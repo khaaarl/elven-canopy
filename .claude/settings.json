@@ -38,6 +38,7 @@
       "Bash(find:*)",
       "Bash(git:*)",
       "Bash(godot:*)",
+      "Bash(godot4:*)",
       "Bash(grep:*)",
       "Bash(head:*)",
       "Bash(isort:*)",
