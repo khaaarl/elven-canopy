@@ -15,7 +15,7 @@
 // state and start/goal nodes. No randomness, no floating-point ambiguity
 // beyond basic f32 arithmetic with `total_cmp` for ordering.
 
-use crate::nav::NavGraph;
+use crate::nav::{EdgeType, NavGraph};
 use crate::types::NavNodeId;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -141,6 +141,86 @@ pub fn astar(
     None // No path found.
 }
 
+/// Like `astar`, but only traverses edges whose `edge_type` is in
+/// `allowed_edges`. Returns `None` if no path exists using only those types.
+pub fn astar_filtered(
+    graph: &NavGraph,
+    start: NavNodeId,
+    goal: NavNodeId,
+    max_speed: f32,
+    allowed_edges: &[EdgeType],
+) -> Option<PathResult> {
+    let n = graph.node_count();
+    if n == 0 {
+        return None;
+    }
+    if start == goal {
+        return Some(PathResult {
+            nodes: vec![start],
+            edge_indices: Vec::new(),
+            total_cost: 0.0,
+        });
+    }
+
+    let mut g_score = vec![f32::INFINITY; n];
+    let mut came_from: Vec<Option<(NavNodeId, usize)>> = vec![None; n];
+    let mut closed = vec![false; n];
+
+    g_score[start.0 as usize] = 0.0;
+
+    let mut open = BinaryHeap::new();
+    let h_start = heuristic(graph, start, goal, max_speed);
+    open.push(OpenEntry {
+        node: start,
+        f_score: h_start,
+    });
+
+    while let Some(current) = open.pop() {
+        let current_id = current.node;
+        let ci = current_id.0 as usize;
+
+        if current_id == goal {
+            return Some(reconstruct_path(&came_from, start, goal, g_score[ci]));
+        }
+
+        if closed[ci] {
+            continue;
+        }
+        closed[ci] = true;
+
+        let current_g = g_score[ci];
+
+        for &edge_idx in graph.neighbors(current_id) {
+            let edge = graph.edge(edge_idx);
+
+            if !allowed_edges.contains(&edge.edge_type) {
+                continue;
+            }
+
+            let neighbor = edge.to;
+            let ni = neighbor.0 as usize;
+
+            if closed[ni] {
+                continue;
+            }
+
+            let tentative_g = current_g + edge.cost;
+
+            if tentative_g < g_score[ni] {
+                g_score[ni] = tentative_g;
+                came_from[ni] = Some((current_id, edge_idx));
+                let f = tentative_g + heuristic(graph, neighbor, goal, max_speed);
+                open.push(OpenEntry {
+                    node: neighbor,
+                    f_score: f,
+                });
+            }
+        }
+    }
+
+    None
+}
+
 /// Admissible heuristic: Manhattan distance / max_speed.
 fn heuristic(graph: &NavGraph, from: NavNodeId, to: NavNodeId, max_speed: f32) -> f32 {
     let a = graph.node(from).position;
@@ -243,6 +323,41 @@ mod tests {
         // No edges — no path.
         let result = astar(&graph, a, b, 1.0);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn astar_filtered_avoids_disallowed_edges() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0));
+        let c = graph.add_node(VoxelCoord::new(10, 0, 0));
+        // a->b via ForestFloor, b->c via TrunkClimb.
+        graph.add_edge(a, b, EdgeType::ForestFloor, 5.0);
+        graph.add_edge(b, c, EdgeType::TrunkClimb, 5.0);
+
+        // Only allow ForestFloor — path a->c should fail (can't cross TrunkClimb).
+        let result = astar_filtered(&graph, a, c, 1.0, &[EdgeType::ForestFloor]);
+        assert!(result.is_none());
+
+        // Allow both — should succeed.
+        let result = astar_filtered(
+            &graph,
+            a,
+            c,
+            1.0,
+            &[EdgeType::ForestFloor, EdgeType::TrunkClimb],
+        );
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().nodes, vec![a, b, c]);
+    }
+
+    #[test]
+    fn astar_filtered_same_start_and_goal() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
+        let result = astar_filtered(&graph, a, a, 1.0, &[EdgeType::ForestFloor]);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().total_cost, 0.0);
     }
 
     #[test]

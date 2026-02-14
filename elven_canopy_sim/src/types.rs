@@ -150,8 +150,8 @@ macro_rules! entity_id {
 
 entity_id!(/// Unique identifier for a tree entity.
 TreeId);
-entity_id!(/// Unique identifier for an elf entity.
-ElfId);
+entity_id!(/// Unique identifier for a creature entity (elf, capybara, etc.).
+CreatureId);
 entity_id!(/// Unique identifier for a player (tree spirit).
 PlayerId);
 entity_id!(/// Unique identifier for a structure (platform, bridge, etc.).
@@ -174,6 +174,14 @@ pub struct NavEdgeId(pub u32);
 // ---------------------------------------------------------------------------
 // Simulation enums
 // ---------------------------------------------------------------------------
+
+/// Species of creature. Used as a key into `SpeciesData` in `GameConfig`
+/// to drive all behavioral differences from data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Species {
+    Elf,
+    Capybara,
+}
 
 /// Simulation speed settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,7 +265,7 @@ mod tests {
         let mut rng_a = GameRng::new(99);
         let mut rng_b = GameRng::new(99);
         assert_eq!(TreeId::new(&mut rng_a), TreeId::new(&mut rng_b));
-        assert_eq!(ElfId::new(&mut rng_a), ElfId::new(&mut rng_b));
+        assert_eq!(CreatureId::new(&mut rng_a), CreatureId::new(&mut rng_b));
     }
 
     #[test]

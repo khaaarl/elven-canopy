@@ -7,8 +7,13 @@
 //
 // On construction (`new()`/`with_config()`), the sim generates tree geometry
 // via `tree_gen.rs`, builds the navigation graph via `nav.rs`, and initializes
-// the voxel world via `world.rs`. Elf spawning, pathfinding (via
+// the voxel world via `world.rs`. Creature spawning, pathfinding (via
 // `pathfinding.rs`), and movement are handled through the command/event system.
+//
+// All creature types (elf, capybara, etc.) use a single `Creature` struct with
+// a `species` field. Behavioral differences (speed, heartbeat interval, edge
+// restrictions) come from data in `SpeciesData` — Dwarf Fortress-style
+// data-driven design. See `species.rs` and `config.rs`.
 //
 // See also: `event.rs` for the event queue, `command.rs` for `SimCommand`,
 // `config.rs` for `GameConfig`, `types.rs` for entity IDs, `world.rs` for
@@ -24,6 +29,7 @@ use crate::event::{EventQueue, ScheduledEventKind, SimEvent, SimEventKind};
 use crate::nav::{self, NavGraph};
 use crate::pathfinding;
 use crate::prng::GameRng;
+use crate::species::SpeciesData;
 use crate::tree_gen;
 use crate::types::*;
 use crate::world::VoxelWorld;
@@ -51,8 +57,8 @@ pub struct SimState {
     /// All tree entities, keyed by ID. BTreeMap for deterministic iteration.
     pub trees: BTreeMap<TreeId, Tree>,
 
-    /// All elf entities, keyed by ID.
-    pub elves: BTreeMap<ElfId, Elf>,
+    /// All creature entities (elves, capybaras, etc.), keyed by ID.
+    pub creatures: BTreeMap<CreatureId, Creature>,
 
     /// The player's tree ID.
     pub player_tree_id: TreeId,
@@ -67,6 +73,10 @@ pub struct SimState {
     /// The navigation graph built from tree geometry. Regenerated from seed, not serialized.
     #[serde(skip)]
     pub nav_graph: NavGraph,
+
+    /// Species data table built from config. Not serialized (rebuilt from config).
+    #[serde(skip)]
+    pub species_table: BTreeMap<Species, SpeciesData>,
 }
 
 /// A tree entity — the primary world structure.
@@ -86,24 +96,25 @@ pub struct Tree {
     pub branch_voxels: Vec<VoxelCoord>,
 }
 
-/// An elf's current path through the nav graph.
+/// A creature's current path through the nav graph.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ElfPath {
+pub struct CreaturePath {
     /// Remaining node IDs to visit (next node is index 0).
     pub remaining_nodes: Vec<NavNodeId>,
     /// Remaining edge indices to traverse (next edge is index 0).
     pub remaining_edge_indices: Vec<usize>,
 }
 
-/// An elf entity — an autonomous agent in the village.
+/// A creature entity — an autonomous agent (elf, capybara, etc.).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Elf {
-    pub id: ElfId,
+pub struct Creature {
+    pub id: CreatureId,
+    pub species: Species,
     pub position: VoxelCoord,
-    /// Current nav node the elf is at (or moving from).
+    /// Current nav node the creature is at (or moving from).
     pub current_node: Option<NavNodeId>,
-    /// Active path the elf is traversing.
-    pub path: Option<ElfPath>,
+    /// Active path the creature is traversing.
+    pub path: Option<CreaturePath>,
 }
 
 /// The result of processing commands and advancing the simulation.
@@ -154,6 +165,9 @@ impl SimState {
         let mut trees = BTreeMap::new();
         trees.insert(player_tree_id, home_tree);
 
+        // Build species table from config.
+        let species_table = config.species.clone();
+
         let mut state = Self {
             tick: 0,
             rng,
@@ -161,15 +175,16 @@ impl SimState {
             speed: SimSpeed::Normal,
             event_queue: EventQueue::new(),
             trees,
-            elves: BTreeMap::new(),
+            creatures: BTreeMap::new(),
             player_tree_id,
             player_id,
             world,
             nav_graph,
+            species_table,
         };
 
         // Schedule the home tree's first heartbeat.
-        let heartbeat_interval = state.config.heartbeat_interval_ticks;
+        let heartbeat_interval = state.config.tree_heartbeat_interval_ticks;
         state.event_queue.schedule(
             heartbeat_interval,
             ScheduledEventKind::TreeHeartbeat {
@@ -237,7 +252,10 @@ impl SimState {
                 });
             }
             SimAction::SpawnElf { position } => {
-                self.spawn_elf(*position, events);
+                self.spawn_creature(Species::Elf, *position, events);
+            }
+            SimAction::SpawnCapybara { position } => {
+                self.spawn_creature(Species::Capybara, *position, events);
             }
             // Other commands will be implemented as features are added.
             SimAction::DesignateBuild { .. } => {
@@ -255,26 +273,32 @@ impl SimState {
     /// Process a single scheduled event.
     fn process_event(&mut self, kind: ScheduledEventKind, _events: &mut Vec<SimEvent>) {
         match kind {
-            ScheduledEventKind::ElfHeartbeat { elf_id } => {
-                if self.elves.contains_key(&elf_id) {
-                    // If the elf is idle (no path), pick a random destination and pathfind.
-                    self.elf_heartbeat_wander(elf_id);
+            ScheduledEventKind::CreatureHeartbeat { creature_id } => {
+                if let Some(creature) = self.creatures.get(&creature_id) {
+                    let species = creature.species;
+                    let interval = self.species_table[&species].heartbeat_interval_ticks;
 
-                    // TODO: Phase 3+ — need decay, mood, mana generation.
+                    self.creature_heartbeat_wander(creature_id);
+
                     // Reschedule the next heartbeat.
-                    let next_tick = self.tick + self.config.heartbeat_interval_ticks;
-                    self.event_queue
-                        .schedule(next_tick, ScheduledEventKind::ElfHeartbeat { elf_id });
+                    let next_tick = self.tick + interval;
+                    self.event_queue.schedule(
+                        next_tick,
+                        ScheduledEventKind::CreatureHeartbeat { creature_id },
+                    );
                 }
             }
-            ScheduledEventKind::ElfMovementComplete { elf_id, arrived_at } => {
-                self.handle_elf_movement_complete(elf_id, arrived_at);
+            ScheduledEventKind::CreatureMovementComplete {
+                creature_id,
+                arrived_at,
+            } => {
+                self.handle_creature_movement_complete(creature_id, arrived_at);
             }
             ScheduledEventKind::TreeHeartbeat { tree_id } => {
                 if self.trees.contains_key(&tree_id) {
                     // TODO: fruit production, mana updates.
                     // Reschedule.
-                    let next_tick = self.tick + self.config.heartbeat_interval_ticks;
+                    let next_tick = self.tick + self.config.tree_heartbeat_interval_ticks;
                     self.event_queue
                         .schedule(next_tick, ScheduledEventKind::TreeHeartbeat { tree_id });
                 }
@@ -282,69 +306,114 @@ impl SimState {
         }
     }
 
-    /// Spawn an elf at the nearest nav node to the given position.
-    fn spawn_elf(&mut self, position: VoxelCoord, events: &mut Vec<SimEvent>) {
-        let nearest_node = match self.nav_graph.find_nearest_node(position) {
-            Some(n) => n,
-            None => return, // No nav nodes — can't spawn.
+    /// Spawn a creature at the nearest nav node to the given position.
+    /// Ground-only species snap to ground nodes; others snap to any node.
+    fn spawn_creature(
+        &mut self,
+        species: Species,
+        position: VoxelCoord,
+        events: &mut Vec<SimEvent>,
+    ) {
+        let species_data = &self.species_table[&species];
+
+        let nearest_node = if species_data.ground_only {
+            self.nav_graph.find_nearest_ground_node(position)
+        } else {
+            self.nav_graph.find_nearest_node(position)
         };
 
-        let elf_id = ElfId::new(&mut self.rng);
+        let nearest_node = match nearest_node {
+            Some(n) => n,
+            None => return, // No suitable nav nodes — can't spawn.
+        };
+
+        let creature_id = CreatureId::new(&mut self.rng);
         let node_pos = self.nav_graph.node(nearest_node).position;
 
-        let elf = Elf {
-            id: elf_id,
+        let creature = Creature {
+            id: creature_id,
+            species,
             position: node_pos,
             current_node: Some(nearest_node),
             path: None,
         };
 
-        self.elves.insert(elf_id, elf);
+        self.creatures.insert(creature_id, creature);
 
         // Schedule first heartbeat (which will trigger wandering).
-        let heartbeat_tick = self.tick + self.config.heartbeat_interval_ticks;
-        self.event_queue
-            .schedule(heartbeat_tick, ScheduledEventKind::ElfHeartbeat { elf_id });
+        let heartbeat_tick = self.tick + species_data.heartbeat_interval_ticks;
+        self.event_queue.schedule(
+            heartbeat_tick,
+            ScheduledEventKind::CreatureHeartbeat { creature_id },
+        );
 
         events.push(SimEvent {
             tick: self.tick,
-            kind: SimEventKind::ElfArrived { elf_id },
+            kind: SimEventKind::CreatureArrived {
+                creature_id,
+                species,
+            },
         });
     }
 
-    /// Heartbeat wander: if the elf is idle, pick a random destination and start moving.
-    fn elf_heartbeat_wander(&mut self, elf_id: ElfId) {
-        let node_count = self.nav_graph.node_count();
-        if node_count == 0 {
+    /// Heartbeat wander: if the creature is idle, pick a random destination and
+    /// start moving. Ground-only species pick from ground nodes and use filtered
+    /// pathfinding; others pick from all nodes and use full A*.
+    fn creature_heartbeat_wander(&mut self, creature_id: CreatureId) {
+        let creature = match self.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return,
+        };
+
+        // Skip if already moving.
+        if creature.path.is_some() {
             return;
         }
 
-        // Check if the elf is idle (has no active path).
-        let is_idle = self
-            .elves
-            .get(&elf_id)
-            .is_some_and(|e| e.path.is_none());
-
-        if !is_idle {
-            return;
-        }
-
-        let current_node = match self.elves.get(&elf_id).and_then(|e| e.current_node) {
+        let current_node = match creature.current_node {
             Some(n) => n,
             None => return,
         };
 
+        let species = creature.species;
+        let species_data = &self.species_table[&species];
+
         // Pick a random destination.
-        let dest_idx = self.rng.range_u64(0, node_count as u64) as u32;
-        let dest_node = NavNodeId(dest_idx);
+        let dest_node = if species_data.ground_only {
+            let ground_nodes = self.nav_graph.ground_node_ids();
+            if ground_nodes.is_empty() {
+                return;
+            }
+            let idx = self.rng.range_u64(0, ground_nodes.len() as u64) as usize;
+            ground_nodes[idx]
+        } else {
+            let node_count = self.nav_graph.node_count();
+            if node_count == 0 {
+                return;
+            }
+            let idx = self.rng.range_u64(0, node_count as u64) as u32;
+            NavNodeId(idx)
+        };
 
         if dest_node == current_node {
             return; // Already there.
         }
 
-        // Pathfind.
-        let max_speed = self.config.elf_base_speed / self.config.climb_speed_multiplier;
-        let path_result = match pathfinding::astar(&self.nav_graph, current_node, dest_node, max_speed) {
+        // Pathfind with species-appropriate edge filter.
+        let max_speed = self.config.nav_base_speed / self.config.climb_speed_multiplier;
+        let path_result = if let Some(ref allowed) = species_data.allowed_edge_types {
+            pathfinding::astar_filtered(
+                &self.nav_graph,
+                current_node,
+                dest_node,
+                max_speed,
+                allowed,
+            )
+        } else {
+            pathfinding::astar(&self.nav_graph, current_node, dest_node, max_speed)
+        };
+
+        let path_result = match path_result {
             Some(r) => r,
             None => return, // No path found.
         };
@@ -361,35 +430,39 @@ impl SimState {
 
         self.event_queue.schedule(
             arrival_tick,
-            ScheduledEventKind::ElfMovementComplete {
-                elf_id,
+            ScheduledEventKind::CreatureMovementComplete {
+                creature_id,
                 arrived_at: first_dest,
             },
         );
 
         // Store remaining path (skip the first node since we're already there).
-        let elf = self.elves.get_mut(&elf_id).unwrap();
-        elf.path = Some(ElfPath {
+        let creature = self.creatures.get_mut(&creature_id).unwrap();
+        creature.path = Some(CreaturePath {
             remaining_nodes: path_result.nodes[1..].to_vec(),
             remaining_edge_indices: path_result.edge_indices[1..].to_vec(),
         });
     }
 
-    /// Handle an elf arriving at a nav node.
-    fn handle_elf_movement_complete(&mut self, elf_id: ElfId, arrived_at: NavNodeId) {
+    /// Handle a creature arriving at a nav node.
+    fn handle_creature_movement_complete(
+        &mut self,
+        creature_id: CreatureId,
+        arrived_at: NavNodeId,
+    ) {
         let node_pos = self.nav_graph.node(arrived_at).position;
 
-        let elf = match self.elves.get_mut(&elf_id) {
-            Some(e) => e,
-            None => return, // Elf was removed.
+        let creature = match self.creatures.get_mut(&creature_id) {
+            Some(c) => c,
+            None => return, // Creature was removed.
         };
 
         // Update position and current node.
-        elf.position = node_pos;
-        elf.current_node = Some(arrived_at);
+        creature.position = node_pos;
+        creature.current_node = Some(arrived_at);
 
         // Advance path.
-        let should_continue = if let Some(ref mut path) = elf.path {
+        let should_continue = if let Some(ref mut path) = creature.path {
             if !path.remaining_nodes.is_empty() {
                 path.remaining_nodes.remove(0);
             }
@@ -403,7 +476,7 @@ impl SimState {
 
         if should_continue {
             // Schedule next movement.
-            let path = self.elves[&elf_id].path.as_ref().unwrap();
+            let path = self.creatures[&creature_id].path.as_ref().unwrap();
             let next_edge_idx = path.remaining_edge_indices[0];
             let next_edge_cost = self.nav_graph.edge(next_edge_idx).cost;
             let next_dest = path.remaining_nodes[0];
@@ -411,15 +484,23 @@ impl SimState {
 
             self.event_queue.schedule(
                 arrival_tick,
-                ScheduledEventKind::ElfMovementComplete {
-                    elf_id,
+                ScheduledEventKind::CreatureMovementComplete {
+                    creature_id,
                     arrived_at: next_dest,
                 },
             );
         } else {
             // Path complete.
-            self.elves.get_mut(&elf_id).unwrap().path = None;
+            self.creatures.get_mut(&creature_id).unwrap().path = None;
         }
+    }
+
+    /// Count creatures of a given species.
+    pub fn creature_count(&self, species: Species) -> usize {
+        self.creatures
+            .values()
+            .filter(|c| c.species == species)
+            .count()
     }
 }
 
@@ -475,7 +556,7 @@ mod tests {
     #[test]
     fn tree_heartbeat_reschedules() {
         let mut sim = SimState::new(42);
-        let heartbeat_interval = sim.config.heartbeat_interval_ticks;
+        let heartbeat_interval = sim.config.tree_heartbeat_interval_ticks;
 
         // Step past the first heartbeat.
         sim.step(&[], heartbeat_interval + 1);
@@ -546,11 +627,11 @@ mod tests {
         };
 
         let result = sim.step(&[cmd], 2);
-        assert_eq!(sim.elves.len(), 1);
+        assert_eq!(sim.creature_count(Species::Elf), 1);
         assert!(result
             .events
             .iter()
-            .any(|e| matches!(e.kind, SimEventKind::ElfArrived { .. })));
+            .any(|e| matches!(e.kind, SimEventKind::CreatureArrived { species: Species::Elf, .. })));
     }
 
     #[test]
@@ -568,18 +649,32 @@ mod tests {
         };
         sim.step(&[spawn_cmd], 2);
 
-        let initial_pos = sim.elves.values().next().unwrap().position;
+        let initial_pos = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .position;
 
         // Step far enough for heartbeat + movement to complete.
         sim.step(&[], 2000);
 
         // Elf should have moved (though it might have returned to the same node in
         // theory, it's very unlikely with enough ticks and a large-enough graph).
-        let final_pos = sim.elves.values().next().unwrap().position;
+        let final_pos = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .position;
         // We can't guarantee a different position, but we can verify the elf still exists
         // and has a valid position.
-        assert_eq!(sim.elves.len(), 1);
-        let elf = sim.elves.values().next().unwrap();
+        assert_eq!(sim.creature_count(Species::Elf), 1);
+        let elf = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap();
         assert!(elf.current_node.is_some());
         // Verify position matches current node.
         let node_pos = sim.nav_graph.node(elf.current_node.unwrap()).position;
@@ -605,14 +700,189 @@ mod tests {
         sim_a.step(&[spawn.clone()], 1000);
         sim_b.step(&[spawn], 1000);
 
-        // Both sims should have identical elf positions.
-        assert_eq!(sim_a.elves.len(), sim_b.elves.len());
-        for (id, elf_a) in &sim_a.elves {
-            let elf_b = &sim_b.elves[id];
-            assert_eq!(elf_a.position, elf_b.position);
-            assert_eq!(elf_a.current_node, elf_b.current_node);
+        // Both sims should have identical creature positions.
+        assert_eq!(sim_a.creatures.len(), sim_b.creatures.len());
+        for (id, creature_a) in &sim_a.creatures {
+            let creature_b = &sim_b.creatures[id];
+            assert_eq!(creature_a.position, creature_b.position);
+            assert_eq!(creature_a.current_node, creature_b.current_node);
         }
         // PRNG state should be identical.
         assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
+    }
+
+    #[test]
+    fn spawn_capybara_command() {
+        let mut sim = SimState::new(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCapybara {
+                position: tree_pos,
+            },
+        };
+
+        let result = sim.step(&[cmd], 2);
+        assert_eq!(sim.creature_count(Species::Capybara), 1);
+        assert!(result
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, SimEventKind::CreatureArrived { species: Species::Capybara, .. })));
+
+        // Capybara should be at a ground-level node (y=0).
+        let capybara = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Capybara)
+            .unwrap();
+        assert_eq!(capybara.position.y, 0);
+        assert!(capybara.current_node.is_some());
+    }
+
+    #[test]
+    fn capybara_wanders_on_ground() {
+        let mut sim = SimState::new(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCapybara {
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 2);
+
+        // Step far enough for heartbeat + movement.
+        sim.step(&[], 2000);
+
+        assert_eq!(sim.creature_count(Species::Capybara), 1);
+        let capybara = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Capybara)
+            .unwrap();
+        assert!(capybara.current_node.is_some());
+        let node_pos = sim.nav_graph.node(capybara.current_node.unwrap()).position;
+        assert_eq!(capybara.position, node_pos);
+    }
+
+    #[test]
+    fn capybara_stays_on_ground() {
+        let mut sim = SimState::new(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCapybara {
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 2);
+
+        // Run for many ticks — capybara must never leave y=0.
+        for target in (100..5000).step_by(100) {
+            sim.step(&[], target);
+            let capybara = sim
+                .creatures
+                .values()
+                .find(|c| c.species == Species::Capybara)
+                .unwrap();
+            assert_eq!(
+                capybara.position.y, 0,
+                "Capybara left ground at tick {target}: pos={:?}",
+                capybara.position
+            );
+        }
+    }
+
+    #[test]
+    fn determinism_with_capybara() {
+        let mut sim_a = SimState::new(42);
+        let mut sim_b = SimState::new(42);
+
+        let tree_pos = sim_a.trees[&sim_a.player_tree_id].position;
+
+        let spawn = SimCommand {
+            player_id: sim_a.player_id,
+            tick: 1,
+            action: SimAction::SpawnCapybara {
+                position: tree_pos,
+            },
+        };
+
+        sim_a.step(&[spawn.clone()], 1000);
+        sim_b.step(&[spawn], 1000);
+
+        assert_eq!(sim_a.creatures.len(), sim_b.creatures.len());
+        for (id, creature_a) in &sim_a.creatures {
+            let creature_b = &sim_b.creatures[id];
+            assert_eq!(creature_a.position, creature_b.position);
+            assert_eq!(creature_a.current_node, creature_b.current_node);
+        }
+        assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
+    }
+
+    #[test]
+    fn species_data_loaded_from_config() {
+        let sim = SimState::new(42);
+        assert_eq!(sim.species_table.len(), 2);
+        assert!(sim.species_table.contains_key(&Species::Elf));
+        assert!(sim.species_table.contains_key(&Species::Capybara));
+
+        let elf_data = &sim.species_table[&Species::Elf];
+        assert!(!elf_data.ground_only);
+        assert!(elf_data.allowed_edge_types.is_none());
+
+        let capy_data = &sim.species_table[&Species::Capybara];
+        assert!(capy_data.ground_only);
+        assert!(capy_data.allowed_edge_types.is_some());
+    }
+
+    #[test]
+    fn creature_species_preserved() {
+        let mut sim = SimState::new(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Spawn one elf and one capybara.
+        let cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: 1,
+                action: SimAction::SpawnElf {
+                    position: tree_pos,
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: 1,
+                action: SimAction::SpawnCapybara {
+                    position: tree_pos,
+                },
+            },
+        ];
+        sim.step(&cmds, 2);
+
+        assert_eq!(sim.creature_count(Species::Elf), 1);
+        assert_eq!(sim.creature_count(Species::Capybara), 1);
+        assert_eq!(sim.creatures.len(), 2);
+
+        // Verify species are correctly stored.
+        let elf = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap();
+        assert_eq!(elf.species, Species::Elf);
+
+        let capy = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Capybara)
+            .unwrap();
+        assert_eq!(capy.species, Species::Capybara);
     }
 }

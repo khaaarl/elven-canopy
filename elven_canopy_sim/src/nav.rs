@@ -141,13 +141,36 @@ impl NavGraph {
             .min_by_key(|n| n.position.manhattan_distance(pos))
             .map(|n| n.id)
     }
+
+    /// Find the nearest ground-level (y=0) node to the given position.
+    /// Returns `None` if no ground nodes exist.
+    pub fn find_nearest_ground_node(&self, pos: VoxelCoord) -> Option<NavNodeId> {
+        self.nodes
+            .iter()
+            .filter(|n| n.position.y == 0)
+            .min_by_key(|n| n.position.manhattan_distance(pos))
+            .map(|n| n.id)
+    }
+
+    /// Return all ground-level (y=0) node IDs.
+    pub fn ground_node_ids(&self) -> Vec<NavNodeId> {
+        self.nodes
+            .iter()
+            .filter(|n| n.position.y == 0)
+            .map(|n| n.id)
+            .collect()
+    }
 }
 
 /// Build a navigation graph from tree geometry.
 ///
 /// Layout:
-/// 1. **Ground ring**: 4 nodes at trunk base (N/S/E/W at radius+2, y=0),
-///    connected by `ForestFloor` edges.
+/// 1. **Ground rings**: `ground_ring_count` concentric rings of 8 nodes each
+///    (4 cardinals N/E/S/W + 4 intercardinals NE/SE/SW/NW) at y=0. The inner
+///    ring sits at `trunk_radius + 2`, each subsequent ring is
+///    `ground_ring_spacing` voxels farther out. Rings are connected
+///    circumferentially with `ForestFloor` edges, and adjacent rings are
+///    connected radially (same direction, 8 pairs per ring pair).
 /// 2. **Trunk surface**: Every `nav_node_vertical_spacing` y-levels from y=1
 ///    up to trunk height, place 4 nodes (N/S/E/W at radius+1). Connected
 ///    vertically with `TrunkClimb` edges, horizontally with
@@ -155,7 +178,8 @@ impl NavGraph {
 /// 3. **Branches**: A node at branch root (where it meets the trunk) and
 ///    branch tip, connected by `BranchWalk` edge. Root connects to the
 ///    nearest trunk surface node.
-/// 4. **Ground-to-trunk**: Ground ring connects to the lowest trunk surface ring.
+/// 4. **Ground-to-trunk**: Inner ring's 4 cardinal nodes connect to the
+///    lowest trunk surface ring.
 pub fn build_nav_graph(tree: &Tree, config: &GameConfig) -> NavGraph {
     let mut graph = NavGraph::new();
 
@@ -166,22 +190,63 @@ pub fn build_nav_graph(tree: &Tree, config: &GameConfig) -> NavGraph {
     // Cardinal offsets: N(+Z), E(+X), S(-Z), W(-X)
     let cardinal_offsets: [(i32, i32); 4] = [(0, 1), (1, 0), (0, -1), (-1, 0)];
 
-    // --- 1. Ground ring ---
-    let ground_offset = trunk_radius + 2;
-    let mut ground_nodes = Vec::new();
-    for &(dx, dz) in &cardinal_offsets {
-        let id = graph.add_node(VoxelCoord::new(cx + dx * ground_offset, 0, cz + dz * ground_offset));
-        ground_nodes.push(id);
+    // 8 direction offsets for ground rings: 4 cardinals + 4 intercardinals.
+    // Order: N, NE, E, SE, S, SW, W, NW — so indices 0,2,4,6 are cardinal.
+    let ground_dir_offsets: [(i32, i32); 8] = [
+        (0, 1),   // N (+Z)
+        (1, 1),   // NE
+        (1, 0),   // E (+X)
+        (1, -1),  // SE
+        (0, -1),  // S (-Z)
+        (-1, -1), // SW
+        (-1, 0),  // W (-X)
+        (-1, 1),  // NW
+    ];
+
+    // --- 1. Ground rings ---
+    // Build concentric rings of 8 nodes each around the trunk base.
+    let ring_count = config.ground_ring_count.max(1) as usize;
+    let ring_spacing = config.ground_ring_spacing.max(1) as i32;
+    let inner_radius = trunk_radius + 2;
+    let base_speed = config.nav_base_speed;
+
+    // ground_rings[ring_idx][dir_idx] = NavNodeId
+    let mut ground_rings: Vec<Vec<NavNodeId>> = Vec::new();
+
+    for ring_idx in 0..ring_count {
+        let radius = inner_radius + ring_idx as i32 * ring_spacing;
+        let mut ring = Vec::new();
+        for &(dx, dz) in &ground_dir_offsets {
+            let id = graph.add_node(VoxelCoord::new(
+                cx + dx * radius,
+                0,
+                cz + dz * radius,
+            ));
+            ring.push(id);
+        }
+        // Connect circumferentially within this ring.
+        for i in 0..ring.len() {
+            let next = (i + 1) % ring.len();
+            let a_pos = graph.node(ring[i]).position;
+            let b_pos = graph.node(ring[next]).position;
+            let dist = a_pos.manhattan_distance(b_pos) as f32;
+            let cost = dist / base_speed;
+            graph.add_edge(ring[i], ring[next], EdgeType::ForestFloor, cost);
+        }
+        ground_rings.push(ring);
     }
-    // Connect ground ring in a loop.
-    let base_speed = config.elf_base_speed;
-    for i in 0..ground_nodes.len() {
-        let next = (i + 1) % ground_nodes.len();
-        let a_pos = graph.node(ground_nodes[i]).position;
-        let b_pos = graph.node(ground_nodes[next]).position;
-        let dist = a_pos.manhattan_distance(b_pos) as f32;
-        let cost = dist / base_speed;
-        graph.add_edge(ground_nodes[i], ground_nodes[next], EdgeType::ForestFloor, cost);
+
+    // Connect adjacent rings radially (same direction index, 8 pairs per ring pair).
+    for r in 1..ground_rings.len() {
+        for dir in 0..8 {
+            let inner = ground_rings[r - 1][dir];
+            let outer = ground_rings[r][dir];
+            let i_pos = graph.node(inner).position;
+            let o_pos = graph.node(outer).position;
+            let dist = i_pos.manhattan_distance(o_pos) as f32;
+            let cost = dist / base_speed;
+            graph.add_edge(inner, outer, EdgeType::ForestFloor, cost);
+        }
     }
 
     // --- 2. Trunk surface rings ---
@@ -231,15 +296,21 @@ pub fn build_nav_graph(tree: &Tree, config: &GameConfig) -> NavGraph {
     }
 
     // --- 3. Ground-to-trunk connections ---
-    if let Some(first_ring) = trunk_rings.first() {
-        for i in 0..4 {
-            let ground = ground_nodes[i];
-            let trunk_node = first_ring[i];
-            let g_pos = graph.node(ground).position;
-            let t_pos = graph.node(trunk_node).position;
-            let dist = g_pos.manhattan_distance(t_pos) as f32;
-            let cost = dist / climb_speed;
-            graph.add_edge(ground, trunk_node, EdgeType::GroundToTrunk, cost);
+    // Connect inner ring's 4 cardinal nodes (indices 0,2,4,6 = N,E,S,W)
+    // to the lowest trunk surface ring's 4 cardinal nodes (indices 0,1,2,3).
+    if let Some(first_trunk_ring) = trunk_rings.first() {
+        if let Some(inner_ground_ring) = ground_rings.first() {
+            // Cardinal ground indices [0,2,4,6] map to trunk indices [0,1,2,3].
+            let cardinal_ground_indices = [0usize, 2, 4, 6];
+            for (trunk_i, &ground_i) in cardinal_ground_indices.iter().enumerate() {
+                let ground = inner_ground_ring[ground_i];
+                let trunk_node = first_trunk_ring[trunk_i];
+                let g_pos = graph.node(ground).position;
+                let t_pos = graph.node(trunk_node).position;
+                let dist = g_pos.manhattan_distance(t_pos) as f32;
+                let cost = dist / climb_speed;
+                graph.add_edge(ground, trunk_node, EdgeType::GroundToTrunk, cost);
+            }
         }
     }
 

@@ -4,16 +4,20 @@
 // query the simulation. This is the primary interface between GDScript and
 // the Rust sim.
 //
-// In Phase 1 this exposes tree voxel data (for rendering), elf positions
-// (for billboard sprites), and a spawn command. All data is returned in
+// Exposes tree voxel data (for rendering), elf and capybara positions
+// (for billboard sprites), and spawn commands. All data is returned in
 // packed Godot arrays for efficient transfer.
+//
+// Internally, elves and capybaras are stored as unified `Creature` entities
+// with a `species` field. The bridge filters by species when returning
+// positions so the GDScript API is unchanged.
 //
 // See also: `lib.rs` for the GDExtension entry point, and the
 // `elven_canopy_sim` crate for all simulation logic.
 
 use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::sim::SimState;
-use elven_canopy_sim::types::VoxelCoord;
+use elven_canopy_sim::types::{Species, VoxelCoord};
 use godot::prelude::*;
 
 /// Godot node that owns and drives the simulation.
@@ -119,11 +123,11 @@ impl SimBridge {
             return PackedVector3Array::new();
         };
         let mut arr = PackedVector3Array::new();
-        for elf in sim.elves.values() {
+        for creature in sim.creatures.values().filter(|c| c.species == Species::Elf) {
             arr.push(Vector3::new(
-                elf.position.x as f32,
-                elf.position.y as f32,
-                elf.position.z as f32,
+                creature.position.x as f32,
+                creature.position.y as f32,
+                creature.position.z as f32,
             ));
         }
         arr
@@ -132,7 +136,9 @@ impl SimBridge {
     /// Return the number of elves.
     #[func]
     fn elf_count(&self) -> i32 {
-        self.sim.as_ref().map_or(0, |s| s.elves.len() as i32)
+        self.sim
+            .as_ref()
+            .map_or(0, |s| s.creature_count(Species::Elf) as i32)
     }
 
     /// Spawn an elf at the given voxel position.
@@ -145,6 +151,47 @@ impl SimBridge {
             player_id,
             tick: next_tick,
             action: SimAction::SpawnElf {
+                position: VoxelCoord::new(x, y, z),
+            },
+        };
+        sim.step(&[cmd], next_tick);
+    }
+
+    /// Return capybara positions as a PackedVector3Array.
+    #[func]
+    fn get_capybara_positions(&self) -> PackedVector3Array {
+        let Some(sim) = &self.sim else {
+            return PackedVector3Array::new();
+        };
+        let mut arr = PackedVector3Array::new();
+        for creature in sim.creatures.values().filter(|c| c.species == Species::Capybara) {
+            arr.push(Vector3::new(
+                creature.position.x as f32,
+                creature.position.y as f32,
+                creature.position.z as f32,
+            ));
+        }
+        arr
+    }
+
+    /// Return the number of capybaras.
+    #[func]
+    fn capybara_count(&self) -> i32 {
+        self.sim
+            .as_ref()
+            .map_or(0, |s| s.creature_count(Species::Capybara) as i32)
+    }
+
+    /// Spawn a capybara at the given voxel position.
+    #[func]
+    fn spawn_capybara(&mut self, x: i32, y: i32, z: i32) {
+        let Some(sim) = &mut self.sim else { return };
+        let player_id = sim.player_id;
+        let next_tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_id,
+            tick: next_tick,
+            action: SimAction::SpawnCapybara {
                 position: VoxelCoord::new(x, y, z),
             },
         };

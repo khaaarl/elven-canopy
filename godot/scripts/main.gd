@@ -1,12 +1,12 @@
 ## Main scene controller for Elven Canopy.
 ##
-## Initializes the simulation bridge, sets up tree and elf renderers,
-## and spawns an initial elf at the tree base. Steps the simulation
-## forward each frame.
+## Initializes the simulation bridge, sets up tree, elf, and capybara
+## renderers, and spawns initial elves at the tree base. Steps the
+## simulation forward each frame.
 ##
 ## See also: orbital_camera.gd for camera controls, SimBridge (Rust) for
-## the simulation interface, tree_renderer.gd and elf_renderer.gd for
-## visual representation.
+## the simulation interface, tree_renderer.gd, elf_renderer.gd, and
+## capybara_renderer.gd for visual representation.
 
 extends Node3D
 
@@ -27,12 +27,23 @@ func _ready() -> void:
 	var elf_renderer = $ElfRenderer
 	elf_renderer.setup(bridge)
 
-	# Spawn one elf at the tree base (world center at y=0).
+	# Set up capybara renderer (sim-driven).
+	var capybara_renderer = $CapybaraRenderer
+	capybara_renderer.setup(bridge)
+
+	# Spawn elves at the tree base to demonstrate chibi variety.
 	# The world center is world_size/2 (128 for default 256 world).
 	var cx := 128
 	var cz := 128
-	bridge.spawn_elf(cx, 0, cz)
-	print("Elven Canopy: spawned elf at (%d, 0, %d), elf count=%d" % [cx, cz, bridge.elf_count()])
+	for i in 5:
+		var ox := i * 3 - 6  # Spread elves along X axis
+		bridge.spawn_elf(cx + ox, 0, cz)
+	print("Elven Canopy: spawned %d elves near (%d, 0, %d)" % [bridge.elf_count(), cx, cz])
+
+	# Spawn capybaras at ground level.
+	for i in 5:
+		bridge.spawn_capybara(cx, 0, cz)
+	print("Elven Canopy: spawned %d capybaras near (%d, 0, %d)" % [bridge.capybara_count(), cx, cz])
 
 
 func _process(_delta: float) -> void:

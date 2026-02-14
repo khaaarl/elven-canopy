@@ -51,6 +51,10 @@ pub enum SimAction {
     SpawnElf {
         position: VoxelCoord,
     },
+    /// Spawn a new capybara at the given position (snapped to nearest ground nav node).
+    SpawnCapybara {
+        position: VoxelCoord,
+    },
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 {
   "tick_duration_ms": 100,
-  "heartbeat_interval_ticks": 100,
-  "elf_base_speed": 0.1,
+  "tree_heartbeat_interval_ticks": 100,
+  "nav_base_speed": 0.1,
   "climb_speed_multiplier": 0.4,
   "stair_speed_multiplier": 0.7,
   "mana_base_generation_rate": 1.0,
@@ -19,5 +19,21 @@
   "tree_branch_count": 5,
   "tree_branch_length": 8,
   "tree_branch_radius": 1,
-  "nav_node_vertical_spacing": 4
+  "nav_node_vertical_spacing": 4,
+  "ground_ring_count": 4,
+  "ground_ring_spacing": 8,
+  "species": {
+    "Elf": {
+      "base_speed": 0.1,
+      "heartbeat_interval_ticks": 30,
+      "allowed_edge_types": null,
+      "ground_only": false
+    },
+    "Capybara": {
+      "base_speed": 0.06,
+      "heartbeat_interval_ticks": 40,
+      "allowed_edge_types": ["ForestFloor"],
+      "ground_only": true
+    }
+  }
 }

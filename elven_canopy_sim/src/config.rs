@@ -6,13 +6,22 @@
 // multiplayer all clients must have identical configs (enforced via hash
 // comparison at session handshake).
 //
-// See also: `sim.rs` which owns the `GameConfig` as part of `SimState`.
+// Species-specific behavioral data (speed, heartbeat interval, edge
+// restrictions) lives in `SpeciesData` entries keyed by `Species` in the
+// `species` map — see `species.rs`.
+//
+// See also: `sim.rs` which owns the `GameConfig` as part of `SimState`,
+// `species.rs` for the `SpeciesData` struct.
 //
 // **Critical constraint: determinism.** Config values feed directly into
 // simulation logic. All clients must use identical configs for identical
 // results.
 
+use crate::nav::EdgeType;
+use crate::species::SpeciesData;
+use crate::types::Species;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Top-level game configuration. Loaded from JSON, never mutated at runtime.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -20,12 +29,14 @@ pub struct GameConfig {
     /// Number of real-world milliseconds per simulation tick.
     pub tick_duration_ms: u32,
 
-    /// Interval (in ticks) between elf heartbeat events (need decay, mood
-    /// drift, mana generation).
-    pub heartbeat_interval_ticks: u64,
+    /// Interval (in ticks) between tree heartbeat events (fruit production,
+    /// mana capacity updates).
+    pub tree_heartbeat_interval_ticks: u64,
 
-    /// Base elf movement speed in voxels per tick on flat surfaces.
-    pub elf_base_speed: f32,
+    /// Reference movement speed used for nav graph edge cost computation.
+    /// This is the flat-surface speed used when building the graph; individual
+    /// creature species may move faster or slower.
+    pub nav_base_speed: f32,
 
     /// Multiplier applied to movement speed when climbing raw trunk.
     pub climb_speed_multiplier: f32,
@@ -85,14 +96,46 @@ pub struct GameConfig {
 
     /// Vertical spacing between trunk surface nav nodes.
     pub nav_node_vertical_spacing: u32,
+
+    /// Number of concentric ground nav rings around the trunk base.
+    pub ground_ring_count: u32,
+
+    /// Voxel distance between successive ground rings.
+    pub ground_ring_spacing: u32,
+
+    // -- Species --
+
+    /// Per-species behavioral data (speed, heartbeat interval, edge
+    /// restrictions, spawn rules). Keyed by `Species` enum.
+    pub species: BTreeMap<Species, SpeciesData>,
 }
 
 impl Default for GameConfig {
     fn default() -> Self {
+        let mut species = BTreeMap::new();
+        species.insert(
+            Species::Elf,
+            SpeciesData {
+                base_speed: 0.1,
+                heartbeat_interval_ticks: 30,
+                allowed_edge_types: None, // elves can traverse all edges
+                ground_only: false,
+            },
+        );
+        species.insert(
+            Species::Capybara,
+            SpeciesData {
+                base_speed: 0.06,
+                heartbeat_interval_ticks: 40,
+                allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
+                ground_only: true,
+            },
+        );
+
         Self {
             tick_duration_ms: 100,
-            heartbeat_interval_ticks: 100,
-            elf_base_speed: 0.1,
+            tree_heartbeat_interval_ticks: 100,
+            nav_base_speed: 0.1,
             climb_speed_multiplier: 0.4,
             stair_speed_multiplier: 0.7,
             mana_base_generation_rate: 1.0,
@@ -111,6 +154,9 @@ impl Default for GameConfig {
             tree_branch_length: 8,
             tree_branch_radius: 1,
             nav_node_vertical_spacing: 4,
+            ground_ring_count: 4,
+            ground_ring_spacing: 8,
+            species,
         }
     }
 }
@@ -127,18 +173,22 @@ mod tests {
         // Verify a few fields survived the roundtrip.
         assert_eq!(config.tick_duration_ms, restored.tick_duration_ms);
         assert_eq!(
-            config.heartbeat_interval_ticks,
-            restored.heartbeat_interval_ticks
+            config.tree_heartbeat_interval_ticks,
+            restored.tree_heartbeat_interval_ticks
         );
         assert_eq!(config.world_size, restored.world_size);
+        // Verify species data survived.
+        assert_eq!(config.species.len(), restored.species.len());
+        let elf_data = &restored.species[&Species::Elf];
+        assert_eq!(elf_data.heartbeat_interval_ticks, 30);
     }
 
     #[test]
     fn config_loads_from_json_string() {
         let json = r#"{
             "tick_duration_ms": 50,
-            "heartbeat_interval_ticks": 200,
-            "elf_base_speed": 0.2,
+            "tree_heartbeat_interval_ticks": 200,
+            "nav_base_speed": 0.2,
             "climb_speed_multiplier": 0.3,
             "stair_speed_multiplier": 0.6,
             "mana_base_generation_rate": 2.0,
@@ -156,12 +206,31 @@ mod tests {
             "tree_branch_count": 6,
             "tree_branch_length": 10,
             "tree_branch_radius": 2,
-            "nav_node_vertical_spacing": 5
+            "nav_node_vertical_spacing": 5,
+            "ground_ring_count": 3,
+            "ground_ring_spacing": 10,
+            "species": {
+                "Elf": {
+                    "base_speed": 0.2,
+                    "heartbeat_interval_ticks": 100,
+                    "allowed_edge_types": null,
+                    "ground_only": false
+                },
+                "Capybara": {
+                    "base_speed": 0.05,
+                    "heartbeat_interval_ticks": 200,
+                    "allowed_edge_types": ["ForestFloor"],
+                    "ground_only": true
+                }
+            }
         }"#;
         let config: GameConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.tick_duration_ms, 50);
         assert_eq!(config.world_size, (128, 64, 128));
         assert_eq!(config.tree_trunk_radius, 4);
         assert_eq!(config.nav_node_vertical_spacing, 5);
+        let capy = &config.species[&Species::Capybara];
+        assert_eq!(capy.heartbeat_interval_ticks, 200);
+        assert!(capy.ground_only);
     }
 }

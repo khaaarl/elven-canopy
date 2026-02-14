@@ -1,9 +1,10 @@
-[gd_scene load_steps=9 format=3 uid="uid://bqxk3rmkv2y5x"]
+[gd_scene load_steps=10 format=3 uid="uid://bqxk3rmkv2y5x"]
 
 [ext_resource type="Script" path="res://scripts/orbital_camera.gd" id="1_camera"]
 [ext_resource type="Script" path="res://scripts/main.gd" id="2_main"]
 [ext_resource type="Script" path="res://scripts/tree_renderer.gd" id="3_tree_renderer"]
 [ext_resource type="Script" path="res://scripts/elf_renderer.gd" id="4_elf_renderer"]
+[ext_resource type="Script" path="res://scripts/capybara_renderer.gd" id="5_capybara_renderer"]
 
 [sub_resource type="BoxMesh" id="BoxMesh_ground"]
 size = Vector3(80, 0.2, 80)
@@ -59,3 +60,6 @@ script = ExtResource("3_tree_renderer")
 
 [node name="ElfRenderer" type="Node3D" parent="."]
 script = ExtResource("4_elf_renderer")
+
+[node name="CapybaraRenderer" type="Node3D" parent="."]
+script = ExtResource("5_capybara_renderer")

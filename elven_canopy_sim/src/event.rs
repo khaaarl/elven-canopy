@@ -2,7 +2,7 @@
 // narrative events.
 //
 // The sim uses a discrete event simulation model (see design doc §5). Entities
-// schedule future events into a priority queue ordered by `(tick, entity_id)`.
+// schedule future events into a priority queue ordered by `(tick, sequence)`.
 // The sim processes them in order, advancing the clock as needed. Empty ticks
 // are free.
 //
@@ -11,10 +11,10 @@
 // - `SimEvent`: player-visible narrative events emitted as output.
 //
 // See also: `sim.rs` for the tick loop that processes scheduled events,
-// `types.rs` for entity IDs.
+// `types.rs` for entity IDs and the `Species` enum.
 //
 // **Critical constraint: determinism.** Event ordering must be identical
-// across all clients. The `(tick, entity_id)` key provides a total order.
+// across all clients. The `(tick, sequence)` key provides a total order.
 
 use crate::types::*;
 use serde::{Deserialize, Serialize};
@@ -40,10 +40,10 @@ pub struct ScheduledEvent {
 /// The types of internal events the sim can schedule.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ScheduledEventKind {
-    /// Periodic heartbeat for an elf (need decay, mood update, mana generation).
-    ElfHeartbeat { elf_id: ElfId },
-    /// An elf has finished traversing one nav edge and arrives at the next node.
-    ElfMovementComplete { elf_id: ElfId, arrived_at: NavNodeId },
+    /// Periodic heartbeat for a creature (wander decision, need decay, mood).
+    CreatureHeartbeat { creature_id: CreatureId },
+    /// A creature has finished traversing one nav edge and arrives at the next node.
+    CreatureMovementComplete { creature_id: CreatureId, arrived_at: NavNodeId },
     /// Tree heartbeat (fruit production, mana capacity updates).
     TreeHeartbeat { tree_id: TreeId },
 }
@@ -137,8 +137,8 @@ pub struct SimEvent {
 /// Types of narrative events visible to the player.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SimEventKind {
-    /// A new elf has arrived (migration, spawn).
-    ElfArrived { elf_id: ElfId },
+    /// A new creature has arrived (spawn).
+    CreatureArrived { creature_id: CreatureId, species: Species },
     /// Construction on a build project has started.
     BuildStarted { project_id: ProjectId },
     /// A build project has been completed.
@@ -157,23 +157,23 @@ mod tests {
     #[test]
     fn event_queue_ordering() {
         let mut rng = GameRng::new(42);
-        let elf_a = ElfId::new(&mut rng);
-        let elf_b = ElfId::new(&mut rng);
+        let creature_a = CreatureId::new(&mut rng);
+        let creature_b = CreatureId::new(&mut rng);
 
         let mut queue = EventQueue::new();
         // Schedule out of order.
-        queue.schedule(100, ScheduledEventKind::ElfHeartbeat { elf_id: elf_b });
-        queue.schedule(50, ScheduledEventKind::ElfHeartbeat { elf_id: elf_a });
-        queue.schedule(50, ScheduledEventKind::ElfHeartbeat { elf_id: elf_b });
+        queue.schedule(100, ScheduledEventKind::CreatureHeartbeat { creature_id: creature_b });
+        queue.schedule(50, ScheduledEventKind::CreatureHeartbeat { creature_id: creature_a });
+        queue.schedule(50, ScheduledEventKind::CreatureHeartbeat { creature_id: creature_b });
 
         // Should pop in tick order, then sequence order within a tick.
         let first = queue.pop_if_ready(200).unwrap();
         assert_eq!(first.tick, 50);
-        assert_eq!(first.sequence, 1); // elf_a was scheduled second but at tick 50
+        assert_eq!(first.sequence, 1); // creature_a was scheduled second but at tick 50
 
         let second = queue.pop_if_ready(200).unwrap();
         assert_eq!(second.tick, 50);
-        assert_eq!(second.sequence, 2); // elf_b at tick 50
+        assert_eq!(second.sequence, 2); // creature_b at tick 50
 
         let third = queue.pop_if_ready(200).unwrap();
         assert_eq!(third.tick, 100);
@@ -184,10 +184,10 @@ mod tests {
     #[test]
     fn pop_if_ready_respects_tick_limit() {
         let mut rng = GameRng::new(42);
-        let elf = ElfId::new(&mut rng);
+        let creature = CreatureId::new(&mut rng);
 
         let mut queue = EventQueue::new();
-        queue.schedule(100, ScheduledEventKind::ElfHeartbeat { elf_id: elf });
+        queue.schedule(100, ScheduledEventKind::CreatureHeartbeat { creature_id: creature });
 
         // Not ready yet.
         assert!(queue.pop_if_ready(99).is_none());
@@ -198,11 +198,11 @@ mod tests {
     #[test]
     fn event_queue_serialization() {
         let mut rng = GameRng::new(42);
-        let elf = ElfId::new(&mut rng);
+        let creature = CreatureId::new(&mut rng);
 
         let mut queue = EventQueue::new();
-        queue.schedule(10, ScheduledEventKind::ElfHeartbeat { elf_id: elf });
-        queue.schedule(20, ScheduledEventKind::ElfHeartbeat { elf_id: elf });
+        queue.schedule(10, ScheduledEventKind::CreatureHeartbeat { creature_id: creature });
+        queue.schedule(20, ScheduledEventKind::CreatureHeartbeat { creature_id: creature });
 
         let json = serde_json::to_string(&queue).unwrap();
         let mut restored: EventQueue = serde_json::from_str(&json).unwrap();

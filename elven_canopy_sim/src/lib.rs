@@ -14,8 +14,9 @@
 // - `command.rs`:     SimCommand / SimAction — all sim mutations.
 // - `event.rs`:       EventQueue (priority queue) + narrative SimEvents.
 // - `config.rs`:      GameConfig — all tunable parameters.
+// - `species.rs`:     SpeciesData — data-driven creature behavior (DF-style).
 // - `prng.rs`:        Xoshiro256++ PRNG with SplitMix64 seeding.
-// - `types.rs`:       VoxelCoord, entity IDs, voxel types, enums.
+// - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.
 //
 // The companion crate `elven_canopy_gdext` wraps this library for Godot
 // via GDExtension. That boundary is enforced at the compiler level — this
@@ -33,6 +34,7 @@ pub mod nav;
 pub mod pathfinding;
 pub mod prng;
 pub mod sim;
+pub mod species;
 pub mod tree_gen;
 pub mod types;
 pub mod world;
