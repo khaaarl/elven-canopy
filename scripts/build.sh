@@ -31,6 +31,20 @@ elif [ "$(readlink "$LINK")" != "../target" ]; then
     ln -sf ../target "$LINK"
 fi
 
+# --- Import Godot project on first run ----------------------------------------
+# The .godot/ directory (gitignored) contains the import cache and extension
+# registry. On a fresh clone it doesn't exist, so Godot can't find the
+# GDExtension classes. Running --import --headless creates it. The editor
+# may crash after importing (known Godot bug in headless mode), but the
+# side effect — creating .godot/ — is all we need, so we suppress errors.
+
+ensure_godot_imported() {
+    if [ ! -d "$REPO_ROOT/godot/.godot" ]; then
+        echo "First run: importing Godot project..."
+        godot --path "$REPO_ROOT/godot" --headless --import --quit &>/dev/null || true
+    fi
+}
+
 # --- Build --------------------------------------------------------------------
 
 case "$MODE" in
@@ -55,6 +69,7 @@ case "$MODE" in
     run)
         echo "Building elven_canopy_gdext (debug)..."
         cargo build -p elven_canopy_gdext
+        ensure_godot_imported
         echo "Launching Elven Canopy..."
         godot --path "$REPO_ROOT/godot"
         ;;
