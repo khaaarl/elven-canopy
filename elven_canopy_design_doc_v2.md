@@ -259,7 +259,7 @@ Voxel types include:
 - Air
 - Trunk (natural tree trunk material)
 - Branch (natural branch material)
-- Grown Platform (bonesinger-constructed surface)
+- Grown Platform (elf-singer-constructed surface)
 - Grown Wall
 - Grown Stairs/Ramp
 - Bridge/Walkway
@@ -288,9 +288,9 @@ Future: multiple tree species with different properties (branching patterns, fru
 
 ---
 
-## 8. Construction: Bonesinging
+## 8. Construction: Singing
 
-Elves are bonesingers — they sing to the trees, and the tree grows in the desired shape or produces raw wood for crafting. There is no lumber industry or deforestation.
+Elves are magical singers — they sing to the trees, and the tree grows in the desired shape or produces raw wood for crafting. There is no lumber industry or deforestation.
 
 ### Resource: Mana
 
@@ -408,7 +408,7 @@ Each time an elf needs to decide what to do:
 
 ### Mana Generation Tie-In
 
-Elf mana generation rate is modified by overall mood. Happy, fulfilled elves are better bonesingers — this is the mechanical link between the emotional system and the construction/expansion system.
+Elf mana generation rate is modified by overall mood. Happy, fulfilled elves are better singers — this is the mechanical link between the emotional system and the construction/expansion system.
 
 ---
 
@@ -700,7 +700,7 @@ Development follows iterative deepening — all areas developed concurrently at 
 - Blueprint mode: layer-based selection, ghost previews.
 - Platform designation (round preferred, rectangular allowed).
 - Visual smoothing on platforms (not cubes).
-- Bonesinging: elf walks to site, sings, tree grows voxel by voxel.
+- Singing: elf walks to site, sings, tree grows voxel by voxel.
 - Mana as a resource (tree stores it, construction spends it, elves generate it at a flat rate initially).
 - Nav graph updates when construction completes.
 - Multiple elves, task queue with priorities, auto-assignment.
