@@ -4,6 +4,7 @@
     "allow": [
       "Read(/**)",
       "Edit(/**/*.gd)",
+      "Edit(/**/*.gdextension)",
       "Edit(/**/*.godot)",
       "Edit(/**/*.json)",
       "Edit(/**/*.md)",
@@ -15,6 +16,7 @@
       "Edit(/**/*.txt)",
       "Edit(/.tmp/*)",
       "Write(/**/*.gd)",
+      "Write(/**/*.gdextension)",
       "Write(/**/*.godot)",
       "Write(/**/*.json)",
       "Write(/**/*.md)",
