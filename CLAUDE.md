@@ -10,13 +10,65 @@ Elven Canopy is a Dwarf Fortress-inspired simulation/management game set in a fo
 
 - **Godot 4 + Rust via gdext.** Godot handles rendering, input, UI, and camera. All simulation logic lives in Rust.
 - **Two Rust crates.** `elven_canopy_sim` is a pure Rust library (zero Godot dependencies) containing all simulation logic. `elven_canopy_gdext` is a thin wrapper that exposes the sim to Godot via GDExtension. This separation is enforced at the compiler level.
-- **Deterministic simulation.** The sim is a pure function: `(state, commands) → (new_state, events)`. Seeded ChaCha20 PRNG, no `HashMap` (use `BTreeMap`), no system dependencies. Designed for future lockstep multiplayer, perfect replays, and verifiable performance optimizations.
+- **Deterministic simulation.** The sim is a pure function: `(state, commands) → (new_state, events)`. Hand-rolled xoshiro256++ PRNG (no external PRNG dependencies), no `HashMap` (use `BTreeMap`), no system dependencies. Designed for future lockstep multiplayer, perfect replays, and verifiable performance optimizations.
 - **Command-driven mutation.** All sim state changes go through `SimCommand`. In single-player, the GDScript glue translates UI actions into commands. In multiplayer, commands are broadcast and canonically ordered.
 - **Event-driven ticks.** The sim uses a discrete event simulation with a priority queue, not fixed-timestep iteration. Empty ticks are free, enabling efficient fast-forward.
 - **Voxel world, graph pathfinding.** The world is a 3D voxel grid (sim truth), but pathfinding uses a nav graph of nodes and edges matching the constrained topology (platforms, bridges, stairs, trunk surfaces).
 - **Data-driven config.** All tunable parameters live in a `GameConfig` struct loaded from JSON. No magic numbers in the sim.
 
 For full details, see `elven_canopy_design_doc_v2.md`.
+
+## Project Structure
+
+```
+elven-canopy/
+├── Cargo.toml                  # Workspace root (resolver = "2")
+├── elven_canopy_sim/           # Pure Rust simulation library (no Godot deps)
+│   └── src/
+│       ├── lib.rs              # Crate root, module declarations
+│       ├── prng.rs             # xoshiro256++ PRNG + SplitMix64 seeding
+│       ├── types.rs            # VoxelCoord, SimUuid, entity IDs, enums
+│       ├── command.rs          # SimCommand, SimAction
+│       ├── config.rs           # GameConfig (loaded from JSON)
+│       ├── event.rs            # EventQueue (priority queue), SimEvent
+│       └── sim.rs              # SimState, tick loop, command processing
+├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
+│   └── src/
+│       ├── lib.rs              # ExtensionLibrary entry point
+│       └── sim_bridge.rs       # SimBridge node exposed to Godot
+├── godot/                      # Godot 4 project
+│   ├── project.godot           # Project config + input map
+│   ├── elven_canopy.gdextension
+│   ├── target -> ../target     # Symlink so Godot can find the compiled .so
+│   ├── scenes/main.tscn
+│   └── scripts/
+│       ├── main.gd             # Scene controller, initializes SimBridge
+│       └── orbital_camera.gd   # Camera controls
+├── scripts/
+│   └── build.sh                # Build, test, and run script
+└── default_config.json         # Default GameConfig values
+```
+
+## Building and Running
+
+Use `scripts/build.sh` for all build operations. It ensures the `godot/target` symlink exists before compiling.
+
+```bash
+scripts/build.sh          # Debug build
+scripts/build.sh release  # Release build
+scripts/build.sh test     # Run sim tests, then debug build
+scripts/build.sh run      # Debug build, then launch the game
+```
+
+To run sim tests alone: `cargo test -p elven_canopy_sim`
+
+## Toolchain Versions
+
+- **Rust edition:** 2024
+- **gdext crate:** `godot` 0.4.5 with feature `api-4-5`
+- **Godot:** 4.6 (forward-compatible with the 4.5 API)
+
+When upgrading the `godot` crate, check for a matching `api-4-x` feature flag. The API version must be ≤ the Godot runtime version.
 
 ## Running Commands
 
@@ -101,7 +153,7 @@ The squashed commit message should summarize the entire feature, not repeat indi
 
 ## Key Constraints
 
-- **Determinism**: The simulator must produce identical results given the same seed. No hash-order dependence, no set iteration, no stdlib PRNG (use a portable PRNG like PCG/xoshiro implemented from scratch). This enables consistency in multiplayer and verification of optimizaitons.
+- **Determinism**: The simulator must produce identical results given the same seed. No hash-order dependence, no set iteration, no stdlib PRNG. The sim uses a hand-rolled xoshiro256++ (with SplitMix64 seeding) — no external PRNG crate dependencies. This enables consistency in multiplayer and verification of optimizations.
 
 ## Simulator: Test-Driven Workflow (CRITICAL)
 

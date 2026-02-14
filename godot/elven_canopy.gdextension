@@ -1,0 +1,14 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.5
+reloadable = true
+
+[libraries]
+linux.debug.x86_64 = "res://target/debug/libelven_canopy_gdext.so"
+linux.release.x86_64 = "res://target/release/libelven_canopy_gdext.so"
+windows.debug.x86_64 = "res://target/debug/elven_canopy_gdext.dll"
+windows.release.x86_64 = "res://target/release/elven_canopy_gdext.dll"
+macos.debug = "res://target/debug/libelven_canopy_gdext.dylib"
+macos.release = "res://target/release/libelven_canopy_gdext.dylib"
+macos.debug.arm64 = "res://target/debug/libelven_canopy_gdext.dylib"
+macos.release.arm64 = "res://target/release/libelven_canopy_gdext.dylib"

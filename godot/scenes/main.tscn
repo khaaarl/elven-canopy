@@ -1,0 +1,37 @@
+[gd_scene load_steps=6 format=3 uid="uid://bqxk3rmkv2y5x"]
+
+[ext_resource type="Script" path="res://scripts/orbital_camera.gd" id="1_camera"]
+[ext_resource type="Script" path="res://scripts/main.gd" id="2_main"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_ground"]
+size = Vector3(40, 0.5, 40)
+
+[sub_resource type="BoxMesh" id="BoxMesh_trunk"]
+size = Vector3(4, 20, 4)
+
+[sub_resource type="StandardMaterial3D" id="Material_ground"]
+albedo_color = Color(0.25, 0.45, 0.2, 1)
+
+[node name="Main" type="Node3D"]
+script = ExtResource("2_main")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, -0.354, 0.354, 0, 0.707, 0.707, -0.5, -0.612, 0.612, 0, 20, 0)
+shadow_enabled = true
+
+[node name="CameraPivot" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 10, 0)
+script = ExtResource("1_camera")
+
+[node name="Camera3D" type="Camera3D" parent="CameraPivot"]
+current = true
+
+[node name="Ground" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_ground")
+surface_material_override/0 = SubResource("Material_ground")
+
+[node name="TreeTrunk" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 10, 0)
+mesh = SubResource("BoxMesh_trunk")
+
+[node name="SimBridge" type="SimBridge" parent="."]

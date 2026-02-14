@@ -155,9 +155,9 @@ In single-player, the GDScript glue translates UI actions into `SimCommand` and 
 
 ### Determinism Requirements
 
-**PRNG:** All randomness in the sim uses a seedable, portable PRNG (`rand_chacha` / ChaCha20). Never use OS entropy or `thread_rng()` in the sim.
+**PRNG:** All randomness in the sim uses a hand-rolled xoshiro256++ PRNG with SplitMix64 seeding — no external PRNG crate dependencies. Never use OS entropy or `thread_rng()` in the sim.
 
-**Entity IDs:** All entity IDs are UUID v4, generated deterministically from the PRNG. Implementation: take 128 bits from the ChaCha stream, set the version nibble to `0100` (v4) and the variant bits to RFC 4122 compliant. All clients with the same seed generate the same IDs.
+**Entity IDs:** All entity IDs are UUID v4, generated deterministically from the PRNG. Implementation: take 128 bits from the xoshiro256++ stream, set the version nibble to `0100` (v4) and the variant bits to RFC 4122 compliant. All clients with the same seed generate the same IDs.
 
 **Floating point:** Basic arithmetic (+, -, ×, ÷) is deterministic on the same platform/architecture. Avoid transcendental functions (sin, cos, sqrt) in the sim, or use fixed-point/soft-float alternatives. Initial target: determinism across x86_64 clients. Cross-architecture determinism (x86 vs ARM) deferred.
 
@@ -489,13 +489,14 @@ Flying creatures (invaders, potentially tamed animals) would use a completely se
 
 ### Orbital Camera
 
-A `Camera3D` node orbiting a pivot point.
+A `Camera3D` node orbiting a focal point (pivot).
 
-- **WASD** — moves the pivot horizontally, relative to the camera's facing direction.
-- **Q/E or mouse drag** — free horizontal rotation around the pivot (not snapped to 90° increments).
-- **Vertical angle** — clamped to ~15°–75° from horizontal.
-- **Scroll wheel** — zoom (distance from pivot to camera).
-- **R/F or other binding** — move the focal point up/down to navigate vertical levels.
+- **WASD** — moves the focal point horizontally, relative to the camera's facing direction. The camera moves with it; the viewing angle does not change.
+- **Q/E or Left/Right arrows** — free horizontal rotation around the focal point (not snapped to 90° increments).
+- **Up/Down arrows** — tilt the camera (change pitch). Clamped to 10°–80° from horizontal (i.e., 10° short of flat and 10° short of straight down).
+- **Middle-mouse drag** — rotate (horizontal) and tilt (vertical) simultaneously.
+- **Scroll wheel** — zoom (distance from focal point to camera).
+- **R/F or Page Up / Page Down** — move the focal point up/down to navigate vertical levels, clamped to world bounds.
 
 ### Sprite Billboarding
 

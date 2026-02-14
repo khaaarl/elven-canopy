@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "elven_canopy_sim",
+    "elven_canopy_gdext",
+]
+resolver = "2"
