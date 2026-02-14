@@ -9,7 +9,7 @@
 // admissible (never overestimates).
 //
 // See also: `nav.rs` for the `NavGraph` being searched, `sim.rs` which
-// calls pathfinding during elf AI decisions.
+// calls pathfinding during creature AI decisions.
 //
 // **Critical constraint: determinism.** A* is a pure function of graph
 // state and start/goal nodes. No randomness, no floating-point ambiguity

@@ -97,7 +97,7 @@ This separation is enforced at the compiler level. The sim crate cannot accident
 
 **Rust (sim crate) owns:**
 - World voxel data, tree state, structures
-- Elf state: position, personality, needs, mood, tasks, relationships
+- Creature state: position, species, personality, needs, mood, tasks, relationships
 - Nav graph and pathfinding
 - Task scheduling and allocation
 - Event generation and narrative log
@@ -106,7 +106,7 @@ This separation is enforced at the compiler level. The sim crate cannot accident
 
 **Godot (GDScript glue + scene tree) owns:**
 - Rendering voxel geometry as meshes (with visual smoothing/rounding)
-- Rendering elf sprites as billboarded quads
+- Rendering creature sprites as billboarded quads
 - Camera control
 - Player input → SimCommand translation
 - UI (build menus, task lists, elf info, blueprint mode)
@@ -232,7 +232,7 @@ All entities use deterministic UUID v4 identifiers generated from the seeded PRN
 ### Core Entity Types
 
 - **Tree** — the primary world structure and (for the player's tree) the player character. Has health, mana, growth, carrying capacity.
-- **Elf** — autonomous agents with personality, needs, mood, social relationships, and task state.
+- **Creature** — all living entities (elves, capybaras, future species). A single `Creature` struct with a `species: Species` field. Behavioral differences (speed, heartbeat interval, allowed edge types, ground-only restriction) come from `SpeciesData` in the game config — Dwarf Fortress-style data-driven design. No code branching per species.
 - **Structure** — player-designated constructions: platforms, bridges, stairs, walls, enclosures, and special structures (poetry stages, gardens, etc.).
 - **BuildProject** — an in-progress construction job linking a structure blueprint to assigned elves and progress state.
 - **NavNode / NavEdge** — pathfinding graph elements (may use internal IDs rather than UUIDs for compactness, since they aren't referenced in commands or events).

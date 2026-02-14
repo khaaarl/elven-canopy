@@ -1,4 +1,4 @@
-// Navigation graph for elf pathfinding.
+// Navigation graph for creature pathfinding.
 //
 // The nav graph is a set of `NavNode`s (positions) connected by `NavEdge`s
 // (typed, weighted connections). It is built from tree geometry by

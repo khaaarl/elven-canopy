@@ -27,11 +27,16 @@ elven-canopy/
 │   └── src/
 │       ├── lib.rs              # Crate root, module declarations
 │       ├── prng.rs             # xoshiro256++ PRNG + SplitMix64 seeding
-│       ├── types.rs            # VoxelCoord, SimUuid, entity IDs, enums
+│       ├── types.rs            # VoxelCoord, SimUuid, entity IDs, Species enum
 │       ├── command.rs          # SimCommand, SimAction
 │       ├── config.rs           # GameConfig (loaded from JSON)
+│       ├── species.rs          # SpeciesData — data-driven creature behavior
 │       ├── event.rs            # EventQueue (priority queue), SimEvent
-│       └── sim.rs              # SimState, tick loop, command processing
+│       ├── sim.rs              # SimState, tick loop, command processing
+│       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
+│       ├── pathfinding.rs      # A* search over NavGraph
+│       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
+│       └── world.rs            # Dense 3D voxel grid
 ├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
 │   └── src/
 │       ├── lib.rs              # ExtensionLibrary entry point
@@ -43,7 +48,11 @@ elven-canopy/
 │   ├── scenes/main.tscn
 │   └── scripts/
 │       ├── main.gd             # Scene controller, initializes SimBridge
-│       └── orbital_camera.gd   # Camera controls
+│       ├── orbital_camera.gd   # Camera controls
+│       ├── elf_renderer.gd     # Billboard chibi elf sprites
+│       ├── capybara_renderer.gd # Billboard chibi capybara sprites
+│       ├── tree_renderer.gd    # Tree voxel mesh rendering
+│       └── sprite_factory.gd   # Programmatic chibi sprite generation
 ├── scripts/
 │   └── build.sh                # Build, test, and run script
 └── default_config.json         # Default GameConfig values
