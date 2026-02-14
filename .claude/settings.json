@@ -45,6 +45,7 @@
       "Bash(head:*)",
       "Bash(isort:*)",
       "Bash(ldd:*)",
+      "Bash(ln:*)",
       "Bash(ls:*)",
       "Bash(maturin:*)",
       "Bash(mkdir:*)",
