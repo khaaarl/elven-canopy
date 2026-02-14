@@ -11,5 +11,13 @@
   "fruit_production_base_rate": 0.5,
   "world_size": [256, 128, 256],
   "starting_mana": 100.0,
-  "starting_mana_capacity": 500.0
+  "starting_mana_capacity": 500.0,
+  "tree_trunk_radius": 3,
+  "tree_trunk_height": 40,
+  "tree_branch_start_y": 12,
+  "tree_branch_interval": 6,
+  "tree_branch_count": 5,
+  "tree_branch_length": 8,
+  "tree_branch_radius": 1,
+  "nav_node_vertical_spacing": 4
 }

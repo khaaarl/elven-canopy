@@ -47,6 +47,10 @@ pub enum SimAction {
     SetSimSpeed {
         speed: SimSpeed,
     },
+    /// Spawn a new elf at the given position (snapped to nearest nav node).
+    SpawnElf {
+        position: VoxelCoord,
+    },
 }
 
 #[cfg(test)]

@@ -1,17 +1,19 @@
-// Minimal GDExtension bridge class for the simulation.
+// GDExtension bridge class for the simulation.
 //
 // Exposes a `SimBridge` node that Godot scenes can use to create, step, and
 // query the simulation. This is the primary interface between GDScript and
 // the Rust sim.
 //
-// In Phase 0 this is skeletal — it can create a sim with a seed, step it
-// forward, and report basic state. As features are added, this bridge will
-// grow to handle commands, entity queries, and event streaming.
+// In Phase 1 this exposes tree voxel data (for rendering), elf positions
+// (for billboard sprites), and a spawn command. All data is returned in
+// packed Godot arrays for efficient transfer.
 //
 // See also: `lib.rs` for the GDExtension entry point, and the
 // `elven_canopy_sim` crate for all simulation logic.
 
+use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::sim::SimState;
+use elven_canopy_sim::types::VoxelCoord;
 use godot::prelude::*;
 
 /// Godot node that owns and drives the simulation.
@@ -70,5 +72,82 @@ impl SimBridge {
     #[func]
     fn is_initialized(&self) -> bool {
         self.sim.is_some()
+    }
+
+    /// Return trunk voxel positions as a flat PackedInt32Array (x,y,z triples).
+    #[func]
+    fn get_trunk_voxels(&self) -> PackedInt32Array {
+        let Some(sim) = &self.sim else {
+            return PackedInt32Array::new();
+        };
+        let tree = match sim.trees.get(&sim.player_tree_id) {
+            Some(t) => t,
+            None => return PackedInt32Array::new(),
+        };
+        let mut arr = PackedInt32Array::new();
+        for v in &tree.trunk_voxels {
+            arr.push(v.x);
+            arr.push(v.y);
+            arr.push(v.z);
+        }
+        arr
+    }
+
+    /// Return branch voxel positions as a flat PackedInt32Array (x,y,z triples).
+    #[func]
+    fn get_branch_voxels(&self) -> PackedInt32Array {
+        let Some(sim) = &self.sim else {
+            return PackedInt32Array::new();
+        };
+        let tree = match sim.trees.get(&sim.player_tree_id) {
+            Some(t) => t,
+            None => return PackedInt32Array::new(),
+        };
+        let mut arr = PackedInt32Array::new();
+        for v in &tree.branch_voxels {
+            arr.push(v.x);
+            arr.push(v.y);
+            arr.push(v.z);
+        }
+        arr
+    }
+
+    /// Return elf positions as a PackedVector3Array.
+    #[func]
+    fn get_elf_positions(&self) -> PackedVector3Array {
+        let Some(sim) = &self.sim else {
+            return PackedVector3Array::new();
+        };
+        let mut arr = PackedVector3Array::new();
+        for elf in sim.elves.values() {
+            arr.push(Vector3::new(
+                elf.position.x as f32,
+                elf.position.y as f32,
+                elf.position.z as f32,
+            ));
+        }
+        arr
+    }
+
+    /// Return the number of elves.
+    #[func]
+    fn elf_count(&self) -> i32 {
+        self.sim.as_ref().map_or(0, |s| s.elves.len() as i32)
+    }
+
+    /// Spawn an elf at the given voxel position.
+    #[func]
+    fn spawn_elf(&mut self, x: i32, y: i32, z: i32) {
+        let Some(sim) = &mut self.sim else { return };
+        let player_id = sim.player_id;
+        let next_tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_id,
+            tick: next_tick,
+            action: SimAction::SpawnElf {
+                position: VoxelCoord::new(x, y, z),
+            },
+        };
+        sim.step(&[cmd], next_tick);
     }
 }

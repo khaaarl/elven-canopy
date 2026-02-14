@@ -1,37 +1,61 @@
-[gd_scene load_steps=6 format=3 uid="uid://bqxk3rmkv2y5x"]
+[gd_scene load_steps=9 format=3 uid="uid://bqxk3rmkv2y5x"]
 
 [ext_resource type="Script" path="res://scripts/orbital_camera.gd" id="1_camera"]
 [ext_resource type="Script" path="res://scripts/main.gd" id="2_main"]
+[ext_resource type="Script" path="res://scripts/tree_renderer.gd" id="3_tree_renderer"]
+[ext_resource type="Script" path="res://scripts/elf_renderer.gd" id="4_elf_renderer"]
 
 [sub_resource type="BoxMesh" id="BoxMesh_ground"]
-size = Vector3(40, 0.5, 40)
-
-[sub_resource type="BoxMesh" id="BoxMesh_trunk"]
-size = Vector3(4, 20, 4)
+size = Vector3(80, 0.2, 80)
 
 [sub_resource type="StandardMaterial3D" id="Material_ground"]
 albedo_color = Color(0.25, 0.45, 0.2, 1)
 
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 1
+background_color = Color(0.55, 0.7, 0.85, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.65, 0.7, 0.8, 1)
+ambient_light_energy = 0.5
+
+[sub_resource type="CameraAttributesPractical" id="CameraAttributes_main"]
+
 [node name="Main" type="Node3D"]
 script = ExtResource("2_main")
 
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")
+camera_attributes = SubResource("CameraAttributes_main")
+
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
-transform = Transform3D(0.866, -0.354, 0.354, 0, 0.707, 0.707, -0.5, -0.612, 0.612, 0, 20, 0)
+transform = Transform3D(0.866, -0.354, 0.354, 0, 0.707, 0.707, -0.5, -0.612, 0.612, 0, 60, 0)
+light_energy = 0.8
 shadow_enabled = true
 
+[node name="FillLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, 0.354, -0.354, 0, 0.707, 0.707, 0.5, -0.612, 0.612, 0, 60, 0)
+light_energy = 0.3
+shadow_enabled = false
+
 [node name="CameraPivot" type="Node3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 10, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 128, 20, 128)
 script = ExtResource("1_camera")
+zoom_max = 200.0
+focal_y_max = 128.0
 
 [node name="Camera3D" type="Camera3D" parent="CameraPivot"]
 current = true
+far = 500.0
 
 [node name="Ground" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 128, 0, 128)
 mesh = SubResource("BoxMesh_ground")
 surface_material_override/0 = SubResource("Material_ground")
 
-[node name="TreeTrunk" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 10, 0)
-mesh = SubResource("BoxMesh_trunk")
-
 [node name="SimBridge" type="SimBridge" parent="."]
+
+[node name="TreeRenderer" type="Node3D" parent="."]
+script = ExtResource("3_tree_renderer")
+
+[node name="ElfRenderer" type="Node3D" parent="."]
+script = ExtResource("4_elf_renderer")

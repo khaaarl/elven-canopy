@@ -57,6 +57,34 @@ pub struct GameConfig {
 
     /// Maximum mana the starting tree can hold.
     pub starting_mana_capacity: f32,
+
+    // -- Tree generation --
+
+    /// Radius of the tree trunk in voxels.
+    pub tree_trunk_radius: u32,
+
+    /// Height of the tree trunk in voxels.
+    pub tree_trunk_height: u32,
+
+    /// Y-level where branches start growing.
+    pub tree_branch_start_y: u32,
+
+    /// Vertical spacing between branch levels.
+    pub tree_branch_interval: u32,
+
+    /// Number of branches to generate.
+    pub tree_branch_count: u32,
+
+    /// Length of each branch in voxels (from trunk surface).
+    pub tree_branch_length: u32,
+
+    /// Cross-section radius of branches in voxels.
+    pub tree_branch_radius: u32,
+
+    // -- Navigation --
+
+    /// Vertical spacing between trunk surface nav nodes.
+    pub nav_node_vertical_spacing: u32,
 }
 
 impl Default for GameConfig {
@@ -75,6 +103,14 @@ impl Default for GameConfig {
             world_size: (256, 128, 256),
             starting_mana: 100.0,
             starting_mana_capacity: 500.0,
+            tree_trunk_radius: 3,
+            tree_trunk_height: 40,
+            tree_branch_start_y: 12,
+            tree_branch_interval: 6,
+            tree_branch_count: 5,
+            tree_branch_length: 8,
+            tree_branch_radius: 1,
+            nav_node_vertical_spacing: 4,
         }
     }
 }
@@ -112,10 +148,20 @@ mod tests {
             "fruit_production_base_rate": 0.8,
             "world_size": [128, 64, 128],
             "starting_mana": 200.0,
-            "starting_mana_capacity": 1000.0
+            "starting_mana_capacity": 1000.0,
+            "tree_trunk_radius": 4,
+            "tree_trunk_height": 50,
+            "tree_branch_start_y": 15,
+            "tree_branch_interval": 8,
+            "tree_branch_count": 6,
+            "tree_branch_length": 10,
+            "tree_branch_radius": 2,
+            "nav_node_vertical_spacing": 5
         }"#;
         let config: GameConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.tick_duration_ms, 50);
         assert_eq!(config.world_size, (128, 64, 128));
+        assert_eq!(config.tree_trunk_radius, 4);
+        assert_eq!(config.nav_node_vertical_spacing, 5);
     }
 }
