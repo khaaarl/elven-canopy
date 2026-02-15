@@ -5,6 +5,22 @@
 ## generated from integer seeds, so the same seed always produces the same
 ## sprite. No external assets are needed.
 ##
+## Usage: call *_params_from_seed(index) to get a params dictionary, then
+## pass it to the corresponding create_* function:
+##   var params = SpriteFactory.elf_params_from_seed(idx)
+##   var texture = SpriteFactory.create_chibi_elf(params)
+##
+## Elf sprites (48x48): varied by hair color/style (7 colors, 3 styles),
+## eye color (5), skin tone (4), and role (warrior/mage/archer/healer/bard)
+## which determines outfit colors and accessories. Seed hashing uses Knuth
+## multiplicative hash to spread bits across palette indices.
+##
+## Capybara sprites (40x32): varied by body color (4 shades of brown) and
+## accessory (none/flower_crown/scarf/bow).
+##
+## Drawing helpers (_set_px, _draw_circle, _draw_ellipse, _draw_rect,
+## _draw_hline, _draw_vline) handle bounds checking and primitive shapes.
+##
 ## See also: elf_renderer.gd (consumes chibi elf textures),
 ## capybara_renderer.gd (consumes capybara textures).
 

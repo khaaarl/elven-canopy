@@ -1,12 +1,22 @@
-## Renders the tree's voxels using MultiMeshInstance3D.
+## Renders the tree's voxels using MultiMeshInstance3D for batched drawing.
 ##
-## Reads trunk and branch voxel data from SimBridge at startup and creates
-## two MultiMeshInstance3D children — one for trunk voxels (dark brown) and
-## one for branch voxels (lighter brown). Each voxel is rendered as a unit
-## cube.
+## Built once at startup (static mesh — not updated per frame). Reads trunk
+## and branch voxel positions from SimBridge as flat PackedInt32Array
+## (x,y,z triples) and creates two MultiMeshInstance3D children:
+## - Trunk voxels: dark brown (0.35, 0.22, 0.10)
+## - Branch voxels: lighter brown (0.45, 0.30, 0.15)
 ##
-## See also: sim_bridge.rs for the voxel data source, main.gd which creates
-## this node and calls setup().
+## Each voxel is rendered as a unit BoxMesh. Positions are offset by +0.5
+## on all axes so the cube centers on the voxel coordinate (voxel coords
+## are integer corner positions, but cubes need to be centered).
+##
+## MultiMesh is used instead of individual MeshInstance3D nodes because it
+## batches all instances into a single draw call per material, which is
+## critical for performance with thousands of voxels.
+##
+## See also: sim_bridge.rs for get_trunk_voxels() / get_branch_voxels(),
+## tree_gen.rs (Rust) for how the voxel geometry is generated, main.gd
+## which creates this node and calls setup().
 
 extends Node3D
 

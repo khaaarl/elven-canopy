@@ -1,11 +1,19 @@
 ## Renders capybaras as billboard chibi sprites driven by the simulation.
 ##
-## Mirrors the elf_renderer.gd pattern: reads positions from
+## Mirrors the elf_renderer.gd pool pattern: reads positions from
 ## SimBridge.get_capybara_positions() each frame, creates Sprite3D nodes
-## on demand, and hides extras when counts shrink.
+## on demand, and hides extras when counts shrink. Each capybara gets a
+## unique texture from SpriteFactory using the sprite index as a seed
+## (varying body color and accessory).
 ##
-## See also: sprite_factory.gd for texture generation, sim_bridge.rs for
-## capybara position data, main.gd which creates this node and calls setup().
+## Positions are offset by (+0.5, +0.5, +0.5) from the voxel coordinate
+## to center the sprite on the voxel. The Y offset is only 0.5 (vs 1.5
+## for elves) because capybaras are shorter and sit closer to the ground.
+##
+## See also: sprite_factory.gd for capybara texture generation (40x32),
+## elf_renderer.gd for the equivalent elf renderer, sim_bridge.rs for the
+## Rust-side position data, main.gd which creates this node and calls
+## setup().
 
 extends Node3D
 

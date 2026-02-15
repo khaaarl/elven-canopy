@@ -1,13 +1,26 @@
 ## Main scene controller for Elven Canopy.
 ##
-## Initializes the simulation bridge, sets up tree, elf, and capybara
-## renderers, spawns initial creatures, and wires up the spawn toolbar UI
-## with the placement controller. Steps the simulation forward each frame.
+## Orchestrates startup and the per-frame sim loop. Everything in the game
+## connects through this script.
 ##
-## See also: orbital_camera.gd for camera controls, SimBridge (Rust) for
-## the simulation interface, tree_renderer.gd, elf_renderer.gd,
-## capybara_renderer.gd for visual representation, spawn_toolbar.gd for
-## the spawn UI, placement_controller.gd for click-to-place logic.
+## Startup sequence (_ready):
+## 1. Initialize SimBridge with a deterministic seed (sim_seed export).
+## 2. Set up renderers: tree_renderer.gd (static voxel mesh),
+##    elf_renderer.gd and capybara_renderer.gd (billboard sprites).
+## 3. Spawn initial creatures at the tree base via SimBridge commands.
+## 4. Create the spawn toolbar UI (spawn_toolbar.gd) on a CanvasLayer so
+##    it renders on top of the 3D viewport.
+## 5. Create the placement controller (placement_controller.gd) and wire
+##    it to both the SimBridge and the toolbar's signals.
+##
+## Per-frame (_process): advances the sim by one tick via
+## SimBridge.step_to_tick(). Renderers read updated positions from the
+## bridge each frame independently.
+##
+## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
+## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
+## capybara_renderer.gd for rendering, spawn_toolbar.gd for the toolbar
+## UI, placement_controller.gd for click-to-place logic.
 
 extends Node3D
 

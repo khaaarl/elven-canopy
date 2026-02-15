@@ -1,14 +1,24 @@
 ## Toolbar UI for spawning creatures and placing tasks.
 ##
 ## Builds a horizontal row of buttons: "Spawn Elf [1]", "Spawn Capybara [2]",
-## and "Summon [3]". Emits `spawn_requested(species_name)` for creature spawns
-## and `action_requested(action_name)` for task placement.
+## and "Summon Elf [3]". Each button has a keyboard shortcut (1/2/3) handled
+## via _unhandled_input().
+##
+## Emits two signals:
+## - spawn_requested(species_name: String) — for creature spawns ("Elf" or
+##   "Capybara"). Picked up by placement_controller.gd to enter placement mode.
+## - action_requested(action_name: String) — for task actions ("Summon").
+##   Creates a GoTo task at the clicked location via SimBridge.
+##
+## Clicking the same button again while already in placement mode toggles it
+## off (handled by placement_controller.gd's signal callbacks, not here).
 ##
 ## Created programmatically by main.gd and parented under a CanvasLayer so it
 ## renders on top of the 3D viewport.
 ##
 ## See also: placement_controller.gd which listens for these signals and
-## handles the click-to-place flow, main.gd which wires toolbar to controller.
+## handles the click-to-place flow, main.gd which wires toolbar to controller,
+## sim_bridge.rs for the spawn_elf/spawn_capybara/create_goto_task commands.
 
 extends MarginContainer
 
