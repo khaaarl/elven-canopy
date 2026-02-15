@@ -5,8 +5,9 @@
 // the Rust sim.
 //
 // Exposes tree voxel data (for rendering), elf and capybara positions
-// (for billboard sprites), and spawn commands. All data is returned in
-// packed Godot arrays for efficient transfer.
+// (for billboard sprites), nav node positions (for placement UI), and
+// spawn commands. All data is returned in packed Godot arrays for
+// efficient transfer.
 //
 // Internally, elves and capybaras are stored as unified `Creature` entities
 // with a `species` field. The bridge filters by species when returning
@@ -180,6 +181,80 @@ impl SimBridge {
         self.sim
             .as_ref()
             .map_or(0, |s| s.creature_count(Species::Capybara) as i32)
+    }
+
+    /// Return all nav node positions as a PackedVector3Array.
+    #[func]
+    fn get_all_nav_nodes(&self) -> PackedVector3Array {
+        let Some(sim) = &self.sim else {
+            return PackedVector3Array::new();
+        };
+        let mut arr = PackedVector3Array::new();
+        for node in &sim.nav_graph.nodes {
+            arr.push(Vector3::new(
+                node.position.x as f32,
+                node.position.y as f32,
+                node.position.z as f32,
+            ));
+        }
+        arr
+    }
+
+    /// Return ground-level (y=0) nav node positions as a PackedVector3Array.
+    #[func]
+    fn get_ground_nav_nodes(&self) -> PackedVector3Array {
+        let Some(sim) = &self.sim else {
+            return PackedVector3Array::new();
+        };
+        let mut arr = PackedVector3Array::new();
+        for id in sim.nav_graph.ground_node_ids() {
+            let node = sim.nav_graph.node(id);
+            arr.push(Vector3::new(
+                node.position.x as f32,
+                node.position.y as f32,
+                node.position.z as f32,
+            ));
+        }
+        arr
+    }
+
+    /// Return all nav node positions visible from the given camera position
+    /// (not occluded by solid voxels). Used for elf placement.
+    #[func]
+    fn get_visible_nav_nodes(&self, camera_pos: Vector3) -> PackedVector3Array {
+        let Some(sim) = &self.sim else {
+            return PackedVector3Array::new();
+        };
+        let cam = [camera_pos.x, camera_pos.y, camera_pos.z];
+        let mut arr = PackedVector3Array::new();
+        for node in &sim.nav_graph.nodes {
+            let p = node.position;
+            let target = [p.x as f32 + 0.5, p.y as f32 + 0.5, p.z as f32 + 0.5];
+            if !sim.world.raycast_hits_solid(cam, target) {
+                arr.push(Vector3::new(p.x as f32, p.y as f32, p.z as f32));
+            }
+        }
+        arr
+    }
+
+    /// Return ground-level (y=0) nav node positions visible from the given
+    /// camera position (not occluded by solid voxels). Used for capybara
+    /// placement.
+    #[func]
+    fn get_visible_ground_nav_nodes(&self, camera_pos: Vector3) -> PackedVector3Array {
+        let Some(sim) = &self.sim else {
+            return PackedVector3Array::new();
+        };
+        let cam = [camera_pos.x, camera_pos.y, camera_pos.z];
+        let mut arr = PackedVector3Array::new();
+        for id in sim.nav_graph.ground_node_ids() {
+            let p = sim.nav_graph.node(id).position;
+            let target = [p.x as f32 + 0.5, p.y as f32 + 0.5, p.z as f32 + 0.5];
+            if !sim.world.raycast_hits_solid(cam, target) {
+                arr.push(Vector3::new(p.x as f32, p.y as f32, p.z as f32));
+            }
+        }
+        arr
     }
 
     /// Spawn a capybara at the given voxel position.

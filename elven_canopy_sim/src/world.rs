@@ -4,6 +4,10 @@
 // `x + z * size_x + y * size_x * size_z`, giving O(1) read/write access.
 // Out-of-bounds reads return `Air`; out-of-bounds writes are no-ops.
 //
+// Also provides `raycast_hits_solid()`, a 3D DDA (Amanatides & Woo) voxel
+// traversal that tests whether any solid voxel lies between two points.
+// Used by `sim_bridge.rs` to filter nav nodes occluded by geometry.
+//
 // The world is regenerated from seed at load time, so it skips
 // serialization (`#[serde(skip)]` on `SimState.world`). The `Default`
 // impl creates a zero-sized empty world; `SimState::new()` constructs
@@ -89,6 +93,80 @@ impl VoxelWorld {
             self.voxels[i] = voxel;
         }
     }
+
+    /// 3D DDA raycast: returns `true` if any solid (non-Air) voxel lies on the
+    /// line segment from `from` to `to` (both in world-space floats).
+    ///
+    /// Uses the Amanatides & Woo voxel traversal algorithm. Stops early when a
+    /// solid voxel is found or the ray leaves the grid. The destination voxel
+    /// itself is NOT tested (a nav node sitting on a surface should not
+    /// self-occlude).
+    pub fn raycast_hits_solid(&self, from: [f32; 3], to: [f32; 3]) -> bool {
+        let dir = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+
+        // Current voxel coordinates.
+        let mut voxel = [
+            from[0].floor() as i32,
+            from[1].floor() as i32,
+            from[2].floor() as i32,
+        ];
+
+        // Destination voxel (we stop before testing this one).
+        let end_voxel = [
+            to[0].floor() as i32,
+            to[1].floor() as i32,
+            to[2].floor() as i32,
+        ];
+
+        // Step direction (+1 or -1) and tMax/tDelta for each axis.
+        let mut step = [0i32; 3];
+        let mut t_max = [f32::INFINITY; 3];
+        let mut t_delta = [f32::INFINITY; 3];
+
+        for axis in 0..3 {
+            if dir[axis] > 0.0 {
+                step[axis] = 1;
+                t_delta[axis] = 1.0 / dir[axis];
+                t_max[axis] = ((voxel[axis] as f32 + 1.0) - from[axis]) / dir[axis];
+            } else if dir[axis] < 0.0 {
+                step[axis] = -1;
+                t_delta[axis] = 1.0 / (-dir[axis]);
+                t_max[axis] = (from[axis] - voxel[axis] as f32) / (-dir[axis]);
+            }
+            // If dir[axis] == 0, step/t_max/t_delta stay at 0/INF/INF — axis never advances.
+        }
+
+        // March through voxels until we reach the destination or exceed t=1.
+        loop {
+            // Don't test the destination voxel (nav node surface shouldn't self-occlude).
+            if voxel == end_voxel {
+                return false;
+            }
+
+            // Test current voxel.
+            let vt = self.get(VoxelCoord::new(voxel[0], voxel[1], voxel[2]));
+            if vt != VoxelType::Air {
+                return true;
+            }
+
+            // Advance along the axis with the smallest t_max.
+            let min_axis = if t_max[0] <= t_max[1] && t_max[0] <= t_max[2] {
+                0
+            } else if t_max[1] <= t_max[2] {
+                1
+            } else {
+                2
+            };
+
+            // If t_max exceeds 1.0, we've passed the destination without hitting anything.
+            if t_max[min_axis] > 1.0 {
+                return false;
+            }
+
+            voxel[min_axis] += step[min_axis];
+            t_max[min_axis] += t_delta[min_axis];
+        }
+    }
 }
 
 #[cfg(test)]
@@ -143,6 +221,33 @@ mod tests {
         assert_eq!(world.size_z, 0);
         // Out-of-bounds read on empty world should still return Air.
         assert_eq!(world.get(VoxelCoord::new(0, 0, 0)), VoxelType::Air);
+    }
+
+    #[test]
+    fn raycast_hits_solid_voxel() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 4, 8), VoxelType::Trunk);
+
+        // Ray from outside, through the solid voxel, to the other side.
+        assert!(world.raycast_hits_solid([0.5, 4.5, 8.5], [15.5, 4.5, 8.5]));
+        // Ray that doesn't pass through any solid voxel.
+        assert!(!world.raycast_hits_solid([0.5, 0.5, 0.5], [15.5, 0.5, 0.5]));
+    }
+
+    #[test]
+    fn raycast_does_not_self_occlude_destination() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        // Place a solid voxel at the destination — should not count as occluded.
+        world.set(VoxelCoord::new(8, 4, 8), VoxelType::Trunk);
+        assert!(!world.raycast_hits_solid([0.5, 4.5, 0.5], [8.5, 4.5, 8.5]));
+    }
+
+    #[test]
+    fn raycast_blocked_before_destination() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        // Blocker in the middle, destination beyond it.
+        world.set(VoxelCoord::new(5, 4, 8), VoxelType::Trunk);
+        assert!(world.raycast_hits_solid([0.5, 4.5, 8.5], [10.5, 4.5, 8.5]));
     }
 
     #[test]
