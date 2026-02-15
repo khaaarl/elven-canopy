@@ -25,6 +25,11 @@
   "tree_branch_fork_length_ratio": 0.6,
   "tree_branch_fork_radius_ratio": 0.65,
   "tree_branch_fork_max_depth": 2,
+  "tree_leaf_blob_radius": 3,
+  "tree_leaf_blob_density": 0.65,
+  "tree_leaf_tip_only": false,
+  "tree_leaf_branch_coverage": 0.4,
+  "tree_leaf_blob_spacing": 3,
   "species": {
     "Elf": {
       "base_speed": 0.1,

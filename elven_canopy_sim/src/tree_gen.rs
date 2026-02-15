@@ -1,11 +1,11 @@
 // Procedural tree generation.
 //
-// Generates a tree's geometry — smooth trunk cylinder and stochastically
-// curving branches with recursive forking — populating both the `VoxelWorld`
-// grid and the `Tree` entity's voxel lists. The trunk is a uniform cylinder
-// with no per-level jitter. Branches emerge from the trunk surface at
-// evenly-spaced angles (with small random jitter) and taper linearly from
-// full radius at the trunk to radius 1 at the tip.
+// Generates a tree's geometry — smooth trunk cylinder, stochastically curving
+// branches with recursive forking, and leaf blobs at branch tips — populating
+// both the `VoxelWorld` grid and the `Tree` entity's voxel lists. The trunk is
+// a uniform cylinder with no per-level jitter. Branches emerge from the trunk
+// surface at evenly-spaced angles (with small random jitter) and taper
+// linearly from full radius at the trunk to radius 1 at the tip.
 //
 // Each branch grows outward step-by-step using a float cursor walk (the
 // `grow_branch()` function). The branch angle determines both the outward
@@ -23,20 +23,29 @@
 // maintain deterministic RNG ordering. The `branch_parents` vec tracks
 // parent-child relationships for nav graph construction.
 //
+// **Leaf blobs:** After all branches are grown, `generate_leaf_blobs()` places
+// semi-spherical clusters of `VoxelType::Leaf` voxels at branch tips and
+// (optionally) along the outer portion of branches. Density, radius, spacing,
+// and coverage are configurable. Leaves never overwrite Trunk or Branch voxels.
+// Leaf RNG draws happen in a separate pass after all branch draws, so existing
+// branch-only tests remain unaffected.
+//
 // Called during `SimState::new()` to build the initial world. Future phases
 // may call it again for tree growth events.
 //
 // See also: `world.rs` for the voxel grid being populated, `nav.rs` for the
 // navigation graph built on top of the generated geometry, `config.rs` for
-// tree generation parameters (including 6 fork params), `sim.rs` which calls
-// `generate_tree()`.
+// tree generation parameters (including 6 fork params and 5 leaf params),
+// `sim.rs` which calls `generate_tree()`.
 //
 // **Critical constraint: determinism.** All randomness comes from the
 // `GameRng` passed by the caller. Float cursor positions are rounded to
 // integers for voxel placement. `f32::cos()`/`sin()` are IEEE 754 and
 // produce identical results across platforms. Fork rolls are always drawn
 // for eligible steps when `fork_max_depth > 0`, regardless of the current
-// branch's depth, to keep RNG draw counts consistent.
+// branch's depth, to keep RNG draw counts consistent. Leaf generation always
+// draws `rng.next_f32()` for every in-sphere voxel to maintain deterministic
+// RNG ordering.
 
 use crate::config::GameConfig;
 use crate::prng::GameRng;
@@ -69,6 +78,8 @@ pub struct TreeGenResult {
     /// trunk, `Some(BranchParent)` = sub-branch forked from a parent.
     /// Length always matches `branch_paths`.
     pub branch_parents: Vec<Option<BranchParent>>,
+    /// Leaf voxel positions placed as semi-spherical blobs at/near branch tips.
+    pub leaf_voxels: Vec<VoxelCoord>,
 }
 
 /// A pending branch growth job for the iterative work queue.
@@ -349,12 +360,104 @@ pub fn generate_tree(
         }
     }
 
+    // --- Leaf blobs (separate pass after all branches) ---
+    let leaf_voxels = generate_leaf_blobs(&branch_paths, world, config, rng);
+
     TreeGenResult {
         trunk_voxels,
         branch_voxels,
         branch_paths,
         branch_parents,
+        leaf_voxels,
     }
+}
+
+/// Generate leaf blob voxels along branch tips and (optionally) outer portions.
+///
+/// Runs as a separate pass **after** all branch growth is complete, so the RNG
+/// draws for leaves never interleave with branch logic. For each branch path:
+///
+/// 1. Always place a blob at the tip (last position).
+/// 2. If `!tip_only`, walk backward from the tip along the last `coverage`
+///    fraction of the path, placing additional blobs every `spacing` steps.
+/// 3. For each blob center, iterate a sphere of `blob_radius` and
+///    stochastically place `Leaf` voxels at `density` probability, skipping
+///    existing solid voxels (Trunk, Branch, Leaf).
+///
+/// Always draws `rng.next_f32()` for every in-sphere voxel (even if skipped)
+/// to maintain deterministic RNG ordering.
+fn generate_leaf_blobs(
+    branch_paths: &[Vec<VoxelCoord>],
+    world: &mut VoxelWorld,
+    config: &GameConfig,
+    rng: &mut GameRng,
+) -> Vec<VoxelCoord> {
+    let mut leaf_voxels = Vec::new();
+    let radius = config.tree_leaf_blob_radius as i32;
+    let density = config.tree_leaf_blob_density;
+    let tip_only = config.tree_leaf_tip_only;
+    let coverage = config.tree_leaf_branch_coverage;
+    let spacing = config.tree_leaf_blob_spacing as usize;
+    let r_sq = radius * radius;
+
+    for path in branch_paths {
+        if path.is_empty() {
+            continue;
+        }
+
+        // Collect blob centers for this branch.
+        let mut blob_centers: Vec<VoxelCoord> = Vec::new();
+
+        // Always place a blob at the tip.
+        blob_centers.push(*path.last().unwrap());
+
+        // If not tip_only, walk backward from tip along the coverage fraction.
+        if !tip_only && path.len() > 1 {
+            let covered_steps = ((path.len() as f32 * coverage).ceil() as usize).min(path.len());
+            let start_idx = path.len().saturating_sub(covered_steps);
+            // Walk backward from tip, placing blobs every `spacing` steps.
+            let mut steps_since_last = 0usize;
+            for i in (start_idx..path.len().saturating_sub(1)).rev() {
+                steps_since_last += 1;
+                if steps_since_last >= spacing {
+                    blob_centers.push(path[i]);
+                    steps_since_last = 0;
+                }
+            }
+        }
+
+        // Place voxels for each blob center.
+        for center in &blob_centers {
+            for dx in -radius..=radius {
+                for dy in -radius..=radius {
+                    for dz in -radius..=radius {
+                        if dx * dx + dy * dy + dz * dz > r_sq {
+                            continue;
+                        }
+                        // Always draw for determinism.
+                        let roll = rng.next_f32();
+                        if roll >= density {
+                            continue;
+                        }
+                        let coord = VoxelCoord::new(
+                            center.x + dx,
+                            center.y + dy,
+                            center.z + dz,
+                        );
+                        let existing = world.get(coord);
+                        if matches!(existing, VoxelType::Trunk | VoxelType::Branch | VoxelType::Leaf)
+                        {
+                            continue;
+                        }
+                        world.set(coord, VoxelType::Leaf);
+                        leaf_voxels.push(coord);
+                    }
+                }
+            }
+        }
+    }
+
+    leaf_voxels
 }
 
 #[cfg(test)]
@@ -818,5 +921,134 @@ mod tests {
             assert_eq!(pa, pb, "Branch path {i} differs between runs");
         }
         assert_eq!(result_a.branch_voxels, result_b.branch_voxels);
+    }
+
+    // --- Leaf tests ---
+
+    /// Helper config for leaf tests: uses branches long enough to test coverage.
+    fn leaf_test_config() -> GameConfig {
+        GameConfig {
+            world_size: (128, 128, 128),
+            tree_trunk_radius: 4,
+            tree_trunk_height: 60,
+            tree_branch_start_y: 20,
+            tree_branch_interval: 10,
+            tree_branch_count: 4,
+            tree_branch_length: 15,
+            tree_branch_radius: 2,
+            tree_branch_fork_max_depth: 0,
+            tree_leaf_blob_radius: 3,
+            tree_leaf_blob_density: 0.65,
+            tree_leaf_tip_only: false,
+            tree_leaf_branch_coverage: 0.4,
+            tree_leaf_blob_spacing: 3,
+            ..GameConfig::default()
+        }
+    }
+
+    #[test]
+    fn generates_leaf_voxels() {
+        let config = leaf_test_config();
+        let mut world = VoxelWorld::new(128, 128, 128);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng);
+
+        assert!(!result.leaf_voxels.is_empty(), "Should generate leaf voxels");
+        for coord in &result.leaf_voxels {
+            assert_eq!(
+                world.get(*coord),
+                VoxelType::Leaf,
+                "Leaf voxel at {coord} should be Leaf type in world"
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_do_not_overwrite_trunk_or_branch() {
+        let config = leaf_test_config();
+        let mut world = VoxelWorld::new(128, 128, 128);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng);
+
+        // All trunk voxels should still be Trunk.
+        for coord in &result.trunk_voxels {
+            assert_eq!(
+                world.get(*coord),
+                VoxelType::Trunk,
+                "Trunk voxel at {coord} was overwritten"
+            );
+        }
+        // All branch voxels should still be Branch.
+        for coord in &result.branch_voxels {
+            assert_eq!(
+                world.get(*coord),
+                VoxelType::Branch,
+                "Branch voxel at {coord} was overwritten"
+            );
+        }
+    }
+
+    #[test]
+    fn leaf_generation_deterministic() {
+        let config = leaf_test_config();
+
+        let mut world_a = VoxelWorld::new(128, 128, 128);
+        let mut rng_a = GameRng::new(42);
+        let result_a = generate_tree(&mut world_a, &config, &mut rng_a);
+
+        let mut world_b = VoxelWorld::new(128, 128, 128);
+        let mut rng_b = GameRng::new(42);
+        let result_b = generate_tree(&mut world_b, &config, &mut rng_b);
+
+        assert_eq!(result_a.leaf_voxels, result_b.leaf_voxels);
+    }
+
+    #[test]
+    fn no_leaves_at_zero_density() {
+        let config = GameConfig {
+            tree_leaf_blob_density: 0.0,
+            ..leaf_test_config()
+        };
+        let mut world = VoxelWorld::new(128, 128, 128);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng);
+
+        assert!(
+            result.leaf_voxels.is_empty(),
+            "With density=0, should have no leaf voxels (got {})",
+            result.leaf_voxels.len()
+        );
+    }
+
+    #[test]
+    fn leaves_near_branch_tips() {
+        let config = leaf_test_config();
+        let mut world = VoxelWorld::new(128, 128, 128);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng);
+
+        let blob_radius = config.tree_leaf_blob_radius;
+        // Collect all branch tips.
+        let tips: Vec<VoxelCoord> = result
+            .branch_paths
+            .iter()
+            .filter_map(|p| p.last().copied())
+            .collect();
+
+        // Every leaf voxel should be within blob_radius of some branch tip
+        // or some path position in the covered range.
+        for coord in &result.leaf_voxels {
+            let near_tip = tips.iter().any(|tip| {
+                coord.manhattan_distance(*tip) <= blob_radius * 2
+            });
+            let near_path = result.branch_paths.iter().any(|path| {
+                path.iter()
+                    .any(|p| coord.manhattan_distance(*p) <= blob_radius * 2)
+            });
+            assert!(
+                near_tip || near_path,
+                "Leaf voxel at {coord} is not near any branch tip or path"
+            );
+        }
     }
 }

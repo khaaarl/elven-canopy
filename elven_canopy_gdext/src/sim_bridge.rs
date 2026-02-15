@@ -8,8 +8,9 @@
 //
 // - **Lifecycle:** `init_sim(seed)`, `step_to_tick(tick)`, `current_tick()`,
 //   `is_initialized()`.
-// - **World data:** `get_trunk_voxels()`, `get_branch_voxels()` — flat
-//   `PackedInt32Array` of (x,y,z) triples for voxel mesh rendering.
+// - **World data:** `get_trunk_voxels()`, `get_branch_voxels()`,
+//   `get_leaf_voxels()` — flat `PackedInt32Array` of (x,y,z) triples for
+//   voxel mesh rendering.
 // - **Creature positions:** `get_elf_positions()`, `get_capybara_positions()`
 //   — `PackedVector3Array` for billboard sprite placement. Internally, all
 //   creatures are unified `Creature` entities with a `species` field; the
@@ -127,6 +128,25 @@ impl SimBridge {
         };
         let mut arr = PackedInt32Array::new();
         for v in &tree.branch_voxels {
+            arr.push(v.x);
+            arr.push(v.y);
+            arr.push(v.z);
+        }
+        arr
+    }
+
+    /// Return leaf voxel positions as a flat PackedInt32Array (x,y,z triples).
+    #[func]
+    fn get_leaf_voxels(&self) -> PackedInt32Array {
+        let Some(sim) = &self.sim else {
+            return PackedInt32Array::new();
+        };
+        let tree = match sim.trees.get(&sim.player_tree_id) {
+            Some(t) => t,
+            None => return PackedInt32Array::new(),
+        };
+        let mut arr = PackedInt32Array::new();
+        for v in &tree.leaf_voxels {
             arr.push(v.x);
             arr.push(v.y);
             arr.push(v.z);

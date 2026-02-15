@@ -251,7 +251,7 @@ fn derive_edge_type(
                     EdgeType::TrunkCircumference
                 }
             }
-            Branch | GrownPlatform | Bridge => EdgeType::BranchWalk,
+            Branch | Leaf | GrownPlatform | Bridge => EdgeType::BranchWalk,
             GrownStairs | GrownWall => EdgeType::TrunkClimb,
             Air => EdgeType::BranchWalk, // shouldn't happen
         };
@@ -260,7 +260,9 @@ fn derive_edge_type(
     // Mixed surface types.
     match (from_surface, to_surface) {
         (ForestFloor, Trunk) | (Trunk, ForestFloor) => EdgeType::GroundToTrunk,
-        (Trunk, Branch) | (Branch, Trunk) => EdgeType::TrunkClimb,
+        (Trunk, Branch) | (Branch, Trunk) | (Trunk, Leaf) | (Leaf, Trunk) => {
+            EdgeType::TrunkClimb
+        }
         _ => {
             // GrownStairs / GrownWall → climb-like; everything else → walk-like.
             if matches!(from_surface, GrownStairs | GrownWall)
@@ -625,6 +627,7 @@ mod tests {
             tree_branch_length: 6,
             tree_branch_radius: 1,
             tree_branch_fork_max_depth: 0,
+            tree_leaf_blob_density: 0.0, // Disable leaves in basic nav tests.
             ..GameConfig::default()
         };
 
@@ -772,6 +775,7 @@ mod tests {
             tree_branch_fork_chance: 1.0,
             tree_branch_fork_min_step: 2,
             tree_branch_fork_max_depth: 2,
+            tree_leaf_blob_density: 0.0, // Disable leaves — this tests fork connectivity.
             ..GameConfig::default()
         };
 
@@ -845,5 +849,60 @@ mod tests {
             assert_eq!(na.position, nb.position);
             assert_eq!(na.surface_type, nb.surface_type);
         }
+    }
+
+    #[test]
+    fn nav_graph_connected_with_leaves() {
+        use crate::prng::GameRng;
+        use crate::tree_gen;
+
+        let config = GameConfig {
+            world_size: (128, 128, 128),
+            tree_trunk_radius: 4,
+            tree_trunk_height: 60,
+            tree_branch_start_y: 20,
+            tree_branch_interval: 10,
+            tree_branch_count: 4,
+            tree_branch_length: 15,
+            tree_branch_radius: 2,
+            tree_branch_fork_max_depth: 0,
+            tree_leaf_blob_radius: 3,
+            tree_leaf_blob_density: 0.65,
+            tree_leaf_tip_only: false,
+            tree_leaf_branch_coverage: 0.4,
+            tree_leaf_blob_spacing: 3,
+            ..GameConfig::default()
+        };
+
+        let mut world = VoxelWorld::new(128, 128, 128);
+        let mut rng = GameRng::new(42);
+        tree_gen::generate_tree(&mut world, &config, &mut rng);
+
+        let graph = build_nav_graph(&world, &config);
+        assert!(graph.node_count() > 0);
+
+        // BFS flood fill from node 0.
+        let n = graph.node_count();
+        let mut visited = vec![false; n];
+        let mut queue = std::collections::VecDeque::new();
+        visited[0] = true;
+        queue.push_back(NavNodeId(0));
+
+        while let Some(current) = queue.pop_front() {
+            for &edge_idx in graph.neighbors(current) {
+                let neighbor = graph.edge(edge_idx).to;
+                let ni = neighbor.0 as usize;
+                if !visited[ni] {
+                    visited[ni] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        let unreachable_count = visited.iter().filter(|&&v| !v).count();
+        assert!(
+            unreachable_count == 0,
+            "Found {unreachable_count} unreachable nodes (out of {n}) with leaves enabled",
+        );
     }
 }

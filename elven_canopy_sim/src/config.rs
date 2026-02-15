@@ -112,6 +112,23 @@ pub struct GameConfig {
     /// Maximum fork generations (0 = no forks, 1 = one level, etc.).
     pub tree_branch_fork_max_depth: u32,
 
+    // -- Leaf generation --
+
+    /// Radius of spherical leaf blobs (voxels).
+    pub tree_leaf_blob_radius: u32,
+
+    /// Probability each in-sphere voxel is placed (0.0–1.0). Creates organic gaps.
+    pub tree_leaf_blob_density: f32,
+
+    /// If true, only place a blob at the branch tip; if false, also along the branch.
+    pub tree_leaf_tip_only: bool,
+
+    /// Fraction of the branch (measured from the tip) that gets leaf blobs.
+    pub tree_leaf_branch_coverage: f32,
+
+    /// Minimum steps between blob centers along a branch.
+    pub tree_leaf_blob_spacing: u32,
+
     // -- Species --
 
     /// Per-species behavioral data (speed, heartbeat interval, edge
@@ -168,6 +185,11 @@ impl Default for GameConfig {
             tree_branch_fork_length_ratio: 0.6,
             tree_branch_fork_radius_ratio: 0.65,
             tree_branch_fork_max_depth: 2,
+            tree_leaf_blob_radius: 3,
+            tree_leaf_blob_density: 0.65,
+            tree_leaf_tip_only: false,
+            tree_leaf_branch_coverage: 0.4,
+            tree_leaf_blob_spacing: 3,
             species,
         }
     }
@@ -224,6 +246,11 @@ mod tests {
             "tree_branch_fork_length_ratio": 0.6,
             "tree_branch_fork_radius_ratio": 0.65,
             "tree_branch_fork_max_depth": 2,
+            "tree_leaf_blob_radius": 3,
+            "tree_leaf_blob_density": 0.65,
+            "tree_leaf_tip_only": false,
+            "tree_leaf_branch_coverage": 0.4,
+            "tree_leaf_blob_spacing": 3,
             "species": {
                 "Elf": {
                     "base_speed": 0.2,

@@ -186,6 +186,8 @@ pub struct Tree {
     /// Parent relationship for each branch path. `None` = primary branch,
     /// `Some(BranchParent)` = sub-branch forked from a parent.
     pub branch_parents: Vec<Option<BranchParent>>,
+    /// Leaf voxel positions (semi-spherical blobs near branch tips).
+    pub leaf_voxels: Vec<VoxelCoord>,
 }
 
 /// A creature's current path through the nav graph.
@@ -253,6 +255,7 @@ impl SimState {
             branch_voxels: tree_result.branch_voxels,
             branch_paths: tree_result.branch_paths,
             branch_parents: tree_result.branch_parents,
+            leaf_voxels: tree_result.leaf_voxels,
         };
 
         // Build nav graph from voxel world geometry.
