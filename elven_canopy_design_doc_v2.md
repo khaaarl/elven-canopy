@@ -700,6 +700,8 @@ Development follows iterative deepening — all areas developed concurrently at 
 
 ### Phase 0: Foundations (Weeks 1–2)
 
+Status: Done
+
 - Complete Godot "Your first 3D game" tutorial.
 - Build the orbital camera controller with placeholder cubes.
 - Get gdext compiling: minimal Rust struct exposed to Godot.
@@ -709,6 +711,8 @@ Development follows iterative deepening — all areas developed concurrently at 
 
 ### Phase 1: A Tree and an Elf (Weeks 2–4)
 
+Status: Done
+
 - Procedural generation of one tree (trunk + branches) in Rust, rendered as simple geometry in Godot.
 - Nav graph for the tree surface.
 - One elf as a billboard placeholder sprite, pathfinding and moving around the tree.
@@ -716,6 +720,8 @@ Development follows iterative deepening — all areas developed concurrently at 
 - Basic SimCommand pipeline (even if the only command is "spawn elf at location").
 
 ### Phase 2: Construction Basics (Weeks 4–8)
+
+Status: Work in Progress. Added task logic, but not blueprinting, construction, etc.
 
 - Blueprint mode: layer-based selection, ghost previews.
 - Platform designation (round preferred, rectangular allowed).
