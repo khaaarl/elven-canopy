@@ -200,7 +200,8 @@ impl SimBridge {
         arr
     }
 
-    /// Return ground-level (y=0) nav node positions as a PackedVector3Array.
+    /// Return ground-level (ForestFloor surface type) nav node positions as a
+    /// PackedVector3Array.
     #[func]
     fn get_ground_nav_nodes(&self) -> PackedVector3Array {
         let Some(sim) = &self.sim else {
@@ -237,9 +238,9 @@ impl SimBridge {
         arr
     }
 
-    /// Return ground-level (y=0) nav node positions visible from the given
-    /// camera position (not occluded by solid voxels). Used for capybara
-    /// placement.
+    /// Return ground-level (ForestFloor surface type) nav node positions
+    /// visible from the given camera position (not occluded by solid voxels).
+    /// Used for capybara placement.
     #[func]
     fn get_visible_ground_nav_nodes(&self, camera_pos: Vector3) -> PackedVector3Array {
         let Some(sim) = &self.sim else {

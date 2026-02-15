@@ -228,6 +228,13 @@ pub enum VoxelType {
     ForestFloor,
 }
 
+impl VoxelType {
+    /// Returns `true` for any voxel type that isn't `Air`.
+    pub fn is_solid(self) -> bool {
+        self != VoxelType::Air
+    }
+}
+
 impl Default for VoxelType {
     fn default() -> Self {
         Self::Air

@@ -25,9 +25,6 @@
   "tree_branch_fork_length_ratio": 0.6,
   "tree_branch_fork_radius_ratio": 0.65,
   "tree_branch_fork_max_depth": 2,
-  "nav_node_vertical_spacing": 4,
-  "ground_ring_count": 4,
-  "ground_ring_spacing": 8,
   "species": {
     "Elf": {
       "base_speed": 0.1,

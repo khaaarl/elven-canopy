@@ -483,6 +483,25 @@ The one area where broader 2D pathfinding may be needed. Initially treated as di
 
 Flying creatures (invaders, potentially tamed animals) would use a completely separate pathfinding system — true 3D movement through open space. This is architecturally separate from elf navigation and can be added independently.
 
+### Voxel-Derived Nav Graph (Current Implementation)
+
+The nav graph is built directly from the voxel world rather than from hardcoded geometric patterns. Every air voxel that is face-adjacent to at least one solid voxel becomes a nav node. Edges connect nav nodes within the 26-neighborhood (face, edge, and vertex adjacent). This approach means the navigation topology automatically reflects the actual world geometry.
+
+**Node creation:** Air voxels at y≥1 with at least one solid face neighbor. Each node carries a `surface_type` derived from its adjacent solid voxel (priority: voxel below first, then horizontal/above). Ground nodes above `ForestFloor` get surface type `ForestFloor`; nodes clinging to the trunk get `Trunk`; etc.
+
+**Edge creation:** 26-connectivity (13 positive-half neighbors to avoid duplicate bidirectional edges). Edge types and costs are derived from the surface types of both endpoints. Euclidean distance / speed determines cost.
+
+**Why 26-connectivity?** Face-only edges (6-connectivity) leave the air shell around thin geometry (radius-1 branches) disconnected. 26-connectivity ensures all air touching the same surface stays connected.
+
+### Dynamic Nav Updates (Future)
+
+When a voxel changes (construction/destruction), the nav graph can be updated incrementally:
+1. Invalidate nav nodes within Manhattan distance 1 of the changed voxel.
+2. Re-derive affected nodes and edges.
+3. Re-check connectivity for invalidated paths.
+
+This is safe for determinism because voxel changes go through `SimCommand`, so all clients process them in the same order.
+
 ---
 
 ## 11. Camera System

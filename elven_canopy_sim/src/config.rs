@@ -112,17 +112,6 @@ pub struct GameConfig {
     /// Maximum fork generations (0 = no forks, 1 = one level, etc.).
     pub tree_branch_fork_max_depth: u32,
 
-    // -- Navigation --
-
-    /// Vertical spacing between trunk surface nav nodes.
-    pub nav_node_vertical_spacing: u32,
-
-    /// Number of concentric ground nav rings around the trunk base.
-    pub ground_ring_count: u32,
-
-    /// Voxel distance between successive ground rings.
-    pub ground_ring_spacing: u32,
-
     // -- Species --
 
     /// Per-species behavioral data (speed, heartbeat interval, edge
@@ -179,9 +168,6 @@ impl Default for GameConfig {
             tree_branch_fork_length_ratio: 0.6,
             tree_branch_fork_radius_ratio: 0.65,
             tree_branch_fork_max_depth: 2,
-            nav_node_vertical_spacing: 4,
-            ground_ring_count: 4,
-            ground_ring_spacing: 8,
             species,
         }
     }
@@ -238,9 +224,6 @@ mod tests {
             "tree_branch_fork_length_ratio": 0.6,
             "tree_branch_fork_radius_ratio": 0.65,
             "tree_branch_fork_max_depth": 2,
-            "nav_node_vertical_spacing": 5,
-            "ground_ring_count": 3,
-            "ground_ring_spacing": 10,
             "species": {
                 "Elf": {
                     "base_speed": 0.2,
@@ -260,7 +243,6 @@ mod tests {
         assert_eq!(config.tick_duration_ms, 50);
         assert_eq!(config.world_size, (128, 64, 128));
         assert_eq!(config.tree_trunk_radius, 4);
-        assert_eq!(config.nav_node_vertical_spacing, 5);
         let capy = &config.species[&Species::Capybara];
         assert_eq!(capy.heartbeat_interval_ticks, 200);
         assert!(capy.ground_only);

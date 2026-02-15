@@ -266,12 +266,15 @@ fn reconstruct_path(
 mod tests {
     use super::*;
     use crate::nav::EdgeType;
-    use crate::types::VoxelCoord;
+    use crate::types::{VoxelCoord, VoxelType};
+
+    /// Shorthand: all test nodes use ForestFloor surface type.
+    const S: VoxelType = VoxelType::ForestFloor;
 
     #[test]
     fn astar_trivial_path() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         // Path from a to a.
         let result = astar(&graph, a, a, 1.0);
         assert!(result.is_some());
@@ -284,9 +287,9 @@ mod tests {
     #[test]
     fn astar_simple_chain() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
-        let b = graph.add_node(VoxelCoord::new(5, 0, 0));
-        let c = graph.add_node(VoxelCoord::new(10, 0, 0));
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         graph.add_edge(a, b, EdgeType::ForestFloor, 5.0);
         graph.add_edge(b, c, EdgeType::ForestFloor, 5.0);
 
@@ -301,9 +304,9 @@ mod tests {
     #[test]
     fn astar_chooses_shortest() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
-        let b = graph.add_node(VoxelCoord::new(5, 0, 0));
-        let c = graph.add_node(VoxelCoord::new(10, 0, 0));
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // Direct expensive edge a->c.
         graph.add_edge(a, c, EdgeType::ForestFloor, 20.0);
         // Cheaper via b.
@@ -318,8 +321,8 @@ mod tests {
     #[test]
     fn astar_no_path() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
-        let b = graph.add_node(VoxelCoord::new(10, 0, 0));
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // No edges — no path.
         let result = astar(&graph, a, b, 1.0);
         assert!(result.is_none());
@@ -328,9 +331,9 @@ mod tests {
     #[test]
     fn astar_filtered_avoids_disallowed_edges() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
-        let b = graph.add_node(VoxelCoord::new(5, 0, 0));
-        let c = graph.add_node(VoxelCoord::new(10, 0, 0));
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // a->b via ForestFloor, b->c via TrunkClimb.
         graph.add_edge(a, b, EdgeType::ForestFloor, 5.0);
         graph.add_edge(b, c, EdgeType::TrunkClimb, 5.0);
@@ -354,7 +357,7 @@ mod tests {
     #[test]
     fn astar_filtered_same_start_and_goal() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let result = astar_filtered(&graph, a, a, 1.0, &[EdgeType::ForestFloor]);
         assert!(result.is_some());
         assert_eq!(result.unwrap().total_cost, 0.0);
@@ -363,10 +366,10 @@ mod tests {
     #[test]
     fn astar_deterministic() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
-        let b = graph.add_node(VoxelCoord::new(3, 0, 0));
-        let c = graph.add_node(VoxelCoord::new(6, 0, 0));
-        let d = graph.add_node(VoxelCoord::new(3, 3, 0));
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(6, 0, 0), S);
+        let d = graph.add_node(VoxelCoord::new(3, 3, 0), S);
         graph.add_edge(a, b, EdgeType::ForestFloor, 3.0);
         graph.add_edge(b, c, EdgeType::ForestFloor, 3.0);
         graph.add_edge(a, d, EdgeType::TrunkClimb, 4.0);

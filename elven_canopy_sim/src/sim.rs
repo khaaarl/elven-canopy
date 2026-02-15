@@ -167,8 +167,8 @@ impl SimState {
             branch_parents: tree_result.branch_parents,
         };
 
-        // Build nav graph from tree geometry.
-        let nav_graph = nav::build_nav_graph(&home_tree, &config);
+        // Build nav graph from voxel world geometry.
+        let nav_graph = nav::build_nav_graph(&world, &config);
 
         let mut trees = BTreeMap::new();
         trees.insert(player_tree_id, home_tree);
@@ -739,13 +739,13 @@ mod tests {
             .iter()
             .any(|e| matches!(e.kind, SimEventKind::CreatureArrived { species: Species::Capybara, .. })));
 
-        // Capybara should be at a ground-level node (y=0).
+        // Capybara should be at a ground-level node (y=1, air above ForestFloor).
         let capybara = sim
             .creatures
             .values()
             .find(|c| c.species == Species::Capybara)
             .unwrap();
-        assert_eq!(capybara.position.y, 0);
+        assert_eq!(capybara.position.y, 1);
         assert!(capybara.current_node.is_some());
     }
 
@@ -791,7 +791,7 @@ mod tests {
         };
         sim.step(&[cmd], 2);
 
-        // Run for many ticks — capybara must never leave y=0.
+        // Run for many ticks — capybara must never leave y=1 (air above ForestFloor).
         for target in (100..5000).step_by(100) {
             sim.step(&[], target);
             let capybara = sim
@@ -800,7 +800,7 @@ mod tests {
                 .find(|c| c.species == Species::Capybara)
                 .unwrap();
             assert_eq!(
-                capybara.position.y, 0,
+                capybara.position.y, 1,
                 "Capybara left ground at tick {target}: pos={:?}",
                 capybara.position
             );

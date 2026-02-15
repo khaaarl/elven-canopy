@@ -1,29 +1,44 @@
 // Navigation graph for creature pathfinding.
 //
 // The nav graph is a set of `NavNode`s (positions) connected by `NavEdge`s
-// (typed, weighted connections). It is built from tree geometry by
+// (typed, weighted connections). It is built from the voxel world by
 // `build_nav_graph()` and used by `pathfinding.rs` for A* search.
+//
+// **Voxel-derived construction:** Every air voxel that is face-adjacent to at
+// least one solid voxel becomes a nav node. Edges connect face-adjacent nav
+// nodes. This means the nav graph reflects actual world geometry — future
+// construction or destruction of voxels naturally changes the navigable
+// topology (via incremental rebuild).
+//
+// Each nav node carries a `surface_type` derived from the solid voxel it
+// touches (see `derive_surface_type()`). Edge types and costs are derived from
+// the surface types of the two endpoints (see `derive_edge_type()`).
 //
 // All storage uses `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
 // and deterministic iteration order. No `HashMap`.
 //
-// See also: `tree_gen.rs` for the tree geometry that feeds graph construction,
+// See also: `world.rs` for the voxel grid, `tree_gen.rs` for tree geometry,
 // `pathfinding.rs` for A* search over this graph, `sim.rs` which owns the
 // `NavGraph` as part of `SimState`.
 //
-// **Critical constraint: determinism.** The graph is built from deterministic
-// tree geometry. Node/edge IDs are sequential integers assigned in fixed order.
+// **Critical constraint: determinism.** The graph is built by iterating voxels
+// in fixed order (matching the flat index of `VoxelWorld`). Node/edge IDs are
+// sequential integers assigned in that order.
 
 use crate::config::GameConfig;
-use crate::sim::Tree;
-use crate::types::{NavEdgeId, NavNodeId, VoxelCoord};
+use crate::types::{NavEdgeId, NavNodeId, VoxelCoord, VoxelType};
+use crate::world::VoxelWorld;
 use serde::{Deserialize, Serialize};
 
-/// A node in the navigation graph — a position an elf can stand on.
+/// A node in the navigation graph — a position a creature can occupy.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NavNode {
     pub id: NavNodeId,
     pub position: VoxelCoord,
+    /// The type of solid surface this node is adjacent to. Determines what
+    /// kind of creature movement is valid here (e.g. `ForestFloor` for ground
+    /// walking, `Trunk` for climbing).
+    pub surface_type: VoxelType,
     /// Indices into `NavGraph.edges` for edges that originate from this node.
     pub edge_indices: Vec<usize>,
 }
@@ -39,7 +54,7 @@ pub enum EdgeType {
     BranchWalk,
     /// Circumferential movement around the trunk at one y-level.
     TrunkCircumference,
-    /// Connecting ground ring to lowest trunk surface nodes.
+    /// Connecting ground-level nodes to trunk surface nodes.
     GroundToTrunk,
 }
 
@@ -66,12 +81,14 @@ impl NavGraph {
         Self::default()
     }
 
-    /// Add a node at the given position. Returns its ID.
-    pub fn add_node(&mut self, position: VoxelCoord) -> NavNodeId {
+    /// Add a node at the given position with the given surface type. Returns
+    /// its ID.
+    pub fn add_node(&mut self, position: VoxelCoord, surface_type: VoxelType) -> NavNodeId {
         let id = NavNodeId(self.nodes.len() as u32);
         self.nodes.push(NavNode {
             id,
             position,
+            surface_type,
             edge_indices: Vec::new(),
         });
         id
@@ -142,252 +159,259 @@ impl NavGraph {
             .map(|n| n.id)
     }
 
-    /// Find the nearest ground-level (y=0) node to the given position.
-    /// Returns `None` if no ground nodes exist.
+    /// Find the nearest ground-level node (surface type `ForestFloor`) to the
+    /// given position. Returns `None` if no ground nodes exist.
     pub fn find_nearest_ground_node(&self, pos: VoxelCoord) -> Option<NavNodeId> {
         self.nodes
             .iter()
-            .filter(|n| n.position.y == 0)
+            .filter(|n| n.surface_type == VoxelType::ForestFloor)
             .min_by_key(|n| n.position.manhattan_distance(pos))
             .map(|n| n.id)
     }
 
-    /// Return all ground-level (y=0) node IDs.
+    /// Return all ground-level node IDs (surface type `ForestFloor`).
     pub fn ground_node_ids(&self) -> Vec<NavNodeId> {
         self.nodes
             .iter()
-            .filter(|n| n.position.y == 0)
+            .filter(|n| n.surface_type == VoxelType::ForestFloor)
             .map(|n| n.id)
             .collect()
     }
 }
 
-/// Build a navigation graph from tree geometry.
+// ---------------------------------------------------------------------------
+// Surface and edge type derivation
+// ---------------------------------------------------------------------------
+
+/// 6 face-neighbor offsets (±x, ±y, ±z).
+const FACE_OFFSETS: [(i32, i32, i32); 6] = [
+    (1, 0, 0),
+    (-1, 0, 0),
+    (0, 1, 0),
+    (0, -1, 0),
+    (0, 0, 1),
+    (0, 0, -1),
+];
+
+/// Determine what surface a creature at `pos` is touching.
 ///
-/// Layout:
-/// 1. **Ground rings**: `ground_ring_count` concentric rings of 8 nodes each
-///    (4 cardinals N/E/S/W + 4 intercardinals NE/SE/SW/NW) at y=0. The inner
-///    ring sits at `trunk_radius + 2`, each subsequent ring is
-///    `ground_ring_spacing` voxels farther out. Rings are connected
-///    circumferentially with `ForestFloor` edges, and adjacent rings are
-///    connected radially (same direction, 8 pairs per ring pair).
-/// 2. **Trunk surface**: Every `nav_node_vertical_spacing` y-levels from y=1
-///    up to trunk height, place 4 nodes (N/S/E/W at radius+1). Connected
-///    vertically with `TrunkClimb` edges, horizontally with
-///    `TrunkCircumference` edges.
-/// 3. **Branches**: Nav nodes placed along each branch's centerline path
-///    (root, every 3 steps, tip), connected with `BranchWalk` edges. Primary
-///    branch roots connect to the nearest trunk surface node via `TrunkClimb`.
-///    Sub-branch roots connect to the nearest nav node on their parent branch
-///    via `BranchWalk`. The `per_branch_nav_nodes` vec tracks nav node IDs
-///    per branch path, enabling parent lookups for sub-branches.
-/// 4. **Ground-to-trunk**: Inner ring's 4 cardinal nodes connect to the
-///    lowest trunk surface ring.
-pub fn build_nav_graph(tree: &Tree, config: &GameConfig) -> NavGraph {
+/// Priority: the voxel directly below takes precedence (creature standing on
+/// it). Otherwise check horizontal neighbors and above in a fixed order and
+/// return the first solid type found (creature clinging to it).
+///
+/// This means ground-level nodes at y=1 above `ForestFloor` get surface type
+/// `ForestFloor` even when they're also adjacent to the trunk — capybaras can
+/// walk near the trunk base.
+fn derive_surface_type(world: &VoxelWorld, pos: VoxelCoord) -> VoxelType {
+    // Check below first (creature standing on this surface).
+    let below = VoxelCoord::new(pos.x, pos.y - 1, pos.z);
+    let below_type = world.get(below);
+    if below_type.is_solid() {
+        return below_type;
+    }
+
+    // Check horizontal neighbors and above in fixed order.
+    let side_offsets: [(i32, i32, i32); 5] = [
+        (1, 0, 0),
+        (-1, 0, 0),
+        (0, 0, 1),
+        (0, 0, -1),
+        (0, 1, 0),
+    ];
+    for (dx, dy, dz) in side_offsets {
+        let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+        let ntype = world.get(neighbor);
+        if ntype.is_solid() {
+            return ntype;
+        }
+    }
+
+    // Shouldn't happen — only called for air voxels with solid face neighbors.
+    VoxelType::ForestFloor
+}
+
+/// Determine the edge type for a connection between two nav nodes based on
+/// their surface types and positions.
+fn derive_edge_type(
+    from_surface: VoxelType,
+    to_surface: VoxelType,
+    from_pos: VoxelCoord,
+    to_pos: VoxelCoord,
+) -> EdgeType {
+    use VoxelType::*;
+
+    // Same surface type on both sides.
+    if from_surface == to_surface {
+        return match from_surface {
+            ForestFloor => EdgeType::ForestFloor,
+            Trunk => {
+                if from_pos.y != to_pos.y {
+                    EdgeType::TrunkClimb
+                } else {
+                    EdgeType::TrunkCircumference
+                }
+            }
+            Branch | GrownPlatform | Bridge => EdgeType::BranchWalk,
+            GrownStairs | GrownWall => EdgeType::TrunkClimb,
+            Air => EdgeType::BranchWalk, // shouldn't happen
+        };
+    }
+
+    // Mixed surface types.
+    match (from_surface, to_surface) {
+        (ForestFloor, Trunk) | (Trunk, ForestFloor) => EdgeType::GroundToTrunk,
+        (Trunk, Branch) | (Branch, Trunk) => EdgeType::TrunkClimb,
+        _ => {
+            // GrownStairs / GrownWall → climb-like; everything else → walk-like.
+            if matches!(from_surface, GrownStairs | GrownWall)
+                || matches!(to_surface, GrownStairs | GrownWall)
+            {
+                EdgeType::TrunkClimb
+            } else {
+                EdgeType::BranchWalk
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Graph construction
+// ---------------------------------------------------------------------------
+
+/// Build a navigation graph by scanning the voxel world.
+///
+/// **Algorithm:**
+/// 1. Allocate a spatial index (`Vec<u32>`, same size as the voxel grid,
+///    filled with `u32::MAX` as sentinel). This is freed after construction.
+/// 2. **Pass 1 — nodes:** Iterate all voxels in flat-index order (y outer,
+///    z middle, x inner). Each Air voxel with at least one solid face
+///    neighbor becomes a nav node. Its surface type is derived from the
+///    adjacent solid voxels.
+/// 3. **Pass 2 — edges:** Iterate again. For each nav node, check the 13
+///    positive-half neighbors (26-connectivity) to avoid duplicate
+///    bidirectional edges. If the neighbor is also a nav node, derive the
+///    edge type and cost, then add a bidirectional edge. 26-connectivity
+///    (vs face-only) is needed because the air shell around thin geometry
+///    (radius-1 branches) would be disconnected with face-only edges.
+///
+/// With the default 256×128×256 world, expect ~3000–5000 nav nodes (air
+/// voxels touching the tree surface and forest floor). The spatial index
+/// is ~32 MB and freed after construction.
+pub fn build_nav_graph(world: &VoxelWorld, config: &GameConfig) -> NavGraph {
     let mut graph = NavGraph::new();
 
-    let cx = tree.position.x;
-    let cz = tree.position.z;
-    let trunk_radius = config.tree_trunk_radius as i32;
+    let sx = world.size_x as usize;
+    let sy = world.size_y as usize;
+    let sz = world.size_z as usize;
+    let total = sx * sy * sz;
 
-    // Cardinal offsets: N(+Z), E(+X), S(-Z), W(-X)
-    let cardinal_offsets: [(i32, i32); 4] = [(0, 1), (1, 0), (0, -1), (-1, 0)];
+    if total == 0 {
+        return graph;
+    }
 
-    // 8 direction offsets for ground rings: 4 cardinals + 4 intercardinals.
-    // Order: N, NE, E, SE, S, SW, W, NW — so indices 0,2,4,6 are cardinal.
-    let ground_dir_offsets: [(i32, i32); 8] = [
-        (0, 1),   // N (+Z)
-        (1, 1),   // NE
-        (1, 0),   // E (+X)
-        (1, -1),  // SE
-        (0, -1),  // S (-Z)
-        (-1, -1), // SW
-        (-1, 0),  // W (-X)
-        (-1, 1),  // NW
+    // Spatial index: flat voxel index → NavNodeId (u32::MAX = no node).
+    let mut spatial_index: Vec<u32> = vec![u32::MAX; total];
+
+    // --- Pass 1: create nav nodes ---
+    // Start at y=1: y=0 is the floor layer (ForestFloor), so air at y=0
+    // only exists at the floor boundary and creates disconnected artifacts.
+    // Creatures walk ON the floor (y=1), not beside it.
+    for y in 1..sy {
+        for z in 0..sz {
+            for x in 0..sx {
+                let coord = VoxelCoord::new(x as i32, y as i32, z as i32);
+                if world.get(coord) != VoxelType::Air {
+                    continue;
+                }
+
+                // Check if any face neighbor is solid.
+                let has_solid_neighbor = FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
+                    let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+                    world.get(neighbor).is_solid()
+                });
+
+                if has_solid_neighbor {
+                    let surface = derive_surface_type(world, coord);
+                    let node_id = graph.add_node(coord, surface);
+                    let flat_idx = x + z * sx + y * sx * sz;
+                    spatial_index[flat_idx] = node_id.0;
+                }
+            }
+        }
+    }
+
+    // --- Pass 2: create edges ---
+    // Use 26-connectivity (13 positive-half neighbors) to ensure the air
+    // shell around thin geometry (radius-1 branches) stays connected.
+    // The "positive half" is the set of 13 offsets where the first nonzero
+    // component (checking x, then y, then z) is positive. Each generates a
+    // bidirectional edge, covering all 26 directions without duplicates.
+    #[rustfmt::skip]
+    let positive_half: [(i32, i32, i32); 13] = [
+        // dx > 0 (9 offsets)
+        ( 1, -1, -1), ( 1, -1,  0), ( 1, -1,  1),
+        ( 1,  0, -1), ( 1,  0,  0), ( 1,  0,  1),
+        ( 1,  1, -1), ( 1,  1,  0), ( 1,  1,  1),
+        // dx == 0, dy > 0 (3 offsets)
+        ( 0,  1, -1), ( 0,  1,  0), ( 0,  1,  1),
+        // dx == 0, dy == 0, dz > 0 (1 offset)
+        ( 0,  0,  1),
     ];
-
-    // --- 1. Ground rings ---
-    // Build concentric rings of 8 nodes each around the trunk base.
-    let ring_count = config.ground_ring_count.max(1) as usize;
-    let ring_spacing = config.ground_ring_spacing.max(1) as i32;
-    let inner_radius = trunk_radius + 2;
     let base_speed = config.nav_base_speed;
-
-    // ground_rings[ring_idx][dir_idx] = NavNodeId
-    let mut ground_rings: Vec<Vec<NavNodeId>> = Vec::new();
-
-    for ring_idx in 0..ring_count {
-        let radius = inner_radius + ring_idx as i32 * ring_spacing;
-        let mut ring = Vec::new();
-        for &(dx, dz) in &ground_dir_offsets {
-            let id = graph.add_node(VoxelCoord::new(
-                cx + dx * radius,
-                0,
-                cz + dz * radius,
-            ));
-            ring.push(id);
-        }
-        // Connect circumferentially within this ring.
-        for i in 0..ring.len() {
-            let next = (i + 1) % ring.len();
-            let a_pos = graph.node(ring[i]).position;
-            let b_pos = graph.node(ring[next]).position;
-            let dist = a_pos.manhattan_distance(b_pos) as f32;
-            let cost = dist / base_speed;
-            graph.add_edge(ring[i], ring[next], EdgeType::ForestFloor, cost);
-        }
-        ground_rings.push(ring);
-    }
-
-    // Connect adjacent rings radially (same direction index, 8 pairs per ring pair).
-    for r in 1..ground_rings.len() {
-        for dir in 0..8 {
-            let inner = ground_rings[r - 1][dir];
-            let outer = ground_rings[r][dir];
-            let i_pos = graph.node(inner).position;
-            let o_pos = graph.node(outer).position;
-            let dist = i_pos.manhattan_distance(o_pos) as f32;
-            let cost = dist / base_speed;
-            graph.add_edge(inner, outer, EdgeType::ForestFloor, cost);
-        }
-    }
-
-    // --- 2. Trunk surface rings ---
-    let spacing = config.nav_node_vertical_spacing.max(1);
-    let trunk_height = config.tree_trunk_height;
-    let trunk_surface_offset = trunk_radius + 1;
-
-    // Collect trunk rings for vertical connections.
-    let mut trunk_rings: Vec<Vec<NavNodeId>> = Vec::new();
-
-    let mut y = spacing;
-    while y <= trunk_height {
-        let mut ring = Vec::new();
-        for &(dx, dz) in &cardinal_offsets {
-            let id = graph.add_node(VoxelCoord::new(
-                cx + dx * trunk_surface_offset,
-                y as i32,
-                cz + dz * trunk_surface_offset,
-            ));
-            ring.push(id);
-        }
-        // Connect circumferentially.
-        for i in 0..ring.len() {
-            let next = (i + 1) % ring.len();
-            let a_pos = graph.node(ring[i]).position;
-            let b_pos = graph.node(ring[next]).position;
-            let dist = a_pos.manhattan_distance(b_pos) as f32;
-            let cost = dist / base_speed;
-            graph.add_edge(ring[i], ring[next], EdgeType::TrunkCircumference, cost);
-        }
-        trunk_rings.push(ring);
-        y += spacing;
-    }
-
-    // Connect rings vertically with TrunkClimb edges.
     let climb_speed = base_speed * config.climb_speed_multiplier;
-    for i in 1..trunk_rings.len() {
-        for j in 0..4 {
-            let lower = trunk_rings[i - 1][j];
-            let upper = trunk_rings[i][j];
-            let l_pos = graph.node(lower).position;
-            let u_pos = graph.node(upper).position;
-            let dist = l_pos.manhattan_distance(u_pos) as f32;
-            let cost = dist / climb_speed;
-            graph.add_edge(lower, upper, EdgeType::TrunkClimb, cost);
-        }
-    }
 
-    // --- 3. Ground-to-trunk connections ---
-    // Connect inner ring's 4 cardinal nodes (indices 0,2,4,6 = N,E,S,W)
-    // to the lowest trunk surface ring's 4 cardinal nodes (indices 0,1,2,3).
-    if let Some(first_trunk_ring) = trunk_rings.first() {
-        if let Some(inner_ground_ring) = ground_rings.first() {
-            // Cardinal ground indices [0,2,4,6] map to trunk indices [0,1,2,3].
-            let cardinal_ground_indices = [0usize, 2, 4, 6];
-            for (trunk_i, &ground_i) in cardinal_ground_indices.iter().enumerate() {
-                let ground = inner_ground_ring[ground_i];
-                let trunk_node = first_trunk_ring[trunk_i];
-                let g_pos = graph.node(ground).position;
-                let t_pos = graph.node(trunk_node).position;
-                let dist = g_pos.manhattan_distance(t_pos) as f32;
-                let cost = dist / climb_speed;
-                graph.add_edge(ground, trunk_node, EdgeType::GroundToTrunk, cost);
-            }
-        }
-    }
-
-    // --- 4. Branch nodes ---
-    // Place nav nodes along each branch path (root, every 3 steps, tip).
-    // Track per-branch nav nodes so sub-branches can connect to parents.
-    let mut per_branch_nav_nodes: Vec<Vec<NavNodeId>> = Vec::new();
-
-    for (path_idx, path) in tree.branch_paths.iter().enumerate() {
-        if path.is_empty() {
-            per_branch_nav_nodes.push(Vec::new());
-            continue;
-        }
-
-        // Place nav nodes at root (0), every 3 steps, and tip.
-        let mut branch_nav_ids: Vec<NavNodeId> = Vec::new();
-        for (step, pos) in path.iter().enumerate() {
-            if step == 0 || step == path.len() - 1 || step % 3 == 0 {
-                branch_nav_ids.push(graph.add_node(*pos));
-            }
-        }
-
-        // Connect consecutive nav nodes along this branch.
-        for i in 1..branch_nav_ids.len() {
-            let prev = branch_nav_ids[i - 1];
-            let curr = branch_nav_ids[i];
-            let p_pos = graph.node(prev).position;
-            let c_pos = graph.node(curr).position;
-            let dist = p_pos.manhattan_distance(c_pos) as f32;
-            let cost = dist / base_speed;
-            if dist > 0.0 {
-                graph.add_edge(prev, curr, EdgeType::BranchWalk, cost);
-            }
-        }
-
-        // Connect this branch's root to the tree structure.
-        let root_node = branch_nav_ids[0];
-        let root_pos = graph.node(root_node).position;
-
-        match &tree.branch_parents[path_idx] {
-            None => {
-                // Primary branch: connect root to nearest trunk surface node.
-                let nearest_trunk = trunk_rings
-                    .iter()
-                    .flat_map(|ring| ring.iter())
-                    .min_by_key(|&&node_id| {
-                        graph.node(node_id).position.manhattan_distance(root_pos)
-                    })
-                    .copied();
-
-                if let Some(trunk_node) = nearest_trunk {
-                    let t_pos = graph.node(trunk_node).position;
-                    let d = root_pos.manhattan_distance(t_pos) as f32;
-                    let c = d / climb_speed;
-                    graph.add_edge(root_node, trunk_node, EdgeType::TrunkClimb, c);
+    for y in 1..sy {
+        for z in 0..sz {
+            for x in 0..sx {
+                let flat_idx = x + z * sx + y * sx * sz;
+                let from_id = spatial_index[flat_idx];
+                if from_id == u32::MAX {
+                    continue;
                 }
-            }
-            Some(parent) => {
-                // Sub-branch: connect root to nearest nav node on parent branch.
-                let parent_nav = &per_branch_nav_nodes[parent.parent_path_idx];
-                if let Some(&closest) = parent_nav
-                    .iter()
-                    .min_by_key(|&&nid| graph.node(nid).position.manhattan_distance(root_pos))
-                {
-                    let p_pos = graph.node(closest).position;
-                    let d = root_pos.manhattan_distance(p_pos) as f32;
-                    // Use max(1.0, ...) so overlapping positions still get connected.
-                    let c = if d > 0.0 { d / base_speed } else { 1.0 };
-                    graph.add_edge(root_node, closest, EdgeType::BranchWalk, c);
+
+                for &(dx, dy, dz) in &positive_half {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    let nz = z as i32 + dz;
+
+                    if nx < 0 || ny < 0 || nz < 0 {
+                        continue;
+                    }
+                    let (nxu, nyu, nzu) = (nx as usize, ny as usize, nz as usize);
+                    if nxu >= sx || nyu >= sy || nzu >= sz {
+                        continue;
+                    }
+
+                    let n_flat = nxu + nzu * sx + nyu * sx * sz;
+                    let to_id = spatial_index[n_flat];
+                    if to_id == u32::MAX {
+                        continue;
+                    }
+
+                    let from = NavNodeId(from_id);
+                    let to = NavNodeId(to_id);
+                    let from_node = graph.node(from);
+                    let to_node = graph.node(to);
+
+                    let edge_type = derive_edge_type(
+                        from_node.surface_type,
+                        to_node.surface_type,
+                        from_node.position,
+                        to_node.position,
+                    );
+
+                    let speed = match edge_type {
+                        EdgeType::TrunkClimb | EdgeType::GroundToTrunk => climb_speed,
+                        _ => base_speed,
+                    };
+                    // Euclidean distance for the edge cost.
+                    let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+                    let cost = dist / speed;
+
+                    graph.add_edge(from, to, edge_type, cost);
                 }
             }
         }
-
-        per_branch_nav_nodes.push(branch_nav_ids);
     }
 
     graph
@@ -397,12 +421,14 @@ pub fn build_nav_graph(tree: &Tree, config: &GameConfig) -> NavGraph {
 mod tests {
     use super::*;
 
+    // --- NavGraph unit tests ---
+
     #[test]
     fn add_node_assigns_sequential_ids() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
-        let b = graph.add_node(VoxelCoord::new(1, 0, 0));
-        let c = graph.add_node(VoxelCoord::new(2, 0, 0));
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::Trunk);
         assert_eq!(a, NavNodeId(0));
         assert_eq!(b, NavNodeId(1));
         assert_eq!(c, NavNodeId(2));
@@ -412,11 +438,10 @@ mod tests {
     #[test]
     fn add_edge_creates_bidirectional() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0));
-        let b = graph.add_node(VoxelCoord::new(5, 0, 0));
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), VoxelType::ForestFloor);
         graph.add_edge(a, b, EdgeType::ForestFloor, 5.0);
 
-        // Node a should have an edge to b.
         let a_edges: Vec<_> = graph
             .neighbors(a)
             .iter()
@@ -424,7 +449,6 @@ mod tests {
             .collect();
         assert_eq!(a_edges, vec![b]);
 
-        // Node b should have an edge back to a.
         let b_edges: Vec<_> = graph
             .neighbors(b)
             .iter()
@@ -436,9 +460,9 @@ mod tests {
     #[test]
     fn find_nearest_node_works() {
         let mut graph = NavGraph::new();
-        graph.add_node(VoxelCoord::new(0, 0, 0));
-        graph.add_node(VoxelCoord::new(10, 0, 0));
-        graph.add_node(VoxelCoord::new(5, 5, 0));
+        graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        graph.add_node(VoxelCoord::new(10, 0, 0), VoxelType::ForestFloor);
+        graph.add_node(VoxelCoord::new(5, 5, 0), VoxelType::Trunk);
 
         let nearest = graph.find_nearest_node(VoxelCoord::new(4, 4, 0));
         assert_eq!(nearest, Some(NavNodeId(2))); // (5,5,0) is closest
@@ -451,87 +475,290 @@ mod tests {
     }
 
     #[test]
-    fn build_nav_graph_has_ground_ring() {
-        let tree = test_tree();
-        let config = test_config();
-        let graph = build_nav_graph(&tree, &config);
+    fn ground_node_ids_filters_by_surface_type() {
+        let mut graph = NavGraph::new();
+        graph.add_node(VoxelCoord::new(0, 1, 0), VoxelType::ForestFloor);
+        graph.add_node(VoxelCoord::new(1, 5, 0), VoxelType::Trunk);
+        graph.add_node(VoxelCoord::new(2, 1, 0), VoxelType::ForestFloor);
 
-        // Should have at least 4 ground nodes at y=0.
-        let ground_nodes: Vec<_> = graph
-            .nodes
-            .iter()
-            .filter(|n| n.position.y == 0)
-            .collect();
-        assert!(ground_nodes.len() >= 4);
+        let ground = graph.ground_node_ids();
+        assert_eq!(ground.len(), 2);
+        assert_eq!(ground[0], NavNodeId(0));
+        assert_eq!(ground[1], NavNodeId(2));
     }
 
     #[test]
-    fn build_nav_graph_has_trunk_nodes() {
-        let tree = test_tree();
-        let config = test_config();
-        let graph = build_nav_graph(&tree, &config);
+    fn find_nearest_ground_node_filters_by_surface_type() {
+        let mut graph = NavGraph::new();
+        graph.add_node(VoxelCoord::new(0, 1, 0), VoxelType::ForestFloor);
+        graph.add_node(VoxelCoord::new(1, 1, 0), VoxelType::Trunk);
+        graph.add_node(VoxelCoord::new(5, 1, 0), VoxelType::ForestFloor);
 
-        // Should have trunk surface nodes above y=0.
-        let trunk_nodes: Vec<_> = graph
-            .nodes
-            .iter()
-            .filter(|n| n.position.y > 0)
-            .collect();
-        assert!(!trunk_nodes.is_empty());
+        // Closest overall is the Trunk node, but ground search skips it.
+        let nearest = graph.find_nearest_ground_node(VoxelCoord::new(1, 1, 0));
+        assert_eq!(nearest, Some(NavNodeId(0)));
+    }
+
+    // --- Surface type derivation tests ---
+
+    #[test]
+    fn surface_type_standing_on_floor() {
+        let mut world = VoxelWorld::new(8, 8, 8);
+        world.set(VoxelCoord::new(4, 0, 4), VoxelType::ForestFloor);
+        // Air at y=1 is above ForestFloor.
+        let surface = derive_surface_type(&world, VoxelCoord::new(4, 1, 4));
+        assert_eq!(surface, VoxelType::ForestFloor);
     }
 
     #[test]
-    fn build_nav_graph_is_connected() {
-        use crate::pathfinding;
+    fn surface_type_standing_on_trunk() {
+        let mut world = VoxelWorld::new(8, 8, 8);
+        world.set(VoxelCoord::new(4, 5, 4), VoxelType::Trunk);
+        // Air at y=6 is above trunk.
+        let surface = derive_surface_type(&world, VoxelCoord::new(4, 6, 4));
+        assert_eq!(surface, VoxelType::Trunk);
+    }
 
-        let tree = test_tree();
-        let config = test_config();
-        let graph = build_nav_graph(&tree, &config);
+    #[test]
+    fn surface_type_clinging_to_trunk() {
+        let mut world = VoxelWorld::new(8, 8, 8);
+        // Trunk at x=3, air at x=4 clinging to trunk side.
+        world.set(VoxelCoord::new(3, 5, 4), VoxelType::Trunk);
+        let surface = derive_surface_type(&world, VoxelCoord::new(4, 5, 4));
+        // Nothing below, but trunk to the -x side.
+        assert_eq!(surface, VoxelType::Trunk);
+    }
 
-        // Every node should be reachable from node 0.
-        let start = NavNodeId(0);
-        for i in 1..graph.node_count() {
-            let goal = NavNodeId(i as u32);
-            let path = pathfinding::astar(&graph, start, goal, 1.0);
-            assert!(
-                path.is_some(),
-                "No path from node 0 to node {i} (pos {:?})",
-                graph.node(goal).position,
+    #[test]
+    fn surface_type_floor_takes_priority_over_trunk() {
+        // Node at y=1 with ForestFloor below and Trunk to the side — should
+        // be ForestFloor (standing on it takes priority).
+        let mut world = VoxelWorld::new(8, 8, 8);
+        world.set(VoxelCoord::new(4, 0, 4), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(3, 1, 4), VoxelType::Trunk);
+        let surface = derive_surface_type(&world, VoxelCoord::new(4, 1, 4));
+        assert_eq!(surface, VoxelType::ForestFloor);
+    }
+
+    // --- Edge type derivation tests ---
+
+    #[test]
+    fn edge_type_forest_floor() {
+        let et = derive_edge_type(
+            VoxelType::ForestFloor,
+            VoxelType::ForestFloor,
+            VoxelCoord::new(0, 1, 0),
+            VoxelCoord::new(1, 1, 0),
+        );
+        assert_eq!(et, EdgeType::ForestFloor);
+    }
+
+    #[test]
+    fn edge_type_trunk_climb() {
+        let et = derive_edge_type(
+            VoxelType::Trunk,
+            VoxelType::Trunk,
+            VoxelCoord::new(4, 5, 4),
+            VoxelCoord::new(4, 6, 4),
+        );
+        assert_eq!(et, EdgeType::TrunkClimb);
+    }
+
+    #[test]
+    fn edge_type_trunk_circumference() {
+        let et = derive_edge_type(
+            VoxelType::Trunk,
+            VoxelType::Trunk,
+            VoxelCoord::new(4, 5, 4),
+            VoxelCoord::new(4, 5, 5),
+        );
+        assert_eq!(et, EdgeType::TrunkCircumference);
+    }
+
+    #[test]
+    fn edge_type_ground_to_trunk() {
+        let et = derive_edge_type(
+            VoxelType::ForestFloor,
+            VoxelType::Trunk,
+            VoxelCoord::new(4, 1, 4),
+            VoxelCoord::new(4, 2, 4),
+        );
+        assert_eq!(et, EdgeType::GroundToTrunk);
+    }
+
+    #[test]
+    fn edge_type_trunk_to_branch() {
+        let et = derive_edge_type(
+            VoxelType::Trunk,
+            VoxelType::Branch,
+            VoxelCoord::new(4, 10, 4),
+            VoxelCoord::new(5, 10, 4),
+        );
+        assert_eq!(et, EdgeType::TrunkClimb);
+    }
+
+    #[test]
+    fn edge_type_branch_walk() {
+        let et = derive_edge_type(
+            VoxelType::Branch,
+            VoxelType::Branch,
+            VoxelCoord::new(10, 20, 4),
+            VoxelCoord::new(11, 20, 4),
+        );
+        assert_eq!(et, EdgeType::BranchWalk);
+    }
+
+    // --- build_nav_graph integration tests ---
+
+    /// Helper: create a VoxelWorld with a generated tree (no forks).
+    fn test_world_and_config() -> (VoxelWorld, GameConfig) {
+        use crate::prng::GameRng;
+        use crate::tree_gen;
+
+        let config = GameConfig {
+            world_size: (64, 64, 64),
+            tree_trunk_radius: 3,
+            tree_trunk_height: 30,
+            tree_branch_start_y: 10,
+            tree_branch_interval: 5,
+            tree_branch_count: 4,
+            tree_branch_length: 6,
+            tree_branch_radius: 1,
+            tree_branch_fork_max_depth: 0,
+            ..GameConfig::default()
+        };
+
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        tree_gen::generate_tree(&mut world, &config, &mut rng);
+
+        (world, config)
+    }
+
+    #[test]
+    fn nav_nodes_are_air_voxels() {
+        let (world, config) = test_world_and_config();
+        let graph = build_nav_graph(&world, &config);
+
+        for node in &graph.nodes {
+            assert_eq!(
+                world.get(node.position),
+                VoxelType::Air,
+                "Nav node at {:?} should be air, got {:?}",
+                node.position,
+                world.get(node.position),
             );
         }
     }
 
-    fn test_tree() -> Tree {
-        use crate::prng::GameRng;
-        use crate::tree_gen;
-        use crate::world::VoxelWorld;
+    #[test]
+    fn nav_nodes_adjacent_to_solid() {
+        let (world, config) = test_world_and_config();
+        let graph = build_nav_graph(&world, &config);
 
-        let config = test_config();
-        let mut world = VoxelWorld::new(64, 64, 64);
-        let mut rng = GameRng::new(42);
-        let result = tree_gen::generate_tree(&mut world, &config, &mut rng);
-
-        Tree {
-            id: crate::types::TreeId(crate::types::SimUuid::new_v4(&mut rng)),
-            position: VoxelCoord::new(32, 0, 32),
-            health: 100.0,
-            growth_level: 1,
-            mana_stored: 100.0,
-            mana_capacity: 500.0,
-            fruit_production_rate: 0.5,
-            carrying_capacity: 20.0,
-            current_load: 0.0,
-            owner: None,
-            trunk_voxels: result.trunk_voxels,
-            branch_voxels: result.branch_voxels,
-            branch_paths: result.branch_paths,
-            branch_parents: result.branch_parents,
+        for node in &graph.nodes {
+            let has_solid = FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
+                let n = VoxelCoord::new(
+                    node.position.x + dx,
+                    node.position.y + dy,
+                    node.position.z + dz,
+                );
+                world.get(n).is_solid()
+            });
+            assert!(
+                has_solid,
+                "Nav node at {:?} has no solid face neighbor",
+                node.position,
+            );
         }
     }
 
     #[test]
+    fn build_nav_graph_has_ground_nodes() {
+        let (world, config) = test_world_and_config();
+        let graph = build_nav_graph(&world, &config);
+
+        let ground_nodes: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|n| n.surface_type == VoxelType::ForestFloor)
+            .collect();
+        assert!(
+            ground_nodes.len() >= 4,
+            "Expected at least 4 ground nodes, got {}",
+            ground_nodes.len(),
+        );
+        // Ground nodes should be at y=1 (air above ForestFloor at y=0).
+        for n in &ground_nodes {
+            assert_eq!(
+                n.position.y, 1,
+                "Ground node should be at y=1, got y={}",
+                n.position.y,
+            );
+        }
+    }
+
+    #[test]
+    fn build_nav_graph_has_trunk_nodes() {
+        let (world, config) = test_world_and_config();
+        let graph = build_nav_graph(&world, &config);
+
+        let trunk_nodes: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|n| n.surface_type == VoxelType::Trunk)
+            .collect();
+        assert!(!trunk_nodes.is_empty(), "Should have trunk surface nodes");
+    }
+
+    #[test]
+    fn build_nav_graph_is_connected() {
+        let (world, config) = test_world_and_config();
+        let graph = build_nav_graph(&world, &config);
+
+        assert!(graph.node_count() > 0, "Graph should have nodes");
+
+        // BFS flood fill from node 0 — all nodes should be reachable.
+        let n = graph.node_count();
+        let mut visited = vec![false; n];
+        let mut queue = std::collections::VecDeque::new();
+        visited[0] = true;
+        queue.push_back(NavNodeId(0));
+
+        while let Some(current) = queue.pop_front() {
+            for &edge_idx in graph.neighbors(current) {
+                let neighbor = graph.edge(edge_idx).to;
+                let ni = neighbor.0 as usize;
+                if !visited[ni] {
+                    visited[ni] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        let unreachable: Vec<_> = visited
+            .iter()
+            .enumerate()
+            .filter(|&(_, v)| !v)
+            .map(|(i, _)| {
+                let node = graph.node(NavNodeId(i as u32));
+                (i, node.position, node.surface_type)
+            })
+            .collect();
+
+        assert!(
+            unreachable.is_empty(),
+            "Found {} unreachable nodes (out of {}). First 10: {:?}",
+            unreachable.len(),
+            n,
+            &unreachable[..unreachable.len().min(10)],
+        );
+    }
+
+    #[test]
     fn build_nav_graph_is_connected_with_forks() {
-        use crate::pathfinding;
+        use crate::prng::GameRng;
+        use crate::tree_gen;
 
         let config = GameConfig {
             world_size: (64, 64, 64),
@@ -545,54 +772,47 @@ mod tests {
             tree_branch_fork_chance: 1.0,
             tree_branch_fork_min_step: 2,
             tree_branch_fork_max_depth: 2,
-            nav_node_vertical_spacing: 4,
             ..GameConfig::default()
         };
 
-        let mut world = crate::world::VoxelWorld::new(64, 64, 64);
-        let mut rng = crate::prng::GameRng::new(42);
-        let result = crate::tree_gen::generate_tree(&mut world, &config, &mut rng);
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        tree_gen::generate_tree(&mut world, &config, &mut rng);
 
-        let tree = Tree {
-            id: crate::types::TreeId(crate::types::SimUuid::new_v4(&mut rng)),
-            position: VoxelCoord::new(32, 0, 32),
-            health: 100.0,
-            growth_level: 1,
-            mana_stored: 100.0,
-            mana_capacity: 500.0,
-            fruit_production_rate: 0.5,
-            carrying_capacity: 20.0,
-            current_load: 0.0,
-            owner: None,
-            trunk_voxels: result.trunk_voxels,
-            branch_voxels: result.branch_voxels,
-            branch_paths: result.branch_paths,
-            branch_parents: result.branch_parents,
-        };
+        let graph = build_nav_graph(&world, &config);
+        assert!(graph.node_count() > 0);
 
-        assert!(
-            tree.branch_paths.len() > 4,
-            "Expected forks to produce more than 4 branch paths, got {}",
-            tree.branch_paths.len(),
-        );
+        // BFS flood fill from node 0.
+        let n = graph.node_count();
+        let mut visited = vec![false; n];
+        let mut queue = std::collections::VecDeque::new();
+        visited[0] = true;
+        queue.push_back(NavNodeId(0));
 
-        let graph = build_nav_graph(&tree, &config);
-
-        // Every node should be reachable from node 0.
-        let start = NavNodeId(0);
-        for i in 1..graph.node_count() {
-            let goal = NavNodeId(i as u32);
-            let path = pathfinding::astar(&graph, start, goal, 1.0);
-            assert!(
-                path.is_some(),
-                "No path from node 0 to node {i} (pos {:?})",
-                graph.node(goal).position,
-            );
+        while let Some(current) = queue.pop_front() {
+            for &edge_idx in graph.neighbors(current) {
+                let neighbor = graph.edge(edge_idx).to;
+                let ni = neighbor.0 as usize;
+                if !visited[ni] {
+                    visited[ni] = true;
+                    queue.push_back(neighbor);
+                }
+            }
         }
+
+        let unreachable_count = visited.iter().filter(|&&v| !v).count();
+        assert!(
+            unreachable_count == 0,
+            "Found {unreachable_count} unreachable nodes (out of {n})",
+        );
     }
 
-    fn test_config() -> GameConfig {
-        GameConfig {
+    #[test]
+    fn voxel_nav_determinism() {
+        use crate::prng::GameRng;
+        use crate::tree_gen;
+
+        let config = GameConfig {
             world_size: (64, 64, 64),
             tree_trunk_radius: 3,
             tree_trunk_height: 30,
@@ -602,8 +822,28 @@ mod tests {
             tree_branch_length: 6,
             tree_branch_radius: 1,
             tree_branch_fork_max_depth: 0,
-            nav_node_vertical_spacing: 4,
             ..GameConfig::default()
+        };
+
+        // Build two graphs from the same seed.
+        let mut world_a = VoxelWorld::new(64, 64, 64);
+        let mut rng_a = GameRng::new(42);
+        tree_gen::generate_tree(&mut world_a, &config, &mut rng_a);
+        let graph_a = build_nav_graph(&world_a, &config);
+
+        let mut world_b = VoxelWorld::new(64, 64, 64);
+        let mut rng_b = GameRng::new(42);
+        tree_gen::generate_tree(&mut world_b, &config, &mut rng_b);
+        let graph_b = build_nav_graph(&world_b, &config);
+
+        assert_eq!(graph_a.node_count(), graph_b.node_count());
+        assert_eq!(graph_a.edges.len(), graph_b.edges.len());
+
+        for i in 0..graph_a.node_count() {
+            let na = &graph_a.nodes[i];
+            let nb = &graph_b.nodes[i];
+            assert_eq!(na.position, nb.position);
+            assert_eq!(na.surface_type, nb.surface_type);
         }
     }
 }
