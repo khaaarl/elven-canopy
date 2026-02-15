@@ -92,6 +92,26 @@ pub struct GameConfig {
     /// Cross-section radius of branches in voxels.
     pub tree_branch_radius: u32,
 
+    // -- Branch forking --
+
+    /// Per-eligible-step probability of spawning a sub-branch fork.
+    pub tree_branch_fork_chance: f32,
+
+    /// Minimum steps along a branch before forking is eligible.
+    pub tree_branch_fork_min_step: u32,
+
+    /// Angle offset from parent direction for fork (radians, ~34° at 0.6).
+    pub tree_branch_fork_angle: f32,
+
+    /// Child branch length = parent remaining steps * this ratio.
+    pub tree_branch_fork_length_ratio: f32,
+
+    /// Child branch radius = parent effective radius * this ratio.
+    pub tree_branch_fork_radius_ratio: f32,
+
+    /// Maximum fork generations (0 = no forks, 1 = one level, etc.).
+    pub tree_branch_fork_max_depth: u32,
+
     // -- Navigation --
 
     /// Vertical spacing between trunk surface nav nodes.
@@ -153,6 +173,12 @@ impl Default for GameConfig {
             tree_branch_count: 5,
             tree_branch_length: 8,
             tree_branch_radius: 1,
+            tree_branch_fork_chance: 0.08,
+            tree_branch_fork_min_step: 3,
+            tree_branch_fork_angle: 0.6,
+            tree_branch_fork_length_ratio: 0.6,
+            tree_branch_fork_radius_ratio: 0.65,
+            tree_branch_fork_max_depth: 2,
             nav_node_vertical_spacing: 4,
             ground_ring_count: 4,
             ground_ring_spacing: 8,
@@ -206,6 +232,12 @@ mod tests {
             "tree_branch_count": 6,
             "tree_branch_length": 10,
             "tree_branch_radius": 2,
+            "tree_branch_fork_chance": 0.08,
+            "tree_branch_fork_min_step": 3,
+            "tree_branch_fork_angle": 0.6,
+            "tree_branch_fork_length_ratio": 0.6,
+            "tree_branch_fork_radius_ratio": 0.65,
+            "tree_branch_fork_max_depth": 2,
             "nav_node_vertical_spacing": 5,
             "ground_ring_count": 3,
             "ground_ring_spacing": 10,
