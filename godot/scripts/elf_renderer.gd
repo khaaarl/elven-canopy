@@ -8,9 +8,11 @@
 ## unique appearance (hair, eyes, role outfit, etc.).
 ##
 ## Sprites use BILLBOARD_ENABLED so they always face the camera. Positions
-## are offset by (+0.5, +1.5, +0.5) from the voxel coordinate — the X/Z
-## offset centers the sprite on the voxel, and the Y offset of 1.5 makes
-## the sprite stand on top of the voxel rather than inside it.
+## are offset by (+0.5, +0.48, +0.5) from the nav node coordinate — the X/Z
+## offset centers the sprite on the voxel, and the Y offset places the sprite
+## center half its height above the floor (feet at pos.y, the air/floor
+## boundary). At pixel_size 0.02, the 48px sprite is 0.96 world units tall
+## (~1.9m given 2m voxels).
 ##
 ## See also: sprite_factory.gd for chibi elf texture generation (48x48),
 ## capybara_renderer.gd for the equivalent capybara renderer, sim_bridge.rs
@@ -42,7 +44,7 @@ func _process(_delta: float) -> void:
 		var sprite := Sprite3D.new()
 		sprite.texture = SpriteFactory.create_chibi_elf(params)
 		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		sprite.pixel_size = 0.06  # Scale: 48px * 0.06 = 2.88 world units
+		sprite.pixel_size = 0.02  # Scale: 48px * 0.02 = 0.96 world units (~1.9m)
 		sprite.transparent = true
 		sprite.no_depth_test = false
 		add_child(sprite)
@@ -53,7 +55,7 @@ func _process(_delta: float) -> void:
 		if i < elf_count:
 			_elf_sprites[i].visible = true
 			var pos := positions[i]
-			# Offset Y by ~1.5 so the sprite stands on top of the voxel.
-			_elf_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + 1.5, pos.z + 0.5)
+			# Nav node pos is the air voxel; feet at pos.y, center at +half sprite height.
+			_elf_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + 0.48, pos.z + 0.5)
 		else:
 			_elf_sprites[i].visible = false

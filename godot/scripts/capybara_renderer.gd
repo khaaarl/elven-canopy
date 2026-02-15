@@ -6,9 +6,10 @@
 ## unique texture from SpriteFactory using the sprite index as a seed
 ## (varying body color and accessory).
 ##
-## Positions are offset by (+0.5, +0.5, +0.5) from the voxel coordinate
-## to center the sprite on the voxel. The Y offset is only 0.5 (vs 1.5
-## for elves) because capybaras are shorter and sit closer to the ground.
+## Positions are offset by (+0.5, +0.32, +0.5) from the nav node coordinate.
+## The Y offset places the sprite center half its height above the floor
+## (feet at pos.y). At pixel_size 0.02, the 32px-tall sprite is 0.64 world
+## units (~1.3m given 2m voxels).
 ##
 ## See also: sprite_factory.gd for capybara texture generation (40x32),
 ## elf_renderer.gd for the equivalent elf renderer, sim_bridge.rs for the
@@ -40,7 +41,7 @@ func _process(_delta: float) -> void:
 		var sprite := Sprite3D.new()
 		sprite.texture = SpriteFactory.create_capybara(params)
 		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		sprite.pixel_size = 0.06  # 40px * 0.06 = 2.4 world units wide
+		sprite.pixel_size = 0.02  # 40px * 0.02 = 0.80 world units wide
 		sprite.transparent = true
 		sprite.no_depth_test = false
 		add_child(sprite)
@@ -51,6 +52,7 @@ func _process(_delta: float) -> void:
 		if i < count:
 			_capybara_sprites[i].visible = true
 			var pos := positions[i]
-			_capybara_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5)
+			# Nav node pos is the air voxel; feet at pos.y, center at +half sprite height.
+			_capybara_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + 0.32, pos.z + 0.5)
 		else:
 			_capybara_sprites[i].visible = false
