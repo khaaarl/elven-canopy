@@ -1,15 +1,33 @@
 // Commands that mutate simulation state.
 //
-// All simulation mutations go through `SimCommand`. In single-player, the
-// Godot GDScript glue translates UI actions into commands and passes them
-// to the Rust sim. In multiplayer, commands are broadcast to all peers,
-// canonically ordered, then applied — guaranteeing deterministic state.
+// All external mutations to the simulation go through `SimCommand`. This is
+// the only way outside code can change sim state — the sim is a pure function
+// `(state, commands) -> (new_state, events)`, and commands are the input.
 //
-// See also: `types.rs` for the ID and enum types used here, `sim.rs` for
-// the simulation state that processes these commands.
+// The full flow for a player action:
+//   GDScript UI → `sim_bridge.rs` (gdext) → constructs a `SimCommand` →
+//   `SimState::step()` in `sim.rs` processes it.
 //
-// **Critical constraint: determinism.** Commands are the sole input to the
-// sim's pure function `(state, commands) -> (new_state, events)`.
+// In multiplayer (future), commands are broadcast to all peers, canonically
+// ordered by tick, then applied — guaranteeing identical state.
+//
+// A `SimCommand` carries a `player_id`, a `tick` (when to apply), and a
+// `SimAction` enum. Current actions:
+// - `DesignateBuild` / `CancelBuild` / `SetTaskPriority` — build system
+//   (placeholders, not yet wired).
+// - `SetSimSpeed` — pause / play / fast-forward.
+// - `SpawnElf` / `SpawnCapybara` — place a creature at a voxel position.
+// - `CreateTask` — create a task at a voxel position (see `task.rs` for
+//   `TaskKind`). The handler in `sim.rs` snaps the position to the nearest
+//   nav node.
+//
+// See also: `sim.rs` for `process_command()` which dispatches these,
+// `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
+// `sim_bridge.rs` (in the gdext crate) for the GDScript-facing wrappers.
+//
+// **Critical constraint: determinism.** Commands are the sole external input
+// to the sim. Internal state changes come from scheduled events (see
+// `event.rs`).
 
 use crate::task::TaskKind;
 use crate::types::*;

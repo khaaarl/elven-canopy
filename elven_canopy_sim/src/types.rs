@@ -1,8 +1,33 @@
 // Core types shared across the simulation.
 //
-// Defines spatial coordinates (`VoxelCoord`), entity identifiers (strongly-typed
-// UUID v4 wrappers), and other foundational types. All types derive `Serialize`
-// and `Deserialize` for save/load and multiplayer state transfer.
+// Defines spatial coordinates, entity identifiers, voxel types, and game enums
+// used throughout the sim. This is the foundational types file — nearly every
+// other module imports from here.
+//
+// ## Sections
+//
+// - **Spatial types:** `VoxelCoord` — integer position in the 3D voxel grid.
+// - **Entity IDs:** Strongly-typed UUID v4 wrappers generated via the
+//   `entity_id!` macro. Each entity type gets its own newtype around `SimUuid`
+//   so the compiler prevents mixing them up. Current IDs: `TreeId`,
+//   `CreatureId`, `PlayerId`, `StructureId`, `ProjectId`, `TaskId`.
+// - **Nav graph IDs:** `NavNodeId` and `NavEdgeId` — compact `u32` wrappers
+//   (not UUIDs) since nav nodes are rebuilt from world geometry and never
+//   persisted across sessions.
+// - **Simulation enums:** `Species`, `SimSpeed`, `Priority`, `BuildType`.
+// - **Voxel types:** `VoxelType` — the material at each grid cell (`Air`,
+//   `Trunk`, `Branch`, `ForestFloor`, etc.).
+//
+// `SimUuid` is a hand-rolled UUID v4 (RFC 4122) generated deterministically
+// from the sim's `GameRng`. It serializes as the standard 8-4-4-4-12 hex
+// string so it can serve as a JSON map key.
+//
+// All types derive `Serialize` and `Deserialize` for save/load and multiplayer
+// state transfer.
+//
+// See also: `prng.rs` for the PRNG that generates entity IDs, `sim.rs` for
+// the `SimState` that owns entities keyed by these IDs, `world.rs` for the
+// voxel grid indexed by `VoxelCoord`.
 //
 // **Critical constraint: determinism.** Entity IDs are generated from the sim's
 // `GameRng` (see `prng.rs`). Do not use external UUID libraries or OS entropy.

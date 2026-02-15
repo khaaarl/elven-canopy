@@ -1,20 +1,37 @@
 // GDExtension bridge class for the simulation.
 //
 // Exposes a `SimBridge` node that Godot scenes can use to create, step, and
-// query the simulation. This is the primary interface between GDScript and
-// the Rust sim.
+// query the simulation. This is the sole interface between GDScript and the
+// Rust sim — all sim interaction goes through methods on this class.
 //
-// Exposes tree voxel data (for rendering), elf and capybara positions
-// (for billboard sprites), nav node positions (for placement UI), and
-// spawn commands. All data is returned in packed Godot arrays for
-// efficient transfer.
+// ## What it exposes
 //
-// Internally, elves and capybaras are stored as unified `Creature` entities
-// with a `species` field. The bridge filters by species when returning
-// positions so the GDScript API is unchanged.
+// - **Lifecycle:** `init_sim(seed)`, `step_to_tick(tick)`, `current_tick()`,
+//   `is_initialized()`.
+// - **World data:** `get_trunk_voxels()`, `get_branch_voxels()` — flat
+//   `PackedInt32Array` of (x,y,z) triples for voxel mesh rendering.
+// - **Creature positions:** `get_elf_positions()`, `get_capybara_positions()`
+//   — `PackedVector3Array` for billboard sprite placement. Internally, all
+//   creatures are unified `Creature` entities with a `species` field; the
+//   bridge filters by species so the GDScript API has clean per-species calls.
+// - **Nav nodes:** `get_all_nav_nodes()`, `get_ground_nav_nodes()` — for
+//   debug visualization. `get_visible_nav_nodes(cam_pos)`,
+//   `get_visible_ground_nav_nodes(cam_pos)` — filtered by voxel-based
+//   occlusion (3D DDA raycast in `world.rs`) so the placement UI only snaps
+//   to nodes the camera can actually see.
+// - **Commands:** `spawn_elf(x,y,z)`, `spawn_capybara(x,y,z)`,
+//   `create_goto_task(x,y,z)` — each constructs a `SimCommand` and
+//   immediately steps the sim by one tick to apply it.
+// - **Stats:** `elf_count()`, `capybara_count()`, `home_tree_mana()`.
 //
-// See also: `lib.rs` for the GDExtension entry point, and the
-// `elven_canopy_sim` crate for all simulation logic.
+// All array data uses packed Godot types (`PackedInt32Array`,
+// `PackedVector3Array`) for efficient transfer across the GDExtension
+// boundary — no per-element marshalling.
+//
+// See also: `lib.rs` for the GDExtension entry point, the
+// `elven_canopy_sim` crate for all simulation logic, `command.rs` for
+// `SimCommand`/`SimAction`, `placement_controller.gd` and
+// `spawn_toolbar.gd` for the GDScript callers.
 
 use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::sim::SimState;

@@ -1,14 +1,46 @@
 // Task entities — units of work that creatures can be assigned to.
 //
-// Tasks are the core of the assignment system: the sim maintains a registry
-// of tasks (`BTreeMap<TaskId, Task>` on `SimState`), and each creature's
+// Tasks are the core of the assignment system. The sim maintains a task
+// registry (`BTreeMap<TaskId, Task>` on `SimState`), and each creature's
 // activation loop checks for available tasks before defaulting to wandering.
 //
-// Each `TaskKind` has a behavior script evaluated per activation: walk toward
-// the task location if not there yet, otherwise do work or complete instantly.
+// ## Data model
 //
-// See also: `sim.rs` for the activation loop that executes task behavior,
-// `types.rs` for `TaskId`, `command.rs` for commands that create tasks.
+// A `Task` has a `kind` (`TaskKind` enum), a `state` (`TaskState` lifecycle),
+// a `location` (nav node where work happens), and an `assignees` list. Tasks
+// with nonzero `total_cost` track `progress` toward completion; tasks with
+// `total_cost == 0.0` (like `GoTo`) complete instantly on arrival.
+//
+// `required_species` optionally restricts which species can claim the task.
+// If `Some(Species::Elf)`, only elves will pick it up. If `None`, any idle
+// creature of any species can claim it.
+//
+// ## Task kinds and behavior scripts
+//
+// Each `TaskKind` defines a per-activation behavior script, dispatched via
+// match in `sim.rs` `execute_task_behavior()`:
+//
+// - `GoTo` — walk toward `location`; complete instantly on arrival. Used by
+//   the "Summon Elf" UI button to direct an elf to a clicked location.
+//
+// Future kinds (Build, Harvest, etc.) would add variants here and corresponding
+// match arms in `sim.rs`.
+//
+// ## Lifecycle
+//
+// `TaskState` tracks where a task is in its lifecycle:
+// - `Available` — no creature is working on it yet. Idle creatures check for
+//   these during their activation loop.
+// - `InProgress` — at least one creature has claimed it and is walking toward
+//   it or doing work. `find_available_task()` in `sim.rs` skips these, so
+//   only one creature transitions a task out of `Available`.
+// - `Complete` — finished. All assignees have their `current_task` cleared
+//   and return to wandering.
+//
+// See also: `sim.rs` for the activation loop that executes task behavior and
+// handles assignment/completion, `types.rs` for `TaskId`, `command.rs` for
+// the `CreateTask` command that adds tasks, `sim_bridge.rs` (in the gdext
+// crate) for the GDScript-facing `create_goto_task()` wrapper.
 //
 // **Critical constraint: determinism.** Tasks are stored in `BTreeMap` and
 // iterated in deterministic order. Task IDs come from the sim PRNG.

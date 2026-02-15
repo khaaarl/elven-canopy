@@ -10,12 +10,86 @@
 // the voxel world via `world.rs`. Creature spawning and movement are handled
 // through the command/event system.
 //
+// ## Activation chain
+//
 // Creature movement uses an **activation chain**: each creature has a
 // `CreatureActivation` event that fires, performs one action (walk 1 nav edge
 // or do 1 unit of task work), and schedules the next activation based on how
-// long the action takes. Idle creatures (no task) wander by picking a random
-// adjacent nav node each activation. `CreatureHeartbeat` is separate and
-// handles periodic non-movement checks (mood, mana, etc.).
+// long the action takes. This replaces the older heartbeat-driven wandering
+// model entirely — `CreatureHeartbeat` still exists but is decoupled from
+// movement; it handles periodic non-movement checks (mood, mana, etc.).
+//
+// The activation loop (`process_creature_activation`) runs this logic:
+//
+//   1. If the creature has no task (`current_task == None`), check for an
+//      available task to claim. If none found, **wander**: pick a random
+//      adjacent nav node, move there, and schedule the next activation at
+//      `now + edge_cost / speed`.
+//   2. If the creature has a task, run its **behavior script** (see below).
+//
+// Wandering is intentionally local and aimless — no pathfinding, just 1 random
+// neighbor per activation. This creates natural-looking milling about.
+//
+// ## Task system
+//
+// Tasks are the core assignment mechanism. The sim maintains a task registry
+// (`BTreeMap<TaskId, Task>`) and each creature stores an optional `current_task`.
+//
+// ### Task entity (`task.rs`)
+//
+// A `Task` has:
+// - `kind: TaskKind` — determines behavior (currently only `GoTo`).
+// - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
+// - `location: NavNodeId` — where creatures go to work on the task.
+// - `assignees: Vec<CreatureId>` — supports multiple workers.
+// - `progress: f32` and `total_cost: f32` — for tasks that require work units
+//   (0.0 total_cost means instant completion, e.g. GoTo).
+// - `required_species: Option<Species>` — species restriction (if `Some`,
+//   only that species can claim it).
+//
+// ### Task lifecycle
+//
+// 1. A `CreateTask` command (from the UI via `sim_bridge.rs`) creates a task
+//    in `Available` state, snapped to the nearest nav node.
+// 2. On its next activation, an idle creature whose species matches calls
+//    `find_available_task`, which returns the first `Available` task in
+//    deterministic BTreeMap order. The creature calls `claim_task`, which
+//    sets the task to `InProgress`, adds the creature to `assignees`, and
+//    computes an A* path to `task.location`.
+// 3. Each subsequent activation runs the task's behavior script (see below).
+// 4. On completion, `complete_task` sets the task to `Complete` and clears
+//    `current_task` for all assignees, returning them to wandering.
+//
+// Only one creature can transition a task from `Available` → `InProgress`.
+// Once `InProgress`, `find_available_task` skips it, preventing pile-ons.
+// (Multi-worker tasks are structurally supported via `assignees` but not yet
+// used — a future task kind could transition back to `Available` to recruit
+// more workers.)
+//
+// ### Task behavior scripts
+//
+// Each `TaskKind` defines behavior evaluated per activation via match dispatch
+// in `execute_task_behavior`:
+//
+//   GoTo:
+//     - If at `task.location` → complete instantly (total_cost is 0).
+//     - Otherwise → walk 1 edge along the A* path toward the location.
+//
+// Future kinds (Build, Harvest, etc.) would follow the same pattern: walk
+// toward location if not there, otherwise do one increment of work per
+// activation, completing when `progress >= total_cost`.
+//
+// ### Task assignment details
+//
+// `find_available_task` filters by: (1) `TaskState::Available`, (2) species
+// compatibility (`required_species` is `None` or matches the creature's
+// species). It returns the first match in BTreeMap iteration order, which is
+// deterministic by `TaskId`.
+//
+// Task checking happens on every activation of an idle creature. This is
+// simple and correct; optimization (checking less frequently) is deferred.
+//
+// ## Species
 //
 // All creature types (elf, capybara, etc.) use a single `Creature` struct with
 // a `species` field. Behavioral differences (speed, heartbeat interval, edge
@@ -24,7 +98,8 @@
 //
 // See also: `event.rs` for the event queue, `command.rs` for `SimCommand`,
 // `config.rs` for `GameConfig`, `types.rs` for entity IDs, `world.rs` for
-// the voxel grid, `nav.rs` for navigation, `pathfinding.rs` for A*.
+// the voxel grid, `nav.rs` for navigation, `pathfinding.rs` for A*,
+// `task.rs` for `Task`/`TaskKind`/`TaskState`.
 //
 // **Critical constraint: determinism.** All state mutations flow through
 // `SimCommand` or internal scheduled events. No external input (system time,

@@ -1,17 +1,39 @@
 // Simulation events — both the internal scheduling queue and player-visible
 // narrative events.
 //
-// The sim uses a discrete event simulation model (see design doc §5). Entities
-// schedule future events into a priority queue ordered by `(tick, sequence)`.
-// The sim processes them in order, advancing the clock as needed. Empty ticks
-// are free.
+// The sim uses a discrete event simulation model. Entities schedule future
+// events into a priority queue ordered by `(tick, sequence)`. The tick loop
+// in `sim.rs` pops events up to the current tick and dispatches them.
+// Empty ticks are free (the queue skips forward).
 //
 // This file defines two related but distinct concepts:
-// - `ScheduledEvent`: internal events in the priority queue that drive the sim.
-// - `SimEvent`: player-visible narrative events emitted as output.
+//
+// ## `ScheduledEvent` — internal sim events (priority queue)
+//
+// These drive the simulation's behavior. Current event types:
+// - `CreatureActivation` — the core creature behavior loop. Each activation,
+//   the creature does one action (check for a task, walk 1 nav edge, or do
+//   1 unit of work) and schedules its next activation based on how long the
+//   action took. See `sim.rs` `process_creature_activation()`.
+// - `CreatureHeartbeat` — periodic non-movement checks (mood, mana, needs).
+//   Does NOT drive movement — that's entirely the activation chain.
+// - `CreatureMovementComplete` — arrival at a nav node during pathfinding.
+//   Used by the task system when walking along an A* path.
+// - `TreeHeartbeat` — periodic tree updates (fruit, mana capacity).
+//
+// The `EventQueue` wraps a `BinaryHeap` with reversed `Ord` to get min-heap
+// behavior (earliest tick pops first). A monotonic `next_sequence` counter
+// breaks ties within the same tick deterministically — events scheduled first
+// fire first.
+//
+// ## `SimEvent` — player-visible narrative events (output)
+//
+// Emitted by the sim as output for the UI event log. Not queued — produced
+// synchronously during event processing and collected by the caller.
 //
 // See also: `sim.rs` for the tick loop that processes scheduled events,
-// `types.rs` for entity IDs and the `Species` enum.
+// `types.rs` for entity IDs and the `Species` enum, `task.rs` for the task
+// system that `CreatureActivation` interacts with.
 //
 // **Critical constraint: determinism.** Event ordering must be identical
 // across all clients. The `(tick, sequence)` key provides a total order.
