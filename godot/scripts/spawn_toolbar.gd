@@ -1,21 +1,23 @@
-## Toolbar UI for spawning creatures.
+## Toolbar UI for spawning creatures and placing tasks.
 ##
-## Builds a horizontal row of "Spawn Elf [1]" and "Spawn Capybara [2]" buttons.
-## Emits `spawn_requested(species_name)` when a button is clicked or its
-## keyboard shortcut is pressed.
+## Builds a horizontal row of buttons: "Spawn Elf [1]", "Spawn Capybara [2]",
+## and "Summon [3]". Emits `spawn_requested(species_name)` for creature spawns
+## and `action_requested(action_name)` for task placement.
 ##
 ## Created programmatically by main.gd and parented under a CanvasLayer so it
 ## renders on top of the 3D viewport.
 ##
-## See also: placement_controller.gd which listens for `spawn_requested` and
+## See also: placement_controller.gd which listens for these signals and
 ## handles the click-to-place flow, main.gd which wires toolbar to controller.
 
 extends MarginContainer
 
 signal spawn_requested(species_name: String)
+signal action_requested(action_name: String)
 
 var _elf_button: Button
 var _capybara_button: Button
+var _summon_button: Button
 
 
 func _ready() -> void:
@@ -37,6 +39,11 @@ func _ready() -> void:
 	_capybara_button.pressed.connect(_on_capybara_pressed)
 	hbox.add_child(_capybara_button)
 
+	_summon_button = Button.new()
+	_summon_button.text = "Summon Elf [3]"
+	_summon_button.pressed.connect(_on_summon_pressed)
+	hbox.add_child(_summon_button)
+
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -47,6 +54,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif key.keycode == KEY_2:
 			_on_capybara_pressed()
 			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_3:
+			_on_summon_pressed()
+			get_viewport().set_input_as_handled()
 
 
 func _on_elf_pressed() -> void:
@@ -55,3 +65,7 @@ func _on_elf_pressed() -> void:
 
 func _on_capybara_pressed() -> void:
 	spawn_requested.emit("Capybara")
+
+
+func _on_summon_pressed() -> void:
+	action_requested.emit("Summon")

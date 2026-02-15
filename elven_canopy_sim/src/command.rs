@@ -11,6 +11,7 @@
 // **Critical constraint: determinism.** Commands are the sole input to the
 // sim's pure function `(state, commands) -> (new_state, events)`.
 
+use crate::task::TaskKind;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +55,13 @@ pub enum SimAction {
     /// Spawn a new capybara at the given position (snapped to nearest ground nav node).
     SpawnCapybara {
         position: VoxelCoord,
+    },
+    /// Create a task at the given position (snapped to nearest nav node).
+    /// If `required_species` is set, only that species can claim the task.
+    CreateTask {
+        kind: TaskKind,
+        position: VoxelCoord,
+        required_species: Option<Species>,
     },
 }
 

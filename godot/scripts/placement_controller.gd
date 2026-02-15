@@ -1,11 +1,15 @@
-## Placement controller for click-to-place creature spawning.
+## Placement controller for click-to-place creature spawning and task creation.
 ##
 ## State machine (IDLE / PLACING) that handles the placement flow:
-## 1. Toolbar emits spawn_requested → enter PLACING mode
+## 1. Toolbar emits spawn_requested or action_requested → enter PLACING mode
 ## 2. Each frame: find the nav node closest to the mouse ray in 3D, show
 ##    wireframe highlight cube at that position
-## 3. Left-click: confirm spawn via SimBridge, exit placement mode
+## 3. Left-click: confirm action via SimBridge, exit placement mode
 ## 4. Right-click or Escape: cancel, exit placement mode
+##
+## Supports two placement types:
+## - Species spawn (Elf, Capybara): places a creature at the clicked nav node
+## - Actions (Summon): creates a GoTo task at the clicked nav node
 ##
 ## Uses _unhandled_input() and set_input_as_handled() so placement clicks don't
 ## propagate to the camera (which also uses _unhandled_input).
@@ -24,6 +28,7 @@ const SNAP_THRESHOLD := 5.0
 
 var _state: State = State.IDLE
 var _species_name: String = ""
+var _action_name: String = ""
 var _valid_positions: PackedVector3Array
 var _snapped_position: Vector3
 var _has_snap: bool = false
@@ -40,6 +45,7 @@ func setup(bridge: SimBridge, camera: Camera3D) -> void:
 
 func connect_toolbar(toolbar: Node) -> void:
 	toolbar.spawn_requested.connect(_on_spawn_requested)
+	toolbar.action_requested.connect(_on_action_requested)
 
 
 func _ready() -> void:
@@ -94,13 +100,26 @@ func _draw_wireframe_cube(mesh: ImmediateMesh) -> void:
 
 func _on_spawn_requested(species_name: String) -> void:
 	if _state == State.PLACING:
-		# If already placing, switch species or cancel if same.
-		if _species_name == species_name:
+		if _species_name == species_name and _action_name == "":
 			_exit_placement()
 			return
 	_species_name = species_name
-	_state = State.PLACING
+	_action_name = ""
+	_enter_placement()
 
+
+func _on_action_requested(action_name: String) -> void:
+	if _state == State.PLACING:
+		if _action_name == action_name and _species_name == "":
+			_exit_placement()
+			return
+	_action_name = action_name
+	_species_name = ""
+	_enter_placement()
+
+
+func _enter_placement() -> void:
+	_state = State.PLACING
 	_draw_wireframe_cube(_highlight.mesh as ImmediateMesh)
 	_highlight.visible = false
 	_has_snap = false
@@ -120,6 +139,7 @@ func _process(_delta: float) -> void:
 	if _species_name == "Capybara":
 		_valid_positions = _bridge.get_visible_ground_nav_nodes(cam_pos)
 	else:
+		# Elves and task actions can target any nav node.
 		_valid_positions = _bridge.get_visible_nav_nodes(cam_pos)
 
 	# Find the nav node whose perpendicular distance to the mouse ray is
@@ -178,7 +198,9 @@ func _confirm_spawn() -> void:
 	var y := int(_snapped_position.y)
 	var z := int(_snapped_position.z)
 
-	if _species_name == "Elf":
+	if _action_name == "Summon":
+		_bridge.create_goto_task(x, y, z)
+	elif _species_name == "Elf":
 		_bridge.spawn_elf(x, y, z)
 	elif _species_name == "Capybara":
 		_bridge.spawn_capybara(x, y, z)
@@ -189,5 +211,6 @@ func _confirm_spawn() -> void:
 func _exit_placement() -> void:
 	_state = State.IDLE
 	_species_name = ""
+	_action_name = ""
 	_highlight.visible = false
 	_has_snap = false

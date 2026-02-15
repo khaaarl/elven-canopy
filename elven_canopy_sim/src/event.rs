@@ -40,8 +40,12 @@ pub struct ScheduledEvent {
 /// The types of internal events the sim can schedule.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ScheduledEventKind {
-    /// Periodic heartbeat for a creature (wander decision, need decay, mood).
+    /// Periodic heartbeat for a creature (mood decay, mana generation, need updates).
+    /// Does NOT drive movement — that's handled by `CreatureActivation`.
     CreatureHeartbeat { creature_id: CreatureId },
+    /// A creature's activation fires: it does one action (walk 1 edge or work)
+    /// and schedules the next activation based on how long the action takes.
+    CreatureActivation { creature_id: CreatureId },
     /// A creature has finished traversing one nav edge and arrives at the next node.
     CreatureMovementComplete { creature_id: CreatureId, arrived_at: NavNodeId },
     /// Tree heartbeat (fruit production, mana capacity updates).

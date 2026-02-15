@@ -158,6 +158,8 @@ entity_id!(/// Unique identifier for a structure (platform, bridge, etc.).
 StructureId);
 entity_id!(/// Unique identifier for an in-progress build project.
 ProjectId);
+entity_id!(/// Unique identifier for a task (go-to, build, harvest, etc.).
+TaskId);
 
 // ---------------------------------------------------------------------------
 // Nav graph IDs — simple integers, not UUIDs, for compactness.

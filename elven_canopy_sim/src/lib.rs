@@ -15,6 +15,7 @@
 // - `event.rs`:       EventQueue (priority queue) + narrative SimEvents.
 // - `config.rs`:      GameConfig — all tunable parameters.
 // - `species.rs`:     SpeciesData — data-driven creature behavior (DF-style).
+// - `task.rs`:        Task entities — units of work assigned to creatures.
 // - `prng.rs`:        Xoshiro256++ PRNG with SplitMix64 seeding.
 // - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.
 //
@@ -35,6 +36,7 @@ pub mod pathfinding;
 pub mod prng;
 pub mod sim;
 pub mod species;
+pub mod task;
 pub mod tree_gen;
 pub mod types;
 pub mod world;

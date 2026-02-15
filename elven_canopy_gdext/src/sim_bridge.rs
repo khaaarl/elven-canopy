@@ -258,6 +258,25 @@ impl SimBridge {
         arr
     }
 
+    /// Create a GoTo task at the given voxel position (snapped to nearest nav node).
+    /// Only an idle elf will claim it and walk to that location.
+    #[func]
+    fn create_goto_task(&mut self, x: i32, y: i32, z: i32) {
+        let Some(sim) = &mut self.sim else { return };
+        let player_id = sim.player_id;
+        let next_tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_id,
+            tick: next_tick,
+            action: SimAction::CreateTask {
+                kind: elven_canopy_sim::task::TaskKind::GoTo,
+                position: VoxelCoord::new(x, y, z),
+                required_species: Some(Species::Elf),
+            },
+        };
+        sim.step(&[cmd], next_tick);
+    }
+
     /// Spawn a capybara at the given voxel position.
     #[func]
     fn spawn_capybara(&mut self, x: i32, y: i32, z: i32) {
