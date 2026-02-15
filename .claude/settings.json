@@ -60,6 +60,7 @@
       "Bash(rmdir:*)",
       "Bash(rustc:*)",
       "Bash(ruff:*)",
+      "Bash(scripts/build.sh:*)",
       "Bash(sed:*)",
       "Bash(tail:*)",
       "Bash(tee:*)",
