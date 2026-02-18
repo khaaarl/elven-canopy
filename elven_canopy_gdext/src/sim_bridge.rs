@@ -9,8 +9,8 @@
 // - **Lifecycle:** `init_sim(seed)`, `step_to_tick(tick)`, `current_tick()`,
 //   `is_initialized()`.
 // - **World data:** `get_trunk_voxels()`, `get_branch_voxels()`,
-//   `get_leaf_voxels()` — flat `PackedInt32Array` of (x,y,z) triples for
-//   voxel mesh rendering.
+//   `get_leaf_voxels()`, `get_fruit_voxels()` — flat `PackedInt32Array` of
+//   (x,y,z) triples for voxel mesh rendering.
 // - **Creature positions:** `get_elf_positions()`, `get_capybara_positions()`
 //   — `PackedVector3Array` for billboard sprite placement. Internally, all
 //   creatures are unified `Creature` entities with a `species` field; the
@@ -23,7 +23,8 @@
 // - **Commands:** `spawn_elf(x,y,z)`, `spawn_capybara(x,y,z)`,
 //   `create_goto_task(x,y,z)` — each constructs a `SimCommand` and
 //   immediately steps the sim by one tick to apply it.
-// - **Stats:** `elf_count()`, `capybara_count()`, `home_tree_mana()`.
+// - **Stats:** `elf_count()`, `capybara_count()`, `fruit_count()`,
+//   `home_tree_mana()`.
 //
 // All array data uses packed Godot types (`PackedInt32Array`,
 // `PackedVector3Array`) for efficient transfer across the GDExtension
@@ -152,6 +153,35 @@ impl SimBridge {
             arr.push(v.z);
         }
         arr
+    }
+
+    /// Return fruit voxel positions as a flat PackedInt32Array (x,y,z triples).
+    #[func]
+    fn get_fruit_voxels(&self) -> PackedInt32Array {
+        let Some(sim) = &self.sim else {
+            return PackedInt32Array::new();
+        };
+        let tree = match sim.trees.get(&sim.player_tree_id) {
+            Some(t) => t,
+            None => return PackedInt32Array::new(),
+        };
+        let mut arr = PackedInt32Array::new();
+        for v in &tree.fruit_positions {
+            arr.push(v.x);
+            arr.push(v.y);
+            arr.push(v.z);
+        }
+        arr
+    }
+
+    /// Return the number of fruit on the player's home tree.
+    #[func]
+    fn fruit_count(&self) -> i32 {
+        self.sim.as_ref().map_or(0, |s| {
+            s.trees
+                .get(&s.player_tree_id)
+                .map_or(0, |t| t.fruit_positions.len() as i32)
+        })
     }
 
     /// Return elf positions as a PackedVector3Array.

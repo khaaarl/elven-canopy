@@ -9,6 +9,8 @@
   "platform_mana_cost_per_voxel": 10.0,
   "bridge_mana_cost_per_voxel": 15.0,
   "fruit_production_base_rate": 0.5,
+  "fruit_max_per_tree": 20,
+  "fruit_initial_attempts": 12,
   "world_size": [256, 128, 256],
   "starting_mana": 100.0,
   "starting_mana_capacity": 500.0,

@@ -188,6 +188,8 @@ pub struct Tree {
     pub branch_parents: Vec<Option<BranchParent>>,
     /// Leaf voxel positions (semi-spherical blobs near branch tips).
     pub leaf_voxels: Vec<VoxelCoord>,
+    /// Positions of fruit hanging below leaf voxels.
+    pub fruit_positions: Vec<VoxelCoord>,
 }
 
 /// A creature's current path through the nav graph.
@@ -256,6 +258,7 @@ impl SimState {
             branch_paths: tree_result.branch_paths,
             branch_parents: tree_result.branch_parents,
             leaf_voxels: tree_result.leaf_voxels,
+            fruit_positions: Vec::new(),
         };
 
         // Build nav graph from voxel world geometry.
@@ -282,6 +285,13 @@ impl SimState {
             nav_graph,
             species_table,
         };
+
+        // Fast-forward fruit spawning: run the same attempt_fruit_spawn code
+        // path N times, as if N heartbeats had already passed for fruit.
+        let initial_attempts = state.config.fruit_initial_attempts;
+        for _ in 0..initial_attempts {
+            state.attempt_fruit_spawn(player_tree_id);
+        }
 
         // Schedule the home tree's first heartbeat.
         let heartbeat_interval = state.config.tree_heartbeat_interval_ticks;
@@ -433,7 +443,11 @@ impl SimState {
             }
             ScheduledEventKind::TreeHeartbeat { tree_id } => {
                 if self.trees.contains_key(&tree_id) {
-                    // TODO: fruit production, mana updates.
+                    // Fruit production.
+                    self.attempt_fruit_spawn(tree_id);
+
+                    // TODO: mana updates.
+
                     // Reschedule.
                     let next_tick = self.tick + self.config.tree_heartbeat_interval_ticks;
                     self.event_queue
@@ -856,6 +870,56 @@ impl SimState {
             // Path complete.
             self.creatures.get_mut(&creature_id).unwrap().path = None;
         }
+    }
+
+    /// Attempt to spawn one fruit on the given tree. Rolls the RNG for spawn
+    /// chance and picks a random leaf voxel to hang fruit below. Returns `true`
+    /// if a fruit was actually placed.
+    ///
+    /// This is the single code path for all fruit spawning — both the initial
+    /// fast-forward during `with_config()` and the periodic `TreeHeartbeat`.
+    fn attempt_fruit_spawn(&mut self, tree_id: TreeId) -> bool {
+        let tree = match self.trees.get(&tree_id) {
+            Some(t) => t,
+            None => return false,
+        };
+
+        if tree.fruit_positions.len() >= self.config.fruit_max_per_tree as usize {
+            return false;
+        }
+
+        // Roll spawn chance.
+        let roll = self.rng.next_f32();
+        if roll >= self.config.fruit_production_base_rate {
+            return false;
+        }
+
+        if tree.leaf_voxels.is_empty() {
+            return false;
+        }
+
+        // Pick a random leaf voxel; fruit hangs one voxel below it.
+        let leaf_count = tree.leaf_voxels.len();
+        let leaf_idx = self.rng.range_u64(0, leaf_count as u64) as usize;
+        let leaf_pos = tree.leaf_voxels[leaf_idx];
+        let fruit_pos = VoxelCoord::new(leaf_pos.x, leaf_pos.y - 1, leaf_pos.z);
+
+        // Position must be in-bounds, currently air, and not already fruited.
+        if !self.world.in_bounds(fruit_pos) {
+            return false;
+        }
+        if self.world.get(fruit_pos) != VoxelType::Air {
+            return false;
+        }
+        if tree.fruit_positions.contains(&fruit_pos) {
+            return false;
+        }
+
+        // Place the fruit.
+        self.world.set(fruit_pos, VoxelType::Fruit);
+        let tree = self.trees.get_mut(&tree_id).unwrap();
+        tree.fruit_positions.push(fruit_pos);
+        true
     }
 
     /// Count creatures of a given species.
@@ -1523,6 +1587,94 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn new_sim_has_initial_fruit() {
+        let sim = SimState::new(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        assert!(
+            !tree.fruit_positions.is_empty(),
+            "Tree should have some initial fruit (got 0)"
+        );
+    }
+
+    #[test]
+    fn fruit_hangs_below_leaf_voxels() {
+        let sim = SimState::new(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        for fruit_pos in &tree.fruit_positions {
+            // The leaf above the fruit should be in the tree's leaf_voxels.
+            let leaf_above = VoxelCoord::new(fruit_pos.x, fruit_pos.y + 1, fruit_pos.z);
+            assert!(
+                tree.leaf_voxels.contains(&leaf_above),
+                "Fruit at {} should hang below a leaf voxel, but no leaf at {}",
+                fruit_pos, leaf_above
+            );
+        }
+    }
+
+    #[test]
+    fn fruit_set_in_world_grid() {
+        let sim = SimState::new(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        for fruit_pos in &tree.fruit_positions {
+            assert_eq!(
+                sim.world.get(*fruit_pos),
+                VoxelType::Fruit,
+                "World should have Fruit voxel at {}",
+                fruit_pos
+            );
+        }
+    }
+
+    #[test]
+    fn fruit_grows_during_heartbeat() {
+        // Use a config with no initial fruit but high spawn rate so heartbeats produce fruit.
+        let mut config = GameConfig::default();
+        config.fruit_initial_attempts = 0;
+        config.fruit_production_base_rate = 1.0; // Always spawn
+        config.fruit_max_per_tree = 100;
+        let mut sim = SimState::with_config(42, config);
+        let tree_id = sim.player_tree_id;
+
+        assert!(
+            sim.trees[&tree_id].fruit_positions.is_empty(),
+            "Should start with no fruit when initial_attempts = 0"
+        );
+
+        // Step past several heartbeats (interval = 100 ticks).
+        sim.step(&[], 500);
+
+        assert!(
+            !sim.trees[&tree_id].fruit_positions.is_empty(),
+            "Fruit should grow during tree heartbeats"
+        );
+    }
+
+    #[test]
+    fn fruit_respects_max_count() {
+        let mut config = GameConfig::default();
+        config.fruit_max_per_tree = 3;
+        config.fruit_initial_attempts = 100; // Many attempts, but max is 3.
+        config.fruit_production_base_rate = 1.0;
+        let sim = SimState::with_config(42, config);
+        let tree = &sim.trees[&sim.player_tree_id];
+
+        assert!(
+            tree.fruit_positions.len() <= 3,
+            "Fruit count {} should not exceed max 3",
+            tree.fruit_positions.len()
+        );
+    }
+
+    #[test]
+    fn fruit_deterministic() {
+        let sim_a = SimState::new(42);
+        let sim_b = SimState::new(42);
+        let tree_a = &sim_a.trees[&sim_a.player_tree_id];
+        let tree_b = &sim_b.trees[&sim_b.player_tree_id];
+        assert_eq!(tree_a.fruit_positions, tree_b.fruit_positions);
     }
 
     #[test]

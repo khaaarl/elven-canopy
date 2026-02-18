@@ -60,6 +60,14 @@ pub struct GameConfig {
     /// Base rate of fruit production per tree per heartbeat tick.
     pub fruit_production_base_rate: f32,
 
+    /// Maximum number of fruit a single tree can bear at once.
+    pub fruit_max_per_tree: u32,
+
+    /// Number of fruit-spawn attempts during tree initialization (fast-forward).
+    /// Each attempt runs the same code path as heartbeat-driven spawning, so
+    /// not all attempts will succeed (chance roll + valid position required).
+    pub fruit_initial_attempts: u32,
+
     /// World dimensions in voxels (x, y, z).
     pub world_size: (u32, u32, u32),
 
@@ -169,6 +177,8 @@ impl Default for GameConfig {
             platform_mana_cost_per_voxel: 10.0,
             bridge_mana_cost_per_voxel: 15.0,
             fruit_production_base_rate: 0.5,
+            fruit_max_per_tree: 20,
+            fruit_initial_attempts: 12,
             world_size: (256, 128, 256),
             starting_mana: 100.0,
             starting_mana_capacity: 500.0,
@@ -230,6 +240,8 @@ mod tests {
             "platform_mana_cost_per_voxel": 8.0,
             "bridge_mana_cost_per_voxel": 12.0,
             "fruit_production_base_rate": 0.8,
+            "fruit_max_per_tree": 25,
+            "fruit_initial_attempts": 15,
             "world_size": [128, 64, 128],
             "starting_mana": 200.0,
             "starting_mana_capacity": 1000.0,

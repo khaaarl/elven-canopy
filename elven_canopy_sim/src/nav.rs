@@ -251,7 +251,7 @@ fn derive_edge_type(
                     EdgeType::TrunkCircumference
                 }
             }
-            Branch | Leaf | GrownPlatform | Bridge => EdgeType::BranchWalk,
+            Branch | Leaf | Fruit | GrownPlatform | Bridge => EdgeType::BranchWalk,
             GrownStairs | GrownWall => EdgeType::TrunkClimb,
             Air => EdgeType::BranchWalk, // shouldn't happen
         };

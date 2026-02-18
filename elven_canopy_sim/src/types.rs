@@ -254,6 +254,7 @@ pub enum VoxelType {
     Bridge,
     ForestFloor,
     Leaf,
+    Fruit,
 }
 
 impl VoxelType {
