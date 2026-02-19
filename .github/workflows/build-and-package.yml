@@ -13,11 +13,40 @@ name: Build & Package
 
 on:
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create a GitHub Release with the built artifacts"
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag (e.g. v0.1.0). Leave blank for date-based."
+        required: false
+        type: string
+        default: ""
 
 env:
   GODOT_VERSION: "4.6.1"
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Resolve version tag (runs in parallel with test)
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Determine version tag
+        id: tag
+        run: |
+          if [[ -z "${{ inputs.release_tag }}" ]]; then
+            echo "tag=v$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved tag: $(grep tag= "$GITHUB_OUTPUT" | tail -1)"
+
   # ---------------------------------------------------------------------------
   # Run sim tests before any builds
   # ---------------------------------------------------------------------------
@@ -34,7 +63,7 @@ jobs:
   # Linux (x86_64)
   # ---------------------------------------------------------------------------
   build-linux:
-    needs: test
+    needs: [test, prepare]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,16 +94,19 @@ jobs:
           godot --headless --path godot --export-release "Linux" \
             "${GITHUB_WORKSPACE}/build/linux/elven-canopy.x86_64"
 
+      - name: Create archive
+        run: tar czf "elven-canopy-${{ needs.prepare.outputs.version_tag }}-linux-x86_64.tar.gz" -C build/linux .
+
       - uses: actions/upload-artifact@v4
         with:
-          name: elven-canopy-linux
-          path: build/linux/
+          name: elven-canopy-${{ needs.prepare.outputs.version_tag }}-linux-x86_64
+          path: "elven-canopy-${{ needs.prepare.outputs.version_tag }}-linux-x86_64.tar.gz"
 
   # ---------------------------------------------------------------------------
   # Windows (x86_64)
   # ---------------------------------------------------------------------------
   build-windows:
-    needs: test
+    needs: [test, prepare]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,16 +140,20 @@ jobs:
           godot --headless --path godot --export-release "Windows" \
             "${GITHUB_WORKSPACE}/build/windows/elven-canopy.exe"
 
+      - name: Create archive
+        shell: bash
+        run: 7z a "elven-canopy-${{ needs.prepare.outputs.version_tag }}-windows-x86_64.zip" ./build/windows/*
+
       - uses: actions/upload-artifact@v4
         with:
-          name: elven-canopy-windows
-          path: build/windows/
+          name: elven-canopy-${{ needs.prepare.outputs.version_tag }}-windows-x86_64
+          path: "elven-canopy-${{ needs.prepare.outputs.version_tag }}-windows-x86_64.zip"
 
   # ---------------------------------------------------------------------------
   # macOS (universal: aarch64 + x86_64)
   # ---------------------------------------------------------------------------
   build-macos:
-    needs: test
+    needs: [test, prepare]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -161,16 +197,19 @@ jobs:
           godot --headless --path godot --export-release "macOS" \
             "${GITHUB_WORKSPACE}/build/macos/ElvenCanopy.app"
 
+      - name: Create archive
+        run: cd build/macos && zip -ry "../../elven-canopy-${{ needs.prepare.outputs.version_tag }}-macos-universal.zip" ElvenCanopy.app
+
       - uses: actions/upload-artifact@v4
         with:
-          name: elven-canopy-macos
-          path: build/macos/
+          name: elven-canopy-${{ needs.prepare.outputs.version_tag }}-macos-universal
+          path: "elven-canopy-${{ needs.prepare.outputs.version_tag }}-macos-universal.zip"
 
   # ---------------------------------------------------------------------------
   # Android (arm64-v8a) — debug/unsigned APK
   # ---------------------------------------------------------------------------
   build-android:
-    needs: test
+    needs: [test, prepare]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -235,16 +274,19 @@ jobs:
           godot --headless --path godot --export-debug "Android" \
             "${GITHUB_WORKSPACE}/build/android/elven-canopy.apk"
 
+      - name: Rename APK with version
+        run: cp build/android/elven-canopy.apk "elven-canopy-${{ needs.prepare.outputs.version_tag }}-android-arm64.apk"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: elven-canopy-android
-          path: build/android/
+          name: elven-canopy-${{ needs.prepare.outputs.version_tag }}-android-arm64
+          path: "elven-canopy-${{ needs.prepare.outputs.version_tag }}-android-arm64.apk"
 
   # ---------------------------------------------------------------------------
   # iOS (arm64) — unsigned Xcode project
   # ---------------------------------------------------------------------------
   build-ios:
-    needs: test
+    needs: [test, prepare]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -303,7 +345,42 @@ jobs:
           godot --headless --path godot --export-release "iOS" \
             "${GITHUB_WORKSPACE}/build/ios/elven-canopy.xcodeproj"
 
+      - name: Create archive
+        run: cd build && zip -r "../elven-canopy-${{ needs.prepare.outputs.version_tag }}-ios-arm64.zip" ios/
+
       - uses: actions/upload-artifact@v4
         with:
-          name: elven-canopy-ios
-          path: build/ios/
+          name: elven-canopy-${{ needs.prepare.outputs.version_tag }}-ios-arm64
+          path: "elven-canopy-${{ needs.prepare.outputs.version_tag }}-ios-arm64.zip"
+
+  # ---------------------------------------------------------------------------
+  # Create GitHub Release (optional)
+  # ---------------------------------------------------------------------------
+  release:
+    if: ${{ inputs.create_release }}
+    needs: [prepare, build-linux, build-windows, build-macos, build-android, build-ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh artifacts/
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ needs.prepare.outputs.version_tag }}"
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Elven Canopy $TAG" \
+            --generate-notes \
+            artifacts/elven-canopy-*
