@@ -243,15 +243,21 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-      - name: Build GDExtension library with cargo-ndk
+      - name: Build GDExtension library (Android arm64)
         run: |
           cargo install cargo-ndk
           cargo ndk -t arm64-v8a build --release -p elven_canopy_gdext
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
 
-      - name: Install library for Godot
+      - name: Build GDExtension library (host Linux x86_64)
+        run: cargo build --release -p elven_canopy_gdext
+
+      - name: Install libraries for Godot
         run: |
+          mkdir -p godot/target/release godot/target/debug
+          cp target/release/libelven_canopy_gdext.so godot/target/release/
+          cp target/release/libelven_canopy_gdext.so godot/target/debug/
           mkdir -p godot/target/aarch64-linux-android/release godot/target/aarch64-linux-android/debug
           cp target/aarch64-linux-android/release/libelven_canopy_gdext.so godot/target/aarch64-linux-android/release/
           cp target/aarch64-linux-android/release/libelven_canopy_gdext.so godot/target/aarch64-linux-android/debug/
@@ -309,8 +315,11 @@ jobs:
         with:
           key: ios
 
-      - name: Build GDExtension library
+      - name: Build GDExtension library (iOS arm64)
         run: cargo build --release -p elven_canopy_gdext --target aarch64-apple-ios
+
+      - name: Build GDExtension library (host macOS)
+        run: cargo build --release -p elven_canopy_gdext
 
       - name: Create .framework bundle
         run: |
@@ -338,8 +347,11 @@ jobs:
           </plist>
           PLIST
 
-      - name: Install library for Godot
+      - name: Install libraries for Godot
         run: |
+          mkdir -p godot/target/release godot/target/debug
+          cp target/release/libelven_canopy_gdext.dylib godot/target/release/
+          cp target/release/libelven_canopy_gdext.dylib godot/target/debug/
           mkdir -p godot/target/aarch64-apple-ios/release godot/target/aarch64-apple-ios/debug
           cp -R target/aarch64-apple-ios/release/elven_canopy_gdext.framework godot/target/aarch64-apple-ios/release/
           cp -R target/aarch64-apple-ios/release/elven_canopy_gdext.framework godot/target/aarch64-apple-ios/debug/
