@@ -1,0 +1,309 @@
+# CI workflow: Build the Rust GDExtension library and package the game via
+# Godot's export pipeline for Linux, Windows, macOS, Android, and iOS.
+#
+# Triggered manually via workflow_dispatch.
+#
+# Caveats:
+# - Android: Exports a debug/unsigned APK. For release, add ANDROID_KEYSTORE_* secrets.
+# - iOS: Exports an unsigned Xcode project. For App Store, add Apple signing secrets.
+# - macOS: Not code-signed or notarized. Users will need to bypass Gatekeeper.
+# - Mobile gdext: Experimental. If Android/iOS jobs fail, desktop builds still succeed.
+
+name: Build & Package
+
+on:
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: "4.6.1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Run sim tests before any builds
+  # ---------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run sim tests
+        run: cargo test -p elven_canopy_sim
+
+  # ---------------------------------------------------------------------------
+  # Linux (x86_64)
+  # ---------------------------------------------------------------------------
+  build-linux:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+
+      - name: Build GDExtension library
+        run: cargo build --release -p elven_canopy_gdext
+
+      - name: Create target symlink
+        run: ln -sf ../target godot/target
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+
+      - name: Import Godot project
+        run: godot --headless --path godot --import --quit 2>&1 || true
+
+      - name: Export game
+        run: |
+          mkdir -p build/linux
+          godot --headless --path godot --export-release "Linux" \
+            "${GITHUB_WORKSPACE}/build/linux/elven-canopy.x86_64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elven-canopy-linux
+          path: build/linux/
+
+  # ---------------------------------------------------------------------------
+  # Windows (x86_64)
+  # ---------------------------------------------------------------------------
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+
+      - name: Build GDExtension library
+        run: cargo build --release -p elven_canopy_gdext
+
+      - name: Create target junction
+        shell: cmd
+        run: mklink /J godot\target ..\target
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+
+      - name: Import Godot project
+        shell: bash
+        run: godot --headless --path godot --import --quit 2>&1 || true
+
+      - name: Export game
+        shell: bash
+        run: |
+          mkdir -p build/windows
+          godot --headless --path godot --export-release "Windows" \
+            "${GITHUB_WORKSPACE}/build/windows/elven-canopy.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elven-canopy-windows
+          path: build/windows/
+
+  # ---------------------------------------------------------------------------
+  # macOS (universal: aarch64 + x86_64)
+  # ---------------------------------------------------------------------------
+  build-macos:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos
+
+      - name: Build GDExtension library (aarch64)
+        run: cargo build --release -p elven_canopy_gdext --target aarch64-apple-darwin
+
+      - name: Build GDExtension library (x86_64)
+        run: cargo build --release -p elven_canopy_gdext --target x86_64-apple-darwin
+
+      - name: Create universal binary
+        run: |
+          mkdir -p target/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/libelven_canopy_gdext.dylib \
+            target/x86_64-apple-darwin/release/libelven_canopy_gdext.dylib \
+            -output target/release/libelven_canopy_gdext.dylib
+
+      - name: Create target symlink
+        run: ln -sf ../target godot/target
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+
+      - name: Import Godot project
+        run: godot --headless --path godot --import --quit 2>&1 || true
+
+      - name: Export game
+        run: |
+          mkdir -p build/macos
+          godot --headless --path godot --export-release "macOS" \
+            "${GITHUB_WORKSPACE}/build/macos/ElvenCanopy.app"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elven-canopy-macos
+          path: build/macos/
+
+  # ---------------------------------------------------------------------------
+  # Android (arm64-v8a) — debug/unsigned APK
+  # ---------------------------------------------------------------------------
+  build-android:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - name: Create debug keystore
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkey -v -keystore ~/.android/debug.keystore \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Build GDExtension library with cargo-ndk
+        run: |
+          cargo install cargo-ndk
+          cargo ndk -t arm64-v8a build --release -p elven_canopy_gdext
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+
+      - name: Create target symlink
+        run: ln -sf ../target godot/target
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+
+      - name: Configure Godot editor settings for Android
+        run: |
+          GODOT_CONFIG="${HOME}/.config/godot"
+          mkdir -p "${GODOT_CONFIG}"
+          cat > "${GODOT_CONFIG}/editor_settings-4.tres" << 'EOF'
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "/usr/local/lib/android/sdk"
+          export/android/debug_keystore = "/home/runner/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+
+      - name: Import Godot project
+        run: godot --headless --path godot --import --quit 2>&1 || true
+
+      - name: Export game
+        run: |
+          mkdir -p build/android
+          godot --headless --path godot --export-debug "Android" \
+            "${GITHUB_WORKSPACE}/build/android/elven-canopy.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elven-canopy-android
+          path: build/android/
+
+  # ---------------------------------------------------------------------------
+  # iOS (arm64) — unsigned Xcode project
+  # ---------------------------------------------------------------------------
+  build-ios:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+
+      - name: Build GDExtension library
+        run: cargo build --release -p elven_canopy_gdext --target aarch64-apple-ios
+
+      - name: Create .framework bundle
+        run: |
+          FW="target/aarch64-apple-ios/release/elven_canopy_gdext.framework"
+          mkdir -p "${FW}"
+          cp target/aarch64-apple-ios/release/libelven_canopy_gdext.dylib \
+            "${FW}/elven_canopy_gdext"
+          cat > "${FW}/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>elven_canopy_gdext</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.elvencanopy.gdext</string>
+            <key>CFBundleVersion</key>
+            <string>1.0</string>
+            <key>CFBundlePackageType</key>
+            <string>FMWK</string>
+            <key>MinimumOSVersion</key>
+            <string>12.0</string>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Create target symlink
+        run: ln -sf ../target godot/target
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+
+      - name: Import Godot project
+        run: godot --headless --path godot --import --quit 2>&1 || true
+
+      - name: Export game
+        run: |
+          mkdir -p build/ios
+          godot --headless --path godot --export-release "iOS" \
+            "${GITHUB_WORKSPACE}/build/ios/elven-canopy.xcodeproj"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elven-canopy-ios
+          path: build/ios/
