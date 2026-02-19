@@ -75,8 +75,11 @@ jobs:
       - name: Build GDExtension library
         run: cargo build --release -p elven_canopy_gdext
 
-      - name: Create target symlink
-        run: ln -sf ../target godot/target
+      - name: Install library for Godot
+        run: |
+          mkdir -p godot/target/release godot/target/debug
+          cp target/release/libelven_canopy_gdext.so godot/target/release/
+          cp target/release/libelven_canopy_gdext.so godot/target/debug/
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
@@ -118,9 +121,12 @@ jobs:
       - name: Build GDExtension library
         run: cargo build --release -p elven_canopy_gdext
 
-      - name: Create target junction
-        shell: cmd
-        run: mklink /J godot\target ..\target
+      - name: Install library for Godot
+        shell: bash
+        run: |
+          mkdir -p godot/target/release godot/target/debug
+          cp target/release/elven_canopy_gdext.dll godot/target/release/
+          cp target/release/elven_canopy_gdext.dll godot/target/debug/
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
@@ -178,8 +184,11 @@ jobs:
             target/x86_64-apple-darwin/release/libelven_canopy_gdext.dylib \
             -output target/release/libelven_canopy_gdext.dylib
 
-      - name: Create target symlink
-        run: ln -sf ../target godot/target
+      - name: Install library for Godot
+        run: |
+          mkdir -p godot/target/release godot/target/debug
+          cp target/release/libelven_canopy_gdext.dylib godot/target/release/
+          cp target/release/libelven_canopy_gdext.dylib godot/target/debug/
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
@@ -241,8 +250,11 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
 
-      - name: Create target symlink
-        run: ln -sf ../target godot/target
+      - name: Install library for Godot
+        run: |
+          mkdir -p godot/target/aarch64-linux-android/release godot/target/aarch64-linux-android/debug
+          cp target/aarch64-linux-android/release/libelven_canopy_gdext.so godot/target/aarch64-linux-android/release/
+          cp target/aarch64-linux-android/release/libelven_canopy_gdext.so godot/target/aarch64-linux-android/debug/
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
@@ -326,8 +338,11 @@ jobs:
           </plist>
           PLIST
 
-      - name: Create target symlink
-        run: ln -sf ../target godot/target
+      - name: Install library for Godot
+        run: |
+          mkdir -p godot/target/aarch64-apple-ios/release godot/target/aarch64-apple-ios/debug
+          cp -R target/aarch64-apple-ios/release/elven_canopy_gdext.framework godot/target/aarch64-apple-ios/release/
+          cp -R target/aarch64-apple-ios/release/elven_canopy_gdext.framework godot/target/aarch64-apple-ios/debug/
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
