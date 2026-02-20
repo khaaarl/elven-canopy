@@ -369,7 +369,7 @@ jobs:
       - name: Export game
         run: |
           mkdir -p build/ios
-          godot --headless --path godot --export-release "iOS" \
+          godot --headless --path godot --export-debug "iOS" \
             "${GITHUB_WORKSPACE}/build/ios/elven-canopy.xcodeproj"
 
       - name: Create archive
