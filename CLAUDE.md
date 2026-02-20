@@ -16,7 +16,7 @@ Elven Canopy is a Dwarf Fortress-inspired simulation/management game set in a fo
 - **Voxel world, graph pathfinding.** The world is a 3D voxel grid (sim truth), but pathfinding uses a nav graph of nodes and edges matching the constrained topology (platforms, bridges, stairs, trunk surfaces).
 - **Data-driven config.** All tunable parameters live in a `GameConfig` struct loaded from JSON. No magic numbers in the sim.
 
-For full details, see `elven_canopy_design_doc_v2.md`.
+For full details, see `docs/design_doc.md`.
 
 ## Project Structure
 
