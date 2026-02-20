@@ -302,10 +302,13 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # iOS (arm64) — unsigned Xcode project
+  # Requires real Apple Developer credentials (team ID, icons, signing) to
+  # fully succeed. Marked continue-on-error so it doesn't block releases.
   # ---------------------------------------------------------------------------
   build-ios:
     needs: [test, prepare]
     runs-on: macos-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -385,7 +388,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     if: ${{ inputs.create_release }}
-    needs: [prepare, build-linux, build-windows, build-macos, build-android, build-ios]
+    needs: [prepare, build-linux, build-windows, build-macos, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
