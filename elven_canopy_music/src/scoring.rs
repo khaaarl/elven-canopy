@@ -20,6 +20,7 @@
 // Consumed by sa.rs for simulated annealing refinement.
 
 use crate::grid::{Grid, Voice, interval};
+use crate::mode::ModeInstance;
 
 /// Weights for scoring layers. Tunable parameters.
 #[derive(Debug, Clone)]
@@ -46,6 +47,10 @@ pub struct ScoringWeights {
     // Layer 4: Global
     pub opening_consonance_reward: f64,
     pub closing_consonance_reward: f64,
+
+    // Layer 5: Modal compliance
+    pub out_of_mode_penalty: f64,
+    pub mode_degree_reward: f64,
 }
 
 impl Default for ScoringWeights {
@@ -73,25 +78,30 @@ impl Default for ScoringWeights {
             // Global
             opening_consonance_reward: 5.0,
             closing_consonance_reward: 8.0,
+
+            // Modal compliance
+            out_of_mode_penalty: -8.0,
+            mode_degree_reward: 1.0,
         }
     }
 }
 
 /// Full score for a grid.
-pub fn score_grid(grid: &Grid, weights: &ScoringWeights) -> f64 {
+pub fn score_grid(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) -> f64 {
     let mut total = 0.0;
 
     total += score_hard_rules(grid, weights);
     total += score_melodic(grid, weights);
     total += score_harmonic(grid, weights);
     total += score_global(grid, weights);
+    total += score_modal(grid, weights, mode);
 
     total
 }
 
 /// Score contribution from a local window around a specific beat.
 /// Used for incremental scoring after a mutation.
-pub fn score_local(grid: &Grid, weights: &ScoringWeights, beat: usize) -> f64 {
+pub fn score_local(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance, beat: usize) -> f64 {
     let window_start = beat.saturating_sub(2);
     let window_end = (beat + 3).min(grid.num_beats);
 
@@ -100,6 +110,7 @@ pub fn score_local(grid: &Grid, weights: &ScoringWeights, beat: usize) -> f64 {
     for b in window_start..window_end {
         total += score_beat_hard_rules(grid, weights, b);
         total += score_beat_harmonic(grid, weights, b);
+        total += score_beat_modal(grid, weights, mode, b);
     }
 
     // Melodic scoring for voices that have notes in the window
@@ -375,14 +386,46 @@ fn score_global(grid: &Grid, weights: &ScoringWeights) -> f64 {
     score
 }
 
+// ── Layer 5: Modal compliance ──
+
+fn score_modal(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) -> f64 {
+    let mut score = 0.0;
+    for beat in 0..grid.num_beats {
+        score += score_beat_modal(grid, weights, mode, beat);
+    }
+    score
+}
+
+fn score_beat_modal(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance, beat: usize) -> f64 {
+    let mut score = 0.0;
+
+    for voice in Voice::ALL {
+        if let Some(pitch) = grid.sounding_pitch(voice, beat) {
+            if mode.is_in_mode(pitch) {
+                // Reward structurally important degrees more
+                score += mode.pitch_fitness(pitch) * weights.mode_degree_reward;
+            } else {
+                score += weights.out_of_mode_penalty;
+            }
+        }
+    }
+
+    score
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn default_mode() -> ModeInstance {
+        ModeInstance::d_dorian()
+    }
 
     #[test]
     fn test_parallel_fifths_penalized() {
         let mut grid = Grid::new(2);
         let weights = ScoringWeights::default();
+        let mode = default_mode();
 
         // Beat 0: Soprano C4 (60), Alto F3 (53) — perfect 5th
         // Beat 1: Soprano D4 (62), Alto G3 (55) — perfect 5th
@@ -392,7 +435,7 @@ mod tests {
         grid.set_note(Voice::Alto, 0, 53);
         grid.set_note(Voice::Alto, 1, 55);
 
-        let score = score_grid(&grid, &weights);
+        let score = score_grid(&grid, &weights, &mode);
         // The parallel fifths penalty (-50) should dominate
         assert!(score < 0.0, "Parallel fifths should produce negative score, got {}", score);
     }

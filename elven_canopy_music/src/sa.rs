@@ -13,6 +13,7 @@
 
 use crate::grid::{Grid, Voice};
 use crate::markov::MarkovModels;
+use crate::mode::ModeInstance;
 use crate::scoring::{ScoringWeights, score_grid, score_local};
 use rand::Rng;
 
@@ -66,6 +67,7 @@ pub fn anneal(
     models: &MarkovModels,
     structural_cells: &[(usize, usize)],
     weights: &ScoringWeights,
+    mode: &ModeInstance,
     config: &SAConfig,
     rng: &mut impl Rng,
 ) -> SAResult {
@@ -89,7 +91,7 @@ pub fn anneal(
 
     if mutable_cells.is_empty() {
         return SAResult {
-            final_score: score_grid(grid, weights),
+            final_score: score_grid(grid, weights, mode),
             iterations: 0,
             accepted: 0,
             reheats: 0,
@@ -97,7 +99,7 @@ pub fn anneal(
     }
 
     let mut temp = config.initial_temp;
-    let mut _current_score = score_grid(grid, weights);
+    let mut _current_score = score_grid(grid, weights, mode);
     let mut iterations = 0;
     let mut accepted = 0;
     let mut reheats = 0;
@@ -113,7 +115,7 @@ pub fn anneal(
             let (range_low, range_high) = voice.range();
 
             // Score the local region before mutation
-            let old_local = score_local(grid, weights, beat);
+            let old_local = score_local(grid, weights, mode, beat);
 
             // Propose new pitch using Markov model
             let mut context = Vec::new();
@@ -147,8 +149,9 @@ pub fn anneal(
 
             let rng_val: f64 = rng.random();
             let proposed_interval = models.melodic.sample(&context, rng_val);
-            let new_pitch = (pitch_before as i16 + proposed_interval as i16)
+            let raw_pitch = (pitch_before as i16 + proposed_interval as i16)
                 .clamp(range_low as i16, range_high as i16) as u8;
+            let new_pitch = mode.snap_to_mode(raw_pitch);
 
             if new_pitch == old_pitch {
                 iterations += 1;
@@ -168,7 +171,7 @@ pub fn anneal(
             }
 
             // Score after mutation
-            let new_local = score_local(grid, weights, beat);
+            let new_local = score_local(grid, weights, mode, beat);
             let delta = new_local - old_local;
 
             // Metropolis criterion
@@ -208,7 +211,7 @@ pub fn anneal(
     }
 
     SAResult {
-        final_score: score_grid(grid, weights),
+        final_score: score_grid(grid, weights, mode),
         iterations,
         accepted,
         reheats,
@@ -227,14 +230,15 @@ mod tests {
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let weights = ScoringWeights::default();
+        let mode = ModeInstance::d_dorian();
         let mut rng = rand::rng();
 
         let plan = generate_structure(&library, 2, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
         let structural = apply_structure(&mut grid, &plan);
-        fill_draft(&mut grid, &models, &structural, &mut rng);
+        fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
 
-        let score_before = score_grid(&grid, &weights);
+        let _score_before = score_grid(&grid, &weights, &mode);
 
         let config = SAConfig {
             initial_temp: 5.0,
@@ -245,10 +249,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = anneal(&mut grid, &models, &structural, &weights, &config, &mut rng);
+        let result = anneal(&mut grid, &models, &structural, &weights, &mode, &config, &mut rng);
 
-        // SA should generally improve or maintain score
-        // (Not guaranteed with limited iterations, but should usually improve)
         assert!(result.iterations > 0, "SA should have run some iterations");
         assert!(result.accepted > 0, "SA should have accepted some mutations");
     }

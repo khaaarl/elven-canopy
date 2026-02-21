@@ -17,6 +17,7 @@
 // The generator is deterministic given a seed, supporting reproducible output.
 
 pub mod grid;
+pub mod mode;
 pub mod markov;
 pub mod structure;
 pub mod draft;
