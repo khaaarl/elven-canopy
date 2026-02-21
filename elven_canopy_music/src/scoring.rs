@@ -61,6 +61,10 @@ pub struct ScoringWeights {
     // Hidden 5ths/octaves (lighter than parallel)
     pub hidden_fifths: f64,
     pub hidden_octaves: f64,
+
+    // Contour: reward arch shapes, penalize repeated climax
+    pub climax_repeat_penalty: f64,
+    pub arch_contour_reward: f64,
 }
 
 impl Default for ScoringWeights {
@@ -102,6 +106,10 @@ impl Default for ScoringWeights {
             // Hidden 5ths/octaves (lighter than parallel motion)
             hidden_fifths: -15.0,
             hidden_octaves: -15.0,
+
+            // Contour
+            climax_repeat_penalty: -3.0,
+            arch_contour_reward: 5.0,
         }
     }
 }
@@ -499,9 +507,11 @@ fn score_global(grid: &Grid, weights: &ScoringWeights) -> f64 {
     // Cadence detection
     score += score_cadences(grid, weights);
 
-    // Rhythmic independence: penalize when all voices attack simultaneously
-    // for extended passages (homorhythmic blocks are un-Palestrinian except at cadences)
+    // Rhythmic independence
     score += score_rhythmic_independence(grid, weights);
+
+    // Melodic contour: arch shapes and climax uniqueness
+    score += score_contour(grid, weights);
 
     score
 }
@@ -561,6 +571,53 @@ fn score_cadences(grid: &Grid, _weights: &ScoringWeights) -> f64 {
             let iv = interval::semitones(bn, sn);
             if interval::is_perfect_consonance(iv) {
                 score += 3.0;
+            }
+        }
+    }
+
+    score
+}
+
+/// Score melodic contour for each voice.
+/// Rewards arch-shaped contours (rise to climax, then descent) and penalizes
+/// the highest note occurring too many times (climax should be special).
+fn score_contour(grid: &Grid, weights: &ScoringWeights) -> f64 {
+    let mut score = 0.0;
+
+    for voice in Voice::ALL {
+        // Collect all attack pitches with their beat positions
+        let mut notes: Vec<(usize, u8)> = Vec::new();
+        for beat in 0..grid.num_beats {
+            let cell = grid.cell(voice, beat);
+            if cell.attack && !cell.is_rest {
+                notes.push((beat, cell.pitch));
+            }
+        }
+
+        if notes.len() < 4 {
+            continue;
+        }
+
+        // Climax uniqueness: the highest pitch should appear rarely
+        let max_pitch = notes.iter().map(|&(_, p)| p).max().unwrap();
+        let climax_count = notes.iter().filter(|&&(_, p)| p == max_pitch).count();
+        if climax_count > 3 {
+            score += weights.climax_repeat_penalty * (climax_count as f64 - 3.0);
+        }
+
+        // Arch contour: the climax should be roughly in the middle 40-80% of the piece.
+        // Find where the climax occurs as a fraction of the total.
+        let first_climax_beat = notes.iter()
+            .find(|&&(_, p)| p == max_pitch)
+            .map(|&(b, _)| b)
+            .unwrap();
+        let total_span = notes.last().unwrap().0 - notes.first().unwrap().0;
+        if total_span > 0 {
+            let climax_pos = (first_climax_beat - notes.first().unwrap().0) as f64
+                / total_span as f64;
+            // Ideal: climax between 30% and 70% through the phrase
+            if climax_pos > 0.3 && climax_pos < 0.7 {
+                score += weights.arch_contour_reward;
             }
         }
     }

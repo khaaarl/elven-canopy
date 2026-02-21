@@ -9,7 +9,7 @@
 //
 // Modes: dorian, phrygian, lydian, mixolydian, aeolian, ionian
 
-use elven_canopy_music::draft::fill_draft;
+use elven_canopy_music::draft::{fill_draft, generate_final_cadence};
 use elven_canopy_music::grid::Grid;
 use elven_canopy_music::markov::{MarkovModels, MotifLibrary};
 use elven_canopy_music::midi::write_midi;
@@ -102,6 +102,12 @@ fn main() {
     println!("  {} structural cells placed.", structural.len());
 
     fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
+
+    // Generate a proper final cadence
+    let mut structural = structural;
+    generate_final_cadence(&mut grid, &mode, &mut structural);
+    println!("  {} total structural cells (including final cadence).", structural.len());
+
     let draft_score = score_grid(&grid, &weights, &mode);
     println!("  Draft score: {:.1}", draft_score);
 

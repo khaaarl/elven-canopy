@@ -224,11 +224,156 @@ fn pitch_score(
     score
 }
 
+/// Generate a proper final cadence in the last beats of the piece.
+///
+/// Places a cadential formula that converges all voices to a perfect
+/// consonance on the mode's final. This is called after fill_draft
+/// and marks the cadence cells as structural so SA doesn't disturb them.
+///
+/// The cadence occupies the last 6 eighth-note beats:
+///   - Beat -6: penultimate harmony (dominant-function chord)
+///   - Beat -4: suspension/resolution (soprano step, bass 5th→final)
+///   - Beat -2: final chord (all voices on final/5th/octave)
+///   - Beats -1,0: held final
+pub fn generate_final_cadence(
+    grid: &mut Grid,
+    mode: &ModeInstance,
+    structural_cells: &mut Vec<(usize, usize)>,
+) {
+    let n = grid.num_beats;
+    if n < 8 {
+        return; // Too short for a cadence
+    }
+
+    // Determine target pitches for the final chord
+    let final_pc = mode.final_pc;
+
+    // Find the final/5th pitches in each voice's range
+    let final_pitches: [u8; 4] = Voice::ALL.map(|v| {
+        let (low, high) = v.range();
+        let mid = (low + high) / 2;
+        // Find the nearest pitch with the final's pitch class
+        nearest_pc_in_range(final_pc, mid, low, high)
+    });
+
+    // For the penultimate beat, use the 5th above the final (dominant function)
+    // This gives a V→I cadential motion
+    let fifth_pc = (final_pc + 7) % 12;
+
+    // Bass: 5th → final (the strongest cadential bass motion)
+    let bass_range = Voice::Bass.range();
+    let bass_fifth = nearest_pc_in_range(fifth_pc, final_pitches[3], bass_range.0, bass_range.1);
+    let bass_final = final_pitches[3];
+
+    // Soprano: step above → final (resolving down)
+    let sop_final = final_pitches[0];
+    // One scale degree above the final
+    let sop_penult = mode.snap_to_mode(sop_final + 2);
+
+    // Alto: stays on or near the 5th/3rd of final chord
+    let alto_range = Voice::Alto.range();
+    let third_pc = (final_pc + mode.mode.intervals()[2]) % 12;
+    let alto_final = nearest_pc_in_range(fifth_pc, final_pitches[1], alto_range.0, alto_range.1);
+    let alto_penult = nearest_pc_in_range(third_pc, alto_final, alto_range.0, alto_range.1);
+
+    // Tenor: complementary motion
+    let tenor_range = Voice::Tenor.range();
+    let tenor_final = nearest_pc_in_range(final_pc, final_pitches[2], tenor_range.0, tenor_range.1);
+    let tenor_penult = nearest_pc_in_range(fifth_pc, tenor_final, tenor_range.0, tenor_range.1);
+
+    // Place the cadence
+    let cadence_start = n.saturating_sub(6);
+
+    // Penultimate chord (beat -6 to -4)
+    let penult_beat = cadence_start;
+    place_cadence_note(grid, Voice::Soprano, penult_beat, sop_penult, 2, structural_cells);
+    place_cadence_note(grid, Voice::Alto, penult_beat, alto_penult, 2, structural_cells);
+    place_cadence_note(grid, Voice::Tenor, penult_beat, tenor_penult, 2, structural_cells);
+    place_cadence_note(grid, Voice::Bass, penult_beat, bass_fifth, 2, structural_cells);
+
+    // Resolution to final chord (beat -4 to end)
+    let final_beat = cadence_start + 2;
+    let hold = n - final_beat - 1;
+    place_cadence_note(grid, Voice::Soprano, final_beat, sop_final, hold, structural_cells);
+    place_cadence_note(grid, Voice::Alto, final_beat, alto_final, hold, structural_cells);
+    place_cadence_note(grid, Voice::Tenor, final_beat, tenor_final, hold, structural_cells);
+    place_cadence_note(grid, Voice::Bass, final_beat, bass_final, hold, structural_cells);
+}
+
+/// Place a note with hold duration and mark all cells as structural.
+fn place_cadence_note(
+    grid: &mut Grid,
+    voice: Voice,
+    beat: usize,
+    pitch: u8,
+    hold_beats: usize,
+    structural: &mut Vec<(usize, usize)>,
+) {
+    if beat >= grid.num_beats {
+        return;
+    }
+    grid.set_note(voice, beat, pitch);
+    structural.push((voice.index(), beat));
+
+    for h in 1..=hold_beats {
+        if beat + h < grid.num_beats {
+            grid.extend_note(voice, beat + h);
+            structural.push((voice.index(), beat + h));
+        }
+    }
+}
+
+/// Find the nearest MIDI pitch with a given pitch class within a range.
+fn nearest_pc_in_range(target_pc: u8, near: u8, low: u8, high: u8) -> u8 {
+    let mut best = near;
+    let mut best_dist = 128u8;
+
+    for p in low..=high {
+        if p % 12 == target_pc {
+            let dist = if p >= near { p - near } else { near - p };
+            if dist < best_dist {
+                best = p;
+                best_dist = dist;
+            }
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::markov::{MarkovModels, MotifLibrary};
     use crate::structure::{generate_structure, apply_structure};
+
+    #[test]
+    fn test_final_cadence_ends_on_mode_final() {
+        let models = MarkovModels::default_models();
+        let library = MotifLibrary::default_library();
+        let mode = ModeInstance::d_dorian();
+        let mut rng = rand::rng();
+
+        let plan = generate_structure(&library, 2, &mut rng);
+        let mut grid = Grid::new(plan.total_beats);
+        let mut structural = apply_structure(&mut grid, &plan);
+        fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
+        generate_final_cadence(&mut grid, &mode, &mut structural);
+
+        // The last sounding beat should have all voices on the mode final or its 5th
+        let last_beat = grid.num_beats - 1;
+        for voice in Voice::ALL {
+            if let Some(pitch) = grid.sounding_pitch(voice, last_beat) {
+                let pc = pitch % 12;
+                let final_pc = mode.final_pc;
+                let fifth_pc = (final_pc + 7) % 12;
+                assert!(
+                    pc == final_pc || pc == fifth_pc,
+                    "Voice {:?} on final beat has pitch {} (pc {}), expected final {} or 5th {}",
+                    voice, pitch, pc, final_pc, fifth_pc
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_fill_draft_produces_notes() {
