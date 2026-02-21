@@ -69,6 +69,7 @@
       "Bash(ty:*)",
       "Bash(wc:*)",
       "Bash(which:*)",
+      "WebFetch",
       "WebSearch"
     ],
     "deny": [
