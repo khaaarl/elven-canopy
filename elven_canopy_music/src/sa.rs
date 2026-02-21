@@ -106,94 +106,30 @@ pub fn anneal(
 
     while temp > config.final_temp {
         for _ in 0..config.mutations_per_step {
-            // Pick a random mutable cell
-            let idx = rng.random_range(0..mutable_cells.len());
-            let (voice, beat) = mutable_cells[idx];
+            // 20% duration mutations, 80% pitch mutations
+            let do_duration_mutation = rng.random::<f64>() < 0.2;
 
-            // Get current pitch
-            let old_pitch = grid.cell(voice, beat).pitch;
-            let (range_low, range_high) = voice.range();
-
-            // Score the local region before mutation
-            let old_local = score_local(grid, weights, mode, beat);
-
-            // Propose new pitch using Markov model
-            let mut context = Vec::new();
-            let mut prev_pitch = None;
-            for b in (0..beat).rev() {
-                let cell = grid.cell(voice, b);
-                if cell.attack && !cell.is_rest {
-                    if let Some(pp) = prev_pitch {
-                        let iv = cell.pitch as i8 - pp as i8;
-                        context.insert(0, iv);
-                        if context.len() >= 3 {
-                            break;
-                        }
-                    }
-                    prev_pitch = Some(cell.pitch);
+            if do_duration_mutation {
+                // Duration mutation: extend or shorten a note
+                let idx = rng.random_range(0..mutable_cells.len());
+                let (voice, beat) = mutable_cells[idx];
+                let delta = try_duration_mutation(
+                    grid, weights, mode, voice, beat, &structural_set, temp, rng,
+                );
+                if let Some(d) = delta {
+                    _current_score += d;
+                    accepted += 1;
                 }
-            }
-
-            // Also find the pitch just before this beat for interval calculation
-            let pitch_before = {
-                let mut p = None;
-                for b in (0..beat).rev() {
-                    let cell = grid.cell(voice, b);
-                    if !cell.is_rest {
-                        p = Some(cell.pitch);
-                        break;
-                    }
-                }
-                p.unwrap_or(old_pitch)
-            };
-
-            let rng_val: f64 = rng.random();
-            let proposed_interval = models.melodic.sample(&context, rng_val);
-            let raw_pitch = (pitch_before as i16 + proposed_interval as i16)
-                .clamp(range_low as i16, range_high as i16) as u8;
-            let new_pitch = mode.snap_to_mode(raw_pitch);
-
-            if new_pitch == old_pitch {
-                iterations += 1;
-                continue;
-            }
-
-            // Apply mutation
-            grid.cell_mut(voice, beat).pitch = new_pitch;
-
-            // Also update continuation cells
-            for b in (beat + 1)..grid.num_beats {
-                let cell = grid.cell(voice, b);
-                if cell.is_rest || cell.attack {
-                    break;
-                }
-                grid.cell_mut(voice, b).pitch = new_pitch;
-            }
-
-            // Score after mutation
-            let new_local = score_local(grid, weights, mode, beat);
-            let delta = new_local - old_local;
-
-            // Metropolis criterion
-            let accept = if delta >= 0.0 {
-                true
             } else {
-                let probability = (delta / temp).exp();
-                rng.random::<f64>() < probability
-            };
-
-            if accept {
-                _current_score += delta;
-                accepted += 1;
-            } else {
-                // Revert
-                grid.cell_mut(voice, beat).pitch = old_pitch;
-                for b in (beat + 1)..grid.num_beats {
-                    let cell = grid.cell(voice, b);
-                    if cell.is_rest || cell.attack {
-                        break;
-                    }
-                    grid.cell_mut(voice, b).pitch = old_pitch;
+                // Pitch mutation
+                let idx = rng.random_range(0..mutable_cells.len());
+                let (voice, beat) = mutable_cells[idx];
+                let delta = try_pitch_mutation(
+                    grid, models, weights, mode, voice, beat, temp, rng,
+                );
+                if let Some(d) = delta {
+                    _current_score += d;
+                    accepted += 1;
                 }
             }
 
@@ -215,6 +151,201 @@ pub fn anneal(
         iterations,
         accepted,
         reheats,
+    }
+}
+
+/// Try a pitch mutation at (voice, beat). Returns Some(delta) if accepted, None if rejected.
+fn try_pitch_mutation(
+    grid: &mut Grid,
+    models: &MarkovModels,
+    weights: &ScoringWeights,
+    mode: &ModeInstance,
+    voice: Voice,
+    beat: usize,
+    temp: f64,
+    rng: &mut impl Rng,
+) -> Option<f64> {
+    let old_pitch = grid.cell(voice, beat).pitch;
+    let (range_low, range_high) = voice.range();
+
+    let old_local = score_local(grid, weights, mode, beat);
+
+    // Build Markov context from preceding notes
+    let mut context = Vec::new();
+    let mut prev_pitch = None;
+    for b in (0..beat).rev() {
+        let cell = grid.cell(voice, b);
+        if cell.attack && !cell.is_rest {
+            if let Some(pp) = prev_pitch {
+                let iv = cell.pitch as i8 - pp as i8;
+                context.insert(0, iv);
+                if context.len() >= 3 {
+                    break;
+                }
+            }
+            prev_pitch = Some(cell.pitch);
+        }
+    }
+
+    let pitch_before = {
+        let mut p = None;
+        for b in (0..beat).rev() {
+            let cell = grid.cell(voice, b);
+            if !cell.is_rest {
+                p = Some(cell.pitch);
+                break;
+            }
+        }
+        p.unwrap_or(old_pitch)
+    };
+
+    let rng_val: f64 = rng.random();
+    let proposed_interval = models.melodic.sample(&context, rng_val);
+    let raw_pitch = (pitch_before as i16 + proposed_interval as i16)
+        .clamp(range_low as i16, range_high as i16) as u8;
+    let new_pitch = mode.snap_to_mode(raw_pitch);
+
+    if new_pitch == old_pitch {
+        return None;
+    }
+
+    // Apply
+    grid.cell_mut(voice, beat).pitch = new_pitch;
+    for b in (beat + 1)..grid.num_beats {
+        let cell = grid.cell(voice, b);
+        if cell.is_rest || cell.attack {
+            break;
+        }
+        grid.cell_mut(voice, b).pitch = new_pitch;
+    }
+
+    let new_local = score_local(grid, weights, mode, beat);
+    let delta = new_local - old_local;
+
+    if metropolis_accept(delta, temp, rng) {
+        Some(delta)
+    } else {
+        // Revert
+        grid.cell_mut(voice, beat).pitch = old_pitch;
+        for b in (beat + 1)..grid.num_beats {
+            let cell = grid.cell(voice, b);
+            if cell.is_rest || cell.attack {
+                break;
+            }
+            grid.cell_mut(voice, b).pitch = old_pitch;
+        }
+        None
+    }
+}
+
+/// Try a duration mutation at (voice, beat). Extends or shortens the note.
+/// Returns Some(delta) if accepted, None if rejected.
+fn try_duration_mutation(
+    grid: &mut Grid,
+    weights: &ScoringWeights,
+    mode: &ModeInstance,
+    voice: Voice,
+    beat: usize,
+    structural: &std::collections::HashSet<(usize, usize)>,
+    temp: f64,
+    rng: &mut impl Rng,
+) -> Option<f64> {
+    let cell = grid.cell(voice, beat);
+    if cell.is_rest || !cell.attack {
+        return None;
+    }
+    let pitch = cell.pitch;
+
+    // Find the end of this note (how many continuation cells follow)
+    let mut note_end = beat;
+    for b in (beat + 1)..grid.num_beats {
+        let c = grid.cell(voice, b);
+        if c.is_rest || c.attack {
+            break;
+        }
+        note_end = b;
+    }
+    let current_dur = note_end - beat + 1;
+
+    // Decide: extend (+1) or shorten (-1)
+    let extend = rng.random_bool(0.5);
+
+    if extend {
+        // Try to extend by 1 beat
+        let target = note_end + 1;
+        if target >= grid.num_beats {
+            return None;
+        }
+        if structural.contains(&(voice.index(), target)) {
+            return None;
+        }
+        let target_cell = grid.cell(voice, target);
+        if !target_cell.is_rest {
+            return None; // Can't extend into another note
+        }
+
+        // Score before
+        let old_local = score_local(grid, weights, mode, beat)
+            + score_local(grid, weights, mode, target);
+
+        // Apply extension
+        grid.cell_mut(voice, target).pitch = pitch;
+        grid.cell_mut(voice, target).is_rest = false;
+        grid.cell_mut(voice, target).attack = false;
+
+        let new_local = score_local(grid, weights, mode, beat)
+            + score_local(grid, weights, mode, target);
+        let delta = new_local - old_local;
+
+        if metropolis_accept(delta, temp, rng) {
+            Some(delta)
+        } else {
+            // Revert
+            grid.cell_mut(voice, target).pitch = 0;
+            grid.cell_mut(voice, target).is_rest = true;
+            grid.cell_mut(voice, target).attack = false;
+            None
+        }
+    } else {
+        // Try to shorten by 1 beat (remove the last continuation)
+        if current_dur <= 1 {
+            return None; // Can't shorten a single-beat note
+        }
+        if structural.contains(&(voice.index(), note_end)) {
+            return None;
+        }
+
+        let old_local = score_local(grid, weights, mode, beat)
+            + score_local(grid, weights, mode, note_end);
+
+        // Remove the last beat of the note (make it a rest)
+        grid.cell_mut(voice, note_end).pitch = 0;
+        grid.cell_mut(voice, note_end).is_rest = true;
+        grid.cell_mut(voice, note_end).attack = false;
+
+        let new_local = score_local(grid, weights, mode, beat)
+            + score_local(grid, weights, mode, note_end);
+        let delta = new_local - old_local;
+
+        if metropolis_accept(delta, temp, rng) {
+            Some(delta)
+        } else {
+            // Revert
+            grid.cell_mut(voice, note_end).pitch = pitch;
+            grid.cell_mut(voice, note_end).is_rest = false;
+            grid.cell_mut(voice, note_end).attack = false;
+            None
+        }
+    }
+}
+
+/// Metropolis acceptance criterion.
+fn metropolis_accept(delta: f64, temp: f64, rng: &mut impl Rng) -> bool {
+    if delta >= 0.0 {
+        true
+    } else {
+        let probability = (delta / temp).exp();
+        rng.random::<f64>() < probability
     }
 }
 

@@ -51,6 +51,16 @@ pub struct ScoringWeights {
     // Layer 5: Modal compliance
     pub out_of_mode_penalty: f64,
     pub mode_degree_reward: f64,
+
+    // Suspension reward (a properly prepared suspension is idiomatic, reward it)
+    pub suspension_reward: f64,
+
+    // Rhythmic independence
+    pub homorhythm_penalty: f64,
+
+    // Hidden 5ths/octaves (lighter than parallel)
+    pub hidden_fifths: f64,
+    pub hidden_octaves: f64,
 }
 
 impl Default for ScoringWeights {
@@ -82,6 +92,16 @@ impl Default for ScoringWeights {
             // Modal compliance
             out_of_mode_penalty: -8.0,
             mode_degree_reward: 1.0,
+
+            // Suspensions
+            suspension_reward: 5.0,
+
+            // Rhythmic independence
+            homorhythm_penalty: -4.0,
+
+            // Hidden 5ths/octaves (lighter than parallel motion)
+            hidden_fifths: -15.0,
+            hidden_octaves: -15.0,
         }
     }
 }
@@ -152,11 +172,16 @@ fn score_beat_hard_rules(grid: &Grid, weights: &ScoringWeights, beat: usize) -> 
                     score += weights.voice_crossing;
                 }
 
-                // Strong-beat dissonance
+                // Strong-beat dissonance — but allow properly prepared suspensions.
+                // A suspension is: the dissonant note was held (not attacked) from
+                // a consonance on the previous beat, and resolves by step down.
                 if is_strong && interval::is_dissonant(iv) {
-                    // Check if it's a properly prepared suspension
-                    // (simplified: just penalize for now)
-                    score += weights.strong_beat_dissonance;
+                    if is_prepared_suspension(grid, vi, vj, beat) {
+                        // Reward prepared suspensions — they're idiomatic Palestrina
+                        score += weights.suspension_reward;
+                    } else {
+                        score += weights.strong_beat_dissonance;
+                    }
                 }
 
                 // Parallel 5ths/octaves (need previous beat)
@@ -173,23 +198,33 @@ fn score_beat_hard_rules(grid: &Grid, weights: &ScoringWeights, beat: usize) -> 
                         let j_attacks = grid.cell(vj, beat).attack;
 
                         if i_attacks || j_attacks {
-                            // Parallel motion: both voices move in same direction
+                            // Both voices move in same direction
                             let motion_i = pi as i16 - ppi as i16;
                             let motion_j = pj as i16 - ppj as i16;
-                            let parallel = (motion_i > 0 && motion_j > 0)
+                            let same_direction = (motion_i > 0 && motion_j > 0)
                                 || (motion_i < 0 && motion_j < 0);
 
-                            if parallel {
+                            if same_direction {
                                 let curr_ic = (curr_iv.unsigned_abs()) % 12;
                                 let prev_ic = (prev_iv.unsigned_abs()) % 12;
 
-                                // Parallel 5ths
+                                // Parallel 5ths: 5th → 5th by parallel motion
                                 if curr_ic == 7 && prev_ic == 7 {
                                     score += weights.parallel_fifths;
                                 }
-                                // Parallel octaves/unisons
+                                // Parallel octaves/unisons: 8ve → 8ve by parallel motion
                                 if curr_ic == 0 && prev_ic == 0 {
                                     score += weights.parallel_octaves;
+                                }
+
+                                // Hidden (direct) 5ths/8ves: arriving at a perfect
+                                // consonance by similar motion from a non-perfect one.
+                                // Lighter penalty than parallel.
+                                if curr_ic == 7 && prev_ic != 7 {
+                                    score += weights.hidden_fifths;
+                                }
+                                if curr_ic == 0 && prev_ic != 0 {
+                                    score += weights.hidden_octaves;
                                 }
                             }
                         }
@@ -208,6 +243,76 @@ fn score_beat_hard_rules(grid: &Grid, weights: &ScoringWeights, beat: usize) -> 
     }
 
     score
+}
+
+/// Check if a dissonance between two voices at a beat is a properly prepared suspension.
+///
+/// A prepared suspension has three conditions:
+/// 1. Preparation: the suspended note was consonant with the other voice on the previous beat
+/// 2. Suspension: the note is HELD (not attacked) into the current beat, forming the dissonance
+/// 3. Resolution: the suspended voice resolves by step downward on the next beat
+///
+/// Either voice can be the suspended one; we check both directions.
+fn is_prepared_suspension(grid: &Grid, vi: Voice, vj: Voice, beat: usize) -> bool {
+    // Need previous beat for preparation and next beat for resolution
+    if beat == 0 || beat + 1 >= grid.num_beats {
+        return false;
+    }
+
+    // Check if vi is the suspended voice
+    if check_suspension_voice(grid, vi, vj, beat) {
+        return true;
+    }
+    // Check if vj is the suspended voice
+    if check_suspension_voice(grid, vj, vi, beat) {
+        return true;
+    }
+
+    false
+}
+
+/// Check if `suspended` voice is held into a dissonance against `moving` voice at `beat`.
+fn check_suspension_voice(grid: &Grid, suspended: Voice, moving: Voice, beat: usize) -> bool {
+    let cell_sus = grid.cell(suspended, beat);
+    let cell_mov = grid.cell(moving, beat);
+
+    // The suspended voice must NOT attack on this beat (it's held from before)
+    if cell_sus.attack || cell_sus.is_rest {
+        return false;
+    }
+    // The moving voice must have attacked (it moved against the held note)
+    if !cell_mov.attack || cell_mov.is_rest {
+        return false;
+    }
+
+    // Preparation: on the previous beat, both voices were sounding and consonant
+    let prev_sus = grid.sounding_pitch(suspended, beat - 1);
+    let prev_mov = grid.sounding_pitch(moving, beat - 1);
+    if let (Some(ps), Some(pm)) = (prev_sus, prev_mov) {
+        let prev_iv = interval::semitones(pm, ps);
+        if !interval::is_consonant(prev_iv) {
+            return false; // Preparation wasn't consonant
+        }
+    } else {
+        return false; // One voice was resting
+    }
+
+    // Resolution: the suspended voice steps down on the next beat
+    let next_sus = grid.sounding_pitch(suspended, beat + 1);
+    let curr_sus = cell_sus.pitch;
+    if let Some(ns) = next_sus {
+        let resolution = curr_sus as i16 - ns as i16;
+        // Should resolve down by 1-2 semitones
+        if resolution >= 1 && resolution <= 2 {
+            // The next beat should be an attack (the suspension resolves)
+            let next_cell = grid.cell(suspended, beat + 1);
+            if next_cell.attack {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 // ── Layer 2: Melodic preferences ──
@@ -229,6 +334,7 @@ fn score_melodic_window(
 ) -> f64 {
     let mut score = 0.0;
     let mut prev_pitch: Option<u8> = None;
+    let mut prev_interval_abs: u16 = 0; // absolute size of previous interval
     let mut prev_direction: Option<i8> = None; // 1=up, -1=down, 0=same
     let mut direction_run = 0i32;
     let mut repeated_count = 0u32;
@@ -292,13 +398,20 @@ fn score_melodic_window(
                 }
 
                 // Leap recovery: after a leap (>4 semitones), the next move
-                // should be in the opposite direction by step
-                if abs_iv > 4 && direction != 0 {
-                    // Check if the previous interval was a leap
-                    // (simplified: just check direction)
+                // should be in the opposite direction by step.
+                // If the previous interval was a leap and this interval
+                // doesn't move in the opposite direction by step, penalize.
+                if prev_interval_abs > 4 {
+                    let recovered = direction != 0
+                        && direction != prev_dir
+                        && abs_iv <= 2;
+                    if !recovered {
+                        score += weights.leap_recovery_penalty;
+                    }
                 }
             }
 
+            prev_interval_abs = abs_iv;
             prev_direction = Some(direction);
         }
 
@@ -383,13 +496,12 @@ fn score_global(grid: &Grid, weights: &ScoringWeights) -> f64 {
         }
     }
 
-    // Cadence detection: reward proper cadential motion at phrase boundaries.
-    // A phrase boundary is detected when at least 2 voices have rests nearby.
-    // At these points, reward:
-    // - Contrary stepwise motion between outer voices converging on consonance
-    // - Bass moving by 4th/5th to the final or 5th degree
-    // - Soprano resolving by step
+    // Cadence detection
     score += score_cadences(grid, weights);
+
+    // Rhythmic independence: penalize when all voices attack simultaneously
+    // for extended passages (homorhythmic blocks are un-Palestrinian except at cadences)
+    score += score_rhythmic_independence(grid, weights);
 
     score
 }
@@ -456,6 +568,34 @@ fn score_cadences(grid: &Grid, _weights: &ScoringWeights) -> f64 {
     score
 }
 
+/// Score rhythmic independence between voices.
+/// Penalizes when 3+ voices attack on the same beat for many consecutive beats.
+fn score_rhythmic_independence(grid: &Grid, weights: &ScoringWeights) -> f64 {
+    let mut score = 0.0;
+    let mut consecutive_homorhythm = 0;
+
+    for beat in 0..grid.num_beats {
+        let attacks: usize = Voice::ALL.iter()
+            .filter(|&&v| {
+                let c = grid.cell(v, beat);
+                c.attack && !c.is_rest
+            })
+            .count();
+
+        if attacks >= 3 {
+            consecutive_homorhythm += 1;
+            // Start penalizing after 4 consecutive homorhythmic beats
+            if consecutive_homorhythm > 4 {
+                score += weights.homorhythm_penalty;
+            }
+        } else {
+            consecutive_homorhythm = 0;
+        }
+    }
+
+    score
+}
+
 // ── Layer 5: Modal compliance ──
 
 fn score_modal(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) -> f64 {
@@ -511,6 +651,49 @@ mod tests {
     }
 
     #[test]
+    fn test_suspension_not_penalized() {
+        // A properly prepared suspension: Alto holds a C4 from a consonance,
+        // Soprano attacks D4 creating a dissonance, then Alto resolves down to B3.
+        let mut grid = Grid::new(4);
+        let _weights = ScoringWeights::default();
+        let _mode = default_mode();
+
+        // Beat 0: Soprano E4 (64), Alto C4 (60) — major 3rd (consonant) — preparation
+        grid.set_note(Voice::Soprano, 0, 64);
+        grid.set_note(Voice::Alto, 0, 60);
+
+        // Beat 1: Alto holds C4, Soprano attacks D4 (62) — major 2nd (dissonant)
+        grid.extend_note(Voice::Alto, 1); // Alto holds (not attacked)
+        grid.set_note(Voice::Soprano, 1, 62); // Soprano attacks
+
+        // Beat 2: Alto resolves to B3 (59) — step down — resolution
+        grid.set_note(Voice::Alto, 2, 59);
+        grid.set_note(Voice::Soprano, 2, 62); // Soprano holds or continues
+
+        // Beat 1 is not a strong beat (strong = beat % 4 == 0), so let's adjust:
+        // Use beat 0 for preparation, beat 4... but we only have 4 beats.
+        // Instead, test the is_prepared_suspension function directly.
+        let is_sus = is_prepared_suspension(&grid, Voice::Soprano, Voice::Alto, 1);
+        assert!(is_sus, "Should detect prepared suspension (Alto held from consonance, resolves down)");
+    }
+
+    #[test]
+    fn test_unprepared_dissonance_penalized() {
+        let mut grid = Grid::new(4);
+        let weights = ScoringWeights::default();
+        let mode = default_mode();
+
+        // Both voices attack into a dissonance on a strong beat = NOT a suspension
+        // Beat 0 (strong): Soprano D4 (62), Alto C4 (60) — major 2nd
+        grid.set_note(Voice::Soprano, 0, 62);
+        grid.set_note(Voice::Alto, 0, 60);
+
+        let score = score_grid(&grid, &weights, &mode);
+        // Should include the strong-beat dissonance penalty
+        assert!(score < 0.0, "Unprepared dissonance on strong beat should penalize, got {}", score);
+    }
+
+    #[test]
     fn test_consonance_rewarded() {
         let mut grid = Grid::new(4);
         let weights = ScoringWeights::default();
@@ -521,6 +704,32 @@ mod tests {
 
         let beat_score = score_beat_harmonic(&grid, &weights, 0);
         assert!(beat_score > 0.0, "Consonant intervals should be rewarded");
+    }
+
+    #[test]
+    fn test_leap_recovery_penalized() {
+        let mut grid = Grid::new(6);
+        let weights = ScoringWeights::default();
+
+        // Soprano: C4 (60), then leap up to A4 (69) = +9 semitones,
+        // then continue upward to B4 (71) = no recovery (same direction)
+        grid.set_note(Voice::Soprano, 0, 60);
+        grid.set_note(Voice::Soprano, 2, 69);
+        grid.set_note(Voice::Soprano, 4, 71);
+
+        let no_recovery = score_melodic_window(&grid, &weights, Voice::Soprano, 0, 6);
+
+        // Now: leap up, then step back down = proper recovery
+        let mut grid2 = Grid::new(6);
+        grid2.set_note(Voice::Soprano, 0, 60);
+        grid2.set_note(Voice::Soprano, 2, 69);
+        grid2.set_note(Voice::Soprano, 4, 67); // step down = recovery
+
+        let with_recovery = score_melodic_window(&grid2, &weights, Voice::Soprano, 0, 6);
+
+        assert!(with_recovery > no_recovery,
+            "Leap with recovery ({:.1}) should score better than without ({:.1})",
+            with_recovery, no_recovery);
     }
 
     #[test]
