@@ -348,7 +348,7 @@ fn score_beat_harmonic(grid: &Grid, weights: &ScoringWeights, beat: usize) -> f6
     score
 }
 
-// ── Layer 4: Global ──
+// ── Layer 4: Global & Cadence ──
 
 fn score_global(grid: &Grid, weights: &ScoringWeights) -> f64 {
     let mut score = 0.0;
@@ -380,6 +380,76 @@ fn score_global(grid: &Grid, weights: &ScoringWeights) -> f64 {
                 score += weights.closing_consonance_reward;
             }
             break;
+        }
+    }
+
+    // Cadence detection: reward proper cadential motion at phrase boundaries.
+    // A phrase boundary is detected when at least 2 voices have rests nearby.
+    // At these points, reward:
+    // - Contrary stepwise motion between outer voices converging on consonance
+    // - Bass moving by 4th/5th to the final or 5th degree
+    // - Soprano resolving by step
+    score += score_cadences(grid, weights);
+
+    score
+}
+
+/// Detect phrase boundaries and score cadential motion there.
+fn score_cadences(grid: &Grid, _weights: &ScoringWeights) -> f64 {
+    let mut score = 0.0;
+
+    // Find beats where a rest follows sounding notes (phrase endings)
+    for beat in 2..grid.num_beats.saturating_sub(1) {
+        // Check if this beat is near a phrase boundary:
+        // at least 2 voices have a rest within 1-2 beats after this point
+        let mut voices_resting_soon = 0;
+        for voice in Voice::ALL {
+            let has_rest_ahead = (1..=2).any(|offset| {
+                let b = beat + offset;
+                b < grid.num_beats && grid.cell(voice, b).is_rest
+            });
+            if has_rest_ahead {
+                voices_resting_soon += 1;
+            }
+        }
+
+        if voices_resting_soon < 2 {
+            continue;
+        }
+
+        // This beat is near a phrase boundary. Check cadential motion.
+
+        // Get soprano and bass pitches at this beat and the previous beat
+        let sop_now = grid.sounding_pitch(Voice::Soprano, beat);
+        let sop_prev = if beat > 0 { grid.sounding_pitch(Voice::Soprano, beat - 1) } else { None };
+        let bass_now = grid.sounding_pitch(Voice::Bass, beat);
+        let bass_prev = if beat > 0 { grid.sounding_pitch(Voice::Bass, beat - 1) } else { None };
+
+        if let (Some(sn), Some(sp), Some(bn), Some(bp)) = (sop_now, sop_prev, bass_now, bass_prev) {
+            let sop_motion = sn as i16 - sp as i16;
+            let bass_motion = bn as i16 - bp as i16;
+
+            // Contrary motion between soprano and bass
+            if (sop_motion > 0 && bass_motion < 0) || (sop_motion < 0 && bass_motion > 0) {
+                score += 3.0;
+            }
+
+            // Soprano moving by step (1-2 semitones)
+            if sop_motion.unsigned_abs() <= 2 && sop_motion != 0 {
+                score += 2.0;
+            }
+
+            // Bass moving by 4th or 5th (5 or 7 semitones)
+            let bass_abs = bass_motion.unsigned_abs();
+            if bass_abs == 5 || bass_abs == 7 {
+                score += 4.0;
+            }
+
+            // Final beat of cadence lands on perfect consonance
+            let iv = interval::semitones(bn, sn);
+            if interval::is_perfect_consonance(iv) {
+                score += 3.0;
+            }
         }
     }
 

@@ -115,18 +115,32 @@ pub fn generate_structure(
     }
 }
 
+/// Common rhythmic patterns for motifs (durations in eighth-note beats).
+/// These give Palestrina-style variety: mix of quarters, halves, dotted quarters.
+const RHYTHM_PATTERNS: &[&[usize]] = &[
+    &[2, 2, 2, 2, 2, 2, 2, 2, 2, 2],          // all quarters (simple)
+    &[4, 2, 2, 4, 2, 2, 4, 2, 2, 4],          // half, quarter, quarter (stately)
+    &[2, 2, 4, 2, 2, 4, 2, 2, 4, 2],          // quarter, quarter, half
+    &[3, 1, 2, 2, 3, 1, 2, 2, 3, 1],          // dotted quarter + eighth
+    &[2, 4, 2, 4, 2, 4, 2, 4, 2, 4],          // alternating quarter and half
+    &[4, 4, 2, 2, 4, 4, 2, 2, 4, 4],          // two halves then two quarters
+];
+
 /// Write the motif entries from a structure plan onto the grid.
 /// Returns a set of (voice, beat) pairs that are "structural" (shouldn't be
 /// freely mutated by micro-mutations in SA).
 pub fn apply_structure(grid: &mut Grid, plan: &StructurePlan) -> Vec<(usize, usize)> {
     let mut structural_cells = Vec::new();
 
-    for point in &plan.imitation_points {
+    for (point_idx, point) in plan.imitation_points.iter().enumerate() {
+        // Pick a rhythm pattern for this imitation point
+        // All entries of the same point use the same rhythm (imitation!)
+        let rhythm = RHYTHM_PATTERNS[point_idx % RHYTHM_PATTERNS.len()];
+
         for entry in &point.entries {
             let mut pitch = (point.reference_pitch as i16 + entry.transposition as i16) as u8;
             let voice = entry.voice;
 
-            // Clamp to voice range
             let (low, high) = voice.range();
             while pitch < low {
                 pitch += 12;
@@ -135,7 +149,6 @@ pub fn apply_structure(grid: &mut Grid, plan: &StructurePlan) -> Vec<(usize, usi
                 pitch -= 12;
             }
 
-            // Write the motif onto the grid
             let mut beat = entry.start_beat;
             if beat >= grid.num_beats {
                 continue;
@@ -145,14 +158,20 @@ pub fn apply_structure(grid: &mut Grid, plan: &StructurePlan) -> Vec<(usize, usi
             grid.set_note(voice, beat, pitch);
             structural_cells.push((voice.index(), beat));
 
-            // Each subsequent interval
-            for &interval in &point.motif.intervals {
-                // Each motif note gets 2 eighth-note beats (quarter note)
-                if beat + 1 < grid.num_beats {
-                    grid.extend_note(voice, beat + 1);
-                    structural_cells.push((voice.index(), beat + 1));
+            // Hold first note for its rhythmic duration
+            let first_dur = rhythm[0];
+            for hold in 1..first_dur {
+                if beat + hold < grid.num_beats {
+                    grid.extend_note(voice, beat + hold);
+                    structural_cells.push((voice.index(), beat + hold));
                 }
-                beat += 2;
+            }
+
+            // Each subsequent interval
+            for (iv_idx, &interval) in point.motif.intervals.iter().enumerate() {
+                let dur = rhythm[(iv_idx + 1) % rhythm.len()];
+
+                beat += rhythm[iv_idx % rhythm.len()];
                 if beat >= grid.num_beats {
                     break;
                 }
@@ -161,12 +180,23 @@ pub fn apply_structure(grid: &mut Grid, plan: &StructurePlan) -> Vec<(usize, usi
                 pitch = new_pitch;
                 grid.set_note(voice, beat, pitch);
                 structural_cells.push((voice.index(), beat));
+
+                // Hold for this note's rhythmic duration
+                for hold in 1..dur {
+                    if beat + hold < grid.num_beats {
+                        grid.extend_note(voice, beat + hold);
+                        structural_cells.push((voice.index(), beat + hold));
+                    }
+                }
             }
 
-            // Hold final note for 2 beats
-            if beat + 1 < grid.num_beats {
-                grid.extend_note(voice, beat + 1);
-                structural_cells.push((voice.index(), beat + 1));
+            // Hold final note for an extra beat (phrase ending)
+            let final_dur = rhythm[(point.motif.intervals.len()) % rhythm.len()];
+            for hold in 1..=final_dur {
+                if beat + hold < grid.num_beats {
+                    grid.extend_note(voice, beat + hold);
+                    structural_cells.push((voice.index(), beat + hold));
+                }
             }
         }
     }
