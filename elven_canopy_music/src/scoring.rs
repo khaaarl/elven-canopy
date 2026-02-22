@@ -106,6 +106,10 @@ pub struct ScoringWeights {
 
     // Interval distribution: penalty for deviating from Palestrina norms
     pub interval_distribution_penalty: f64,
+
+    // Melodic entropy: reward moderate information content, penalize extremes
+    pub entropy_reward: f64,
+    pub entropy_penalty: f64,
 }
 
 impl Default for ScoringWeights {
@@ -172,6 +176,10 @@ impl Default for ScoringWeights {
 
             // Interval distribution
             interval_distribution_penalty: -0.5,
+
+            // Melodic entropy (information content)
+            entropy_reward: 6.0,
+            entropy_penalty: -4.0,
         }
     }
 }
@@ -188,6 +196,7 @@ pub fn score_grid(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) ->
     total += score_texture(grid, weights);
     total += score_tension_curve(grid, weights);
     total += score_interval_distribution(grid, weights);
+    total += score_entropy(grid, weights);
 
     total
 }
@@ -202,6 +211,7 @@ pub struct ScoreBreakdown {
     pub texture: f64,
     pub tension_curve: f64,
     pub interval_dist: f64,
+    pub entropy: f64,
     pub tonal_contour: f64,
     pub total: f64,
 }
@@ -221,14 +231,15 @@ pub fn score_breakdown(
     let texture = score_texture(grid, weights);
     let tension_curve = score_tension_curve(grid, weights);
     let interval_dist = score_interval_distribution(grid, weights);
+    let entropy = score_entropy(grid, weights);
     let tonal_contour = score_tonal_contour(grid, mapping, weights);
 
     let total = hard_rules + melodic + harmonic + global + modal
-        + texture + tension_curve + interval_dist + tonal_contour;
+        + texture + tension_curve + interval_dist + entropy + tonal_contour;
 
     ScoreBreakdown {
         hard_rules, melodic, harmonic, global, modal,
-        texture, tension_curve, interval_dist, tonal_contour, total,
+        texture, tension_curve, interval_dist, entropy, tonal_contour, total,
     }
 }
 
@@ -1036,6 +1047,61 @@ fn score_interval_distribution(grid: &Grid, weights: &ScoringWeights) -> f64 {
     } else {
         0.0
     }
+}
+
+// ── Melodic entropy scoring ──
+
+/// Score melodic entropy (information content) per voice.
+///
+/// Moderate entropy is ideal for Palestrina: too low means the melody is
+/// monotonous (stuck on few pitches), too high means it's erratic and
+/// incoherent. The target Shannon entropy for melodic intervals is
+/// approximately 2.0-3.5 bits.
+fn score_entropy(grid: &Grid, weights: &ScoringWeights) -> f64 {
+    let mut score = 0.0;
+
+    for voice in Voice::ALL {
+        // Count interval occurrences
+        let mut interval_counts: std::collections::BTreeMap<i8, u32> = std::collections::BTreeMap::new();
+        let mut prev_pitch: Option<u8> = None;
+        let mut total = 0u32;
+
+        for beat in 0..grid.num_beats {
+            let cell = grid.cell(voice, beat);
+            if cell.attack && !cell.is_rest {
+                if let Some(prev) = prev_pitch {
+                    let iv = (cell.pitch as i8).wrapping_sub(prev as i8);
+                    *interval_counts.entry(iv).or_insert(0) += 1;
+                    total += 1;
+                }
+                prev_pitch = Some(cell.pitch);
+            }
+        }
+
+        if total < 10 {
+            continue; // Not enough data
+        }
+
+        // Compute Shannon entropy: H = -Σ p(x) * log2(p(x))
+        let total_f = total as f64;
+        let entropy: f64 = interval_counts.values()
+            .map(|&c| {
+                let p = c as f64 / total_f;
+                if p > 0.0 { -p * p.log2() } else { 0.0 }
+            })
+            .sum();
+
+        // Target range: 2.0-3.5 bits
+        if entropy >= 2.0 && entropy <= 3.5 {
+            score += weights.entropy_reward;
+        } else if entropy < 1.5 || entropy > 4.5 {
+            // Way outside the sweet spot
+            score += weights.entropy_penalty;
+        }
+        // Between 1.5-2.0 or 3.5-4.5: no bonus, no penalty
+    }
+
+    score
 }
 
 // ── Layer 6: Tonal contour constraints (Vaelith text) ──

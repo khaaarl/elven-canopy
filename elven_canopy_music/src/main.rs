@@ -196,6 +196,7 @@ fn main() {
         println!("  Texture:         {:>8.1}", bd.texture);
         println!("  Tension curve:   {:>8.1}", bd.tension_curve);
         println!("  Interval dist:   {:>8.1}", bd.interval_dist);
+        println!("  Entropy:         {:>8.1}", bd.entropy);
         println!("  Tonal contour:   {:>8.1}", bd.tonal_contour);
         println!("  ─────────────────────────");
         println!("  Total:           {:>8.1}", bd.total);
