@@ -84,6 +84,10 @@ pub struct ScoringWeights {
     // Layer 6: Tonal contour constraints (Vaelith text)
     pub tonal_contour_violation: f64,
     pub tonal_contour_reward: f64,
+
+    // Stressed syllable metric placement
+    pub stressed_on_strong_beat: f64,
+    pub stressed_on_weak_beat: f64,
 }
 
 impl Default for ScoringWeights {
@@ -136,6 +140,10 @@ impl Default for ScoringWeights {
             // Tonal contour (high weight — Vaelith tone system)
             tonal_contour_violation: -20.0,
             tonal_contour_reward: 3.0,
+
+            // Stressed syllable metric placement
+            stressed_on_strong_beat: 4.0,
+            stressed_on_weak_beat: -3.0,
         }
     }
 }
@@ -768,6 +776,16 @@ pub fn score_tonal_contour(
     let mut score = 0.0;
     for span in &mapping.spans {
         score += score_span_contour(grid, span, weights);
+
+        // Stressed syllable metric placement
+        if span.stressed {
+            let is_strong_beat = span.start_beat % 4 == 0;
+            if is_strong_beat {
+                score += weights.stressed_on_strong_beat;
+            } else {
+                score += weights.stressed_on_weak_beat;
+            }
+        }
     }
     score
 }
@@ -787,6 +805,54 @@ pub fn score_tonal_contour_local(
         }
     }
     score
+}
+
+/// Statistics about tonal contour compliance.
+#[derive(Debug)]
+pub struct TonalContourStats {
+    pub total_spans: usize,
+    pub compliant: usize,
+    pub violated: usize,
+    pub stressed_on_strong: usize,
+    pub stressed_on_weak: usize,
+    pub total_stressed: usize,
+}
+
+/// Compute tonal contour compliance statistics for display.
+pub fn tonal_contour_stats(
+    grid: &Grid,
+    mapping: &TextMapping,
+) -> TonalContourStats {
+    let mut stats = TonalContourStats {
+        total_spans: mapping.spans.len(),
+        compliant: 0,
+        violated: 0,
+        stressed_on_strong: 0,
+        stressed_on_weak: 0,
+        total_stressed: 0,
+    };
+
+    let weights = ScoringWeights::default();
+
+    for span in &mapping.spans {
+        let contour_score = score_span_contour(grid, span, &weights);
+        if contour_score > 0.0 {
+            stats.compliant += 1;
+        } else {
+            stats.violated += 1;
+        }
+
+        if span.stressed {
+            stats.total_stressed += 1;
+            if span.start_beat % 4 == 0 {
+                stats.stressed_on_strong += 1;
+            } else {
+                stats.stressed_on_weak += 1;
+            }
+        }
+    }
+
+    stats
 }
 
 /// Score a single syllable span's tonal contour.

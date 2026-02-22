@@ -18,7 +18,7 @@ use elven_canopy_music::markov::{MarkovModels, MotifLibrary};
 use elven_canopy_music::midi::write_midi;
 use elven_canopy_music::mode::{Mode, ModeInstance};
 use elven_canopy_music::sa::{SAConfig, anneal_with_text};
-use elven_canopy_music::scoring::{ScoringWeights, score_grid, score_tonal_contour};
+use elven_canopy_music::scoring::{ScoringWeights, score_grid, score_tonal_contour, tonal_contour_stats};
 use elven_canopy_music::structure::{generate_structure, apply_structure, apply_responses};
 use elven_canopy_music::text_mapping::apply_text_mapping;
 use elven_canopy_music::vaelith::generate_phrases;
@@ -168,6 +168,23 @@ fn main() {
         let stats = grid.stats();
         println!("  {} attacks, {} sounding beats, {} rests",
             stats.total_attacks, stats.total_sounding, stats.rests);
+
+        // Tonal contour compliance stats
+        let tonal_stats = tonal_contour_stats(&grid, &mapping);
+        println!();
+        println!("Tonal contour compliance:");
+        println!("  Syllable spans: {} total, {} compliant ({:.0}%), {} violated",
+            tonal_stats.total_spans, tonal_stats.compliant,
+            if tonal_stats.total_spans > 0 {
+                tonal_stats.compliant as f64 / tonal_stats.total_spans as f64 * 100.0
+            } else { 0.0 },
+            tonal_stats.violated);
+        if tonal_stats.total_stressed > 0 {
+            println!("  Stressed syllables: {} on strong beats ({:.0}%), {} on weak beats",
+                tonal_stats.stressed_on_strong,
+                tonal_stats.stressed_on_strong as f64 / tonal_stats.total_stressed as f64 * 100.0,
+                tonal_stats.stressed_on_weak);
+        }
         println!();
     }
 
