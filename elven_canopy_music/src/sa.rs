@@ -2,7 +2,8 @@
 //
 // Takes a draft-filled grid and iteratively improves it by proposing
 // mutations, scoring the result, and accepting/rejecting based on the
-// Metropolis criterion. Uses a cooling schedule with periodic reheating.
+// Metropolis criterion. Uses a cooling schedule with periodic reheating
+// and optional adaptive cooling.
 //
 // Three types of mutations:
 // - Pitch mutation (~75%): change a note's pitch using Markov-guided proposal,
@@ -12,6 +13,10 @@
 //   by converting the last beat to a rest. Respects structural cells.
 // - Text-swap macro mutation (~5%, text mode only): replace a section's phrase
 //   with an alternative candidate, changing the tonal constraints.
+//
+// Adaptive cooling (AdaptiveCooler): tracks acceptance rate over sliding
+// windows and adjusts cooling rate to maintain a productive 15-40% acceptance
+// zone. Slows cooling when acceptance drops too low, speeds up when too high.
 //
 // Structural cells (motif entries from structure.rs and final cadence from
 // draft.rs) are excluded from mutation — they're the compositional anchors.

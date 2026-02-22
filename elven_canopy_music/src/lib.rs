@@ -11,8 +11,10 @@
 // - markov.rs: Loaded Markov transition tables for melodic/harmonic guidance
 // - structure.rs: High-level form planning (motifs, imitation, dai/thol responses)
 // - draft.rs: Initial grid filling using Markov-guided sampling + final cadence
-// - scoring.rs: Multi-layer scoring (counterpoint + harmonic + tonal contour)
-// - sa.rs: Simulated annealing with pitch/duration/text-swap mutations
+// - scoring.rs: Multi-layer scoring (counterpoint + harmonic + modal + texture
+//   + tension curve + interval distribution + tonal contour)
+// - sa.rs: Simulated annealing with pitch/duration/text-swap mutations and
+//   adaptive cooling
 // - midi.rs: MIDI file output from completed grids
 // - vaelith.rs: Vaelith tonal conlang grammar engine (vocabulary + phrase gen)
 // - text_mapping.rs: Syllable-to-grid mapping and tonal contour tracking

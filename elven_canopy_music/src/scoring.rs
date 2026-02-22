@@ -17,10 +17,18 @@
 //   melodic contour shape.
 // Layer 5 (Modal, medium weight): Mode compliance and degree-weighted
 //   fitness.
+// Ensemble texture: Rewards varied voice density across the piece
+//   (mix of 2, 3, and 4 active voices). Penalizes prolonged thin textures.
+// Tension curve: Rewards arc-shaped tension profiles that peak around
+//   55-75% through the piece, measured via pitch height and dissonance.
+// Interval distribution: Penalizes melodic interval profiles that deviate
+//   from Palestrina norms (~55% steps, ~22% 3rds, ~15% 4ths/5ths).
 // Layer 6 (Tonal contour, high weight): Vaelith tone system enforcement.
 //   Each syllable's tone (level/rising/falling/dipping/peaking) constrains
 //   the pitch movement within its grid span. Scored via separate
 //   score_tonal_contour() with TextMapping from text_mapping.rs.
+//   Also scores stressed syllable metric placement (root syllables on
+//   strong beats).
 //
 // Scoring is designed for incremental updates: score_local() evaluates a
 // small window around a mutation for efficient SA evaluation. Full
