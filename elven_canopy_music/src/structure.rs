@@ -5,6 +5,13 @@
 // This creates a partially-filled grid with motif cells constrained and
 // connective tissue cells free for the draft generator.
 //
+// Key features:
+// - 5 entry order patterns and 5 transposition schemes for variety
+// - Frequency-weighted motif selection from the trained corpus library
+// - Variable voice count per section (2-4 voices, fuller at bookends)
+// - 6 rhythmic patterns applied to motif entries
+// - Rest gaps between sections for phrase breathing
+//
 // Depends on markov.rs for motif library access. The output is consumed by
 // draft.rs to fill free cells.
 

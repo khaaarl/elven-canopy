@@ -4,18 +4,23 @@
 // aesthetic preferences. The score is a weighted sum of penalties/rewards
 // across several layers:
 //
-// Layer 1 (Hard rules, high weight): Parallel 5ths/8ves, strong-beat
-//   dissonance, voice crossing, range violations.
+// Layer 1 (Hard rules, high weight): Parallel 5ths/8ves, hidden 5ths/8ves,
+//   strong-beat dissonance (with suspension exemption), voice crossing,
+//   range violations. Properly prepared suspensions are detected and
+//   rewarded rather than penalized.
 // Layer 2 (Melodic prefs, medium weight): Stepwise motion, leap recovery,
-//   direction variety.
+//   direction variety, climax uniqueness, arch contour.
 // Layer 3 (Harmonic prefs, medium weight): Consonance preference, voice
-//   spacing, cadence patterns.
-// Layer 4 (Global, medium weight): Opening/closing conventions, rhythmic
-//   independence.
+//   spacing, interval variety (penalizes monotonous intervals).
+// Layer 4 (Global, medium weight): Opening/closing consonance, cadence
+//   detection and reward, rhythmic independence (penalizes homorhythm),
+//   melodic contour shape.
+// Layer 5 (Modal, medium weight): Mode compliance and degree-weighted
+//   fitness.
 //
-// Scoring is designed for incremental updates: each beat's contribution
-// depends on a window of ~2-3 beats, so after a single-cell mutation only
-// a small region needs rescoring.
+// Scoring is designed for incremental updates: score_local() evaluates a
+// small window around a mutation for efficient SA evaluation. Full
+// score_grid() is used for global quality measurement.
 //
 // Consumed by sa.rs for simulated annealing refinement.
 

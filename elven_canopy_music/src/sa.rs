@@ -4,9 +4,15 @@
 // mutations, scoring the result, and accepting/rejecting based on the
 // Metropolis criterion. Uses a cooling schedule with periodic reheating.
 //
-// Two types of mutations:
-// - Micro: change a single note's pitch (Markov-guided proposal)
-// - Macro: shift motif entries, adjust transposition (not yet implemented)
+// Two types of micro mutations (~80/20 split):
+// - Pitch mutation: change a note's pitch using Markov-guided proposal,
+//   snapped to the active mode. Builds a context of recent intervals for
+//   the Markov model. Uses incremental local scoring for efficiency.
+// - Duration mutation: extend a note into an adjacent rest, or shorten by
+//   converting the last beat to a rest. Respects structural cells.
+//
+// Structural cells (motif entries from structure.rs and final cadence from
+// draft.rs) are excluded from mutation — they're the compositional anchors.
 //
 // Depends on scoring.rs for quality evaluation and markov.rs for
 // mutation proposals.

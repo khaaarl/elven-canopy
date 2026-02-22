@@ -1,12 +1,16 @@
 // Draft generation: filling the grid's free cells with Markov-guided pitches.
 //
 // After structure.rs has placed motif entries (structural cells), this module
-// fills the remaining empty cells with musically plausible pitches. It uses
-// the melodic Markov model for each voice and the harmonic model to weight
-// proposals by how well they fit with other sounding voices.
+// fills the remaining empty cells with musically plausible pitches. It uses:
+// - Melodic Markov model for interval-based pitch proposals
+// - Harmonic model (unigram + transitions) for voice-pair compatibility
+// - Mode instance for scale fitness and pitch snapping
 //
-// Now mode-aware: pitches are snapped to the active mode and scored for
-// modal fitness. Uses mode.rs for scale membership checks.
+// Also provides generate_final_cadence() which places a V→I cadential
+// formula in the last beats, marking those cells as structural.
+//
+// Voice entries are staggered: each voice waits until its first structural
+// cell before filling, preserving the imitative texture from structure.rs.
 //
 // The draft doesn't need to be perfect — it's refined by SA (sa.rs). But a
 // good draft dramatically reduces the work SA needs to do.
