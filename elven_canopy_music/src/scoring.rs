@@ -88,6 +88,16 @@ pub struct ScoringWeights {
     // Stressed syllable metric placement
     pub stressed_on_strong_beat: f64,
     pub stressed_on_weak_beat: f64,
+
+    // Ensemble texture
+    pub texture_variety_reward: f64,
+    pub thin_texture_penalty: f64,
+
+    // Tension curve
+    pub tension_curve_reward: f64,
+
+    // Interval distribution: penalty for deviating from Palestrina norms
+    pub interval_distribution_penalty: f64,
 }
 
 impl Default for ScoringWeights {
@@ -144,6 +154,16 @@ impl Default for ScoringWeights {
             // Stressed syllable metric placement
             stressed_on_strong_beat: 4.0,
             stressed_on_weak_beat: -3.0,
+
+            // Ensemble texture: reward varied voice count, penalize too thin
+            texture_variety_reward: 8.0,
+            thin_texture_penalty: -2.0,
+
+            // Tension curve: reward proper arc shape
+            tension_curve_reward: 15.0,
+
+            // Interval distribution
+            interval_distribution_penalty: -0.5,
         }
     }
 }
@@ -157,6 +177,9 @@ pub fn score_grid(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) ->
     total += score_harmonic(grid, weights);
     total += score_global(grid, weights);
     total += score_modal(grid, weights, mode);
+    total += score_texture(grid, weights);
+    total += score_tension_curve(grid, weights);
+    total += score_interval_distribution(grid, weights);
 
     total
 }
@@ -758,6 +781,215 @@ fn score_beat_modal(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance, 
     score
 }
 
+// ── Ensemble texture scoring ──
+
+/// Score texture variety: reward pieces that vary the number of active voices
+/// across the piece. Penalize extremely thin textures (1 voice for too long).
+/// Reward variety in voice density (a mix of 2, 3, and 4 voices).
+fn score_texture(grid: &Grid, weights: &ScoringWeights) -> f64 {
+    let mut score = 0.0;
+    let mut density_counts = [0u32; 5]; // index = number of active voices (0-4)
+    let mut consecutive_thin = 0u32;
+
+    for beat in 0..grid.num_beats {
+        let active = Voice::ALL.iter()
+            .filter(|&&v| grid.sounding_pitch(v, beat).is_some())
+            .count();
+        density_counts[active] += 1;
+
+        if active <= 1 {
+            consecutive_thin += 1;
+            if consecutive_thin > 6 {
+                score += weights.thin_texture_penalty;
+            }
+        } else {
+            consecutive_thin = 0;
+        }
+    }
+
+    // Reward variety: count how many different densities (2, 3, 4) are used
+    let distinct_densities = density_counts[2..=4].iter().filter(|&&c| c > 0).count();
+    if distinct_densities >= 3 {
+        score += weights.texture_variety_reward;
+    } else if distinct_densities >= 2 {
+        score += weights.texture_variety_reward * 0.5;
+    }
+
+    score
+}
+
+// ── Tension curve scoring ──
+
+/// Score the overall tension curve of the piece.
+///
+/// Palestrina-style pieces typically build tension through the middle and
+/// release toward the end. Tension is measured by: average pitch height,
+/// dissonance density, and voice density. The ideal curve peaks around
+/// 55-75% through the piece.
+fn score_tension_curve(grid: &Grid, weights: &ScoringWeights) -> f64 {
+    if grid.num_beats < 16 {
+        return 0.0;
+    }
+
+    // Divide the piece into 8 segments
+    let seg_len = grid.num_beats / 8;
+    if seg_len == 0 {
+        return 0.0;
+    }
+
+    let mut segment_tension: Vec<f64> = Vec::new();
+
+    for seg in 0..8 {
+        let start = seg * seg_len;
+        let end = if seg == 7 { grid.num_beats } else { (seg + 1) * seg_len };
+
+        let mut total_pitch = 0u32;
+        let mut pitch_count = 0u32;
+        let mut dissonance_count = 0u32;
+        let mut pair_count = 0u32;
+
+        for beat in start..end {
+            let slice = grid.vertical_slice(beat);
+            let pitches: Vec<u8> = slice.iter().filter_map(|&p| p).collect();
+
+            for &p in &pitches {
+                total_pitch += p as u32;
+                pitch_count += 1;
+            }
+
+            // Count dissonant pairs
+            for i in 0..pitches.len() {
+                for j in (i + 1)..pitches.len() {
+                    let iv = interval::semitones(pitches[j], pitches[i]);
+                    pair_count += 1;
+                    if interval::is_dissonant(iv) {
+                        dissonance_count += 1;
+                    }
+                }
+            }
+        }
+
+        if pitch_count == 0 {
+            segment_tension.push(0.0);
+            continue;
+        }
+
+        // Tension = normalized pitch height + dissonance ratio
+        let avg_pitch = total_pitch as f64 / pitch_count as f64;
+        let pitch_tension = (avg_pitch - 48.0) / 36.0; // normalize ~C3-C6 range
+        let diss_ratio = if pair_count > 0 {
+            dissonance_count as f64 / pair_count as f64
+        } else {
+            0.0
+        };
+
+        segment_tension.push(pitch_tension + diss_ratio * 2.0);
+    }
+
+    // Find the peak segment
+    let peak_seg = segment_tension.iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    // Ideal peak: segments 4-5 (55-75% through the piece)
+    let peak_pos = peak_seg as f64 / 7.0;
+    let mut score = 0.0;
+
+    if peak_pos >= 0.4 && peak_pos <= 0.8 {
+        score += weights.tension_curve_reward;
+    } else if peak_pos >= 0.3 && peak_pos <= 0.9 {
+        score += weights.tension_curve_reward * 0.5;
+    }
+
+    // Bonus: tension should generally increase before the peak and decrease after
+    let rising_before = (1..=peak_seg)
+        .filter(|&i| segment_tension[i] >= segment_tension[i - 1])
+        .count();
+    let falling_after = (peak_seg + 1..segment_tension.len())
+        .filter(|&i| segment_tension[i] <= segment_tension[i - 1])
+        .count();
+
+    let total_before = peak_seg.max(1);
+    let total_after = (segment_tension.len() - peak_seg - 1).max(1);
+
+    let arc_quality = (rising_before as f64 / total_before as f64
+        + falling_after as f64 / total_after as f64) / 2.0;
+
+    // Reward good arc shape (0.5 = random, 1.0 = perfect arc)
+    if arc_quality > 0.6 {
+        score += weights.tension_curve_reward * 0.5 * (arc_quality - 0.5);
+    }
+
+    score
+}
+
+// ── Interval distribution scoring ──
+
+/// Score how well melodic intervals match Palestrina's empirical distribution.
+///
+/// Palestrina's music is dominated by stepwise motion (2nds ~60%), with
+/// some 3rds (~20%), occasional 4ths/5ths (~12%), and rare larger leaps (~8%).
+/// This function penalizes distributions that deviate significantly.
+fn score_interval_distribution(grid: &Grid, weights: &ScoringWeights) -> f64 {
+    // Target distribution (proportion of intervals in each category)
+    // Based on empirical analysis of Palestrina masses
+    const TARGET_STEP: f64 = 0.55;     // unison + 2nds (0-2 semitones)
+    const TARGET_THIRD: f64 = 0.22;    // 3rds (3-4 semitones)
+    const TARGET_FOURTH_FIFTH: f64 = 0.15; // 4ths-5ths (5-7 semitones)
+    // remainder = larger leaps (~8%)
+
+    let mut step_count = 0u32;
+    let mut third_count = 0u32;
+    let mut fourth_fifth_count = 0u32;
+    let mut total = 0u32;
+
+    for voice in Voice::ALL {
+        let mut prev_pitch: Option<u8> = None;
+        for beat in 0..grid.num_beats {
+            let cell = grid.cell(voice, beat);
+            if cell.attack && !cell.is_rest {
+                if let Some(prev) = prev_pitch {
+                    let abs_iv = (cell.pitch as i16 - prev as i16).unsigned_abs();
+                    total += 1;
+                    match abs_iv {
+                        0..=2 => step_count += 1,
+                        3..=4 => third_count += 1,
+                        5..=7 => fourth_fifth_count += 1,
+                        _ => {}
+                    }
+                }
+                prev_pitch = Some(cell.pitch);
+            }
+        }
+    }
+
+    if total < 20 {
+        return 0.0; // Not enough data for meaningful comparison
+    }
+
+    let total_f = total as f64;
+    let step_ratio = step_count as f64 / total_f;
+    let third_ratio = third_count as f64 / total_f;
+    let fourth_fifth_ratio = fourth_fifth_count as f64 / total_f;
+
+    // Penalize deviation from target proportions
+    let step_dev = (step_ratio - TARGET_STEP).abs();
+    let third_dev = (third_ratio - TARGET_THIRD).abs();
+    let fourth_dev = (fourth_fifth_ratio - TARGET_FOURTH_FIFTH).abs();
+
+    // Weight step motion deviation more heavily (it's most important)
+    let total_deviation = step_dev * 2.0 + third_dev + fourth_dev;
+
+    // Only penalize if deviation is substantial (> 0.15)
+    if total_deviation > 0.15 {
+        weights.interval_distribution_penalty * (total_deviation - 0.15) * total_f
+    } else {
+        0.0
+    }
+}
+
 // ── Layer 6: Tonal contour constraints (Vaelith text) ──
 
 /// Score tonal contour compliance for all syllable spans in the mapping.
@@ -1119,5 +1351,48 @@ mod tests {
 
         let score = score_melodic_window(&grid, &weights, Voice::Soprano, 0, 6);
         assert!(score > 0.0, "Stepwise motion should be rewarded, got {}", score);
+    }
+
+    #[test]
+    fn test_texture_variety_rewarded() {
+        let mut grid = Grid::new(24);
+        let weights = ScoringWeights::default();
+
+        // Section with 2 voices (beats 0-7)
+        grid.set_note(Voice::Soprano, 0, 67);
+        grid.extend_note(Voice::Soprano, 1);
+        grid.set_note(Voice::Alto, 0, 62);
+        grid.extend_note(Voice::Alto, 1);
+
+        // Section with 3 voices (beats 8-15)
+        grid.set_note(Voice::Soprano, 8, 67);
+        grid.set_note(Voice::Alto, 8, 62);
+        grid.set_note(Voice::Tenor, 8, 55);
+
+        // Section with 4 voices (beats 16-23)
+        grid.set_note(Voice::Soprano, 16, 67);
+        grid.set_note(Voice::Alto, 16, 62);
+        grid.set_note(Voice::Tenor, 16, 55);
+        grid.set_note(Voice::Bass, 16, 48);
+
+        let score = score_texture(&grid, &weights);
+        assert!(score > 0.0, "Varied texture (2/3/4 voices) should be rewarded, got {}", score);
+    }
+
+    #[test]
+    fn test_interval_distribution_stepwise_good() {
+        let mut grid = Grid::new(40);
+        let weights = ScoringWeights::default();
+
+        // Mostly stepwise soprano line (Palestrina-like)
+        let pitches = [60, 62, 64, 62, 60, 62, 64, 65, 64, 62,
+                       60, 62, 64, 62, 60, 62, 64, 65, 67, 65];
+        for (i, &p) in pitches.iter().enumerate() {
+            grid.set_note(Voice::Soprano, i * 2, p);
+        }
+
+        let score = score_interval_distribution(&grid, &weights);
+        // Mostly steps = close to target, should have low or no penalty
+        assert!(score >= -5.0, "Stepwise-dominated line should have mild distribution penalty, got {}", score);
     }
 }

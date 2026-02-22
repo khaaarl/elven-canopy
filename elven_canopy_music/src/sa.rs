@@ -45,6 +45,8 @@ pub struct SAConfig {
     pub reheat_target: f64,
     /// Number of reheats allowed.
     pub max_reheats: usize,
+    /// Enable adaptive cooling (adjust cooling rate based on acceptance ratio).
+    pub adaptive: bool,
 }
 
 impl Default for SAConfig {
@@ -57,6 +59,64 @@ impl Default for SAConfig {
             reheat_temp: 0.1,
             reheat_target: 3.0,
             max_reheats: 3,
+            adaptive: true,
+        }
+    }
+}
+
+/// Adaptive cooling state: tracks acceptance rate over a sliding window
+/// and adjusts the cooling rate accordingly.
+struct AdaptiveCooler {
+    base_rate: f64,
+    window_accepted: u32,
+    window_total: u32,
+    window_size: u32,
+}
+
+impl AdaptiveCooler {
+    fn new(base_rate: f64) -> Self {
+        AdaptiveCooler {
+            base_rate,
+            window_accepted: 0,
+            window_total: 0,
+            window_size: 200,
+        }
+    }
+
+    fn record(&mut self, accepted: bool) {
+        self.window_total += 1;
+        if accepted {
+            self.window_accepted += 1;
+        }
+    }
+
+    /// Return the current effective cooling rate, adapting based on acceptance.
+    /// Target acceptance rate: 15-40%. If too low, slow cooling (rate closer
+    /// to 1.0). If too high, speed up cooling (rate closer to base).
+    fn effective_rate(&mut self) -> f64 {
+        if self.window_total < self.window_size {
+            return self.base_rate;
+        }
+
+        let accept_ratio = self.window_accepted as f64 / self.window_total as f64;
+
+        // Reset window for next measurement
+        self.window_accepted = 0;
+        self.window_total = 0;
+
+        if accept_ratio < 0.05 {
+            // Almost nothing accepted — slow cooling dramatically
+            // Move rate toward 1.0 (slow)
+            self.base_rate + (1.0 - self.base_rate) * 0.5
+        } else if accept_ratio < 0.15 {
+            // Below target — slow cooling a bit
+            self.base_rate + (1.0 - self.base_rate) * 0.2
+        } else if accept_ratio > 0.50 {
+            // Too many accepted — speed up cooling
+            self.base_rate * 0.95
+        } else {
+            // In the sweet spot — use base rate
+            self.base_rate
         }
     }
 }
@@ -216,12 +276,14 @@ pub fn anneal_with_text(
     let mut iterations = 0;
     let mut accepted = 0;
     let mut reheats = 0;
+    let mut cooler = AdaptiveCooler::new(config.cooling_rate);
 
     let num_sections = plan.imitation_points.len();
 
     while temp > config.final_temp {
         for _ in 0..config.mutations_per_step {
             let roll: f64 = rng.random();
+            let mut step_accepted = false;
 
             if roll < 0.05 && num_sections > 0 && !phrase_candidates.is_empty() {
                 // Text-swap macro mutation (~5%)
@@ -231,6 +293,7 @@ pub fn anneal_with_text(
                 if let Some(d) = delta {
                     _current_score += d;
                     accepted += 1;
+                    step_accepted = true;
                 }
             } else if roll < 0.25 {
                 // Duration mutation (~20%)
@@ -242,6 +305,7 @@ pub fn anneal_with_text(
                 if let Some(d) = delta {
                     _current_score += d;
                     accepted += 1;
+                    step_accepted = true;
                 }
             } else {
                 // Pitch mutation with tonal contour awareness (~75%)
@@ -253,13 +317,22 @@ pub fn anneal_with_text(
                 if let Some(d) = delta {
                     _current_score += d;
                     accepted += 1;
+                    step_accepted = true;
                 }
             }
 
+            if config.adaptive {
+                cooler.record(step_accepted);
+            }
             iterations += 1;
         }
 
-        temp *= config.cooling_rate;
+        let rate = if config.adaptive {
+            cooler.effective_rate()
+        } else {
+            config.cooling_rate
+        };
+        temp *= rate;
 
         if temp < config.reheat_temp && reheats < config.max_reheats {
             temp = config.reheat_target;
