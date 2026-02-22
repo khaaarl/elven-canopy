@@ -19,7 +19,7 @@ use elven_canopy_music::midi::write_midi;
 use elven_canopy_music::mode::{Mode, ModeInstance};
 use elven_canopy_music::sa::{SAConfig, anneal_with_text};
 use elven_canopy_music::scoring::{ScoringWeights, score_grid, score_tonal_contour};
-use elven_canopy_music::structure::{generate_structure, apply_structure};
+use elven_canopy_music::structure::{generate_structure, apply_structure, apply_responses};
 use elven_canopy_music::text_mapping::apply_text_mapping;
 use elven_canopy_music::vaelith::generate_phrases;
 use rand::SeedableRng;
@@ -109,15 +109,18 @@ fn main() {
     println!("[3/5] Generating draft...");
     let mut grid = Grid::new(plan.total_beats);
     grid.tempo_bpm = tempo;
-    let structural = apply_structure(&mut grid, &plan);
+    let mut structural = apply_structure(&mut grid, &plan);
     println!("  {} structural cells placed.", structural.len());
+    apply_responses(&mut grid, &plan, &mode, &mut structural);
+    if !plan.response_points.is_empty() {
+        println!("  {} response markers (dai/thol) applied.", plan.response_points.len());
+    }
 
     fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
 
     // Generate a proper final cadence
-    let mut structural = structural;
     generate_final_cadence(&mut grid, &mode, &mut structural);
-    println!("  {} total structural cells (including final cadence).", structural.len());
+    println!("  {} total structural cells (including cadence+responses).", structural.len());
 
     // Generate Vaelith text and apply text mapping
     println!("  Generating Vaelith text...");
@@ -267,10 +270,9 @@ fn run_batch(args: &[String]) {
         let plan = generate_structure(&motif_library, num_sections, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
         grid.tempo_bpm = tempo;
-        let structural = apply_structure(&mut grid, &plan);
+        let mut structural = apply_structure(&mut grid, &plan);
+        apply_responses(&mut grid, &plan, &mode, &mut structural);
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
-
-        let mut structural = structural;
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
         let phrase_candidates = generate_phrases(num_sections, &mut rng);
