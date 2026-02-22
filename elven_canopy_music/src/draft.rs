@@ -104,7 +104,7 @@ fn fill_voice(
 
             // Try several alternatives, pick best
             let mut best_pitch = proposed_pitch;
-            let mut best_score = pitch_score(grid, voice, beat, proposed_pitch, mode);
+            let mut best_score = pitch_score(grid, voice, beat, proposed_pitch, models, mode);
 
             for _ in 0..4 {
                 let alt_rng: f64 = rng.random();
@@ -112,7 +112,7 @@ fn fill_voice(
                 let raw = (prev as i16 + alt_interval as i16)
                     .clamp(range_low as i16, range_high as i16) as u8;
                 let alt_pitch = mode.snap_to_mode(raw);
-                let alt_score = pitch_score(grid, voice, beat, alt_pitch, mode);
+                let alt_score = pitch_score(grid, voice, beat, alt_pitch, models, mode);
                 if alt_score > best_score {
                     best_score = alt_score;
                     best_pitch = alt_pitch;
@@ -181,12 +181,14 @@ fn fill_voice(
 }
 
 /// Combined score for a proposed pitch at a given position.
-/// Considers harmonic compatibility with other voices AND modal fitness.
+/// Considers harmonic compatibility with other voices, modal fitness,
+/// and trained harmonic model preferences.
 fn pitch_score(
     grid: &Grid,
     voice: Voice,
     beat: usize,
     proposed_pitch: u8,
+    models: &MarkovModels,
     mode: &ModeInstance,
 ) -> f64 {
     let mut score = 0.0;
@@ -203,6 +205,7 @@ fn pitch_score(
         if let Some(other_pitch) = grid.sounding_pitch(other_voice, beat) {
             let iv = interval::semitones(other_pitch, proposed_pitch);
 
+            // Basic consonance/dissonance
             if interval::is_consonant(iv) {
                 score += 2.0;
             } else {
@@ -212,6 +215,35 @@ fn pitch_score(
             let is_strong = beat % 4 == 0;
             if is_strong && interval::is_perfect_consonance(iv) {
                 score += 1.0;
+            }
+
+            // Use trained harmonic model for finer preference
+            let iv_clamped = iv.clamp(-24, 24) as i8;
+            if let Some(&weight) = models.harmonic.unigram.get(&iv_clamped) {
+                let total: f64 = models.harmonic.unigram.values().sum();
+                if total > 0.0 {
+                    // Normalize to [0, 1] and scale
+                    score += (weight / total) * 3.0;
+                }
+            }
+
+            // Also check harmonic transitions from previous beat
+            if beat > 0 {
+                let prev_other = grid.sounding_pitch(other_voice, beat - 1);
+                let prev_self = grid.sounding_pitch(voice, beat - 1);
+                if let (Some(po), Some(ps)) = (prev_other, prev_self) {
+                    let prev_iv = interval::semitones(po, ps);
+                    let prev_iv_clamped = prev_iv.clamp(-24, 24) as i8;
+                    let key = prev_iv_clamped.to_string();
+                    if let Some(table) = models.harmonic.transitions.get(&key) {
+                        if let Some(&weight) = table.get(&iv_clamped) {
+                            let total: f64 = table.values().sum();
+                            if total > 0.0 {
+                                score += (weight / total) * 2.0;
+                            }
+                        }
+                    }
+                }
             }
 
             let abs_iv = iv.unsigned_abs();
