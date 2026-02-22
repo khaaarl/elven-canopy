@@ -287,6 +287,49 @@ fn pitch_score(
             if abs_iv > 24 {
                 score -= 1.0;
             }
+
+            // Penalize parallel 5ths/octaves with previous beat
+            if beat > 0 {
+                let prev_other = grid.sounding_pitch(other_voice, beat - 1);
+                let prev_self = grid.sounding_pitch(voice, beat - 1);
+                if let (Some(po), Some(ps)) = (prev_other, prev_self) {
+                    let prev_iv = interval::semitones(po, ps);
+                    let curr_ic = (iv.unsigned_abs()) % 12;
+                    let prev_ic = (prev_iv.unsigned_abs()) % 12;
+
+                    let motion_self = proposed_pitch as i16 - ps as i16;
+                    let motion_other = other_pitch as i16 - po as i16;
+                    let same_direction = (motion_self > 0 && motion_other > 0)
+                        || (motion_self < 0 && motion_other < 0);
+
+                    if same_direction {
+                        // Parallel 5ths or octaves — heavy penalty
+                        if (curr_ic == 7 && prev_ic == 7) || (curr_ic == 0 && prev_ic == 0) {
+                            score -= 10.0;
+                        }
+                        // Hidden (direct) 5ths/octaves — lighter penalty
+                        if (curr_ic == 7 && prev_ic != 7) || (curr_ic == 0 && prev_ic != 0) {
+                            score -= 3.0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Voice crossing: penalize if this pitch crosses another voice
+    for other_voice in Voice::ALL {
+        if other_voice == voice {
+            continue;
+        }
+        if let Some(other_pitch) = grid.sounding_pitch(other_voice, beat) {
+            // Higher-numbered voice should have lower pitch
+            if voice.index() < other_voice.index() && proposed_pitch < other_pitch {
+                score -= 5.0;
+            }
+            if voice.index() > other_voice.index() && proposed_pitch > other_pitch {
+                score -= 5.0;
+            }
         }
     }
 
