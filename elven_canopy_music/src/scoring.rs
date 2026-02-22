@@ -192,6 +192,46 @@ pub fn score_grid(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) ->
     total
 }
 
+/// Per-layer scoring breakdown for diagnostic output.
+pub struct ScoreBreakdown {
+    pub hard_rules: f64,
+    pub melodic: f64,
+    pub harmonic: f64,
+    pub global: f64,
+    pub modal: f64,
+    pub texture: f64,
+    pub tension_curve: f64,
+    pub interval_dist: f64,
+    pub tonal_contour: f64,
+    pub total: f64,
+}
+
+/// Compute a per-layer scoring breakdown for display.
+pub fn score_breakdown(
+    grid: &Grid,
+    weights: &ScoringWeights,
+    mode: &ModeInstance,
+    mapping: &TextMapping,
+) -> ScoreBreakdown {
+    let hard_rules = score_hard_rules(grid, weights);
+    let melodic = score_melodic(grid, weights);
+    let harmonic = score_harmonic(grid, weights);
+    let global = score_global(grid, weights);
+    let modal = score_modal(grid, weights, mode);
+    let texture = score_texture(grid, weights);
+    let tension_curve = score_tension_curve(grid, weights);
+    let interval_dist = score_interval_distribution(grid, weights);
+    let tonal_contour = score_tonal_contour(grid, mapping, weights);
+
+    let total = hard_rules + melodic + harmonic + global + modal
+        + texture + tension_curve + interval_dist + tonal_contour;
+
+    ScoreBreakdown {
+        hard_rules, melodic, harmonic, global, modal,
+        texture, tension_curve, interval_dist, tonal_contour, total,
+    }
+}
+
 /// Score contribution from a local window around a specific beat.
 /// Used for incremental scoring after a mutation.
 pub fn score_local(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance, beat: usize) -> f64 {

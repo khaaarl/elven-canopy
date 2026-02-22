@@ -22,7 +22,7 @@ use elven_canopy_music::markov::{MarkovModels, MotifLibrary};
 use elven_canopy_music::midi::{write_midi, write_midi_with_text};
 use elven_canopy_music::mode::{Mode, ModeInstance};
 use elven_canopy_music::sa::{SAConfig, anneal_with_text};
-use elven_canopy_music::scoring::{ScoringWeights, score_grid, score_tonal_contour, tonal_contour_stats};
+use elven_canopy_music::scoring::{ScoringWeights, score_grid, score_tonal_contour, score_breakdown, tonal_contour_stats};
 use elven_canopy_music::structure::{generate_structure, apply_structure, apply_responses};
 use elven_canopy_music::text_mapping::apply_text_mapping;
 use elven_canopy_music::vaelith::generate_phrases_with_brightness;
@@ -183,6 +183,22 @@ fn main() {
         let stats = grid.stats();
         println!("  {} attacks, {} sounding beats, {} rests",
             stats.total_attacks, stats.total_sounding, stats.rests);
+
+        // Scoring breakdown
+        let bd = score_breakdown(&grid, &weights, &mode, &mapping);
+        println!();
+        println!("Score breakdown:");
+        println!("  Hard rules:      {:>8.1}", bd.hard_rules);
+        println!("  Melodic:         {:>8.1}", bd.melodic);
+        println!("  Harmonic:        {:>8.1}", bd.harmonic);
+        println!("  Global:          {:>8.1}", bd.global);
+        println!("  Modal:           {:>8.1}", bd.modal);
+        println!("  Texture:         {:>8.1}", bd.texture);
+        println!("  Tension curve:   {:>8.1}", bd.tension_curve);
+        println!("  Interval dist:   {:>8.1}", bd.interval_dist);
+        println!("  Tonal contour:   {:>8.1}", bd.tonal_contour);
+        println!("  ─────────────────────────");
+        println!("  Total:           {:>8.1}", bd.total);
 
         // Tonal contour compliance stats
         let tonal_stats = tonal_contour_stats(&grid, &mapping);
