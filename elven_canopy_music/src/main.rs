@@ -10,6 +10,9 @@
 //   Batch mode:
 //   cargo run -p elven_canopy_music -- --batch N [--output-dir DIR] [other flags]
 //
+//   Mode scan (same seed across all 6 modes):
+//   cargo run -p elven_canopy_music -- --mode-scan [--seed N] [other flags]
+//
 // Modes: dorian, phrygian, lydian, mixolydian, aeolian, ionian
 // Brightness: 0.0 = dark/warm vowels, 1.0 = bright/silvery, 0.5 = neutral
 
@@ -33,6 +36,12 @@ fn main() {
     // Check for batch mode
     if args.iter().any(|a| a == "--batch") {
         run_batch(&args);
+        return;
+    }
+
+    // Check for mode-scan: generate the same piece in all 6 modes
+    if args.iter().any(|a| a == "--mode-scan") {
+        run_mode_scan(&args);
         return;
     }
 
@@ -325,4 +334,94 @@ fn run_batch(args: &[String]) {
     println!();
     println!("Generated {} pieces in {}/", count, output_dir);
     println!("Rate them with: python python/rate_midi.py --dir {}", output_dir);
+}
+
+/// Generate the same piece in all 6 church modes for comparison.
+fn run_mode_scan(args: &[String]) {
+    let num_sections: usize = parse_flag(args, "--sections").unwrap_or(3);
+    let sa_iters: usize = parse_flag(args, "--sa-iterations").unwrap_or(10000);
+    let tempo: u16 = parse_flag(args, "--tempo").unwrap_or(72);
+    let seed: u64 = parse_flag(args, "--seed").unwrap_or(42);
+    let output_dir: String = parse_flag(args, "--output-dir")
+        .unwrap_or_else(|| ".tmp/mode_scan".to_string());
+    let brightness: f64 = parse_flag(args, "--brightness").unwrap_or(0.5);
+
+    let weights = ScoringWeights::default();
+
+    println!("=== Mode Scan: seed {} across 6 modes ===", seed);
+    println!("Sections: {}, Tempo: {}, Brightness: {:.1}", num_sections, tempo, brightness);
+    println!("Output dir: {}", output_dir);
+    println!();
+
+    std::fs::create_dir_all(&output_dir).expect("Failed to create output directory");
+
+    let models = if Path::new("data/markov_models.json").exists() {
+        MarkovModels::load(Path::new("data/markov_models.json"))
+            .unwrap_or_else(|_| MarkovModels::default_models())
+    } else {
+        MarkovModels::default_models()
+    };
+
+    let motif_library = if Path::new("data/motif_library.json").exists() {
+        MotifLibrary::load(Path::new("data/motif_library.json"))
+            .unwrap_or_else(|_| MotifLibrary::default_library())
+    } else {
+        MotifLibrary::default_library()
+    };
+
+    let config = SAConfig {
+        cooling_rate: 1.0 - (1.0 / sa_iters as f64),
+        ..Default::default()
+    };
+
+    let modes = [
+        ("dorian", Mode::Dorian, 2),
+        ("phrygian", Mode::Phrygian, 4),
+        ("lydian", Mode::Lydian, 5),
+        ("mixolydian", Mode::Mixolydian, 7),
+        ("aeolian", Mode::Aeolian, 9),
+        ("ionian", Mode::Ionian, 0),
+    ];
+
+    println!("{:<12} {:>6} {:>10} {:>10} {:>10} {:>8}",
+        "Mode", "Final", "Draft", "Final", "Delta", "Accept%");
+    println!("{}", "-".repeat(62));
+
+    for (name, mode_enum, final_pc) in &modes {
+        let mode = ModeInstance::new(*mode_enum, *final_pc);
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        let plan = generate_structure(&motif_library, num_sections, &mut rng);
+        let mut grid = Grid::new(plan.total_beats);
+        grid.tempo_bpm = tempo;
+        let mut structural = apply_structure(&mut grid, &plan);
+        apply_responses(&mut grid, &plan, &mode, &mut structural);
+        fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
+        generate_final_cadence(&mut grid, &mode, &mut structural);
+
+        let phrase_candidates = generate_phrases_with_brightness(num_sections, brightness, &mut rng);
+        let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
+
+        let draft_score = score_grid(&grid, &weights, &mode)
+            + score_tonal_contour(&grid, &mapping, &weights);
+        let result = anneal_with_text(
+            &mut grid, &models, &structural, &weights, &mode,
+            &config, &plan, &mut mapping, &phrase_candidates, &mut rng,
+        );
+
+        let accept_pct = if result.iterations > 0 {
+            result.accepted as f64 / result.iterations as f64 * 100.0
+        } else { 0.0 };
+
+        let output_path = format!("{}/{}.mid", output_dir, name);
+        write_midi_with_text(&grid, &mapping, Path::new(&output_path))
+            .expect("Failed to write MIDI");
+
+        println!("{:<12} {:>6} {:>10.1} {:>10.1} {:>+10.1} {:>7.1}%",
+            name, pitch_name(*final_pc), draft_score, result.final_score,
+            result.final_score - draft_score, accept_pct);
+    }
+
+    println!();
+    println!("Generated 6 mode variants in {}/", output_dir);
 }
