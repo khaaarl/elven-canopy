@@ -158,6 +158,112 @@ impl Grid {
     }
 }
 
+impl Grid {
+    /// Print a compact text summary of the grid for debugging.
+    /// Shows each voice as a row with note names and durations.
+    pub fn summary(&self) -> String {
+        let mut out = String::new();
+        let bar_beats = 8; // 4/4 time in eighth notes
+
+        for voice in Voice::ALL {
+            out.push_str(&format!("{:>8}: ", format!("{:?}", voice)));
+            let mut beat = 0;
+            while beat < self.num_beats {
+                // Bar line
+                if beat > 0 && beat % bar_beats == 0 {
+                    out.push('|');
+                }
+
+                let cell = self.cell(voice, beat);
+                if cell.is_rest {
+                    out.push('.');
+                    beat += 1;
+                } else if cell.attack {
+                    let name = pitch_name(cell.pitch);
+                    out.push_str(name);
+                    // Count continuation beats
+                    let mut dur = 1;
+                    while beat + dur < self.num_beats {
+                        let next = self.cell(voice, beat + dur);
+                        if next.is_rest || next.attack {
+                            break;
+                        }
+                        dur += 1;
+                    }
+                    // Show holds as dashes
+                    for _ in 1..dur {
+                        out.push('-');
+                    }
+                    beat += dur;
+                } else {
+                    // Continuation without attack (shouldn't happen at start of display)
+                    out.push('-');
+                    beat += 1;
+                }
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Count note statistics for the grid.
+    pub fn stats(&self) -> GridStats {
+        let mut total_attacks = 0;
+        let mut total_sounding = 0;
+        let mut rests = 0;
+
+        for voice in Voice::ALL {
+            for beat in 0..self.num_beats {
+                let cell = self.cell(voice, beat);
+                if cell.is_rest {
+                    rests += 1;
+                } else {
+                    total_sounding += 1;
+                    if cell.attack {
+                        total_attacks += 1;
+                    }
+                }
+            }
+        }
+
+        GridStats {
+            total_beats: self.num_beats,
+            total_attacks,
+            total_sounding,
+            rests,
+        }
+    }
+}
+
+/// Statistics about a grid's contents.
+#[derive(Debug)]
+pub struct GridStats {
+    pub total_beats: usize,
+    pub total_attacks: usize,
+    pub total_sounding: usize,
+    pub rests: usize,
+}
+
+/// Convert a MIDI pitch to a compact note name (e.g., "C4", "F#3").
+pub fn pitch_name(pitch: u8) -> &'static str {
+    const NAMES: &[&str] = &[
+        "C0","C#0","D0","Eb0","E0","F0","F#0","G0","Ab0","A0","Bb0","B0",
+        "C1","C#1","D1","Eb1","E1","F1","F#1","G1","Ab1","A1","Bb1","B1",
+        "C2","C#2","D2","Eb2","E2","F2","F#2","G2","Ab2","A2","Bb2","B2",
+        "C3","C#3","D3","Eb3","E3","F3","F#3","G3","Ab3","A3","Bb3","B3",
+        "C4","C#4","D4","Eb4","E4","F4","F#4","G4","Ab4","A4","Bb4","B4",
+        "C5","C#5","D5","Eb5","E5","F5","F#5","G5","Ab5","A5","Bb5","B5",
+        "C6","C#6","D6","Eb6","E6","F6","F#6","G6","Ab6","A6","Bb6","B6",
+        "C7","C#7","D7","Eb7","E7","F7","F#7","G7","Ab7","A7","Bb7","B7",
+        "C8","C#8","D8","Eb8","E8","F8","F#8","G8","Ab8","A8","Bb8","B8",
+    ];
+    if (pitch as usize) < NAMES.len() {
+        NAMES[pitch as usize]
+    } else {
+        "??"
+    }
+}
+
 /// Musical interval helpers.
 pub mod interval {
     /// Compute the interval in semitones between two MIDI pitches.
