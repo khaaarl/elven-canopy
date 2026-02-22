@@ -16,7 +16,7 @@
 use elven_canopy_music::draft::{fill_draft, generate_final_cadence};
 use elven_canopy_music::grid::Grid;
 use elven_canopy_music::markov::{MarkovModels, MotifLibrary};
-use elven_canopy_music::midi::write_midi;
+use elven_canopy_music::midi::{write_midi, write_midi_with_text};
 use elven_canopy_music::mode::{Mode, ModeInstance};
 use elven_canopy_music::sa::{SAConfig, anneal_with_text};
 use elven_canopy_music::scoring::{ScoringWeights, score_grid, score_tonal_contour, tonal_contour_stats};
@@ -194,9 +194,9 @@ fn main() {
         println!();
     }
 
-    // Write MIDI
+    // Write MIDI with embedded lyrics
     println!("[5/5] Writing MIDI to {}...", output_path);
-    match write_midi(&grid, Path::new(output_path)) {
+    match write_midi_with_text(&grid, &mapping, Path::new(output_path)) {
         Ok(()) => {
             let duration_seconds = grid.num_beats as f64 / (grid.tempo_bpm as f64 / 60.0 * 2.0);
             println!("  Done! Duration: {:.0}s ({:.1} bars)",

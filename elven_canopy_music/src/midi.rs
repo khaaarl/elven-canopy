@@ -4,9 +4,14 @@
 // Each voice maps to a separate MIDI track. The grid's eighth-note beats
 // map to MIDI ticks based on the tempo.
 //
+// Supports optional Vaelith lyric embedding: syllable text is written as
+// MIDI lyric meta events on the soprano track at syllable onset positions.
+// Most MIDI players display these as scrolling lyrics.
+//
 // Uses the `midly` crate for MIDI writing. Output is SMF Format 1 (multi-track).
 
 use crate::grid::{Grid, Voice};
+use crate::text_mapping::TextMapping;
 use midly::{
     Format, Header, MidiMessage, Smf, Timing, Track, TrackEvent, TrackEventKind,
     num::{u4, u7, u15, u24, u28},
@@ -21,7 +26,20 @@ const TICKS_PER_EIGHTH: u32 = TICKS_PER_QUARTER as u32 / 2;
 
 /// Convert a Grid to MIDI and write to a file.
 pub fn write_midi(grid: &Grid, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let smf = grid_to_smf(grid);
+    let smf = grid_to_smf(grid, None);
+    let mut buf = Vec::new();
+    smf.write(&mut buf)?;
+    std::fs::write(path, &buf)?;
+    Ok(())
+}
+
+/// Convert a Grid to MIDI with embedded Vaelith lyrics and write to a file.
+pub fn write_midi_with_text(
+    grid: &Grid,
+    mapping: &TextMapping,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let smf = grid_to_smf(grid, Some(mapping));
     let mut buf = Vec::new();
     smf.write(&mut buf)?;
     std::fs::write(path, &buf)?;
@@ -29,7 +47,7 @@ pub fn write_midi(grid: &Grid, path: &Path) -> Result<(), Box<dyn std::error::Er
 }
 
 /// Convert a Grid to an in-memory SMF.
-fn grid_to_smf(grid: &Grid) -> Smf<'static> {
+fn grid_to_smf(grid: &Grid, text: Option<&TextMapping>) -> Smf<'static> {
     let mut smf = Smf::new(Header::new(
         Format::Parallel,
         Timing::Metrical(u15::new(TICKS_PER_QUARTER)),
@@ -132,6 +150,28 @@ fn grid_to_smf(grid: &Grid) -> Smf<'static> {
             }
             // If not attack and not rest, it's a continuation — do nothing
 
+            // Add lyric events at syllable onsets (soprano track only)
+            if vi == 0 && cell.syllable_onset {
+                if let Some(mapping) = text {
+                    // Find the syllable span for this beat
+                    let lyric_text = mapping.spans.iter()
+                        .find(|s| s.voice == Voice::Soprano && s.start_beat == beat)
+                        .map(|s| s.text.clone());
+
+                    if let Some(text_str) = lyric_text {
+                        let lyric_bytes: Vec<u8> = text_str.bytes().collect();
+                        // Leak the bytes so they have 'static lifetime for midly
+                        let leaked: &'static [u8] = Box::leak(lyric_bytes.into_boxed_slice());
+                        let delta = beat_tick.saturating_sub(last_event_tick);
+                        track.push(TrackEvent {
+                            delta: u28::new(delta),
+                            kind: TrackEventKind::Meta(midly::MetaMessage::Lyric(leaked)),
+                        });
+                        last_event_tick = beat_tick;
+                    }
+                }
+            }
+
             current_tick = beat_tick + TICKS_PER_EIGHTH;
         }
 
@@ -175,7 +215,7 @@ mod tests {
         // Eighth note E4 (beat 2)
         grid.set_note(Voice::Soprano, 2, 64);
 
-        let smf = grid_to_smf(&grid);
+        let smf = grid_to_smf(&grid, None);
         // 1 tempo track + 4 voice tracks
         assert_eq!(smf.tracks.len(), 5);
     }
