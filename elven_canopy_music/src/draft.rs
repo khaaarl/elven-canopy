@@ -50,6 +50,11 @@ fn fill_voice(
     let mut last_pitch: Option<u8> = None;
     let mut beats_since_rest: usize = 0;
 
+    // Find the first structural cell for this voice — don't fill before it
+    let first_structural_beat = (0..grid.num_beats)
+        .find(|&b| structural.contains(&(voice.index(), b)))
+        .unwrap_or(0);
+
     for beat in 0..grid.num_beats {
         // Skip structural cells — they're already placed
         if structural.contains(&(voice.index(), beat)) {
@@ -79,9 +84,9 @@ fn fill_voice(
 
         // Breathing: insert rests for phrase structure
         let should_rest = if last_pitch.is_none() {
-            // Stagger voice entries: each voice enters a few beats apart
-            let voice_delay = voice.index() * 4 + rng.random_range(0..4);
-            beat < voice_delay
+            // Don't enter before the voice's first structural entry
+            // (preserves the staggered entry from structure planning)
+            beat < first_structural_beat
         } else if beats_since_rest > 24 && beat_in_bar == 0 {
             // After ~3 bars, take a breath on a downbeat
             rng.random_bool(0.4)
