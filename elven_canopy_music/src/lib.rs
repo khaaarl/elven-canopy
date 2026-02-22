@@ -24,3 +24,4 @@ pub mod draft;
 pub mod scoring;
 pub mod sa;
 pub mod midi;
+pub mod vaelith;
