@@ -17,9 +17,11 @@ use elven_canopy_music::grid::Grid;
 use elven_canopy_music::markov::{MarkovModels, MotifLibrary};
 use elven_canopy_music::midi::write_midi;
 use elven_canopy_music::mode::{Mode, ModeInstance};
-use elven_canopy_music::sa::{SAConfig, anneal};
-use elven_canopy_music::scoring::{ScoringWeights, score_grid};
+use elven_canopy_music::sa::{SAConfig, anneal_with_text};
+use elven_canopy_music::scoring::{ScoringWeights, score_grid, score_tonal_contour};
 use elven_canopy_music::structure::{generate_structure, apply_structure};
+use elven_canopy_music::text_mapping::apply_text_mapping;
+use elven_canopy_music::vaelith::generate_phrases;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::path::Path;
@@ -117,23 +119,43 @@ fn main() {
     generate_final_cadence(&mut grid, &mode, &mut structural);
     println!("  {} total structural cells (including final cadence).", structural.len());
 
-    let draft_score = score_grid(&grid, &weights, &mode);
-    println!("  Draft score: {:.1}", draft_score);
+    // Generate Vaelith text and apply text mapping
+    println!("  Generating Vaelith text...");
+    let phrase_candidates = generate_phrases(num_sections, &mut rng);
+    let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
+    println!("  {} syllable spans mapped across {} section phrases.",
+        mapping.spans.len(), mapping.section_phrases.len());
+    for (i, phrase) in mapping.section_phrases.iter().enumerate() {
+        println!("    Section {}: \"{}\" ({})", i + 1, phrase.text, phrase.meaning);
+    }
 
-    // SA refinement
-    println!("[4/5] Refining with simulated annealing...");
+    let draft_score = score_grid(&grid, &weights, &mode);
+    let draft_text_score = score_tonal_contour(&grid, &mapping, &weights);
+    println!("  Draft score: {:.1} (counterpoint) + {:.1} (tonal) = {:.1}",
+        draft_score, draft_text_score, draft_score + draft_text_score);
+
+    // SA refinement with text awareness
+    println!("[4/5] Refining with text-aware simulated annealing...");
     let config = SAConfig {
         cooling_rate: 1.0 - (1.0 / sa_iters as f64),
         ..Default::default()
     };
-    let result = anneal(&mut grid, &models, &structural, &weights, &mode, &config, &mut rng);
+    let result = anneal_with_text(
+        &mut grid, &models, &structural, &weights, &mode,
+        &config, &plan, &mut mapping, &phrase_candidates, &mut rng,
+    );
     println!("  Iterations: {}", result.iterations);
     println!("  Accepted: {} ({:.1}%)",
         result.accepted,
         if result.iterations > 0 { result.accepted as f64 / result.iterations as f64 * 100.0 } else { 0.0 });
     println!("  Reheats: {}", result.reheats);
+    let total_draft = draft_score + draft_text_score;
     println!("  Score: {:.1} -> {:.1} (delta {:+.1})",
-        draft_score, result.final_score, result.final_score - draft_score);
+        total_draft, result.final_score, result.final_score - total_draft);
+    println!("  Final text phrases:");
+    for (i, phrase) in mapping.section_phrases.iter().enumerate() {
+        println!("    Section {}: \"{}\" ({})", i + 1, phrase.text, phrase.meaning);
+    }
 
     // Show grid summary if verbose
     if args.iter().any(|a| a == "--verbose" || a == "-v") {
@@ -251,8 +273,15 @@ fn run_batch(args: &[String]) {
         let mut structural = structural;
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
-        let draft_score = score_grid(&grid, &weights, &mode);
-        let result = anneal(&mut grid, &models, &structural, &weights, &mode, &config, &mut rng);
+        let phrase_candidates = generate_phrases(num_sections, &mut rng);
+        let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
+
+        let draft_score = score_grid(&grid, &weights, &mode)
+            + score_tonal_contour(&grid, &mapping, &weights);
+        let result = anneal_with_text(
+            &mut grid, &models, &structural, &weights, &mode,
+            &config, &plan, &mut mapping, &phrase_candidates, &mut rng,
+        );
 
         let accept_pct = if result.iterations > 0 {
             result.accepted as f64 / result.iterations as f64 * 100.0

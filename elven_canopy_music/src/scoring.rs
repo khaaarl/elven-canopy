@@ -26,6 +26,8 @@
 
 use crate::grid::{Grid, Voice, interval};
 use crate::mode::ModeInstance;
+use crate::text_mapping::TextMapping;
+use crate::vaelith::Tone;
 
 /// Weights for scoring layers. Tunable parameters.
 #[derive(Debug, Clone)]
@@ -73,6 +75,10 @@ pub struct ScoringWeights {
 
     // Interval variety: penalize monotonous voice-pair intervals
     pub interval_monotony_penalty: f64,
+
+    // Layer 6: Tonal contour constraints (Vaelith text)
+    pub tonal_contour_violation: f64,
+    pub tonal_contour_reward: f64,
 }
 
 impl Default for ScoringWeights {
@@ -121,6 +127,10 @@ impl Default for ScoringWeights {
 
             // Interval variety
             interval_monotony_penalty: -2.0,
+
+            // Tonal contour (high weight — Vaelith tone system)
+            tonal_contour_violation: -20.0,
+            tonal_contour_reward: 3.0,
         }
     }
 }
@@ -735,6 +745,131 @@ fn score_beat_modal(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance, 
     score
 }
 
+// ── Layer 6: Tonal contour constraints (Vaelith text) ──
+
+/// Score tonal contour compliance for all syllable spans in the mapping.
+///
+/// Each syllable has a fixed tone (level, rising, falling, dipping, peaking)
+/// that constrains pitch movement within its grid span. This function checks
+/// each span and rewards/penalizes based on contour match.
+///
+/// This is separate from score_grid() because it requires the TextMapping.
+/// Call it alongside score_grid() in the main scoring pipeline.
+pub fn score_tonal_contour(
+    grid: &Grid,
+    mapping: &TextMapping,
+    weights: &ScoringWeights,
+) -> f64 {
+    let mut score = 0.0;
+    for span in &mapping.spans {
+        score += score_span_contour(grid, span, weights);
+    }
+    score
+}
+
+/// Score tonal contour locally — only check spans that overlap with the given beat.
+/// Used for incremental scoring after a pitch mutation.
+pub fn score_tonal_contour_local(
+    grid: &Grid,
+    mapping: &TextMapping,
+    weights: &ScoringWeights,
+    beat: usize,
+) -> f64 {
+    let mut score = 0.0;
+    for span in &mapping.spans {
+        if beat >= span.start_beat && beat <= span.end_beat {
+            score += score_span_contour(grid, span, weights);
+        }
+    }
+    score
+}
+
+/// Score a single syllable span's tonal contour.
+fn score_span_contour(
+    grid: &Grid,
+    span: &crate::text_mapping::SyllableSpan,
+    weights: &ScoringWeights,
+) -> f64 {
+    // Collect pitches within the span
+    let mut pitches: Vec<u8> = Vec::new();
+    for beat in span.start_beat..=span.end_beat {
+        if beat >= grid.num_beats {
+            break;
+        }
+        let cell = grid.cell(span.voice, beat);
+        if !cell.is_rest {
+            pitches.push(cell.pitch);
+        }
+    }
+
+    if pitches.is_empty() {
+        return 0.0;
+    }
+
+    // Check if the span has enough notes for the tone's minimum
+    if pitches.len() < span.tone.min_notes() {
+        // Not enough notes to realize the contour — mild penalty
+        return weights.tonal_contour_violation * 0.5;
+    }
+
+    let first = pitches[0];
+    let last = *pitches.last().unwrap();
+
+    match span.tone {
+        Tone::Level => {
+            // All pitches should be the same
+            if pitches.iter().all(|&p| p == first) {
+                weights.tonal_contour_reward
+            } else {
+                weights.tonal_contour_violation
+            }
+        }
+        Tone::Rising => {
+            // First pitch < last pitch (net ascending)
+            if first < last {
+                weights.tonal_contour_reward
+            } else {
+                weights.tonal_contour_violation
+            }
+        }
+        Tone::Falling => {
+            // First pitch > last pitch (net descending)
+            if first > last {
+                weights.tonal_contour_reward
+            } else {
+                weights.tonal_contour_violation
+            }
+        }
+        Tone::Dipping => {
+            // Valley: some pitch in the middle is lower than both first and last
+            if pitches.len() >= 3 {
+                let min_middle = pitches[1..pitches.len() - 1].iter().min().copied().unwrap_or(first);
+                if min_middle < first && min_middle < last {
+                    weights.tonal_contour_reward
+                } else {
+                    weights.tonal_contour_violation
+                }
+            } else {
+                // Only 2 notes but need 3 for dipping
+                weights.tonal_contour_violation * 0.5
+            }
+        }
+        Tone::Peaking => {
+            // Hill: some pitch in the middle is higher than both first and last
+            if pitches.len() >= 3 {
+                let max_middle = pitches[1..pitches.len() - 1].iter().max().copied().unwrap_or(first);
+                if max_middle > first && max_middle > last {
+                    weights.tonal_contour_reward
+                } else {
+                    weights.tonal_contour_violation
+                }
+            } else {
+                weights.tonal_contour_violation * 0.5
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,6 +977,63 @@ mod tests {
         assert!(with_recovery > no_recovery,
             "Leap with recovery ({:.1}) should score better than without ({:.1})",
             with_recovery, no_recovery);
+    }
+
+    #[test]
+    fn test_tonal_contour_level_rewarded() {
+        use crate::text_mapping::{TextMapping, SyllableSpan};
+
+        let mut grid = Grid::new(4);
+        let weights = ScoringWeights::default();
+
+        // Level tone: all notes should be the same pitch
+        grid.set_note(Voice::Soprano, 0, 62);
+        grid.extend_note(Voice::Soprano, 1);
+        grid.extend_note(Voice::Soprano, 2);
+
+        let mapping = TextMapping {
+            section_phrases: vec![],
+            spans: vec![SyllableSpan {
+                voice: Voice::Soprano,
+                start_beat: 0,
+                end_beat: 2,
+                tone: Tone::Level,
+                text: "thir".to_string(),
+                stressed: true,
+                syllable_id: 1,
+            }],
+        };
+
+        let score = score_tonal_contour(&grid, &mapping, &weights);
+        assert!(score > 0.0, "Level tone with held pitch should be rewarded, got {}", score);
+    }
+
+    #[test]
+    fn test_tonal_contour_rising_penalized_when_falling() {
+        use crate::text_mapping::{TextMapping, SyllableSpan};
+
+        let mut grid = Grid::new(4);
+        let weights = ScoringWeights::default();
+
+        // Rising tone but pitch goes down
+        grid.set_note(Voice::Soprano, 0, 67);
+        grid.set_note(Voice::Soprano, 1, 64);
+
+        let mapping = TextMapping {
+            section_phrases: vec![],
+            spans: vec![SyllableSpan {
+                voice: Voice::Soprano,
+                start_beat: 0,
+                end_beat: 1,
+                tone: Tone::Rising,
+                text: "thír".to_string(),
+                stressed: true,
+                syllable_id: 1,
+            }],
+        };
+
+        let score = score_tonal_contour(&grid, &mapping, &weights);
+        assert!(score < 0.0, "Rising tone with falling pitch should be penalized, got {}", score);
     }
 
     #[test]

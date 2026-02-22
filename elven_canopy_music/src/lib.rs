@@ -25,3 +25,4 @@ pub mod scoring;
 pub mod sa;
 pub mod midi;
 pub mod vaelith;
+pub mod text_mapping;

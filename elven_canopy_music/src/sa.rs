@@ -4,23 +4,28 @@
 // mutations, scoring the result, and accepting/rejecting based on the
 // Metropolis criterion. Uses a cooling schedule with periodic reheating.
 //
-// Two types of micro mutations (~80/20 split):
-// - Pitch mutation: change a note's pitch using Markov-guided proposal,
-//   snapped to the active mode. Builds a context of recent intervals for
-//   the Markov model. Uses incremental local scoring for efficiency.
-// - Duration mutation: extend a note into an adjacent rest, or shorten by
-//   converting the last beat to a rest. Respects structural cells.
+// Three types of mutations:
+// - Pitch mutation (~75%): change a note's pitch using Markov-guided proposal,
+//   snapped to the active mode. Includes tonal contour scoring when text
+//   mapping is active.
+// - Duration mutation (~20%): extend a note into an adjacent rest, or shorten
+//   by converting the last beat to a rest. Respects structural cells.
+// - Text-swap macro mutation (~5%, text mode only): replace a section's phrase
+//   with an alternative candidate, changing the tonal constraints.
 //
 // Structural cells (motif entries from structure.rs and final cadence from
 // draft.rs) are excluded from mutation — they're the compositional anchors.
 //
-// Depends on scoring.rs for quality evaluation and markov.rs for
-// mutation proposals.
+// Depends on scoring.rs for quality evaluation, markov.rs for mutation
+// proposals, and text_mapping.rs + vaelith.rs for text-aware optimization.
 
 use crate::grid::{Grid, Voice};
 use crate::markov::MarkovModels;
 use crate::mode::ModeInstance;
-use crate::scoring::{ScoringWeights, score_grid, score_local};
+use crate::scoring::{ScoringWeights, score_grid, score_local, score_tonal_contour, score_tonal_contour_local};
+use crate::structure::StructurePlan;
+use crate::text_mapping::{TextMapping, swap_section_phrase};
+use crate::vaelith::VaelithPhrase;
 use rand::Rng;
 
 /// SA configuration parameters.
@@ -157,6 +162,270 @@ pub fn anneal(
         iterations,
         accepted,
         reheats,
+    }
+}
+
+/// Run text-aware simulated annealing on a grid.
+///
+/// Extends the base SA with tonal contour scoring and text-swap macro mutations.
+/// The text mapping is modified in-place when phrase swaps are accepted.
+pub fn anneal_with_text(
+    grid: &mut Grid,
+    models: &MarkovModels,
+    structural_cells: &[(usize, usize)],
+    weights: &ScoringWeights,
+    mode: &ModeInstance,
+    config: &SAConfig,
+    plan: &StructurePlan,
+    mapping: &mut TextMapping,
+    phrase_candidates: &[Vec<VaelithPhrase>],
+    rng: &mut impl Rng,
+) -> SAResult {
+    let structural_set: std::collections::HashSet<(usize, usize)> =
+        structural_cells.iter().copied().collect();
+
+    let num_beats = grid.num_beats;
+    let mut mutable_cells: Vec<(Voice, usize)> = Vec::new();
+    for &voice in &Voice::ALL {
+        for beat in 0..num_beats {
+            if structural_set.contains(&(voice.index(), beat)) {
+                continue;
+            }
+            let cell = grid.cell(voice, beat);
+            if !cell.is_rest && cell.attack {
+                mutable_cells.push((voice, beat));
+            }
+        }
+    }
+
+    if mutable_cells.is_empty() {
+        let base = score_grid(grid, weights, mode);
+        let text = score_tonal_contour(grid, mapping, weights);
+        return SAResult {
+            final_score: base + text,
+            iterations: 0,
+            accepted: 0,
+            reheats: 0,
+        };
+    }
+
+    let mut temp = config.initial_temp;
+    let base_score = score_grid(grid, weights, mode);
+    let text_score = score_tonal_contour(grid, mapping, weights);
+    let mut _current_score = base_score + text_score;
+    let mut iterations = 0;
+    let mut accepted = 0;
+    let mut reheats = 0;
+
+    let num_sections = plan.imitation_points.len();
+
+    while temp > config.final_temp {
+        for _ in 0..config.mutations_per_step {
+            let roll: f64 = rng.random();
+
+            if roll < 0.05 && num_sections > 0 && !phrase_candidates.is_empty() {
+                // Text-swap macro mutation (~5%)
+                let delta = try_text_swap_mutation(
+                    grid, weights, mode, plan, mapping, phrase_candidates, temp, rng,
+                );
+                if let Some(d) = delta {
+                    _current_score += d;
+                    accepted += 1;
+                }
+            } else if roll < 0.25 {
+                // Duration mutation (~20%)
+                let idx = rng.random_range(0..mutable_cells.len());
+                let (voice, beat) = mutable_cells[idx];
+                let delta = try_duration_mutation(
+                    grid, weights, mode, voice, beat, &structural_set, temp, rng,
+                );
+                if let Some(d) = delta {
+                    _current_score += d;
+                    accepted += 1;
+                }
+            } else {
+                // Pitch mutation with tonal contour awareness (~75%)
+                let idx = rng.random_range(0..mutable_cells.len());
+                let (voice, beat) = mutable_cells[idx];
+                let delta = try_pitch_mutation_with_text(
+                    grid, models, weights, mode, mapping, voice, beat, temp, rng,
+                );
+                if let Some(d) = delta {
+                    _current_score += d;
+                    accepted += 1;
+                }
+            }
+
+            iterations += 1;
+        }
+
+        temp *= config.cooling_rate;
+
+        if temp < config.reheat_temp && reheats < config.max_reheats {
+            temp = config.reheat_target;
+            reheats += 1;
+        }
+    }
+
+    let final_base = score_grid(grid, weights, mode);
+    let final_text = score_tonal_contour(grid, mapping, weights);
+    SAResult {
+        final_score: final_base + final_text,
+        iterations,
+        accepted,
+        reheats,
+    }
+}
+
+/// Try a pitch mutation that also considers tonal contour constraints.
+fn try_pitch_mutation_with_text(
+    grid: &mut Grid,
+    models: &MarkovModels,
+    weights: &ScoringWeights,
+    mode: &ModeInstance,
+    mapping: &TextMapping,
+    voice: Voice,
+    beat: usize,
+    temp: f64,
+    rng: &mut impl Rng,
+) -> Option<f64> {
+    let old_pitch = grid.cell(voice, beat).pitch;
+    let (range_low, range_high) = voice.range();
+
+    let old_local = score_local(grid, weights, mode, beat)
+        + score_tonal_contour_local(grid, mapping, weights, beat);
+
+    // Build Markov context from preceding notes
+    let mut context = Vec::new();
+    let mut prev_pitch = None;
+    for b in (0..beat).rev() {
+        let cell = grid.cell(voice, b);
+        if cell.attack && !cell.is_rest {
+            if let Some(pp) = prev_pitch {
+                let iv = cell.pitch as i8 - pp as i8;
+                context.insert(0, iv);
+                if context.len() >= 3 {
+                    break;
+                }
+            }
+            prev_pitch = Some(cell.pitch);
+        }
+    }
+
+    let pitch_before = {
+        let mut p = None;
+        for b in (0..beat).rev() {
+            let cell = grid.cell(voice, b);
+            if !cell.is_rest {
+                p = Some(cell.pitch);
+                break;
+            }
+        }
+        p.unwrap_or(old_pitch)
+    };
+
+    let rng_val: f64 = rng.random();
+    let proposed_interval = models.melodic.sample(&context, rng_val);
+    let raw_pitch = (pitch_before as i16 + proposed_interval as i16)
+        .clamp(range_low as i16, range_high as i16) as u8;
+    let new_pitch = mode.snap_to_mode(raw_pitch);
+
+    if new_pitch == old_pitch {
+        return None;
+    }
+
+    // Apply
+    grid.cell_mut(voice, beat).pitch = new_pitch;
+    for b in (beat + 1)..grid.num_beats {
+        let cell = grid.cell(voice, b);
+        if cell.is_rest || cell.attack {
+            break;
+        }
+        grid.cell_mut(voice, b).pitch = new_pitch;
+    }
+
+    let new_local = score_local(grid, weights, mode, beat)
+        + score_tonal_contour_local(grid, mapping, weights, beat);
+    let delta = new_local - old_local;
+
+    if metropolis_accept(delta, temp, rng) {
+        Some(delta)
+    } else {
+        // Revert
+        grid.cell_mut(voice, beat).pitch = old_pitch;
+        for b in (beat + 1)..grid.num_beats {
+            let cell = grid.cell(voice, b);
+            if cell.is_rest || cell.attack {
+                break;
+            }
+            grid.cell_mut(voice, b).pitch = old_pitch;
+        }
+        None
+    }
+}
+
+/// Try swapping a section's text phrase with a different candidate.
+/// Scores before and after the swap, accepting via Metropolis criterion.
+fn try_text_swap_mutation(
+    grid: &mut Grid,
+    weights: &ScoringWeights,
+    _mode: &ModeInstance,
+    plan: &StructurePlan,
+    mapping: &mut TextMapping,
+    phrase_candidates: &[Vec<VaelithPhrase>],
+    temp: f64,
+    rng: &mut impl Rng,
+) -> Option<f64> {
+    let num_sections = plan.imitation_points.len().min(phrase_candidates.len());
+    if num_sections == 0 {
+        return None;
+    }
+
+    let section_idx = rng.random_range(0..num_sections);
+    let candidates = &phrase_candidates[section_idx];
+    if candidates.len() <= 1 {
+        return None;
+    }
+
+    // Pick a different phrase
+    let current_text = if section_idx < mapping.section_phrases.len() {
+        &mapping.section_phrases[section_idx].text
+    } else {
+        return None;
+    };
+
+    let alternatives: Vec<&VaelithPhrase> = candidates.iter()
+        .filter(|p| p.text != *current_text)
+        .collect();
+
+    if alternatives.is_empty() {
+        return None;
+    }
+
+    let new_phrase = alternatives[rng.random_range(0..alternatives.len())].clone();
+
+    // Score before
+    let old_score = score_tonal_contour(grid, mapping, weights);
+
+    // Save old phrase for potential revert
+    let old_phrase = mapping.section_phrases[section_idx].clone();
+    let old_spans: Vec<_> = mapping.spans.clone();
+
+    // Apply swap
+    swap_section_phrase(grid, mapping, plan, section_idx, &new_phrase);
+
+    // Score after
+    let new_score = score_tonal_contour(grid, mapping, weights);
+    let delta = new_score - old_score;
+
+    if metropolis_accept(delta, temp, rng) {
+        Some(delta)
+    } else {
+        // Revert: restore old mapping
+        swap_section_phrase(grid, mapping, plan, section_idx, &old_phrase);
+        // Restore the exact old spans (the IDs may have changed)
+        mapping.spans = old_spans;
+        None
     }
 }
 
@@ -390,5 +659,43 @@ mod tests {
 
         assert!(result.iterations > 0, "SA should have run some iterations");
         assert!(result.accepted > 0, "SA should have accepted some mutations");
+    }
+
+    #[test]
+    fn test_sa_with_text() {
+        use crate::vaelith::generate_phrases;
+        use crate::text_mapping::apply_text_mapping;
+
+        let models = MarkovModels::default_models();
+        let library = MotifLibrary::default_library();
+        let weights = ScoringWeights::default();
+        let mode = ModeInstance::d_dorian();
+        let mut rng = rand::rng();
+
+        let plan = generate_structure(&library, 2, &mut rng);
+        let mut grid = Grid::new(plan.total_beats);
+        let structural = apply_structure(&mut grid, &plan);
+        fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
+
+        let phrases = generate_phrases(2, &mut rng);
+        let mut mapping = apply_text_mapping(&mut grid, &plan, &phrases);
+
+        let config = SAConfig {
+            initial_temp: 5.0,
+            final_temp: 0.1,
+            cooling_rate: 0.99,
+            mutations_per_step: 5,
+            max_reheats: 1,
+            ..Default::default()
+        };
+
+        let result = anneal_with_text(
+            &mut grid, &models, &structural, &weights, &mode,
+            &config, &plan, &mut mapping, &phrases, &mut rng,
+        );
+
+        assert!(result.iterations > 0, "Text-aware SA should have run");
+        assert!(result.accepted > 0, "Text-aware SA should accept mutations");
+        assert!(!mapping.spans.is_empty(), "Mapping should still have spans");
     }
 }
