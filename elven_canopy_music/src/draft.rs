@@ -35,8 +35,28 @@ pub fn fill_draft(
     let structural_set: std::collections::HashSet<(usize, usize)> =
         structural_cells.iter().copied().collect();
 
+    // Find section start beats for each voice (where structural motif entries begin)
+    // These help us insert breathing room between sections.
+    let mut section_starts: Vec<Vec<usize>> = vec![Vec::new(); 4];
+    for &(vi, beat) in structural_cells {
+        // An attack on a structural cell that has a rest before it marks a section start
+        let cell = grid.cell(Voice::ALL[vi], beat);
+        if cell.attack && !cell.is_rest {
+            if beat == 0 || grid.cell(Voice::ALL[vi], beat - 1).is_rest
+                || !structural_set.contains(&(vi, beat - 1))
+            {
+                section_starts[vi].push(beat);
+            }
+        }
+    }
+    for starts in &mut section_starts {
+        starts.sort();
+        starts.dedup();
+    }
+
     for voice in Voice::ALL {
-        fill_voice(grid, voice, models, &structural_set, mode, rng);
+        fill_voice(grid, voice, models, &structural_set,
+                   &section_starts[voice.index()], mode, rng);
     }
 }
 
@@ -46,6 +66,7 @@ fn fill_voice(
     voice: Voice,
     models: &MarkovModels,
     structural: &std::collections::HashSet<(usize, usize)>,
+    section_starts: &[usize],
     mode: &ModeInstance,
     rng: &mut impl Rng,
 ) {
@@ -86,11 +107,18 @@ fn fill_voice(
 
         let beat_in_bar = beat % 8; // position within a 4/4 bar
 
+        // Check if a new structural section starts soon (within 2 beats)
+        let near_section_start = section_starts.iter().any(|&s| {
+            s > beat && s <= beat + 2
+        });
+
         // Breathing: insert rests for phrase structure
         let should_rest = if last_pitch.is_none() {
             // Don't enter before the voice's first structural entry
-            // (preserves the staggered entry from structure planning)
             beat < first_structural_beat
+        } else if near_section_start {
+            // Rest just before a new structural section for clean transitions
+            true
         } else if beats_since_rest > 24 && beat_in_bar == 0 {
             // After ~3 bars, take a breath on a downbeat
             rng.random_bool(0.4)
