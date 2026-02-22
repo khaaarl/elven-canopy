@@ -5,12 +5,13 @@
 //
 // Usage:
 //   cargo run -p elven_canopy_music -- [output.mid] [--sections N] [--sa-iterations N]
-//     [--seed N] [--mode MODE] [--tempo BPM] [-v|--verbose]
+//     [--seed N] [--mode MODE] [--tempo BPM] [--brightness 0.0-1.0] [-v|--verbose]
 //
 //   Batch mode:
 //   cargo run -p elven_canopy_music -- --batch N [--output-dir DIR] [other flags]
 //
 // Modes: dorian, phrygian, lydian, mixolydian, aeolian, ionian
+// Brightness: 0.0 = dark/warm vowels, 1.0 = bright/silvery, 0.5 = neutral
 
 use elven_canopy_music::draft::{fill_draft, generate_final_cadence};
 use elven_canopy_music::grid::Grid;
@@ -21,7 +22,7 @@ use elven_canopy_music::sa::{SAConfig, anneal_with_text};
 use elven_canopy_music::scoring::{ScoringWeights, score_grid, score_tonal_contour, tonal_contour_stats};
 use elven_canopy_music::structure::{generate_structure, apply_structure, apply_responses};
 use elven_canopy_music::text_mapping::apply_text_mapping;
-use elven_canopy_music::vaelith::generate_phrases;
+use elven_canopy_music::vaelith::generate_phrases_with_brightness;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::path::Path;
@@ -45,6 +46,7 @@ fn main() {
     let seed: Option<u64> = parse_flag(&args, "--seed");
     let tempo: u16 = parse_flag(&args, "--tempo").unwrap_or(72);
     let mode_name: String = parse_flag(&args, "--mode").unwrap_or_else(|| "dorian".to_string());
+    let brightness: f64 = parse_flag(&args, "--brightness").unwrap_or(0.5);
 
     // Parse mode
     let mode = parse_mode(&mode_name);
@@ -53,6 +55,10 @@ fn main() {
     println!("Output: {}", output_path);
     println!("Mode: {:?} (final = {})", mode.mode, pitch_name(mode.final_pc));
     println!("Tempo: {} BPM", tempo);
+    println!("Brightness: {:.1} ({})", brightness,
+        if brightness > 0.7 { "bright/silvery" }
+        else if brightness < 0.3 { "dark/warm" }
+        else { "neutral" });
     println!("Sections: {}", num_sections);
     println!("SA iterations target: ~{}", sa_iters);
     if let Some(s) = seed {
@@ -123,8 +129,8 @@ fn main() {
     println!("  {} total structural cells (including cadence+responses).", structural.len());
 
     // Generate Vaelith text and apply text mapping
-    println!("  Generating Vaelith text...");
-    let phrase_candidates = generate_phrases(num_sections, &mut rng);
+    println!("  Generating Vaelith text (brightness {:.1})...", brightness);
+    let phrase_candidates = generate_phrases_with_brightness(num_sections, brightness, &mut rng);
     let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
     println!("  {} syllable spans mapped across {} section phrases.",
         mapping.spans.len(), mapping.section_phrases.len());
@@ -245,12 +251,14 @@ fn run_batch(args: &[String]) {
     let mode_name: String = parse_flag(args, "--mode").unwrap_or_else(|| "dorian".to_string());
     let base_seed: u64 = parse_flag(args, "--seed").unwrap_or(1);
     let output_dir: String = parse_flag(args, "--output-dir").unwrap_or_else(|| ".tmp/batch".to_string());
+    let brightness: f64 = parse_flag(args, "--brightness").unwrap_or(0.5);
 
     let mode = parse_mode(&mode_name);
     let weights = ScoringWeights::default();
 
     println!("=== Batch Generation: {} pieces ===", count);
-    println!("Mode: {:?}, Tempo: {}, Sections: {}", mode.mode, tempo, num_sections);
+    println!("Mode: {:?}, Tempo: {}, Sections: {}, Brightness: {:.1}",
+        mode.mode, tempo, num_sections, brightness);
     println!("Output dir: {}", output_dir);
     println!();
 
@@ -292,7 +300,7 @@ fn run_batch(args: &[String]) {
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
-        let phrase_candidates = generate_phrases(num_sections, &mut rng);
+        let phrase_candidates = generate_phrases_with_brightness(num_sections, brightness, &mut rng);
         let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
 
         let draft_score = score_grid(&grid, &weights, &mode)

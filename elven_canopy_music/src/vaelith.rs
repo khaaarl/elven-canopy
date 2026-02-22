@@ -350,10 +350,24 @@ enum PhraseTemplate {
 
 /// Generate a set of candidate phrases for use in music generation.
 ///
+/// `brightness` (0.0–1.0) biases vocabulary toward front-class (bright, silvery)
+/// or back-class (dark, warm) vowels. 0.5 is neutral. This controls timbral color
+/// through vowel harmony — front vowels (e, i) have brighter formants, back
+/// vowels (o, u) are warmer.
+///
 /// Returns multiple phrases for each section, allowing SA to swap between
 /// candidates during refinement.
 pub fn generate_phrases(
     num_sections: usize,
+    rng: &mut impl Rng,
+) -> Vec<Vec<VaelithPhrase>> {
+    generate_phrases_with_brightness(num_sections, 0.5, rng)
+}
+
+/// Generate phrases with brightness bias (0.0 = dark, 1.0 = bright).
+pub fn generate_phrases_with_brightness(
+    num_sections: usize,
+    brightness: f64,
     rng: &mut impl Rng,
 ) -> Vec<Vec<VaelithPhrase>> {
     let mut sections = Vec::new();
@@ -370,13 +384,13 @@ pub fn generate_phrases(
         ];
 
         for &template in &templates {
-            if let Some(phrase) = generate_phrase(template, rng) {
+            if let Some(phrase) = generate_phrase(template, brightness, rng) {
                 candidates.push(phrase);
             }
         }
 
         // Add a liturgical variant
-        if let Some(phrase) = generate_phrase(PhraseTemplate::LiturgicalAffirmation, rng) {
+        if let Some(phrase) = generate_phrase(PhraseTemplate::LiturgicalAffirmation, brightness, rng) {
             candidates.push(phrase);
         }
 
@@ -386,12 +400,39 @@ pub fn generate_phrases(
     sections
 }
 
+/// Pick a lexical entry with brightness bias.
+/// Higher brightness favors front-class vowels, lower favors back-class.
+fn pick_biased<'a>(entries: &'a [LexEntry], brightness: f64, rng: &mut impl Rng) -> &'a LexEntry {
+    if entries.is_empty() {
+        panic!("Empty lexicon");
+    }
+
+    // Calculate weights: front-class words get more weight when brightness > 0.5
+    let weights: Vec<f64> = entries.iter().map(|e| {
+        match e.vowel_class {
+            VowelClass::Front => 0.3 + brightness * 0.7,       // 0.3–1.0
+            VowelClass::Back => 0.3 + (1.0 - brightness) * 0.7, // 1.0–0.3
+        }
+    }).collect();
+
+    let total: f64 = weights.iter().sum();
+    let r: f64 = rng.random::<f64>() * total;
+    let mut cum = 0.0;
+    for (i, &w) in weights.iter().enumerate() {
+        cum += w;
+        if cum > r {
+            return &entries[i];
+        }
+    }
+    &entries[0]
+}
+
 /// Generate a single phrase from a template.
-fn generate_phrase(template: PhraseTemplate, rng: &mut impl Rng) -> Option<VaelithPhrase> {
+fn generate_phrase(template: PhraseTemplate, brightness: f64, rng: &mut impl Rng) -> Option<VaelithPhrase> {
     match template {
         PhraseTemplate::SubjectVerb => {
-            let noun = &NOUNS[rng.random_range(0..NOUNS.len())];
-            let verb = &VERBS[rng.random_range(0..VERBS.len())];
+            let noun = pick_biased(NOUNS, brightness, rng);
+            let verb = pick_biased(VERBS, brightness, rng);
             let aspect_idx = rng.random_range(0..ASPECT_SUFFIXES.len());
             let (front, back, tone, _aspect_name) = ASPECT_SUFFIXES[aspect_idx];
 
@@ -403,9 +444,9 @@ fn generate_phrase(template: PhraseTemplate, rng: &mut impl Rng) -> Option<Vaeli
         }
 
         PhraseTemplate::SubjectObjectVerb => {
-            let subj = &NOUNS[rng.random_range(0..NOUNS.len())];
-            let obj = &NOUNS[rng.random_range(0..NOUNS.len())];
-            let verb = &VERBS[rng.random_range(0..VERBS.len())];
+            let subj = pick_biased(NOUNS, brightness, rng);
+            let obj = pick_biased(NOUNS, brightness, rng);
+            let verb = pick_biased(VERBS, brightness, rng);
             let aspect_idx = rng.random_range(0..ASPECT_SUFFIXES.len());
             let (af, ab, at, _) = ASPECT_SUFFIXES[aspect_idx];
 
@@ -419,8 +460,8 @@ fn generate_phrase(template: PhraseTemplate, rng: &mut impl Rng) -> Option<Vaeli
 
         PhraseTemplate::Exclamation => {
             let ha = PARTICLES.iter().find(|p| p.text == "há").unwrap();
-            let noun = &NOUNS[rng.random_range(0..NOUNS.len())];
-            let verb = &VERBS[rng.random_range(0..VERBS.len())];
+            let noun = pick_biased(NOUNS, brightness, rng);
+            let verb = pick_biased(VERBS, brightness, rng);
             let aspect_idx = rng.random_range(0..ASPECT_SUFFIXES.len());
             let (af, ab, at, _) = ASPECT_SUFFIXES[aspect_idx];
 
@@ -433,9 +474,9 @@ fn generate_phrase(template: PhraseTemplate, rng: &mut impl Rng) -> Option<Vaeli
         }
 
         PhraseTemplate::DescriptiveVerb => {
-            let adj = &ADJECTIVES[rng.random_range(0..ADJECTIVES.len())];
-            let noun = &NOUNS[rng.random_range(0..NOUNS.len())];
-            let verb = &VERBS[rng.random_range(0..VERBS.len())];
+            let adj = pick_biased(ADJECTIVES, brightness, rng);
+            let noun = pick_biased(NOUNS, brightness, rng);
+            let verb = pick_biased(VERBS, brightness, rng);
             let aspect_idx = rng.random_range(0..ASPECT_SUFFIXES.len());
             let (af, ab, at, _) = ASPECT_SUFFIXES[aspect_idx];
 
@@ -448,10 +489,10 @@ fn generate_phrase(template: PhraseTemplate, rng: &mut impl Rng) -> Option<Vaeli
         }
 
         PhraseTemplate::FullSentence => {
-            let subj = &NOUNS[rng.random_range(0..NOUNS.len())];
-            let obj = &NOUNS[rng.random_range(0..NOUNS.len())];
-            let verb = &VERBS[rng.random_range(0..VERBS.len())];
-            let adj = &ADJECTIVES[rng.random_range(0..ADJECTIVES.len())];
+            let subj = pick_biased(NOUNS, brightness, rng);
+            let obj = pick_biased(NOUNS, brightness, rng);
+            let verb = pick_biased(VERBS, brightness, rng);
+            let adj = pick_biased(ADJECTIVES, brightness, rng);
             let aspect_idx = rng.random_range(0..ASPECT_SUFFIXES.len());
             let case_idx = rng.random_range(0..CASE_SUFFIXES.len());
             let (af, ab, at, _) = ASPECT_SUFFIXES[aspect_idx];
@@ -469,8 +510,8 @@ fn generate_phrase(template: PhraseTemplate, rng: &mut impl Rng) -> Option<Vaeli
         }
 
         PhraseTemplate::PossessiveNoun => {
-            let n1 = &NOUNS[rng.random_range(0..NOUNS.len())];
-            let n2 = &NOUNS[rng.random_range(0..NOUNS.len())];
+            let n1 = pick_biased(NOUNS, brightness, rng);
+            let n2 = pick_biased(NOUNS, brightness, rng);
 
             let noun1 = n1.to_word();
             let noun2_gen = n2.with_suffix("-li", "-lu", Tone::Level); // genitive
@@ -480,7 +521,7 @@ fn generate_phrase(template: PhraseTemplate, rng: &mut impl Rng) -> Option<Vaeli
         }
 
         PhraseTemplate::LiturgicalAffirmation => {
-            let verb = &VERBS[rng.random_range(0..VERBS.len())];
+            let verb = pick_biased(VERBS, brightness, rng);
             let dai = PARTICLES.iter().find(|p| p.text == "dai").unwrap();
 
             // Use eternal aspect for liturgical
@@ -504,7 +545,7 @@ pub fn generate_single_phrase(rng: &mut impl Rng) -> VaelithPhrase {
         PhraseTemplate::PossessiveNoun,
     ];
     let template = templates[rng.random_range(0..templates.len())];
-    generate_phrase(template, rng).unwrap()
+    generate_phrase(template, 0.5, rng).unwrap()
 }
 
 #[cfg(test)]
