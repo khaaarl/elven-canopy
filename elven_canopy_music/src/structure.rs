@@ -1,9 +1,8 @@
 // Structure generation: high-level form planning for a piece.
 //
 // Before filling in individual notes, the system plans the overall form:
-// which motifs to use, when each voice enters, how long each section lasts.
-// This creates a partially-filled grid with motif cells constrained and
-// connective tissue cells free for the draft generator.
+// which motifs to use, when each voice enters, how long each section lasts,
+// and where call-and-response markers (dai/thol) are placed.
 //
 // Key features:
 // - 5 entry order patterns and 5 transposition schemes for variety
@@ -11,9 +10,11 @@
 // - Variable voice count per section (2-4 voices, fuller at bookends)
 // - 6 rhythmic patterns applied to motif entries
 // - Rest gaps between sections for phrase breathing
+// - Dai markers: homophonic affirmations between sections (~50% of gaps)
+// - Thol markers: sustained polyphonic chords at major structural midpoints
 //
-// Depends on markov.rs for motif library access. The output is consumed by
-// draft.rs to fill free cells.
+// Depends on markov.rs for motif library access and mode.rs for response
+// chord construction. The output is consumed by draft.rs to fill free cells.
 
 use crate::grid::{Grid, Voice};
 use crate::markov::{Motif, MotifLibrary};

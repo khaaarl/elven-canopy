@@ -1,18 +1,21 @@
 // Elven Canopy Music Generator
 //
 // A Palestrina-style polyphonic music generator that produces four-voice
-// choral music. The system uses a hybrid approach: Markov models trained on
-// Palestrina's corpus provide stylistic guidance, while simulated annealing
-// with rule-based scoring ensures counterpoint correctness.
+// choral music with procedurally generated Vaelith elvish lyrics. The system
+// uses a hybrid approach: Markov models trained on Palestrina's corpus provide
+// stylistic guidance, while simulated annealing with rule-based scoring
+// ensures counterpoint correctness and tonal contour compliance.
 //
 // Architecture:
 // - grid.rs: Core score representation (SATB voices on an eighth-note grid)
 // - markov.rs: Loaded Markov transition tables for melodic/harmonic guidance
-// - structure.rs: High-level form planning (motif placement, imitative entries)
-// - draft.rs: Initial grid filling using Markov-guided sampling
-// - scoring.rs: Multi-layer scoring function (counterpoint rules + preferences)
-// - sa.rs: Simulated annealing refinement loop
+// - structure.rs: High-level form planning (motifs, imitation, dai/thol responses)
+// - draft.rs: Initial grid filling using Markov-guided sampling + final cadence
+// - scoring.rs: Multi-layer scoring (counterpoint + harmonic + tonal contour)
+// - sa.rs: Simulated annealing with pitch/duration/text-swap mutations
 // - midi.rs: MIDI file output from completed grids
+// - vaelith.rs: Vaelith tonal conlang grammar engine (vocabulary + phrase gen)
+// - text_mapping.rs: Syllable-to-grid mapping and tonal contour tracking
 //
 // The generator is deterministic given a seed, supporting reproducible output.
 

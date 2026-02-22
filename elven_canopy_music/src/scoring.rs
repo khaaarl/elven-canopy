@@ -17,10 +17,15 @@
 //   melodic contour shape.
 // Layer 5 (Modal, medium weight): Mode compliance and degree-weighted
 //   fitness.
+// Layer 6 (Tonal contour, high weight): Vaelith tone system enforcement.
+//   Each syllable's tone (level/rising/falling/dipping/peaking) constrains
+//   the pitch movement within its grid span. Scored via separate
+//   score_tonal_contour() with TextMapping from text_mapping.rs.
 //
 // Scoring is designed for incremental updates: score_local() evaluates a
 // small window around a mutation for efficient SA evaluation. Full
-// score_grid() is used for global quality measurement.
+// score_grid() is used for global quality measurement. Tonal contour
+// scoring uses score_tonal_contour_local() for per-span evaluation.
 //
 // Consumed by sa.rs for simulated annealing refinement.
 
