@@ -65,6 +65,9 @@ pub struct ScoringWeights {
     // Contour: reward arch shapes, penalize repeated climax
     pub climax_repeat_penalty: f64,
     pub arch_contour_reward: f64,
+
+    // Interval variety: penalize monotonous voice-pair intervals
+    pub interval_monotony_penalty: f64,
 }
 
 impl Default for ScoringWeights {
@@ -110,6 +113,9 @@ impl Default for ScoringWeights {
             // Contour
             climax_repeat_penalty: -3.0,
             arch_contour_reward: 5.0,
+
+            // Interval variety
+            interval_monotony_penalty: -2.0,
         }
     }
 }
@@ -436,6 +442,50 @@ fn score_harmonic(grid: &Grid, weights: &ScoringWeights) -> f64 {
     for beat in 0..grid.num_beats {
         score += score_beat_harmonic(grid, weights, beat);
     }
+
+    // Interval variety: check that voice pairs don't stay at the same interval
+    // for too many consecutive beats.
+    score += score_interval_variety(grid, weights);
+
+    score
+}
+
+/// Penalize monotonous intervals between voice pairs.
+/// If the same interval class persists for 8+ beats, it sounds static.
+fn score_interval_variety(grid: &Grid, weights: &ScoringWeights) -> f64 {
+    let mut score = 0.0;
+
+    for i in 0..4 {
+        for j in (i + 1)..4 {
+            let vi = Voice::ALL[i];
+            let vj = Voice::ALL[j];
+
+            let mut same_count = 0;
+            let mut prev_ic: Option<u8> = None;
+
+            for beat in 0..grid.num_beats {
+                let pi = grid.sounding_pitch(vi, beat);
+                let pj = grid.sounding_pitch(vj, beat);
+
+                if let (Some(a), Some(b)) = (pi, pj) {
+                    let ic = interval::interval_class(a, b);
+                    if Some(ic) == prev_ic {
+                        same_count += 1;
+                        if same_count > 8 {
+                            score += weights.interval_monotony_penalty;
+                        }
+                    } else {
+                        same_count = 0;
+                    }
+                    prev_ic = Some(ic);
+                } else {
+                    same_count = 0;
+                    prev_ic = None;
+                }
+            }
+        }
+    }
+
     score
 }
 

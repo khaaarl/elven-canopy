@@ -43,10 +43,30 @@ pub struct StructurePlan {
     pub imitation_points: Vec<ImitationPoint>,
 }
 
+/// Common entry orders for imitation points. Variety creates interest.
+const ENTRY_ORDERS: &[[Voice; 4]] = &[
+    [Voice::Soprano, Voice::Alto, Voice::Tenor, Voice::Bass],     // top-down
+    [Voice::Tenor, Voice::Bass, Voice::Soprano, Voice::Alto],     // bottom-up (pair)
+    [Voice::Alto, Voice::Soprano, Voice::Tenor, Voice::Bass],     // inner voice leads
+    [Voice::Bass, Voice::Tenor, Voice::Alto, Voice::Soprano],     // bass-up
+    [Voice::Soprano, Voice::Tenor, Voice::Alto, Voice::Bass],     // crossed pairs
+];
+
+/// Common transposition schemes for imitation entries.
+/// (soprano, alto, tenor, bass) in semitones from reference.
+const TRANSPOSITION_SCHEMES: &[[i8; 4]] = &[
+    [0, -5, -12, -17],    // standard: unison, 4th down, octave, octave+4th
+    [0, -7, -12, -19],    // 5th answer: unison, 5th down, octave, octave+5th
+    [0, -5, -12, -12],    // tenor/bass same octave
+    [0, -7, -12, -17],    // mixed: 5th down alto, octave tenor, octave+4th bass
+    [0, 0, -12, -12],     // paired: sop=alto, tenor=bass (antiphonal)
+];
+
 /// Generate a structure plan for a piece.
 ///
 /// Creates a sequence of imitation points using motifs from the library,
-/// planning voice entries at staggered offsets.
+/// planning voice entries at staggered offsets. Varies entry order,
+/// transposition, and number of participating voices for variety.
 pub fn generate_structure(
     motif_library: &MotifLibrary,
     num_sections: usize,
@@ -55,43 +75,57 @@ pub fn generate_structure(
     let mut imitation_points = Vec::new();
     let mut current_beat: usize = 0;
 
-    for _section_idx in 0..num_sections {
-        // Pick a motif
-        let motif_idx = rng.random_range(0..motif_library.motifs.len());
-        let motif = &motif_library.motifs[motif_idx];
+    // Bias motif selection toward more frequent (more idiomatic) motifs
+    let total_freq: u64 = motif_library.motifs.iter().map(|m| m.frequency as u64).sum();
 
-        // Choose a reference starting pitch appropriate for soprano range
-        let reference_pitch = rng.random_range(62u8..72);
+    for section_idx in 0..num_sections {
+        // Pick a motif weighted by frequency (more common = more idiomatic)
+        let motif = pick_weighted_motif(motif_library, total_freq, rng);
 
-        // Plan entries for all 4 voices with staggered timing
-        let entry_offset = motif.typical_entry_offset as usize;
-        let mut entries = Vec::new();
-
-        // Entry order varies — common patterns: S-A-T-B or T-B-S-A
-        let voice_order = if rng.random_bool(0.5) {
-            [Voice::Soprano, Voice::Alto, Voice::Tenor, Voice::Bass]
-        } else {
-            [Voice::Tenor, Voice::Bass, Voice::Soprano, Voice::Alto]
+        // Choose reference pitch — vary between sections for pitch interest
+        let reference_pitch = match section_idx % 3 {
+            0 => rng.random_range(62u8..68),   // lower soprano range
+            1 => rng.random_range(67u8..74),   // higher
+            _ => rng.random_range(64u8..70),   // middle
         };
 
+        // Vary entry offset slightly
+        let base_offset = motif.typical_entry_offset as usize;
+        let entry_offset = base_offset + rng.random_range(0..3); // 8-10 beats typical
+
+        // Pick entry order and transposition scheme
+        let voice_order = ENTRY_ORDERS[rng.random_range(0..ENTRY_ORDERS.len())];
+        let transpositions = TRANSPOSITION_SCHEMES[rng.random_range(0..TRANSPOSITION_SCHEMES.len())];
+
+        // Decide how many voices participate (2-4)
+        let min_voices = if section_idx == 0 || section_idx == num_sections - 1 {
+            3 // First and last sections should be fuller
+        } else {
+            2
+        };
+        let num_voices = rng.random_range(min_voices..=4);
+
+        let mut entries = Vec::new();
+        let mut voices_added = 0;
+
         for (i, &voice) in voice_order.iter().enumerate() {
-            // Not all voices need to participate in every point
-            if i > 0 && rng.random_bool(0.15) {
-                continue; // 15% chance to skip a voice
+            if voices_added >= num_voices {
+                break;
             }
 
-            let transposition = match voice {
-                Voice::Soprano => 0,
-                Voice::Alto => -5, // down a 4th (or up a 5th from an octave lower)
-                Voice::Tenor => -12, // down an octave
-                Voice::Bass => -17,  // down an octave + 4th
-            };
+            // Skip voices randomly (except the lead voice)
+            if i > 0 && voices_added >= min_voices && rng.random_bool(0.25) {
+                continue;
+            }
+
+            let transposition = transpositions[voice.index()];
 
             entries.push(VoiceEntry {
                 voice,
                 start_beat: current_beat + i * entry_offset,
                 transposition,
             });
+            voices_added += 1;
         }
 
         imitation_points.push(ImitationPoint {
@@ -100,19 +134,41 @@ pub fn generate_structure(
             entries,
         });
 
-        // Advance to next section with some breathing room
-        let section_length = (voice_order.len() * entry_offset)
+        // Advance to next section
+        let section_length = (voices_added * entry_offset)
             + motif.intervals.len() * 2
             + rng.random_range(4..12);
         current_beat += section_length;
+
+        // Add a rest gap between sections (2-6 beats of breathing room)
+        let gap = rng.random_range(2..7);
+        current_beat += gap;
     }
 
-    let total_beats = current_beat + 8; // Add a few beats for final cadence
+    let total_beats = current_beat + 8; // Add beats for final cadence
 
     StructurePlan {
         total_beats,
         imitation_points,
     }
+}
+
+/// Pick a motif weighted by its corpus frequency (more common = more likely).
+fn pick_weighted_motif<'a>(
+    library: &'a MotifLibrary,
+    total_freq: u64,
+    rng: &mut impl Rng,
+) -> &'a Motif {
+    let target = rng.random_range(0..total_freq);
+    let mut cumulative = 0u64;
+    for motif in &library.motifs {
+        cumulative += motif.frequency as u64;
+        if cumulative > target {
+            return motif;
+        }
+    }
+    // Fallback (shouldn't happen)
+    &library.motifs[0]
 }
 
 /// Common rhythmic patterns for motifs (durations in eighth-note beats).
