@@ -1,6 +1,6 @@
 # Elven Canopy Music Generator
 
-A Palestrina-style four-voice polyphonic music generator with procedurally generated Vaelith elvish lyrics. Produces MIDI files suitable for playback, evaluation, and eventually in-game use.
+A Palestrina-style four-voice polyphonic music generator with procedurally generated Vaelith elvish lyrics. Produces MIDI files for playback and optional LilyPond files for engraved sheet music.
 
 ## Quick Start
 
@@ -15,14 +15,21 @@ cargo run -p elven_canopy_music -- output.mid --seed 42
 cargo run -p elven_canopy_music -- my_piece.mid \
   --seed 42 --sections 4 --mode phrygian \
   --brightness 0.8 --tempo 66 --sa-iterations 15000 -v
+
+# Generate with LilyPond sheet music output
+cargo run -p elven_canopy_music -- my_piece.mid --seed 42 --ly
 ```
 
-Output is a Standard MIDI File (Format 1, 4 voice tracks + tempo track). Play with any MIDI player:
+Output is a Standard MIDI File (Format 1, 4 voice tracks + tempo track). With `--ly`, a `.ly` file is written alongside the MIDI for engraving into PDF sheet music.
 
 ```bash
+# Playback
 timidity output.mid          # Linux
 fluidsynth output.mid        # Cross-platform
 open output.mid              # macOS (opens in GarageBand/QuickTime)
+
+# Sheet music (requires LilyPond installed)
+lilypond output.ly           # produces output.pdf
 ```
 
 ## CLI Reference
@@ -42,6 +49,7 @@ cargo run -p elven_canopy_music -- [OUTPUT_PATH] [OPTIONS]
 | `--tempo N` | 72 | Tempo in BPM |
 | `--brightness F` | 0.5 | Vaelith vowel brightness, 0.0-1.0 |
 | `--sa-iterations N` | 10000 | SA refinement effort (higher = better but slower) |
+| `--ly` | off | Write a LilyPond (.ly) file alongside the MIDI |
 | `-v` / `--verbose` | off | Show grid summary, score breakdown, contour stats |
 
 ### Batch mode
@@ -49,7 +57,7 @@ cargo run -p elven_canopy_music -- [OUTPUT_PATH] [OPTIONS]
 Generate multiple pieces with sequential seeds for comparison or preference rating:
 
 ```bash
-cargo run -p elven_canopy_music -- --batch 20 --seed 1 --output-dir .tmp/batch
+cargo run -p elven_canopy_music -- --batch 20 --seed 1 --output-dir .tmp/batch --ly
 ```
 
 | Flag | Default | Description |
@@ -57,6 +65,7 @@ cargo run -p elven_canopy_music -- --batch 20 --seed 1 --output-dir .tmp/batch
 | `--batch N` | 10 | Number of pieces to generate |
 | `--seed N` | 1 | Starting seed (increments per piece) |
 | `--output-dir DIR` | `.tmp/batch` | Output directory |
+| `--ly` | off | Also write LilyPond (.ly) files |
 
 Prints a score comparison table. Use with the rating tool:
 
@@ -69,10 +78,10 @@ python python/rate_midi.py --dir .tmp/batch
 Generate the same piece in all 6 church modes for side-by-side comparison:
 
 ```bash
-cargo run -p elven_canopy_music -- --mode-scan --seed 42
+cargo run -p elven_canopy_music -- --mode-scan --seed 42 --ly
 ```
 
-Produces 6 MIDI files in `.tmp/mode_scan/` (one per mode), with a table comparing scores.
+Produces 6 MIDI files in `.tmp/mode_scan/` (one per mode), with a table comparing scores. With `--ly`, also writes `.ly` files for each mode.
 
 ## Parameters Guide
 
@@ -123,6 +132,28 @@ Each section introduces a new melodic motif treated imitatively (voices enter in
 | 4 | 80-100s | Extended, with call-and-response |
 | 5+ | 100s+ | Long form |
 
+## LilyPond Sheet Music
+
+The `--ly` flag writes a `.ly` file alongside the MIDI output. This file can be engraved into publication-quality PDF sheet music using [LilyPond](https://lilypond.org/).
+
+```bash
+# Generate MIDI + LilyPond
+cargo run -p elven_canopy_music -- output.mid --seed 42 --ly
+
+# Engrave to PDF (requires LilyPond installed)
+lilypond output.ly
+```
+
+The `.ly` file contains:
+- All four SATB voices with correct clefs (treble, treble, treble_8, bass)
+- Key signature and mode (e.g., `\key d \dorian`)
+- Time signature (4/4) and tempo marking
+- Vaelith lyrics under each voice via `\addlyrics`
+- Notes split at barlines with ties (standard choral engraving practice)
+- Absolute pitches (no `\relative` mode)
+
+Install LilyPond: `sudo apt install lilypond` (Linux), `brew install lilypond` (macOS), or download from [lilypond.org](https://lilypond.org/download.html).
+
 ## Verbose Output
 
 With `-v`, the generator shows:
@@ -164,7 +195,8 @@ The generation pipeline has 5 stages:
 [4] SA refinement   ~85K iterations of pitch/duration/text-swap mutations
         |                    adaptive cooling, periodic reheating
         |
-[5] Write MIDI      4 voice tracks + tempo + embedded lyrics
+[5] Write output    MIDI (4 voice tracks + tempo + lyrics)
+                         + optional LilyPond sheet music (.ly)
 ```
 
 ### Source files (elven_canopy_music/src/)
@@ -181,8 +213,9 @@ The generation pipeline has 5 stages:
 | `vaelith.rs` | 615 | Vaelith conlang grammar engine |
 | `text_mapping.rs` | 487 | Syllable-to-grid mapping, tone constraints |
 | `midi.rs` | 222 | MIDI output with embedded lyrics |
-| `main.rs` | 444 | CLI: single, batch, and mode-scan modes |
-| `lib.rs` | 33 | Module declarations |
+| `lilypond.rs` | 290 | LilyPond sheet music output (.ly files) |
+| `main.rs` | 470 | CLI: single, batch, and mode-scan modes |
+| `lib.rs` | 35 | Module declarations |
 
 ### Trained data (data/)
 
@@ -221,7 +254,7 @@ Plays pairs of MIDI files and asks you to choose which sounds better. Results ar
 cargo test -p elven_canopy_music
 ```
 
-37 unit tests covering all modules: grid operations, Markov sampling, mode logic, structure planning, draft generation, scoring layers, SA convergence, text mapping, MIDI output, and Vaelith grammar.
+59 unit tests covering all modules: grid operations, Markov sampling, mode logic, structure planning, draft generation, scoring layers, SA convergence, text mapping, MIDI output, LilyPond output, and Vaelith grammar.
 
 ## Next Steps
 

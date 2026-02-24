@@ -16,6 +16,7 @@
 // - sa.rs: Simulated annealing with pitch/duration/text-swap mutations and
 //   adaptive cooling
 // - midi.rs: MIDI file output from completed grids
+// - lilypond.rs: LilyPond sheet music output (.ly files for engraving)
 // - vaelith.rs: Vaelith tonal conlang grammar engine (vocabulary + phrase gen)
 // - text_mapping.rs: Syllable-to-grid mapping and tonal contour tracking
 //
@@ -29,5 +30,6 @@ pub mod draft;
 pub mod scoring;
 pub mod sa;
 pub mod midi;
+pub mod lilypond;
 pub mod vaelith;
 pub mod text_mapping;

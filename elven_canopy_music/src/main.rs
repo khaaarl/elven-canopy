@@ -1,24 +1,28 @@
 // Elven Canopy Music Generator — CLI entry point.
 //
-// Generates a Palestrina-style four-voice choral piece and writes it to MIDI.
-// The pipeline: structure planning → draft generation → SA refinement → MIDI output.
+// Generates a Palestrina-style four-voice choral piece and writes it to MIDI,
+// with optional LilyPond sheet music output.
+// The pipeline: structure planning → draft generation → SA refinement → output.
 //
 // Usage:
 //   cargo run -p elven_canopy_music -- [output.mid] [--sections N] [--sa-iterations N]
-//     [--seed N] [--mode MODE] [--tempo BPM] [--brightness 0.0-1.0] [-v|--verbose]
+//     [--seed N] [--mode MODE] [--tempo BPM] [--brightness 0.0-1.0] [--ly]
+//     [-v|--verbose]
 //
 //   Batch mode:
-//   cargo run -p elven_canopy_music -- --batch N [--output-dir DIR] [other flags]
+//   cargo run -p elven_canopy_music -- --batch N [--output-dir DIR] [--ly] [other flags]
 //
 //   Mode scan (same seed across all 6 modes):
-//   cargo run -p elven_canopy_music -- --mode-scan [--seed N] [other flags]
+//   cargo run -p elven_canopy_music -- --mode-scan [--seed N] [--ly] [other flags]
 //
 // Modes: dorian, phrygian, lydian, mixolydian, aeolian, ionian
 // Brightness: 0.0 = dark/warm vowels, 1.0 = bright/silvery, 0.5 = neutral
+// --ly: Write a LilyPond (.ly) file alongside the MIDI output
 
 use elven_canopy_music::draft::{fill_draft, generate_final_cadence};
 use elven_canopy_music::grid::Grid;
 use elven_canopy_music::markov::{MarkovModels, MotifLibrary};
+use elven_canopy_music::lilypond::write_lilypond;
 use elven_canopy_music::midi::{write_midi, write_midi_with_text};
 use elven_canopy_music::mode::{Mode, ModeInstance};
 use elven_canopy_music::sa::{SAConfig, anneal_with_text};
@@ -56,6 +60,7 @@ fn main() {
     let tempo: u16 = parse_flag(&args, "--tempo").unwrap_or(72);
     let mode_name: String = parse_flag(&args, "--mode").unwrap_or_else(|| "dorian".to_string());
     let brightness: f64 = parse_flag(&args, "--brightness").unwrap_or(0.5);
+    let write_ly = args.iter().any(|a| a == "--ly");
 
     // Parse mode
     let mode = parse_mode(&mode_name);
@@ -221,7 +226,7 @@ fn main() {
     }
 
     // Write MIDI with embedded lyrics
-    println!("[5/5] Writing MIDI to {}...", output_path);
+    println!("[5/5] Writing output to {}...", output_path);
     match write_midi_with_text(&grid, &mapping, Path::new(output_path)) {
         Ok(()) => {
             let duration_seconds = grid.num_beats as f64 / (grid.tempo_bpm as f64 / 60.0 * 2.0);
@@ -234,8 +239,21 @@ fn main() {
         }
     }
 
+    // Write LilyPond if requested
+    if write_ly {
+        let ly_path = Path::new(output_path).with_extension("ly");
+        match write_lilypond(&grid, &mode, &mapping, &ly_path) {
+            Ok(()) => println!("  LilyPond: {}", ly_path.display()),
+            Err(e) => eprintln!("  Error writing LilyPond: {}", e),
+        }
+    }
+
     println!();
     println!("Play with: timidity {} (or any MIDI player)", output_path);
+    if write_ly {
+        let ly_path = Path::new(output_path).with_extension("ly");
+        println!("Engrave with: lilypond {}", ly_path.display());
+    }
 }
 
 fn parse_mode(name: &str) -> ModeInstance {
@@ -278,6 +296,7 @@ fn run_batch(args: &[String]) {
     let base_seed: u64 = parse_flag(args, "--seed").unwrap_or(1);
     let output_dir: String = parse_flag(args, "--output-dir").unwrap_or_else(|| ".tmp/batch".to_string());
     let brightness: f64 = parse_flag(args, "--brightness").unwrap_or(0.5);
+    let write_ly = args.iter().any(|a| a == "--ly");
 
     let mode = parse_mode(&mode_name);
     let weights = ScoringWeights::default();
@@ -343,6 +362,12 @@ fn run_batch(args: &[String]) {
         let output_path = format!("{}/piece_{:04}.mid", output_dir, seed);
         write_midi(&grid, Path::new(&output_path)).expect("Failed to write MIDI");
 
+        if write_ly {
+            let ly_path = format!("{}/piece_{:04}.ly", output_dir, seed);
+            write_lilypond(&grid, &mode, &mapping, Path::new(&ly_path))
+                .expect("Failed to write LilyPond");
+        }
+
         println!("{:>5} {:>10.1} {:>10.1} {:>+10.1} {:>7.1}%",
             seed, draft_score, result.final_score,
             result.final_score - draft_score, accept_pct);
@@ -362,6 +387,7 @@ fn run_mode_scan(args: &[String]) {
     let output_dir: String = parse_flag(args, "--output-dir")
         .unwrap_or_else(|| ".tmp/mode_scan".to_string());
     let brightness: f64 = parse_flag(args, "--brightness").unwrap_or(0.5);
+    let write_ly = args.iter().any(|a| a == "--ly");
 
     let weights = ScoringWeights::default();
 
@@ -433,6 +459,12 @@ fn run_mode_scan(args: &[String]) {
         let output_path = format!("{}/{}.mid", output_dir, name);
         write_midi_with_text(&grid, &mapping, Path::new(&output_path))
             .expect("Failed to write MIDI");
+
+        if write_ly {
+            let ly_path = format!("{}/{}.ly", output_dir, name);
+            write_lilypond(&grid, &mode, &mapping, Path::new(&ly_path))
+                .expect("Failed to write LilyPond");
+        }
 
         println!("{:<12} {:>6} {:>10.1} {:>10.1} {:>+10.1} {:>7.1}%",
             name, pitch_name(*final_pc), draft_score, result.final_score,
