@@ -1,0 +1,15 @@
+[package]
+name = "elven_canopy_music"
+version = "0.1.0"
+edition = "2024"
+description = "Palestrina-style polyphonic music generator for Elven Canopy"
+
+[[bin]]
+name = "generate"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+midly = "0.5"
+rand = "0.9"

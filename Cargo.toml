@@ -2,5 +2,6 @@
 members = [
     "elven_canopy_sim",
     "elven_canopy_gdext",
+    "elven_canopy_music",
 ]
 resolver = "2"

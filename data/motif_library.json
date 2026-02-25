@@ -1,0 +1,563 @@
+{
+  "motifs": [
+    {
+      "intervals": [
+        -2,
+        -2,
+        -1,
+        -2
+      ],
+      "frequency": 7347,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -1,
+        -2,
+        -2
+      ],
+      "frequency": 6501,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -1,
+        -2,
+        -2,
+        2
+      ],
+      "frequency": 5842,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        1,
+        2,
+        2
+      ],
+      "frequency": 5769,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        2,
+        1,
+        2
+      ],
+      "frequency": 5294,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -1,
+        -2,
+        2,
+        1
+      ],
+      "frequency": 5104,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -1,
+        -2,
+        2
+      ],
+      "frequency": 5024,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        1,
+        -1,
+        -2
+      ],
+      "frequency": 4488,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -2,
+        2,
+        2
+      ],
+      "frequency": 4310,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        2,
+        1,
+        -1
+      ],
+      "frequency": 4151,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "frequency": 4038,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        1,
+        -1,
+        -2,
+        -2
+      ],
+      "frequency": 4020,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        2,
+        2,
+        1
+      ],
+      "frequency": 3423,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        -2,
+        -2,
+        -1
+      ],
+      "frequency": 3355,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        0,
+        -2,
+        -2,
+        -1
+      ],
+      "frequency": 3294,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        0,
+        -2,
+        -1,
+        -2
+      ],
+      "frequency": 3272,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        0,
+        -1,
+        1
+      ],
+      "frequency": 3029,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        0,
+        -1,
+        -2,
+        -2
+      ],
+      "frequency": 2982,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -2,
+        -1,
+        1
+      ],
+      "frequency": 2952,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        0,
+        -1,
+        -2,
+        2
+      ],
+      "frequency": 2904,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        2,
+        1,
+        2
+      ],
+      "frequency": 2777,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -1,
+        -2,
+        -2,
+        -2
+      ],
+      "frequency": 2760,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -1,
+        -2,
+        -2,
+        -1
+      ],
+      "frequency": 2683,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        1,
+        2,
+        2,
+        -2
+      ],
+      "frequency": 2604,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        2,
+        -2,
+        -2
+      ],
+      "frequency": 2485,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        2,
+        2,
+        1
+      ],
+      "frequency": 2467,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -1,
+        -2,
+        -2,
+        2,
+        2
+      ],
+      "frequency": 2371,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        2,
+        1,
+        -1,
+        -2
+      ],
+      "frequency": 2366,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -1,
+        -2,
+        2,
+        -2
+      ],
+      "frequency": 2316,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        0,
+        -1,
+        1,
+        0
+      ],
+      "frequency": 2270,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        1,
+        0,
+        -1
+      ],
+      "frequency": 2263,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -2,
+        -1,
+        -2,
+        2
+      ],
+      "frequency": 2205,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        1,
+        -1,
+        -2,
+        -2
+      ],
+      "frequency": 2204,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        -2,
+        -1,
+        -2
+      ],
+      "frequency": 2200,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        1,
+        0,
+        -1,
+        -2
+      ],
+      "frequency": 2162,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -2,
+        -1,
+        -2,
+        -2
+      ],
+      "frequency": 2142,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -1,
+        -2,
+        -2,
+        2
+      ],
+      "frequency": 2131,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -1,
+        -2,
+        2,
+        1
+      ],
+      "frequency": 2120,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        1,
+        2,
+        -2
+      ],
+      "frequency": 2032,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        0,
+        -2,
+        0,
+        -1
+      ],
+      "frequency": 1984,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -4,
+        2,
+        2,
+        1
+      ],
+      "frequency": 1983,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -2,
+        2,
+        -2
+      ],
+      "frequency": 1891,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -1,
+        -2,
+        2,
+        1,
+        2
+      ],
+      "frequency": 1873,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        2,
+        1,
+        0
+      ],
+      "frequency": 1862,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        1,
+        2,
+        -2,
+        -1
+      ],
+      "frequency": 1853,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -1,
+        1,
+        2
+      ],
+      "frequency": 1830,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        2,
+        -2,
+        -2,
+        -1,
+        -2
+      ],
+      "frequency": 1816,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -1,
+        -2,
+        -2,
+        0
+      ],
+      "frequency": 1800,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        -2,
+        -2,
+        -2,
+        -1
+      ],
+      "frequency": 1798,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    },
+    {
+      "intervals": [
+        3,
+        -1,
+        -2,
+        -2
+      ],
+      "frequency": 1784,
+      "typical_entry_offset": 8,
+      "typical_transposition": 7
+    }
+  ]
+}
