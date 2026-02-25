@@ -49,8 +49,34 @@ var _pitch: float = 0.7  # ~40°, a comfortable default
 var _zoom: float = 30.0
 ## Whether middle mouse is being held for drag rotation/tilt.
 var _rotating: bool = false
+## Whether the camera is in follow mode (tracking a creature).
+var _following: bool = false
 
 @onready var _camera: Camera3D = $Camera3D
+
+
+## Enter follow mode: camera pivot snaps to the target and tracks it.
+func start_follow(target_pos: Vector3) -> void:
+	_following = true
+	position = target_pos
+	_update_camera_transform()
+
+
+## Update the follow target position. Call each frame while following.
+func update_follow_target(target_pos: Vector3) -> void:
+	if _following:
+		position = target_pos
+		_update_camera_transform()
+
+
+## Exit follow mode. Camera stays where it is.
+func stop_follow() -> void:
+	_following = false
+
+
+## Returns true if the camera is in follow mode.
+func is_following() -> bool:
+	return _following
 
 
 func _ready() -> void:
@@ -104,6 +130,7 @@ func _process(delta: float) -> void:
 		var movement := (forward * -input_dir.y + right * input_dir.x) * move_speed * delta
 		position += movement
 		moved = true
+		_following = false
 
 	# Keyboard rotation (Q/E and Left/Right arrows).
 	if Input.is_action_pressed("rotate_left"):
@@ -125,9 +152,11 @@ func _process(delta: float) -> void:
 	if Input.is_action_pressed("focal_up"):
 		position.y = min(position.y + vertical_speed * delta, focal_y_max)
 		moved = true
+		_following = false
 	if Input.is_action_pressed("focal_down"):
 		position.y = max(position.y - vertical_speed * delta, focal_y_min)
 		moved = true
+		_following = false
 
 	if moved:
 		_update_camera_transform()

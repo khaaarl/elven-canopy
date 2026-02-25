@@ -48,6 +48,10 @@ func connect_toolbar(toolbar: Node) -> void:
 	toolbar.action_requested.connect(_on_action_requested)
 
 
+func is_placing() -> bool:
+	return _state == State.PLACING
+
+
 func _ready() -> void:
 	_highlight = MeshInstance3D.new()
 	_highlight.visible = false
