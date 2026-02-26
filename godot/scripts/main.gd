@@ -4,15 +4,17 @@
 ## connects through this script.
 ##
 ## Startup sequence (_ready):
-## 1. Initialize SimBridge with a deterministic seed (sim_seed export).
-## 2. Set up renderers: tree_renderer.gd (static voxel mesh),
+## 1. Read the simulation seed from GameSession autoload (set by the new-game
+##    menu), falling back to the @export default for direct scene launches.
+## 2. Initialize SimBridge with the seed.
+## 3. Set up renderers: tree_renderer.gd (static voxel mesh),
 ##    elf_renderer.gd and capybara_renderer.gd (billboard sprites).
-## 3. Spawn initial creatures at the tree base via SimBridge commands.
-## 4. Create the spawn toolbar UI (spawn_toolbar.gd) on a CanvasLayer so
+## 4. Spawn initial creatures at the tree base via SimBridge commands.
+## 5. Create the spawn toolbar UI (spawn_toolbar.gd) on a CanvasLayer so
 ##    it renders on top of the 3D viewport.
-## 5. Create the placement controller (placement_controller.gd) and wire
+## 6. Create the placement controller (placement_controller.gd) and wire
 ##    it to both the SimBridge and the toolbar's signals.
-## 6. Create the creature info panel (creature_info_panel.gd) and
+## 7. Create the creature info panel (creature_info_panel.gd) and
 ##    selection controller (selection_controller.gd), wire them to the
 ##    camera for follow mode.
 ##
@@ -25,11 +27,14 @@
 ## capybara_renderer.gd for rendering, spawn_toolbar.gd for the toolbar
 ## UI, placement_controller.gd for click-to-place logic,
 ## selection_controller.gd for click-to-select, creature_info_panel.gd
-## for the creature info panel.
+## for the creature info panel, game_session.gd for the autoload that
+## carries the seed from the menu.
 
 extends Node3D
 
 ## The simulation seed. Deterministic: same seed = same game.
+## Overridden by GameSession.sim_seed when launched through the menu flow.
+## The @export default (42) is a fallback for direct scene launches (F6 in editor).
 @export var sim_seed: int = 42
 
 var _selector: Node3D
@@ -38,6 +43,11 @@ var _camera_pivot: Node3D
 
 
 func _ready() -> void:
+	# Use seed from GameSession autoload if available (normal flow through menus).
+	# Fall back to the @export var if GameSession hasn't been set (direct scene launch).
+	if GameSession.sim_seed >= 0:
+		sim_seed = GameSession.sim_seed
+
 	var bridge: SimBridge = $SimBridge
 	bridge.init_sim(sim_seed)
 	print("Elven Canopy: sim initialized (seed=%d, mana=%.1f)" % [sim_seed, bridge.home_tree_mana()])

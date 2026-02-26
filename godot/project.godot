@@ -11,8 +11,12 @@ config_version=5
 [application]
 
 config/name="Elven Canopy"
-run/main_scene="res://scenes/main.tscn"
+run/main_scene="res://scenes/main_menu.tscn"
 config/features=PackedStringArray("4.6")
+
+[autoload]
+
+GameSession="*res://scripts/game_session.gd"
 
 [rendering]
 

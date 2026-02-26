@@ -618,6 +618,25 @@ mod tests {
     }
 
     #[test]
+    fn different_seeds_produce_different_trees() {
+        let config = test_config_no_roots();
+
+        let mut world_a = VoxelWorld::new(64, 64, 64);
+        let mut rng_a = GameRng::new(42);
+        let result_a = generate_tree(&mut world_a, &config, &mut rng_a);
+
+        let mut world_b = VoxelWorld::new(64, 64, 64);
+        let mut rng_b = GameRng::new(999);
+        let result_b = generate_tree(&mut world_b, &config, &mut rng_b);
+
+        // Branch geometry uses RNG for angles, growth, forking — must differ.
+        assert_ne!(
+            result_a.branch_voxels, result_b.branch_voxels,
+            "Different seeds must produce different branch geometry"
+        );
+    }
+
+    #[test]
     fn trunk_tapers() {
         let config = test_config_no_roots();
         let mut world = VoxelWorld::new(64, 64, 64);

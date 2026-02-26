@@ -5,3 +5,12 @@ members = [
     "elven_canopy_music",
 ]
 resolver = "2"
+
+# godot-core generates massive amounts of binding code and can OOM on systems
+# with ≤4 GB RAM. Raising codegen-units splits each crate into more, smaller
+# LLVM modules so peak RSS per rustc process stays lower.
+[profile.dev]
+codegen-units = 256
+
+[profile.release]
+codegen-units = 256

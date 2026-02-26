@@ -45,30 +45,41 @@ ensure_godot_imported() {
     fi
 }
 
+# --- Limit parallelism on low-RAM systems ------------------------------------
+# Each rustc process can use 1-2 GB on the gdext crate. On systems with ≤4 GB
+# of RAM, restrict to a single job to avoid OOM / heavy swapping.
+
+CARGO_JOBS=""
+TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') || true
+if [ -n "$TOTAL_RAM_KB" ] && [ "$TOTAL_RAM_KB" -le 4194304 ]; then
+    CARGO_JOBS="-j 1"
+    echo "Low RAM detected ($(( TOTAL_RAM_KB / 1024 )) MB) — building with -j 1"
+fi
+
 # --- Build --------------------------------------------------------------------
 
 case "$MODE" in
     debug)
         echo "Building elven_canopy_gdext (debug)..."
-        cargo build -p elven_canopy_gdext
+        cargo build -p elven_canopy_gdext $CARGO_JOBS
         echo "Done. Run: cd godot && godot"
         ;;
     release)
         echo "Building elven_canopy_gdext (release)..."
-        cargo build -p elven_canopy_gdext --release
+        cargo build -p elven_canopy_gdext --release $CARGO_JOBS
         echo "Done. Run: cd godot && godot"
         ;;
     test)
         echo "Running sim tests..."
-        cargo test -p elven_canopy_sim
+        cargo test -p elven_canopy_sim $CARGO_JOBS
         echo ""
         echo "Building elven_canopy_gdext (debug)..."
-        cargo build -p elven_canopy_gdext
+        cargo build -p elven_canopy_gdext $CARGO_JOBS
         echo "Done. Run: cd godot && godot"
         ;;
     run)
         echo "Building elven_canopy_gdext (debug)..."
-        cargo build -p elven_canopy_gdext
+        cargo build -p elven_canopy_gdext $CARGO_JOBS
         ensure_godot_imported
         echo "Launching Elven Canopy..."
         godot --path "$REPO_ROOT/godot"
