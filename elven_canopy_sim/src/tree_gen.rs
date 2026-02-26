@@ -23,6 +23,14 @@
 //    non-root = Branch, root segments = Root.
 // 6. Leaf blobs are placed at terminal positions of non-root segments.
 //
+// ## 6-connectivity invariant
+//
+// Every tree voxel (Trunk, Branch, Root) must share at least one face with
+// another tree voxel. When a growth step moves diagonally across 2 or 3
+// axes, `bridge_cross_sections()` fills intermediate voxels along a
+// 6-connected path between consecutive step positions. See also
+// `round_to_voxel()`.
+//
 // ## Voxel placement priority
 //
 // Trunk > Branch > Root > Leaf. Higher-priority types are never overwritten.
@@ -330,6 +338,7 @@ fn grow_segment(
     let base_flare = profile.trunk.base_flare;
 
     let mut step_count = 0u32;
+    let mut prev_voxel_center = round_to_voxel(job.position);
 
     while job.energy > 0.0 {
         // Compute radius from remaining energy.
@@ -363,6 +372,20 @@ fn grow_segment(
         } else {
             &mut *branch_voxels
         };
+
+        // Bridge gap from previous step if the voxel center jumped diagonally
+        // (would otherwise create corner-only or edge-only connections).
+        let current_voxel_center = round_to_voxel(job.position);
+        bridge_cross_sections(
+            world,
+            prev_voxel_center,
+            current_voxel_center,
+            job.direction,
+            radius,
+            vtype,
+            voxel_list,
+        );
+        prev_voxel_center = current_voxel_center;
 
         // Place cross-section voxels at current position.
         place_cross_section(world, job.position, job.direction, radius, vtype, voxel_list);
@@ -462,6 +485,59 @@ fn grow_segment(
         leaf_blob_centers.push(LeafBlobCenter {
             position: job.position,
         });
+    }
+}
+
+/// Convert a float position to a voxel coordinate by rounding.
+fn round_to_voxel(pos: Vec3) -> VoxelCoord {
+    VoxelCoord::new(
+        pos[0].round() as i32,
+        pos[1].round() as i32,
+        pos[2].round() as i32,
+    )
+}
+
+/// Place cross-sections along a 6-connected (face-sharing) path between two
+/// voxel centers. This fills gaps when a growth step moves diagonally across
+/// 2 or 3 axes, which would otherwise leave only corner/edge connections.
+///
+/// The path is traced greedily: each step advances along whichever axis has
+/// the largest remaining distance. This is deterministic and produces the
+/// shortest 6-connected path (Manhattan distance).
+///
+/// Only intermediate points are filled — the caller already places
+/// cross-sections at both endpoints.
+fn bridge_cross_sections(
+    world: &mut VoxelWorld,
+    from: VoxelCoord,
+    to: VoxelCoord,
+    direction: Vec3,
+    radius: f32,
+    vtype: VoxelType,
+    voxel_list: &mut Vec<VoxelCoord>,
+) {
+    let mut current = from;
+    while current != to {
+        let dx = to.x - current.x;
+        let dy = to.y - current.y;
+        let dz = to.z - current.z;
+
+        // Step along the axis with the largest remaining gap.
+        if dx.abs() >= dy.abs() && dx.abs() >= dz.abs() {
+            current.x += dx.signum();
+        } else if dy.abs() >= dz.abs() {
+            current.y += dy.signum();
+        } else {
+            current.z += dz.signum();
+        }
+
+        // Skip the final point — the caller places a cross-section there.
+        if current == to {
+            break;
+        }
+
+        let bridge_center = [current.x as f32, current.y as f32, current.z as f32];
+        place_cross_section(world, bridge_center, direction, radius, vtype, voxel_list);
     }
 }
 
@@ -856,6 +932,100 @@ mod tests {
         assert_eq!(result_a.branch_voxels, result_b.branch_voxels);
         assert_eq!(result_a.root_voxels, result_b.root_voxels);
         assert_eq!(result_a.leaf_voxels, result_b.leaf_voxels);
+    }
+
+    /// Every non-air tree voxel (Trunk, Branch, Root) must share at least one
+    /// face with another tree voxel — no corner-only or edge-only connections.
+    /// This is the 6-connectivity invariant.
+    #[test]
+    fn all_wood_voxels_are_face_connected() {
+        // Use a diagonal direction to maximize the chance of corner/edge jumps.
+        let mut config = test_config_no_roots();
+        config.tree_profile.growth.initial_energy = 30.0;
+        // Diagonal direction: [1,1,1]/sqrt(3) — worst case for connectivity.
+        config.tree_profile.trunk.initial_direction = [0.577, 0.577, 0.577];
+        // No splits — just one straight diagonal line.
+        config.tree_profile.split.split_chance_base = 0.0;
+        // No gravitropism or deflection — keep the direction purely diagonal.
+        config.tree_profile.curvature.gravitropism = 0.0;
+        config.tree_profile.curvature.random_deflection = 0.0;
+        // Min radius to keep branches skinny (single-voxel cross-sections).
+        config.tree_profile.growth.min_radius = 0.1;
+        config.tree_profile.growth.energy_to_radius = 0.0001;
+        config.tree_profile.trunk.base_flare = 0.0;
+
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng);
+
+        let all_wood: Vec<VoxelCoord> = result
+            .trunk_voxels
+            .iter()
+            .chain(result.branch_voxels.iter())
+            .copied()
+            .collect();
+
+        assert!(all_wood.len() > 5, "Need enough voxels to test (got {})", all_wood.len());
+
+        // Build a set for O(1) lookup.
+        let wood_set: std::collections::HashSet<VoxelCoord> = all_wood.iter().copied().collect();
+
+        let face_offsets: [(i32, i32, i32); 6] = [
+            (1, 0, 0), (-1, 0, 0),
+            (0, 1, 0), (0, -1, 0),
+            (0, 0, 1), (0, 0, -1),
+        ];
+
+        for &coord in &all_wood {
+            let has_face_neighbor = face_offsets.iter().any(|&(dx, dy, dz)| {
+                let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+                wood_set.contains(&neighbor)
+            });
+            assert!(
+                has_face_neighbor,
+                "Wood voxel at {} has no face-adjacent wood neighbor (only corner/edge connected)",
+                coord
+            );
+        }
+    }
+
+    /// Same face-connectivity check but on a full-featured tree with splits,
+    /// roots, and the default fantasy_mega profile. Verifies the fix works
+    /// for real-world tree shapes, not just a synthetic diagonal line.
+    #[test]
+    fn face_connectivity_with_splits_and_roots() {
+        let config = test_config();
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng);
+
+        let all_wood: Vec<VoxelCoord> = result
+            .trunk_voxels
+            .iter()
+            .chain(result.branch_voxels.iter())
+            .chain(result.root_voxels.iter())
+            .copied()
+            .collect();
+
+        let wood_set: std::collections::HashSet<VoxelCoord> = all_wood.iter().copied().collect();
+
+        let face_offsets: [(i32, i32, i32); 6] = [
+            (1, 0, 0), (-1, 0, 0),
+            (0, 1, 0), (0, -1, 0),
+            (0, 0, 1), (0, 0, -1),
+        ];
+
+        for &coord in &all_wood {
+            let has_face_neighbor = face_offsets.iter().any(|&(dx, dy, dz)| {
+                let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+                wood_set.contains(&neighbor)
+            });
+            assert!(
+                has_face_neighbor,
+                "Wood voxel at {} has no face-adjacent wood neighbor",
+                coord
+            );
+        }
     }
 
     #[test]
