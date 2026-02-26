@@ -14,24 +14,45 @@
   "world_size": [256, 128, 256],
   "starting_mana": 100.0,
   "starting_mana_capacity": 500.0,
-  "tree_trunk_radius": 3,
-  "tree_trunk_height": 40,
-  "tree_branch_start_y": 12,
-  "tree_branch_interval": 6,
-  "tree_branch_count": 5,
-  "tree_branch_length": 8,
-  "tree_branch_radius": 1,
-  "tree_branch_fork_chance": 0.08,
-  "tree_branch_fork_min_step": 3,
-  "tree_branch_fork_angle": 0.6,
-  "tree_branch_fork_length_ratio": 0.6,
-  "tree_branch_fork_radius_ratio": 0.65,
-  "tree_branch_fork_max_depth": 2,
-  "tree_leaf_blob_radius": 3,
-  "tree_leaf_blob_density": 0.65,
-  "tree_leaf_tip_only": false,
-  "tree_leaf_branch_coverage": 0.4,
-  "tree_leaf_blob_spacing": 3,
+  "tree_profile": {
+    "growth": {
+      "initial_energy": 400.0,
+      "energy_to_radius": 0.08,
+      "min_radius": 0.5,
+      "growth_step_length": 1.0,
+      "energy_per_step": 1.0
+    },
+    "split": {
+      "split_chance_base": 0.12,
+      "split_count": 1,
+      "split_energy_ratio": 0.35,
+      "split_angle": 0.7,
+      "split_angle_variance": 0.3,
+      "min_progress_for_split": 0.15
+    },
+    "curvature": {
+      "gravitropism": 0.08,
+      "random_deflection": 0.15,
+      "deflection_coherence": 0.7
+    },
+    "roots": {
+      "root_energy_fraction": 0.15,
+      "root_initial_count": 5,
+      "root_gravitropism": 0.12,
+      "root_initial_angle": 0.3,
+      "root_surface_tendency": 0.8
+    },
+    "leaves": {
+      "leaf_shape": "Sphere",
+      "leaf_density": 0.65,
+      "leaf_size": 3,
+      "canopy_density": 1.0
+    },
+    "trunk": {
+      "base_flare": 0.5,
+      "initial_direction": [0.0, 1.0, 0.0]
+    }
+  },
   "species": {
     "Elf": {
       "base_speed": 0.1,

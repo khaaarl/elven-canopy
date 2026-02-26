@@ -1,11 +1,12 @@
 ## Renders the tree's voxels using MultiMeshInstance3D for batched drawing.
 ##
 ## Built once at startup (static mesh — not updated per frame). Reads trunk,
-## branch, leaf, and fruit voxel positions from SimBridge as flat
-## PackedInt32Array (x,y,z triples) and creates four MultiMeshInstance3D
+## branch, root, leaf, and fruit voxel positions from SimBridge as flat
+## PackedInt32Array (x,y,z triples) and creates five MultiMeshInstance3D
 ## children:
 ## - Trunk voxels: dark brown (0.35, 0.22, 0.10) — unit BoxMesh
 ## - Branch voxels: lighter brown (0.45, 0.30, 0.15) — unit BoxMesh
+## - Root voxels: dark earthy brown (0.30, 0.20, 0.12) — unit BoxMesh
 ## - Leaf voxels: Minecraft-style cutout (alpha scissor) with a procedural
 ##   16x16 texture of opaque green patches and transparent holes — unit BoxMesh
 ## - Fruit voxels: warm amber/gold SphereMesh with subtle emissive glow,
@@ -21,15 +22,17 @@
 ## critical for performance with thousands of voxels.
 ##
 ## See also: sim_bridge.rs for get_trunk_voxels() / get_branch_voxels() /
-## get_leaf_voxels() / get_fruit_voxels(), tree_gen.rs (Rust) for how the
-## voxel geometry is generated, sim.rs for fruit spawning logic, main.gd
-## which creates this node and calls setup().
+## get_root_voxels() / get_leaf_voxels() / get_fruit_voxels(), tree_gen.rs
+## (Rust) for how the voxel geometry is generated via energy-based recursive
+## segment growth, sim.rs for fruit spawning logic, main.gd which creates
+## this node and calls setup().
 
 extends Node3D
 
 var _trunk_mesh_instance: MultiMeshInstance3D
 var _branch_mesh_instance: MultiMeshInstance3D
 var _leaf_mesh_instance: MultiMeshInstance3D
+var _root_mesh_instance: MultiMeshInstance3D
 var _fruit_mesh_instance: MultiMeshInstance3D
 
 
@@ -57,6 +60,17 @@ func setup(bridge: SimBridge) -> void:
 		_branch_mesh_instance.name = "BranchMultiMesh"
 		add_child(_branch_mesh_instance)
 
+	# --- Roots ---
+	var root_voxels := bridge.get_root_voxels()
+	var root_count := root_voxels.size() / 3
+	if root_count > 0:
+		_root_mesh_instance = _create_voxel_multimesh(
+			root_voxels, root_count,
+			Color(0.30, 0.20, 0.12)  # Dark earthy brown
+		)
+		_root_mesh_instance.name = "RootMultiMesh"
+		add_child(_root_mesh_instance)
+
 	# --- Leaves ---
 	var leaf_voxels := bridge.get_leaf_voxels()
 	var leaf_count := leaf_voxels.size() / 3
@@ -73,8 +87,8 @@ func setup(bridge: SimBridge) -> void:
 		_fruit_mesh_instance.name = "FruitMultiMesh"
 		add_child(_fruit_mesh_instance)
 
-	print("TreeRenderer: %d trunk, %d branch, %d leaf, %d fruit voxels" % [
-		trunk_count, branch_count, leaf_count, fruit_count
+	print("TreeRenderer: %d trunk, %d branch, %d root, %d leaf, %d fruit voxels" % [
+		trunk_count, branch_count, root_count, leaf_count, fruit_count
 	])
 
 

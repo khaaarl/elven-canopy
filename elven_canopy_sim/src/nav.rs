@@ -12,7 +12,9 @@
 //
 // Each nav node carries a `surface_type` derived from the solid voxel it
 // touches (see `derive_surface_type()`). Edge types and costs are derived from
-// the surface types of the two endpoints (see `derive_edge_type()`).
+// the surface types of the two endpoints (see `derive_edge_type()`). Root
+// voxels are treated as walkable surfaces (BranchWalk), with ForestFloor and
+// TrunkClimb transitions at boundaries.
 //
 // All storage uses `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
 // and deterministic iteration order. No `HashMap`.
@@ -251,7 +253,7 @@ fn derive_edge_type(
                     EdgeType::TrunkCircumference
                 }
             }
-            Branch | Leaf | Fruit | GrownPlatform | Bridge => EdgeType::BranchWalk,
+            Branch | Leaf | Fruit | GrownPlatform | Bridge | Root => EdgeType::BranchWalk,
             GrownStairs | GrownWall => EdgeType::TrunkClimb,
             Air => EdgeType::BranchWalk, // shouldn't happen
         };
@@ -260,6 +262,8 @@ fn derive_edge_type(
     // Mixed surface types.
     match (from_surface, to_surface) {
         (ForestFloor, Trunk) | (Trunk, ForestFloor) => EdgeType::GroundToTrunk,
+        (ForestFloor, Root) | (Root, ForestFloor) => EdgeType::ForestFloor,
+        (Trunk, Root) | (Root, Trunk) => EdgeType::TrunkClimb,
         (Trunk, Branch) | (Branch, Trunk) | (Trunk, Leaf) | (Leaf, Trunk) => {
             EdgeType::TrunkClimb
         }
@@ -612,24 +616,19 @@ mod tests {
 
     // --- build_nav_graph integration tests ---
 
-    /// Helper: create a VoxelWorld with a generated tree (no forks).
+    /// Helper: create a VoxelWorld with a generated tree.
+    /// Uses the default fantasy_mega profile with leaves disabled and
+    /// a small 64^3 world.
     fn test_world_and_config() -> (VoxelWorld, GameConfig) {
         use crate::prng::GameRng;
         use crate::tree_gen;
 
-        let config = GameConfig {
+        let mut config = GameConfig {
             world_size: (64, 64, 64),
-            tree_trunk_radius: 3,
-            tree_trunk_height: 30,
-            tree_branch_start_y: 10,
-            tree_branch_interval: 5,
-            tree_branch_count: 4,
-            tree_branch_length: 6,
-            tree_branch_radius: 1,
-            tree_branch_fork_max_depth: 0,
-            tree_leaf_blob_density: 0.0, // Disable leaves in basic nav tests.
             ..GameConfig::default()
         };
+        // Disable leaves for basic nav tests.
+        config.tree_profile.leaves.canopy_density = 0.0;
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
@@ -759,25 +758,18 @@ mod tests {
     }
 
     #[test]
-    fn build_nav_graph_is_connected_with_forks() {
+    fn build_nav_graph_is_connected_with_splits() {
         use crate::prng::GameRng;
         use crate::tree_gen;
 
-        let config = GameConfig {
+        let mut config = GameConfig {
             world_size: (64, 64, 64),
-            tree_trunk_radius: 3,
-            tree_trunk_height: 30,
-            tree_branch_start_y: 10,
-            tree_branch_interval: 5,
-            tree_branch_count: 4,
-            tree_branch_length: 6,
-            tree_branch_radius: 1,
-            tree_branch_fork_chance: 1.0,
-            tree_branch_fork_min_step: 2,
-            tree_branch_fork_max_depth: 2,
-            tree_leaf_blob_density: 0.0, // Disable leaves — this tests fork connectivity.
             ..GameConfig::default()
         };
+        // High split chance to test connectivity with many branches.
+        config.tree_profile.split.split_chance_base = 1.0;
+        config.tree_profile.split.min_progress_for_split = 0.05;
+        config.tree_profile.leaves.canopy_density = 0.0;
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
@@ -818,14 +810,6 @@ mod tests {
 
         let config = GameConfig {
             world_size: (64, 64, 64),
-            tree_trunk_radius: 3,
-            tree_trunk_height: 30,
-            tree_branch_start_y: 10,
-            tree_branch_interval: 5,
-            tree_branch_count: 4,
-            tree_branch_length: 6,
-            tree_branch_radius: 1,
-            tree_branch_fork_max_depth: 0,
             ..GameConfig::default()
         };
 
@@ -857,24 +841,11 @@ mod tests {
         use crate::tree_gen;
 
         let config = GameConfig {
-            world_size: (128, 128, 128),
-            tree_trunk_radius: 4,
-            tree_trunk_height: 60,
-            tree_branch_start_y: 20,
-            tree_branch_interval: 10,
-            tree_branch_count: 4,
-            tree_branch_length: 15,
-            tree_branch_radius: 2,
-            tree_branch_fork_max_depth: 0,
-            tree_leaf_blob_radius: 3,
-            tree_leaf_blob_density: 0.65,
-            tree_leaf_tip_only: false,
-            tree_leaf_branch_coverage: 0.4,
-            tree_leaf_blob_spacing: 3,
+            world_size: (64, 64, 64),
             ..GameConfig::default()
         };
 
-        let mut world = VoxelWorld::new(128, 128, 128);
+        let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         tree_gen::generate_tree(&mut world, &config, &mut rng);
 
@@ -903,6 +874,50 @@ mod tests {
         assert!(
             unreachable_count == 0,
             "Found {unreachable_count} unreachable nodes (out of {n}) with leaves enabled",
+        );
+    }
+
+    #[test]
+    fn nav_graph_connected_with_roots() {
+        use crate::prng::GameRng;
+        use crate::tree_gen;
+
+        let mut config = GameConfig {
+            world_size: (64, 64, 64),
+            ..GameConfig::default()
+        };
+        config.tree_profile.roots.root_energy_fraction = 0.2;
+        config.tree_profile.roots.root_initial_count = 5;
+
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        tree_gen::generate_tree(&mut world, &config, &mut rng);
+
+        let graph = build_nav_graph(&world, &config);
+        assert!(graph.node_count() > 0);
+
+        // BFS flood fill from node 0.
+        let n = graph.node_count();
+        let mut visited = vec![false; n];
+        let mut queue = std::collections::VecDeque::new();
+        visited[0] = true;
+        queue.push_back(NavNodeId(0));
+
+        while let Some(current) = queue.pop_front() {
+            for &edge_idx in graph.neighbors(current) {
+                let neighbor = graph.edge(edge_idx).to;
+                let ni = neighbor.0 as usize;
+                if !visited[ni] {
+                    visited[ni] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        let unreachable_count = visited.iter().filter(|&&v| !v).count();
+        assert!(
+            unreachable_count == 0,
+            "Found {unreachable_count} unreachable nodes (out of {n}) with roots enabled",
         );
     }
 }

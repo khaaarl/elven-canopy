@@ -6,12 +6,19 @@
 // multiplayer all clients must have identical configs (enforced via hash
 // comparison at session handshake).
 //
+// Tree generation parameters are grouped into a `TreeProfile` struct with
+// nested sub-structs: `GrowthParams`, `SplitParams`, `CurvatureParams`,
+// `RootParams`, `LeafParams`, and `TrunkParams`. Named preset constructors
+// (`TreeProfile::fantasy_mega()`, `::oak()`, etc.) produce different tree
+// archetypes by tuning the same parameter set.
+//
 // Species-specific behavioral data (speed, heartbeat interval, edge
 // restrictions) lives in `SpeciesData` entries keyed by `Species` in the
 // `species` map — see `species.rs`.
 //
 // See also: `sim.rs` which owns the `GameConfig` as part of `SimState`,
-// `species.rs` for the `SpeciesData` struct.
+// `species.rs` for the `SpeciesData` struct, `tree_gen.rs` for the
+// energy-based recursive segment growth algorithm that reads `TreeProfile`.
 //
 // **Critical constraint: determinism.** Config values feed directly into
 // simulation logic. All clients must use identical configs for identical
@@ -22,6 +29,304 @@ use crate::species::SpeciesData;
 use crate::types::Species;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+// ---------------------------------------------------------------------------
+// Tree profile — nested parameter groups
+// ---------------------------------------------------------------------------
+
+/// Shape of leaf blobs at branch terminals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LeafShape {
+    /// Uniform sphere.
+    Sphere,
+    /// Vertically compressed ellipsoid — wider than tall.
+    Cloud,
+}
+
+/// Controls energy budget, radius scaling, and step size for segment growth.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GrowthParams {
+    /// Total energy budget for the tree (trunk + branches). Higher values
+    /// produce taller, thicker trees.
+    pub initial_energy: f32,
+    /// Scaling factor: `radius = sqrt(energy * energy_to_radius)`. Controls
+    /// how thick segments are relative to their remaining energy.
+    pub energy_to_radius: f32,
+    /// Minimum segment radius in voxels. Segments below this still place voxels.
+    pub min_radius: f32,
+    /// Distance in voxels per growth step.
+    pub growth_step_length: f32,
+    /// Energy consumed per growth step.
+    pub energy_per_step: f32,
+}
+
+/// Controls when and how segments split into child branches.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SplitParams {
+    /// Base probability of splitting at each eligible step.
+    pub split_chance_base: f32,
+    /// Number of child branches per split event (typically 1–2).
+    pub split_count: u32,
+    /// Fraction of parent's remaining energy given to each child.
+    /// The continuation keeps `1 - split_energy_ratio * split_count`.
+    pub split_energy_ratio: f32,
+    /// Angle (radians) between parent direction and child direction.
+    pub split_angle: f32,
+    /// Random variance added to split angle (radians).
+    pub split_angle_variance: f32,
+    /// Minimum fraction of energy spent before splits become eligible (0.0–1.0).
+    pub min_progress_for_split: f32,
+}
+
+/// Controls how segments curve during growth.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CurvatureParams {
+    /// Gravitropism strength. Positive = grow upward, negative = droop.
+    /// Applied as a vertical bias to the direction each step.
+    pub gravitropism: f32,
+    /// Maximum angular deflection (radians) per step from random perturbation.
+    pub random_deflection: f32,
+    /// How much successive deflections correlate (0.0 = fully random each step,
+    /// 1.0 = same deflection direction throughout). Creates smooth curves.
+    pub deflection_coherence: f32,
+}
+
+/// Controls root segment generation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RootParams {
+    /// Fraction of `initial_energy` allocated to roots (0.0–1.0).
+    pub root_energy_fraction: f32,
+    /// Number of root segments seeded at the trunk base.
+    pub root_initial_count: u32,
+    /// Gravitropism for roots — positive = grow downward.
+    pub root_gravitropism: f32,
+    /// Initial angle below horizontal for root segments (radians).
+    /// 0 = horizontal, PI/2 = straight down.
+    pub root_initial_angle: f32,
+    /// Tendency to stay near the surface (y=0). Higher values keep roots
+    /// shallow; 0.0 allows roots to dive deep.
+    pub root_surface_tendency: f32,
+}
+
+/// Controls leaf blob generation at branch terminals.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LeafParams {
+    /// Shape of leaf blobs.
+    pub leaf_shape: LeafShape,
+    /// Probability each voxel within the blob radius is placed (0.0–1.0).
+    pub leaf_density: f32,
+    /// Radius of leaf blobs in voxels.
+    pub leaf_size: u32,
+    /// Overall canopy density factor. Multiplied with leaf_density for the
+    /// effective placement probability. 0.0 = no leaves.
+    pub canopy_density: f32,
+}
+
+/// Controls trunk-specific properties.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TrunkParams {
+    /// Flare factor at the trunk base. 0.0 = no flare, 1.0 = double radius at y=1.
+    pub base_flare: f32,
+    /// Initial growth direction as a unit vector [x, y, z].
+    /// Default is straight up: [0.0, 1.0, 0.0].
+    pub initial_direction: [f32; 3],
+}
+
+/// Complete tree generation profile — all parameters needed to grow a tree.
+///
+/// Named preset constructors produce different tree archetypes:
+/// - `fantasy_mega()`: towering mega-tree (the default)
+/// - `oak()`: broad spreading crown
+/// - `conifer()`: tall and narrow
+/// - `willow()`: drooping branches
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TreeProfile {
+    pub growth: GrowthParams,
+    pub split: SplitParams,
+    pub curvature: CurvatureParams,
+    pub roots: RootParams,
+    pub leaves: LeafParams,
+    pub trunk: TrunkParams,
+}
+
+impl TreeProfile {
+    /// Fantasy mega-tree: the default preset. A towering tree with thick trunk,
+    /// wide spread, many splits, and a generous root system.
+    pub fn fantasy_mega() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 400.0,
+                energy_to_radius: 0.08,
+                min_radius: 0.5,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.12,
+                split_count: 1,
+                split_energy_ratio: 0.35,
+                split_angle: 0.7,
+                split_angle_variance: 0.3,
+                min_progress_for_split: 0.15,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.08,
+                random_deflection: 0.15,
+                deflection_coherence: 0.7,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.15,
+                root_initial_count: 5,
+                root_gravitropism: 0.12,
+                root_initial_angle: 0.3,
+                root_surface_tendency: 0.8,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Sphere,
+                leaf_density: 0.65,
+                leaf_size: 3,
+                canopy_density: 1.0,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.5,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Oak: broad spreading crown, thick trunk, moderate height.
+    pub fn oak() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 250.0,
+                energy_to_radius: 0.1,
+                min_radius: 0.5,
+                growth_step_length: 1.0,
+                energy_per_step: 1.2,
+            },
+            split: SplitParams {
+                split_chance_base: 0.18,
+                split_count: 1,
+                split_energy_ratio: 0.4,
+                split_angle: 0.9,
+                split_angle_variance: 0.4,
+                min_progress_for_split: 0.1,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.04,
+                random_deflection: 0.2,
+                deflection_coherence: 0.6,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.12,
+                root_initial_count: 4,
+                root_gravitropism: 0.15,
+                root_initial_angle: 0.2,
+                root_surface_tendency: 0.9,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Cloud,
+                leaf_density: 0.7,
+                leaf_size: 3,
+                canopy_density: 1.0,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.3,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Conifer: tall and narrow, strong central leader.
+    pub fn conifer() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 300.0,
+                energy_to_radius: 0.06,
+                min_radius: 0.5,
+                growth_step_length: 1.0,
+                energy_per_step: 0.8,
+            },
+            split: SplitParams {
+                split_chance_base: 0.08,
+                split_count: 2,
+                split_energy_ratio: 0.2,
+                split_angle: 0.6,
+                split_angle_variance: 0.2,
+                min_progress_for_split: 0.05,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.15,
+                random_deflection: 0.05,
+                deflection_coherence: 0.8,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.1,
+                root_initial_count: 3,
+                root_gravitropism: 0.2,
+                root_initial_angle: 0.5,
+                root_surface_tendency: 0.5,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Sphere,
+                leaf_density: 0.5,
+                leaf_size: 2,
+                canopy_density: 0.8,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.2,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Willow: drooping branches with negative gravitropism on higher generations.
+    pub fn willow() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 200.0,
+                energy_to_radius: 0.07,
+                min_radius: 0.5,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.15,
+                split_count: 2,
+                split_energy_ratio: 0.3,
+                split_angle: 0.5,
+                split_angle_variance: 0.3,
+                min_progress_for_split: 0.1,
+            },
+            curvature: CurvatureParams {
+                gravitropism: -0.1,
+                random_deflection: 0.1,
+                deflection_coherence: 0.9,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.1,
+                root_initial_count: 4,
+                root_gravitropism: 0.1,
+                root_initial_angle: 0.3,
+                root_surface_tendency: 0.7,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Sphere,
+                leaf_density: 0.4,
+                leaf_size: 2,
+                canopy_density: 1.2,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.15,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Top-level game config
+// ---------------------------------------------------------------------------
 
 /// Top-level game configuration. Loaded from JSON, never mutated at runtime.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -77,67 +382,8 @@ pub struct GameConfig {
     /// Maximum mana the starting tree can hold.
     pub starting_mana_capacity: f32,
 
-    // -- Tree generation --
-
-    /// Radius of the tree trunk in voxels.
-    pub tree_trunk_radius: u32,
-
-    /// Height of the tree trunk in voxels.
-    pub tree_trunk_height: u32,
-
-    /// Y-level where branches start growing.
-    pub tree_branch_start_y: u32,
-
-    /// Vertical spacing between branch levels.
-    pub tree_branch_interval: u32,
-
-    /// Number of branches to generate.
-    pub tree_branch_count: u32,
-
-    /// Length of each branch in voxels (from trunk surface).
-    pub tree_branch_length: u32,
-
-    /// Cross-section radius of branches in voxels.
-    pub tree_branch_radius: u32,
-
-    // -- Branch forking --
-
-    /// Per-eligible-step probability of spawning a sub-branch fork.
-    pub tree_branch_fork_chance: f32,
-
-    /// Minimum steps along a branch before forking is eligible.
-    pub tree_branch_fork_min_step: u32,
-
-    /// Angle offset from parent direction for fork (radians, ~34° at 0.6).
-    pub tree_branch_fork_angle: f32,
-
-    /// Child branch length = parent remaining steps * this ratio.
-    pub tree_branch_fork_length_ratio: f32,
-
-    /// Child branch radius = parent effective radius * this ratio.
-    pub tree_branch_fork_radius_ratio: f32,
-
-    /// Maximum fork generations (0 = no forks, 1 = one level, etc.).
-    pub tree_branch_fork_max_depth: u32,
-
-    // -- Leaf generation --
-
-    /// Radius of spherical leaf blobs (voxels).
-    pub tree_leaf_blob_radius: u32,
-
-    /// Probability each in-sphere voxel is placed (0.0–1.0). Creates organic gaps.
-    pub tree_leaf_blob_density: f32,
-
-    /// If true, only place a blob at the branch tip; if false, also along the branch.
-    pub tree_leaf_tip_only: bool,
-
-    /// Fraction of the branch (measured from the tip) that gets leaf blobs.
-    pub tree_leaf_branch_coverage: f32,
-
-    /// Minimum steps between blob centers along a branch.
-    pub tree_leaf_blob_spacing: u32,
-
-    // -- Species --
+    /// Tree generation parameters — energy-based recursive growth profile.
+    pub tree_profile: TreeProfile,
 
     /// Per-species behavioral data (speed, heartbeat interval, edge
     /// restrictions, spawn rules). Keyed by `Species` enum.
@@ -182,24 +428,7 @@ impl Default for GameConfig {
             world_size: (256, 128, 256),
             starting_mana: 100.0,
             starting_mana_capacity: 500.0,
-            tree_trunk_radius: 3,
-            tree_trunk_height: 40,
-            tree_branch_start_y: 12,
-            tree_branch_interval: 6,
-            tree_branch_count: 5,
-            tree_branch_length: 8,
-            tree_branch_radius: 1,
-            tree_branch_fork_chance: 0.08,
-            tree_branch_fork_min_step: 3,
-            tree_branch_fork_angle: 0.6,
-            tree_branch_fork_length_ratio: 0.6,
-            tree_branch_fork_radius_ratio: 0.65,
-            tree_branch_fork_max_depth: 2,
-            tree_leaf_blob_radius: 3,
-            tree_leaf_blob_density: 0.65,
-            tree_leaf_tip_only: false,
-            tree_leaf_branch_coverage: 0.4,
-            tree_leaf_blob_spacing: 3,
+            tree_profile: TreeProfile::fantasy_mega(),
             species,
         }
     }
@@ -221,6 +450,11 @@ mod tests {
             restored.tree_heartbeat_interval_ticks
         );
         assert_eq!(config.world_size, restored.world_size);
+        // Verify tree profile survived.
+        assert_eq!(
+            config.tree_profile.growth.initial_energy,
+            restored.tree_profile.growth.initial_energy
+        );
         // Verify species data survived.
         assert_eq!(config.species.len(), restored.species.len());
         let elf_data = &restored.species[&Species::Elf];
@@ -245,24 +479,45 @@ mod tests {
             "world_size": [128, 64, 128],
             "starting_mana": 200.0,
             "starting_mana_capacity": 1000.0,
-            "tree_trunk_radius": 4,
-            "tree_trunk_height": 50,
-            "tree_branch_start_y": 15,
-            "tree_branch_interval": 8,
-            "tree_branch_count": 6,
-            "tree_branch_length": 10,
-            "tree_branch_radius": 2,
-            "tree_branch_fork_chance": 0.08,
-            "tree_branch_fork_min_step": 3,
-            "tree_branch_fork_angle": 0.6,
-            "tree_branch_fork_length_ratio": 0.6,
-            "tree_branch_fork_radius_ratio": 0.65,
-            "tree_branch_fork_max_depth": 2,
-            "tree_leaf_blob_radius": 3,
-            "tree_leaf_blob_density": 0.65,
-            "tree_leaf_tip_only": false,
-            "tree_leaf_branch_coverage": 0.4,
-            "tree_leaf_blob_spacing": 3,
+            "tree_profile": {
+                "growth": {
+                    "initial_energy": 300.0,
+                    "energy_to_radius": 0.1,
+                    "min_radius": 0.5,
+                    "growth_step_length": 1.0,
+                    "energy_per_step": 1.0
+                },
+                "split": {
+                    "split_chance_base": 0.1,
+                    "split_count": 1,
+                    "split_energy_ratio": 0.3,
+                    "split_angle": 0.8,
+                    "split_angle_variance": 0.3,
+                    "min_progress_for_split": 0.15
+                },
+                "curvature": {
+                    "gravitropism": 0.05,
+                    "random_deflection": 0.1,
+                    "deflection_coherence": 0.7
+                },
+                "roots": {
+                    "root_energy_fraction": 0.1,
+                    "root_initial_count": 4,
+                    "root_gravitropism": 0.1,
+                    "root_initial_angle": 0.3,
+                    "root_surface_tendency": 0.8
+                },
+                "leaves": {
+                    "leaf_shape": "Sphere",
+                    "leaf_density": 0.5,
+                    "leaf_size": 3,
+                    "canopy_density": 1.0
+                },
+                "trunk": {
+                    "base_flare": 0.3,
+                    "initial_direction": [0.0, 1.0, 0.0]
+                }
+            },
             "species": {
                 "Elf": {
                     "base_speed": 0.2,
@@ -281,9 +536,23 @@ mod tests {
         let config: GameConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.tick_duration_ms, 50);
         assert_eq!(config.world_size, (128, 64, 128));
-        assert_eq!(config.tree_trunk_radius, 4);
+        assert_eq!(config.tree_profile.growth.initial_energy, 300.0);
         let capy = &config.species[&Species::Capybara];
         assert_eq!(capy.heartbeat_interval_ticks, 200);
         assert!(capy.ground_only);
+    }
+
+    #[test]
+    fn preset_fantasy_mega_has_roots() {
+        let profile = TreeProfile::fantasy_mega();
+        assert!(profile.roots.root_energy_fraction > 0.0);
+        assert!(profile.roots.root_initial_count > 0);
+    }
+
+    #[test]
+    fn preset_oak_has_wider_splits() {
+        let oak = TreeProfile::oak();
+        let conifer = TreeProfile::conifer();
+        assert!(oak.split.split_angle > conifer.split.split_angle);
     }
 }

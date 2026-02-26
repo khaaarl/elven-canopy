@@ -8,12 +8,12 @@
 // Module overview:
 // - `sim.rs`:         Top-level SimState, tick loop, command/event processing.
 // - `world.rs`:       Dense 3D voxel grid (the world's spatial truth).
-// - `tree_gen.rs`:    Procedural tree generation (trunk + branches).
+// - `tree_gen.rs`:    Energy-based recursive tree generation (trunk, branches, roots, leaves).
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
 // - `pathfinding.rs`: A* pathfinding over the nav graph.
 // - `command.rs`:     SimCommand / SimAction — all sim mutations.
 // - `event.rs`:       EventQueue (priority queue) + narrative SimEvents.
-// - `config.rs`:      GameConfig — all tunable parameters.
+// - `config.rs`:      GameConfig + TreeProfile — all tunable parameters including nested tree presets.
 // - `species.rs`:     SpeciesData — data-driven creature behavior (DF-style).
 // - `task.rs`:        Task entities — units of work assigned to creatures.
 // - `prng.rs`:        Xoshiro256++ PRNG with SplitMix64 seeding.
