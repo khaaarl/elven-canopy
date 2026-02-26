@@ -28,7 +28,7 @@
 ## UI, placement_controller.gd for click-to-place logic,
 ## selection_controller.gd for click-to-select, creature_info_panel.gd
 ## for the creature info panel, game_session.gd for the autoload that
-## carries the seed from the menu.
+## carries the seed from the menu, pause_menu.gd for the ESC pause overlay.
 
 extends Node3D
 
@@ -124,6 +124,25 @@ func _ready() -> void:
 		_panel.hide_panel()
 		_camera_pivot.stop_follow()
 	)
+
+	# Menu button (top-right corner, on the same CanvasLayer as toolbar).
+	var menu_btn := Button.new()
+	menu_btn.text = "Menu"
+	menu_btn.custom_minimum_size = Vector2(80, 40)
+	menu_btn.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	menu_btn.position = Vector2(-90, 10)
+	canvas_layer.add_child(menu_btn)
+
+	# Pause menu overlay (on a higher CanvasLayer so it covers toolbar/panel).
+	var pause_layer := CanvasLayer.new()
+	pause_layer.layer = 2
+	add_child(pause_layer)
+
+	var pause_script = load("res://scripts/pause_menu.gd")
+	var pause_menu := ColorRect.new()
+	pause_menu.set_script(pause_script)
+	pause_layer.add_child(pause_menu)
+	menu_btn.pressed.connect(pause_menu.toggle)
 
 	# Wire follow button → camera.
 	_panel.follow_requested.connect(func():
