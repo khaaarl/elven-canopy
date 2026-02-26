@@ -15,6 +15,10 @@
 //   — `PackedVector3Array` for billboard sprite placement. Internally, all
 //   creatures are unified `Creature` entities with a `species` field; the
 //   bridge filters by species so the GDScript API has clean per-species calls.
+// - **Creature info:** `get_creature_info(species_name, index)` — returns a
+//   `VarDictionary` with species, position (x/y/z), and task status for the
+//   creature at the given species-filtered index. Used by the creature info
+//   panel for display and follow-mode tracking.
 // - **Nav nodes:** `get_all_nav_nodes()`, `get_ground_nav_nodes()` — for
 //   debug visualization. `get_visible_nav_nodes(cam_pos)`,
 //   `get_visible_ground_nav_nodes(cam_pos)` — filtered by voxel-based
@@ -342,6 +346,44 @@ impl SimBridge {
             },
         };
         sim.step(&[cmd], next_tick);
+    }
+
+    /// Return info about the creature at the given species-filtered index.
+    ///
+    /// The index corresponds to the creature's position in the iteration
+    /// order of `get_elf_positions()` or `get_capybara_positions()` — i.e.,
+    /// BTreeMap order filtered by species.
+    ///
+    /// Returns a VarDictionary with keys: "species", "x", "y", "z", "has_task".
+    /// Returns an empty VarDictionary if species is unknown or index is out of
+    /// bounds.
+    #[func]
+    fn get_creature_info(&self, species_name: GString, index: i32) -> VarDictionary {
+        let Some(sim) = &self.sim else {
+            return VarDictionary::new();
+        };
+        let species = match species_name.to_string().as_str() {
+            "Elf" => Species::Elf,
+            "Capybara" => Species::Capybara,
+            _ => return VarDictionary::new(),
+        };
+        let creature = sim
+            .creatures
+            .values()
+            .filter(|c| c.species == species)
+            .nth(index as usize);
+        match creature {
+            Some(c) => {
+                let mut dict = VarDictionary::new();
+                dict.set("species", species_name.clone());
+                dict.set("x", c.position.x);
+                dict.set("y", c.position.y);
+                dict.set("z", c.position.z);
+                dict.set("has_task", c.current_task.is_some());
+                dict
+            }
+            None => VarDictionary::new(),
+        }
     }
 
     /// Spawn a capybara at the given voxel position.

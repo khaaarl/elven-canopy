@@ -48,11 +48,15 @@ elven-canopy/
 │   ├── scenes/main.tscn
 │   └── scripts/
 │       ├── main.gd             # Scene controller, initializes SimBridge
-│       ├── orbital_camera.gd   # Camera controls
+│       ├── orbital_camera.gd   # Camera controls (orbit + follow mode)
 │       ├── elf_renderer.gd     # Billboard chibi elf sprites
 │       ├── capybara_renderer.gd # Billboard chibi capybara sprites
 │       ├── tree_renderer.gd    # Tree voxel mesh rendering
-│       └── sprite_factory.gd   # Programmatic chibi sprite generation
+│       ├── sprite_factory.gd   # Programmatic chibi sprite generation
+│       ├── spawn_toolbar.gd    # Toolbar UI for spawning creatures/tasks
+│       ├── placement_controller.gd  # Click-to-place for spawns and tasks
+│       ├── selection_controller.gd  # Click-to-select creatures
+│       └── creature_info_panel.gd   # Right-side creature info + follow button
 ├── scripts/
 │   └── build.sh                # Build, test, and run script
 └── default_config.json         # Default GameConfig values

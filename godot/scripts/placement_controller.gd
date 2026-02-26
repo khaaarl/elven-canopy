@@ -12,11 +12,14 @@
 ## - Actions (Summon): creates a GoTo task at the clicked nav node
 ##
 ## Uses _unhandled_input() and set_input_as_handled() so placement clicks don't
-## propagate to the camera (which also uses _unhandled_input).
+## propagate to the camera (which also uses _unhandled_input). Exposes
+## is_placing() so selection_controller.gd can skip creature selection while
+## a placement action is in progress.
 ##
 ## See also: spawn_toolbar.gd which triggers placement mode, main.gd which
-## wires the two together, sim_bridge.rs for get_visible_nav_nodes/
-## get_visible_ground_nav_nodes (voxel-based occlusion filtering).
+## wires the two together, selection_controller.gd which checks is_placing(),
+## sim_bridge.rs for get_visible_nav_nodes/get_visible_ground_nav_nodes
+## (voxel-based occlusion filtering).
 
 extends Node3D
 
@@ -46,6 +49,10 @@ func setup(bridge: SimBridge, camera: Camera3D) -> void:
 func connect_toolbar(toolbar: Node) -> void:
 	toolbar.spawn_requested.connect(_on_spawn_requested)
 	toolbar.action_requested.connect(_on_action_requested)
+
+
+func is_placing() -> bool:
+	return _state == State.PLACING
 
 
 func _ready() -> void:
