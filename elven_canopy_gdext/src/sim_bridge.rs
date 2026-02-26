@@ -6,8 +6,8 @@
 //
 // ## What it exposes
 //
-// - **Lifecycle:** `init_sim(seed)`, `step_to_tick(tick)`, `current_tick()`,
-//   `is_initialized()`.
+// - **Lifecycle:** `init_sim(seed)`, `init_sim_with_tree_profile_json(seed, json)`,
+//   `step_to_tick(tick)`, `current_tick()`, `is_initialized()`.
 // - **World data:** `get_trunk_voxels()`, `get_branch_voxels()`,
 //   `get_root_voxels()`, `get_leaf_voxels()`, `get_fruit_voxels()` — flat
 //   `PackedInt32Array` of (x,y,z) triples for voxel mesh rendering.
@@ -40,6 +40,7 @@
 // `spawn_toolbar.gd` for the GDScript callers.
 
 use elven_canopy_sim::command::{SimAction, SimCommand};
+use elven_canopy_sim::config::{GameConfig, TreeProfile};
 use elven_canopy_sim::sim::SimState;
 use elven_canopy_sim::types::{Species, VoxelCoord};
 use godot::prelude::*;
@@ -70,6 +71,24 @@ impl SimBridge {
     fn init_sim(&mut self, seed: i64) {
         self.sim = Some(SimState::new(seed as u64));
         godot_print!("SimBridge: simulation initialized with seed {seed}");
+    }
+
+    /// Initialize the simulation with the given seed and a custom tree profile.
+    ///
+    /// The `tree_profile_json` parameter is a JSON string matching the
+    /// `TreeProfile` serde schema (see `config.rs`). If parsing fails, falls
+    /// back to the default Fantasy Mega profile.
+    #[func]
+    fn init_sim_with_tree_profile_json(&mut self, seed: i64, tree_profile_json: GString) {
+        let profile: TreeProfile = serde_json::from_str(&tree_profile_json.to_string())
+            .unwrap_or_else(|e| {
+                godot_warn!("Failed to parse tree profile JSON: {e}, using default");
+                TreeProfile::fantasy_mega()
+            });
+        let mut config = GameConfig::default();
+        config.tree_profile = profile;
+        self.sim = Some(SimState::with_config(seed as u64, config));
+        godot_print!("SimBridge: simulation initialized with seed {seed} and custom tree profile");
     }
 
     /// Advance the simulation to the target tick, processing all events.

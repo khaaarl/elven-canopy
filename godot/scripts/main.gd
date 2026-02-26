@@ -49,7 +49,11 @@ func _ready() -> void:
 		sim_seed = GameSession.sim_seed
 
 	var bridge: SimBridge = $SimBridge
-	bridge.init_sim(sim_seed)
+	if not GameSession.tree_profile.is_empty():
+		var json_str := JSON.stringify(GameSession.tree_profile)
+		bridge.init_sim_with_tree_profile_json(sim_seed, json_str)
+	else:
+		bridge.init_sim(sim_seed)
 	print("Elven Canopy: sim initialized (seed=%d, mana=%.1f)" % [sim_seed, bridge.home_tree_mana()])
 
 	# Set up tree renderer.
