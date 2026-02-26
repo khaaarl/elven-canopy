@@ -55,6 +55,13 @@ func _ready() -> void:
 	load_game_btn.disabled = true
 	vbox.add_child(load_game_btn)
 
+	# Quit Game button.
+	var quit_btn := Button.new()
+	quit_btn.text = "Quit Game"
+	quit_btn.custom_minimum_size = Vector2(200, 50)
+	quit_btn.pressed.connect(func(): get_tree().quit())
+	vbox.add_child(quit_btn)
+
 
 func _on_new_game_pressed() -> void:
 	get_tree().change_scene_to_file("res://scenes/new_game.tscn")
