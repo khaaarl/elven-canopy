@@ -54,6 +54,7 @@ version = "0.1.0"
 dependencies = [
  "elven_canopy_sim",
  "godot",
+ "serde_json",
 ]
 
 [[package]]
