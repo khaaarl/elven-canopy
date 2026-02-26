@@ -113,7 +113,7 @@ use crate::task;
 use crate::pathfinding;
 use crate::prng::GameRng;
 use crate::species::SpeciesData;
-use crate::tree_gen::{self, BranchParent};
+use crate::tree_gen;
 use crate::types::*;
 use crate::world::VoxelWorld;
 use serde::{Deserialize, Serialize};
@@ -180,14 +180,10 @@ pub struct Tree {
     pub owner: Option<PlayerId>,
     pub trunk_voxels: Vec<VoxelCoord>,
     pub branch_voxels: Vec<VoxelCoord>,
-    /// Centerline cursor positions for each branch (one path per branch).
-    /// Sub-branches are additional entries appended after primary branches.
-    pub branch_paths: Vec<Vec<VoxelCoord>>,
-    /// Parent relationship for each branch path. `None` = primary branch,
-    /// `Some(BranchParent)` = sub-branch forked from a parent.
-    pub branch_parents: Vec<Option<BranchParent>>,
-    /// Leaf voxel positions (semi-spherical blobs near branch tips).
+    /// Leaf voxel positions (blobs at branch terminals).
     pub leaf_voxels: Vec<VoxelCoord>,
+    /// Root voxel positions (at or below ground level).
+    pub root_voxels: Vec<VoxelCoord>,
     /// Positions of fruit hanging below leaf voxels.
     pub fruit_positions: Vec<VoxelCoord>,
 }
@@ -255,9 +251,8 @@ impl SimState {
             owner: Some(player_id),
             trunk_voxels: tree_result.trunk_voxels,
             branch_voxels: tree_result.branch_voxels,
-            branch_paths: tree_result.branch_paths,
-            branch_parents: tree_result.branch_parents,
             leaf_voxels: tree_result.leaf_voxels,
+            root_voxels: tree_result.root_voxels,
             fruit_positions: Vec::new(),
         };
 

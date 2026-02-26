@@ -16,7 +16,7 @@
 //   persisted across sessions.
 // - **Simulation enums:** `Species`, `SimSpeed`, `Priority`, `BuildType`.
 // - **Voxel types:** `VoxelType` — the material at each grid cell (`Air`,
-//   `Trunk`, `Branch`, `Leaf`, `ForestFloor`, etc.).
+//   `Trunk`, `Branch`, `Root`, `Leaf`, `ForestFloor`, etc.).
 //
 // `SimUuid` is a hand-rolled UUID v4 (RFC 4122) generated deterministically
 // from the sim's `GameRng`. It serializes as the standard 8-4-4-4-12 hex
@@ -255,6 +255,7 @@ pub enum VoxelType {
     ForestFloor,
     Leaf,
     Fruit,
+    Root,
 }
 
 impl VoxelType {
