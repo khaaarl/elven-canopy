@@ -96,6 +96,15 @@
 // restrictions) come from data in `SpeciesData` — Dwarf Fortress-style
 // data-driven design. See `species.rs` and `config.rs`.
 //
+// ## Save/load
+//
+// `SimState` derives `Serialize`/`Deserialize` via serde. Three transient
+// fields (`world`, `nav_graph`, `species_table`) are `#[serde(skip)]` and
+// must be rebuilt after deserialization via `rebuild_transient_state()`.
+// Convenience methods `to_json()` and `from_json()` handle the full
+// serialize/deserialize + rebuild cycle. `rebuild_world()` reconstructs the
+// voxel grid from stored tree voxel lists and config (forest floor extent).
+//
 // See also: `event.rs` for the event queue, `command.rs` for `SimCommand`,
 // `config.rs` for `GameConfig`, `types.rs` for entity IDs, `world.rs` for
 // the voxel grid, `nav.rs` for navigation, `pathfinding.rs` for A*,
@@ -929,6 +938,77 @@ impl SimState {
         true
     }
 
+    // -----------------------------------------------------------------------
+    // Save/load helpers
+    // -----------------------------------------------------------------------
+
+    /// Rebuild the voxel world from config and stored tree entity data.
+    ///
+    /// Recreates the `VoxelWorld` from scratch: lays the forest floor at y=0
+    /// using `config.floor_extent`, then places every tree's trunk, branch,
+    /// root, leaf, and fruit voxels. This is the inverse of tree generation —
+    /// instead of growing the tree procedurally, we replay the stored voxel
+    /// lists.
+    pub fn rebuild_world(config: &GameConfig, trees: &BTreeMap<TreeId, Tree>) -> VoxelWorld {
+        let (ws_x, ws_y, ws_z) = config.world_size;
+        let mut world = VoxelWorld::new(ws_x, ws_y, ws_z);
+
+        // Lay forest floor.
+        let center_x = ws_x as i32 / 2;
+        let center_z = ws_z as i32 / 2;
+        let floor_extent = config.floor_extent;
+        for dx in -floor_extent..=floor_extent {
+            for dz in -floor_extent..=floor_extent {
+                let coord = VoxelCoord::new(center_x + dx, 0, center_z + dz);
+                world.set(coord, VoxelType::ForestFloor);
+            }
+        }
+
+        // Place tree voxels. Priority order: Trunk > Branch > Root > Leaf > Fruit.
+        for tree in trees.values() {
+            for &coord in &tree.trunk_voxels {
+                world.set(coord, VoxelType::Trunk);
+            }
+            for &coord in &tree.branch_voxels {
+                world.set(coord, VoxelType::Branch);
+            }
+            for &coord in &tree.root_voxels {
+                world.set(coord, VoxelType::Root);
+            }
+            for &coord in &tree.leaf_voxels {
+                world.set(coord, VoxelType::Leaf);
+            }
+            for &coord in &tree.fruit_positions {
+                world.set(coord, VoxelType::Fruit);
+            }
+        }
+
+        world
+    }
+
+    /// Rebuild all transient (`#[serde(skip)]`) fields after deserialization.
+    ///
+    /// Restores: `world` (voxel grid from stored tree voxels + config),
+    /// `nav_graph` (from rebuilt world geometry), `species_table` (from config).
+    pub fn rebuild_transient_state(&mut self) {
+        self.world = Self::rebuild_world(&self.config, &self.trees);
+        self.nav_graph = nav::build_nav_graph(&self.world, &self.config);
+        self.species_table = self.config.species.clone();
+    }
+
+    /// Serialize the simulation state to a JSON string.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+
+    /// Deserialize a simulation state from a JSON string and rebuild
+    /// transient fields (world, nav_graph, species_table).
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        let mut state: SimState = serde_json::from_str(json)?;
+        state.rebuild_transient_state();
+        Ok(state)
+    }
+
     /// Count creatures of a given species.
     pub fn creature_count(&self, species: Species) -> usize {
         self.creatures
@@ -1682,6 +1762,164 @@ mod tests {
         let tree_a = &sim_a.trees[&sim_a.player_tree_id];
         let tree_b = &sim_b.trees[&sim_b.player_tree_id];
         assert_eq!(tree_a.fruit_positions, tree_b.fruit_positions);
+    }
+
+    // -----------------------------------------------------------------------
+    // Save/load roundtrip tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rebuild_world_matches_original() {
+        let sim = SimState::new(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+
+        // Rebuild world from stored tree voxels and config.
+        let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees);
+
+        // Check trunk voxels.
+        for coord in &tree.trunk_voxels {
+            assert_eq!(
+                rebuilt.get(*coord),
+                VoxelType::Trunk,
+                "Rebuilt world missing trunk voxel at {coord}"
+            );
+        }
+        // Check branch voxels.
+        for coord in &tree.branch_voxels {
+            assert_eq!(
+                rebuilt.get(*coord),
+                VoxelType::Branch,
+                "Rebuilt world missing branch voxel at {coord}"
+            );
+        }
+        // Check root voxels.
+        for coord in &tree.root_voxels {
+            assert_eq!(
+                rebuilt.get(*coord),
+                VoxelType::Root,
+                "Rebuilt world missing root voxel at {coord}"
+            );
+        }
+        // Check leaf voxels.
+        for coord in &tree.leaf_voxels {
+            assert_eq!(
+                rebuilt.get(*coord),
+                VoxelType::Leaf,
+                "Rebuilt world missing leaf voxel at {coord}"
+            );
+        }
+        // Check forest floor.
+        let (ws_x, _, ws_z) = sim.config.world_size;
+        let center_x = ws_x as i32 / 2;
+        let center_z = ws_z as i32 / 2;
+        let floor_coord = VoxelCoord::new(center_x, 0, center_z);
+        assert_eq!(rebuilt.get(floor_coord), VoxelType::ForestFloor);
+    }
+
+    #[test]
+    fn rebuild_transient_state_restores_nav_graph() {
+        let sim = SimState::new(42);
+        let json = sim.to_json().unwrap();
+
+        // Deserialize — transient fields are default (empty).
+        let mut restored: SimState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.nav_graph.node_count(), 0, "Before rebuild, nav_graph should be empty");
+        assert_eq!(restored.world.size_x, 0, "Before rebuild, world should be empty");
+
+        // Rebuild transient state.
+        restored.rebuild_transient_state();
+        assert!(
+            restored.nav_graph.node_count() > 0,
+            "After rebuild, nav_graph should have nodes"
+        );
+        assert_eq!(
+            restored.nav_graph.node_count(),
+            sim.nav_graph.node_count(),
+            "Rebuilt nav_graph should match original node count"
+        );
+    }
+
+    #[test]
+    fn json_roundtrip_preserves_state() {
+        let mut sim = SimState::new(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Spawn creatures and advance ticks.
+        let cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: 1,
+                action: SimAction::SpawnElf {
+                    position: tree_pos,
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: 1,
+                action: SimAction::SpawnCapybara {
+                    position: tree_pos,
+                },
+            },
+        ];
+        sim.step(&cmds, 200);
+
+        let restored = SimState::from_json(&sim.to_json().unwrap()).unwrap();
+
+        assert_eq!(sim.tick, restored.tick);
+        assert_eq!(sim.creatures.len(), restored.creatures.len());
+        for (id, creature) in &sim.creatures {
+            let restored_creature = &restored.creatures[id];
+            assert_eq!(creature.position, restored_creature.position);
+            assert_eq!(creature.species, restored_creature.species);
+        }
+        assert_eq!(sim.player_tree_id, restored.player_tree_id);
+        assert_eq!(sim.player_id, restored.player_id);
+    }
+
+    #[test]
+    fn json_roundtrip_continues_deterministically() {
+        let mut sim = SimState::new(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Spawn creatures and advance.
+        let spawn = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnElf {
+                position: tree_pos,
+            },
+        };
+        sim.step(&[spawn], 200);
+
+        // Save and restore.
+        let mut restored = SimState::from_json(&sim.to_json().unwrap()).unwrap();
+
+        // Advance both 500 more ticks.
+        sim.step(&[], 700);
+        restored.step(&[], 700);
+
+        // Creature positions must match.
+        for (id, creature) in &sim.creatures {
+            let restored_creature = &restored.creatures[id];
+            assert_eq!(
+                creature.position, restored_creature.position,
+                "Creature {id:?} position diverged after roundtrip + 500 ticks"
+            );
+        }
+        // PRNG state must match.
+        assert_eq!(sim.rng.next_u64(), restored.rng.next_u64());
+    }
+
+    #[test]
+    fn from_json_rejects_invalid_json() {
+        let result = SimState::from_json("not valid json {{{");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_json_rejects_wrong_schema() {
+        let result = SimState::from_json(r#"{"tick": "not_a_number"}"#);
+        assert!(result.is_err());
     }
 
     #[test]

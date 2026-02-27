@@ -12,6 +12,7 @@
   "fruit_max_per_tree": 20,
   "fruit_initial_attempts": 12,
   "world_size": [256, 128, 256],
+  "floor_extent": 20,
   "starting_mana": 100.0,
   "starting_mana_capacity": 500.0,
   "tree_profile": {

@@ -4,19 +4,14 @@
 ## connects through this script.
 ##
 ## Startup sequence (_ready):
-## 1. Read the simulation seed from GameSession autoload (set by the new-game
-##    menu), falling back to the @export default for direct scene launches.
-## 2. Initialize SimBridge with the seed.
-## 3. Set up renderers: tree_renderer.gd (static voxel mesh),
-##    elf_renderer.gd and capybara_renderer.gd (billboard sprites).
-## 4. Spawn initial creatures at the tree base via SimBridge commands.
-## 5. Create the spawn toolbar UI (spawn_toolbar.gd) on a CanvasLayer so
-##    it renders on top of the 3D viewport.
-## 6. Create the placement controller (placement_controller.gd) and wire
-##    it to both the SimBridge and the toolbar's signals.
-## 7. Create the creature info panel (creature_info_panel.gd) and
-##    selection controller (selection_controller.gd), wire them to the
-##    camera for follow mode.
+## 1. Check GameSession.load_save_path — if set, load a saved game instead
+##    of starting fresh.
+## 2. For new games: read the simulation seed from GameSession autoload (set
+##    by the new-game menu), initialize SimBridge, and spawn initial creatures.
+## 3. For loaded games: read the save file, call bridge.load_game_json(),
+##    and skip creature spawning (creatures are already in the loaded state).
+## 4. Common path: set up renderers, toolbar, placement controller, selection
+##    controller, creature info panel, menu button, and pause menu.
 ##
 ## Per-frame (_process): advances the sim by one tick via
 ## SimBridge.step_to_tick(). If the camera is following a creature, updates
@@ -28,7 +23,8 @@
 ## UI, placement_controller.gd for click-to-place logic,
 ## selection_controller.gd for click-to-select, creature_info_panel.gd
 ## for the creature info panel, game_session.gd for the autoload that
-## carries the seed from the menu, pause_menu.gd for the ESC pause overlay.
+## carries the seed/load path from the menu, pause_menu.gd for the ESC
+## pause overlay.
 
 extends Node3D
 
@@ -43,18 +39,44 @@ var _camera_pivot: Node3D
 
 
 func _ready() -> void:
-	# Use seed from GameSession autoload if available (normal flow through menus).
-	# Fall back to the @export var if GameSession hasn't been set (direct scene launch).
-	if GameSession.sim_seed >= 0:
-		sim_seed = GameSession.sim_seed
-
 	var bridge: SimBridge = $SimBridge
-	if not GameSession.tree_profile.is_empty():
-		var json_str := JSON.stringify(GameSession.tree_profile)
-		bridge.init_sim_with_tree_profile_json(sim_seed, json_str)
-	else:
-		bridge.init_sim(sim_seed)
-	print("Elven Canopy: sim initialized (seed=%d, mana=%.1f)" % [sim_seed, bridge.home_tree_mana()])
+	var is_loaded_game := false
+
+	# --- Branch: load a saved game or start a new one ---
+	if GameSession.load_save_path != "":
+		is_loaded_game = _try_load_save(bridge, GameSession.load_save_path)
+		GameSession.load_save_path = ""
+		if not is_loaded_game:
+			# Load failed — return to main menu.
+			push_error("main: failed to load save, returning to main menu")
+			get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
+			return
+
+	if not is_loaded_game:
+		# Normal new-game flow.
+		if GameSession.sim_seed >= 0:
+			sim_seed = GameSession.sim_seed
+
+		if not GameSession.tree_profile.is_empty():
+			var json_str := JSON.stringify(GameSession.tree_profile)
+			bridge.init_sim_with_tree_profile_json(sim_seed, json_str)
+		else:
+			bridge.init_sim(sim_seed)
+		print("Elven Canopy: sim initialized (seed=%d, mana=%.1f)" % [sim_seed, bridge.home_tree_mana()])
+
+		# Spawn initial creatures.
+		var cx := 128
+		var cz := 128
+		for i in 5:
+			var ox := i * 3 - 6
+			bridge.spawn_elf(cx + ox, 0, cz)
+		print("Elven Canopy: spawned %d elves near (%d, 0, %d)" % [bridge.elf_count(), cx, cz])
+
+		for i in 5:
+			bridge.spawn_capybara(cx, 0, cz)
+		print("Elven Canopy: spawned %d capybaras near (%d, 0, %d)" % [bridge.capybara_count(), cx, cz])
+
+	# --- Common setup (new game and loaded game) ---
 
 	# Set up tree renderer.
 	var tree_renderer = $TreeRenderer
@@ -67,20 +89,6 @@ func _ready() -> void:
 	# Set up capybara renderer (sim-driven).
 	var capybara_renderer = $CapybaraRenderer
 	capybara_renderer.setup(bridge)
-
-	# Spawn elves at the tree base to demonstrate chibi variety.
-	# The world center is world_size/2 (128 for default 256 world).
-	var cx := 128
-	var cz := 128
-	for i in 5:
-		var ox := i * 3 - 6  # Spread elves along X axis
-		bridge.spawn_elf(cx + ox, 0, cz)
-	print("Elven Canopy: spawned %d elves near (%d, 0, %d)" % [bridge.elf_count(), cx, cz])
-
-	# Spawn capybaras at ground level.
-	for i in 5:
-		bridge.spawn_capybara(cx, 0, cz)
-	print("Elven Canopy: spawned %d capybaras near (%d, 0, %d)" % [bridge.capybara_count(), cx, cz])
 
 	# Set up spawn toolbar UI (rendered on top of 3D via CanvasLayer).
 	var canvas_layer := CanvasLayer.new()
@@ -113,7 +121,7 @@ func _ready() -> void:
 	_selector.setup(bridge, $CameraPivot/Camera3D)
 	_selector.set_placement_controller(controller)
 
-	# Wire selection → panel.
+	# Wire selection -> panel.
 	_camera_pivot = $CameraPivot
 	_selector.creature_selected.connect(func(species: String, index: int):
 		var info := bridge.get_creature_info(species, index)
@@ -142,9 +150,10 @@ func _ready() -> void:
 	var pause_menu := ColorRect.new()
 	pause_menu.set_script(pause_script)
 	pause_layer.add_child(pause_menu)
+	pause_menu.setup(bridge)
 	menu_btn.pressed.connect(pause_menu.toggle)
 
-	# Wire follow button → camera.
+	# Wire follow button -> camera.
 	_panel.follow_requested.connect(func():
 		var pos = _get_creature_world_pos(bridge,
 			_selector.get_selected_species(), _selector.get_selected_index())
@@ -158,6 +167,23 @@ func _ready() -> void:
 		_selector.deselect()
 		_camera_pivot.stop_follow()
 	)
+
+
+## Try to load a save file. Returns true on success.
+func _try_load_save(bridge: SimBridge, save_path: String) -> bool:
+	var file := FileAccess.open(save_path, FileAccess.READ)
+	if file == null:
+		push_error("main: cannot open save file: %s" % save_path)
+		return false
+	var json := file.get_as_text()
+	file.close()
+	if json.is_empty():
+		push_error("main: save file is empty: %s" % save_path)
+		return false
+	var ok := bridge.load_game_json(json)
+	if ok:
+		print("Elven Canopy: loaded save from %s (tick=%d)" % [save_path, bridge.current_tick()])
+	return ok
 
 
 func _process(_delta: float) -> void:

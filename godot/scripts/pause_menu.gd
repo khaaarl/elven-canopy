@@ -1,22 +1,31 @@
 ## In-game pause menu overlay.
 ##
-## A semi-transparent full-screen overlay with Resume, Save (disabled),
+## A semi-transparent full-screen overlay with Resume, Save Game,
 ## Main Menu, and Quit buttons. Uses Godot's built-in pause system:
 ## when shown, get_tree().paused = true freezes _process in main.gd
 ## (and all other default-mode nodes), stopping the sim. This node's
 ## process_mode is PROCESS_MODE_ALWAYS so it keeps receiving input.
+##
+## Save Game opens a save_dialog.gd modal; the pause menu handles
+## writing the JSON to `user://saves/<name>.json` via the SimBridge.
 ##
 ## ESC key toggles the menu via _unhandled_input. When the menu is hidden,
 ## placement_controller.gd and selection_controller.gd consume ESC first
 ## (via set_input_as_handled), so the pause menu only opens when nothing
 ## else claims ESC.
 ##
+## Call `setup(bridge)` after construction to enable saving. Without it,
+## the Save button remains disabled.
+##
 ## Exposes toggle(), open(), close() so main.gd can wire a menu button.
 ##
 ## See also: main.gd (creates and wires this menu), main_menu.gd (target
-## of the "Main Menu" button).
+## of the "Main Menu" button), save_dialog.gd (modal save name input).
 
 extends ColorRect
+
+var _bridge: SimBridge
+var _save_btn: Button
 
 
 func _ready() -> void:
@@ -50,12 +59,13 @@ func _ready() -> void:
 	resume_btn.pressed.connect(close)
 	vbox.add_child(resume_btn)
 
-	# Save Game button (disabled placeholder).
-	var save_btn := Button.new()
-	save_btn.text = "Save Game"
-	save_btn.custom_minimum_size = Vector2(200, 50)
-	save_btn.disabled = true
-	vbox.add_child(save_btn)
+	# Save Game button (enabled after setup() provides a bridge).
+	_save_btn = Button.new()
+	_save_btn.text = "Save Game"
+	_save_btn.custom_minimum_size = Vector2(200, 50)
+	_save_btn.disabled = true
+	_save_btn.pressed.connect(_on_save_pressed)
+	vbox.add_child(_save_btn)
 
 	# Main Menu button.
 	var main_menu_btn := Button.new()
@@ -73,6 +83,12 @@ func _ready() -> void:
 
 	# Start hidden.
 	visible = false
+
+
+## Provide the SimBridge reference so Save Game can function.
+func setup(bridge: SimBridge) -> void:
+	_bridge = bridge
+	_save_btn.disabled = false
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -96,6 +112,41 @@ func open() -> void:
 func close() -> void:
 	visible = false
 	get_tree().paused = false
+
+
+func _on_save_pressed() -> void:
+	var dialog_script = load("res://scripts/save_dialog.gd")
+	var dialog := ColorRect.new()
+	dialog.set_script(dialog_script)
+	add_child(dialog)
+	dialog.save_requested.connect(_do_save)
+
+
+func _do_save(save_name: String) -> void:
+	if _bridge == null:
+		return
+	var json := _bridge.save_game_json()
+	if json.is_empty():
+		push_error("PauseMenu: save_game_json returned empty string")
+		return
+
+	# Ensure saves directory exists.
+	DirAccess.make_dir_recursive_absolute("user://saves")
+
+	# Sanitize file name: replace characters unsafe on Windows/macOS/Linux.
+	# Windows forbids: \ / : * ? " < > |
+	var safe_name := save_name
+	for ch in ["\\", "/", ":", "*", "?", "\"", "<", ">", "|"]:
+		safe_name = safe_name.replace(ch, "_")
+	var path := "user://saves/" + safe_name + ".json"
+
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		push_error("PauseMenu: failed to open %s for writing" % path)
+		return
+	file.store_string(json)
+	file.close()
+	print("PauseMenu: saved game to %s" % path)
 
 
 func _on_main_menu_pressed() -> void:

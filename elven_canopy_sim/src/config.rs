@@ -376,6 +376,12 @@ pub struct GameConfig {
     /// World dimensions in voxels (x, y, z).
     pub world_size: (u32, u32, u32),
 
+    /// Half-extent of the forest floor around the world center.
+    /// The floor covers `(center - floor_extent)` to `(center + floor_extent)`
+    /// in both X and Z at y=0. Also used by `rebuild_world()` when restoring
+    /// transient state after deserialization.
+    pub floor_extent: i32,
+
     /// Initial mana stored in the player's home tree.
     pub starting_mana: f32,
 
@@ -430,6 +436,7 @@ impl Default for GameConfig {
             fruit_max_per_tree: 20,
             fruit_initial_attempts: 12,
             world_size: (256, 128, 256),
+            floor_extent: 20,
             starting_mana: 100.0,
             starting_mana_capacity: 500.0,
             tree_profile: TreeProfile::fantasy_mega(),
@@ -481,6 +488,7 @@ mod tests {
             "fruit_max_per_tree": 25,
             "fruit_initial_attempts": 15,
             "world_size": [128, 64, 128],
+            "floor_extent": 15,
             "starting_mana": 200.0,
             "starting_mana_capacity": 1000.0,
             "tree_profile": {
