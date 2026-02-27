@@ -10,8 +10,9 @@
 ##    by the new-game menu), initialize SimBridge, and spawn initial creatures.
 ## 3. For loaded games: read the save file, call bridge.load_game_json(),
 ##    and skip creature spawning (creatures are already in the loaded state).
-## 4. Common path: set up renderers, toolbar, placement controller, selection
-##    controller, creature info panel, menu button, and pause menu.
+## 4. Common path: set up renderers, toolbar, placement controller,
+##    construction controller, selection controller, creature info panel,
+##    menu button, and pause menu.
 ##
 ## Per-frame (_process): uses a time-based accumulator to advance the sim by
 ## the correct number of ticks, decoupled from the frame rate. The sim runs
@@ -22,14 +23,22 @@
 ## and distributes it to renderers and the selection controller for smooth
 ## creature movement interpolation between nav nodes.
 ##
+## ESC precedence chain (reverse tree order — later children fire first):
+## 1. placement_controller — cancel active placement
+## 2. construction_controller — if placing: exit placing sub-mode;
+##    if active: exit construction mode
+## 3. selection_controller — deselect creature
+## 4. pause_menu — open/close (on CanvasLayer, fires after scene tree nodes)
+##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
-## capybara_renderer.gd for rendering, spawn_toolbar.gd for the toolbar
-## UI, placement_controller.gd for click-to-place logic,
-## selection_controller.gd for click-to-select, creature_info_panel.gd
-## for the creature info panel, game_session.gd for the autoload that
-## carries the seed/load path from the menu, pause_menu.gd for the ESC
-## pause overlay.
+## capybara_renderer.gd / blueprint_renderer.gd for rendering,
+## spawn_toolbar.gd for the toolbar UI, placement_controller.gd for
+## click-to-place logic, construction_controller.gd for construction mode
+## and platform placement, selection_controller.gd for click-to-select,
+## creature_info_panel.gd for the creature info panel, game_session.gd
+## for the autoload that carries the seed/load path from the menu,
+## pause_menu.gd for the ESC pause overlay.
 
 extends Node3D
 
@@ -41,6 +50,7 @@ extends Node3D
 var _selector: Node3D
 var _panel: PanelContainer
 var _camera_pivot: Node3D
+var _construction_controller: Node
 ## Fractional seconds of unprocessed sim time. Accumulates each frame,
 ## converted to ticks by dividing by tick_duration_ms / 1000.
 var _sim_accumulator: float = 0.0
@@ -119,6 +129,37 @@ func _ready() -> void:
 	add_child(controller)
 	controller.setup(bridge, $CameraPivot/Camera3D)
 	controller.connect_toolbar(toolbar)
+
+	# Set up construction controller (between placement and selection for
+	# ESC precedence — reverse tree order means later children fire first).
+	var construction_script = load("res://scripts/construction_controller.gd")
+	_construction_controller = Node.new()
+	_construction_controller.set_script(construction_script)
+	add_child(_construction_controller)
+	_construction_controller.setup(bridge, $CameraPivot)
+	_construction_controller.connect_toolbar(toolbar)
+	# Construction panel lives on the CanvasLayer for UI rendering.
+	canvas_layer.add_child(_construction_controller.get_panel())
+
+	# Entering construction mode: deselect creature, cancel placement.
+	_construction_controller.construction_mode_entered.connect(func():
+		if controller.is_placing():
+			controller.cancel_placement()
+		if _selector:
+			_selector.deselect()
+		if _panel:
+			_panel.hide_panel()
+		if _camera_pivot:
+			_camera_pivot.stop_follow()
+	)
+
+	# Set up blueprint renderer (shows designated blueprints as ghost cubes).
+	var bp_renderer_script = load("res://scripts/blueprint_renderer.gd")
+	var bp_renderer := Node3D.new()
+	bp_renderer.set_script(bp_renderer_script)
+	add_child(bp_renderer)
+	bp_renderer.setup(bridge)
+	_construction_controller.blueprint_placed.connect(bp_renderer.refresh)
 
 	# Set up creature info panel (on the same CanvasLayer as the toolbar).
 	var panel_script = load("res://scripts/creature_info_panel.gd")

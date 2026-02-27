@@ -15,9 +15,15 @@
 ## break follow automatically; rotation and zoom do not. The creature info
 ## panel's Follow/Unfollow button drives entry and exit.
 ##
+## Voxel snap mode: construction_controller.gd calls set_voxel_snap() to
+## enable/disable. When active and no movement inputs are held, the focal
+## point smoothly lerps to the nearest voxel center (+0.5 offset to match
+## renderer centering). get_focus_voxel() returns the current rounded voxel
+## coordinate for use by construction systems (e.g., ghost mesh placement).
+##
 ## See also: main.gd which instantiates the scene and drives follow updates,
 ## selection_controller.gd and creature_info_panel.gd for the selection and
-## follow UI.
+## follow UI, construction_controller.gd for voxel snap toggling.
 
 extends Node3D
 
@@ -58,6 +64,16 @@ var _zoom: float = 30.0
 var _rotating: bool = false
 ## Whether the camera is in follow mode (tracking a creature).
 var _following: bool = false
+## Whether voxel-snap is enabled (construction mode).
+var _snap_to_voxel: bool = false
+## Lerp speed for voxel snap (units per second, exponential decay).
+const SNAP_LERP_SPEED: float = 8.0
+## Whether a tentative snap target is active (for short key taps in snap mode).
+var _has_tentative: bool = false
+## Voxel center to snap to on short tap (when key released before crossing boundary).
+var _tentative_target: Vector3 = Vector3.ZERO
+## Voxel center when positional movement started in snap mode.
+var _snap_origin: Vector3 = Vector3.ZERO
 
 @onready var _camera: Camera3D = $Camera3D
 
@@ -84,6 +100,22 @@ func stop_follow() -> void:
 ## Returns true if the camera is in follow mode.
 func is_following() -> bool:
 	return _following
+
+
+## Enable or disable voxel-snap mode (used by construction_controller.gd).
+func set_voxel_snap(enabled: bool) -> void:
+	_snap_to_voxel = enabled
+	_has_tentative = false
+
+
+## Returns the voxel coordinate the camera focus is currently snapped to.
+## Useful for construction systems that need to know the selected voxel.
+func get_focus_voxel() -> Vector3i:
+	return Vector3i(
+		int(floor(position.x)),
+		int(floor(position.y)),
+		int(floor(position.z))
+	)
 
 
 func _ready() -> void:
@@ -128,6 +160,15 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _process(delta: float) -> void:
 	var moved := false
+	var position_moved := false
+	var move_dir := Vector3.ZERO
+
+	# Capture pre-movement voxel center for tentative snap tracking.
+	var pre_move_voxel := Vector3(
+		floor(position.x) + 0.5,
+		floor(position.y) + 0.5,
+		floor(position.z) + 0.5
+	)
 
 	# Horizontal movement relative to camera facing.
 	var input_dir := Vector2.ZERO
@@ -147,7 +188,9 @@ func _process(delta: float) -> void:
 		var right := Vector3(cos(_yaw), 0.0, -sin(_yaw))
 		var movement := (forward * -input_dir.y + right * input_dir.x) * move_speed * delta
 		position += movement
+		move_dir += movement
 		moved = true
+		position_moved = true
 		_following = false
 
 	# Keyboard rotation (Q/E and Left/Right arrows).
@@ -168,16 +211,74 @@ func _process(delta: float) -> void:
 
 	# Vertical focal point movement (Page Up/Down), clamped to world bounds.
 	if Input.is_action_pressed("focal_up"):
+		var old_y := position.y
 		position.y = min(position.y + vertical_speed * delta, focal_y_max)
+		move_dir.y += position.y - old_y
 		moved = true
+		position_moved = true
 		_following = false
 	if Input.is_action_pressed("focal_down"):
+		var old_y := position.y
 		position.y = max(position.y - vertical_speed * delta, focal_y_min)
+		move_dir.y += position.y - old_y
 		moved = true
+		position_moved = true
 		_following = false
+
+	# Tentative snap target: when moving in snap mode, track the intended
+	# next voxel so short key taps always advance by at least one voxel.
+	# On the first frame of movement, record the origin and compute the
+	# tentative target. On subsequent frames, clear tentative if we've
+	# crossed a voxel boundary (natural movement takes over).
+	if _snap_to_voxel and position_moved:
+		var post_move_voxel := Vector3(
+			floor(position.x) + 0.5,
+			floor(position.y) + 0.5,
+			floor(position.z) + 0.5
+		)
+		if not _has_tentative:
+			# First frame of movement — record origin and set tentative.
+			_snap_origin = pre_move_voxel
+			_has_tentative = true
+			var dir := move_dir.normalized()
+			var step := Vector3.ZERO
+			if abs(dir.x) > 0.4:
+				step.x = signf(dir.x)
+			if abs(dir.y) > 0.4:
+				step.y = signf(dir.y)
+			if abs(dir.z) > 0.4:
+				step.z = signf(dir.z)
+			_tentative_target = _snap_origin + step
+		elif post_move_voxel.distance_squared_to(_snap_origin) > 0.01:
+			# Crossed a voxel boundary naturally — tentative no longer needed.
+			_has_tentative = false
 
 	if moved:
 		_update_camera_transform()
+
+	# Voxel snap: when enabled and no inputs are active, smoothly pull the
+	# focal point to the nearest voxel center (+0.5 to match renderer offset).
+	# If a tentative target exists (from a short key tap), snap there instead.
+	if _snap_to_voxel and not moved and not _rotating:
+		var snap_target: Vector3
+		if _has_tentative:
+			snap_target = _tentative_target
+		else:
+			snap_target = Vector3(
+				floor(position.x) + 0.5,
+				floor(position.y) + 0.5,
+				floor(position.z) + 0.5
+			)
+		var dist_sq := position.distance_squared_to(snap_target)
+		if dist_sq > 0.0001:
+			position = position.lerp(snap_target, SNAP_LERP_SPEED * delta)
+			_update_camera_transform()
+		elif dist_sq > 0.0:
+			position = snap_target
+			_update_camera_transform()
+		# Clear tentative once we've arrived at the target.
+		if _has_tentative and position.distance_squared_to(_tentative_target) < 0.001:
+			_has_tentative = false
 
 
 func _update_camera_transform() -> void:

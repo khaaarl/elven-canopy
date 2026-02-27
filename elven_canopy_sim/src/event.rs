@@ -165,6 +165,8 @@ pub struct SimEvent {
 pub enum SimEventKind {
     /// A new creature has arrived (spawn).
     CreatureArrived { creature_id: CreatureId, species: Species },
+    /// A build project has been designated (blueprint created).
+    BlueprintDesignated { project_id: ProjectId },
     /// Construction on a build project has started.
     BuildStarted { project_id: ProjectId },
     /// A build project has been completed.

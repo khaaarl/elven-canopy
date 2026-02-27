@@ -34,8 +34,17 @@
 //   occlusion (3D DDA raycast in `world.rs`) so the placement UI only snaps
 //   to nodes the camera can actually see.
 // - **Commands:** `spawn_elf(x,y,z)`, `spawn_capybara(x,y,z)`,
-//   `create_goto_task(x,y,z)` — each constructs a `SimCommand` and
-//   immediately steps the sim by one tick to apply it.
+//   `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
+//   `designate_build_rect(x,y,z,width,depth)` — each constructs a
+//   `SimCommand` and immediately steps the sim by one tick to apply it.
+// - **Construction:** `validate_build_position(x,y,z)` checks whether a
+//   voxel is valid for building (Air + adjacent to solid) — used for
+//   single-voxel preview. `validate_build_air(x,y,z)` checks only
+//   in-bounds + Air (no adjacency), and `has_solid_neighbor(x,y,z)`
+//   checks adjacency alone — used together for multi-voxel rectangle
+//   validation where adjacency applies to the rectangle as a whole.
+//   `get_blueprint_voxels()` returns flat (x,y,z) triples for all
+//   `Designated` blueprints, consumed by `blueprint_renderer.gd`.
 // - **Stats:** `elf_count()`, `capybara_count()`, `fruit_count()`,
 //   `home_tree_mana()`.
 //
@@ -48,12 +57,14 @@
 // `SimCommand`/`SimAction`, `placement_controller.gd` and
 // `spawn_toolbar.gd` for spawning/placement callers,
 // `selection_controller.gd` and `creature_info_panel.gd` for creature
-// query callers.
+// query callers, `construction_controller.gd` for build placement,
+// `blueprint_renderer.gd` for blueprint visualization.
 
+use elven_canopy_sim::blueprint::BlueprintState;
 use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::config::{GameConfig, TreeProfile};
 use elven_canopy_sim::sim::SimState;
-use elven_canopy_sim::types::{Species, VoxelCoord};
+use elven_canopy_sim::types::{BuildType, Priority, Species, VoxelCoord, VoxelType};
 use godot::prelude::*;
 
 /// Godot node that owns and drives the simulation.
@@ -501,5 +512,119 @@ impl SimBridge {
             },
         };
         sim.step(&[cmd], next_tick);
+    }
+
+    /// Check whether a single voxel is a valid build position.
+    ///
+    /// A position is valid if it is in-bounds, Air, and has at least one
+    /// face-adjacent solid voxel. Used by the construction ghost mesh to
+    /// show blue (valid) vs red (invalid) preview color for single-voxel
+    /// placement.
+    #[func]
+    fn validate_build_position(&self, x: i32, y: i32, z: i32) -> bool {
+        let Some(sim) = &self.sim else { return false };
+        let coord = VoxelCoord::new(x, y, z);
+        sim.world.in_bounds(coord)
+            && sim.world.get(coord) == VoxelType::Air
+            && sim.world.has_solid_face_neighbor(coord)
+    }
+
+    /// Check whether a single voxel is in-bounds and Air (buildable).
+    ///
+    /// Unlike `validate_build_position`, this does NOT require adjacency
+    /// to a solid voxel. Used by multi-voxel rectangle validation where
+    /// the adjacency requirement applies to the rectangle as a whole (at
+    /// least one voxel must touch solid), not to every individual voxel.
+    #[func]
+    fn validate_build_air(&self, x: i32, y: i32, z: i32) -> bool {
+        let Some(sim) = &self.sim else { return false };
+        let coord = VoxelCoord::new(x, y, z);
+        sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+    }
+
+    /// Check whether a single voxel has at least one face-adjacent solid
+    /// voxel. Used alongside `validate_build_air` for multi-voxel rectangle
+    /// validation.
+    #[func]
+    fn has_solid_neighbor(&self, x: i32, y: i32, z: i32) -> bool {
+        let Some(sim) = &self.sim else { return false };
+        sim.world.has_solid_face_neighbor(VoxelCoord::new(x, y, z))
+    }
+
+    /// Designate a single-voxel platform blueprint at the given position.
+    ///
+    /// Constructs a `DesignateBuild` command and steps the sim by one tick,
+    /// following the same pattern as `spawn_elf()` / `create_goto_task()`.
+    /// The sim validates the position internally and silently ignores invalid
+    /// designations.
+    #[func]
+    fn designate_build(&mut self, x: i32, y: i32, z: i32) {
+        let Some(sim) = &mut self.sim else { return };
+        let player_id = sim.player_id;
+        let next_tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_id,
+            tick: next_tick,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![VoxelCoord::new(x, y, z)],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], next_tick);
+    }
+
+    /// Designate a rectangular platform blueprint.
+    ///
+    /// `x, y, z` is the min-corner of the rectangle (GDScript computes this
+    /// from the center focus voxel and the current dimensions). `width` and
+    /// `depth` are the size in X and Z (clamped to >= 1). All voxels share
+    /// the same Y. Same command pattern as `designate_build()`.
+    #[func]
+    fn designate_build_rect(&mut self, x: i32, y: i32, z: i32, width: i32, depth: i32) {
+        let Some(sim) = &mut self.sim else { return };
+        let w = width.max(1);
+        let d = depth.max(1);
+        let mut voxels = Vec::with_capacity((w * d) as usize);
+        for dx in 0..w {
+            for dz in 0..d {
+                voxels.push(VoxelCoord::new(x + dx, y, z + dz));
+            }
+        }
+        let player_id = sim.player_id;
+        let next_tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_id,
+            tick: next_tick,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], next_tick);
+    }
+
+    /// Return all voxels from `Designated` blueprints as a flat
+    /// PackedInt32Array of (x,y,z) triples.
+    ///
+    /// Used by the blueprint renderer to show translucent ghost cubes for
+    /// planned construction. Same format as `get_trunk_voxels()` etc.
+    #[func]
+    fn get_blueprint_voxels(&self) -> PackedInt32Array {
+        let Some(sim) = &self.sim else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for bp in sim.blueprints.values() {
+            if bp.state == BlueprintState::Designated {
+                for v in &bp.voxels {
+                    arr.push(v.x);
+                    arr.push(v.y);
+                    arr.push(v.z);
+                }
+            }
+        }
+        arr
     }
 }

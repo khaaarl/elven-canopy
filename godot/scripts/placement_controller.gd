@@ -14,10 +14,13 @@
 ## Uses _unhandled_input() and set_input_as_handled() so placement clicks don't
 ## propagate to the camera (which also uses _unhandled_input). Exposes
 ## is_placing() so selection_controller.gd can skip creature selection while
-## a placement action is in progress.
+## a placement action is in progress, and cancel_placement() so
+## construction_controller.gd can exit placement mode when entering
+## construction mode.
 ##
 ## See also: spawn_toolbar.gd which triggers placement mode, main.gd which
 ## wires the two together, selection_controller.gd which checks is_placing(),
+## construction_controller.gd which calls cancel_placement(),
 ## sim_bridge.rs for get_visible_nav_nodes/get_visible_ground_nav_nodes
 ## (voxel-based occlusion filtering).
 
@@ -53,6 +56,11 @@ func connect_toolbar(toolbar: Node) -> void:
 
 func is_placing() -> bool:
 	return _state == State.PLACING
+
+
+func cancel_placement() -> void:
+	if _state == State.PLACING:
+		_exit_placement()
 
 
 func _ready() -> void:
@@ -116,6 +124,10 @@ func _on_spawn_requested(species_name: String) -> void:
 
 
 func _on_action_requested(action_name: String) -> void:
+	# Only handle placement actions (e.g., "Summon"). "Build" is handled by
+	# construction_controller.gd, not by placement.
+	if action_name != "Summon":
+		return
 	if _state == State.PLACING:
 		if _action_name == action_name and _species_name == "":
 			_exit_placement()

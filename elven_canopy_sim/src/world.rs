@@ -94,6 +94,25 @@ impl VoxelWorld {
         }
     }
 
+    /// Returns `true` if any of the 6 face-adjacent voxels (±x, ±y, ±z) is solid.
+    ///
+    /// Out-of-bounds neighbors return Air (from `get()`), so boundary coords
+    /// are handled correctly without special cases.
+    pub fn has_solid_face_neighbor(&self, coord: VoxelCoord) -> bool {
+        const FACE_OFFSETS: [(i32, i32, i32); 6] = [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ];
+        FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
+            self.get(VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz))
+                .is_solid()
+        })
+    }
+
     /// 3D DDA raycast: returns `true` if any solid (non-Air) voxel lies on the
     /// line segment from `from` to `to` (both in world-space floats).
     ///
@@ -262,5 +281,38 @@ mod tests {
         assert_eq!(world.get(VoxelCoord::new(4, 3, 4)), VoxelType::Air);
         assert_eq!(world.get(VoxelCoord::new(5, 2, 4)), VoxelType::Air);
         assert_eq!(world.get(VoxelCoord::new(5, 3, 3)), VoxelType::Air);
+    }
+
+    #[test]
+    fn has_solid_face_neighbor_true_when_adjacent() {
+        let mut world = VoxelWorld::new(8, 8, 8);
+        world.set(VoxelCoord::new(4, 3, 4), VoxelType::Trunk);
+        // Air voxel directly above the trunk.
+        assert!(world.has_solid_face_neighbor(VoxelCoord::new(4, 4, 4)));
+        // Air voxel to the +x side.
+        assert!(world.has_solid_face_neighbor(VoxelCoord::new(5, 3, 4)));
+        // Air voxel to the -z side.
+        assert!(world.has_solid_face_neighbor(VoxelCoord::new(4, 3, 3)));
+    }
+
+    #[test]
+    fn has_solid_face_neighbor_false_when_isolated() {
+        let world = VoxelWorld::new(8, 8, 8);
+        // All-air world — no face neighbor is solid.
+        assert!(!world.has_solid_face_neighbor(VoxelCoord::new(4, 4, 4)));
+    }
+
+    #[test]
+    fn has_solid_face_neighbor_at_boundary() {
+        let mut world = VoxelWorld::new(8, 8, 8);
+        // Place solid at the edge of the world.
+        world.set(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        // Neighbor at (1,0,0) should detect the solid.
+        assert!(world.has_solid_face_neighbor(VoxelCoord::new(1, 0, 0)));
+        // Out-of-bounds neighbors return Air, so (-1,0,0) has no solid neighbor
+        // besides (0,0,0) itself.
+        assert!(world.has_solid_face_neighbor(VoxelCoord::new(0, 1, 0)));
+        // Coord at (-1,0,0) is OOB; its neighbors include (0,0,0) which is solid.
+        assert!(world.has_solid_face_neighbor(VoxelCoord::new(-1, 0, 0)));
     }
 }

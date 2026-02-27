@@ -16,6 +16,7 @@
 // - `config.rs`:      GameConfig + TreeProfile — all tunable parameters including nested tree presets.
 // - `species.rs`:     SpeciesData — data-driven creature behavior (DF-style).
 // - `task.rs`:        Task entities — units of work assigned to creatures.
+// - `blueprint.rs`:   Blueprint data model for the construction system.
 // - `prng.rs`:        Xoshiro256++ PRNG with SplitMix64 seeding.
 // - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.
 //
@@ -28,6 +29,7 @@
 // seeded xoshiro256++ PRNG (see `prng.rs`). No `HashMap`, no system time,
 // no OS entropy. Use `BTreeMap` for ordered collections.
 
+pub mod blueprint;
 pub mod command;
 pub mod config;
 pub mod event;
