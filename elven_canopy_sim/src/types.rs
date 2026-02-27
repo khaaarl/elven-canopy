@@ -95,6 +95,7 @@ impl SimUuid {
     }
 
     /// Parse a UUID from its 8-4-4-4-12 hex string representation.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         let hex: String = s.chars().filter(|c| *c != '-').collect();
         if hex.len() != 32 {
@@ -140,11 +141,22 @@ impl fmt::Display for SimUuid {
         write!(
             f,
             "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-            b[0], b[1], b[2], b[3],
-            b[4], b[5],
-            b[6], b[7],
-            b[8], b[9],
-            b[10], b[11], b[12], b[13], b[14], b[15],
+            b[0],
+            b[1],
+            b[2],
+            b[3],
+            b[4],
+            b[5],
+            b[6],
+            b[7],
+            b[8],
+            b[9],
+            b[10],
+            b[11],
+            b[12],
+            b[13],
+            b[14],
+            b[15],
         )
     }
 }
@@ -243,8 +255,9 @@ pub enum BuildType {
 // ---------------------------------------------------------------------------
 
 /// The material/type of a single voxel in the world grid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum VoxelType {
+    #[default]
     Air,
     Trunk,
     Branch,
@@ -262,12 +275,6 @@ impl VoxelType {
     /// Returns `true` for any voxel type that isn't `Air`.
     pub fn is_solid(self) -> bool {
         self != VoxelType::Air
-    }
-}
-
-impl Default for VoxelType {
-    fn default() -> Self {
-        Self::Air
     }
 }
 

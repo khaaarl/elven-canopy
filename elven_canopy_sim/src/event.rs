@@ -69,7 +69,10 @@ pub enum ScheduledEventKind {
     /// and schedules the next activation based on how long the action takes.
     CreatureActivation { creature_id: CreatureId },
     /// A creature has finished traversing one nav edge and arrives at the next node.
-    CreatureMovementComplete { creature_id: CreatureId, arrived_at: NavNodeId },
+    CreatureMovementComplete {
+        creature_id: CreatureId,
+        arrived_at: NavNodeId,
+    },
     /// Tree heartbeat (fruit production, mana capacity updates).
     TreeHeartbeat { tree_id: TreeId },
 }
@@ -164,7 +167,10 @@ pub struct SimEvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SimEventKind {
     /// A new creature has arrived (spawn).
-    CreatureArrived { creature_id: CreatureId, species: Species },
+    CreatureArrived {
+        creature_id: CreatureId,
+        species: Species,
+    },
     /// A build project has been designated (blueprint created).
     BlueprintDesignated { project_id: ProjectId },
     /// Construction on a build project has started.
@@ -190,9 +196,24 @@ mod tests {
 
         let mut queue = EventQueue::new();
         // Schedule out of order.
-        queue.schedule(100, ScheduledEventKind::CreatureHeartbeat { creature_id: creature_b });
-        queue.schedule(50, ScheduledEventKind::CreatureHeartbeat { creature_id: creature_a });
-        queue.schedule(50, ScheduledEventKind::CreatureHeartbeat { creature_id: creature_b });
+        queue.schedule(
+            100,
+            ScheduledEventKind::CreatureHeartbeat {
+                creature_id: creature_b,
+            },
+        );
+        queue.schedule(
+            50,
+            ScheduledEventKind::CreatureHeartbeat {
+                creature_id: creature_a,
+            },
+        );
+        queue.schedule(
+            50,
+            ScheduledEventKind::CreatureHeartbeat {
+                creature_id: creature_b,
+            },
+        );
 
         // Should pop in tick order, then sequence order within a tick.
         let first = queue.pop_if_ready(200).unwrap();
@@ -215,7 +236,12 @@ mod tests {
         let creature = CreatureId::new(&mut rng);
 
         let mut queue = EventQueue::new();
-        queue.schedule(100, ScheduledEventKind::CreatureHeartbeat { creature_id: creature });
+        queue.schedule(
+            100,
+            ScheduledEventKind::CreatureHeartbeat {
+                creature_id: creature,
+            },
+        );
 
         // Not ready yet.
         assert!(queue.pop_if_ready(99).is_none());
@@ -229,8 +255,18 @@ mod tests {
         let creature = CreatureId::new(&mut rng);
 
         let mut queue = EventQueue::new();
-        queue.schedule(10, ScheduledEventKind::CreatureHeartbeat { creature_id: creature });
-        queue.schedule(20, ScheduledEventKind::CreatureHeartbeat { creature_id: creature });
+        queue.schedule(
+            10,
+            ScheduledEventKind::CreatureHeartbeat {
+                creature_id: creature,
+            },
+        );
+        queue.schedule(
+            20,
+            ScheduledEventKind::CreatureHeartbeat {
+                creature_id: creature,
+            },
+        );
 
         let json = serde_json::to_string(&queue).unwrap();
         let mut restored: EventQueue = serde_json::from_str(&json).unwrap();

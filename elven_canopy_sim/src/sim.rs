@@ -137,10 +137,10 @@ use crate::command::{SimAction, SimCommand};
 use crate::config::GameConfig;
 use crate::event::{EventQueue, ScheduledEventKind, SimEvent, SimEventKind};
 use crate::nav::{self, NavGraph};
-use crate::task;
 use crate::pathfinding;
 use crate::prng::GameRng;
 use crate::species::SpeciesData;
+use crate::task;
 use crate::tree_gen;
 use crate::types::*;
 use crate::world::VoxelWorld;
@@ -250,7 +250,6 @@ pub struct Creature {
     // These fields record the visual start/end of each movement for smooth
     // rendering interpolation. They are never read by sim logic — only by
     // `interpolated_position()` which is called from the GDExtension bridge.
-
     /// Position the creature is visually moving FROM (None when stationary).
     #[serde(default)]
     pub move_from: Option<VoxelCoord>,
@@ -286,8 +285,8 @@ impl Creature {
         if let (Some(from), Some(to)) = (self.move_from, self.move_to) {
             let duration = self.move_end_tick as f64 - self.move_start_tick as f64;
             if duration > 0.0 {
-                let t = ((render_tick - self.move_start_tick as f64) / duration)
-                    .clamp(0.0, 1.0) as f32;
+                let t =
+                    ((render_tick - self.move_start_tick as f64) / duration).clamp(0.0, 1.0) as f32;
                 let x = from.x as f32 + (to.x as f32 - from.x as f32) * t;
                 let y = from.y as f32 + (to.y as f32 - from.y as f32) * t;
                 let z = from.z as f32 + (to.z as f32 - from.z as f32) * t;
@@ -527,11 +526,7 @@ impl SimState {
 
     /// Cancel a blueprint by ProjectId. Emits `BuildCancelled` if found.
     /// Silent no-op if the ProjectId doesn't exist (idempotent for multiplayer).
-    fn cancel_build(
-        &mut self,
-        project_id: ProjectId,
-        events: &mut Vec<SimEvent>,
-    ) {
+    fn cancel_build(&mut self, project_id: ProjectId, events: &mut Vec<SimEvent>) {
         if self.blueprints.remove(&project_id).is_some() {
             events.push(SimEvent {
                 tick: self.tick,
@@ -724,7 +719,7 @@ impl SimState {
             .values()
             .find(|t| {
                 t.state == task::TaskState::Available
-                    && t.required_species.map_or(true, |s| s == species)
+                    && t.required_species.is_none_or(|s| s == species)
             })
             .map(|t| t.id)
     }
@@ -780,8 +775,7 @@ impl SimState {
             task::TaskKind::GoTo => {
                 // GoTo completes instantly on arrival.
                 self.complete_task(task_id);
-            }
-            // Future: Build → do_work_increment, etc.
+            } // Future: Build → do_work_increment, etc.
         }
 
         // Schedule next activation (creature is now idle, will wander or pick
@@ -929,14 +923,12 @@ impl SimState {
             Some(c) => c.current_task,
             None => return,
         };
-        if let Some(tid) = task_id {
-            if let Some(task) = self.tasks.get_mut(&tid) {
-                task.assignees.retain(|&id| id != creature_id);
-                if task.assignees.is_empty()
-                    && matches!(task.state, task::TaskState::InProgress)
-                {
-                    task.state = task::TaskState::Available;
-                }
+        if let Some(tid) = task_id
+            && let Some(task) = self.tasks.get_mut(&tid)
+        {
+            task.assignees.retain(|&id| id != creature_id);
+            if task.assignees.is_empty() && matches!(task.state, task::TaskState::InProgress) {
+                task.state = task::TaskState::Available;
             }
         }
         if let Some(creature) = self.creatures.get_mut(&creature_id) {
@@ -991,9 +983,9 @@ impl SimState {
 
         // Compute traversal time from distance * species ticks-per-voxel.
         let tpv = match edge.edge_type {
-            crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
-                species_data.climb_ticks_per_voxel.unwrap_or(species_data.walk_ticks_per_voxel)
-            }
+            crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => species_data
+                .climb_ticks_per_voxel
+                .unwrap_or(species_data.walk_ticks_per_voxel),
             _ => species_data.walk_ticks_per_voxel,
         };
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
@@ -1062,7 +1054,9 @@ impl SimState {
             let next_edge = self.nav_graph.edge(next_edge_idx);
             let tpv = match next_edge.edge_type {
                 crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
-                    species_data.climb_ticks_per_voxel.unwrap_or(species_data.walk_ticks_per_voxel)
+                    species_data
+                        .climb_ticks_per_voxel
+                        .unwrap_or(species_data.walk_ticks_per_voxel)
                 }
                 _ => species_data.walk_ticks_per_voxel,
             };
@@ -1263,12 +1257,12 @@ mod tests {
         };
         let result = sim.step(&[cmd], 20);
         assert_eq!(sim.speed, SimSpeed::Paused);
-        assert!(
-            result
-                .events
-                .iter()
-                .any(|e| matches!(e.kind, SimEventKind::SpeedChanged { speed: SimSpeed::Paused }))
-        );
+        assert!(result.events.iter().any(|e| matches!(
+            e.kind,
+            SimEventKind::SpeedChanged {
+                speed: SimSpeed::Paused
+            }
+        )));
     }
 
     #[test]
@@ -1321,14 +1315,23 @@ mod tests {
     fn new_sim_has_tree_voxels() {
         let sim = SimState::new(42);
         let tree = &sim.trees[&sim.player_tree_id];
-        assert!(!tree.trunk_voxels.is_empty(), "Tree should have trunk voxels");
-        assert!(!tree.branch_voxels.is_empty(), "Tree should have branch voxels");
+        assert!(
+            !tree.trunk_voxels.is_empty(),
+            "Tree should have trunk voxels"
+        );
+        assert!(
+            !tree.branch_voxels.is_empty(),
+            "Tree should have branch voxels"
+        );
     }
 
     #[test]
     fn new_sim_has_nav_graph() {
         let sim = SimState::new(42);
-        assert!(sim.nav_graph.node_count() > 0, "Nav graph should have nodes");
+        assert!(
+            sim.nav_graph.node_count() > 0,
+            "Nav graph should have nodes"
+        );
     }
 
     #[test]
@@ -1339,17 +1342,18 @@ mod tests {
         let cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
 
         let result = sim.step(&[cmd], 2);
         assert_eq!(sim.creature_count(Species::Elf), 1);
-        assert!(result
-            .events
-            .iter()
-            .any(|e| matches!(e.kind, SimEventKind::CreatureArrived { species: Species::Elf, .. })));
+        assert!(result.events.iter().any(|e| matches!(
+            e.kind,
+            SimEventKind::CreatureArrived {
+                species: Species::Elf,
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -1361,9 +1365,7 @@ mod tests {
         let spawn_cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
         sim.step(&[spawn_cmd], 2);
 
@@ -1393,9 +1395,7 @@ mod tests {
         let spawn = SimCommand {
             player_id: sim_a.player_id,
             tick: 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
 
         sim_a.step(&[spawn.clone()], 1000);
@@ -1420,17 +1420,18 @@ mod tests {
         let cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnCapybara {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnCapybara { position: tree_pos },
         };
 
         let result = sim.step(&[cmd], 2);
         assert_eq!(sim.creature_count(Species::Capybara), 1);
-        assert!(result
-            .events
-            .iter()
-            .any(|e| matches!(e.kind, SimEventKind::CreatureArrived { species: Species::Capybara, .. })));
+        assert!(result.events.iter().any(|e| matches!(
+            e.kind,
+            SimEventKind::CreatureArrived {
+                species: Species::Capybara,
+                ..
+            }
+        )));
 
         // Capybara should be at a ground-level node (y=1, air above ForestFloor).
         let capybara = sim
@@ -1450,9 +1451,7 @@ mod tests {
         let cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnCapybara {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnCapybara { position: tree_pos },
         };
         sim.step(&[cmd], 2);
 
@@ -1478,9 +1477,7 @@ mod tests {
         let cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnCapybara {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnCapybara { position: tree_pos },
         };
         sim.step(&[cmd], 2);
 
@@ -1510,9 +1507,7 @@ mod tests {
         let spawn = SimCommand {
             player_id: sim_a.player_id,
             tick: 1,
-            action: SimAction::SpawnCapybara {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnCapybara { position: tree_pos },
         };
 
         sim_a.step(&[spawn.clone()], 1000);
@@ -1535,9 +1530,7 @@ mod tests {
         let cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
         sim.step(&[cmd], 2);
 
@@ -1584,9 +1577,7 @@ mod tests {
         let cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
         sim.step(&[cmd], 2);
 
@@ -1598,7 +1589,9 @@ mod tests {
                 .values()
                 .find(|c| c.species == Species::Elf)
                 .unwrap();
-            let node = elf.current_node.expect("Elf should always have a current node");
+            let node = elf
+                .current_node
+                .expect("Elf should always have a current node");
             assert!(
                 (node.0 as usize) < sim.nav_graph.node_count(),
                 "Node ID {} out of range at tick {}",
@@ -1620,9 +1613,7 @@ mod tests {
         let cmd = SimCommand {
             player_id: sim.player_id,
             tick: sim.tick + 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
         sim.step(&[cmd], sim.tick + 2);
         sim.creatures
@@ -1717,7 +1708,11 @@ mod tests {
         sim.step(&[], sim.tick + 10000);
 
         let task = &sim.tasks[&task_id];
-        assert_eq!(task.state, TaskState::Complete, "GoTo task should be complete");
+        assert_eq!(
+            task.state,
+            TaskState::Complete,
+            "GoTo task should be complete"
+        );
         let elf = &sim.creatures[&elf_id];
         assert_eq!(
             elf.current_task, None,
@@ -1782,9 +1777,7 @@ mod tests {
         let spawn_cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
         sim.step(&[spawn_cmd], 2);
 
@@ -1832,9 +1825,7 @@ mod tests {
             let cmd = SimCommand {
                 player_id: sim.player_id,
                 tick: sim.tick + 1,
-                action: SimAction::SpawnElf {
-                    position: tree_pos,
-                },
+                action: SimAction::SpawnElf { position: tree_pos },
             };
             sim.step(&[cmd], sim.tick + 2);
         }
@@ -1842,9 +1833,7 @@ mod tests {
             let cmd = SimCommand {
                 player_id: sim.player_id,
                 tick: sim.tick + 1,
-                action: SimAction::SpawnCapybara {
-                    position: tree_pos,
-                },
+                action: SimAction::SpawnCapybara { position: tree_pos },
             };
             sim.step(&[cmd], sim.tick + 2);
         }
@@ -1900,7 +1889,8 @@ mod tests {
             assert!(
                 tree.leaf_voxels.contains(&leaf_above),
                 "Fruit at {} should hang below a leaf voxel, but no leaf at {}",
-                fruit_pos, leaf_above
+                fruit_pos,
+                leaf_above
             );
         }
     }
@@ -2027,8 +2017,15 @@ mod tests {
 
         // Deserialize — transient fields are default (empty).
         let mut restored: SimState = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.nav_graph.node_count(), 0, "Before rebuild, nav_graph should be empty");
-        assert_eq!(restored.world.size_x, 0, "Before rebuild, world should be empty");
+        assert_eq!(
+            restored.nav_graph.node_count(),
+            0,
+            "Before rebuild, nav_graph should be empty"
+        );
+        assert_eq!(
+            restored.world.size_x, 0,
+            "Before rebuild, world should be empty"
+        );
 
         // Rebuild transient state.
         restored.rebuild_transient_state();
@@ -2053,16 +2050,12 @@ mod tests {
             SimCommand {
                 player_id: sim.player_id,
                 tick: 1,
-                action: SimAction::SpawnElf {
-                    position: tree_pos,
-                },
+                action: SimAction::SpawnElf { position: tree_pos },
             },
             SimCommand {
                 player_id: sim.player_id,
                 tick: 1,
-                action: SimAction::SpawnCapybara {
-                    position: tree_pos,
-                },
+                action: SimAction::SpawnCapybara { position: tree_pos },
             },
         ];
         sim.step(&cmds, 200);
@@ -2089,9 +2082,7 @@ mod tests {
         let spawn = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
         sim.step(&[spawn], 200);
 
@@ -2152,16 +2143,12 @@ mod tests {
             SimCommand {
                 player_id: sim.player_id,
                 tick: 1,
-                action: SimAction::SpawnElf {
-                    position: tree_pos,
-                },
+                action: SimAction::SpawnElf { position: tree_pos },
             },
             SimCommand {
                 player_id: sim.player_id,
                 tick: 1,
-                action: SimAction::SpawnCapybara {
-                    position: tree_pos,
-                },
+                action: SimAction::SpawnCapybara { position: tree_pos },
             },
         ];
         sim.step(&cmds, 2);
@@ -2199,9 +2186,7 @@ mod tests {
         let cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
         sim.step(&[cmd], 1);
 
@@ -2230,8 +2215,11 @@ mod tests {
     fn food_does_not_go_below_zero() {
         // Use a custom config with aggressive decay so food depletes quickly.
         let mut config = GameConfig::default();
-        config.species.get_mut(&Species::Elf).unwrap().food_decay_per_tick =
-            1_000_000_000_000_000; // Depletes in 1 tick
+        config
+            .species
+            .get_mut(&Species::Elf)
+            .unwrap()
+            .food_decay_per_tick = 1_000_000_000_000_000; // Depletes in 1 tick
         let mut sim = SimState::with_config(42, config);
         let tree_pos = sim.trees[&sim.player_tree_id].position;
 
@@ -2239,9 +2227,7 @@ mod tests {
         let cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
         sim.step(&[cmd], 1);
 
@@ -2337,7 +2323,10 @@ mod tests {
             move_end_tick: 200,
         };
         let (x, _, _) = creature.interpolated_position(999.0);
-        assert!((x - 10.0).abs() < 0.001, "Past end should clamp to destination, got {x}");
+        assert!(
+            (x - 10.0).abs() < 0.001,
+            "Past end should clamp to destination, got {x}"
+        );
     }
 
     #[test]
@@ -2371,9 +2360,7 @@ mod tests {
         let cmd = SimCommand {
             player_id: sim.player_id,
             tick: 1,
-            action: SimAction::SpawnElf {
-                position: tree_pos,
-            },
+            action: SimAction::SpawnElf { position: tree_pos },
         };
         sim.step(&[cmd], 1);
 
@@ -2395,12 +2382,29 @@ mod tests {
         sim.step(&[], 2);
 
         let elf = &sim.creatures[&elf_id];
-        assert!(elf.move_from.is_some(), "move_from should be set after wander");
+        assert!(
+            elf.move_from.is_some(),
+            "move_from should be set after wander"
+        );
         assert!(elf.move_to.is_some(), "move_to should be set after wander");
-        assert_eq!(elf.move_from.unwrap(), initial_pos, "move_from should be the spawn position");
-        assert_eq!(elf.move_to.unwrap(), elf.position, "move_to should be the new position");
-        assert_eq!(elf.move_start_tick, 2, "move_start_tick should be the activation tick");
-        assert!(elf.move_end_tick > elf.move_start_tick, "move_end_tick should be after start");
+        assert_eq!(
+            elf.move_from.unwrap(),
+            initial_pos,
+            "move_from should be the spawn position"
+        );
+        assert_eq!(
+            elf.move_to.unwrap(),
+            elf.position,
+            "move_to should be the new position"
+        );
+        assert_eq!(
+            elf.move_start_tick, 2,
+            "move_start_tick should be the activation tick"
+        );
+        assert!(
+            elf.move_end_tick > elf.move_start_tick,
+            "move_end_tick should be after start"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2420,14 +2424,9 @@ mod tests {
                 (0, 0, 1),
                 (0, 0, -1),
             ] {
-                let neighbor = VoxelCoord::new(
-                    trunk_coord.x + dx,
-                    trunk_coord.y + dy,
-                    trunk_coord.z + dz,
-                );
-                if sim.world.in_bounds(neighbor)
-                    && sim.world.get(neighbor) == VoxelType::Air
-                {
+                let neighbor =
+                    VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y + dy, trunk_coord.z + dz);
+                if sim.world.in_bounds(neighbor) && sim.world.get(neighbor) == VoxelType::Air {
                     return neighbor;
                 }
             }
@@ -2455,10 +2454,12 @@ mod tests {
         let bp = sim.blueprints.values().next().unwrap();
         assert_eq!(bp.voxels, vec![air_coord]);
         assert_eq!(bp.state, BlueprintState::Designated);
-        assert!(result.events.iter().any(|e| matches!(
-            e.kind,
-            SimEventKind::BlueprintDesignated { .. }
-        )));
+        assert!(
+            result
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, SimEventKind::BlueprintDesignated { .. }))
+        );
     }
 
     #[test]
@@ -2568,10 +2569,12 @@ mod tests {
         let result = sim.step(&[cmd2], 2);
 
         assert!(sim.blueprints.is_empty());
-        assert!(result.events.iter().any(|e| matches!(
-            e.kind,
-            SimEventKind::BuildCancelled { .. }
-        )));
+        assert!(
+            result
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, SimEventKind::BuildCancelled { .. }))
+        );
     }
 
     #[test]
@@ -2589,10 +2592,12 @@ mod tests {
         let result = sim.step(&[cmd], 1);
 
         assert!(sim.blueprints.is_empty());
-        assert!(!result.events.iter().any(|e| matches!(
-            e.kind,
-            SimEventKind::BuildCancelled { .. }
-        )));
+        assert!(
+            !result
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, SimEventKind::BuildCancelled { .. }))
+        );
     }
 
     #[test]

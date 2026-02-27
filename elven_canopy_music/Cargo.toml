@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "Palestrina-style polyphonic music generator for Elven Canopy"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "generate"
 path = "src/main.rs"

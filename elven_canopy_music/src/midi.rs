@@ -76,9 +76,7 @@ fn grid_to_smf(grid: &Grid, text: Option<&TextMapping>) -> Smf<'static> {
         // Track name
         track.push(TrackEvent {
             delta: u28::new(0),
-            kind: TrackEventKind::Meta(midly::MetaMessage::TrackName(
-                voice_names[vi].as_bytes(),
-            )),
+            kind: TrackEventKind::Meta(midly::MetaMessage::TrackName(voice_names[vi].as_bytes())),
         });
 
         // Set to choir aahs (program 52) for choral sound
@@ -97,8 +95,7 @@ fn grid_to_smf(grid: &Grid, text: Option<&TextMapping>) -> Smf<'static> {
         let mut last_event_tick: u32 = 0;
         let mut note_on: Option<u8> = None;
 
-        for beat in 0..grid.num_beats {
-            let cell = &voice_row[beat];
+        for (beat, cell) in voice_row.iter().enumerate().take(grid.num_beats) {
             let beat_tick = beat as u32 * TICKS_PER_EIGHTH;
 
             if cell.is_rest {
@@ -151,24 +148,27 @@ fn grid_to_smf(grid: &Grid, text: Option<&TextMapping>) -> Smf<'static> {
             // If not attack and not rest, it's a continuation — do nothing
 
             // Add lyric events at syllable onsets (soprano track only)
-            if vi == 0 && cell.syllable_onset {
-                if let Some(mapping) = text {
-                    // Find the syllable span for this beat
-                    let lyric_text = mapping.spans.iter()
-                        .find(|s| s.voice == Voice::Soprano && s.start_beat == beat)
-                        .map(|s| s.text.clone());
+            if vi == 0
+                && cell.syllable_onset
+                && let Some(mapping) = text
+            {
+                // Find the syllable span for this beat
+                let lyric_text = mapping
+                    .spans
+                    .iter()
+                    .find(|s| s.voice == Voice::Soprano && s.start_beat == beat)
+                    .map(|s| s.text.clone());
 
-                    if let Some(text_str) = lyric_text {
-                        let lyric_bytes: Vec<u8> = text_str.bytes().collect();
-                        // Leak the bytes so they have 'static lifetime for midly
-                        let leaked: &'static [u8] = Box::leak(lyric_bytes.into_boxed_slice());
-                        let delta = beat_tick.saturating_sub(last_event_tick);
-                        track.push(TrackEvent {
-                            delta: u28::new(delta),
-                            kind: TrackEventKind::Meta(midly::MetaMessage::Lyric(leaked)),
-                        });
-                        last_event_tick = beat_tick;
-                    }
+                if let Some(text_str) = lyric_text {
+                    let lyric_bytes: Vec<u8> = text_str.bytes().collect();
+                    // Leak the bytes so they have 'static lifetime for midly
+                    let leaked: &'static [u8] = Box::leak(lyric_bytes.into_boxed_slice());
+                    let delta = beat_tick.saturating_sub(last_event_tick);
+                    track.push(TrackEvent {
+                        delta: u28::new(delta),
+                        kind: TrackEventKind::Meta(midly::MetaMessage::Lyric(leaked)),
+                    });
+                    last_event_tick = beat_tick;
                 }
             }
 

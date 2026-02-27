@@ -76,21 +76,21 @@ pub struct StructurePlan {
 
 /// Common entry orders for imitation points. Variety creates interest.
 const ENTRY_ORDERS: &[[Voice; 4]] = &[
-    [Voice::Soprano, Voice::Alto, Voice::Tenor, Voice::Bass],     // top-down
-    [Voice::Tenor, Voice::Bass, Voice::Soprano, Voice::Alto],     // bottom-up (pair)
-    [Voice::Alto, Voice::Soprano, Voice::Tenor, Voice::Bass],     // inner voice leads
-    [Voice::Bass, Voice::Tenor, Voice::Alto, Voice::Soprano],     // bass-up
-    [Voice::Soprano, Voice::Tenor, Voice::Alto, Voice::Bass],     // crossed pairs
+    [Voice::Soprano, Voice::Alto, Voice::Tenor, Voice::Bass], // top-down
+    [Voice::Tenor, Voice::Bass, Voice::Soprano, Voice::Alto], // bottom-up (pair)
+    [Voice::Alto, Voice::Soprano, Voice::Tenor, Voice::Bass], // inner voice leads
+    [Voice::Bass, Voice::Tenor, Voice::Alto, Voice::Soprano], // bass-up
+    [Voice::Soprano, Voice::Tenor, Voice::Alto, Voice::Bass], // crossed pairs
 ];
 
 /// Common transposition schemes for imitation entries.
 /// (soprano, alto, tenor, bass) in semitones from reference.
 const TRANSPOSITION_SCHEMES: &[[i8; 4]] = &[
-    [0, -5, -12, -17],    // standard: unison, 4th down, octave, octave+4th
-    [0, -7, -12, -19],    // 5th answer: unison, 5th down, octave, octave+5th
-    [0, -5, -12, -12],    // tenor/bass same octave
-    [0, -7, -12, -17],    // mixed: 5th down alto, octave tenor, octave+4th bass
-    [0, 0, -12, -12],     // paired: sop=alto, tenor=bass (antiphonal)
+    [0, -5, -12, -17], // standard: unison, 4th down, octave, octave+4th
+    [0, -7, -12, -19], // 5th answer: unison, 5th down, octave, octave+5th
+    [0, -5, -12, -12], // tenor/bass same octave
+    [0, -7, -12, -17], // mixed: 5th down alto, octave tenor, octave+4th bass
+    [0, 0, -12, -12],  // paired: sop=alto, tenor=bass (antiphonal)
 ];
 
 /// Generate a structure plan for a piece.
@@ -108,7 +108,11 @@ pub fn generate_structure(
     let mut current_beat: usize = 0;
 
     // Bias motif selection toward more frequent (more idiomatic) motifs
-    let total_freq: u64 = motif_library.motifs.iter().map(|m| m.frequency as u64).sum();
+    let total_freq: u64 = motif_library
+        .motifs
+        .iter()
+        .map(|m| m.frequency as u64)
+        .sum();
 
     for section_idx in 0..num_sections {
         // Pick a motif weighted by frequency (more common = more idiomatic)
@@ -116,9 +120,9 @@ pub fn generate_structure(
 
         // Choose reference pitch — vary between sections for pitch interest
         let reference_pitch = match section_idx % 3 {
-            0 => rng.random_range(62u8..68),   // lower soprano range
-            1 => rng.random_range(67u8..74),   // higher
-            _ => rng.random_range(64u8..70),   // middle
+            0 => rng.random_range(62u8..68), // lower soprano range
+            1 => rng.random_range(67u8..74), // higher
+            _ => rng.random_range(64u8..70), // middle
         };
 
         // Vary entry offset slightly
@@ -127,7 +131,8 @@ pub fn generate_structure(
 
         // Pick entry order and transposition scheme
         let voice_order = ENTRY_ORDERS[rng.random_range(0..ENTRY_ORDERS.len())];
-        let transpositions = TRANSPOSITION_SCHEMES[rng.random_range(0..TRANSPOSITION_SCHEMES.len())];
+        let transpositions =
+            TRANSPOSITION_SCHEMES[rng.random_range(0..TRANSPOSITION_SCHEMES.len())];
 
         // Decide how many voices participate (2-4)
         let min_voices = if section_idx == 0 || section_idx == num_sections - 1 {
@@ -167,9 +172,8 @@ pub fn generate_structure(
         });
 
         // Advance to next section
-        let section_length = (voices_added * entry_offset)
-            + motif.intervals.len() * 2
-            + rng.random_range(4..12);
+        let section_length =
+            (voices_added * entry_offset) + motif.intervals.len() * 2 + rng.random_range(4..12);
         current_beat += section_length;
 
         // Add a rest gap between sections with optional response markers
@@ -226,12 +230,12 @@ fn pick_weighted_motif<'a>(
 /// Common rhythmic patterns for motifs (durations in eighth-note beats).
 /// These give Palestrina-style variety: mix of quarters, halves, dotted quarters.
 const RHYTHM_PATTERNS: &[&[usize]] = &[
-    &[2, 2, 2, 2, 2, 2, 2, 2, 2, 2],          // all quarters (simple)
-    &[4, 2, 2, 4, 2, 2, 4, 2, 2, 4],          // half, quarter, quarter (stately)
-    &[2, 2, 4, 2, 2, 4, 2, 2, 4, 2],          // quarter, quarter, half
-    &[3, 1, 2, 2, 3, 1, 2, 2, 3, 1],          // dotted quarter + eighth
-    &[2, 4, 2, 4, 2, 4, 2, 4, 2, 4],          // alternating quarter and half
-    &[4, 4, 2, 2, 4, 4, 2, 2, 4, 4],          // two halves then two quarters
+    &[2, 2, 2, 2, 2, 2, 2, 2, 2, 2], // all quarters (simple)
+    &[4, 2, 2, 4, 2, 2, 4, 2, 2, 4], // half, quarter, quarter (stately)
+    &[2, 2, 4, 2, 2, 4, 2, 2, 4, 2], // quarter, quarter, half
+    &[3, 1, 2, 2, 3, 1, 2, 2, 3, 1], // dotted quarter + eighth
+    &[2, 4, 2, 4, 2, 4, 2, 4, 2, 4], // alternating quarter and half
+    &[4, 4, 2, 2, 4, 4, 2, 2, 4, 4], // two halves then two quarters
 ];
 
 /// Write the motif entries from a structure plan onto the grid.
@@ -284,7 +288,8 @@ pub fn apply_structure(grid: &mut Grid, plan: &StructurePlan) -> Vec<(usize, usi
                     break;
                 }
 
-                let new_pitch = (pitch as i16 + interval as i16).clamp(low as i16, high as i16) as u8;
+                let new_pitch =
+                    (pitch as i16 + interval as i16).clamp(low as i16, high as i16) as u8;
                 pitch = new_pitch;
                 grid.set_note(voice, beat, pitch);
                 structural_cells.push((voice.index(), beat));
@@ -433,7 +438,7 @@ fn nearest_pc(target_pc: u8, near: u8, low: u8, high: u8) -> u8 {
     let mut best_dist = 128u8;
     for p in low..=high {
         if p % 12 == target_pc {
-            let dist = if p >= near { p - near } else { near - p };
+            let dist = p.abs_diff(near);
             if dist < best_dist {
                 best = p;
                 best_dist = dist;
@@ -475,8 +480,11 @@ mod tests {
 
         // Check that structural cells have actual notes
         for &(vi, beat) in &structural {
-            assert!(!grid.voices[vi][beat].is_rest,
-                "Structural cell at voice {} beat {} should not be rest", vi, beat);
+            assert!(
+                !grid.voices[vi][beat].is_rest,
+                "Structural cell at voice {} beat {} should not be rest",
+                vi, beat
+            );
         }
     }
 
@@ -497,13 +505,18 @@ mod tests {
 
         // If any response points were placed, structural should have grown
         if !plan.response_points.is_empty() {
-            assert!(structural.len() > before_count,
-                "Response markers should add structural cells");
+            assert!(
+                structural.len() > before_count,
+                "Response markers should add structural cells"
+            );
 
             // Check that all new structural cells are non-rest
             for &(vi, beat) in &structural[before_count..] {
-                assert!(!grid.voices[vi][beat].is_rest,
-                    "Response cell at voice {} beat {} should not be rest", vi, beat);
+                assert!(
+                    !grid.voices[vi][beat].is_rest,
+                    "Response cell at voice {} beat {} should not be rest",
+                    vi, beat
+                );
             }
         }
     }

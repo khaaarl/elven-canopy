@@ -55,26 +55,18 @@ pub enum SimAction {
         priority: Priority,
     },
     /// Cancel an in-progress or queued build project.
-    CancelBuild {
-        project_id: ProjectId,
-    },
+    CancelBuild { project_id: ProjectId },
     /// Change the priority of an existing build project.
     SetTaskPriority {
         project_id: ProjectId,
         priority: Priority,
     },
     /// Change the simulation speed.
-    SetSimSpeed {
-        speed: SimSpeed,
-    },
+    SetSimSpeed { speed: SimSpeed },
     /// Spawn a new elf at the given position (snapped to nearest nav node).
-    SpawnElf {
-        position: VoxelCoord,
-    },
+    SpawnElf { position: VoxelCoord },
     /// Spawn a new capybara at the given position (snapped to nearest ground nav node).
-    SpawnCapybara {
-        position: VoxelCoord,
-    },
+    SpawnCapybara { position: VoxelCoord },
     /// Create a task at the given position (snapped to nearest nav node).
     /// If `required_species` is set, only that species can claim the task.
     CreateTask {
@@ -97,10 +89,7 @@ mod tests {
             tick: 100,
             action: SimAction::DesignateBuild {
                 build_type: BuildType::Platform,
-                voxels: vec![
-                    VoxelCoord::new(10, 20, 30),
-                    VoxelCoord::new(11, 20, 30),
-                ],
+                voxels: vec![VoxelCoord::new(10, 20, 30), VoxelCoord::new(11, 20, 30)],
                 priority: Priority::Normal,
             },
         };

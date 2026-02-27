@@ -219,13 +219,8 @@ fn derive_surface_type(world: &VoxelWorld, pos: VoxelCoord) -> VoxelType {
     }
 
     // Check horizontal neighbors and above in fixed order.
-    let side_offsets: [(i32, i32, i32); 5] = [
-        (1, 0, 0),
-        (-1, 0, 0),
-        (0, 0, 1),
-        (0, 0, -1),
-        (0, 1, 0),
-    ];
+    let side_offsets: [(i32, i32, i32); 5] =
+        [(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1), (0, 1, 0)];
     for (dx, dy, dz) in side_offsets {
         let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
         let ntype = world.get(neighbor);
@@ -270,9 +265,7 @@ fn derive_edge_type(
         (ForestFloor, Trunk) | (Trunk, ForestFloor) => EdgeType::GroundToTrunk,
         (ForestFloor, Root) | (Root, ForestFloor) => EdgeType::ForestFloor,
         (Trunk, Root) | (Root, Trunk) => EdgeType::TrunkClimb,
-        (Trunk, Branch) | (Branch, Trunk) | (Trunk, Leaf) | (Leaf, Trunk) => {
-            EdgeType::TrunkClimb
-        }
+        (Trunk, Branch) | (Branch, Trunk) | (Trunk, Leaf) | (Leaf, Trunk) => EdgeType::TrunkClimb,
         _ => {
             // GrownStairs / GrownWall → climb-like; everything else → walk-like.
             if matches!(from_surface, GrownStairs | GrownWall)

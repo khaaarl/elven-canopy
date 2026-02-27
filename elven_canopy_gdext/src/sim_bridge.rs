@@ -107,8 +107,10 @@ impl SimBridge {
                 godot_warn!("Failed to parse tree profile JSON: {e}, using default");
                 TreeProfile::fantasy_mega()
             });
-        let mut config = GameConfig::default();
-        config.tree_profile = profile;
+        let config = GameConfig {
+            tree_profile: profile,
+            ..Default::default()
+        };
         self.sim = Some(SimState::with_config(seed as u64, config));
         godot_print!("SimBridge: simulation initialized with seed {seed} and custom tree profile");
     }
@@ -307,7 +309,11 @@ impl SimBridge {
             return PackedVector3Array::new();
         };
         let mut arr = PackedVector3Array::new();
-        for creature in sim.creatures.values().filter(|c| c.species == Species::Capybara) {
+        for creature in sim
+            .creatures
+            .values()
+            .filter(|c| c.species == Species::Capybara)
+        {
             let (x, y, z) = creature.interpolated_position(render_tick);
             arr.push(Vector3::new(x, y, z));
         }
@@ -427,7 +433,12 @@ impl SimBridge {
     /// Returns an empty VarDictionary if species is unknown or index is out of
     /// bounds.
     #[func]
-    fn get_creature_info(&self, species_name: GString, index: i32, render_tick: f64) -> VarDictionary {
+    fn get_creature_info(
+        &self,
+        species_name: GString,
+        index: i32,
+        render_tick: f64,
+    ) -> VarDictionary {
         let Some(sim) = &self.sim else {
             return VarDictionary::new();
         };
@@ -486,8 +497,11 @@ impl SimBridge {
     fn load_game_json(&mut self, json: GString) -> bool {
         match SimState::from_json(&json.to_string()) {
             Ok(state) => {
-                godot_print!("SimBridge: loaded save (tick={}, creatures={})",
-                    state.tick, state.creatures.len());
+                godot_print!(
+                    "SimBridge: loaded save (tick={}, creatures={})",
+                    state.tick,
+                    state.creatures.len()
+                );
                 self.sim = Some(state);
                 true
             }

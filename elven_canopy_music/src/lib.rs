@@ -23,14 +23,14 @@
 //
 // The generator is deterministic given a seed, supporting reproducible output.
 
-pub mod grid;
-pub mod mode;
-pub mod markov;
-pub mod structure;
 pub mod draft;
-pub mod scoring;
-pub mod sa;
-pub mod midi;
+pub mod grid;
 pub mod lilypond;
-pub mod vaelith;
+pub mod markov;
+pub mod midi;
+pub mod mode;
+pub mod sa;
+pub mod scoring;
+pub mod structure;
 pub mod text_mapping;
+pub mod vaelith;

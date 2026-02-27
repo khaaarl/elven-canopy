@@ -47,8 +47,8 @@ impl Tone {
 /// Vowel class for suffix harmony.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VowelClass {
-    Front,  // e, i — bright, silvery
-    Back,   // o, u — deep, warm
+    Front, // e, i — bright, silvery
+    Back,  // o, u — deep, warm
 }
 
 /// A single syllable in a generated phrase.
@@ -117,30 +117,22 @@ struct LexEntry {
     stressed_first: bool,
     /// Vowel class for suffix harmony.
     vowel_class: VowelClass,
-    /// Part of speech.
-    pos: PartOfSpeech,
     /// English meaning (for debugging).
     meaning: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PartOfSpeech {
-    Noun,
-    Verb,
-    Adjective,
-    Particle,
-    Pronoun,
-}
-
 impl LexEntry {
     fn to_word(&self) -> Word {
-        let syllables: Vec<Syllable> = self.syllables.iter().enumerate().map(|(i, &(text, tone))| {
-            Syllable {
+        let syllables: Vec<Syllable> = self
+            .syllables
+            .iter()
+            .enumerate()
+            .map(|(i, &(text, tone))| Syllable {
                 text: text.to_string(),
                 tone,
                 stressed: self.stressed_first && i == 0,
-            }
-        }).collect();
+            })
+            .collect();
 
         Word {
             text: self.text.to_string(),
@@ -168,155 +160,351 @@ impl LexEntry {
 // ── Vocabulary ──
 
 const NOUNS: &[LexEntry] = &[
-    LexEntry { text: "thír", syllables: &[("thír", Tone::Rising)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "star" },
-    LexEntry { text: "aleth", syllables: &[("a", Tone::Level), ("leth", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "tree" },
-    LexEntry { text: "lena", syllables: &[("le", Tone::Level), ("na", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "leaf" },
-    LexEntry { text: "wena", syllables: &[("we", Tone::Level), ("na", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "water" },
-    LexEntry { text: "léshi", syllables: &[("lé", Tone::Rising), ("shi", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "light" },
-    LexEntry { text: "mòru", syllables: &[("mò", Tone::Falling), ("ru", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Back,
-        pos: PartOfSpeech::Noun, meaning: "forest" },
-    LexEntry { text: "kael", syllables: &[("kael", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "song" },
-    LexEntry { text: "ana", syllables: &[("a", Tone::Level), ("na", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "spirit" },
-    LexEntry { text: "resha", syllables: &[("re", Tone::Level), ("sha", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "moon" },
-    LexEntry { text: "fola", syllables: &[("fo", Tone::Level), ("la", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Back,
-        pos: PartOfSpeech::Noun, meaning: "love" },
-    LexEntry { text: "sena", syllables: &[("se", Tone::Level), ("na", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "memory" },
-    LexEntry { text: "eirith", syllables: &[("ei", Tone::Level), ("rith", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "eternity" },
-    LexEntry { text: "něma", syllables: &[("ně", Tone::Dipping), ("ma", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "dream" },
-    LexEntry { text: "hâli", syllables: &[("hâ", Tone::Peaking), ("li", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "sun" },
-    LexEntry { text: "áiren", syllables: &[("ái", Tone::Rising), ("ren", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "canopy" },
-    LexEntry { text: "nàshi", syllables: &[("nà", Tone::Falling), ("shi", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "stream" },
-    LexEntry { text: "washi", syllables: &[("wa", Tone::Level), ("shi", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "wisdom" },
-    LexEntry { text: "thâne", syllables: &[("thâ", Tone::Peaking), ("ne", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Noun, meaning: "fire" },
+    LexEntry {
+        text: "thír",
+        syllables: &[("thír", Tone::Rising)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "star",
+    },
+    LexEntry {
+        text: "aleth",
+        syllables: &[("a", Tone::Level), ("leth", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "tree",
+    },
+    LexEntry {
+        text: "lena",
+        syllables: &[("le", Tone::Level), ("na", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "leaf",
+    },
+    LexEntry {
+        text: "wena",
+        syllables: &[("we", Tone::Level), ("na", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "water",
+    },
+    LexEntry {
+        text: "léshi",
+        syllables: &[("lé", Tone::Rising), ("shi", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "light",
+    },
+    LexEntry {
+        text: "mòru",
+        syllables: &[("mò", Tone::Falling), ("ru", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Back,
+
+        meaning: "forest",
+    },
+    LexEntry {
+        text: "kael",
+        syllables: &[("kael", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "song",
+    },
+    LexEntry {
+        text: "ana",
+        syllables: &[("a", Tone::Level), ("na", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "spirit",
+    },
+    LexEntry {
+        text: "resha",
+        syllables: &[("re", Tone::Level), ("sha", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "moon",
+    },
+    LexEntry {
+        text: "fola",
+        syllables: &[("fo", Tone::Level), ("la", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Back,
+
+        meaning: "love",
+    },
+    LexEntry {
+        text: "sena",
+        syllables: &[("se", Tone::Level), ("na", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "memory",
+    },
+    LexEntry {
+        text: "eirith",
+        syllables: &[("ei", Tone::Level), ("rith", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "eternity",
+    },
+    LexEntry {
+        text: "něma",
+        syllables: &[("ně", Tone::Dipping), ("ma", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "dream",
+    },
+    LexEntry {
+        text: "hâli",
+        syllables: &[("hâ", Tone::Peaking), ("li", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "sun",
+    },
+    LexEntry {
+        text: "áiren",
+        syllables: &[("ái", Tone::Rising), ("ren", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "canopy",
+    },
+    LexEntry {
+        text: "nàshi",
+        syllables: &[("nà", Tone::Falling), ("shi", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "stream",
+    },
+    LexEntry {
+        text: "washi",
+        syllables: &[("wa", Tone::Level), ("shi", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "wisdom",
+    },
+    LexEntry {
+        text: "thâne",
+        syllables: &[("thâ", Tone::Peaking), ("ne", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "fire",
+    },
 ];
 
 const VERBS: &[LexEntry] = &[
-    LexEntry { text: "rase", syllables: &[("ra", Tone::Level), ("se", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Verb, meaning: "sing" },
-    LexEntry { text: "shine", syllables: &[("shi", Tone::Level), ("ne", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Verb, meaning: "glow" },
-    LexEntry { text: "kóse", syllables: &[("kó", Tone::Rising), ("se", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Back,
-        pos: PartOfSpeech::Verb, meaning: "grow" },
-    LexEntry { text: "fáre", syllables: &[("fá", Tone::Rising), ("re", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Verb, meaning: "fly" },
-    LexEntry { text: "lethe", syllables: &[("le", Tone::Level), ("the", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Verb, meaning: "flow" },
-    LexEntry { text: "ashe", syllables: &[("a", Tone::Level), ("she", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Verb, meaning: "breathe" },
-    LexEntry { text: "mire", syllables: &[("mi", Tone::Level), ("re", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Verb, meaning: "see" },
-    LexEntry { text: "fole", syllables: &[("fo", Tone::Level), ("le", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Back,
-        pos: PartOfSpeech::Verb, meaning: "love" },
-    LexEntry { text: "sethe", syllables: &[("se", Tone::Level), ("the", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Verb, meaning: "remember" },
-    LexEntry { text: "wethe", syllables: &[("we", Tone::Level), ("the", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Verb, meaning: "weave" },
-    LexEntry { text: "niwe", syllables: &[("ni", Tone::Level), ("we", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Verb, meaning: "dwell" },
-    LexEntry { text: "thale", syllables: &[("tha", Tone::Level), ("le", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Verb, meaning: "name" },
+    LexEntry {
+        text: "rase",
+        syllables: &[("ra", Tone::Level), ("se", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "sing",
+    },
+    LexEntry {
+        text: "shine",
+        syllables: &[("shi", Tone::Level), ("ne", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "glow",
+    },
+    LexEntry {
+        text: "kóse",
+        syllables: &[("kó", Tone::Rising), ("se", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Back,
+
+        meaning: "grow",
+    },
+    LexEntry {
+        text: "fáre",
+        syllables: &[("fá", Tone::Rising), ("re", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "fly",
+    },
+    LexEntry {
+        text: "lethe",
+        syllables: &[("le", Tone::Level), ("the", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "flow",
+    },
+    LexEntry {
+        text: "ashe",
+        syllables: &[("a", Tone::Level), ("she", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "breathe",
+    },
+    LexEntry {
+        text: "mire",
+        syllables: &[("mi", Tone::Level), ("re", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "see",
+    },
+    LexEntry {
+        text: "fole",
+        syllables: &[("fo", Tone::Level), ("le", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Back,
+
+        meaning: "love",
+    },
+    LexEntry {
+        text: "sethe",
+        syllables: &[("se", Tone::Level), ("the", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "remember",
+    },
+    LexEntry {
+        text: "wethe",
+        syllables: &[("we", Tone::Level), ("the", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "weave",
+    },
+    LexEntry {
+        text: "niwe",
+        syllables: &[("ni", Tone::Level), ("we", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "dwell",
+    },
+    LexEntry {
+        text: "thale",
+        syllables: &[("tha", Tone::Level), ("le", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "name",
+    },
 ];
 
 const ADJECTIVES: &[LexEntry] = &[
-    LexEntry { text: "ráva", syllables: &[("rá", Tone::Rising), ("va", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Adjective, meaning: "bright" },
-    LexEntry { text: "ála", syllables: &[("á", Tone::Rising), ("la", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Adjective, meaning: "great" },
-    LexEntry { text: "mèsha", syllables: &[("mè", Tone::Falling), ("sha", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Adjective, meaning: "deep" },
-    LexEntry { text: "néla", syllables: &[("né", Tone::Rising), ("la", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Adjective, meaning: "new" },
-    LexEntry { text: "rǐma", syllables: &[("rǐ", Tone::Dipping), ("ma", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Adjective, meaning: "hidden" },
+    LexEntry {
+        text: "ráva",
+        syllables: &[("rá", Tone::Rising), ("va", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "bright",
+    },
+    LexEntry {
+        text: "ála",
+        syllables: &[("á", Tone::Rising), ("la", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "great",
+    },
+    LexEntry {
+        text: "mèsha",
+        syllables: &[("mè", Tone::Falling), ("sha", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "deep",
+    },
+    LexEntry {
+        text: "néla",
+        syllables: &[("né", Tone::Rising), ("la", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "new",
+    },
+    LexEntry {
+        text: "rǐma",
+        syllables: &[("rǐ", Tone::Dipping), ("ma", Tone::Level)],
+        stressed_first: true,
+        vowel_class: VowelClass::Front,
+
+        meaning: "hidden",
+    },
 ];
 
 const PARTICLES: &[LexEntry] = &[
-    LexEntry { text: "dai", syllables: &[("dai", Tone::Level)],
-        stressed_first: false, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Particle, meaning: "truly" },
-    LexEntry { text: "na", syllables: &[("na", Tone::Level)],
-        stressed_first: false, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Particle, meaning: "and" },
-    LexEntry { text: "e", syllables: &[("e", Tone::Level)],
-        stressed_first: false, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Particle, meaning: "that" },
-    LexEntry { text: "késhi", syllables: &[("ké", Tone::Rising), ("shi", Tone::Level)],
-        stressed_first: false, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Particle, meaning: "forever" },
-    LexEntry { text: "há", syllables: &[("há", Tone::Rising)],
-        stressed_first: false, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Particle, meaning: "behold" },
-    LexEntry { text: "lóshi", syllables: &[("ló", Tone::Rising), ("shi", Tone::Level)],
-        stressed_first: false, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Particle, meaning: "now" },
-];
+    LexEntry {
+        text: "dai",
+        syllables: &[("dai", Tone::Level)],
+        stressed_first: false,
+        vowel_class: VowelClass::Front,
 
-const PRONOUNS: &[LexEntry] = &[
-    LexEntry { text: "náire", syllables: &[("nái", Tone::Rising), ("re", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Pronoun, meaning: "we (inclusive)" },
-    LexEntry { text: "le", syllables: &[("le", Tone::Level)],
-        stressed_first: true, vowel_class: VowelClass::Front,
-        pos: PartOfSpeech::Pronoun, meaning: "it/they" },
+        meaning: "truly",
+    },
+    LexEntry {
+        text: "na",
+        syllables: &[("na", Tone::Level)],
+        stressed_first: false,
+        vowel_class: VowelClass::Front,
+
+        meaning: "and",
+    },
+    LexEntry {
+        text: "e",
+        syllables: &[("e", Tone::Level)],
+        stressed_first: false,
+        vowel_class: VowelClass::Front,
+
+        meaning: "that",
+    },
+    LexEntry {
+        text: "késhi",
+        syllables: &[("ké", Tone::Rising), ("shi", Tone::Level)],
+        stressed_first: false,
+        vowel_class: VowelClass::Front,
+
+        meaning: "forever",
+    },
+    LexEntry {
+        text: "há",
+        syllables: &[("há", Tone::Rising)],
+        stressed_first: false,
+        vowel_class: VowelClass::Front,
+
+        meaning: "behold",
+    },
+    LexEntry {
+        text: "lóshi",
+        syllables: &[("ló", Tone::Rising), ("shi", Tone::Level)],
+        stressed_first: false,
+        vowel_class: VowelClass::Front,
+
+        meaning: "now",
+    },
 ];
 
 /// Verb aspect suffixes: (front_suffix, back_suffix, tone).
 const ASPECT_SUFFIXES: &[(&str, &str, Tone, &str)] = &[
     ("-thir", "-thur", Tone::Level, "eternal"),
-    ("-ren",  "-ran",  Tone::Level, "ongoing"),
-    ("-shi",  "-shu",  Tone::Level, "completed"),
-    ("-tha",  "-tha",  Tone::Level, "habitual"),
+    ("-ren", "-ran", Tone::Level, "ongoing"),
+    ("-shi", "-shu", Tone::Level, "completed"),
+    ("-tha", "-tha", Tone::Level, "habitual"),
 ];
 
 /// Case suffixes: (front_suffix, back_suffix, tone).
@@ -357,10 +545,7 @@ enum PhraseTemplate {
 ///
 /// Returns multiple phrases for each section, allowing SA to swap between
 /// candidates during refinement.
-pub fn generate_phrases(
-    num_sections: usize,
-    rng: &mut impl Rng,
-) -> Vec<Vec<VaelithPhrase>> {
+pub fn generate_phrases(num_sections: usize, rng: &mut impl Rng) -> Vec<Vec<VaelithPhrase>> {
     generate_phrases_with_brightness(num_sections, 0.5, rng)
 }
 
@@ -390,7 +575,9 @@ pub fn generate_phrases_with_brightness(
         }
 
         // Add a liturgical variant
-        if let Some(phrase) = generate_phrase(PhraseTemplate::LiturgicalAffirmation, brightness, rng) {
+        if let Some(phrase) =
+            generate_phrase(PhraseTemplate::LiturgicalAffirmation, brightness, rng)
+        {
             candidates.push(phrase);
         }
 
@@ -408,12 +595,15 @@ fn pick_biased<'a>(entries: &'a [LexEntry], brightness: f64, rng: &mut impl Rng)
     }
 
     // Calculate weights: front-class words get more weight when brightness > 0.5
-    let weights: Vec<f64> = entries.iter().map(|e| {
-        match e.vowel_class {
-            VowelClass::Front => 0.3 + brightness * 0.7,       // 0.3–1.0
-            VowelClass::Back => 0.3 + (1.0 - brightness) * 0.7, // 1.0–0.3
-        }
-    }).collect();
+    let weights: Vec<f64> = entries
+        .iter()
+        .map(|e| {
+            match e.vowel_class {
+                VowelClass::Front => 0.3 + brightness * 0.7, // 0.3–1.0
+                VowelClass::Back => 0.3 + (1.0 - brightness) * 0.7, // 1.0–0.3
+            }
+        })
+        .collect();
 
     let total: f64 = weights.iter().sum();
     let r: f64 = rng.random::<f64>() * total;
@@ -428,7 +618,11 @@ fn pick_biased<'a>(entries: &'a [LexEntry], brightness: f64, rng: &mut impl Rng)
 }
 
 /// Generate a single phrase from a template.
-fn generate_phrase(template: PhraseTemplate, brightness: f64, rng: &mut impl Rng) -> Option<VaelithPhrase> {
+fn generate_phrase(
+    template: PhraseTemplate,
+    brightness: f64,
+    rng: &mut impl Rng,
+) -> Option<VaelithPhrase> {
     match template {
         PhraseTemplate::SubjectVerb => {
             let noun = pick_biased(NOUNS, brightness, rng);
@@ -455,7 +649,10 @@ fn generate_phrase(template: PhraseTemplate, brightness: f64, rng: &mut impl Rng
             let verb_word = verb.with_suffix(af, ab, at);
 
             let meaning = format!("{} {} {}", subj.meaning, verb.meaning, obj.meaning);
-            Some(VaelithPhrase::from_words(&[subject, object, verb_word], &meaning))
+            Some(VaelithPhrase::from_words(
+                &[subject, object, verb_word],
+                &meaning,
+            ))
         }
 
         PhraseTemplate::Exclamation => {
@@ -470,7 +667,10 @@ fn generate_phrase(template: PhraseTemplate, brightness: f64, rng: &mut impl Rng
             let verb_word = verb.with_suffix(af, ab, at);
 
             let meaning = format!("behold, {} {}", noun.meaning, verb.meaning);
-            Some(VaelithPhrase::from_words(&[excl, subject, verb_word], &meaning))
+            Some(VaelithPhrase::from_words(
+                &[excl, subject, verb_word],
+                &meaning,
+            ))
         }
 
         PhraseTemplate::DescriptiveVerb => {
@@ -485,7 +685,10 @@ fn generate_phrase(template: PhraseTemplate, brightness: f64, rng: &mut impl Rng
             let verb_word = verb.with_suffix(af, ab, at);
 
             let meaning = format!("{} {} {}", adj.meaning, noun.meaning, verb.meaning);
-            Some(VaelithPhrase::from_words(&[adj_word, noun_word, verb_word], &meaning))
+            Some(VaelithPhrase::from_words(
+                &[adj_word, noun_word, verb_word],
+                &meaning,
+            ))
         }
 
         PhraseTemplate::FullSentence => {
@@ -503,10 +706,14 @@ fn generate_phrase(template: PhraseTemplate, brightness: f64, rng: &mut impl Rng
             let obj_word = obj.with_suffix(cf, cb, ct);
             let verb_word = verb.with_suffix(af, ab, at);
 
-            let meaning = format!("{} {} {} {}", adj.meaning, subj.meaning,
-                                  verb.meaning, obj.meaning);
+            let meaning = format!(
+                "{} {} {} {}",
+                adj.meaning, subj.meaning, verb.meaning, obj.meaning
+            );
             Some(VaelithPhrase::from_words(
-                &[adj_word, subj_word, obj_word, verb_word], &meaning))
+                &[adj_word, subj_word, obj_word, verb_word],
+                &meaning,
+            ))
         }
 
         PhraseTemplate::PossessiveNoun => {
@@ -559,9 +766,12 @@ mod tests {
 
         assert!(!phrase.text.is_empty(), "Phrase should have text");
         assert!(!phrase.syllables.is_empty(), "Phrase should have syllables");
-        assert!(phrase.min_notes >= phrase.syllables.len(),
+        assert!(
+            phrase.min_notes >= phrase.syllables.len(),
             "Min notes ({}) should be >= syllable count ({})",
-            phrase.min_notes, phrase.syllables.len());
+            phrase.min_notes,
+            phrase.syllables.len()
+        );
     }
 
     #[test]
@@ -582,8 +792,11 @@ mod tests {
 
         // Vaelith should have >50% level tones (roots ~40% + suffixes ~95%)
         let pct = level_count as f64 / total_count as f64;
-        assert!(pct > 0.40,
-            "Level tones should dominate ({:.0}% found, expected >40%)", pct * 100.0);
+        assert!(
+            pct > 0.40,
+            "Level tones should dominate ({:.0}% found, expected >40%)",
+            pct * 100.0
+        );
     }
 
     #[test]
@@ -593,8 +806,10 @@ mod tests {
 
         assert_eq!(sections.len(), 3);
         for section in &sections {
-            assert!(section.len() >= 2,
-                "Each section should have multiple candidate phrases");
+            assert!(
+                section.len() >= 2,
+                "Each section should have multiple candidate phrases"
+            );
         }
     }
 
@@ -604,8 +819,16 @@ mod tests {
         let phrase = VaelithPhrase {
             text: "test".to_string(),
             syllables: vec![
-                Syllable { text: "thír".to_string(), tone: Tone::Rising, stressed: true },
-                Syllable { text: "ne".to_string(), tone: Tone::Level, stressed: false },
+                Syllable {
+                    text: "thír".to_string(),
+                    tone: Tone::Rising,
+                    stressed: true,
+                },
+                Syllable {
+                    text: "ne".to_string(),
+                    tone: Tone::Level,
+                    stressed: false,
+                },
             ],
             min_notes: 3, // 2 + 1
             meaning: "test".to_string(),

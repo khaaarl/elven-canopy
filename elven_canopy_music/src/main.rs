@@ -21,13 +21,15 @@
 
 use elven_canopy_music::draft::{fill_draft, generate_final_cadence};
 use elven_canopy_music::grid::Grid;
-use elven_canopy_music::markov::{MarkovModels, MotifLibrary};
 use elven_canopy_music::lilypond::write_lilypond;
+use elven_canopy_music::markov::{MarkovModels, MotifLibrary};
 use elven_canopy_music::midi::{write_midi, write_midi_with_text};
 use elven_canopy_music::mode::{Mode, ModeInstance};
 use elven_canopy_music::sa::{SAConfig, anneal_with_text};
-use elven_canopy_music::scoring::{ScoringWeights, score_grid, score_tonal_contour, score_breakdown, tonal_contour_stats};
-use elven_canopy_music::structure::{generate_structure, apply_structure, apply_responses};
+use elven_canopy_music::scoring::{
+    ScoringWeights, score_breakdown, score_grid, score_tonal_contour, tonal_contour_stats,
+};
+use elven_canopy_music::structure::{apply_responses, apply_structure, generate_structure};
 use elven_canopy_music::text_mapping::apply_text_mapping;
 use elven_canopy_music::vaelith::generate_phrases_with_brightness;
 use rand::SeedableRng;
@@ -50,7 +52,8 @@ fn main() {
     }
 
     // Parse arguments
-    let output_path = args.get(1)
+    let output_path = args
+        .get(1)
         .filter(|s| !s.starts_with("--"))
         .map(|s| s.as_str())
         .unwrap_or("output.mid");
@@ -67,12 +70,23 @@ fn main() {
 
     println!("=== Elven Canopy Music Generator ===");
     println!("Output: {}", output_path);
-    println!("Mode: {:?} (final = {})", mode.mode, pitch_name(mode.final_pc));
+    println!(
+        "Mode: {:?} (final = {})",
+        mode.mode,
+        pitch_name(mode.final_pc)
+    );
     println!("Tempo: {} BPM", tempo);
-    println!("Brightness: {:.1} ({})", brightness,
-        if brightness > 0.7 { "bright/silvery" }
-        else if brightness < 0.3 { "dark/warm" }
-        else { "neutral" });
+    println!(
+        "Brightness: {:.1} ({})",
+        brightness,
+        if brightness > 0.7 {
+            "bright/silvery"
+        } else if brightness < 0.3 {
+            "dark/warm"
+        } else {
+            "neutral"
+        }
+    );
     println!("Sections: {}", num_sections);
     println!("SA iterations target: ~{}", sa_iters);
     if let Some(s) = seed {
@@ -96,8 +110,14 @@ fn main() {
     let models = if Path::new("data/markov_models.json").exists() {
         println!("  Found trained Markov models, loading...");
         match MarkovModels::load(Path::new("data/markov_models.json")) {
-            Ok(m) => { println!("  Loaded successfully."); m }
-            Err(e) => { println!("  Failed to load: {}. Using defaults.", e); models }
+            Ok(m) => {
+                println!("  Loaded successfully.");
+                m
+            }
+            Err(e) => {
+                println!("  Failed to load: {}. Using defaults.", e);
+                models
+            }
         }
     } else {
         println!("  Using default models.");
@@ -107,22 +127,38 @@ fn main() {
     let motif_library = if Path::new("data/motif_library.json").exists() {
         println!("  Found motif library, loading...");
         match MotifLibrary::load(Path::new("data/motif_library.json")) {
-            Ok(l) => { println!("  Loaded {} motifs.", l.motifs.len()); l }
-            Err(e) => { println!("  Failed to load: {}. Using defaults.", e); motif_library }
+            Ok(l) => {
+                println!("  Loaded {} motifs.", l.motifs.len());
+                l
+            }
+            Err(e) => {
+                println!("  Failed to load: {}. Using defaults.", e);
+                motif_library
+            }
         }
     } else {
-        println!("  Using default motif library ({} built-in motifs).", motif_library.motifs.len());
+        println!(
+            "  Using default motif library ({} built-in motifs).",
+            motif_library.motifs.len()
+        );
         motif_library
     };
 
     // Generate structure
     println!("[2/5] Planning structure ({} sections)...", num_sections);
     let plan = generate_structure(&motif_library, num_sections, &mut rng);
-    println!("  Total beats: {} ({:.1} bars of 4/4)",
-        plan.total_beats, plan.total_beats as f64 / 8.0);
+    println!(
+        "  Total beats: {} ({:.1} bars of 4/4)",
+        plan.total_beats,
+        plan.total_beats as f64 / 8.0
+    );
     for (i, point) in plan.imitation_points.iter().enumerate() {
-        println!("  Section {}: {} voice entries, motif of {} intervals",
-            i + 1, point.entries.len(), point.motif.intervals.len());
+        println!(
+            "  Section {}: {} voice entries, motif of {} intervals",
+            i + 1,
+            point.entries.len(),
+            point.motif.intervals.len()
+        );
     }
 
     // Create grid and apply structure
@@ -133,29 +169,50 @@ fn main() {
     println!("  {} structural cells placed.", structural.len());
     apply_responses(&mut grid, &plan, &mode, &mut structural);
     if !plan.response_points.is_empty() {
-        println!("  {} response markers (dai/thol) applied.", plan.response_points.len());
+        println!(
+            "  {} response markers (dai/thol) applied.",
+            plan.response_points.len()
+        );
     }
 
     fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
 
     // Generate a proper final cadence
     generate_final_cadence(&mut grid, &mode, &mut structural);
-    println!("  {} total structural cells (including cadence+responses).", structural.len());
+    println!(
+        "  {} total structural cells (including cadence+responses).",
+        structural.len()
+    );
 
     // Generate Vaelith text and apply text mapping
-    println!("  Generating Vaelith text (brightness {:.1})...", brightness);
+    println!(
+        "  Generating Vaelith text (brightness {:.1})...",
+        brightness
+    );
     let phrase_candidates = generate_phrases_with_brightness(num_sections, brightness, &mut rng);
     let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
-    println!("  {} syllable spans mapped across {} section phrases.",
-        mapping.spans.len(), mapping.section_phrases.len());
+    println!(
+        "  {} syllable spans mapped across {} section phrases.",
+        mapping.spans.len(),
+        mapping.section_phrases.len()
+    );
     for (i, phrase) in mapping.section_phrases.iter().enumerate() {
-        println!("    Section {}: \"{}\" ({})", i + 1, phrase.text, phrase.meaning);
+        println!(
+            "    Section {}: \"{}\" ({})",
+            i + 1,
+            phrase.text,
+            phrase.meaning
+        );
     }
 
     let draft_score = score_grid(&grid, &weights, &mode);
     let draft_text_score = score_tonal_contour(&grid, &mapping, &weights);
-    println!("  Draft score: {:.1} (counterpoint) + {:.1} (tonal) = {:.1}",
-        draft_score, draft_text_score, draft_score + draft_text_score);
+    println!(
+        "  Draft score: {:.1} (counterpoint) + {:.1} (tonal) = {:.1}",
+        draft_score,
+        draft_text_score,
+        draft_score + draft_text_score
+    );
 
     // SA refinement with text awareness
     println!("[4/5] Refining with text-aware simulated annealing...");
@@ -164,20 +221,43 @@ fn main() {
         ..Default::default()
     };
     let result = anneal_with_text(
-        &mut grid, &models, &structural, &weights, &mode,
-        &config, &plan, &mut mapping, &phrase_candidates, &mut rng,
+        &mut grid,
+        &models,
+        &structural,
+        &weights,
+        &mode,
+        &config,
+        &plan,
+        &mut mapping,
+        &phrase_candidates,
+        &mut rng,
     );
     println!("  Iterations: {}", result.iterations);
-    println!("  Accepted: {} ({:.1}%)",
+    println!(
+        "  Accepted: {} ({:.1}%)",
         result.accepted,
-        if result.iterations > 0 { result.accepted as f64 / result.iterations as f64 * 100.0 } else { 0.0 });
+        if result.iterations > 0 {
+            result.accepted as f64 / result.iterations as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
     println!("  Reheats: {}", result.reheats);
     let total_draft = draft_score + draft_text_score;
-    println!("  Score: {:.1} -> {:.1} (delta {:+.1})",
-        total_draft, result.final_score, result.final_score - total_draft);
+    println!(
+        "  Score: {:.1} -> {:.1} (delta {:+.1})",
+        total_draft,
+        result.final_score,
+        result.final_score - total_draft
+    );
     println!("  Final text phrases:");
     for (i, phrase) in mapping.section_phrases.iter().enumerate() {
-        println!("    Section {}: \"{}\" ({})", i + 1, phrase.text, phrase.meaning);
+        println!(
+            "    Section {}: \"{}\" ({})",
+            i + 1,
+            phrase.text,
+            phrase.meaning
+        );
     }
 
     // Show grid summary if verbose
@@ -186,8 +266,10 @@ fn main() {
         println!("Grid summary:");
         print!("{}", grid.summary());
         let stats = grid.stats();
-        println!("  {} attacks, {} sounding beats, {} rests",
-            stats.total_attacks, stats.total_sounding, stats.rests);
+        println!(
+            "  {} attacks, {} sounding beats, {} rests",
+            stats.total_attacks, stats.total_sounding, stats.rests
+        );
 
         // Scoring breakdown
         let bd = score_breakdown(&grid, &weights, &mode, &mapping);
@@ -210,17 +292,24 @@ fn main() {
         let tonal_stats = tonal_contour_stats(&grid, &mapping);
         println!();
         println!("Tonal contour compliance:");
-        println!("  Syllable spans: {} total, {} compliant ({:.0}%), {} violated",
-            tonal_stats.total_spans, tonal_stats.compliant,
+        println!(
+            "  Syllable spans: {} total, {} compliant ({:.0}%), {} violated",
+            tonal_stats.total_spans,
+            tonal_stats.compliant,
             if tonal_stats.total_spans > 0 {
                 tonal_stats.compliant as f64 / tonal_stats.total_spans as f64 * 100.0
-            } else { 0.0 },
-            tonal_stats.violated);
+            } else {
+                0.0
+            },
+            tonal_stats.violated
+        );
         if tonal_stats.total_stressed > 0 {
-            println!("  Stressed syllables: {} on strong beats ({:.0}%), {} on weak beats",
+            println!(
+                "  Stressed syllables: {} on strong beats ({:.0}%), {} on weak beats",
                 tonal_stats.stressed_on_strong,
                 tonal_stats.stressed_on_strong as f64 / tonal_stats.total_stressed as f64 * 100.0,
-                tonal_stats.stressed_on_weak);
+                tonal_stats.stressed_on_weak
+            );
         }
         println!();
     }
@@ -230,8 +319,11 @@ fn main() {
     match write_midi_with_text(&grid, &mapping, Path::new(output_path)) {
         Ok(()) => {
             let duration_seconds = grid.num_beats as f64 / (grid.tempo_bpm as f64 / 60.0 * 2.0);
-            println!("  Done! Duration: {:.0}s ({:.1} bars)",
-                duration_seconds, grid.num_beats as f64 / 8.0);
+            println!(
+                "  Done! Duration: {:.0}s ({:.1} bars)",
+                duration_seconds,
+                grid.num_beats as f64 / 8.0
+            );
         }
         Err(e) => {
             eprintln!("  Error writing MIDI: {}", e);
@@ -258,12 +350,12 @@ fn main() {
 
 fn parse_mode(name: &str) -> ModeInstance {
     match name.to_lowercase().as_str() {
-        "dorian" => ModeInstance::new(Mode::Dorian, 2),         // D Dorian
-        "phrygian" => ModeInstance::new(Mode::Phrygian, 4),     // E Phrygian
-        "lydian" => ModeInstance::new(Mode::Lydian, 5),         // F Lydian
+        "dorian" => ModeInstance::new(Mode::Dorian, 2), // D Dorian
+        "phrygian" => ModeInstance::new(Mode::Phrygian, 4), // E Phrygian
+        "lydian" => ModeInstance::new(Mode::Lydian, 5), // F Lydian
         "mixolydian" => ModeInstance::new(Mode::Mixolydian, 7), // G Mixolydian
-        "aeolian" => ModeInstance::new(Mode::Aeolian, 9),       // A Aeolian
-        "ionian" => ModeInstance::new(Mode::Ionian, 0),         // C Ionian
+        "aeolian" => ModeInstance::new(Mode::Aeolian, 9), // A Aeolian
+        "ionian" => ModeInstance::new(Mode::Ionian, 0), // C Ionian
         _ => {
             eprintln!("Unknown mode '{}'. Using Dorian.", name);
             ModeInstance::d_dorian()
@@ -273,15 +365,25 @@ fn parse_mode(name: &str) -> ModeInstance {
 
 fn pitch_name(pc: u8) -> &'static str {
     match pc % 12 {
-        0 => "C", 1 => "C#", 2 => "D", 3 => "Eb",
-        4 => "E", 5 => "F", 6 => "F#", 7 => "G",
-        8 => "Ab", 9 => "A", 10 => "Bb", 11 => "B",
-        _ => "?"
+        0 => "C",
+        1 => "C#",
+        2 => "D",
+        3 => "Eb",
+        4 => "E",
+        5 => "F",
+        6 => "F#",
+        7 => "G",
+        8 => "Ab",
+        9 => "A",
+        10 => "Bb",
+        11 => "B",
+        _ => "?",
     }
 }
 
 fn parse_flag<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
-    args.iter().position(|a| a == flag)
+    args.iter()
+        .position(|a| a == flag)
         .and_then(|i| args.get(i + 1))
         .and_then(|v| v.parse().ok())
 }
@@ -294,7 +396,8 @@ fn run_batch(args: &[String]) {
     let tempo: u16 = parse_flag(args, "--tempo").unwrap_or(72);
     let mode_name: String = parse_flag(args, "--mode").unwrap_or_else(|| "dorian".to_string());
     let base_seed: u64 = parse_flag(args, "--seed").unwrap_or(1);
-    let output_dir: String = parse_flag(args, "--output-dir").unwrap_or_else(|| ".tmp/batch".to_string());
+    let output_dir: String =
+        parse_flag(args, "--output-dir").unwrap_or_else(|| ".tmp/batch".to_string());
     let brightness: f64 = parse_flag(args, "--brightness").unwrap_or(0.5);
     let write_ly = args.iter().any(|a| a == "--ly");
 
@@ -302,8 +405,10 @@ fn run_batch(args: &[String]) {
     let weights = ScoringWeights::default();
 
     println!("=== Batch Generation: {} pieces ===", count);
-    println!("Mode: {:?}, Tempo: {}, Sections: {}, Brightness: {:.1}",
-        mode.mode, tempo, num_sections, brightness);
+    println!(
+        "Mode: {:?}, Tempo: {}, Sections: {}, Brightness: {:.1}",
+        mode.mode, tempo, num_sections, brightness
+    );
     println!("Output dir: {}", output_dir);
     println!();
 
@@ -330,7 +435,10 @@ fn run_batch(args: &[String]) {
         ..Default::default()
     };
 
-    println!("{:>5} {:>10} {:>10} {:>10} {:>8}", "Seed", "Draft", "Final", "Delta", "Accept%");
+    println!(
+        "{:>5} {:>10} {:>10} {:>10} {:>8}",
+        "Seed", "Draft", "Final", "Delta", "Accept%"
+    );
     println!("{}", "-".repeat(50));
 
     for i in 0..count {
@@ -345,19 +453,30 @@ fn run_batch(args: &[String]) {
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
-        let phrase_candidates = generate_phrases_with_brightness(num_sections, brightness, &mut rng);
+        let phrase_candidates =
+            generate_phrases_with_brightness(num_sections, brightness, &mut rng);
         let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
 
-        let draft_score = score_grid(&grid, &weights, &mode)
-            + score_tonal_contour(&grid, &mapping, &weights);
+        let draft_score =
+            score_grid(&grid, &weights, &mode) + score_tonal_contour(&grid, &mapping, &weights);
         let result = anneal_with_text(
-            &mut grid, &models, &structural, &weights, &mode,
-            &config, &plan, &mut mapping, &phrase_candidates, &mut rng,
+            &mut grid,
+            &models,
+            &structural,
+            &weights,
+            &mode,
+            &config,
+            &plan,
+            &mut mapping,
+            &phrase_candidates,
+            &mut rng,
         );
 
         let accept_pct = if result.iterations > 0 {
             result.accepted as f64 / result.iterations as f64 * 100.0
-        } else { 0.0 };
+        } else {
+            0.0
+        };
 
         let output_path = format!("{}/piece_{:04}.mid", output_dir, seed);
         write_midi(&grid, Path::new(&output_path)).expect("Failed to write MIDI");
@@ -368,14 +487,22 @@ fn run_batch(args: &[String]) {
                 .expect("Failed to write LilyPond");
         }
 
-        println!("{:>5} {:>10.1} {:>10.1} {:>+10.1} {:>7.1}%",
-            seed, draft_score, result.final_score,
-            result.final_score - draft_score, accept_pct);
+        println!(
+            "{:>5} {:>10.1} {:>10.1} {:>+10.1} {:>7.1}%",
+            seed,
+            draft_score,
+            result.final_score,
+            result.final_score - draft_score,
+            accept_pct
+        );
     }
 
     println!();
     println!("Generated {} pieces in {}/", count, output_dir);
-    println!("Rate them with: python python/rate_midi.py --dir {}", output_dir);
+    println!(
+        "Rate them with: python python/rate_midi.py --dir {}",
+        output_dir
+    );
 }
 
 /// Generate the same piece in all 6 church modes for comparison.
@@ -384,15 +511,18 @@ fn run_mode_scan(args: &[String]) {
     let sa_iters: usize = parse_flag(args, "--sa-iterations").unwrap_or(10000);
     let tempo: u16 = parse_flag(args, "--tempo").unwrap_or(72);
     let seed: u64 = parse_flag(args, "--seed").unwrap_or(42);
-    let output_dir: String = parse_flag(args, "--output-dir")
-        .unwrap_or_else(|| ".tmp/mode_scan".to_string());
+    let output_dir: String =
+        parse_flag(args, "--output-dir").unwrap_or_else(|| ".tmp/mode_scan".to_string());
     let brightness: f64 = parse_flag(args, "--brightness").unwrap_or(0.5);
     let write_ly = args.iter().any(|a| a == "--ly");
 
     let weights = ScoringWeights::default();
 
     println!("=== Mode Scan: seed {} across 6 modes ===", seed);
-    println!("Sections: {}, Tempo: {}, Brightness: {:.1}", num_sections, tempo, brightness);
+    println!(
+        "Sections: {}, Tempo: {}, Brightness: {:.1}",
+        num_sections, tempo, brightness
+    );
     println!("Output dir: {}", output_dir);
     println!();
 
@@ -426,8 +556,10 @@ fn run_mode_scan(args: &[String]) {
         ("ionian", Mode::Ionian, 0),
     ];
 
-    println!("{:<12} {:>6} {:>10} {:>10} {:>10} {:>8}",
-        "Mode", "Final", "Draft", "Final", "Delta", "Accept%");
+    println!(
+        "{:<12} {:>6} {:>10} {:>10} {:>10} {:>8}",
+        "Mode", "Final", "Draft", "Final", "Delta", "Accept%"
+    );
     println!("{}", "-".repeat(62));
 
     for (name, mode_enum, final_pc) in &modes {
@@ -442,19 +574,30 @@ fn run_mode_scan(args: &[String]) {
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
-        let phrase_candidates = generate_phrases_with_brightness(num_sections, brightness, &mut rng);
+        let phrase_candidates =
+            generate_phrases_with_brightness(num_sections, brightness, &mut rng);
         let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
 
-        let draft_score = score_grid(&grid, &weights, &mode)
-            + score_tonal_contour(&grid, &mapping, &weights);
+        let draft_score =
+            score_grid(&grid, &weights, &mode) + score_tonal_contour(&grid, &mapping, &weights);
         let result = anneal_with_text(
-            &mut grid, &models, &structural, &weights, &mode,
-            &config, &plan, &mut mapping, &phrase_candidates, &mut rng,
+            &mut grid,
+            &models,
+            &structural,
+            &weights,
+            &mode,
+            &config,
+            &plan,
+            &mut mapping,
+            &phrase_candidates,
+            &mut rng,
         );
 
         let accept_pct = if result.iterations > 0 {
             result.accepted as f64 / result.iterations as f64 * 100.0
-        } else { 0.0 };
+        } else {
+            0.0
+        };
 
         let output_path = format!("{}/{}.mid", output_dir, name);
         write_midi_with_text(&grid, &mapping, Path::new(&output_path))
@@ -466,9 +609,15 @@ fn run_mode_scan(args: &[String]) {
                 .expect("Failed to write LilyPond");
         }
 
-        println!("{:<12} {:>6} {:>10.1} {:>10.1} {:>+10.1} {:>7.1}%",
-            name, pitch_name(*final_pc), draft_score, result.final_score,
-            result.final_score - draft_score, accept_pct);
+        println!(
+            "{:<12} {:>6} {:>10.1} {:>10.1} {:>+10.1} {:>7.1}%",
+            name,
+            pitch_name(*final_pc),
+            draft_score,
+            result.final_score,
+            result.final_score - draft_score,
+            accept_pct
+        );
     }
 
     println!();

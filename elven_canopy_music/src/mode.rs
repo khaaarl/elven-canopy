@@ -37,12 +37,12 @@ impl Mode {
     /// Returns 7 intervals representing degrees 1-7.
     pub fn intervals(self) -> [u8; 7] {
         match self {
-            Mode::Dorian =>     [0, 2, 3, 5, 7, 9, 10],
-            Mode::Phrygian =>   [0, 1, 3, 5, 7, 8, 10],
-            Mode::Lydian =>     [0, 2, 4, 6, 7, 9, 11],
+            Mode::Dorian => [0, 2, 3, 5, 7, 9, 10],
+            Mode::Phrygian => [0, 1, 3, 5, 7, 8, 10],
+            Mode::Lydian => [0, 2, 4, 6, 7, 9, 11],
             Mode::Mixolydian => [0, 2, 4, 5, 7, 9, 10],
-            Mode::Aeolian =>    [0, 2, 3, 5, 7, 8, 10],
-            Mode::Ionian =>     [0, 2, 4, 5, 7, 9, 11],
+            Mode::Aeolian => [0, 2, 3, 5, 7, 8, 10],
+            Mode::Ionian => [0, 2, 4, 5, 7, 9, 11],
         }
     }
 
@@ -60,12 +60,12 @@ impl Mode {
     /// Returns (mode, final_pitch_class) pairs.
     pub fn common_modes() -> &'static [(Mode, u8)] {
         &[
-            (Mode::Dorian, 2),      // D Dorian (final = D, pc 2)
-            (Mode::Phrygian, 4),    // E Phrygian (final = E, pc 4)
-            (Mode::Mixolydian, 7),  // G Mixolydian (final = G, pc 7)
-            (Mode::Aeolian, 9),     // A Aeolian (final = A, pc 9)
-            (Mode::Ionian, 0),      // C Ionian (final = C, pc 0)
-            (Mode::Dorian, 7),      // G Dorian (transposed, final = G, pc 7)
+            (Mode::Dorian, 2),     // D Dorian (final = D, pc 2)
+            (Mode::Phrygian, 4),   // E Phrygian (final = E, pc 4)
+            (Mode::Mixolydian, 7), // G Mixolydian (final = G, pc 7)
+            (Mode::Aeolian, 9),    // A Aeolian (final = A, pc 9)
+            (Mode::Ionian, 0),     // C Ionian (final = C, pc 0)
+            (Mode::Dorian, 7),     // G Dorian (transposed, final = G, pc 7)
         ]
     }
 }
@@ -80,7 +80,10 @@ pub struct ModeInstance {
 
 impl ModeInstance {
     pub fn new(mode: Mode, final_pc: u8) -> Self {
-        ModeInstance { mode, final_pc: final_pc % 12 }
+        ModeInstance {
+            mode,
+            final_pc: final_pc % 12,
+        }
     }
 
     /// D Dorian — the most common mode in Palestrina.
@@ -156,13 +159,13 @@ mod tests {
         let mode = ModeInstance::d_dorian();
 
         // D4=62, E4=64, F4=65, G4=67, A4=69, B4=71, C5=72
-        assert!(mode.is_in_mode(62));  // D
-        assert!(mode.is_in_mode(64));  // E
-        assert!(mode.is_in_mode(65));  // F
-        assert!(mode.is_in_mode(67));  // G
-        assert!(mode.is_in_mode(69));  // A
-        assert!(mode.is_in_mode(71));  // B
-        assert!(mode.is_in_mode(72));  // C
+        assert!(mode.is_in_mode(62)); // D
+        assert!(mode.is_in_mode(64)); // E
+        assert!(mode.is_in_mode(65)); // F
+        assert!(mode.is_in_mode(67)); // G
+        assert!(mode.is_in_mode(69)); // A
+        assert!(mode.is_in_mode(71)); // B
+        assert!(mode.is_in_mode(72)); // C
 
         assert!(!mode.is_in_mode(63)); // Eb (not in D Dorian)
         assert!(!mode.is_in_mode(66)); // F# (not in D Dorian)
@@ -173,7 +176,7 @@ mod tests {
         let mode = ModeInstance::d_dorian();
         assert_eq!(mode.scale_degree(62), Some(0)); // D = degree 0 (final)
         assert_eq!(mode.scale_degree(69), Some(4)); // A = degree 4 (5th)
-        assert_eq!(mode.scale_degree(63), None);    // Eb = not in mode
+        assert_eq!(mode.scale_degree(63), None); // Eb = not in mode
     }
 
     #[test]
@@ -188,8 +191,8 @@ mod tests {
     fn test_phrygian_half_step() {
         let mode = ModeInstance::new(Mode::Phrygian, 4); // E Phrygian
         // E to F is 1 semitone — the characteristic Phrygian half-step
-        assert!(mode.is_in_mode(64));  // E
-        assert!(mode.is_in_mode(65));  // F
+        assert!(mode.is_in_mode(64)); // E
+        assert!(mode.is_in_mode(65)); // F
         assert_eq!(mode.scale_degree(64), Some(0)); // E = final
         assert_eq!(mode.scale_degree(65), Some(1)); // F = 2nd degree
     }

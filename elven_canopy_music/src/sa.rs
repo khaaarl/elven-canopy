@@ -27,7 +27,9 @@
 use crate::grid::{Grid, Voice};
 use crate::markov::MarkovModels;
 use crate::mode::ModeInstance;
-use crate::scoring::{ScoringWeights, score_grid, score_local, score_tonal_contour, score_tonal_contour_local};
+use crate::scoring::{
+    ScoringWeights, score_grid, score_local, score_tonal_contour, score_tonal_contour_local,
+};
 use crate::structure::StructurePlan;
 use crate::text_mapping::{TextMapping, swap_section_phrase};
 use crate::vaelith::VaelithPhrase;
@@ -190,7 +192,14 @@ pub fn anneal(
                 let idx = rng.random_range(0..mutable_cells.len());
                 let (voice, beat) = mutable_cells[idx];
                 let delta = try_duration_mutation(
-                    grid, weights, mode, voice, beat, &structural_set, temp, rng,
+                    grid,
+                    weights,
+                    mode,
+                    voice,
+                    beat,
+                    &structural_set,
+                    temp,
+                    rng,
                 );
                 if let Some(d) = delta {
                     _current_score += d;
@@ -200,9 +209,7 @@ pub fn anneal(
                 // Pitch mutation
                 let idx = rng.random_range(0..mutable_cells.len());
                 let (voice, beat) = mutable_cells[idx];
-                let delta = try_pitch_mutation(
-                    grid, models, weights, mode, voice, beat, temp, rng,
-                );
+                let delta = try_pitch_mutation(grid, models, weights, mode, voice, beat, temp, rng);
                 if let Some(d) = delta {
                     _current_score += d;
                     accepted += 1;
@@ -234,6 +241,7 @@ pub fn anneal(
 ///
 /// Extends the base SA with tonal contour scoring and text-swap macro mutations.
 /// The text mapping is modified in-place when phrase swaps are accepted.
+#[allow(clippy::too_many_arguments)]
 pub fn anneal_with_text(
     grid: &mut Grid,
     models: &MarkovModels,
@@ -293,7 +301,14 @@ pub fn anneal_with_text(
             if roll < 0.05 && num_sections > 0 && !phrase_candidates.is_empty() {
                 // Text-swap macro mutation (~5%)
                 let delta = try_text_swap_mutation(
-                    grid, weights, mode, plan, mapping, phrase_candidates, temp, rng,
+                    grid,
+                    weights,
+                    mode,
+                    plan,
+                    mapping,
+                    phrase_candidates,
+                    temp,
+                    rng,
                 );
                 if let Some(d) = delta {
                     _current_score += d;
@@ -305,7 +320,14 @@ pub fn anneal_with_text(
                 let idx = rng.random_range(0..mutable_cells.len());
                 let (voice, beat) = mutable_cells[idx];
                 let delta = try_duration_mutation(
-                    grid, weights, mode, voice, beat, &structural_set, temp, rng,
+                    grid,
+                    weights,
+                    mode,
+                    voice,
+                    beat,
+                    &structural_set,
+                    temp,
+                    rng,
                 );
                 if let Some(d) = delta {
                     _current_score += d;
@@ -356,6 +378,7 @@ pub fn anneal_with_text(
 }
 
 /// Try a pitch mutation that also considers tonal contour constraints.
+#[allow(clippy::too_many_arguments)]
 fn try_pitch_mutation_with_text(
     grid: &mut Grid,
     models: &MarkovModels,
@@ -444,6 +467,7 @@ fn try_pitch_mutation_with_text(
 
 /// Try swapping a section's text phrase with a different candidate.
 /// Scores before and after the swap, accepting via Metropolis criterion.
+#[allow(clippy::too_many_arguments)]
 fn try_text_swap_mutation(
     grid: &mut Grid,
     weights: &ScoringWeights,
@@ -472,7 +496,8 @@ fn try_text_swap_mutation(
         return None;
     };
 
-    let alternatives: Vec<&VaelithPhrase> = candidates.iter()
+    let alternatives: Vec<&VaelithPhrase> = candidates
+        .iter()
         .filter(|p| p.text != *current_text)
         .collect();
 
@@ -508,6 +533,7 @@ fn try_text_swap_mutation(
 }
 
 /// Try a pitch mutation at (voice, beat). Returns Some(delta) if accepted, None if rejected.
+#[allow(clippy::too_many_arguments)]
 fn try_pitch_mutation(
     grid: &mut Grid,
     models: &MarkovModels,
@@ -593,6 +619,7 @@ fn try_pitch_mutation(
 
 /// Try a duration mutation at (voice, beat). Extends or shortens the note.
 /// Returns Some(delta) if accepted, None if rejected.
+#[allow(clippy::too_many_arguments)]
 fn try_duration_mutation(
     grid: &mut Grid,
     weights: &ScoringWeights,
@@ -638,16 +665,16 @@ fn try_duration_mutation(
         }
 
         // Score before
-        let old_local = score_local(grid, weights, mode, beat)
-            + score_local(grid, weights, mode, target);
+        let old_local =
+            score_local(grid, weights, mode, beat) + score_local(grid, weights, mode, target);
 
         // Apply extension
         grid.cell_mut(voice, target).pitch = pitch;
         grid.cell_mut(voice, target).is_rest = false;
         grid.cell_mut(voice, target).attack = false;
 
-        let new_local = score_local(grid, weights, mode, beat)
-            + score_local(grid, weights, mode, target);
+        let new_local =
+            score_local(grid, weights, mode, beat) + score_local(grid, weights, mode, target);
         let delta = new_local - old_local;
 
         if metropolis_accept(delta, temp, rng) {
@@ -668,16 +695,16 @@ fn try_duration_mutation(
             return None;
         }
 
-        let old_local = score_local(grid, weights, mode, beat)
-            + score_local(grid, weights, mode, note_end);
+        let old_local =
+            score_local(grid, weights, mode, beat) + score_local(grid, weights, mode, note_end);
 
         // Remove the last beat of the note (make it a rest)
         grid.cell_mut(voice, note_end).pitch = 0;
         grid.cell_mut(voice, note_end).is_rest = true;
         grid.cell_mut(voice, note_end).attack = false;
 
-        let new_local = score_local(grid, weights, mode, beat)
-            + score_local(grid, weights, mode, note_end);
+        let new_local =
+            score_local(grid, weights, mode, beat) + score_local(grid, weights, mode, note_end);
         let delta = new_local - old_local;
 
         if metropolis_accept(delta, temp, rng) {
@@ -705,9 +732,9 @@ fn metropolis_accept(delta: f64, temp: f64, rng: &mut impl Rng) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::markov::{MarkovModels, MotifLibrary};
-    use crate::structure::{generate_structure, apply_structure};
     use crate::draft::fill_draft;
+    use crate::markov::{MarkovModels, MotifLibrary};
+    use crate::structure::{apply_structure, generate_structure};
 
     #[test]
     fn test_sa_improves_score() {
@@ -733,16 +760,27 @@ mod tests {
             ..Default::default()
         };
 
-        let result = anneal(&mut grid, &models, &structural, &weights, &mode, &config, &mut rng);
+        let result = anneal(
+            &mut grid,
+            &models,
+            &structural,
+            &weights,
+            &mode,
+            &config,
+            &mut rng,
+        );
 
         assert!(result.iterations > 0, "SA should have run some iterations");
-        assert!(result.accepted > 0, "SA should have accepted some mutations");
+        assert!(
+            result.accepted > 0,
+            "SA should have accepted some mutations"
+        );
     }
 
     #[test]
     fn test_sa_with_text() {
-        use crate::vaelith::generate_phrases;
         use crate::text_mapping::apply_text_mapping;
+        use crate::vaelith::generate_phrases;
 
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
@@ -768,8 +806,16 @@ mod tests {
         };
 
         let result = anneal_with_text(
-            &mut grid, &models, &structural, &weights, &mode,
-            &config, &plan, &mut mapping, &phrases, &mut rng,
+            &mut grid,
+            &models,
+            &structural,
+            &weights,
+            &mode,
+            &config,
+            &plan,
+            &mut mapping,
+            &phrases,
+            &mut rng,
         );
 
         assert!(result.iterations > 0, "Text-aware SA should have run");

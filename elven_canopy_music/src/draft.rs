@@ -41,12 +41,13 @@ pub fn fill_draft(
     for &(vi, beat) in structural_cells {
         // An attack on a structural cell that has a rest before it marks a section start
         let cell = grid.cell(Voice::ALL[vi], beat);
-        if cell.attack && !cell.is_rest {
-            if beat == 0 || grid.cell(Voice::ALL[vi], beat - 1).is_rest
-                || !structural_set.contains(&(vi, beat - 1))
-            {
-                section_starts[vi].push(beat);
-            }
+        if cell.attack
+            && !cell.is_rest
+            && (beat == 0
+                || grid.cell(Voice::ALL[vi], beat - 1).is_rest
+                || !structural_set.contains(&(vi, beat - 1)))
+        {
+            section_starts[vi].push(beat);
         }
     }
     for starts in &mut section_starts {
@@ -55,8 +56,15 @@ pub fn fill_draft(
     }
 
     for voice in Voice::ALL {
-        fill_voice(grid, voice, models, &structural_set,
-                   &section_starts[voice.index()], mode, rng);
+        fill_voice(
+            grid,
+            voice,
+            models,
+            &structural_set,
+            &section_starts[voice.index()],
+            mode,
+            rng,
+        );
     }
 }
 
@@ -108,9 +116,7 @@ fn fill_voice(
         let beat_in_bar = beat % 8; // position within a 4/4 bar
 
         // Check if a new structural section starts soon (within 2 beats)
-        let near_section_start = section_starts.iter().any(|&s| {
-            s > beat && s <= beat + 2
-        });
+        let near_section_start = section_starts.iter().any(|&s| s > beat && s <= beat + 2);
 
         // Breathing: insert rests for phrase structure
         let should_rest = if last_pitch.is_none() {
@@ -166,9 +172,7 @@ fn fill_voice(
                 mode.snap_to_mode(mid)
             } else {
                 // Weight toward final and 5th
-                let weights: Vec<f64> = candidates.iter()
-                    .map(|&p| mode.pitch_fitness(p))
-                    .collect();
+                let weights: Vec<f64> = candidates.iter().map(|&p| mode.pitch_fitness(p)).collect();
                 let total: f64 = weights.iter().sum();
                 let r: f64 = rng.random::<f64>() * total;
                 let mut cum = 0.0;
@@ -188,10 +192,16 @@ fn fill_voice(
 
         // Variable note duration based on metric position and style
         let hold_beats = match beat_in_bar {
-            0 => rng.random_range(2..=5),       // downbeat: half to dotted half
-            4 => rng.random_range(1..=3),       // beat 3: quarter to dotted quarter
-            2 | 6 => rng.random_range(1..=2),   // weak beats: eighth to quarter
-            _ => if rng.random_bool(0.6) { 1 } else { 0 },  // off-beats
+            0 => rng.random_range(2..=5),     // downbeat: half to dotted half
+            4 => rng.random_range(1..=3),     // beat 3: quarter to dotted quarter
+            2 | 6 => rng.random_range(1..=2), // weak beats: eighth to quarter
+            _ => {
+                if rng.random_bool(0.6) {
+                    1
+                } else {
+                    0
+                }
+            } // off-beats
         };
 
         for hold in 1..=hold_beats {
@@ -249,7 +259,7 @@ fn pitch_score(
                 score -= 1.5;
             }
 
-            let is_strong = beat % 4 == 0;
+            let is_strong = beat.is_multiple_of(4);
             if is_strong && interval::is_perfect_consonance(iv) {
                 score += 1.0;
             }
@@ -272,12 +282,12 @@ fn pitch_score(
                     let prev_iv = interval::semitones(po, ps);
                     let prev_iv_clamped = prev_iv.clamp(-24, 24) as i8;
                     let key = prev_iv_clamped.to_string();
-                    if let Some(table) = models.harmonic.transitions.get(&key) {
-                        if let Some(&weight) = table.get(&iv_clamped) {
-                            let total: f64 = table.values().sum();
-                            if total > 0.0 {
-                                score += (weight / total) * 2.0;
-                            }
+                    if let Some(table) = models.harmonic.transitions.get(&key)
+                        && let Some(&weight) = table.get(&iv_clamped)
+                    {
+                        let total: f64 = table.values().sum();
+                        if total > 0.0 {
+                            score += (weight / total) * 2.0;
                         }
                     }
                 }
@@ -398,18 +408,74 @@ pub fn generate_final_cadence(
 
     // Penultimate chord (beat -6 to -4)
     let penult_beat = cadence_start;
-    place_cadence_note(grid, Voice::Soprano, penult_beat, sop_penult, 2, structural_cells);
-    place_cadence_note(grid, Voice::Alto, penult_beat, alto_penult, 2, structural_cells);
-    place_cadence_note(grid, Voice::Tenor, penult_beat, tenor_penult, 2, structural_cells);
-    place_cadence_note(grid, Voice::Bass, penult_beat, bass_fifth, 2, structural_cells);
+    place_cadence_note(
+        grid,
+        Voice::Soprano,
+        penult_beat,
+        sop_penult,
+        2,
+        structural_cells,
+    );
+    place_cadence_note(
+        grid,
+        Voice::Alto,
+        penult_beat,
+        alto_penult,
+        2,
+        structural_cells,
+    );
+    place_cadence_note(
+        grid,
+        Voice::Tenor,
+        penult_beat,
+        tenor_penult,
+        2,
+        structural_cells,
+    );
+    place_cadence_note(
+        grid,
+        Voice::Bass,
+        penult_beat,
+        bass_fifth,
+        2,
+        structural_cells,
+    );
 
     // Resolution to final chord (beat -4 to end)
     let final_beat = cadence_start + 2;
     let hold = n - final_beat - 1;
-    place_cadence_note(grid, Voice::Soprano, final_beat, sop_final, hold, structural_cells);
-    place_cadence_note(grid, Voice::Alto, final_beat, alto_final, hold, structural_cells);
-    place_cadence_note(grid, Voice::Tenor, final_beat, tenor_final, hold, structural_cells);
-    place_cadence_note(grid, Voice::Bass, final_beat, bass_final, hold, structural_cells);
+    place_cadence_note(
+        grid,
+        Voice::Soprano,
+        final_beat,
+        sop_final,
+        hold,
+        structural_cells,
+    );
+    place_cadence_note(
+        grid,
+        Voice::Alto,
+        final_beat,
+        alto_final,
+        hold,
+        structural_cells,
+    );
+    place_cadence_note(
+        grid,
+        Voice::Tenor,
+        final_beat,
+        tenor_final,
+        hold,
+        structural_cells,
+    );
+    place_cadence_note(
+        grid,
+        Voice::Bass,
+        final_beat,
+        bass_final,
+        hold,
+        structural_cells,
+    );
 }
 
 /// Place a note with hold duration and mark all cells as structural.
@@ -442,7 +508,7 @@ fn nearest_pc_in_range(target_pc: u8, near: u8, low: u8, high: u8) -> u8 {
 
     for p in low..=high {
         if p % 12 == target_pc {
-            let dist = if p >= near { p - near } else { near - p };
+            let dist = p.abs_diff(near);
             if dist < best_dist {
                 best = p;
                 best_dist = dist;
@@ -456,7 +522,7 @@ fn nearest_pc_in_range(target_pc: u8, near: u8, low: u8, high: u8) -> u8 {
 mod tests {
     use super::*;
     use crate::markov::{MarkovModels, MotifLibrary};
-    use crate::structure::{generate_structure, apply_structure};
+    use crate::structure::{apply_structure, generate_structure};
 
     #[test]
     fn test_final_cadence_ends_on_mode_final() {
@@ -481,7 +547,11 @@ mod tests {
                 assert!(
                     pc == final_pc || pc == fifth_pc,
                     "Voice {:?} on final beat has pitch {} (pc {}), expected final {} or 5th {}",
-                    voice, pitch, pc, final_pc, fifth_pc
+                    voice,
+                    pitch,
+                    pc,
+                    final_pc,
+                    fifth_pc
                 );
             }
         }
@@ -507,7 +577,11 @@ mod tests {
                 }
             }
         }
-        assert!(note_count > 20, "Draft should produce substantial notes, got {}", note_count);
+        assert!(
+            note_count > 20,
+            "Draft should produce substantial notes, got {}",
+            note_count
+        );
     }
 
     #[test]
@@ -542,7 +616,15 @@ mod tests {
                 }
             }
         }
-        let pct = if total > 0 { in_mode as f64 / total as f64 } else { 0.0 };
-        assert!(pct > 0.85, "At least 85% of draft notes should be in mode, got {:.0}%", pct * 100.0);
+        let pct = if total > 0 {
+            in_mode as f64 / total as f64
+        } else {
+            0.0
+        };
+        assert!(
+            pct > 0.85,
+            "At least 85% of draft notes should be in mode, got {:.0}%",
+            pct * 100.0
+        );
     }
 }

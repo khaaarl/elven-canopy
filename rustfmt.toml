@@ -1,0 +1,5 @@
+# Rust formatting configuration for Elven Canopy.
+#
+# Applied by `cargo fmt --all`. Enforced in CI via `cargo fmt --all --check`.
+# All settings are left at default. This file exists as a project marker and
+# a place to add overrides if needed.

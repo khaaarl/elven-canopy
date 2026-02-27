@@ -39,19 +39,19 @@ impl MelodicModel {
     pub fn default_model() -> Self {
         let mut order0 = TransitionTable::new();
         // Stepwise motion dominates (~60%), then thirds (~20%), then rest
-        order0.insert(0, 5.0);   // repeated note
-        order0.insert(1, 15.0);  // minor 2nd up
+        order0.insert(0, 5.0); // repeated note
+        order0.insert(1, 15.0); // minor 2nd up
         order0.insert(-1, 15.0); // minor 2nd down
-        order0.insert(2, 15.0);  // major 2nd up
+        order0.insert(2, 15.0); // major 2nd up
         order0.insert(-2, 15.0); // major 2nd down
-        order0.insert(3, 5.0);   // minor 3rd up
-        order0.insert(-3, 5.0);  // minor 3rd down
-        order0.insert(4, 5.0);   // major 3rd up
-        order0.insert(-4, 5.0);  // major 3rd down
-        order0.insert(5, 3.0);   // perfect 4th up
-        order0.insert(-5, 3.0);  // perfect 4th down
-        order0.insert(7, 2.0);   // perfect 5th up
-        order0.insert(-7, 2.0);  // perfect 5th down
+        order0.insert(3, 5.0); // minor 3rd up
+        order0.insert(-3, 5.0); // minor 3rd down
+        order0.insert(4, 5.0); // major 3rd up
+        order0.insert(-4, 5.0); // major 3rd down
+        order0.insert(5, 3.0); // perfect 4th up
+        order0.insert(-5, 3.0); // perfect 4th down
+        order0.insert(7, 2.0); // perfect 5th up
+        order0.insert(-7, 2.0); // perfect 5th down
 
         MelodicModel {
             order3: BTreeMap::new(),
@@ -66,31 +66,31 @@ impl MelodicModel {
     pub fn sample(&self, context: &[i8], rng_val: f64) -> i8 {
         // Try order-3 first
         if context.len() >= 3 {
-            let key = context_key(&context[context.len()-3..]);
-            if let Some(table) = self.order3.get(&key) {
-                if let Some(interval) = sample_from_table(table, rng_val) {
-                    return interval;
-                }
+            let key = context_key(&context[context.len() - 3..]);
+            if let Some(table) = self.order3.get(&key)
+                && let Some(interval) = sample_from_table(table, rng_val)
+            {
+                return interval;
             }
         }
 
         // Backoff to order-2
         if context.len() >= 2 {
-            let key = context_key(&context[context.len()-2..]);
-            if let Some(table) = self.order2.get(&key) {
-                if let Some(interval) = sample_from_table(table, rng_val) {
-                    return interval;
-                }
+            let key = context_key(&context[context.len() - 2..]);
+            if let Some(table) = self.order2.get(&key)
+                && let Some(interval) = sample_from_table(table, rng_val)
+            {
+                return interval;
             }
         }
 
         // Backoff to order-1
-        if context.len() >= 1 {
-            let key = context_key(&context[context.len()-1..]);
-            if let Some(table) = self.order1.get(&key) {
-                if let Some(interval) = sample_from_table(table, rng_val) {
-                    return interval;
-                }
+        if !context.is_empty() {
+            let key = context_key(&context[context.len() - 1..]);
+            if let Some(table) = self.order1.get(&key)
+                && let Some(interval) = sample_from_table(table, rng_val)
+            {
+                return interval;
             }
         }
 
@@ -102,37 +102,37 @@ impl MelodicModel {
     pub fn probability(&self, context: &[i8], next_interval: i8) -> f64 {
         // Try highest order first, back off
         if context.len() >= 3 {
-            let key = context_key(&context[context.len()-3..]);
-            if let Some(table) = self.order3.get(&key) {
-                if let Some(&p) = table.get(&next_interval) {
-                    let total: f64 = table.values().sum();
-                    if total > 0.0 {
-                        return p / total;
-                    }
+            let key = context_key(&context[context.len() - 3..]);
+            if let Some(table) = self.order3.get(&key)
+                && let Some(&p) = table.get(&next_interval)
+            {
+                let total: f64 = table.values().sum();
+                if total > 0.0 {
+                    return p / total;
                 }
             }
         }
 
         if context.len() >= 2 {
-            let key = context_key(&context[context.len()-2..]);
-            if let Some(table) = self.order2.get(&key) {
-                if let Some(&p) = table.get(&next_interval) {
-                    let total: f64 = table.values().sum();
-                    if total > 0.0 {
-                        return p / total;
-                    }
+            let key = context_key(&context[context.len() - 2..]);
+            if let Some(table) = self.order2.get(&key)
+                && let Some(&p) = table.get(&next_interval)
+            {
+                let total: f64 = table.values().sum();
+                if total > 0.0 {
+                    return p / total;
                 }
             }
         }
 
-        if context.len() >= 1 {
-            let key = context_key(&context[context.len()-1..]);
-            if let Some(table) = self.order1.get(&key) {
-                if let Some(&p) = table.get(&next_interval) {
-                    let total: f64 = table.values().sum();
-                    if total > 0.0 {
-                        return p / total;
-                    }
+        if !context.is_empty() {
+            let key = context_key(&context[context.len() - 1..]);
+            if let Some(table) = self.order1.get(&key)
+                && let Some(&p) = table.get(&next_interval)
+            {
+                let total: f64 = table.values().sum();
+                if total > 0.0 {
+                    return p / total;
                 }
             }
         }
@@ -239,10 +239,10 @@ impl MotifLibrary {
             motifs: vec![
                 // Ascending stepwise motif (very common in Palestrina)
                 Motif {
-                    intervals: vec![2, 2, 1, 2],  // whole, whole, half, whole steps
+                    intervals: vec![2, 2, 1, 2], // whole, whole, half, whole steps
                     frequency: 50,
-                    typical_entry_offset: 8,       // 1 bar offset
-                    typical_transposition: 7,      // at the 5th
+                    typical_entry_offset: 8,  // 1 bar offset
+                    typical_transposition: 7, // at the 5th
                 },
                 // Descending stepwise
                 Motif {
@@ -253,7 +253,7 @@ impl MotifLibrary {
                 },
                 // Ascending with leap recovery
                 Motif {
-                    intervals: vec![2, 2, 5, -2, -1],  // step up, leap 4th, step back
+                    intervals: vec![2, 2, 5, -2, -1], // step up, leap 4th, step back
                     frequency: 30,
                     typical_entry_offset: 6,
                     typical_transposition: 7,
@@ -263,7 +263,7 @@ impl MotifLibrary {
                     intervals: vec![2, 2, 1, -2, -2],
                     frequency: 35,
                     typical_entry_offset: 8,
-                    typical_transposition: 12,     // at the octave
+                    typical_transposition: 12, // at the octave
                 },
                 // Opening 5th leap with stepwise descent
                 Motif {
@@ -286,7 +286,11 @@ impl MotifLibrary {
 
 /// Encode a context (slice of intervals) as a string key for BTreeMap lookup.
 fn context_key(context: &[i8]) -> String {
-    context.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")
+    context
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Sample an interval from a transition table using a random value in [0, 1).

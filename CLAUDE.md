@@ -149,6 +149,26 @@ When upgrading the `godot` crate, check for a matching `api-4-x` feature flag. T
 
 ## Code Quality Tools
 
+`cargo fmt`, `cargo clippy`, `gdformat`, and `gdlint` are all enforced in CI via `.github/workflows/lint.yml`. Run all checks locally with:
+
+```bash
+scripts/build.sh check    # fmt --check + clippy + gdformat --check + gdlint
+```
+
+### Rust
+
+Workspace lint config lives in the root `Cargo.toml` under `[workspace.lints.clippy]`. Each crate inherits via `[lints] workspace = true`. Formatting config is in `rustfmt.toml` (currently all defaults).
+
+Run individually:
+
+```bash
+cargo fmt --all --check       # check formatting
+cargo clippy --workspace -- -D warnings   # lint
+cargo fmt --all               # auto-format
+```
+
+### GDScript
+
 GDScript files are checked with **gdformat** (formatter) and **gdlint** (linter) from the [gdtoolkit](https://github.com/Scony/godot-gdscript-toolkit) package.
 
 **Setup (one-time):**
@@ -164,26 +184,15 @@ If the venv already exists, just activate and install:
 source python/.venv/bin/activate && pip install -r python/requirements-dev.txt
 ```
 
-**Running checks:**
-
-```bash
-scripts/build.sh check   # runs gdformat --check + gdlint on all GDScript files
-```
-
-Or individually:
+Run individually:
 
 ```bash
 python/.venv/bin/gdformat --check --line-length 100 godot/scripts/*.gd
 python/.venv/bin/gdlint godot/scripts/*.gd
+python/.venv/bin/gdformat --line-length 100 godot/scripts/*.gd   # auto-format
 ```
 
-**Auto-formatting:** To apply formatting fixes, run `gdformat` without `--check`:
-
-```bash
-python/.venv/bin/gdformat --line-length 100 godot/scripts/*.gd
-```
-
-**Configuration:** `.gdlintrc` at the repo root configures gdlint. Currently disables `function-variable-name` (short names like `W`/`H` are intentional in pixel-drawing code). CI runs the same checks via `.github/workflows/lint.yml`.
+**Configuration:** `.gdlintrc` at the repo root configures gdlint. Currently disables `function-variable-name` (short names like `W`/`H` are intentional in pixel-drawing code).
 
 ## Running Commands
 

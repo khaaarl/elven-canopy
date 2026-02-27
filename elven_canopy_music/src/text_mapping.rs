@@ -90,13 +90,8 @@ pub fn apply_text_mapping(
             }
 
             // Assign syllables to attacks
-            let syllable_spans = assign_syllables_to_attacks(
-                &phrase,
-                &attacks,
-                voice,
-                grid,
-                &mut next_syllable_id,
-            );
+            let syllable_spans =
+                assign_syllables_to_attacks(&phrase, &attacks, voice, grid, &mut next_syllable_id);
 
             // Apply to grid
             for span in &syllable_spans {
@@ -211,11 +206,7 @@ fn assign_syllables_to_attacks(
 
     // Distribute attacks to syllables, respecting min_notes per tone
     let mut attack_idx = 0;
-    let extra = if total_attacks > min_needed {
-        total_attacks - min_needed
-    } else {
-        0
-    };
+    let extra = total_attacks.saturating_sub(min_needed);
 
     for (syl_idx, syl) in syllables.iter().enumerate() {
         if attack_idx >= total_attacks {
@@ -231,7 +222,9 @@ fn assign_syllables_to_attacks(
             total_attacks - attack_idx
         } else if extra > 0 && syl.stressed {
             // Stressed syllables get extra attacks (melismatic)
-            min + (extra / num_syllables).max(1).min(total_attacks - attack_idx - 1)
+            min + (extra / num_syllables)
+                .max(1)
+                .min(total_attacks - attack_idx - 1)
         } else {
             min.min(total_attacks - attack_idx)
         };
@@ -241,12 +234,8 @@ fn assign_syllables_to_attacks(
         let last_beat_attack = attacks[end_attack_idx - 1];
 
         // The syllable spans from its first attack to just before the next syllable's first attack
-        let end_beat = find_syllable_end(
-            grid,
-            voice,
-            last_beat_attack,
-            attacks.get(end_attack_idx),
-        );
+        let end_beat =
+            find_syllable_end(grid, voice, last_beat_attack, attacks.get(end_attack_idx));
 
         let id = *next_id;
         *next_id = next_id.wrapping_add(1);
@@ -275,7 +264,7 @@ fn find_syllable_end(
     attack_beat: usize,
     next_attack: Option<&usize>,
 ) -> usize {
-    let limit = next_attack.map(|&b| b).unwrap_or(grid.num_beats);
+    let limit = next_attack.copied().unwrap_or(grid.num_beats);
     let mut end = attack_beat;
     for beat in (attack_beat + 1)..limit {
         if beat >= grid.num_beats {
@@ -303,7 +292,9 @@ pub fn swap_section_phrase(
     new_phrase: &VaelithPhrase,
 ) {
     // Clear old syllable data for this section
-    let old_spans: Vec<SyllableSpan> = mapping.spans.iter()
+    let old_spans: Vec<SyllableSpan> = mapping
+        .spans
+        .iter()
         .filter(|s| {
             // Check if this span belongs to the target section by checking
             // if its start_beat falls within any voice entry of that section
@@ -311,9 +302,10 @@ pub fn swap_section_phrase(
                 return false;
             }
             let point = &plan.imitation_points[section_idx];
-            point.entries.iter().any(|e| {
-                e.voice == s.voice && s.start_beat >= e.start_beat
-            })
+            point
+                .entries
+                .iter()
+                .any(|e| e.voice == s.voice && s.start_beat >= e.start_beat)
         })
         .cloned()
         .collect();
@@ -330,10 +322,18 @@ pub fn swap_section_phrase(
     }
 
     // Remove old spans from mapping
-    mapping.spans.retain(|s| !old_spans.iter().any(|o| o.syllable_id == s.syllable_id));
+    mapping
+        .spans
+        .retain(|s| !old_spans.iter().any(|o| o.syllable_id == s.syllable_id));
 
     // Find the next available syllable_id
-    let mut next_id = mapping.spans.iter().map(|s| s.syllable_id).max().unwrap_or(0) + 1;
+    let mut next_id = mapping
+        .spans
+        .iter()
+        .map(|s| s.syllable_id)
+        .max()
+        .unwrap_or(0)
+        + 1;
 
     // Re-map with new phrase
     if section_idx < plan.imitation_points.len() {
@@ -348,9 +348,8 @@ pub fn swap_section_phrase(
                 continue;
             }
 
-            let new_spans = assign_syllables_to_attacks(
-                new_phrase, &attacks, voice, grid, &mut next_id,
-            );
+            let new_spans =
+                assign_syllables_to_attacks(new_phrase, &attacks, voice, grid, &mut next_id);
 
             for span in &new_spans {
                 let cell = grid.cell_mut(span.voice, span.start_beat);
@@ -378,10 +377,10 @@ pub fn swap_section_phrase(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::draft::fill_draft;
     use crate::markov::{MarkovModels, MotifLibrary};
     use crate::mode::ModeInstance;
-    use crate::structure::{generate_structure, apply_structure};
-    use crate::draft::fill_draft;
+    use crate::structure::{apply_structure, generate_structure};
     use crate::vaelith::generate_phrases;
 
     #[test]
@@ -400,17 +399,30 @@ mod tests {
         let mapping = apply_text_mapping(&mut grid, &plan, &phrases);
 
         // Should have mapped some syllable spans
-        assert!(!mapping.spans.is_empty(),
-            "Should have at least one syllable span");
-        assert_eq!(mapping.section_phrases.len(), 2,
-            "Should have 2 section phrases");
+        assert!(
+            !mapping.spans.is_empty(),
+            "Should have at least one syllable span"
+        );
+        assert_eq!(
+            mapping.section_phrases.len(),
+            2,
+            "Should have 2 section phrases"
+        );
 
         // Every span should have a valid beat range
         for span in &mapping.spans {
-            assert!(span.start_beat <= span.end_beat,
-                "Span start {} should be <= end {}", span.start_beat, span.end_beat);
-            assert!(span.end_beat < grid.num_beats,
-                "Span end {} should be < grid size {}", span.end_beat, grid.num_beats);
+            assert!(
+                span.start_beat <= span.end_beat,
+                "Span start {} should be <= end {}",
+                span.start_beat,
+                span.end_beat
+            );
+            assert!(
+                span.end_beat < grid.num_beats,
+                "Span end {} should be < grid size {}",
+                span.end_beat,
+                grid.num_beats
+            );
         }
     }
 
@@ -440,9 +452,13 @@ mod tests {
         }
 
         // Should match the number of spans
-        assert_eq!(onset_count, mapping.spans.len(),
+        assert_eq!(
+            onset_count,
+            mapping.spans.len(),
             "Grid onset count ({}) should match span count ({})",
-            onset_count, mapping.spans.len());
+            onset_count,
+            mapping.spans.len()
+        );
     }
 
     #[test]
@@ -467,8 +483,10 @@ mod tests {
         swap_section_phrase(&mut grid, &mut mapping, &plan, 0, &new_phrase);
 
         // Should still have spans (possibly different count)
-        assert!(!mapping.spans.is_empty(),
-            "Should still have spans after swap");
+        assert!(
+            !mapping.spans.is_empty(),
+            "Should still have spans after swap"
+        );
         // The phrase should have been updated
         assert_eq!(mapping.section_phrases[0].text, new_phrase.text);
 
@@ -477,9 +495,12 @@ mod tests {
             for beat in 0..grid.num_beats {
                 let cell = grid.cell(voice, beat);
                 if cell.syllable_onset {
-                    assert!(cell.syllable_id > 0,
+                    assert!(
+                        cell.syllable_id > 0,
                         "Onset at {:?} beat {} should have syllable_id > 0",
-                        voice, beat);
+                        voice,
+                        beat
+                    );
                 }
             }
         }

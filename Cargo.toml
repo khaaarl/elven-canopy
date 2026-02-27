@@ -14,3 +14,6 @@ codegen-units = 256
 
 [profile.release]
 codegen-units = 256
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

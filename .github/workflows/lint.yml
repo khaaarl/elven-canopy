@@ -1,25 +1,53 @@
-# CI workflow: GDScript formatting and linting checks.
+# CI workflow: Formatting and linting checks for Rust and GDScript.
 #
-# Runs gdformat --check and gdlint on all GDScript files. Triggers on
-# pushes and pull requests that touch GDScript files or the lint config.
+# Two independent jobs:
+# - rust: cargo fmt --check + cargo clippy (no Godot needed, fast)
+# - gdscript: gdformat --check + gdlint
+#
+# Triggers on pushes and pull requests that touch relevant files.
 
 name: Lint
 
 on:
   push:
     paths:
+      - "**.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rustfmt.toml"
+      - "elven_canopy_*/Cargo.toml"
       - "godot/scripts/**.gd"
       - ".gdlintrc"
       - "python/requirements-dev.txt"
       - ".github/workflows/lint.yml"
   pull_request:
     paths:
+      - "**.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rustfmt.toml"
+      - "elven_canopy_*/Cargo.toml"
       - "godot/scripts/**.gd"
       - ".gdlintrc"
       - "python/requirements-dev.txt"
       - ".github/workflows/lint.yml"
 
 jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace -- -D warnings
+
   gdscript:
     runs-on: ubuntu-latest
     steps:

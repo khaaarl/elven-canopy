@@ -321,6 +321,7 @@ pub fn generate_tree(
 
 /// Grow a single segment from the given job, placing voxels and potentially
 /// spawning child segments via splitting.
+#[allow(clippy::too_many_arguments)]
 fn grow_segment(
     mut job: SegmentJob,
     world: &mut VoxelWorld,
@@ -388,7 +389,14 @@ fn grow_segment(
         prev_voxel_center = current_voxel_center;
 
         // Place cross-section voxels at current position.
-        place_cross_section(world, job.position, job.direction, radius, vtype, voxel_list);
+        place_cross_section(
+            world,
+            job.position,
+            job.direction,
+            radius,
+            vtype,
+            voxel_list,
+        );
 
         // Check for split.
         let progress = 1.0 - (job.energy / initial_energy);
@@ -451,7 +459,11 @@ fn grow_segment(
             let target_y = 0.0_f32;
             let y_offset = job.position[1] - target_y;
             // If root is below ground, pull up; if above, pull down.
-            let surface_bias = [0.0, -y_offset * profile.roots.root_surface_tendency * 0.1, 0.0];
+            let surface_bias = [
+                0.0,
+                -y_offset * profile.roots.root_surface_tendency * 0.1,
+                0.0,
+            ];
             job.direction = vec3_normalize(vec3_add(job.direction, surface_bias));
         }
 
@@ -724,7 +736,11 @@ mod tests {
         let top_threshold = max_y - 3;
 
         let base_count = result.trunk_voxels.iter().filter(|v| v.y <= 3).count();
-        let top_count = result.trunk_voxels.iter().filter(|v| v.y >= top_threshold).count();
+        let top_count = result
+            .trunk_voxels
+            .iter()
+            .filter(|v| v.y >= top_threshold)
+            .count();
 
         assert!(
             base_count > top_count,
@@ -801,11 +817,15 @@ mod tests {
         let center_z = 32;
 
         // At least some root voxels should be horizontally distant from center.
-        let far_roots = result.root_voxels.iter().filter(|v| {
-            let dx = (v.x - center_x).abs();
-            let dz = (v.z - center_z).abs();
-            dx > 3 || dz > 3
-        }).count();
+        let far_roots = result
+            .root_voxels
+            .iter()
+            .filter(|v| {
+                let dx = (v.x - center_x).abs();
+                let dz = (v.z - center_z).abs();
+                dx > 3 || dz > 3
+            })
+            .count();
 
         assert!(
             far_roots > 0,
@@ -965,15 +985,22 @@ mod tests {
             .copied()
             .collect();
 
-        assert!(all_wood.len() > 5, "Need enough voxels to test (got {})", all_wood.len());
+        assert!(
+            all_wood.len() > 5,
+            "Need enough voxels to test (got {})",
+            all_wood.len()
+        );
 
         // Build a set for O(1) lookup.
         let wood_set: std::collections::HashSet<VoxelCoord> = all_wood.iter().copied().collect();
 
         let face_offsets: [(i32, i32, i32); 6] = [
-            (1, 0, 0), (-1, 0, 0),
-            (0, 1, 0), (0, -1, 0),
-            (0, 0, 1), (0, 0, -1),
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
         ];
 
         for &coord in &all_wood {
@@ -1010,9 +1037,12 @@ mod tests {
         let wood_set: std::collections::HashSet<VoxelCoord> = all_wood.iter().copied().collect();
 
         let face_offsets: [(i32, i32, i32); 6] = [
-            (1, 0, 0), (-1, 0, 0),
-            (0, 1, 0), (0, -1, 0),
-            (0, 0, 1), (0, 0, -1),
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
         ];
 
         for &coord in &all_wood {

@@ -49,12 +49,12 @@ pub fn midi_to_ly_note(midi_pitch: u8) -> String {
 /// A valid LilyPond duration: note value (in eighth-note beats) and its
 /// text representation.
 const DURATION_TABLE: [(usize, &str); 6] = [
-    (8, "1"),   // whole note = 8 eighth-note beats
-    (6, "2."),  // dotted half
-    (4, "2"),   // half note
-    (3, "4."),  // dotted quarter
-    (2, "4"),   // quarter note
-    (1, "8"),   // eighth note
+    (8, "1"),  // whole note = 8 eighth-note beats
+    (6, "2."), // dotted half
+    (4, "2"),  // half note
+    (3, "4."), // dotted quarter
+    (2, "4"),  // quarter note
+    (1, "8"),  // eighth note
 ];
 
 /// Decompose a duration (in eighth-note beats) into a sequence of LilyPond
@@ -117,8 +117,15 @@ pub fn mode_to_ly_key(mode: &ModeInstance) -> String {
 /// An event in a voice: either a note or a rest with a duration.
 #[derive(Debug, Clone)]
 enum VoiceEvent {
-    Note { pitch: u8, duration: usize, start_beat: usize },
-    Rest { duration: usize, start_beat: usize },
+    Note {
+        pitch: u8,
+        duration: usize,
+        start_beat: usize,
+    },
+    Rest {
+        duration: usize,
+        start_beat: usize,
+    },
 }
 
 /// Walk a voice's grid cells and collect events (notes and rests with durations).
@@ -136,7 +143,10 @@ fn collect_voice_events(grid: &Grid, voice: Voice) -> Vec<VoiceEvent> {
             while beat + dur < grid.num_beats && row[beat + dur].is_rest {
                 dur += 1;
             }
-            events.push(VoiceEvent::Rest { duration: dur, start_beat: start });
+            events.push(VoiceEvent::Rest {
+                duration: dur,
+                start_beat: start,
+            });
             beat += dur;
         } else if cell.attack {
             // Count continuation beats
@@ -150,7 +160,11 @@ fn collect_voice_events(grid: &Grid, voice: Voice) -> Vec<VoiceEvent> {
                 }
                 dur += 1;
             }
-            events.push(VoiceEvent::Note { pitch, duration: dur, start_beat: start });
+            events.push(VoiceEvent::Note {
+                pitch,
+                duration: dur,
+                start_beat: start,
+            });
             beat += dur;
         } else {
             // Orphan continuation (shouldn't happen in well-formed grids)
@@ -168,7 +182,11 @@ fn render_voice_music(grid: &Grid, voice: Voice) -> String {
 
     for event in &events {
         match event {
-            VoiceEvent::Note { pitch, duration, start_beat } => {
+            VoiceEvent::Note {
+                pitch,
+                duration,
+                start_beat,
+            } => {
                 let fragments = split_at_barlines(*start_beat, *duration);
                 for (i, frag) in fragments.iter().enumerate() {
                     let parts = decompose_duration(*frag);
@@ -187,7 +205,10 @@ fn render_voice_music(grid: &Grid, voice: Voice) -> String {
                     beats_in_bar = (*start_beat + fragments[..=i].iter().sum::<usize>()) % 8;
                 }
             }
-            VoiceEvent::Rest { duration, start_beat } => {
+            VoiceEvent::Rest {
+                duration,
+                start_beat,
+            } => {
                 let fragments = split_at_barlines(*start_beat, *duration);
                 for (i, frag) in fragments.iter().enumerate() {
                     let parts = decompose_duration(*frag);
@@ -218,17 +239,23 @@ fn render_voice_lyrics(grid: &Grid, voice: Voice, mapping: &TextMapping) -> Stri
     let mut has_any_lyrics = false;
 
     for event in &events {
-        if let VoiceEvent::Note { start_beat, duration, .. } = event {
+        if let VoiceEvent::Note {
+            start_beat,
+            duration,
+            ..
+        } = event
+        {
             // Check for syllable at this beat
-            let syllable = mapping.spans.iter()
+            let syllable = mapping
+                .spans
+                .iter()
                 .find(|s| s.voice == voice && s.start_beat == *start_beat);
 
             // For notes that cross barlines, we get tied notes — each tied
             // segment after the first needs a `_` skip in lyrics
             let fragments = split_at_barlines(*start_beat, *duration);
-            let total_ly_notes: usize = fragments.iter()
-                .map(|f| decompose_duration(*f).len())
-                .sum();
+            let total_ly_notes: usize =
+                fragments.iter().map(|f| decompose_duration(*f).len()).sum();
 
             if let Some(span) = syllable {
                 if !out.is_empty() {
@@ -272,22 +299,34 @@ pub fn grid_to_lilypond(
 
     // Title block
     let title_text = title.unwrap_or("Elven Canopy");
-    let mode_subtitle = format!("{:?} on {}", mode.mode,
-        LY_PITCH_NAMES[mode.final_pc as usize % 12].to_uppercase());
-    let _ = write!(ly, "\\header {{\n  title = \"{}\"\n  subtitle = \"{}\"\n}}\n\n",
-        title_text, mode_subtitle);
+    let mode_subtitle = format!(
+        "{:?} on {}",
+        mode.mode,
+        LY_PITCH_NAMES[mode.final_pc as usize % 12].to_uppercase()
+    );
+    let _ = write!(
+        ly,
+        "\\header {{\n  title = \"{}\"\n  subtitle = \"{}\"\n}}\n\n",
+        title_text, mode_subtitle
+    );
 
     // Global block (key, time, tempo)
     let key_str = mode_to_ly_key(mode);
-    let _ = write!(ly, "global = {{\n  {} \\time 4/4 \\tempo 4 = {}\n}}\n\n",
-        key_str, grid.tempo_bpm);
+    let _ = write!(
+        ly,
+        "global = {{\n  {} \\time 4/4 \\tempo 4 = {}\n}}\n\n",
+        key_str, grid.tempo_bpm
+    );
 
     // Voice music variables
     let voice_names = ["soprano", "alto", "tenor", "bass"];
     for (vi, voice) in Voice::ALL.iter().enumerate() {
         let music = render_voice_music(grid, *voice);
-        let _ = write!(ly, "{} = \\absolute {{\n  \\global\n  {}\n}}\n\n",
-            voice_names[vi], music);
+        let _ = write!(
+            ly,
+            "{} = \\absolute {{\n  \\global\n  {}\n}}\n\n",
+            voice_names[vi], music
+        );
     }
 
     // Score block with ChoirStaff
@@ -297,14 +336,16 @@ pub fn grid_to_lilypond(
     let display_names = ["Soprano", "Alto", "Tenor", "Bass"];
 
     for (vi, _voice) in Voice::ALL.iter().enumerate() {
-        let _ = write!(ly,
+        let _ = write!(
+            ly,
             "    \\new Staff = \"{}\" \\with {{ instrumentName = \"{}\" }} {{\n      \\clef {}\n      \\{}\n    }}\n",
-            display_names[vi], display_names[vi], clefs[vi], voice_names[vi]);
+            display_names[vi], display_names[vi], clefs[vi], voice_names[vi]
+        );
 
         // Add lyrics if there are any for this voice
         let lyrics = render_voice_lyrics(grid, Voice::ALL[vi], mapping);
         if !lyrics.is_empty() {
-            let _ = write!(ly, "    \\addlyrics {{ {} }}\n", lyrics);
+            let _ = writeln!(ly, "    \\addlyrics {{ {} }}", lyrics);
         }
     }
 
@@ -364,21 +405,21 @@ mod tests {
 
     #[test]
     fn test_midi_to_ly_note_accidentals() {
-        assert_eq!(midi_to_ly_note(61), "cis'");   // C#4
-        assert_eq!(midi_to_ly_note(63), "ees'");    // Eb4
-        assert_eq!(midi_to_ly_note(66), "fis'");    // F#4
-        assert_eq!(midi_to_ly_note(68), "aes'");    // Ab4
-        assert_eq!(midi_to_ly_note(70), "bes'");    // Bb4
+        assert_eq!(midi_to_ly_note(61), "cis'"); // C#4
+        assert_eq!(midi_to_ly_note(63), "ees'"); // Eb4
+        assert_eq!(midi_to_ly_note(66), "fis'"); // F#4
+        assert_eq!(midi_to_ly_note(68), "aes'"); // Ab4
+        assert_eq!(midi_to_ly_note(70), "bes'"); // Bb4
     }
 
     #[test]
     fn test_decompose_duration_single_values() {
-        assert_eq!(decompose_duration(8), vec!["1"]);    // whole note
-        assert_eq!(decompose_duration(6), vec!["2."]);   // dotted half
-        assert_eq!(decompose_duration(4), vec!["2"]);    // half note
-        assert_eq!(decompose_duration(3), vec!["4."]);   // dotted quarter
-        assert_eq!(decompose_duration(2), vec!["4"]);    // quarter note
-        assert_eq!(decompose_duration(1), vec!["8"]);    // eighth note
+        assert_eq!(decompose_duration(8), vec!["1"]); // whole note
+        assert_eq!(decompose_duration(6), vec!["2."]); // dotted half
+        assert_eq!(decompose_duration(4), vec!["2"]); // half note
+        assert_eq!(decompose_duration(3), vec!["4."]); // dotted quarter
+        assert_eq!(decompose_duration(2), vec!["4"]); // quarter note
+        assert_eq!(decompose_duration(1), vec!["8"]); // eighth note
     }
 
     #[test]
@@ -513,7 +554,10 @@ mod tests {
         grid.extend_note(Voice::Bass, 1);
 
         let mode = ModeInstance::new(Mode::Dorian, 2);
-        let mapping = TextMapping { section_phrases: vec![], spans: vec![] };
+        let mapping = TextMapping {
+            section_phrases: vec![],
+            spans: vec![],
+        };
 
         let ly = grid_to_lilypond(&grid, &mode, &mapping, Some("Test Piece"));
 
@@ -535,9 +579,9 @@ mod tests {
     fn test_integration_with_generated_grid() {
         use crate::draft::{fill_draft, generate_final_cadence};
         use crate::markov::{MarkovModels, MotifLibrary};
-        use crate::structure::{generate_structure, apply_structure, apply_responses};
-        use crate::vaelith::generate_phrases_with_brightness;
+        use crate::structure::{apply_responses, apply_structure, generate_structure};
         use crate::text_mapping::apply_text_mapping;
+        use crate::vaelith::generate_phrases_with_brightness;
         use rand::SeedableRng;
         use rand::rngs::StdRng;
 
@@ -565,8 +609,10 @@ mod tests {
         assert!(ly.contains("\\addlyrics"), "Expected lyrics in output");
 
         // Should have real note content, not just rests
-        assert!(ly.contains("c'") || ly.contains("d'") || ly.contains("e'"),
-            "Expected some notes in the output");
+        assert!(
+            ly.contains("c'") || ly.contains("d'") || ly.contains("e'"),
+            "Expected some notes in the output"
+        );
 
         // Length sanity — a 2-section piece should produce substantial output
         assert!(ly.len() > 500, "Output too short ({} bytes)", ly.len());

@@ -9,7 +9,7 @@
 #   scripts/build.sh release  # release build
 #   scripts/build.sh test     # run sim tests then build
 #   scripts/build.sh run      # debug build then launch the game
-#   scripts/build.sh check    # run gdformat + gdlint checks
+#   scripts/build.sh check    # run fmt, clippy, gdformat, gdlint checks
 #
 # Run from the repo root.
 
@@ -86,6 +86,12 @@ case "$MODE" in
         godot --path "$REPO_ROOT/godot"
         ;;
     check)
+        echo "Checking Rust formatting..."
+        cargo fmt --all --check
+        echo ""
+        echo "Running Clippy..."
+        cargo clippy --workspace -- -D warnings
+        echo ""
         echo "Checking GDScript formatting..."
         "$REPO_ROOT/python/.venv/bin/gdformat" --check --line-length 100 godot/scripts/*.gd
         echo ""

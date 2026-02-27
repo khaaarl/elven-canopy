@@ -24,24 +24,13 @@
 use crate::types::{VoxelCoord, VoxelType};
 
 /// Dense 3D voxel grid.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct VoxelWorld {
     /// Flat storage: index = x + z * size_x + y * size_x * size_z.
     voxels: Vec<VoxelType>,
     pub size_x: u32,
     pub size_y: u32,
     pub size_z: u32,
-}
-
-impl Default for VoxelWorld {
-    fn default() -> Self {
-        Self {
-            voxels: Vec::new(),
-            size_x: 0,
-            size_y: 0,
-            size_z: 0,
-        }
-    }
 }
 
 impl VoxelWorld {

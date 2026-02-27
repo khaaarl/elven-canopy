@@ -42,8 +42,7 @@ struct OpenEntry {
 
 impl PartialEq for OpenEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.f_score.total_cmp(&other.f_score) == Ordering::Equal
-            && self.node == other.node
+        self.f_score.total_cmp(&other.f_score) == Ordering::Equal && self.node == other.node
     }
 }
 
