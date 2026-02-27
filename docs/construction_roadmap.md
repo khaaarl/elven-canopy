@@ -15,90 +15,62 @@ Add a `Blueprint` struct to the sim. Wire `DesignateBuild` command to validate a
 
 Done on branch `feature/blueprint-data-model`. Files: `blueprint.rs` (new), `sim.rs`, `world.rs`, `event.rs`, `command.rs`, `lib.rs`. 14 new tests, 136 total passing.
 
-## Step 2: Construction Mode Toggle (GDScript + gdext)
+## Step 2: Construction Mode Toggle (GDScript + gdext) ✓ DONE
 
 Enter/exit a construction mode that sets up the UI and camera for building.
 
-**UI:**
-- Construction button (top of screen) toggles construction mode on/off
-- When active, a panel appears on the right side of the screen (empty for now — future steps add build options to it)
-- ESC exits construction mode (fits existing ESC precedence chain)
+Done on branch `feature/construction-mode`. Construction button toggles mode on/off, ESC exits, camera snaps to voxel centers in construction mode, validation bridge exposes `validate_blueprint_voxels()` from Rust to GDScript.
 
-**Camera behavior in construction mode:**
-- The orbital camera's focus point (orbit target) smoothly slides/pulls toward the nearest voxel center when the player releases movement keys
-- Snaps in all 3 dimensions (x, y, z)
-- Smooth interpolation so it doesn't feel jerky
-- Normal camera movement still works (orbit, zoom, pan) — the snap only activates after input stops
+## Step 3: 1x1 Platform Blueprint Placement (GDScript + gdext) ✓ DONE
 
-**Files likely touched:**
-- `orbital_camera.gd` — add snap-to-voxel-center behavior, toggled by construction mode
-- New `construction_controller.gd` — manages construction mode state, UI panel
-- `main.gd` — wire the new controller
-- `spawn_toolbar.gd` or new toolbar — add the construction mode button
+Place a single-voxel platform blueprint at the camera focus position. Ghost mesh preview (blue=valid, red=invalid), confirm/cancel, designated blueprints rendered as light-blue ghost meshes.
 
-**Validation bridge (prep for Step 3):**
-- `sim_bridge.rs` — expose `validate_blueprint_voxels(voxels) -> bool` to GDScript
-- Calls `world.in_bounds()`, `world.get()`, `world.has_solid_face_neighbor()`
+Done as part of the construction mode work. Files: `construction_controller.gd`, `blueprint_renderer.gd`, `sim_bridge.rs`.
 
-## Step 3: 1x1 Platform Blueprint Placement (GDScript + gdext)
+## Step 4: Adjustable Platform Size (GDScript) ✓ DONE
 
-Place a single-voxel platform blueprint at the camera focus position.
+Click-and-drag to designate rectangular platforms of arbitrary size. All voxels on the same Y level, ghost mesh updates in real-time, color reflects validity of the entire rectangle.
 
-**Ghost mesh:**
-- Translucent 1x1x1 cube rendered at the snapped camera focus position
-- **Blue** if the position is valid (Air + adjacent to solid)
-- **Red** if invalid
-- Validation calls through the sim bridge to reuse Rust logic
+Done — large platform blueprints can be created and are displayed in the UI.
 
-**Confirm/cancel:**
-- Click or hotkey to confirm → sends `DesignateBuild` command with the single voxel
-- ESC or right-click to cancel / exit construction mode
+## Step 5: Blueprint → Build Job (sim)
 
-**Designated blueprint rendering:**
-- Once confirmed, the blueprint appears in-game as a **light-blue ghost mesh**
-- New renderer (like `tree_renderer.gd`) that reads `SimState.blueprints` and draws translucent cubes for each `Designated` blueprint's voxels
-- `sim_bridge.rs` needs to expose blueprint data to GDScript
+**This is the next step.** When a blueprint is designated, create a `Build` task in the task system so an elf can be assigned to construct it.
 
-**Files likely touched:**
-- `construction_controller.gd` — placement logic, ghost mesh preview
-- New `blueprint_renderer.gd` — renders designated blueprints as light-blue ghost meshes
-- `sim_bridge.rs` — `designate_build()` + `get_blueprints()` methods
-- `main.gd` / `main.tscn` — wire blueprint renderer
+**Sub-steps:**
 
-## Step 4: Adjustable Platform Size (GDScript)
+### 5a: Instant placement (cheat mode)
 
-Expand the 1x1 platform to an adjustable rectangle via click-and-drag.
-
-**Interaction:**
-- Click to set one corner, drag to set the opposite corner of the rectangle
-- All voxels are on the same Y level (horizontal platform)
-- Ghost mesh updates in real-time as the player drags
-- Color reflects validity of the entire rectangle (all voxels must be valid)
-- Release to confirm the shape, then click "Construct" or press Enter
-
-**Files likely touched:**
-- `construction_controller.gd` — drag-to-select rectangle logic
-- Ghost mesh generation for multi-voxel preview
-
-## Step 5: Platform Placement (sim only)
-
-When a blueprint is designated, immediately place `GrownPlatform` voxels in the world. Rebuild the nav graph. Mark the blueprint as `Complete`. This is a temporary "cheat mode" — it skips mana cost and construction time so we can verify that:
+When a blueprint is designated, immediately place `GrownPlatform` voxels in the world. Rebuild the nav graph. Mark the blueprint as `Complete`. This temporary shortcut lets us verify that:
 - Voxels appear in the world correctly
 - Nav graph updates and creatures can walk on platforms
-- Save/load works with placed platforms (rebuild_world needs to restore them)
+- Save/load works with placed platforms
 
-## Step 6: Build Task + Single Worker
+### 5b: Build task creation
 
 Replace instant placement with a `Build` task kind in the task system:
 - `DesignateBuild` creates the blueprint AND a `Build` task at the blueprint location
-- An idle elf claims the task, pathfinds to the site
+- The task has a target position (adjacent walkable voxel near the blueprint)
+
+### 5c: Elf assignment + pathfinding
+
+- An idle elf claims the `Build` task
+- Elf pathfinds to the build site (nearest walkable voxel adjacent to the blueprint)
 - Verify the elf walks to the correct location
+
+### 5d: Construction work
+
 - On arrival, the elf does work (progress increments per activation tick)
-- Mana is deducted from the tree per work unit
 - When progress reaches total_cost, voxels are placed and nav graph rebuilds
 - Blueprint transitions to `Complete`
 
-## Step 7: Incremental Nav Graph Update
+### 5e: Mana cost (deferred)
+
+- Mana is deducted from the tree per work unit
+- Insufficient mana pauses construction
+- (Can be deferred until the mana economy exists)
+
+## Step 6: Incremental Nav Graph Update
 
 Replace the full `build_nav_graph()` call with an incremental update:
 - When voxels change, invalidate nav nodes within Manhattan distance 1
