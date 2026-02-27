@@ -17,6 +17,13 @@ target
 .godot
 builds
 
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+*.egg
+
 # Claude stuff
 .claude/settings.local.json
 
