@@ -155,7 +155,7 @@ The repo's `.claude/settings.json` sets `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DI
 
 ## Scratch Files
 
-Use `.tmp/` in the repo root (gitignored) for any temporary files — benchmark output, intermediate data, scratch scripts, etc. Always `mkdir -p .tmp` before writing. **Do NOT use `/tmp`** — it can trigger permission prompts and isn't project-scoped.
+Use `.tmp/` in the repo root (gitignored) for any temporary files — benchmark output, intermediate data, scratch scripts, etc. Before writing, run `ls .tmp` to check if the directory exists; if it doesn't, run `mkdir .tmp`. **Do NOT use `/tmp`** — it can trigger permission prompts and isn't project-scoped.
 
 ## Module Docstrings
 
