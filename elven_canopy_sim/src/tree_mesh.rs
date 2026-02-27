@@ -139,6 +139,7 @@ struct FaceDesc {
 /// of edge01 × edge03 points outward).
 const FACES: [FaceDesc; 6] = [
     // Face 0: +X (right)
+    // Viewed from +X: corners go BL→BR→TR→TL (Y up, Z right)
     FaceDesc {
         corners: [
             [1.0, 0.0, 0.0],
@@ -147,10 +148,11 @@ const FACES: [FaceDesc; 6] = [
             [1.0, 1.0, 0.0],
         ],
         normal: [1.0, 0.0, 0.0],
-        edge_adj: [5, 3, 4, 2], // bottom→-Z, left→-Y, top→+Z, right→+Y
+        edge_adj: [3, 4, 2, 5], // bottom→-Y, right→+Z, top→+Y, left→-Z
         neighbor_delta: [1, 0, 0],
     },
     // Face 1: -X (left)
+    // Viewed from -X: corners go BL→BR→TR→TL (Y up, Z left)
     FaceDesc {
         corners: [
             [0.0, 0.0, 1.0],
@@ -159,10 +161,11 @@ const FACES: [FaceDesc; 6] = [
             [0.0, 1.0, 1.0],
         ],
         normal: [-1.0, 0.0, 0.0],
-        edge_adj: [4, 3, 5, 2], // bottom→+Z, left→-Y, top→-Z, right→+Y
+        edge_adj: [3, 5, 2, 4], // bottom→-Y, right→-Z, top→+Y, left→+Z
         neighbor_delta: [-1, 0, 0],
     },
     // Face 2: +Y (top)
+    // Viewed from +Y (above): corners go near-L→near-R→far-R→far-L
     FaceDesc {
         corners: [
             [0.0, 1.0, 0.0],
@@ -171,10 +174,11 @@ const FACES: [FaceDesc; 6] = [
             [0.0, 1.0, 1.0],
         ],
         normal: [0.0, 1.0, 0.0],
-        edge_adj: [1, 5, 0, 4], // left→-X, bottom→-Z, right→+X, top→+Z
+        edge_adj: [5, 0, 4, 1], // near→-Z, right→+X, far→+Z, left→-X
         neighbor_delta: [0, 1, 0],
     },
     // Face 3: -Y (bottom)
+    // Viewed from -Y (below): corners go far-L→far-R→near-R→near-L
     FaceDesc {
         corners: [
             [0.0, 0.0, 1.0],
@@ -183,10 +187,11 @@ const FACES: [FaceDesc; 6] = [
             [0.0, 0.0, 0.0],
         ],
         normal: [0.0, -1.0, 0.0],
-        edge_adj: [1, 4, 0, 5], // left→-X, bottom→+Z, right→+X, top→-Z
+        edge_adj: [4, 0, 5, 1], // far→+Z, right→+X, near→-Z, left→-X
         neighbor_delta: [0, -1, 0],
     },
     // Face 4: +Z (front)
+    // Viewed from +Z: corners go BR→BL→TL→TR (Y up, X left)
     FaceDesc {
         corners: [
             [1.0, 0.0, 1.0],
@@ -195,10 +200,11 @@ const FACES: [FaceDesc; 6] = [
             [1.0, 1.0, 1.0],
         ],
         normal: [0.0, 0.0, 1.0],
-        edge_adj: [0, 3, 1, 2], // right→+X, bottom→-Y, left→-X, top→+Y
+        edge_adj: [3, 1, 2, 0], // bottom→-Y, left→-X, top→+Y, right→+X
         neighbor_delta: [0, 0, 1],
     },
     // Face 5: -Z (back)
+    // Viewed from -Z: corners go BL→BR→TR→TL (Y up, X right)
     FaceDesc {
         corners: [
             [0.0, 0.0, 0.0],
@@ -207,7 +213,7 @@ const FACES: [FaceDesc; 6] = [
             [0.0, 1.0, 0.0],
         ],
         normal: [0.0, 0.0, -1.0],
-        edge_adj: [1, 3, 0, 2], // left→-X, bottom→-Y, right→+X, top→+Y
+        edge_adj: [3, 0, 2, 1], // bottom→-Y, right→+X, top→+Y, left→-X
         neighbor_delta: [0, 0, -1],
     },
 ];
@@ -306,7 +312,9 @@ pub fn generate_tree_mesh(
                 ]
             });
 
-            // Compute inset (center quad) corners.
+            // Compute inset (center quad) corners — inset from each edge on
+            // the face plane, staying at the original face distance along the
+            // normal. This is the flat center of the beveled face.
             let center = [
                 (abs_corners[0][0] + abs_corners[1][0] + abs_corners[2][0] + abs_corners[3][0])
                     / 4.0,
@@ -319,6 +327,19 @@ pub fn generate_tree_mesh(
             let inset_corners: [[f32; 3]; 4] =
                 std::array::from_fn(|ci| lerp3(center, abs_corners[ci], 1.0 - inset * 2.0));
 
+            // Compute recessed outer corners — the original face corners pulled
+            // inward along the face normal by `inset`. This is the key to actual
+            // 3D bevel geometry: the center quad sits at the face surface, and
+            // the edge strips angle down from the center quad to these recessed
+            // positions, creating visible chamfered edges.
+            let recessed_corners: [[f32; 3]; 4] = std::array::from_fn(|ci| {
+                [
+                    abs_corners[ci][0] - face.normal[0] * inset,
+                    abs_corners[ci][1] - face.normal[1] * inset,
+                    abs_corners[ci][2] - face.normal[2] * inset,
+                ]
+            });
+
             // Emit center quad with face normal.
             emit_quad(
                 &mut mesh,
@@ -329,14 +350,16 @@ pub fn generate_tree_mesh(
                 face.normal,
             );
 
-            // Emit 4 edge strips.
+            // Emit 4 edge strips — trapezoids connecting the inset center quad
+            // edges (at the face surface) to the recessed outer edges (pulled
+            // inward). These create the actual angled bevel geometry.
             for edge_idx in 0..4 {
                 let next_idx = (edge_idx + 1) % 4;
                 let adj_face_idx = face.edge_adj[edge_idx];
 
-                // Strip corners: outer0, outer1, inner1, inner0
-                let outer0 = abs_corners[edge_idx];
-                let outer1 = abs_corners[next_idx];
+                // Strip corners: outer (recessed) → inner (center quad edge)
+                let outer0 = recessed_corners[edge_idx];
+                let outer1 = recessed_corners[next_idx];
                 let inner1 = inset_corners[next_idx];
                 let inner0 = inset_corners[edge_idx];
 
@@ -597,6 +620,82 @@ mod tests {
             "expected angled normals from beveled edges, got {} unique normals",
             normals.len()
         );
+    }
+
+    #[test]
+    fn bevel_produces_non_coplanar_geometry() {
+        // With a non-zero bevel, the edge strip outer corners are recessed
+        // inward along the face normal. This means not all vertices on the
+        // +X face lie at x=1 — some should be at x=1-inset.
+        let (world, voxels) = single_voxel_world();
+        let inset = 0.2;
+        let config = MeshConfig {
+            bevel_inset: inset,
+            ..MeshConfig::default()
+        };
+        let mesh = generate_tree_mesh(&world, &voxels, &config);
+
+        // Collect all unique x-coordinates of vertices (quantized).
+        let mut x_values = std::collections::BTreeSet::new();
+        for i in (0..mesh.vertices.len()).step_by(3) {
+            x_values.insert((mesh.vertices[i] * 1000.0).round() as i32);
+        }
+
+        // For the +X face (at x=6 since voxel is at (5,5,5)), center quad
+        // vertices are at x=6.0 and edge strip outer vertices at x=6.0-0.2=5.8.
+        // For the -X face (at x=5), center quad at x=5.0 and outer at x=5.0+0.2=5.2.
+        // Other faces have x values ranging from 5.0 to 6.0.
+        assert!(
+            x_values.contains(&5800),
+            "expected recessed x=5.8 from +X face bevel, got x values: {:?}",
+            x_values
+        );
+        assert!(
+            x_values.contains(&5200),
+            "expected recessed x=5.2 from -X face bevel, got x values: {:?}",
+            x_values
+        );
+    }
+
+    #[test]
+    fn edge_adj_correctness() {
+        // Verify each face's edge_adj entries reference the correct adjacent
+        // face by checking that the shared edge actually borders that face.
+        for (fi, face) in FACES.iter().enumerate() {
+            for edge_idx in 0..4 {
+                let next_idx = (edge_idx + 1) % 4;
+                let adj_fi = face.edge_adj[edge_idx];
+
+                // The edge goes from face.corners[edge_idx] to face.corners[next_idx].
+                // Both corners should lie on the adjacent face's plane.
+                let adj = &FACES[adj_fi];
+                for &ci in &[edge_idx, next_idx] {
+                    let corner = face.corners[ci];
+                    // The corner should satisfy: dot(corner, adj.normal) == dot(adj.corners[0], adj.normal)
+                    // (i.e., it lies on the adjacent face's plane, which is at the voxel boundary).
+                    // For an adjacent face, the corner lies on the adjacent face's plane
+                    // OR on the opposite side (for the face's own plane).
+                    // Simpler check: the corner should be on the boundary between
+                    // this face and the adjacent face.
+                    let dot_corner = corner[0] * adj.neighbor_delta[0] as f32
+                        + corner[1] * adj.neighbor_delta[1] as f32
+                        + corner[2] * adj.neighbor_delta[2] as f32;
+                    // The adjacent face's neighbor_delta points outward. The shared
+                    // edge corners should be at the maximum extent in that direction
+                    // (value = 0 or 1 depending on direction).
+                    let expected = if adj.neighbor_delta[0] + adj.neighbor_delta[1] + adj.neighbor_delta[2] > 0 {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    assert!(
+                        (dot_corner - expected).abs() < 1e-6,
+                        "face {fi} edge {edge_idx} corner {ci}: corner {:?} should be on the boundary of face {adj_fi} (adj normal {:?}), dot={dot_corner} expected={expected}",
+                        corner, adj.normal
+                    );
+                }
+            }
+        }
     }
 
     #[test]
