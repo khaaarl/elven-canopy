@@ -1,4 +1,4 @@
-## Handles click-to-select for creatures (elves and capybaras).
+## Handles click-to-select for all creature species.
 ##
 ## On left-click (when not in placement mode), casts a ray from the camera
 ## through the mouse position and finds the closest creature sprite using
@@ -6,13 +6,17 @@
 ## set_render_tick(), called by main.gd each frame) so click targets match
 ## the smooth visual positions.
 ##
-## Selection state: tracks species ("Elf" / "Capybara") and index (matching
-## the position array order from SimBridge). When a creature is selected,
-## emits creature_selected; when deselected, emits creature_deselected.
+## Selection state: tracks species name and index (matching the position array
+## order from SimBridge). When a creature is selected, emits creature_selected;
+## when deselected, emits creature_deselected.
+##
+## Uses a data-driven SPECIES_Y_OFFSETS dict so adding new species doesn't
+## require code changes here — just add the entry.
 ##
 ## See also: creature_info_panel.gd for the UI panel, orbital_camera.gd for
 ## follow mode, placement_controller.gd for the ray-snap algorithm origin,
-## elf_renderer.gd / capybara_renderer.gd for sprite position offsets.
+## elf_renderer.gd / capybara_renderer.gd / creature_renderer.gd for sprite
+## position offsets.
 
 extends Node3D
 
@@ -23,6 +27,16 @@ signal creature_deselected
 ## creature sprite center for it to count as a click hit. Tighter than
 ## placement_controller's 5.0 since sprites are small.
 const SNAP_THRESHOLD := 1.5
+
+## Y offsets per species — must match the renderers.
+const SPECIES_Y_OFFSETS = {
+	"Elf": 0.48,
+	"Capybara": 0.32,
+	"Boar": 0.38,
+	"Deer": 0.46,
+	"Monkey": 0.44,
+	"Squirrel": 0.28,
+}
 
 var _bridge: SimBridge
 var _camera: Camera3D
@@ -87,27 +101,17 @@ func _try_select_creature(mouse_pos: Vector2) -> void:
 	var best_species := ""
 	var best_index := -1
 
-	# Check elf sprites (Y offset +0.48, matching elf_renderer.gd).
-	var elf_positions := _bridge.get_elf_positions(_render_tick)
-	for i in elf_positions.size():
-		var pos := elf_positions[i]
-		var world_pos := Vector3(pos.x + 0.5, pos.y + 0.48, pos.z + 0.5)
-		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
-		if dist_sq < best_dist_sq:
-			best_dist_sq = dist_sq
-			best_species = "Elf"
-			best_index = i
-
-	# Check capybara sprites (Y offset +0.32, matching capybara_renderer.gd).
-	var capybara_positions := _bridge.get_capybara_positions(_render_tick)
-	for i in capybara_positions.size():
-		var pos := capybara_positions[i]
-		var world_pos := Vector3(pos.x + 0.5, pos.y + 0.32, pos.z + 0.5)
-		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
-		if dist_sq < best_dist_sq:
-			best_dist_sq = dist_sq
-			best_species = "Capybara"
-			best_index = i
+	for species_name in SPECIES_Y_OFFSETS:
+		var positions := _bridge.get_creature_positions(species_name, _render_tick)
+		var y_off: float = SPECIES_Y_OFFSETS[species_name]
+		for i in positions.size():
+			var pos := positions[i]
+			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
+			if dist_sq < best_dist_sq:
+				best_dist_sq = dist_sq
+				best_species = species_name
+				best_index = i
 
 	if best_index >= 0:
 		_selected_species = best_species

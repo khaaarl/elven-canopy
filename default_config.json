@@ -69,6 +69,42 @@
       "ground_only": true,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 3333333333
+    },
+    "Boar": {
+      "walk_ticks_per_voxel": 600,
+      "climb_ticks_per_voxel": null,
+      "heartbeat_interval_ticks": 4000,
+      "allowed_edge_types": ["ForestFloor"],
+      "ground_only": true,
+      "food_max": 1000000000000000,
+      "food_decay_per_tick": 3333333333
+    },
+    "Deer": {
+      "walk_ticks_per_voxel": 400,
+      "climb_ticks_per_voxel": null,
+      "heartbeat_interval_ticks": 3500,
+      "allowed_edge_types": ["ForestFloor"],
+      "ground_only": true,
+      "food_max": 1000000000000000,
+      "food_decay_per_tick": 3333333333
+    },
+    "Monkey": {
+      "walk_ticks_per_voxel": 550,
+      "climb_ticks_per_voxel": 800,
+      "heartbeat_interval_ticks": 3000,
+      "allowed_edge_types": null,
+      "ground_only": false,
+      "food_max": 1000000000000000,
+      "food_decay_per_tick": 3333333333
+    },
+    "Squirrel": {
+      "walk_ticks_per_voxel": 700,
+      "climb_ticks_per_voxel": 600,
+      "heartbeat_interval_ticks": 2500,
+      "allowed_edge_types": null,
+      "ground_only": false,
+      "food_max": 1000000000000000,
+      "food_decay_per_tick": 3333333333
     }
   }
 }

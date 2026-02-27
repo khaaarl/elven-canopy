@@ -419,6 +419,54 @@ impl Default for GameConfig {
                 food_decay_per_tick: 3_333_333_333,
             },
         );
+        species.insert(
+            Species::Boar,
+            SpeciesData {
+                walk_ticks_per_voxel: 600,
+                climb_ticks_per_voxel: None,
+                heartbeat_interval_ticks: 4000,
+                allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
+                ground_only: true,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 3_333_333_333,
+            },
+        );
+        species.insert(
+            Species::Deer,
+            SpeciesData {
+                walk_ticks_per_voxel: 400,
+                climb_ticks_per_voxel: None,
+                heartbeat_interval_ticks: 3500,
+                allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
+                ground_only: true,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 3_333_333_333,
+            },
+        );
+        species.insert(
+            Species::Monkey,
+            SpeciesData {
+                walk_ticks_per_voxel: 550,
+                climb_ticks_per_voxel: Some(800),
+                heartbeat_interval_ticks: 3000,
+                allowed_edge_types: None,
+                ground_only: false,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 3_333_333_333,
+            },
+        );
+        species.insert(
+            Species::Squirrel,
+            SpeciesData {
+                walk_ticks_per_voxel: 700,
+                climb_ticks_per_voxel: Some(600),
+                heartbeat_interval_ticks: 2500,
+                allowed_edge_types: None,
+                ground_only: false,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 3_333_333_333,
+            },
+        );
 
         Self {
             tick_duration_ms: 1,
@@ -461,7 +509,8 @@ mod tests {
             config.tree_profile.growth.initial_energy,
             restored.tree_profile.growth.initial_energy
         );
-        // Verify species data survived.
+        // Verify species data survived (6 species: Elf, Capybara, Boar, Deer, Monkey, Squirrel).
+        assert_eq!(config.species.len(), 6);
         assert_eq!(config.species.len(), restored.species.len());
         let elf_data = &restored.species[&Species::Elf];
         assert_eq!(elf_data.heartbeat_interval_ticks, 3000);

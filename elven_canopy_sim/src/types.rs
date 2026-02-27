@@ -220,6 +220,10 @@ pub struct NavEdgeId(pub u32);
 pub enum Species {
     Elf,
     Capybara,
+    Boar,
+    Deer,
+    Monkey,
+    Squirrel,
 }
 
 /// Simulation speed settings.

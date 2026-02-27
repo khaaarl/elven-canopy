@@ -8,7 +8,8 @@
 ## 4. Right-click or Escape: cancel, exit placement mode
 ##
 ## Supports two placement types:
-## - Species spawn (Elf, Capybara): places a creature at the clicked nav node
+## - Species spawn (any species): places a creature at the clicked nav node.
+##   Ground-only species are restricted to ground nodes via bridge query.
 ## - Actions (Summon): creates a GoTo task at the clicked nav node
 ##
 ## Uses _unhandled_input() and set_input_as_handled() so placement clicks don't
@@ -164,10 +165,11 @@ func _process(_delta: float) -> void:
 
 	# Fetch nav nodes visible from the current camera position (Rust-side
 	# voxel raycast filters out nodes occluded by solid geometry).
-	if _species_name == "Capybara":
+	# Ground-only species (Capybara, Boar, Deer) can only target ground nodes.
+	if _species_name != "" and _bridge.is_species_ground_only(_species_name):
 		_valid_positions = _bridge.get_visible_ground_nav_nodes(cam_pos)
 	else:
-		# Elves and task actions can target any nav node.
+		# Climbing species and task actions can target any nav node.
 		_valid_positions = _bridge.get_visible_nav_nodes(cam_pos)
 
 	# Find the nav node whose perpendicular distance to the mouse ray is
@@ -228,10 +230,8 @@ func _confirm_spawn() -> void:
 
 	if _action_name == "Summon":
 		_bridge.create_goto_task(x, y, z)
-	elif _species_name == "Elf":
-		_bridge.spawn_elf(x, y, z)
-	elif _species_name == "Capybara":
-		_bridge.spawn_capybara(x, y, z)
+	elif _species_name != "":
+		_bridge.spawn_creature(_species_name, x, y, z)
 
 	_exit_placement()
 

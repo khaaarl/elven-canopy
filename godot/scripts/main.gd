@@ -42,6 +42,17 @@
 
 extends Node3D
 
+## Y offsets per species for world-space sprite positions. Must match the
+## values used by elf_renderer.gd, capybara_renderer.gd, and creature_renderer.gd.
+const SPECIES_Y_OFFSETS = {
+	"Elf": 0.48,
+	"Capybara": 0.32,
+	"Boar": 0.38,
+	"Deer": 0.46,
+	"Monkey": 0.44,
+	"Squirrel": 0.28,
+}
+
 ## The simulation seed. Deterministic: same seed = same game.
 ## Overridden by GameSession.sim_seed when launched through the menu flow.
 ## The @export default (42) is a fallback for direct scene launches (F6 in editor).
@@ -51,6 +62,9 @@ var _selector: Node3D
 var _panel: PanelContainer
 var _camera_pivot: Node3D
 var _construction_controller: Node
+## Renderers for new species (Boar, Deer, Monkey, Squirrel). Receive
+## render_tick each frame for smooth creature interpolation.
+var _extra_renderers: Array = []
 ## Fractional seconds of unprocessed sim time. Accumulates each frame,
 ## converted to ticks by dividing by tick_duration_ms / 1000.
 var _sim_accumulator: float = 0.0
@@ -106,6 +120,26 @@ func _ready() -> void:
 			)
 		)
 
+		for i in 3:
+			bridge.spawn_creature("Boar", cx, 0, cz)
+		for i in 3:
+			bridge.spawn_creature("Deer", cx, 0, cz)
+		for i in 3:
+			bridge.spawn_creature("Monkey", cx, 0, cz)
+		for i in 3:
+			bridge.spawn_creature("Squirrel", cx, 0, cz)
+		print(
+			(
+				"Elven Canopy: spawned new creatures (boar=%d, deer=%d, monkey=%d, squirrel=%d)"
+				% [
+					bridge.creature_count_by_name("Boar"),
+					bridge.creature_count_by_name("Deer"),
+					bridge.creature_count_by_name("Monkey"),
+					bridge.creature_count_by_name("Squirrel"),
+				]
+			)
+		)
+
 	# --- Common setup (new game and loaded game) ---
 
 	# Cache tick duration for the frame accumulator.
@@ -122,6 +156,15 @@ func _ready() -> void:
 	# Set up capybara renderer (sim-driven).
 	var capybara_renderer = $CapybaraRenderer
 	capybara_renderer.setup(bridge)
+
+	# Set up generic renderers for new species.
+	var renderer_script = load("res://scripts/creature_renderer.gd")
+	for entry in [["Boar", 0.38], ["Deer", 0.46], ["Monkey", 0.44], ["Squirrel", 0.28]]:
+		var r := Node3D.new()
+		r.set_script(renderer_script)
+		add_child(r)
+		r.setup(bridge, entry[0], entry[1])
+		_extra_renderers.append(r)
 
 	# Set up spawn toolbar UI (rendered on top of 3D via CanvasLayer).
 	var canvas_layer := CanvasLayer.new()
@@ -275,6 +318,8 @@ func _process(delta: float) -> void:
 	# Distribute render_tick to all consumers that read creature positions.
 	$ElfRenderer.set_render_tick(render_tick)
 	$CapybaraRenderer.set_render_tick(render_tick)
+	for r in _extra_renderers:
+		r.set_render_tick(render_tick)
 	_selector.set_render_tick(render_tick)
 
 	# Update follow target each frame so the camera tracks creature movement.
@@ -302,19 +347,13 @@ func _process(delta: float) -> void:
 
 
 ## Get the world-space position of a creature sprite, matching the offsets
-## used by elf_renderer.gd (+0.48 Y) and capybara_renderer.gd (+0.32 Y).
-## Uses render_tick for smooth interpolation between nav nodes.
+## used by the species renderers. Uses render_tick for smooth interpolation.
 func _get_creature_world_pos(
 	bridge: SimBridge, render_tick: float, species: String, index: int
 ) -> Variant:
-	if species == "Elf":
-		var positions := bridge.get_elf_positions(render_tick)
-		if index >= 0 and index < positions.size():
-			var p := positions[index]
-			return Vector3(p.x + 0.5, p.y + 0.48, p.z + 0.5)
-	elif species == "Capybara":
-		var positions := bridge.get_capybara_positions(render_tick)
-		if index >= 0 and index < positions.size():
-			var p := positions[index]
-			return Vector3(p.x + 0.5, p.y + 0.32, p.z + 0.5)
+	var y_off: float = SPECIES_Y_OFFSETS.get(species, 0.4)
+	var positions := bridge.get_creature_positions(species, render_tick)
+	if index >= 0 and index < positions.size():
+		var p := positions[index]
+		return Vector3(p.x + 0.5, p.y + y_off, p.z + 0.5)
 	return null

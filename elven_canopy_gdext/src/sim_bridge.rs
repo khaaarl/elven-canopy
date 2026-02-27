@@ -15,14 +15,12 @@
 // - **World data:** `get_trunk_voxels()`, `get_branch_voxels()`,
 //   `get_root_voxels()`, `get_leaf_voxels()`, `get_fruit_voxels()` — flat
 //   `PackedInt32Array` of (x,y,z) triples for voxel mesh rendering.
-// - **Creature positions:** `get_elf_positions(render_tick)`,
-//   `get_capybara_positions(render_tick)` — `PackedVector3Array` for billboard
-//   sprite placement. The `render_tick` parameter (a fractional tick computed
-//   by `main.gd` as `current_tick + accumulator_fraction`) enables smooth
-//   interpolation between nav nodes via `Creature::interpolated_position()`.
-//   Internally, all creatures are unified `Creature` entities with a `species`
-//   field; the bridge filters by species so the GDScript API has clean
-//   per-species calls.
+// - **Creature positions:** `get_creature_positions(species_name, render_tick)`
+//   — generic `PackedVector3Array` for billboard sprite placement, replacing
+//   the per-species `get_elf_positions()` / `get_capybara_positions()` (which
+//   remain as thin wrappers). The `render_tick` parameter (a fractional tick
+//   computed by `main.gd` as `current_tick + accumulator_fraction`) enables
+//   smooth interpolation between nav nodes via `Creature::interpolated_position()`.
 // - **Creature info:** `get_creature_info(species_name, index, render_tick)` —
 //   returns a `VarDictionary` with species, interpolated position (x/y/z),
 //   task status, food level, and food_max for the creature at the given
@@ -33,8 +31,9 @@
 //   `get_visible_ground_nav_nodes(cam_pos)` — filtered by voxel-based
 //   occlusion (3D DDA raycast in `world.rs`) so the placement UI only snaps
 //   to nodes the camera can actually see.
-// - **Commands:** `spawn_elf(x,y,z)`, `spawn_capybara(x,y,z)`,
-//   `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
+// - **Commands:** `spawn_creature(species_name, x,y,z)` — generic creature
+//   spawner replacing `spawn_elf()` / `spawn_capybara()` (which remain as
+//   thin wrappers). Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
 //   `designate_build_rect(x,y,z,width,depth)` — each constructs a
 //   `SimCommand` and immediately steps the sim by one tick to apply it.
 // - **Construction:** `validate_build_position(x,y,z)` checks whether a
@@ -45,8 +44,12 @@
 //   validation where adjacency applies to the rectangle as a whole.
 //   `get_blueprint_voxels()` returns flat (x,y,z) triples for all
 //   `Designated` blueprints, consumed by `blueprint_renderer.gd`.
-// - **Stats:** `elf_count()`, `capybara_count()`, `fruit_count()`,
-//   `home_tree_mana()`.
+// - **Stats:** `creature_count_by_name(species_name)` — generic replacement
+//   for `elf_count()` / `capybara_count()` (which remain as thin wrappers).
+//   Also `fruit_count()`, `home_tree_mana()`.
+// - **Species queries:** `is_species_ground_only(species_name)` — used by
+//   the placement controller to decide which nav nodes to show.
+//   `get_all_species_names()` — returns all species names for UI iteration.
 //
 // All array data uses packed Godot types (`PackedInt32Array`,
 // `PackedVector3Array`) for efficient transfer across the GDExtension
@@ -66,6 +69,19 @@ use elven_canopy_sim::config::{GameConfig, TreeProfile};
 use elven_canopy_sim::sim::SimState;
 use elven_canopy_sim::types::{BuildType, Priority, Species, VoxelCoord, VoxelType};
 use godot::prelude::*;
+
+/// Parse a species name string into a `Species` enum variant.
+fn parse_species(name: &str) -> Option<Species> {
+    match name {
+        "Elf" => Some(Species::Elf),
+        "Capybara" => Some(Species::Capybara),
+        "Boar" => Some(Species::Boar),
+        "Deer" => Some(Species::Deer),
+        "Monkey" => Some(Species::Monkey),
+        "Squirrel" => Some(Species::Squirrel),
+        _ => None,
+    }
+}
 
 /// Godot node that owns and drives the simulation.
 ///
@@ -260,72 +276,59 @@ impl SimBridge {
         })
     }
 
-    /// Return elf positions as a PackedVector3Array, interpolated to the
-    /// given render tick for smooth movement between nav nodes. Pass the
-    /// sim's `current_tick()` for non-interpolated positions.
+    /// Return elf positions. Legacy wrapper — delegates to `get_creature_positions`.
     #[func]
     fn get_elf_positions(&self, render_tick: f64) -> PackedVector3Array {
-        let Some(sim) = &self.sim else {
-            return PackedVector3Array::new();
-        };
-        let mut arr = PackedVector3Array::new();
-        for creature in sim.creatures.values().filter(|c| c.species == Species::Elf) {
-            let (x, y, z) = creature.interpolated_position(render_tick);
-            arr.push(Vector3::new(x, y, z));
-        }
-        arr
+        self.get_creature_positions(GString::from("Elf"), render_tick)
     }
 
-    /// Return the number of elves.
+    /// Return the number of elves. Legacy wrapper — delegates to `creature_count_by_name`.
     #[func]
     fn elf_count(&self) -> i32 {
-        self.sim
-            .as_ref()
-            .map_or(0, |s| s.creature_count(Species::Elf) as i32)
+        self.creature_count_by_name(GString::from("Elf"))
     }
 
-    /// Spawn an elf at the given voxel position.
+    /// Spawn a creature of the named species at the given voxel position.
+    ///
+    /// Generic replacement for `spawn_elf()` / `spawn_capybara()`. Species
+    /// name must match a `Species` enum variant ("Elf", "Capybara", "Boar",
+    /// "Deer", "Monkey", "Squirrel"). Unknown names are silently ignored.
     #[func]
-    fn spawn_elf(&mut self, x: i32, y: i32, z: i32) {
+    fn spawn_creature(&mut self, species_name: GString, x: i32, y: i32, z: i32) {
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return;
+        };
         let Some(sim) = &mut self.sim else { return };
         let player_id = sim.player_id;
         let next_tick = sim.tick + 1;
         let cmd = SimCommand {
             player_id,
             tick: next_tick,
-            action: SimAction::SpawnElf {
+            action: SimAction::SpawnCreature {
+                species,
                 position: VoxelCoord::new(x, y, z),
             },
         };
         sim.step(&[cmd], next_tick);
     }
 
-    /// Return capybara positions as a PackedVector3Array, interpolated to
-    /// the given render tick for smooth movement between nav nodes. Pass the
-    /// sim's `current_tick()` for non-interpolated positions.
+    /// Spawn an elf at the given voxel position.
+    /// Legacy wrapper — delegates to `spawn_creature("Elf", ...)`.
     #[func]
-    fn get_capybara_positions(&self, render_tick: f64) -> PackedVector3Array {
-        let Some(sim) = &self.sim else {
-            return PackedVector3Array::new();
-        };
-        let mut arr = PackedVector3Array::new();
-        for creature in sim
-            .creatures
-            .values()
-            .filter(|c| c.species == Species::Capybara)
-        {
-            let (x, y, z) = creature.interpolated_position(render_tick);
-            arr.push(Vector3::new(x, y, z));
-        }
-        arr
+    fn spawn_elf(&mut self, x: i32, y: i32, z: i32) {
+        self.spawn_creature(GString::from("Elf"), x, y, z);
     }
 
-    /// Return the number of capybaras.
+    /// Return capybara positions. Legacy wrapper — delegates to `get_creature_positions`.
+    #[func]
+    fn get_capybara_positions(&self, render_tick: f64) -> PackedVector3Array {
+        self.get_creature_positions(GString::from("Capybara"), render_tick)
+    }
+
+    /// Return the number of capybaras. Legacy wrapper — delegates to `creature_count_by_name`.
     #[func]
     fn capybara_count(&self) -> i32 {
-        self.sim
-            .as_ref()
-            .map_or(0, |s| s.creature_count(Species::Capybara) as i32)
+        self.creature_count_by_name(GString::from("Capybara"))
     }
 
     /// Return all nav node positions as a PackedVector3Array.
@@ -442,10 +445,8 @@ impl SimBridge {
         let Some(sim) = &self.sim else {
             return VarDictionary::new();
         };
-        let species = match species_name.to_string().as_str() {
-            "Elf" => Species::Elf,
-            "Capybara" => Species::Capybara,
-            _ => return VarDictionary::new(),
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return VarDictionary::new();
         };
         let creature = sim
             .creatures
@@ -468,6 +469,68 @@ impl SimBridge {
             }
             None => VarDictionary::new(),
         }
+    }
+
+    /// Return positions for any species as a PackedVector3Array, interpolated
+    /// to the given render tick for smooth movement between nav nodes.
+    /// Generic replacement for `get_elf_positions()` / `get_capybara_positions()`.
+    #[func]
+    fn get_creature_positions(
+        &self,
+        species_name: GString,
+        render_tick: f64,
+    ) -> PackedVector3Array {
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return PackedVector3Array::new();
+        };
+        let Some(sim) = &self.sim else {
+            return PackedVector3Array::new();
+        };
+        let mut arr = PackedVector3Array::new();
+        for creature in sim.creatures.values().filter(|c| c.species == species) {
+            let (x, y, z) = creature.interpolated_position(render_tick);
+            arr.push(Vector3::new(x, y, z));
+        }
+        arr
+    }
+
+    /// Return the number of creatures of the named species.
+    /// Generic replacement for `elf_count()` / `capybara_count()`.
+    #[func]
+    fn creature_count_by_name(&self, species_name: GString) -> i32 {
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return 0;
+        };
+        self.sim
+            .as_ref()
+            .map_or(0, |s| s.creature_count(species) as i32)
+    }
+
+    /// Return whether the named species is ground-only (cannot climb).
+    /// Used by the placement controller to decide which nav nodes to show.
+    #[func]
+    fn is_species_ground_only(&self, species_name: GString) -> bool {
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return false;
+        };
+        let Some(sim) = &self.sim else { return false };
+        sim.species_table
+            .get(&species)
+            .is_some_and(|s| s.ground_only)
+    }
+
+    /// Return the names of all species known to the simulation.
+    /// Used by UI code to iterate over species without hardcoding names.
+    #[func]
+    fn get_all_species_names(&self) -> PackedStringArray {
+        let mut arr = PackedStringArray::new();
+        arr.push("Elf");
+        arr.push("Capybara");
+        arr.push("Boar");
+        arr.push("Deer");
+        arr.push("Monkey");
+        arr.push("Squirrel");
+        arr
     }
 
     /// Serialize the current simulation state to a JSON string.
@@ -513,19 +576,10 @@ impl SimBridge {
     }
 
     /// Spawn a capybara at the given voxel position.
+    /// Legacy wrapper — delegates to `spawn_creature("Capybara", ...)`.
     #[func]
     fn spawn_capybara(&mut self, x: i32, y: i32, z: i32) {
-        let Some(sim) = &mut self.sim else { return };
-        let player_id = sim.player_id;
-        let next_tick = sim.tick + 1;
-        let cmd = SimCommand {
-            player_id,
-            tick: next_tick,
-            action: SimAction::SpawnCapybara {
-                position: VoxelCoord::new(x, y, z),
-            },
-        };
-        sim.step(&[cmd], next_tick);
+        self.spawn_creature(GString::from("Capybara"), x, y, z);
     }
 
     /// Check whether a single voxel is a valid build position.

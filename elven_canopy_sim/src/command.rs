@@ -17,7 +17,7 @@
 // - `CancelBuild` — remove a blueprint by ProjectId.
 // - `SetTaskPriority` — build system (placeholder, not yet wired).
 // - `SetSimSpeed` — pause / play / fast-forward.
-// - `SpawnElf` / `SpawnCapybara` — place a creature at a voxel position.
+// - `SpawnCreature` — place a creature of any species at a voxel position.
 // - `CreateTask` — create a task at a voxel position (see `task.rs` for
 //   `TaskKind`). The handler in `sim.rs` snaps the position to the nearest
 //   nav node.
@@ -63,10 +63,12 @@ pub enum SimAction {
     },
     /// Change the simulation speed.
     SetSimSpeed { speed: SimSpeed },
-    /// Spawn a new elf at the given position (snapped to nearest nav node).
-    SpawnElf { position: VoxelCoord },
-    /// Spawn a new capybara at the given position (snapped to nearest ground nav node).
-    SpawnCapybara { position: VoxelCoord },
+    /// Spawn a creature of the given species at the given position (snapped to
+    /// nearest nav node, or nearest ground node for ground-only species).
+    SpawnCreature {
+        species: Species,
+        position: VoxelCoord,
+    },
     /// Create a task at the given position (snapped to nearest nav node).
     /// If `required_species` is set, only that species can claim the task.
     CreateTask {

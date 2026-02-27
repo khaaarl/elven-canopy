@@ -1,28 +1,27 @@
-## Programmatic sprite generator for chibi elves and capybaras.
+## Programmatic sprite generator for all creature species.
 ##
 ## Provides static factory methods that return ImageTexture objects built
 ## pixel-by-pixel using Image.create(). All sprites are deterministically
 ## generated from integer seeds, so the same seed always produces the same
 ## sprite. No external assets are needed.
 ##
-## Usage: call *_params_from_seed(index) to get a params dictionary, then
-## pass it to the corresponding create_* function:
-##   var params = SpriteFactory.elf_params_from_seed(idx)
-##   var texture = SpriteFactory.create_chibi_elf(params)
+## Usage: call species_params_from_seed(species_name, index) to get a params
+## dictionary, then pass it to create_species_sprite(species_name, params).
+## Per-species methods (elf_params_from_seed, create_chibi_elf, etc.) are
+## also available for direct use.
 ##
-## Elf sprites (48x48): varied by hair color/style (7 colors, 3 styles),
-## eye color (5), skin tone (4), and role (warrior/mage/archer/healer/bard)
-## which determines outfit colors and accessories. Seed hashing uses Knuth
-## multiplicative hash to spread bits across palette indices.
-##
-## Capybara sprites (40x32): varied by body color (4 shades of brown) and
-## accessory (none/flower_crown/scarf/bow).
+## Supported species:
+## - Elf (48x48): hair color/style, eye color, skin tone, role variants
+## - Capybara (40x32): body color, accessory variants
+## - Boar (44x36): body color, tusk size variants
+## - Deer (44x44): body color, antler style, spot pattern variants
+## - Monkey (40x44): fur color, face marking variants
+## - Squirrel (32x32): fur color, tail fluffiness variants
 ##
 ## Drawing helpers (_set_px, _draw_circle, _draw_ellipse, _draw_rect,
 ## _draw_hline, _draw_vline) handle bounds checking and primitive shapes.
 ##
-## See also: elf_renderer.gd (consumes chibi elf textures),
-## capybara_renderer.gd (consumes capybara textures).
+## See also: elf_renderer.gd, capybara_renderer.gd, creature_renderer.gd.
 
 class_name SpriteFactory
 
@@ -80,6 +79,59 @@ const CAPY_BODY_COLORS = [
 ]
 
 const CAPY_ACCESSORIES = ["none", "flower_crown", "scarf", "bow"]
+
+# ---------------------------------------------------------------------------
+# Boar palette constants
+# ---------------------------------------------------------------------------
+
+const BOAR_BODY_COLORS = [
+	Color(0.40, 0.35, 0.30),  # dark gray
+	Color(0.50, 0.40, 0.32),  # brown-gray
+	Color(0.35, 0.30, 0.25),  # charcoal
+	Color(0.55, 0.45, 0.35),  # sandy gray
+]
+
+const BOAR_TUSK_SIZES = ["small", "medium", "large"]
+
+# ---------------------------------------------------------------------------
+# Deer palette constants
+# ---------------------------------------------------------------------------
+
+const DEER_BODY_COLORS = [
+	Color(0.72, 0.55, 0.35),  # tan
+	Color(0.65, 0.48, 0.30),  # fawn
+	Color(0.80, 0.62, 0.40),  # golden
+	Color(0.58, 0.42, 0.28),  # brown
+]
+
+const DEER_ANTLER_STYLES = ["simple", "branched", "wide"]
+const DEER_SPOT_PATTERNS = ["none", "spotted"]
+
+# ---------------------------------------------------------------------------
+# Monkey palette constants
+# ---------------------------------------------------------------------------
+
+const MONKEY_FUR_COLORS = [
+	Color(0.55, 0.38, 0.22),  # brown
+	Color(0.70, 0.52, 0.30),  # golden
+	Color(0.42, 0.30, 0.18),  # dark brown
+	Color(0.62, 0.45, 0.25),  # chestnut
+]
+
+const MONKEY_FACE_MARKINGS = ["plain", "light_muzzle", "eye_patches"]
+
+# ---------------------------------------------------------------------------
+# Squirrel palette constants
+# ---------------------------------------------------------------------------
+
+const SQUIRREL_FUR_COLORS = [
+	Color(0.62, 0.38, 0.18),  # red-brown
+	Color(0.45, 0.35, 0.25),  # gray-brown
+	Color(0.70, 0.48, 0.22),  # golden
+	Color(0.52, 0.40, 0.30),  # dark gray
+]
+
+const SQUIRREL_TAIL_TYPES = ["fluffy", "extra_fluffy", "curled"]
 
 # ---------------------------------------------------------------------------
 # Drawing helpers
@@ -520,3 +572,464 @@ static func create_capybara(params: Dictionary) -> ImageTexture:
 			_set_px(img, head_cx - 1, head_cy - 7, _darken(bow_color, 0.2))
 
 	return ImageTexture.create_from_image(img)
+
+
+# ---------------------------------------------------------------------------
+# Boar generation (44x36)
+# ---------------------------------------------------------------------------
+
+
+## Build deterministic boar params from an integer seed.
+static func boar_params_from_seed(seed: int) -> Dictionary:
+	var h := absi(seed * 2654435761)
+	return {
+		"body_color": BOAR_BODY_COLORS[absi(h) % BOAR_BODY_COLORS.size()],
+		"tusk_size": BOAR_TUSK_SIZES[absi(h / 17) % BOAR_TUSK_SIZES.size()],
+		"seed": seed,
+	}
+
+
+## Create a 44x36 boar sprite.
+static func create_boar(params: Dictionary) -> ImageTexture:
+	var W := 44
+	var H := 36
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var body_color: Color = params.get("body_color", BOAR_BODY_COLORS[0])
+	var tusk_size: String = params.get("tusk_size", "medium")
+
+	var body_dark := _darken(body_color, 0.12)
+	var body_light := _lighten(body_color, 0.10)
+	var outline := Color(0.15, 0.12, 0.10, 1.0)
+	var eye_color := Color(0.10, 0.08, 0.06, 1.0)
+	var white := Color(1.0, 1.0, 1.0, 1.0)
+	var snout_color := Color(0.65, 0.45, 0.40, 1.0)
+	var tusk_color := Color(0.90, 0.88, 0.80, 1.0)
+
+	# Body — wide horizontal ellipse
+	var body_cx := 24
+	var body_cy := 20
+	_draw_ellipse(img, body_cx, body_cy, 16, 10, outline)
+	_draw_ellipse(img, body_cx, body_cy, 15, 9, body_color)
+	_draw_ellipse(img, body_cx + 1, body_cy + 2, 10, 5, body_light)
+
+	# Bristly back — jagged line of darker color along the top
+	for bx in range(body_cx - 10, body_cx + 10, 2):
+		_set_px(img, bx, body_cy - 8, body_dark)
+		_set_px(img, bx + 1, body_cy - 9, body_dark)
+		_set_px(img, bx, body_cy - 7, body_dark)
+
+	# Head — smaller circle at front
+	var head_cx := 7
+	var head_cy := 14
+	_draw_circle(img, head_cx, head_cy, 8, outline)
+	_draw_circle(img, head_cx, head_cy, 7, body_color)
+
+	# Snout
+	_draw_ellipse(img, 2, head_cy + 2, 3, 2, snout_color)
+	_set_px(img, 1, head_cy + 2, _darken(snout_color, 0.2))
+	_set_px(img, 3, head_cy + 2, _darken(snout_color, 0.2))
+
+	# Eyes
+	_draw_rect(img, head_cx - 3, head_cy - 3, 2, 2, eye_color)
+	_set_px(img, head_cx - 3, head_cy - 3, white)
+
+	# Ears — small pointed
+	_draw_circle(img, head_cx - 4, head_cy - 6, 2, body_dark)
+	_draw_circle(img, head_cx + 1, head_cy - 6, 2, body_dark)
+
+	# Tusks
+	var tusk_len := 2
+	if tusk_size == "medium":
+		tusk_len = 3
+	elif tusk_size == "large":
+		tusk_len = 4
+	_draw_vline(img, 2, head_cy + 4, head_cy + 4 + tusk_len, tusk_color)
+	_draw_vline(img, 5, head_cy + 4, head_cy + 4 + tusk_len, tusk_color)
+
+	# Legs
+	var leg_y := body_cy + 7
+	_draw_rect(img, 12, leg_y, 4, 5, outline)
+	_draw_rect(img, 13, leg_y, 2, 4, body_dark)
+	_draw_rect(img, 18, leg_y, 4, 5, outline)
+	_draw_rect(img, 19, leg_y, 2, 4, body_dark)
+	_draw_rect(img, 28, leg_y, 4, 5, outline)
+	_draw_rect(img, 29, leg_y, 2, 4, body_dark)
+	_draw_rect(img, 34, leg_y, 4, 5, outline)
+	_draw_rect(img, 35, leg_y, 2, 4, body_dark)
+
+	# Tail — short curly
+	_set_px(img, 39, body_cy - 3, body_dark)
+	_set_px(img, 40, body_cy - 4, body_dark)
+	_set_px(img, 41, body_cy - 3, body_dark)
+
+	return ImageTexture.create_from_image(img)
+
+
+# ---------------------------------------------------------------------------
+# Deer generation (44x44)
+# ---------------------------------------------------------------------------
+
+
+## Build deterministic deer params from an integer seed.
+static func deer_params_from_seed(seed: int) -> Dictionary:
+	var h := absi(seed * 2654435761)
+	return {
+		"body_color": DEER_BODY_COLORS[absi(h) % DEER_BODY_COLORS.size()],
+		"antler_style": DEER_ANTLER_STYLES[absi(h / 11) % DEER_ANTLER_STYLES.size()],
+		"spot_pattern": DEER_SPOT_PATTERNS[absi(h / 41) % DEER_SPOT_PATTERNS.size()],
+		"seed": seed,
+	}
+
+
+## Create a 44x44 deer sprite.
+static func create_deer(params: Dictionary) -> ImageTexture:
+	var W := 44
+	var H := 44
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var body_color: Color = params.get("body_color", DEER_BODY_COLORS[0])
+	var antler_style: String = params.get("antler_style", "simple")
+	var spot_pattern: String = params.get("spot_pattern", "none")
+
+	var body_dark := _darken(body_color, 0.10)
+	var body_light := _lighten(body_color, 0.12)
+	var outline := Color(0.18, 0.14, 0.10, 1.0)
+	var eye_color := Color(0.10, 0.08, 0.06, 1.0)
+	var white := Color(1.0, 1.0, 1.0, 1.0)
+	var nose_color := Color(0.30, 0.22, 0.18, 1.0)
+	var antler_color := Color(0.55, 0.40, 0.25, 1.0)
+
+	# Body
+	var body_cx := 24
+	var body_cy := 26
+	_draw_ellipse(img, body_cx, body_cy, 15, 9, outline)
+	_draw_ellipse(img, body_cx, body_cy, 14, 8, body_color)
+	_draw_ellipse(img, body_cx + 1, body_cy + 1, 10, 5, body_light)
+
+	# Spots
+	if spot_pattern == "spotted":
+		var spot_color := _lighten(body_color, 0.20)
+		var sh := absi(params.get("seed", 0))
+		for si in range(5):
+			var sx := body_cx - 8 + (absi(sh + si * 37) % 16)
+			var sy := body_cy - 4 + (absi(sh + si * 53) % 8)
+			_draw_circle(img, sx, sy, 1, spot_color)
+
+	# Head — elegant, slightly narrower than body
+	var head_cx := 8
+	var head_cy := 16
+	_draw_ellipse(img, head_cx, head_cy, 7, 8, outline)
+	_draw_ellipse(img, head_cx, head_cy, 6, 7, body_color)
+	_draw_ellipse(img, head_cx - 1, head_cy + 1, 4, 4, body_light)
+
+	# Nose
+	_draw_ellipse(img, 3, head_cy + 5, 2, 1, nose_color)
+
+	# Eyes — large and gentle
+	_draw_rect(img, head_cx - 3, head_cy - 3, 3, 3, eye_color)
+	_set_px(img, head_cx - 3, head_cy - 3, white)
+	_set_px(img, head_cx - 2, head_cy - 3, white)
+
+	# Ears — long pointed
+	for i in range(4):
+		_set_px(img, head_cx - 5 - i, head_cy - 7 - i, body_dark)
+		_set_px(img, head_cx - 4 - i, head_cy - 7 - i, body_color)
+	for i in range(4):
+		_set_px(img, head_cx + 2 + i, head_cy - 7 - i, body_dark)
+		_set_px(img, head_cx + 1 + i, head_cy - 7 - i, body_color)
+
+	# Antlers
+	match antler_style:
+		"simple":
+			_draw_vline(img, head_cx - 2, head_cy - 12, head_cy - 7, antler_color)
+			_draw_vline(img, head_cx + 2, head_cy - 12, head_cy - 7, antler_color)
+			_set_px(img, head_cx - 3, head_cy - 11, antler_color)
+			_set_px(img, head_cx + 3, head_cy - 11, antler_color)
+		"branched":
+			_draw_vline(img, head_cx - 2, head_cy - 13, head_cy - 7, antler_color)
+			_draw_vline(img, head_cx + 2, head_cy - 13, head_cy - 7, antler_color)
+			_set_px(img, head_cx - 4, head_cy - 10, antler_color)
+			_set_px(img, head_cx - 3, head_cy - 10, antler_color)
+			_set_px(img, head_cx + 4, head_cy - 10, antler_color)
+			_set_px(img, head_cx + 3, head_cy - 10, antler_color)
+			_set_px(img, head_cx - 3, head_cy - 12, antler_color)
+			_set_px(img, head_cx + 3, head_cy - 12, antler_color)
+		"wide":
+			_draw_vline(img, head_cx - 3, head_cy - 11, head_cy - 7, antler_color)
+			_draw_vline(img, head_cx + 3, head_cy - 11, head_cy - 7, antler_color)
+			for i in range(4):
+				_set_px(img, head_cx - 3 - i, head_cy - 11 + i / 2, antler_color)
+				_set_px(img, head_cx + 3 + i, head_cy - 11 + i / 2, antler_color)
+
+	# Long slender legs
+	var leg_y := body_cy + 7
+	_draw_rect(img, 14, leg_y, 3, 7, outline)
+	_draw_rect(img, 15, leg_y, 1, 6, body_dark)
+	_draw_rect(img, 19, leg_y, 3, 7, outline)
+	_draw_rect(img, 20, leg_y, 1, 6, body_dark)
+	_draw_rect(img, 29, leg_y, 3, 7, outline)
+	_draw_rect(img, 30, leg_y, 1, 6, body_dark)
+	_draw_rect(img, 34, leg_y, 3, 7, outline)
+	_draw_rect(img, 35, leg_y, 1, 6, body_dark)
+
+	# Hooves
+	var hoof_color := Color(0.25, 0.18, 0.12, 1.0)
+	_draw_rect(img, 14, leg_y + 6, 3, 2, hoof_color)
+	_draw_rect(img, 19, leg_y + 6, 3, 2, hoof_color)
+	_draw_rect(img, 29, leg_y + 6, 3, 2, hoof_color)
+	_draw_rect(img, 34, leg_y + 6, 3, 2, hoof_color)
+
+	# Tail — short fluffy
+	_draw_circle(img, 39, body_cy - 4, 2, body_light)
+
+	return ImageTexture.create_from_image(img)
+
+
+# ---------------------------------------------------------------------------
+# Monkey generation (40x44)
+# ---------------------------------------------------------------------------
+
+
+## Build deterministic monkey params from an integer seed.
+static func monkey_params_from_seed(seed: int) -> Dictionary:
+	var h := absi(seed * 2654435761)
+	return {
+		"fur_color": MONKEY_FUR_COLORS[absi(h) % MONKEY_FUR_COLORS.size()],
+		"face_marking": MONKEY_FACE_MARKINGS[absi(h / 19) % MONKEY_FACE_MARKINGS.size()],
+		"seed": seed,
+	}
+
+
+## Create a 40x44 monkey sprite.
+static func create_monkey(params: Dictionary) -> ImageTexture:
+	var W := 40
+	var H := 44
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var fur_color: Color = params.get("fur_color", MONKEY_FUR_COLORS[0])
+	var face_marking: String = params.get("face_marking", "plain")
+
+	var fur_dark := _darken(fur_color, 0.12)
+	var fur_light := _lighten(fur_color, 0.10)
+	var outline := Color(0.15, 0.12, 0.10, 1.0)
+	var face_color := Color(0.85, 0.70, 0.55, 1.0)
+	var eye_color := Color(0.10, 0.08, 0.06, 1.0)
+	var white := Color(1.0, 1.0, 1.0, 1.0)
+	var mouth_color := Color(0.70, 0.40, 0.35, 1.0)
+
+	# Head — round, big for chibi style
+	var head_cx := 20
+	var head_cy := 12
+	_draw_circle(img, head_cx, head_cy, 10, outline)
+	_draw_circle(img, head_cx, head_cy, 9, fur_color)
+
+	# Face area
+	_draw_ellipse(img, head_cx, head_cy + 1, 6, 6, face_color)
+
+	# Face markings
+	match face_marking:
+		"light_muzzle":
+			_draw_ellipse(img, head_cx, head_cy + 3, 4, 3, _lighten(face_color, 0.15))
+		"eye_patches":
+			_draw_circle(img, head_cx - 4, head_cy - 1, 2, fur_dark)
+			_draw_circle(img, head_cx + 4, head_cy - 1, 2, fur_dark)
+
+	# Big expressive eyes
+	_draw_rect(img, head_cx - 6, head_cy - 2, 4, 4, outline)
+	_draw_rect(img, head_cx - 5, head_cy - 1, 2, 2, eye_color)
+	_set_px(img, head_cx - 5, head_cy - 1, white)
+	_draw_rect(img, head_cx + 3, head_cy - 2, 4, 4, outline)
+	_draw_rect(img, head_cx + 4, head_cy - 1, 2, 2, eye_color)
+	_set_px(img, head_cx + 4, head_cy - 1, white)
+
+	# Nose and mouth
+	_set_px(img, head_cx - 1, head_cy + 3, _darken(face_color, 0.2))
+	_set_px(img, head_cx + 1, head_cy + 3, _darken(face_color, 0.2))
+	_draw_hline(img, head_cx - 2, head_cx + 2, head_cy + 5, mouth_color)
+
+	# Round ears
+	_draw_circle(img, head_cx - 9, head_cy - 3, 3, outline)
+	_draw_circle(img, head_cx - 9, head_cy - 3, 2, fur_color)
+	_set_px(img, head_cx - 9, head_cy - 3, face_color)
+	_draw_circle(img, head_cx + 9, head_cy - 3, 3, outline)
+	_draw_circle(img, head_cx + 9, head_cy - 3, 2, fur_color)
+	_set_px(img, head_cx + 9, head_cy - 3, face_color)
+
+	# Body — small torso
+	var body_top := 22
+	for y in range(body_top, body_top + 10):
+		var hw := 6
+		_draw_hline(img, head_cx - hw, head_cx + hw, y, fur_color)
+	_draw_ellipse(img, head_cx, body_top + 5, 4, 3, fur_light)
+
+	# Arms — long and dangling
+	_draw_rect(img, head_cx - 9, body_top, 3, 10, outline)
+	_draw_rect(img, head_cx - 8, body_top, 1, 9, fur_color)
+	# Hands
+	_draw_circle(img, head_cx - 8, body_top + 10, 2, face_color)
+	_draw_rect(img, head_cx + 7, body_top, 3, 10, outline)
+	_draw_rect(img, head_cx + 8, body_top, 1, 9, fur_color)
+	_draw_circle(img, head_cx + 8, body_top + 10, 2, face_color)
+
+	# Legs — short
+	var leg_y := body_top + 10
+	_draw_rect(img, head_cx - 5, leg_y, 4, 5, outline)
+	_draw_rect(img, head_cx - 4, leg_y, 2, 4, fur_dark)
+	_draw_rect(img, head_cx + 2, leg_y, 4, 5, outline)
+	_draw_rect(img, head_cx + 3, leg_y, 2, 4, fur_dark)
+
+	# Long curly tail
+	for i in range(8):
+		var tx := head_cx + 7 + i
+		var ty := body_top + 3 + int(sin(float(i) * 0.8) * 2.0)
+		_set_px(img, tx, ty, fur_dark)
+		_set_px(img, tx, ty + 1, fur_dark)
+
+	return ImageTexture.create_from_image(img)
+
+
+# ---------------------------------------------------------------------------
+# Squirrel generation (32x32)
+# ---------------------------------------------------------------------------
+
+
+## Build deterministic squirrel params from an integer seed.
+static func squirrel_params_from_seed(seed: int) -> Dictionary:
+	var h := absi(seed * 2654435761)
+	return {
+		"fur_color": SQUIRREL_FUR_COLORS[absi(h) % SQUIRREL_FUR_COLORS.size()],
+		"tail_type": SQUIRREL_TAIL_TYPES[absi(h / 23) % SQUIRREL_TAIL_TYPES.size()],
+		"seed": seed,
+	}
+
+
+## Create a 32x32 squirrel sprite.
+static func create_squirrel(params: Dictionary) -> ImageTexture:
+	var W := 32
+	var H := 32
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var fur_color: Color = params.get("fur_color", SQUIRREL_FUR_COLORS[0])
+	var tail_type: String = params.get("tail_type", "fluffy")
+
+	var fur_dark := _darken(fur_color, 0.12)
+	var fur_light := _lighten(fur_color, 0.12)
+	var outline := Color(0.15, 0.12, 0.10, 1.0)
+	var belly_color := Color(0.90, 0.85, 0.75, 1.0)
+	var eye_color := Color(0.10, 0.08, 0.06, 1.0)
+	var white := Color(1.0, 1.0, 1.0, 1.0)
+	var nose_color := Color(0.30, 0.20, 0.15, 1.0)
+
+	# Head — round
+	var head_cx := 12
+	var head_cy := 9
+	_draw_circle(img, head_cx, head_cy, 7, outline)
+	_draw_circle(img, head_cx, head_cy, 6, fur_color)
+
+	# Cheeks
+	_draw_ellipse(img, head_cx, head_cy + 1, 4, 3, fur_light)
+
+	# Big cute eyes
+	_draw_rect(img, head_cx - 4, head_cy - 2, 3, 3, outline)
+	_draw_rect(img, head_cx - 3, head_cy - 1, 1, 1, eye_color)
+	_set_px(img, head_cx - 3, head_cy - 2, white)
+	_draw_rect(img, head_cx + 2, head_cy - 2, 3, 3, outline)
+	_draw_rect(img, head_cx + 3, head_cy - 1, 1, 1, eye_color)
+	_set_px(img, head_cx + 3, head_cy - 2, white)
+
+	# Tiny nose
+	_set_px(img, head_cx, head_cy + 2, nose_color)
+
+	# Pointed ears with tufts
+	_set_px(img, head_cx - 5, head_cy - 6, fur_dark)
+	_set_px(img, head_cx - 4, head_cy - 6, fur_color)
+	_set_px(img, head_cx - 5, head_cy - 7, fur_dark)
+	_set_px(img, head_cx + 5, head_cy - 6, fur_dark)
+	_set_px(img, head_cx + 4, head_cy - 6, fur_color)
+	_set_px(img, head_cx + 5, head_cy - 7, fur_dark)
+
+	# Body — small round
+	var body_cx := 14
+	var body_cy := 19
+	_draw_ellipse(img, body_cx, body_cy, 6, 5, outline)
+	_draw_ellipse(img, body_cx, body_cy, 5, 4, fur_color)
+	_draw_ellipse(img, body_cx, body_cy + 1, 3, 2, belly_color)
+
+	# Tiny arms
+	_draw_rect(img, body_cx - 6, 17, 2, 4, fur_dark)
+	_draw_rect(img, body_cx + 5, 17, 2, 4, fur_dark)
+
+	# Little legs
+	_draw_rect(img, body_cx - 4, 23, 3, 3, outline)
+	_draw_rect(img, body_cx - 3, 23, 1, 2, fur_dark)
+	_draw_rect(img, body_cx + 2, 23, 3, 3, outline)
+	_draw_rect(img, body_cx + 3, 23, 1, 2, fur_dark)
+
+	# Big bushy tail
+	match tail_type:
+		"fluffy":
+			_draw_ellipse(img, 25, 12, 5, 7, fur_color)
+			_draw_ellipse(img, 25, 11, 4, 5, fur_light)
+		"extra_fluffy":
+			_draw_ellipse(img, 25, 11, 6, 8, fur_color)
+			_draw_ellipse(img, 25, 10, 5, 6, fur_light)
+			_draw_circle(img, 26, 5, 3, fur_color)
+		"curled":
+			_draw_ellipse(img, 24, 13, 5, 6, fur_color)
+			_draw_ellipse(img, 24, 12, 4, 4, fur_light)
+			_draw_circle(img, 27, 8, 3, fur_color)
+			_draw_circle(img, 27, 8, 2, fur_light)
+
+	return ImageTexture.create_from_image(img)
+
+
+# ---------------------------------------------------------------------------
+# Generic dispatch — look up species by name
+# ---------------------------------------------------------------------------
+
+
+## Build a deterministic params dictionary for any species from an integer seed.
+static func species_params_from_seed(species_name: String, seed: int) -> Dictionary:
+	match species_name:
+		"Elf":
+			return elf_params_from_seed(seed)
+		"Capybara":
+			return capybara_params_from_seed(seed)
+		"Boar":
+			return boar_params_from_seed(seed)
+		"Deer":
+			return deer_params_from_seed(seed)
+		"Monkey":
+			return monkey_params_from_seed(seed)
+		"Squirrel":
+			return squirrel_params_from_seed(seed)
+		_:
+			return {"seed": seed}
+
+
+## Create a sprite texture for any species. `params` should come from
+## species_params_from_seed().
+static func create_species_sprite(species_name: String, params: Dictionary) -> ImageTexture:
+	match species_name:
+		"Elf":
+			return create_chibi_elf(params)
+		"Capybara":
+			return create_capybara(params)
+		"Boar":
+			return create_boar(params)
+		"Deer":
+			return create_deer(params)
+		"Monkey":
+			return create_monkey(params)
+		"Squirrel":
+			return create_squirrel(params)
+		_:
+			# Fallback: 16x16 magenta square
+			var img := Image.create(16, 16, false, Image.FORMAT_RGBA8)
+			img.fill(Color(1.0, 0.0, 1.0, 1.0))
+			return ImageTexture.create_from_image(img)

@@ -7,3 +7,7 @@
 # context.  Requiring longer names would hurt readability in pixel-drawing code.
 disable:
 - function-variable-name
+
+# sprite_factory.gd is a single class with many per-species sprite generators,
+# each with palette constants and drawing functions. 1000 lines is too tight.
+max-file-lines: 1100
