@@ -13,8 +13,9 @@
 //
 // A `SimCommand` carries a `player_id`, a `tick` (when to apply), and a
 // `SimAction` enum. Current actions:
-// - `DesignateBuild` / `CancelBuild` / `SetTaskPriority` — build system
-//   (placeholders, not yet wired).
+// - `DesignateBuild` — validate and create a blueprint (see `blueprint.rs`).
+// - `CancelBuild` — remove a blueprint by ProjectId.
+// - `SetTaskPriority` — build system (placeholder, not yet wired).
 // - `SetSimSpeed` — pause / play / fast-forward.
 // - `SpawnElf` / `SpawnCapybara` — place a creature at a voxel position.
 // - `CreateTask` — create a task at a voxel position (see `task.rs` for

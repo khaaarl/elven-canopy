@@ -113,12 +113,15 @@
 // See also: `event.rs` for the event queue, `command.rs` for `SimCommand`,
 // `config.rs` for `GameConfig`, `types.rs` for entity IDs, `world.rs` for
 // the voxel grid, `nav.rs` for navigation, `pathfinding.rs` for A*,
-// `task.rs` for `Task`/`TaskKind`/`TaskState`.
+// `task.rs` for `Task`/`TaskKind`/`TaskState`, `blueprint.rs` for the
+// blueprint data model used by `DesignateBuild`/`CancelBuild` commands.
 //
 // **Critical constraint: determinism.** All state mutations flow through
 // `SimCommand` or internal scheduled events. No external input (system time,
 // thread state, etc.) may influence the simulation.
 
+use crate::blueprint::Blueprint;
+use crate::blueprint::BlueprintState;
 use crate::command::{SimAction, SimCommand};
 use crate::config::GameConfig;
 use crate::event::{EventQueue, ScheduledEventKind, SimEvent, SimEventKind};
@@ -159,6 +162,10 @@ pub struct SimState {
 
     /// All tasks (go-to, build, harvest, etc.), keyed by ID.
     pub tasks: BTreeMap<TaskId, task::Task>,
+
+    /// All build blueprints (designated or complete), keyed by ProjectId.
+    #[serde(default)]
+    pub blueprints: BTreeMap<ProjectId, Blueprint>,
 
     /// The player's tree ID.
     pub player_tree_id: TreeId,
@@ -296,6 +303,7 @@ impl SimState {
             trees,
             creatures: BTreeMap::new(),
             tasks: BTreeMap::new(),
+            blueprints: BTreeMap::new(),
             player_tree_id,
             player_id,
             world,
@@ -385,11 +393,15 @@ impl SimState {
                 self.spawn_creature(Species::Capybara, *position, events);
             }
             // Other commands will be implemented as features are added.
-            SimAction::DesignateBuild { .. } => {
-                // TODO: Phase 2 — construction system.
+            SimAction::DesignateBuild {
+                build_type,
+                voxels,
+                priority,
+            } => {
+                self.designate_build(*build_type, voxels, *priority, events);
             }
-            SimAction::CancelBuild { .. } => {
-                // TODO: Phase 2 — construction system.
+            SimAction::CancelBuild { project_id } => {
+                self.cancel_build(*project_id, events);
             }
             SimAction::SetTaskPriority { .. } => {
                 // TODO: Phase 2 — task system.
@@ -401,6 +413,68 @@ impl SimState {
             } => {
                 self.create_task(kind.clone(), *position, *required_species);
             }
+        }
+    }
+
+    /// Validate and create a blueprint from a `DesignateBuild` command.
+    ///
+    /// Validation (silent no-op on failure, consistent with other commands):
+    /// - Voxels must be non-empty.
+    /// - All voxels must be in-bounds.
+    /// - All voxels must be Air.
+    /// - At least one voxel must have a solid face neighbor.
+    fn designate_build(
+        &mut self,
+        build_type: BuildType,
+        voxels: &[VoxelCoord],
+        priority: Priority,
+        events: &mut Vec<SimEvent>,
+    ) {
+        if voxels.is_empty() {
+            return;
+        }
+        for &coord in voxels {
+            if !self.world.in_bounds(coord) {
+                return;
+            }
+            if self.world.get(coord) != VoxelType::Air {
+                return;
+            }
+        }
+        let any_adjacent = voxels
+            .iter()
+            .any(|&coord| self.world.has_solid_face_neighbor(coord));
+        if !any_adjacent {
+            return;
+        }
+
+        let project_id = ProjectId::new(&mut self.rng);
+        let bp = Blueprint {
+            id: project_id,
+            build_type,
+            voxels: voxels.to_vec(),
+            priority,
+            state: BlueprintState::Designated,
+        };
+        self.blueprints.insert(project_id, bp);
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::BlueprintDesignated { project_id },
+        });
+    }
+
+    /// Cancel a blueprint by ProjectId. Emits `BuildCancelled` if found.
+    /// Silent no-op if the ProjectId doesn't exist (idempotent for multiplayer).
+    fn cancel_build(
+        &mut self,
+        project_id: ProjectId,
+        events: &mut Vec<SimEvent>,
+    ) {
+        if self.blueprints.remove(&project_id).is_some() {
+            events.push(SimEvent {
+                tick: self.tick,
+                kind: SimEventKind::BuildCancelled { project_id },
+            });
         }
     }
 
@@ -2090,5 +2164,259 @@ mod tests {
             .find(|c| c.species == Species::Elf)
             .unwrap();
         assert_eq!(elf.food, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Blueprint / construction tests
+    // -----------------------------------------------------------------------
+
+    /// Find an Air voxel that is face-adjacent to a trunk voxel.
+    /// Panics if none found (should never happen with a generated tree).
+    fn find_air_adjacent_to_trunk(sim: &SimState) -> VoxelCoord {
+        let tree = &sim.trees[&sim.player_tree_id];
+        for &trunk_coord in &tree.trunk_voxels {
+            for &(dx, dy, dz) in &[
+                (1, 0, 0),
+                (-1, 0, 0),
+                (0, 1, 0),
+                (0, -1, 0),
+                (0, 0, 1),
+                (0, 0, -1),
+            ] {
+                let neighbor = VoxelCoord::new(
+                    trunk_coord.x + dx,
+                    trunk_coord.y + dy,
+                    trunk_coord.z + dz,
+                );
+                if sim.world.in_bounds(neighbor)
+                    && sim.world.get(neighbor) == VoxelType::Air
+                {
+                    return neighbor;
+                }
+            }
+        }
+        panic!("No air voxel adjacent to trunk found");
+    }
+
+    #[test]
+    fn designate_build_creates_blueprint() {
+        let mut sim = SimState::new(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        let result = sim.step(&[cmd], 1);
+
+        assert_eq!(sim.blueprints.len(), 1);
+        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(bp.voxels, vec![air_coord]);
+        assert_eq!(bp.state, BlueprintState::Designated);
+        assert!(result.events.iter().any(|e| matches!(
+            e.kind,
+            SimEventKind::BlueprintDesignated { .. }
+        )));
+    }
+
+    #[test]
+    fn designate_build_rejects_out_of_bounds() {
+        let mut sim = SimState::new(42);
+        let oob = VoxelCoord::new(-1, 0, 0);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![oob],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert!(sim.blueprints.is_empty());
+    }
+
+    #[test]
+    fn designate_build_rejects_non_air() {
+        let mut sim = SimState::new(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        let trunk_coord = tree.trunk_voxels[0];
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![trunk_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert!(sim.blueprints.is_empty());
+    }
+
+    #[test]
+    fn designate_build_rejects_no_adjacency() {
+        let mut sim = SimState::new(42);
+        // Pick a coord far from any solid geometry.
+        let isolated = VoxelCoord::new(0, 50, 0);
+        assert_eq!(sim.world.get(isolated), VoxelType::Air);
+        assert!(!sim.world.has_solid_face_neighbor(isolated));
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![isolated],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert!(sim.blueprints.is_empty());
+    }
+
+    #[test]
+    fn designate_build_rejects_empty_voxels() {
+        let mut sim = SimState::new(42);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert!(sim.blueprints.is_empty());
+    }
+
+    #[test]
+    fn cancel_build_removes_blueprint() {
+        let mut sim = SimState::new(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // First designate.
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+        assert_eq!(sim.blueprints.len(), 1);
+        let project_id = *sim.blueprints.keys().next().unwrap();
+
+        // Now cancel.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::CancelBuild { project_id },
+        };
+        let result = sim.step(&[cmd2], 2);
+
+        assert!(sim.blueprints.is_empty());
+        assert!(result.events.iter().any(|e| matches!(
+            e.kind,
+            SimEventKind::BuildCancelled { .. }
+        )));
+    }
+
+    #[test]
+    fn cancel_build_nonexistent_is_noop() {
+        let mut sim = SimState::new(42);
+        let fake_id = ProjectId::new(&mut GameRng::new(999));
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::CancelBuild {
+                project_id: fake_id,
+            },
+        };
+        let result = sim.step(&[cmd], 1);
+
+        assert!(sim.blueprints.is_empty());
+        assert!(!result.events.iter().any(|e| matches!(
+            e.kind,
+            SimEventKind::BuildCancelled { .. }
+        )));
+    }
+
+    #[test]
+    fn sim_serialization_with_blueprints() {
+        let mut sim = SimState::new(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.blueprints.len(), 1);
+
+        let json = sim.to_json().unwrap();
+        let restored = SimState::from_json(&json).unwrap();
+
+        assert_eq!(restored.blueprints.len(), 1);
+        let bp = restored.blueprints.values().next().unwrap();
+        assert_eq!(bp.voxels, vec![air_coord]);
+        assert_eq!(bp.state, BlueprintState::Designated);
+    }
+
+    #[test]
+    fn blueprint_determinism() {
+        let mut sim_a = SimState::new(42);
+        let mut sim_b = SimState::new(42);
+
+        let air_a = find_air_adjacent_to_trunk(&sim_a);
+        let air_b = find_air_adjacent_to_trunk(&sim_b);
+        assert_eq!(air_a, air_b);
+
+        let cmd_a = SimCommand {
+            player_id: sim_a.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_a],
+                priority: Priority::Normal,
+            },
+        };
+        let cmd_b = SimCommand {
+            player_id: sim_b.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_b],
+                priority: Priority::Normal,
+            },
+        };
+        sim_a.step(&[cmd_a], 1);
+        sim_b.step(&[cmd_b], 1);
+
+        let id_a = *sim_a.blueprints.keys().next().unwrap();
+        let id_b = *sim_b.blueprints.keys().next().unwrap();
+        assert_eq!(id_a, id_b);
+        assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
     }
 }
