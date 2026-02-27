@@ -118,9 +118,7 @@ func _refresh_list() -> void:
 	dir.list_dir_end()
 
 	# Sort newest first.
-	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		return a["time"] > b["time"]
-	)
+	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["time"] > b["time"])
 
 	for entry in entries:
 		var display_name: String = entry["name"].get_basename()
@@ -133,7 +131,14 @@ func _input(event: InputEvent) -> void:
 		if event.keycode == KEY_ESCAPE:
 			queue_free()
 			get_viewport().set_input_as_handled()
-		elif not event.echo and (event.keycode == KEY_L or event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER):
+		elif (
+			not event.echo
+			and (
+				event.keycode == KEY_L
+				or event.keycode == KEY_ENTER
+				or event.keycode == KEY_KP_ENTER
+			)
+		):
 			get_viewport().set_input_as_handled()
 			_on_load_pressed()
 

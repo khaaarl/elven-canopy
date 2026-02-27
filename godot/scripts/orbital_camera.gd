@@ -27,6 +27,9 @@
 
 extends Node3D
 
+## Lerp speed for voxel snap (units per second, exponential decay).
+const SNAP_LERP_SPEED: float = 8.0
+
 ## Horizontal move speed in units per second.
 @export var move_speed: float = 20.0
 ## Rotation speed in radians per second (keyboard).
@@ -66,8 +69,6 @@ var _rotating: bool = false
 var _following: bool = false
 ## Whether voxel-snap is enabled (construction mode).
 var _snap_to_voxel: bool = false
-## Lerp speed for voxel snap (units per second, exponential decay).
-const SNAP_LERP_SPEED: float = 8.0
 ## Whether a tentative snap target is active (for short key taps in snap mode).
 var _has_tentative: bool = false
 ## Voxel center to snap to on short tap (when key released before crossing boundary).
@@ -111,11 +112,7 @@ func set_voxel_snap(enabled: bool) -> void:
 ## Returns the voxel coordinate the camera focus is currently snapped to.
 ## Useful for construction systems that need to know the selected voxel.
 func get_focus_voxel() -> Vector3i:
-	return Vector3i(
-		int(floor(position.x)),
-		int(floor(position.y)),
-		int(floor(position.z))
-	)
+	return Vector3i(int(floor(position.x)), int(floor(position.y)), int(floor(position.z)))
 
 
 func _ready() -> void:
@@ -150,11 +147,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and _rotating:
 		var mm := event as InputEventMouseMotion
 		_yaw -= mm.relative.x * mouse_rotation_sensitivity
-		_pitch = clamp(
-			_pitch + mm.relative.y * mouse_pitch_sensitivity,
-			pitch_min,
-			pitch_max
-		)
+		_pitch = clamp(_pitch + mm.relative.y * mouse_pitch_sensitivity, pitch_min, pitch_max)
 		_update_camera_transform()
 
 
@@ -165,9 +158,7 @@ func _process(delta: float) -> void:
 
 	# Capture pre-movement voxel center for tentative snap tracking.
 	var pre_move_voxel := Vector3(
-		floor(position.x) + 0.5,
-		floor(position.y) + 0.5,
-		floor(position.z) + 0.5
+		floor(position.x) + 0.5, floor(position.y) + 0.5, floor(position.z) + 0.5
 	)
 
 	# Horizontal movement relative to camera facing.
@@ -232,9 +223,7 @@ func _process(delta: float) -> void:
 	# crossed a voxel boundary (natural movement takes over).
 	if _snap_to_voxel and position_moved:
 		var post_move_voxel := Vector3(
-			floor(position.x) + 0.5,
-			floor(position.y) + 0.5,
-			floor(position.z) + 0.5
+			floor(position.x) + 0.5, floor(position.y) + 0.5, floor(position.z) + 0.5
 		)
 		if not _has_tentative:
 			# First frame of movement — record origin and set tentative.
@@ -265,9 +254,7 @@ func _process(delta: float) -> void:
 			snap_target = _tentative_target
 		else:
 			snap_target = Vector3(
-				floor(position.x) + 0.5,
-				floor(position.y) + 0.5,
-				floor(position.z) + 0.5
+				floor(position.x) + 0.5, floor(position.y) + 0.5, floor(position.z) + 0.5
 			)
 		var dist_sq := position.distance_squared_to(snap_target)
 		if dist_sq > 0.0001:
@@ -283,11 +270,7 @@ func _process(delta: float) -> void:
 
 func _update_camera_transform() -> void:
 	# Position the camera on a sphere around the focal point (this node).
-	var offset := Vector3(
-		sin(_yaw) * cos(_pitch),
-		sin(_pitch),
-		cos(_yaw) * cos(_pitch)
-	) * _zoom
+	var offset := Vector3(sin(_yaw) * cos(_pitch), sin(_pitch), cos(_yaw) * cos(_pitch)) * _zoom
 
 	_camera.position = offset
 	_camera.look_at(global_position)

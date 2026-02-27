@@ -26,10 +26,65 @@
 
 class_name SpriteFactory
 
+# ---------------------------------------------------------------------------
+# Elf palette constants
+# ---------------------------------------------------------------------------
+
+## Color palettes used by elf_params_from_seed.
+const HAIR_COLORS = [
+	Color(0.95, 0.85, 0.40),  # blonde
+	Color(0.85, 0.30, 0.20),  # red
+	Color(0.20, 0.65, 0.30),  # forest green
+	Color(0.35, 0.50, 0.90),  # blue
+	Color(0.82, 0.82, 0.88),  # silver
+	Color(0.50, 0.30, 0.15),  # brown
+	Color(0.90, 0.50, 0.70),  # pink
+]
+
+const EYE_COLORS = [
+	Color(0.30, 0.50, 0.90),  # blue
+	Color(0.25, 0.70, 0.35),  # green
+	Color(0.85, 0.65, 0.20),  # amber
+	Color(0.60, 0.30, 0.80),  # violet
+	Color(0.45, 0.30, 0.20),  # brown
+]
+
+const SKIN_TONES = [
+	Color(0.93, 0.80, 0.65),  # fair
+	Color(0.85, 0.70, 0.55),  # light
+	Color(0.72, 0.55, 0.40),  # medium
+	Color(0.55, 0.38, 0.25),  # dark
+]
+
+const HAIR_STYLES = ["straight_bangs", "side_swept", "wild"]
+const ROLES = ["warrior", "mage", "archer", "healer", "bard"]
+
+## Outfit base colors per role.
+const ROLE_OUTFIT_COLORS = {
+	"warrior": [Color(0.55, 0.20, 0.15), Color(0.40, 0.15, 0.10)],
+	"mage": [Color(0.25, 0.20, 0.65), Color(0.15, 0.12, 0.50)],
+	"archer": [Color(0.20, 0.50, 0.20), Color(0.15, 0.38, 0.15)],
+	"healer": [Color(0.90, 0.90, 0.85), Color(0.75, 0.75, 0.70)],
+	"bard": [Color(0.80, 0.55, 0.15), Color(0.65, 0.40, 0.10)],
+}
+
+# ---------------------------------------------------------------------------
+# Capybara palette constants
+# ---------------------------------------------------------------------------
+
+const CAPY_BODY_COLORS = [
+	Color(0.58, 0.42, 0.28),  # classic brown
+	Color(0.65, 0.48, 0.32),  # golden brown
+	Color(0.50, 0.36, 0.22),  # dark brown
+	Color(0.68, 0.55, 0.40),  # sandy
+]
+
+const CAPY_ACCESSORIES = ["none", "flower_crown", "scarf", "bow"]
 
 # ---------------------------------------------------------------------------
 # Drawing helpers
 # ---------------------------------------------------------------------------
+
 
 static func _set_px(img: Image, x: int, y: int, color: Color) -> void:
 	if x >= 0 and x < img.get_width() and y >= 0 and y < img.get_height():
@@ -90,49 +145,11 @@ static func _lighten(color: Color, amount: float = 0.2) -> Color:
 # Chibi elf generation
 # ---------------------------------------------------------------------------
 
-## Color palettes used by elf_params_from_seed.
-const HAIR_COLORS = [
-	Color(0.95, 0.85, 0.40),  # blonde
-	Color(0.85, 0.30, 0.20),  # red
-	Color(0.20, 0.65, 0.30),  # forest green
-	Color(0.35, 0.50, 0.90),  # blue
-	Color(0.82, 0.82, 0.88),  # silver
-	Color(0.50, 0.30, 0.15),  # brown
-	Color(0.90, 0.50, 0.70),  # pink
-]
-
-const EYE_COLORS = [
-	Color(0.30, 0.50, 0.90),  # blue
-	Color(0.25, 0.70, 0.35),  # green
-	Color(0.85, 0.65, 0.20),  # amber
-	Color(0.60, 0.30, 0.80),  # violet
-	Color(0.45, 0.30, 0.20),  # brown
-]
-
-const SKIN_TONES = [
-	Color(0.93, 0.80, 0.65),  # fair
-	Color(0.85, 0.70, 0.55),  # light
-	Color(0.72, 0.55, 0.40),  # medium
-	Color(0.55, 0.38, 0.25),  # dark
-]
-
-const HAIR_STYLES = ["straight_bangs", "side_swept", "wild"]
-const ROLES = ["warrior", "mage", "archer", "healer", "bard"]
-
-## Outfit base colors per role.
-const ROLE_OUTFIT_COLORS = {
-	"warrior": [Color(0.55, 0.20, 0.15), Color(0.40, 0.15, 0.10)],
-	"mage":    [Color(0.25, 0.20, 0.65), Color(0.15, 0.12, 0.50)],
-	"archer":  [Color(0.20, 0.50, 0.20), Color(0.15, 0.38, 0.15)],
-	"healer":  [Color(0.90, 0.90, 0.85), Color(0.75, 0.75, 0.70)],
-	"bard":    [Color(0.80, 0.55, 0.15), Color(0.65, 0.40, 0.10)],
-}
-
 
 ## Build a deterministic params dictionary from an integer seed.
 static func elf_params_from_seed(seed: int) -> Dictionary:
 	# Simple hashing to spread bits.
-	var h := absi(seed * 2654435761) # Knuth multiplicative hash (unsigned-ish)
+	var h := absi(seed * 2654435761)  # Knuth multiplicative hash (unsigned-ish)
 	return {
 		"hair_color": HAIR_COLORS[absi(h) % HAIR_COLORS.size()],
 		"eye_color": EYE_COLORS[absi(h / 7) % EYE_COLORS.size()],
@@ -380,15 +397,6 @@ static func create_chibi_elf(params: Dictionary) -> ImageTexture:
 # ---------------------------------------------------------------------------
 # Capybara generation
 # ---------------------------------------------------------------------------
-
-const CAPY_BODY_COLORS = [
-	Color(0.58, 0.42, 0.28),  # classic brown
-	Color(0.65, 0.48, 0.32),  # golden brown
-	Color(0.50, 0.36, 0.22),  # dark brown
-	Color(0.68, 0.55, 0.40),  # sandy
-]
-
-const CAPY_ACCESSORIES = ["none", "flower_crown", "scarf", "bow"]
 
 
 ## Build deterministic capybara params from an integer seed.

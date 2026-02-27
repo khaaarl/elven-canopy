@@ -97,7 +97,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		toggle()
 		get_viewport().set_input_as_handled()
-	elif visible and not _save_dialog_open and event is InputEventKey and event.pressed and not event.echo:
+	elif (
+		visible
+		and not _save_dialog_open
+		and event is InputEventKey
+		and event.pressed
+		and not event.echo
+	):
 		if event.keycode == KEY_Q:
 			get_tree().quit()
 		elif event.keycode == KEY_S and not _save_btn.disabled:
@@ -146,7 +152,7 @@ func _do_save(save_name: String) -> void:
 	# Sanitize file name: replace characters unsafe on Windows/macOS/Linux.
 	# Windows forbids: \ / : * ? " < > |
 	var safe_name := save_name
-	for ch in ["\\", "/", ":", "*", "?", "\"", "<", ">", "|"]:
+	for ch in ["\\", "/", ":", "*", "?", '"', "<", ">", "|"]:
 		safe_name = safe_name.replace(ch, "_")
 	var path := "user://saves/" + safe_name + ".json"
 

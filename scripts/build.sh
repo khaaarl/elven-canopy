@@ -9,6 +9,7 @@
 #   scripts/build.sh release  # release build
 #   scripts/build.sh test     # run sim tests then build
 #   scripts/build.sh run      # debug build then launch the game
+#   scripts/build.sh check    # run gdformat + gdlint checks
 #
 # Run from the repo root.
 
@@ -84,8 +85,17 @@ case "$MODE" in
         echo "Launching Elven Canopy..."
         godot --path "$REPO_ROOT/godot"
         ;;
+    check)
+        echo "Checking GDScript formatting..."
+        "$REPO_ROOT/python/.venv/bin/gdformat" --check --line-length 100 godot/scripts/*.gd
+        echo ""
+        echo "Running GDScript linter..."
+        "$REPO_ROOT/python/.venv/bin/gdlint" godot/scripts/*.gd
+        echo ""
+        echo "All checks passed."
+        ;;
     *)
-        echo "Usage: scripts/build.sh [debug|release|test|run]" >&2
+        echo "Usage: scripts/build.sh [debug|release|test|run|check]" >&2
         exit 1
         ;;
 esac

@@ -267,11 +267,14 @@ func _exit_placing() -> void:
 func _width_decrease() -> void:
 	_set_width(_width - 1)
 
+
 func _width_increase() -> void:
 	_set_width(_width + 1)
 
+
 func _depth_decrease() -> void:
 	_set_depth(_depth - 1)
+
 
 func _depth_increase() -> void:
 	_set_depth(_depth + 1)
@@ -313,9 +316,7 @@ func _process(_delta: float) -> void:
 	# Compute min-corner and position the ghost mesh centered on the rect.
 	var min_corner := _get_min_corner()
 	_ghost.global_position = Vector3(
-		min_corner.x + _width / 2.0,
-		_focus_voxel.y + 0.5,
-		min_corner.z + _depth / 2.0
+		min_corner.x + _width / 2.0, _focus_voxel.y + 0.5, min_corner.z + _depth / 2.0
 	)
 
 	# Validate the rectangle: ALL voxels must be in-bounds + Air, and
@@ -386,6 +387,5 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _confirm_placement() -> void:
 	var min_corner := _get_min_corner()
-	_bridge.designate_build_rect(
-		min_corner.x, min_corner.y, min_corner.z, _width, _depth)
+	_bridge.designate_build_rect(min_corner.x, min_corner.y, min_corner.z, _width, _depth)
 	blueprint_placed.emit()

@@ -90,21 +90,30 @@ func _draw_wireframe_cube(mesh: ImmediateMesh) -> void:
 	var half := 0.5
 	var corners = [
 		Vector3(-half, 0.0, -half),
-		Vector3( half, 0.0, -half),
-		Vector3( half, 0.0,  half),
-		Vector3(-half, 0.0,  half),
+		Vector3(half, 0.0, -half),
+		Vector3(half, 0.0, half),
+		Vector3(-half, 0.0, half),
 		Vector3(-half, 1.0, -half),
-		Vector3( half, 1.0, -half),
-		Vector3( half, 1.0,  half),
-		Vector3(-half, 1.0,  half),
+		Vector3(half, 1.0, -half),
+		Vector3(half, 1.0, half),
+		Vector3(-half, 1.0, half),
 	]
 	# Bottom face edges.
 	var edges = [
-		[0,1],[1,2],[2,3],[3,0],
+		[0, 1],
+		[1, 2],
+		[2, 3],
+		[3, 0],
 		# Top face edges.
-		[4,5],[5,6],[6,7],[7,4],
+		[4, 5],
+		[5, 6],
+		[6, 7],
+		[7, 4],
 		# Vertical edges.
-		[0,4],[1,5],[2,6],[3,7],
+		[0, 4],
+		[1, 5],
+		[2, 6],
+		[3, 7],
 	]
 	for e in edges:
 		mesh.surface_add_vertex(corners[e[0]])

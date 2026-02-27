@@ -1,0 +1,9 @@
+# gdlint configuration for Elven Canopy.
+#
+# Follows gdtoolkit defaults with targeted exceptions for this codebase's
+# patterns.  Run with: python/.venv/bin/gdlint godot/scripts/*.gd
+
+# Short variable names like W and H (for image width/height) are clear in
+# context.  Requiring longer names would hurt readability in pixel-drawing code.
+disable:
+- function-variable-name

@@ -20,12 +20,6 @@
 
 extends Control
 
-var _seed_input: LineEdit
-var _preset_button: OptionButton
-var _sliders: Dictionary = {}  # slider_name → HSlider
-var _value_labels: Dictionary = {}  # slider_name → Label
-var _active_preset_data: Dictionary = {}  # full TreeProfile dict for active preset
-
 # Preset names in display order (index must match OptionButton item indices).
 const PRESET_NAMES: Array[String] = ["Fantasy Mega", "Oak", "Conifer", "Willow"]
 
@@ -43,15 +37,18 @@ const SLIDER_DEFS: Array[Array] = [
 # Full TreeProfile dictionaries matching the Rust serde JSON schema.
 # These are the 4 named presets from config.rs.
 const PRESETS: Dictionary = {
-	"Fantasy Mega": {
-		"growth": {
+	"Fantasy Mega":
+	{
+		"growth":
+		{
 			"initial_energy": 400.0,
 			"energy_to_radius": 0.08,
 			"min_radius": 0.5,
 			"growth_step_length": 1.0,
 			"energy_per_step": 1.0,
 		},
-		"split": {
+		"split":
+		{
 			"split_chance_base": 0.12,
 			"split_count": 1,
 			"split_energy_ratio": 0.35,
@@ -59,38 +56,45 @@ const PRESETS: Dictionary = {
 			"split_angle_variance": 0.3,
 			"min_progress_for_split": 0.15,
 		},
-		"curvature": {
+		"curvature":
+		{
 			"gravitropism": 0.08,
 			"random_deflection": 0.15,
 			"deflection_coherence": 0.7,
 		},
-		"roots": {
+		"roots":
+		{
 			"root_energy_fraction": 0.15,
 			"root_initial_count": 5,
 			"root_gravitropism": 0.12,
 			"root_initial_angle": 0.3,
 			"root_surface_tendency": 0.8,
 		},
-		"leaves": {
+		"leaves":
+		{
 			"leaf_shape": "Sphere",
 			"leaf_density": 0.65,
 			"leaf_size": 3,
 			"canopy_density": 1.0,
 		},
-		"trunk": {
+		"trunk":
+		{
 			"base_flare": 0.5,
 			"initial_direction": [0.0, 1.0, 0.0],
 		},
 	},
-	"Oak": {
-		"growth": {
+	"Oak":
+	{
+		"growth":
+		{
 			"initial_energy": 250.0,
 			"energy_to_radius": 0.1,
 			"min_radius": 0.5,
 			"growth_step_length": 1.0,
 			"energy_per_step": 1.2,
 		},
-		"split": {
+		"split":
+		{
 			"split_chance_base": 0.18,
 			"split_count": 1,
 			"split_energy_ratio": 0.4,
@@ -98,38 +102,45 @@ const PRESETS: Dictionary = {
 			"split_angle_variance": 0.4,
 			"min_progress_for_split": 0.1,
 		},
-		"curvature": {
+		"curvature":
+		{
 			"gravitropism": 0.04,
 			"random_deflection": 0.2,
 			"deflection_coherence": 0.6,
 		},
-		"roots": {
+		"roots":
+		{
 			"root_energy_fraction": 0.12,
 			"root_initial_count": 4,
 			"root_gravitropism": 0.15,
 			"root_initial_angle": 0.2,
 			"root_surface_tendency": 0.9,
 		},
-		"leaves": {
+		"leaves":
+		{
 			"leaf_shape": "Cloud",
 			"leaf_density": 0.7,
 			"leaf_size": 3,
 			"canopy_density": 1.0,
 		},
-		"trunk": {
+		"trunk":
+		{
 			"base_flare": 0.3,
 			"initial_direction": [0.0, 1.0, 0.0],
 		},
 	},
-	"Conifer": {
-		"growth": {
+	"Conifer":
+	{
+		"growth":
+		{
 			"initial_energy": 300.0,
 			"energy_to_radius": 0.06,
 			"min_radius": 0.5,
 			"growth_step_length": 1.0,
 			"energy_per_step": 0.8,
 		},
-		"split": {
+		"split":
+		{
 			"split_chance_base": 0.08,
 			"split_count": 2,
 			"split_energy_ratio": 0.2,
@@ -137,38 +148,45 @@ const PRESETS: Dictionary = {
 			"split_angle_variance": 0.2,
 			"min_progress_for_split": 0.05,
 		},
-		"curvature": {
+		"curvature":
+		{
 			"gravitropism": 0.15,
 			"random_deflection": 0.05,
 			"deflection_coherence": 0.8,
 		},
-		"roots": {
+		"roots":
+		{
 			"root_energy_fraction": 0.1,
 			"root_initial_count": 3,
 			"root_gravitropism": 0.2,
 			"root_initial_angle": 0.5,
 			"root_surface_tendency": 0.5,
 		},
-		"leaves": {
+		"leaves":
+		{
 			"leaf_shape": "Sphere",
 			"leaf_density": 0.5,
 			"leaf_size": 2,
 			"canopy_density": 0.8,
 		},
-		"trunk": {
+		"trunk":
+		{
 			"base_flare": 0.2,
 			"initial_direction": [0.0, 1.0, 0.0],
 		},
 	},
-	"Willow": {
-		"growth": {
+	"Willow":
+	{
+		"growth":
+		{
 			"initial_energy": 200.0,
 			"energy_to_radius": 0.07,
 			"min_radius": 0.5,
 			"growth_step_length": 1.0,
 			"energy_per_step": 1.0,
 		},
-		"split": {
+		"split":
+		{
 			"split_chance_base": 0.15,
 			"split_count": 2,
 			"split_energy_ratio": 0.3,
@@ -176,30 +194,40 @@ const PRESETS: Dictionary = {
 			"split_angle_variance": 0.3,
 			"min_progress_for_split": 0.1,
 		},
-		"curvature": {
+		"curvature":
+		{
 			"gravitropism": -0.1,
 			"random_deflection": 0.1,
 			"deflection_coherence": 0.9,
 		},
-		"roots": {
+		"roots":
+		{
 			"root_energy_fraction": 0.1,
 			"root_initial_count": 4,
 			"root_gravitropism": 0.1,
 			"root_initial_angle": 0.3,
 			"root_surface_tendency": 0.7,
 		},
-		"leaves": {
+		"leaves":
+		{
 			"leaf_shape": "Sphere",
 			"leaf_density": 0.4,
 			"leaf_size": 2,
 			"canopy_density": 1.2,
 		},
-		"trunk": {
+		"trunk":
+		{
 			"base_flare": 0.15,
 			"initial_direction": [0.0, 1.0, 0.0],
 		},
 	},
 }
+
+var _seed_input: LineEdit
+var _preset_button: OptionButton
+var _sliders: Dictionary = {}  # slider_name → HSlider
+var _value_labels: Dictionary = {}  # slider_name → Label
+var _active_preset_data: Dictionary = {}  # full TreeProfile dict for active preset
 
 
 func _ready() -> void:
@@ -392,6 +420,7 @@ func _on_start_pressed() -> void:
 
 
 # --- Utility: nested dictionary access via "group.field" paths ---
+
 
 ## Read a value from a nested dictionary using a dot-separated path.
 func _get_nested(dict: Dictionary, path: String) -> Variant:

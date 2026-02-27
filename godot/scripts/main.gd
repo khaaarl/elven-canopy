@@ -82,7 +82,12 @@ func _ready() -> void:
 			bridge.init_sim_with_tree_profile_json(sim_seed, json_str)
 		else:
 			bridge.init_sim(sim_seed)
-		print("Elven Canopy: sim initialized (seed=%d, mana=%.1f)" % [sim_seed, bridge.home_tree_mana()])
+		print(
+			(
+				"Elven Canopy: sim initialized (seed=%d, mana=%.1f)"
+				% [sim_seed, bridge.home_tree_mana()]
+			)
+		)
 
 		# Spawn initial creatures.
 		var cx := 128
@@ -94,7 +99,12 @@ func _ready() -> void:
 
 		for i in 5:
 			bridge.spawn_capybara(cx, 0, cz)
-		print("Elven Canopy: spawned %d capybaras near (%d, 0, %d)" % [bridge.capybara_count(), cx, cz])
+		print(
+			(
+				"Elven Canopy: spawned %d capybaras near (%d, 0, %d)"
+				% [bridge.capybara_count(), cx, cz]
+			)
+		)
 
 	# --- Common setup (new game and loaded game) ---
 
@@ -142,15 +152,16 @@ func _ready() -> void:
 	canvas_layer.add_child(_construction_controller.get_panel())
 
 	# Entering construction mode: deselect creature, cancel placement.
-	_construction_controller.construction_mode_entered.connect(func():
-		if controller.is_placing():
-			controller.cancel_placement()
-		if _selector:
-			_selector.deselect()
-		if _panel:
-			_panel.hide_panel()
-		if _camera_pivot:
-			_camera_pivot.stop_follow()
+	_construction_controller.construction_mode_entered.connect(
+		func():
+			if controller.is_placing():
+				controller.cancel_placement()
+			if _selector:
+				_selector.deselect()
+			if _panel:
+				_panel.hide_panel()
+			if _camera_pivot:
+				_camera_pivot.stop_follow()
 	)
 
 	# Set up blueprint renderer (shows designated blueprints as ghost cubes).
@@ -177,15 +188,17 @@ func _ready() -> void:
 
 	# Wire selection -> panel.
 	_camera_pivot = $CameraPivot
-	_selector.creature_selected.connect(func(species: String, index: int):
-		var tick := float(bridge.current_tick())
-		var info := bridge.get_creature_info(species, index, tick)
-		if not info.is_empty():
-			_panel.show_creature(species, index, info)
+	_selector.creature_selected.connect(
+		func(species: String, index: int):
+			var tick := float(bridge.current_tick())
+			var info := bridge.get_creature_info(species, index, tick)
+			if not info.is_empty():
+				_panel.show_creature(species, index, info)
 	)
-	_selector.creature_deselected.connect(func():
-		_panel.hide_panel()
-		_camera_pivot.stop_follow()
+	_selector.creature_deselected.connect(
+		func():
+			_panel.hide_panel()
+			_camera_pivot.stop_follow()
 	)
 
 	# Menu button (top-right corner, on the same CanvasLayer as toolbar).
@@ -209,19 +222,20 @@ func _ready() -> void:
 	menu_btn.pressed.connect(pause_menu.toggle)
 
 	# Wire follow button -> camera.
-	_panel.follow_requested.connect(func():
-		var tick := float(bridge.current_tick())
-		var pos = _get_creature_world_pos(bridge, tick,
-			_selector.get_selected_species(), _selector.get_selected_index())
-		if pos != null:
-			_camera_pivot.start_follow(pos)
+	_panel.follow_requested.connect(
+		func():
+			var tick := float(bridge.current_tick())
+			var pos = _get_creature_world_pos(
+				bridge, tick, _selector.get_selected_species(), _selector.get_selected_index()
+			)
+			if pos != null:
+				_camera_pivot.start_follow(pos)
 	)
-	_panel.unfollow_requested.connect(func():
-		_camera_pivot.stop_follow()
-	)
-	_panel.panel_closed.connect(func():
-		_selector.deselect()
-		_camera_pivot.stop_follow()
+	_panel.unfollow_requested.connect(func(): _camera_pivot.stop_follow())
+	_panel.panel_closed.connect(
+		func():
+			_selector.deselect()
+			_camera_pivot.stop_follow()
 	)
 
 
@@ -265,8 +279,9 @@ func _process(delta: float) -> void:
 
 	# Update follow target each frame so the camera tracks creature movement.
 	if _camera_pivot and _camera_pivot.is_following():
-		var pos = _get_creature_world_pos(bridge, render_tick,
-			_selector.get_selected_species(), _selector.get_selected_index())
+		var pos = _get_creature_world_pos(
+			bridge, render_tick, _selector.get_selected_species(), _selector.get_selected_index()
+		)
 		if pos != null:
 			_camera_pivot.update_follow_target(pos)
 		else:
@@ -280,8 +295,8 @@ func _process(delta: float) -> void:
 	# Refresh panel info while a creature is selected.
 	if _panel and _panel.visible and _selector.get_selected_index() >= 0:
 		var info := bridge.get_creature_info(
-			_selector.get_selected_species(), _selector.get_selected_index(),
-			render_tick)
+			_selector.get_selected_species(), _selector.get_selected_index(), render_tick
+		)
 		if not info.is_empty():
 			_panel.update_info(info)
 
@@ -289,8 +304,9 @@ func _process(delta: float) -> void:
 ## Get the world-space position of a creature sprite, matching the offsets
 ## used by elf_renderer.gd (+0.48 Y) and capybara_renderer.gd (+0.32 Y).
 ## Uses render_tick for smooth interpolation between nav nodes.
-func _get_creature_world_pos(bridge: SimBridge, render_tick: float,
-		species: String, index: int) -> Variant:
+func _get_creature_world_pos(
+	bridge: SimBridge, render_tick: float, species: String, index: int
+) -> Variant:
 	if species == "Elf":
 		var positions := bridge.get_elf_positions(render_tick)
 		if index >= 0 and index < positions.size():

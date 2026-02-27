@@ -147,6 +147,44 @@ python rate_midi.py          # Pairwise MIDI comparison for preference model tra
 
 When upgrading the `godot` crate, check for a matching `api-4-x` feature flag. The API version must be ≤ the Godot runtime version.
 
+## Code Quality Tools
+
+GDScript files are checked with **gdformat** (formatter) and **gdlint** (linter) from the [gdtoolkit](https://github.com/Scony/godot-gdscript-toolkit) package.
+
+**Setup (one-time):**
+
+```bash
+cd python && python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+```
+
+If the venv already exists, just activate and install:
+
+```bash
+source python/.venv/bin/activate && pip install -r python/requirements-dev.txt
+```
+
+**Running checks:**
+
+```bash
+scripts/build.sh check   # runs gdformat --check + gdlint on all GDScript files
+```
+
+Or individually:
+
+```bash
+python/.venv/bin/gdformat --check --line-length 100 godot/scripts/*.gd
+python/.venv/bin/gdlint godot/scripts/*.gd
+```
+
+**Auto-formatting:** To apply formatting fixes, run `gdformat` without `--check`:
+
+```bash
+python/.venv/bin/gdformat --line-length 100 godot/scripts/*.gd
+```
+
+**Configuration:** `.gdlintrc` at the repo root configures gdlint. Currently disables `function-variable-name` (short names like `W`/`H` are intentional in pixel-drawing code). CI runs the same checks via `.github/workflows/lint.yml`.
+
 ## Running Commands
 
 The repo's `.claude/settings.json` sets `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1`, which resets the Bash tool's working directory to the project root before every command. This means you never need to worry about working directory drift — just write commands relative to the repo root.

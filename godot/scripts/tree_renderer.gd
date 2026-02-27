@@ -43,8 +43,7 @@ func setup(bridge: SimBridge) -> void:
 	var trunk_count := trunk_voxels.size() / 3
 	if trunk_count > 0:
 		_trunk_mesh_instance = _create_voxel_multimesh(
-			trunk_voxels, trunk_count,
-			Color(0.35, 0.22, 0.10)  # Dark brown
+			trunk_voxels, trunk_count, Color(0.35, 0.22, 0.10)  # Dark brown
 		)
 		_trunk_mesh_instance.name = "TrunkMultiMesh"
 		add_child(_trunk_mesh_instance)
@@ -54,8 +53,7 @@ func setup(bridge: SimBridge) -> void:
 	var branch_count := branch_voxels.size() / 3
 	if branch_count > 0:
 		_branch_mesh_instance = _create_voxel_multimesh(
-			branch_voxels, branch_count,
-			Color(0.45, 0.30, 0.15)  # Lighter brown
+			branch_voxels, branch_count, Color(0.45, 0.30, 0.15)  # Lighter brown
 		)
 		_branch_mesh_instance.name = "BranchMultiMesh"
 		add_child(_branch_mesh_instance)
@@ -65,8 +63,7 @@ func setup(bridge: SimBridge) -> void:
 	var root_count := root_voxels.size() / 3
 	if root_count > 0:
 		_root_mesh_instance = _create_voxel_multimesh(
-			root_voxels, root_count,
-			Color(0.30, 0.20, 0.12)  # Dark earthy brown
+			root_voxels, root_count, Color(0.30, 0.20, 0.12)  # Dark earthy brown
 		)
 		_root_mesh_instance.name = "RootMultiMesh"
 		add_child(_root_mesh_instance)
@@ -87,9 +84,12 @@ func setup(bridge: SimBridge) -> void:
 		_fruit_mesh_instance.name = "FruitMultiMesh"
 		add_child(_fruit_mesh_instance)
 
-	print("TreeRenderer: %d trunk, %d branch, %d root, %d leaf, %d fruit voxels" % [
-		trunk_count, branch_count, root_count, leaf_count, fruit_count
-	])
+	print(
+		(
+			"TreeRenderer: %d trunk, %d branch, %d root, %d leaf, %d fruit voxels"
+			% [trunk_count, branch_count, root_count, leaf_count, fruit_count]
+		)
+	)
 
 
 func _create_voxel_multimesh(
@@ -121,9 +121,7 @@ func _create_voxel_multimesh(
 	return instance
 
 
-func _create_leaf_multimesh(
-	voxels: PackedInt32Array, count: int
-) -> MultiMeshInstance3D:
+func _create_leaf_multimesh(voxels: PackedInt32Array, count: int) -> MultiMeshInstance3D:
 	var mesh := BoxMesh.new()
 	mesh.size = Vector3(1.0, 1.0, 1.0)
 
@@ -155,9 +153,7 @@ func _create_leaf_multimesh(
 	return instance
 
 
-func _create_fruit_multimesh(
-	voxels: PackedInt32Array, count: int
-) -> MultiMeshInstance3D:
+func _create_fruit_multimesh(voxels: PackedInt32Array, count: int) -> MultiMeshInstance3D:
 	var mesh := SphereMesh.new()
 	mesh.radius = 0.4
 	mesh.height = 0.8

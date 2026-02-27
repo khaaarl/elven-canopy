@@ -160,8 +160,9 @@ func _update_food(info: Dictionary) -> void:
 
 
 func _update_position(info: Dictionary) -> void:
-	_position_label.text = "Position: (%d, %d, %d)" % [
-		info.get("x", 0), info.get("y", 0), info.get("z", 0)]
+	_position_label.text = (
+		"Position: (%d, %d, %d)" % [info.get("x", 0), info.get("y", 0), info.get("z", 0)]
+	)
 
 
 func _on_follow_pressed() -> void:
