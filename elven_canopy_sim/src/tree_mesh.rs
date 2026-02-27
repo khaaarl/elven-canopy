@@ -1,10 +1,10 @@
 // Beveled tree mesh generation from voxel data.
 //
 // Produces neighbor-aware beveled mesh geometry for wood voxels (trunk, branch,
-// root). Each exposed face is decomposed into a center quad (inset by
-// `bevel_inset`) plus 4 edge strips that form chamfered transitions between
-// adjacent faces. Hidden faces (where a neighbor is also wood) are culled
-// entirely, and fully enclosed voxels produce no geometry.
+// root). Each exposed face is decomposed into a center quad plus 4 edge strips
+// that form chamfered transitions between adjacent faces. Hidden faces (where a
+// neighbor is also wood) are culled entirely, and fully enclosed voxels produce
+// no geometry.
 //
 // This is a **read-only rendering utility** — it consumes `VoxelWorld` data and
 // produces geometry buffers (`MeshData`) and procedural textures (`TextureData`)
@@ -14,11 +14,22 @@
 // but this is a convenience, not a correctness requirement.)
 //
 // The beveled face decomposition per exposed face:
-//   1 center quad  — the face inset from all 4 edges, normal = face normal
-//   4 edge strips  — trapezoids connecting center quad edges to the voxel's
-//                    outer edges. If the adjacent face sharing that edge is also
-//                    exposed, the strip gets a chamfered normal (average of the
-//                    two face normals); otherwise it gets the flat face normal.
+//   1 center quad  — the face inset from beveled edges, normal = face normal
+//   4 edge strips  — trapezoids connecting center quad edges to the outer edges.
+//                    Beveled strips get a chamfered normal (average of the two
+//                    face normals); flat strips get the face normal.
+//
+// Per-edge bevel determination:
+//   An edge is beveled only when the adjacent face is exposed AND the diagonal
+//   neighbor voxel (face_delta + adj_face_delta) is not wood. This ensures:
+//   - Face-adjacent wood: edges on the shared boundary are flat (continuous).
+//   - Edge-adjacent (diagonal) wood: the shared edge is also flat.
+//
+// Per-corner geometry:
+//   Each corner's inset depends on which of its 2 adjacent edges are beveled.
+//   Outer corners are recessed along the face normal only when BOTH edges are
+//   beveled. At cube vertices where all 3 meeting faces are exposed and all
+//   edges are beveled, a small corner triangle fills the gap.
 //
 // The companion `generate_bark_texture()` creates a simple procedural RGBA8
 // texture with vertical streaks and noise, suitable for tiling across the mesh.
@@ -131,6 +142,11 @@ struct FaceDesc {
     /// Neighbor offset — the voxel coordinate delta for the neighbor on
     /// this face's side.
     neighbor_delta: [i32; 3],
+    /// For each edge i (from corner[i] to corner[(i+1)%4]), the unit vector
+    /// perpendicular to the edge on the face plane, pointing toward the face
+    /// center. Used to compute per-corner insets when only some edges are
+    /// beveled.
+    edge_inward: [[f32; 3]; 4],
 }
 
 /// The 6 faces of a unit cube. Order: +X, -X, +Y, -Y, +Z, -Z.
@@ -150,6 +166,7 @@ const FACES: [FaceDesc; 6] = [
         normal: [1.0, 0.0, 0.0],
         edge_adj: [3, 4, 2, 5], // bottom→-Y, right→+Z, top→+Y, left→-Z
         neighbor_delta: [1, 0, 0],
+        edge_inward: [[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]],
     },
     // Face 1: -X (left)
     // Viewed from -X: corners go BL→BR→TR→TL (Y up, Z left)
@@ -163,6 +180,7 @@ const FACES: [FaceDesc; 6] = [
         normal: [-1.0, 0.0, 0.0],
         edge_adj: [3, 5, 2, 4], // bottom→-Y, right→-Z, top→+Y, left→+Z
         neighbor_delta: [-1, 0, 0],
+        edge_inward: [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
     },
     // Face 2: +Y (top)
     // Viewed from +Y (above): corners go near-L→near-R→far-R→far-L
@@ -176,6 +194,7 @@ const FACES: [FaceDesc; 6] = [
         normal: [0.0, 1.0, 0.0],
         edge_adj: [5, 0, 4, 1], // near→-Z, right→+X, far→+Z, left→-X
         neighbor_delta: [0, 1, 0],
+        edge_inward: [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]],
     },
     // Face 3: -Y (bottom)
     // Viewed from -Y (below): corners go far-L→far-R→near-R→near-L
@@ -189,6 +208,7 @@ const FACES: [FaceDesc; 6] = [
         normal: [0.0, -1.0, 0.0],
         edge_adj: [4, 0, 5, 1], // far→+Z, right→+X, near→-Z, left→-X
         neighbor_delta: [0, -1, 0],
+        edge_inward: [[0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
     },
     // Face 4: +Z (front)
     // Viewed from +Z: corners go BR→BL→TL→TR (Y up, X left)
@@ -202,6 +222,7 @@ const FACES: [FaceDesc; 6] = [
         normal: [0.0, 0.0, 1.0],
         edge_adj: [3, 1, 2, 0], // bottom→-Y, left→-X, top→+Y, right→+X
         neighbor_delta: [0, 0, 1],
+        edge_inward: [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [-1.0, 0.0, 0.0]],
     },
     // Face 5: -Z (back)
     // Viewed from -Z: corners go BL→BR→TR→TL (Y up, X right)
@@ -215,6 +236,7 @@ const FACES: [FaceDesc; 6] = [
         normal: [0.0, 0.0, -1.0],
         edge_adj: [3, 0, 2, 1], // bottom→-Y, right→+X, top→+Y, left→-X
         neighbor_delta: [0, 0, -1],
+        edge_inward: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]],
     },
 ];
 
@@ -235,15 +257,6 @@ fn normalize(v: &mut [f32; 3]) {
         v[1] /= len;
         v[2] /= len;
     }
-}
-
-/// Linearly interpolate between two 3D points.
-fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-    ]
 }
 
 /// Project a 3D position onto 2D UV coordinates based on the face normal.
@@ -312,32 +325,82 @@ pub fn generate_tree_mesh(
                 ]
             });
 
-            // Compute inset (center quad) corners — inset from each edge on
-            // the face plane, staying at the original face distance along the
-            // normal. This is the flat center of the beveled face.
-            let center = [
-                (abs_corners[0][0] + abs_corners[1][0] + abs_corners[2][0] + abs_corners[3][0])
-                    / 4.0,
-                (abs_corners[0][1] + abs_corners[1][1] + abs_corners[2][1] + abs_corners[3][1])
-                    / 4.0,
-                (abs_corners[0][2] + abs_corners[1][2] + abs_corners[2][2] + abs_corners[3][2])
-                    / 4.0,
-            ];
+            // --- Per-edge bevel determination ---
+            // An edge should be beveled only when it's a genuinely exposed
+            // corner. Edge i borders adjacent face adj_fi. The edge is beveled
+            // when BOTH:
+            //   (a) The adjacent face adj_fi is exposed (its face-neighbor is
+            //       not wood), AND
+            //   (b) The diagonal neighbor voxel (voxel + face.neighbor_delta +
+            //       FACES[adj_fi].neighbor_delta) is not wood.
+            // If either fails, the edge is "flat" — no bevel recess there.
+            let edge_beveled: [bool; 4] = std::array::from_fn(|edge_idx| {
+                let adj_fi = face.edge_adj[edge_idx];
+                if !exposed[adj_fi] {
+                    return false; // adjacent face hidden by face-neighbor wood
+                }
+                // Check diagonal neighbor
+                let adj_nd = FACES[adj_fi].neighbor_delta;
+                let diag = VoxelCoord::new(
+                    voxel.x + face.neighbor_delta[0] + adj_nd[0],
+                    voxel.y + face.neighbor_delta[1] + adj_nd[1],
+                    voxel.z + face.neighbor_delta[2] + adj_nd[2],
+                );
+                !is_wood(world.get(diag))
+            });
 
-            let inset_corners: [[f32; 3]; 4] =
-                std::array::from_fn(|ci| lerp3(center, abs_corners[ci], 1.0 - inset * 2.0));
+            // --- Per-corner inset and recess ---
+            // Each corner ci is at the junction of edge (ci-1) and edge ci.
+            // (Edge ci goes from corner[ci] to corner[(ci+1)%4], so corner ci
+            // is the START of edge ci and the END of edge (ci-1)%4.)
+            //
+            // The inset position depends on which adjacent edges are beveled:
+            //   Both beveled → inset from both edges (toward center)
+            //   One beveled  → inset only from the beveled edge
+            //   Neither      → stay at original face corner (no inset)
+            //
+            // The recess (pulling the outer corner toward the voxel center
+            // along the face normal) only happens when BOTH edges are beveled.
+            let prev_edge = |ci: usize| (ci + 3) % 4;
 
-            // Compute recessed outer corners — the original face corners pulled
-            // inward along the face normal by `inset`. This is the key to actual
-            // 3D bevel geometry: the center quad sits at the face surface, and
-            // the edge strips angle down from the center quad to these recessed
-            // positions, creating visible chamfered edges.
-            let recessed_corners: [[f32; 3]; 4] = std::array::from_fn(|ci| {
-                [
-                    abs_corners[ci][0] - face.normal[0] * inset,
-                    abs_corners[ci][1] - face.normal[1] * inset,
-                    abs_corners[ci][2] - face.normal[2] * inset,
-                ]
+            let inset_corners: [[f32; 3]; 4] = std::array::from_fn(|ci| {
+                let bevel_prev = edge_beveled[prev_edge(ci)];
+                let bevel_cur = edge_beveled[ci];
+                let mut pos = abs_corners[ci];
+                if bevel_prev {
+                    // Inset from edge (ci-1): push along edge_inward of that edge
+                    let iw = face.edge_inward[prev_edge(ci)];
+                    pos[0] += iw[0] * inset;
+                    pos[1] += iw[1] * inset;
+                    pos[2] += iw[2] * inset;
+                }
+                if bevel_cur {
+                    // Inset from edge ci: push along edge_inward of this edge
+                    // But edge_inward points from edge toward center. The start
+                    // corner of edge ci is corner ci. The perpendicular inward
+                    // from edge ci at corner ci is edge_inward[ci].
+                    let iw = face.edge_inward[ci];
+                    pos[0] += iw[0] * inset;
+                    pos[1] += iw[1] * inset;
+                    pos[2] += iw[2] * inset;
+                }
+                pos
+            });
+
+            let outer_corners: [[f32; 3]; 4] = std::array::from_fn(|ci| {
+                let bevel_prev = edge_beveled[prev_edge(ci)];
+                let bevel_cur = edge_beveled[ci];
+                if bevel_prev && bevel_cur {
+                    // Both edges beveled — recess along normal
+                    [
+                        abs_corners[ci][0] - face.normal[0] * inset,
+                        abs_corners[ci][1] - face.normal[1] * inset,
+                        abs_corners[ci][2] - face.normal[2] * inset,
+                    ]
+                } else {
+                    // One or zero edges beveled — stay at face plane
+                    abs_corners[ci]
+                }
             });
 
             // Emit center quad with face normal.
@@ -350,23 +413,22 @@ pub fn generate_tree_mesh(
                 face.normal,
             );
 
-            // Emit 4 edge strips — trapezoids connecting the inset center quad
-            // edges (at the face surface) to the recessed outer edges (pulled
-            // inward). These create the actual angled bevel geometry.
+            // Emit 4 edge strips.
             for edge_idx in 0..4 {
                 let next_idx = (edge_idx + 1) % 4;
-                let adj_face_idx = face.edge_adj[edge_idx];
 
-                // Strip corners: outer (recessed) → inner (center quad edge)
-                let outer0 = recessed_corners[edge_idx];
-                let outer1 = recessed_corners[next_idx];
+                // Strip corners: outer → inner (center quad edge)
+                let outer0 = outer_corners[edge_idx];
+                let outer1 = outer_corners[next_idx];
                 let inner1 = inset_corners[next_idx];
                 let inner0 = inset_corners[edge_idx];
 
                 // Determine the strip normal.
-                let strip_normal = if exposed[adj_face_idx] {
-                    // Adjacent face is also exposed — chamfered normal.
-                    let adj_n = FACES[adj_face_idx].normal;
+                let strip_normal = if edge_beveled[edge_idx] {
+                    // Edge is beveled — chamfered normal (average of the two
+                    // face normals).
+                    let adj_fi = face.edge_adj[edge_idx];
+                    let adj_n = FACES[adj_fi].normal;
                     let mut avg = [
                         face.normal[0] + adj_n[0],
                         face.normal[1] + adj_n[1],
@@ -375,11 +437,106 @@ pub fn generate_tree_mesh(
                     normalize(&mut avg);
                     avg
                 } else {
-                    // Adjacent face is hidden — flat face normal.
+                    // Edge is flat — face normal.
                     face.normal
                 };
 
                 emit_quad(&mut mesh, outer0, outer1, inner1, inner0, strip_normal);
+            }
+        }
+
+        // --- Corner triangles ---
+        // At each of the 8 cube vertices, 3 faces meet. When all 3 faces are
+        // exposed and all 3 edges at that vertex are beveled (i.e., all 3
+        // diagonal neighbors in those directions are air), the beveled recess
+        // creates a small triangular gap. Emit a triangle to fill it.
+        //
+        // Table: for each cube corner (cx, cy, cz ∈ {0,1}), the 3 face indices
+        // that meet there.
+        const CORNER_FACES: [([i32; 3], [usize; 3]); 8] = [
+            ([0, 0, 0], [1, 3, 5]), // -X, -Y, -Z
+            ([1, 0, 0], [0, 3, 5]), // +X, -Y, -Z
+            ([0, 1, 0], [1, 2, 5]), // -X, +Y, -Z
+            ([1, 1, 0], [0, 2, 5]), // +X, +Y, -Z
+            ([0, 0, 1], [1, 3, 4]), // -X, -Y, +Z
+            ([1, 0, 1], [0, 3, 4]), // +X, -Y, +Z
+            ([0, 1, 1], [1, 2, 4]), // -X, +Y, +Z
+            ([1, 1, 1], [0, 2, 4]), // +X, +Y, +Z
+        ];
+
+        for &(corner_pos, face_idxs) in &CORNER_FACES {
+            let [f0, f1, f2] = face_idxs;
+
+            // All 3 faces must be exposed.
+            if !exposed[f0] || !exposed[f1] || !exposed[f2] {
+                continue;
+            }
+
+            // All 3 diagonal neighbors (pairs of face normals) must be air.
+            // The diagonal for faces fi and fj is at
+            //   voxel + FACES[fi].neighbor_delta + FACES[fj].neighbor_delta.
+            let pairs = [(f0, f1), (f0, f2), (f1, f2)];
+            let all_diag_air = pairs.iter().all(|&(fa, fb)| {
+                let da = FACES[fa].neighbor_delta;
+                let db = FACES[fb].neighbor_delta;
+                let diag = VoxelCoord::new(
+                    voxel.x + da[0] + db[0],
+                    voxel.y + da[1] + db[1],
+                    voxel.z + da[2] + db[2],
+                );
+                !is_wood(world.get(diag))
+            });
+            if !all_diag_air {
+                continue;
+            }
+
+            // Also check the body diagonal (all 3 face normals summed).
+            let d0 = FACES[f0].neighbor_delta;
+            let d1 = FACES[f1].neighbor_delta;
+            let d2 = FACES[f2].neighbor_delta;
+            let body_diag = VoxelCoord::new(
+                voxel.x + d0[0] + d1[0] + d2[0],
+                voxel.y + d0[1] + d1[1] + d2[1],
+                voxel.z + d0[2] + d1[2] + d2[2],
+            );
+            if is_wood(world.get(body_diag)) {
+                continue;
+            }
+
+            // Compute the 3 recessed corner positions — one from each face's
+            // outer_corner at this vertex. Each face recesses the shared cube
+            // corner along its own normal.
+            let abs_corner = [
+                base[0] + corner_pos[0] as f32,
+                base[1] + corner_pos[1] as f32,
+                base[2] + corner_pos[2] as f32,
+            ];
+
+            let recessed: [[f32; 3]; 3] = std::array::from_fn(|i| {
+                let n = FACES[face_idxs[i]].normal;
+                [
+                    abs_corner[0] - n[0] * inset,
+                    abs_corner[1] - n[1] * inset,
+                    abs_corner[2] - n[2] * inset,
+                ]
+            });
+
+            // Normal: normalized sum of the 3 face normals (points outward
+            // along the body diagonal).
+            let mut tri_normal = [
+                FACES[f0].normal[0] + FACES[f1].normal[0] + FACES[f2].normal[0],
+                FACES[f0].normal[1] + FACES[f1].normal[1] + FACES[f2].normal[1],
+                FACES[f0].normal[2] + FACES[f1].normal[2] + FACES[f2].normal[2],
+            ];
+            normalize(&mut tri_normal);
+
+            // Winding: we need CCW when viewed from outside. The parity of the
+            // corner determines whether we need to swap winding.
+            let parity = corner_pos[0] + corner_pos[1] + corner_pos[2];
+            if parity % 2 == 0 {
+                emit_triangle(&mut mesh, recessed[0], recessed[2], recessed[1], tri_normal);
+            } else {
+                emit_triangle(&mut mesh, recessed[0], recessed[1], recessed[2], tri_normal);
             }
         }
     }
@@ -414,6 +571,29 @@ fn emit_quad(
     mesh.indices.push(base_idx);
     mesh.indices.push(base_idx + 2);
     mesh.indices.push(base_idx + 3);
+}
+
+/// Emit a single triangle into the mesh data.
+/// Corners are expected in CCW order when viewed from the front.
+fn emit_triangle(
+    mesh: &mut MeshData,
+    c0: [f32; 3],
+    c1: [f32; 3],
+    c2: [f32; 3],
+    normal: [f32; 3],
+) {
+    let base_idx = (mesh.vertices.len() / 3) as u32;
+
+    for &corner in &[c0, c1, c2] {
+        mesh.vertices.extend_from_slice(&corner);
+        mesh.normals.extend_from_slice(&normal);
+        let uv = face_uv(corner, normal);
+        mesh.uvs.extend_from_slice(&uv);
+    }
+
+    mesh.indices.push(base_idx);
+    mesh.indices.push(base_idx + 1);
+    mesh.indices.push(base_idx + 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -505,14 +685,18 @@ mod tests {
         let config = MeshConfig::default();
         let mesh = generate_tree_mesh(&world, &voxels, &config);
 
-        // 6 exposed faces × 5 quads × 4 verts = 120 vertices (= 360 floats)
-        assert_eq!(mesh.vertices.len(), 360, "expected 120 vertices × 3 floats");
+        // 6 exposed faces × 5 quads × 4 verts = 120 vertices
+        // + 8 corner triangles × 3 verts = 24 vertices
+        // Total: 144 vertices (= 432 floats)
+        assert_eq!(mesh.vertices.len(), 432, "expected 144 vertices × 3 floats");
         // 6 faces × 5 quads × 6 indices = 180
-        assert_eq!(mesh.indices.len(), 180, "expected 180 indices");
+        // + 8 corner triangles × 3 indices = 24
+        // Total: 204
+        assert_eq!(mesh.indices.len(), 204, "expected 204 indices");
         // Normals same count as vertices
-        assert_eq!(mesh.normals.len(), 360);
-        // UVs: 120 vertices × 2 = 240
-        assert_eq!(mesh.uvs.len(), 240);
+        assert_eq!(mesh.normals.len(), 432);
+        // UVs: 144 vertices × 2 = 288
+        assert_eq!(mesh.uvs.len(), 288);
     }
 
     #[test]
@@ -528,14 +712,19 @@ mod tests {
         let mesh = generate_tree_mesh(&world, &voxels, &config);
 
         // Each voxel has 1 hidden face (the shared +X/-X face), so 5 exposed each.
-        // 2 × 5 faces × 5 quads × 4 verts = 200 vertices
+        // 2 × 5 faces × 5 quads × 4 verts = 200 face vertices
+        // + 2 × 4 corner triangles × 3 verts = 24 corner vertices
+        //   (each voxel has 4 corners on the non-shared side with all 3
+        //    faces exposed and all diagonals air; the 4 corners on the
+        //    shared side have the hidden face so no triangle)
+        // Total: 224 vertices
         assert_eq!(
             mesh.vertices.len() / 3,
-            200,
-            "expected 200 vertices for 2 adjacent voxels"
+            224,
+            "expected 224 vertices for 2 adjacent voxels"
         );
-        // 2 × 5 faces × 5 quads × 6 indices = 300
-        assert_eq!(mesh.indices.len(), 300);
+        // 300 face indices + 24 corner indices = 324
+        assert_eq!(mesh.indices.len(), 324);
     }
 
     #[test]
@@ -571,10 +760,13 @@ mod tests {
 
         // Generate mesh for just the trunk voxel — its +Y face should be hidden.
         let mesh = generate_tree_mesh(&world, &[trunk], &config);
-        // 5 exposed faces × 5 quads × 4 verts = 100
+        // 5 exposed faces × 5 quads × 4 verts = 100 face verts
+        // + 4 corner triangles at y=0 × 3 verts = 12 corner verts
+        //   (4 corners at y=1 include hidden +Y face → no triangle)
+        // Total: 112
         assert_eq!(
             mesh.vertices.len() / 3,
-            100,
+            112,
             "trunk +Y face hidden by adjacent branch"
         );
     }
@@ -588,9 +780,10 @@ mod tests {
         };
         let mesh = generate_tree_mesh(&world, &voxels, &config);
 
-        // Same geometry count — edge strips have zero area but are still emitted.
-        assert_eq!(mesh.vertices.len() / 3, 120);
-        assert_eq!(mesh.indices.len(), 180);
+        // Same geometry count — edge strips and corner triangles have zero
+        // area but are still emitted.
+        assert_eq!(mesh.vertices.len() / 3, 144);
+        assert_eq!(mesh.indices.len(), 204);
     }
 
     #[test]
@@ -694,6 +887,152 @@ mod tests {
                         corner, adj.normal
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn diagonal_neighbor_suppresses_edge_bevel() {
+        // Two wood voxels sharing a cube edge (diagonal neighbors, not
+        // face-adjacent). The shared edge should NOT be beveled.
+        let mut world = VoxelWorld::new(12, 12, 12);
+        let a = VoxelCoord::new(5, 5, 5);
+        let b = VoxelCoord::new(6, 6, 5); // diagonal in X-Y plane
+        world.set(a, VoxelType::Trunk);
+        world.set(b, VoxelType::Trunk);
+
+        let config = MeshConfig {
+            bevel_inset: 0.2,
+            ..MeshConfig::default()
+        };
+        let mesh = generate_tree_mesh(&world, &[a], &config);
+
+        // Voxel A has all 6 faces exposed (B is diagonal, not face-adjacent).
+        // But the edge where A's +X face meets A's +Y face has diagonal
+        // neighbor B at (6,6,5) = A + (1,0,0) + (0,1,0). That diagonal is
+        // wood, so this edge should NOT be beveled.
+        //
+        // All 6 faces × 5 quads = 30 quads (vertex count unchanged).
+        // Corner triangles: the 2 corners at (1,1,z) for z∈{0,1} have their
+        // +X/+Y diagonal blocked by B, so no triangle there. The other
+        // 6 corners still get triangles.
+        // Total: 120 face verts + 6×3 corner verts = 138 verts
+        assert_eq!(
+            mesh.vertices.len() / 3,
+            138,
+            "expected 138 vertices (6 corner triangles, 2 suppressed by diagonal)"
+        );
+
+        // Verify the +X face's edge bordering +Y has flat (non-chamfered)
+        // normal. For face 0 (+X), edge 2 borders face 2 (+Y).
+        // With this edge flat, the strip normal should be [1,0,0] (face
+        // normal), not the chamfered [0.707, 0.707, 0].
+        // Collect normals from vertices near the +X/+Y edge.
+        let mut found_chamfered_xy = false;
+        for i in (0..mesh.normals.len()).step_by(3) {
+            let nx = mesh.normals[i];
+            let ny = mesh.normals[i + 1];
+            // A chamfered +X/+Y normal would have nx≈0.707 and ny≈0.707
+            if nx > 0.5 && nx < 0.9 && ny > 0.5 && ny < 0.9 {
+                found_chamfered_xy = true;
+            }
+        }
+        assert!(
+            !found_chamfered_xy,
+            "edge between +X and +Y should NOT be chamfered when diagonal neighbor exists"
+        );
+    }
+
+    #[test]
+    fn l_shaped_selective_beveling() {
+        // L-shaped configuration: 3 voxels forming an L.
+        // A at (5,5,5), B at (6,5,5), C at (5,6,5).
+        // Tests that bevels are selectively applied based on neighbors.
+        let mut world = VoxelWorld::new(12, 12, 12);
+        let a = VoxelCoord::new(5, 5, 5);
+        let b = VoxelCoord::new(6, 5, 5);
+        let c = VoxelCoord::new(5, 6, 5);
+        world.set(a, VoxelType::Trunk);
+        world.set(b, VoxelType::Trunk);
+        world.set(c, VoxelType::Trunk);
+
+        let config = MeshConfig {
+            bevel_inset: 0.2,
+            ..MeshConfig::default()
+        };
+        let mesh = generate_tree_mesh(&world, &[a, b, c], &config);
+
+        // Basic sanity: mesh should have geometry.
+        assert!(mesh.vertices.len() > 0, "L-shape should produce geometry");
+        assert!(mesh.indices.len() > 0);
+
+        // The inner corner at (6,6,5) — where A's +X/+Y diagonal is — has B
+        // (at (6,5,5)) and C (at (5,6,5)) as face neighbors. The diagonal
+        // voxel at (6,6,5) is air, but B and C each suppress certain bevels
+        // on A's faces. Check that A's +X face edge bordering +Y is NOT
+        // beveled (A's +X face is hidden by B, so it produces no geometry at
+        // all). A's +Y face edge bordering +X is also NOT beveled (A's +X
+        // face is hidden, so that edge_adj is not exposed).
+        //
+        // Verify: no chamfered normal at 45° between +X and +Y should appear
+        // on voxel A's geometry (since A's +X face is entirely hidden by B).
+        // We can't easily isolate A's geometry from the combined mesh, but we
+        // can verify overall consistency.
+        assert_eq!(
+            mesh.vertices.len() % 3,
+            0,
+            "vertex count should be divisible by 3"
+        );
+        assert_eq!(
+            mesh.normals.len(),
+            mesh.vertices.len(),
+            "normals count should match vertices"
+        );
+    }
+
+    #[test]
+    fn edge_inward_correctness() {
+        // Verify that each face's edge_inward vectors are perpendicular to
+        // the edge and point toward the face center.
+        for (fi, face) in FACES.iter().enumerate() {
+            let center = [
+                (face.corners[0][0] + face.corners[1][0] + face.corners[2][0] + face.corners[3][0]) / 4.0,
+                (face.corners[0][1] + face.corners[1][1] + face.corners[2][1] + face.corners[3][1]) / 4.0,
+                (face.corners[0][2] + face.corners[1][2] + face.corners[2][2] + face.corners[3][2]) / 4.0,
+            ];
+            for edge_idx in 0..4 {
+                let next_idx = (edge_idx + 1) % 4;
+                let c0 = face.corners[edge_idx];
+                let c1 = face.corners[next_idx];
+
+                // Edge direction
+                let edge_dir = [c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]];
+                let iw = face.edge_inward[edge_idx];
+
+                // edge_inward should be perpendicular to the edge
+                let dot = edge_dir[0] * iw[0] + edge_dir[1] * iw[1] + edge_dir[2] * iw[2];
+                assert!(
+                    dot.abs() < 1e-6,
+                    "face {fi} edge {edge_idx}: edge_inward not perpendicular to edge (dot={dot})"
+                );
+
+                // edge_inward should be perpendicular to the face normal
+                let dot_n = face.normal[0] * iw[0] + face.normal[1] * iw[1] + face.normal[2] * iw[2];
+                assert!(
+                    dot_n.abs() < 1e-6,
+                    "face {fi} edge {edge_idx}: edge_inward not on face plane (dot with normal={dot_n})"
+                );
+
+                // edge_inward should point toward the center: the midpoint of
+                // the edge plus edge_inward should be closer to center.
+                let mid = [(c0[0] + c1[0]) / 2.0, (c0[1] + c1[1]) / 2.0, (c0[2] + c1[2]) / 2.0];
+                let shifted = [mid[0] + iw[0] * 0.1, mid[1] + iw[1] * 0.1, mid[2] + iw[2] * 0.1];
+                let dist_mid = (mid[0] - center[0]).powi(2) + (mid[1] - center[1]).powi(2) + (mid[2] - center[2]).powi(2);
+                let dist_shifted = (shifted[0] - center[0]).powi(2) + (shifted[1] - center[1]).powi(2) + (shifted[2] - center[2]).powi(2);
+                assert!(
+                    dist_shifted < dist_mid,
+                    "face {fi} edge {edge_idx}: edge_inward points away from center"
+                );
             }
         }
     }
