@@ -24,10 +24,10 @@ The design doc (§26) defines an 8-phase roadmap. Current state:
 
 - **Phase 0 (Foundations):** Complete. Godot + Rust setup, orbital camera, core types, serde.
 - **Phase 1 (A Tree and an Elf):** Complete. Tree generation, nav graph, A* pathfinding, event-driven tick loop, SimCommand pipeline.
-- **Phase 2 (Construction and Persistence):** Partial. Task system is wired (GoTo tasks work), multiple creature spawning works, but no blueprint mode, no construction, no mana economy gameplay, and no save/load.
-- **Phases 3–8:** Not started. No bridges, stairs, structural integrity, fire, emotional systems, food logistics, or multiplayer.
+- **Phase 2 (Construction and Persistence):** Partial. Task system is wired (GoTo tasks work), multiple creature spawning works, save/load works (JSON to `user://saves/`), but no blueprint mode, no construction, and no mana economy gameplay.
+- **Phases 3–8:** Not started. No bridges, stairs, structural integrity, fire, emotional systems, multiplayer.
 
-**Not in any phase but implemented:** Main menu, new game screen (with tree preset sliders and seed input), in-game pause menu, creature info panel with camera follow, capybara species, game session autoload.
+**Not in any phase but implemented:** Main menu, new game screen (with tree preset sliders and seed input), in-game pause menu, creature info panel with camera follow, capybara species, game session autoload, creature food gauge (decays over time, shown in creature info panel and as overhead bar).
 
 **Music crate:** Complete as a standalone generator (Palestrina-style counterpoint with Vaelith lyrics, MIDI + LilyPond output, CLI with batch/mode-scan). Not yet integrated into the game runtime. The design doc §21 describes the music vision but doesn't yet reference the `elven_canopy_music` crate.
 
@@ -84,6 +84,8 @@ elven-canopy/
 │       ├── main_menu.gd        # Main menu UI
 │       ├── new_game_menu.gd    # New game screen with tree parameter sliders
 │       ├── pause_menu.gd       # In-game pause overlay (ESC)
+│       ├── save_dialog.gd      # Modal save-game dialog (name input)
+│       ├── load_dialog.gd      # Modal load-game dialog (file list)
 │       ├── orbital_camera.gd   # Camera controls (orbit + follow mode)
 │       ├── elf_renderer.gd     # Billboard chibi elf sprites (pool pattern)
 │       ├── capybara_renderer.gd # Billboard chibi capybara sprites
@@ -149,7 +151,7 @@ When upgrading the `godot` crate, check for a matching `api-4-x` feature flag. T
 
 The repo's `.claude/settings.json` sets `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1`, which resets the Bash tool's working directory to the project root before every command. This means you never need to worry about working directory drift — just write commands relative to the repo root.
 
-**Keep Bash commands simple.** Do not use command substitution (`$(...)` or backticks), heredocs (`<<EOF`), shell variables, or other shell tricks. These trigger unnecessary permission prompts. Use the dedicated Read/Write/Edit tools for file operations. For `git commit`, pass the message directly with `-m "..."` using a simple quoted string.
+**Keep Bash commands simple.** Do not use command substitution (`$(...)` or backticks), heredocs (`<<EOF`), shell variables, or other shell tricks. These trigger unnecessary permission prompts. Also avoid putting flag names inside quotes (e.g., `git show --stat "--format="` can trigger a "quoted flag names" permission check) — keep flags as bare arguments. Use the dedicated Read/Write/Edit tools for file operations. For `git commit`, pass the message directly with `-m "..."` using a simple quoted string.
 
 ## Scratch Files
 

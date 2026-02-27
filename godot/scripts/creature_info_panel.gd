@@ -5,8 +5,8 @@
 ## Sits on the CanvasLayer alongside the spawn toolbar.
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
-## Content is placeholder for now — species and position are real data from
-## the sim, but name and other stats are dummy values.
+## Shows species, name (placeholder), position, task status, and a food
+## gauge (progress bar + percentage). Updated every frame by main.gd.
 ##
 ## See also: selection_controller.gd which triggers show/hide,
 ## orbital_camera.gd which responds to follow/unfollow,

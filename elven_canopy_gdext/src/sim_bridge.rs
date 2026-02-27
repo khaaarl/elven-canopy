@@ -19,9 +19,9 @@
 //   creatures are unified `Creature` entities with a `species` field; the
 //   bridge filters by species so the GDScript API has clean per-species calls.
 // - **Creature info:** `get_creature_info(species_name, index)` — returns a
-//   `VarDictionary` with species, position (x/y/z), and task status for the
-//   creature at the given species-filtered index. Used by the creature info
-//   panel for display and follow-mode tracking.
+//   `VarDictionary` with species, position (x/y/z), task status, food level,
+//   and food_max for the creature at the given species-filtered index. Used
+//   by the creature info panel for display and follow-mode tracking.
 // - **Nav nodes:** `get_all_nav_nodes()`, `get_ground_nav_nodes()` — for
 //   debug visualization. `get_visible_nav_nodes(cam_pos)`,
 //   `get_visible_ground_nav_nodes(cam_pos)` — filtered by voxel-based
