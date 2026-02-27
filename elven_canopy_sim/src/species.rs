@@ -16,6 +16,10 @@
 //   `Some(vec)` = only listed types (capybaras are ground-only).
 // - `ground_only` — if true, spawning and wandering are restricted to
 //   ground-level nav nodes (`ForestFloor` surface type).
+// - `food_max` — maximum (and starting) food level. Large i64 to avoid
+//   floating-point determinism issues.
+// - `food_decay_per_tick` — food subtracted per sim tick, batch-applied at
+//   heartbeat time as `decay_per_tick * heartbeat_interval_ticks`.
 //
 // See also: `config.rs` where the species table lives as part of `GameConfig`,
 // `sim.rs` for the unified `Creature` type and activation chain that consumes
@@ -43,4 +47,22 @@ pub struct SpeciesData {
 
     /// If true, spawn at ground-level nodes and only pick ground destinations.
     pub ground_only: bool,
+
+    /// Maximum food level (also the starting value). Large i64 avoids
+    /// floating-point determinism concerns; UI computes percentage on the fly.
+    #[serde(default = "default_food_max")]
+    pub food_max: i64,
+
+    /// Food consumed per sim tick. Batch-applied at heartbeat as
+    /// `decay_per_tick * heartbeat_interval_ticks`.
+    #[serde(default = "default_food_decay_per_tick")]
+    pub food_decay_per_tick: i64,
+}
+
+fn default_food_max() -> i64 {
+    1_000_000_000_000_000
+}
+
+fn default_food_decay_per_tick() -> i64 {
+    333_333_333_333
 }

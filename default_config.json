@@ -58,13 +58,17 @@
       "base_speed": 0.1,
       "heartbeat_interval_ticks": 30,
       "allowed_edge_types": null,
-      "ground_only": false
+      "ground_only": false,
+      "food_max": 1000000000000000,
+      "food_decay_per_tick": 333333333333
     },
     "Capybara": {
       "base_speed": 0.06,
       "heartbeat_interval_ticks": 40,
       "allowed_edge_types": ["ForestFloor"],
-      "ground_only": true
+      "ground_only": true,
+      "food_max": 1000000000000000,
+      "food_decay_per_tick": 333333333333
     }
   }
 }

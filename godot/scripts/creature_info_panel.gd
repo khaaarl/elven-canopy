@@ -22,6 +22,8 @@ var _species_label: Label
 var _name_label: Label
 var _position_label: Label
 var _task_label: Label
+var _food_bar: ProgressBar
+var _food_label: Label
 var _follow_button: Button
 var _is_following: bool = false
 var _selected_species: String = ""
@@ -78,6 +80,30 @@ func _ready() -> void:
 	_task_label = Label.new()
 	vbox.add_child(_task_label)
 
+	# Food gauge.
+	var food_row := HBoxContainer.new()
+	food_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(food_row)
+
+	var food_title := Label.new()
+	food_title.text = "Food:"
+	food_row.add_child(food_title)
+
+	_food_bar = ProgressBar.new()
+	_food_bar.min_value = 0.0
+	_food_bar.max_value = 100.0
+	_food_bar.value = 100.0
+	_food_bar.show_percentage = false
+	_food_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_food_bar.custom_minimum_size.y = 20
+	food_row.add_child(_food_bar)
+
+	_food_label = Label.new()
+	_food_label.text = "100%"
+	_food_label.custom_minimum_size.x = 45
+	_food_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	food_row.add_child(_food_label)
+
 	# Spacer to push the follow button toward the bottom-ish area.
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -99,6 +125,7 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 	_name_label.text = "Name: %s #%d" % [species, index + 1]
 	_update_position(info)
 	_task_label.text = "Has task: %s" % str(info.get("has_task", false))
+	_update_food(info)
 	_is_following = false
 	_follow_button.text = "Follow"
 	visible = true
@@ -107,6 +134,7 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 func update_info(info: Dictionary) -> void:
 	_update_position(info)
 	_task_label.text = "Has task: %s" % str(info.get("has_task", false))
+	_update_food(info)
 
 
 func hide_panel() -> void:
@@ -120,6 +148,15 @@ func hide_panel() -> void:
 func set_follow_state(following: bool) -> void:
 	_is_following = following
 	_follow_button.text = "Unfollow" if following else "Follow"
+
+
+func _update_food(info: Dictionary) -> void:
+	var food_max: int = info.get("food_max", 1)
+	if food_max <= 0:
+		food_max = 1
+	var pct: float = 100.0 * float(info.get("food", 0)) / float(food_max)
+	_food_bar.value = pct
+	_food_label.text = "%d%%" % int(pct)
 
 
 func _update_position(info: Dictionary) -> void:
