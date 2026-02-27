@@ -15,14 +15,19 @@
 // - **World data:** `get_trunk_voxels()`, `get_branch_voxels()`,
 //   `get_root_voxels()`, `get_leaf_voxels()`, `get_fruit_voxels()` — flat
 //   `PackedInt32Array` of (x,y,z) triples for voxel mesh rendering.
-// - **Creature positions:** `get_elf_positions()`, `get_capybara_positions()`
-//   — `PackedVector3Array` for billboard sprite placement. Internally, all
-//   creatures are unified `Creature` entities with a `species` field; the
-//   bridge filters by species so the GDScript API has clean per-species calls.
-// - **Creature info:** `get_creature_info(species_name, index)` — returns a
-//   `VarDictionary` with species, position (x/y/z), task status, food level,
-//   and food_max for the creature at the given species-filtered index. Used
-//   by the creature info panel for display and follow-mode tracking.
+// - **Creature positions:** `get_elf_positions(render_tick)`,
+//   `get_capybara_positions(render_tick)` — `PackedVector3Array` for billboard
+//   sprite placement. The `render_tick` parameter (a fractional tick computed
+//   by `main.gd` as `current_tick + accumulator_fraction`) enables smooth
+//   interpolation between nav nodes via `Creature::interpolated_position()`.
+//   Internally, all creatures are unified `Creature` entities with a `species`
+//   field; the bridge filters by species so the GDScript API has clean
+//   per-species calls.
+// - **Creature info:** `get_creature_info(species_name, index, render_tick)` —
+//   returns a `VarDictionary` with species, interpolated position (x/y/z),
+//   task status, food level, and food_max for the creature at the given
+//   species-filtered index. Used by the creature info panel for display and
+//   follow-mode tracking.
 // - **Nav nodes:** `get_all_nav_nodes()`, `get_ground_nav_nodes()` — for
 //   debug visualization. `get_visible_nav_nodes(cam_pos)`,
 //   `get_visible_ground_nav_nodes(cam_pos)` — filtered by voxel-based
@@ -242,19 +247,18 @@ impl SimBridge {
         })
     }
 
-    /// Return elf positions as a PackedVector3Array.
+    /// Return elf positions as a PackedVector3Array, interpolated to the
+    /// given render tick for smooth movement between nav nodes. Pass the
+    /// sim's `current_tick()` for non-interpolated positions.
     #[func]
-    fn get_elf_positions(&self) -> PackedVector3Array {
+    fn get_elf_positions(&self, render_tick: f64) -> PackedVector3Array {
         let Some(sim) = &self.sim else {
             return PackedVector3Array::new();
         };
         let mut arr = PackedVector3Array::new();
         for creature in sim.creatures.values().filter(|c| c.species == Species::Elf) {
-            arr.push(Vector3::new(
-                creature.position.x as f32,
-                creature.position.y as f32,
-                creature.position.z as f32,
-            ));
+            let (x, y, z) = creature.interpolated_position(render_tick);
+            arr.push(Vector3::new(x, y, z));
         }
         arr
     }
@@ -283,19 +287,18 @@ impl SimBridge {
         sim.step(&[cmd], next_tick);
     }
 
-    /// Return capybara positions as a PackedVector3Array.
+    /// Return capybara positions as a PackedVector3Array, interpolated to
+    /// the given render tick for smooth movement between nav nodes. Pass the
+    /// sim's `current_tick()` for non-interpolated positions.
     #[func]
-    fn get_capybara_positions(&self) -> PackedVector3Array {
+    fn get_capybara_positions(&self, render_tick: f64) -> PackedVector3Array {
         let Some(sim) = &self.sim else {
             return PackedVector3Array::new();
         };
         let mut arr = PackedVector3Array::new();
         for creature in sim.creatures.values().filter(|c| c.species == Species::Capybara) {
-            arr.push(Vector3::new(
-                creature.position.x as f32,
-                creature.position.y as f32,
-                creature.position.z as f32,
-            ));
+            let (x, y, z) = creature.interpolated_position(render_tick);
+            arr.push(Vector3::new(x, y, z));
         }
         arr
     }
@@ -406,13 +409,14 @@ impl SimBridge {
     ///
     /// The index corresponds to the creature's position in the iteration
     /// order of `get_elf_positions()` or `get_capybara_positions()` — i.e.,
-    /// BTreeMap order filtered by species.
+    /// BTreeMap order filtered by species. The `render_tick` parameter is
+    /// used for position interpolation (same as the position getters).
     ///
     /// Returns a VarDictionary with keys: "species", "x", "y", "z", "has_task".
     /// Returns an empty VarDictionary if species is unknown or index is out of
     /// bounds.
     #[func]
-    fn get_creature_info(&self, species_name: GString, index: i32) -> VarDictionary {
+    fn get_creature_info(&self, species_name: GString, index: i32, render_tick: f64) -> VarDictionary {
         let Some(sim) = &self.sim else {
             return VarDictionary::new();
         };
@@ -428,11 +432,12 @@ impl SimBridge {
             .nth(index as usize);
         match creature {
             Some(c) => {
+                let (x, y, z) = c.interpolated_position(render_tick);
                 let mut dict = VarDictionary::new();
                 dict.set("species", species_name.clone());
-                dict.set("x", c.position.x);
-                dict.set("y", c.position.y);
-                dict.set("z", c.position.z);
+                dict.set("x", x);
+                dict.set("y", y);
+                dict.set("z", z);
                 dict.set("has_task", c.current_task.is_some());
                 dict.set("food", c.food);
                 let food_max = sim.species_table[&species].food_max;

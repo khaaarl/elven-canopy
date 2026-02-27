@@ -27,7 +27,7 @@ The design doc (§26) defines an 8-phase roadmap. Current state:
 - **Phase 2 (Construction and Persistence):** Partial. Task system is wired (GoTo tasks work), multiple creature spawning works, save/load works (JSON to `user://saves/`), but no blueprint mode, no construction, and no mana economy gameplay.
 - **Phases 3–8:** Not started. No bridges, stairs, structural integrity, fire, emotional systems, multiplayer.
 
-**Not in any phase but implemented:** Main menu, new game screen (with tree preset sliders and seed input), in-game pause menu, creature info panel with camera follow, capybara species, game session autoload, creature food gauge (decays over time, shown in creature info panel and as overhead bar).
+**Not in any phase but implemented:** Main menu, new game screen (with tree preset sliders and seed input), in-game pause menu, creature info panel with camera follow, capybara species, game session autoload, creature food gauge (decays over time, shown in creature info panel and as overhead bar), smooth creature movement interpolation (creatures glide between nav nodes instead of teleporting).
 
 **Music crate:** Complete as a standalone generator (Palestrina-style counterpoint with Vaelith lyrics, MIDI + LilyPond output, CLI with batch/mode-scan). Not yet integrated into the game runtime. The design doc §21 describes the music vision but doesn't yet reference the `elven_canopy_music` crate.
 
@@ -202,9 +202,10 @@ Things that are non-obvious or surprising about this codebase:
 **SimBridge side effects:**
 - `spawn_elf()`, `spawn_capybara()`, and `create_goto_task()` in `sim_bridge.rs` automatically step the sim by 1 tick after applying the command. This is convenient for UI but means these are not pure command-enqueue operations.
 
-**Sprite rendering:**
+**Sprite rendering and movement interpolation:**
 - Elf sprites are offset +0.48 in Y, capybara sprites +0.32, to visually center them above their nav node position. Selection ray-to-sprite distance uses these same offsets.
 - Sprites use a pool pattern: created on demand, never destroyed, only hidden when count decreases.
+- Creature positions are smoothly interpolated between nav nodes. Each `Creature` stores `move_from`/`move_to`/`move_start_tick`/`move_end_tick` (rendering metadata, never read by sim logic). `main.gd` computes a fractional `render_tick = current_tick + accumulator_fraction` each frame and distributes it to renderers and the selection controller. `SimBridge.get_elf_positions(render_tick)` and `get_capybara_positions(render_tick)` call `Creature::interpolated_position()` to lerp between nav nodes.
 
 **Input precedence:**
 - ESC handling flows: placement_controller (cancel placement) → selection_controller (deselect) → pause_menu (open/close menu). Each handler calls `set_input_as_handled()` to prevent downstream handlers from firing.

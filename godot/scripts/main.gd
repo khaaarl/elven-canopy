@@ -17,7 +17,10 @@
 ## the correct number of ticks, decoupled from the frame rate. The sim runs
 ## at 1000 ticks per simulated second (tick_duration_ms = 1). Each frame,
 ## delta time is accumulated and converted to ticks. A cap of 5000 ticks per
-## frame prevents spiral-of-death on slow frames.
+## frame prevents spiral-of-death on slow frames. After stepping the sim,
+## computes a fractional render_tick = current_tick + accumulator_fraction
+## and distributes it to renderers and the selection controller for smooth
+## creature movement interpolation between nav nodes.
 ##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
@@ -134,7 +137,8 @@ func _ready() -> void:
 	# Wire selection -> panel.
 	_camera_pivot = $CameraPivot
 	_selector.creature_selected.connect(func(species: String, index: int):
-		var info := bridge.get_creature_info(species, index)
+		var tick := float(bridge.current_tick())
+		var info := bridge.get_creature_info(species, index, tick)
 		if not info.is_empty():
 			_panel.show_creature(species, index, info)
 	)
@@ -165,7 +169,8 @@ func _ready() -> void:
 
 	# Wire follow button -> camera.
 	_panel.follow_requested.connect(func():
-		var pos = _get_creature_world_pos(bridge,
+		var tick := float(bridge.current_tick())
+		var pos = _get_creature_world_pos(bridge, tick,
 			_selector.get_selected_species(), _selector.get_selected_index())
 		if pos != null:
 			_camera_pivot.start_follow(pos)
@@ -207,9 +212,19 @@ func _process(delta: float) -> void:
 			_sim_accumulator -= ticks_to_advance * _seconds_per_tick
 			bridge.step_to_tick(bridge.current_tick() + ticks_to_advance)
 
+	# Compute the fractional render tick for smooth creature interpolation.
+	# This is the sim's current tick plus the fraction of an unprocessed tick
+	# remaining in the accumulator.
+	var render_tick: float = float(bridge.current_tick()) + (_sim_accumulator / _seconds_per_tick)
+
+	# Distribute render_tick to all consumers that read creature positions.
+	$ElfRenderer.set_render_tick(render_tick)
+	$CapybaraRenderer.set_render_tick(render_tick)
+	_selector.set_render_tick(render_tick)
+
 	# Update follow target each frame so the camera tracks creature movement.
 	if _camera_pivot and _camera_pivot.is_following():
-		var pos = _get_creature_world_pos(bridge,
+		var pos = _get_creature_world_pos(bridge, render_tick,
 			_selector.get_selected_species(), _selector.get_selected_index())
 		if pos != null:
 			_camera_pivot.update_follow_target(pos)
@@ -224,22 +239,24 @@ func _process(delta: float) -> void:
 	# Refresh panel info while a creature is selected.
 	if _panel and _panel.visible and _selector.get_selected_index() >= 0:
 		var info := bridge.get_creature_info(
-			_selector.get_selected_species(), _selector.get_selected_index())
+			_selector.get_selected_species(), _selector.get_selected_index(),
+			render_tick)
 		if not info.is_empty():
 			_panel.update_info(info)
 
 
 ## Get the world-space position of a creature sprite, matching the offsets
 ## used by elf_renderer.gd (+0.48 Y) and capybara_renderer.gd (+0.32 Y).
-func _get_creature_world_pos(bridge: SimBridge, species: String,
-		index: int) -> Variant:
+## Uses render_tick for smooth interpolation between nav nodes.
+func _get_creature_world_pos(bridge: SimBridge, render_tick: float,
+		species: String, index: int) -> Variant:
 	if species == "Elf":
-		var positions := bridge.get_elf_positions()
+		var positions := bridge.get_elf_positions(render_tick)
 		if index >= 0 and index < positions.size():
 			var p := positions[index]
 			return Vector3(p.x + 0.5, p.y + 0.48, p.z + 0.5)
 	elif species == "Capybara":
-		var positions := bridge.get_capybara_positions()
+		var positions := bridge.get_capybara_positions(render_tick)
 		if index >= 0 and index < positions.size():
 			var p := positions[index]
 			return Vector3(p.x + 0.5, p.y + 0.32, p.z + 0.5)

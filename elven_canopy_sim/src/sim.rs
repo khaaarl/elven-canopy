@@ -21,6 +21,17 @@
 // `walk_ticks_per_voxel` for flat edges or `climb_ticks_per_voxel` for
 // TrunkClimb/GroundToTrunk edges (from `species.rs`).
 //
+// ## Movement interpolation
+//
+// Each `Creature` carries rendering-only metadata (`move_from`, `move_to`,
+// `move_start_tick`, `move_end_tick`) that record the visual start/end of
+// each movement. These are set whenever the creature starts traversing a
+// nav edge (in `wander()`, `walk_toward_task()`, and
+// `handle_creature_movement_complete()`) and cleared on arrival. The
+// `interpolated_position(render_tick)` method lerps between them, returning
+// floats for the GDExtension bridge. This data is never read by sim logic
+// and does not affect determinism.
+//
 // `CreatureHeartbeat` still exists but is decoupled from movement; it handles
 // periodic non-movement checks (mood, mana, food decay, etc.).
 //
@@ -227,10 +238,61 @@ pub struct Creature {
     /// `food_decay_per_tick` each tick (batch-applied at heartbeat). 0 = starving.
     #[serde(default = "default_food")]
     pub food: i64,
+
+    // --- Movement interpolation metadata (rendering only) ---
+    // These fields record the visual start/end of each movement for smooth
+    // rendering interpolation. They are never read by sim logic — only by
+    // `interpolated_position()` which is called from the GDExtension bridge.
+
+    /// Position the creature is visually moving FROM (None when stationary).
+    #[serde(default)]
+    pub move_from: Option<VoxelCoord>,
+    /// Position the creature is visually moving TO (None when stationary).
+    #[serde(default)]
+    pub move_to: Option<VoxelCoord>,
+    /// Tick when the current movement started.
+    #[serde(default)]
+    pub move_start_tick: u64,
+    /// Tick when the current movement completes.
+    #[serde(default)]
+    pub move_end_tick: u64,
 }
 
 fn default_food() -> i64 {
     1_000_000_000_000_000
+}
+
+impl Creature {
+    /// Compute an interpolated world position for rendering.
+    ///
+    /// If the creature is mid-movement (both `move_from` and `move_to` are
+    /// `Some` with a positive tick duration), linearly interpolates between
+    /// the two positions based on `render_tick`. The `t` parameter is clamped
+    /// to [0, 1], so positions before the start or after the end are safe.
+    ///
+    /// If the creature is stationary (`move_from` or `move_to` is `None`),
+    /// returns `self.position` converted to floats.
+    ///
+    /// This method returns floats and is only called by the GDExtension bridge
+    /// for rendering — it is never used by sim logic.
+    pub fn interpolated_position(&self, render_tick: f64) -> (f32, f32, f32) {
+        if let (Some(from), Some(to)) = (self.move_from, self.move_to) {
+            let duration = self.move_end_tick as f64 - self.move_start_tick as f64;
+            if duration > 0.0 {
+                let t = ((render_tick - self.move_start_tick as f64) / duration)
+                    .clamp(0.0, 1.0) as f32;
+                let x = from.x as f32 + (to.x as f32 - from.x as f32) * t;
+                let y = from.y as f32 + (to.y as f32 - from.y as f32) * t;
+                let z = from.z as f32 + (to.z as f32 - from.z as f32) * t;
+                return (x, y, z);
+            }
+        }
+        (
+            self.position.x as f32,
+            self.position.y as f32,
+            self.position.z as f32,
+        )
+    }
 }
 
 /// The result of processing commands and advancing the simulation.
@@ -509,6 +571,10 @@ impl SimState {
             path: None,
             current_task: None,
             food: species_data.food_max,
+            move_from: None,
+            move_to: None,
+            move_start_tick: 0,
+            move_end_tick: 0,
         };
 
         self.creatures.insert(creature_id, creature);
@@ -756,8 +822,15 @@ impl SimState {
         let dest_pos = self.nav_graph.node(dest_node).position;
 
         let creature = self.creatures.get_mut(&creature_id).unwrap();
+        let old_pos = creature.position;
         creature.position = dest_pos;
         creature.current_node = Some(dest_node);
+
+        // Set movement interpolation metadata for smooth rendering.
+        creature.move_from = Some(old_pos);
+        creature.move_to = Some(dest_pos);
+        creature.move_start_tick = self.tick;
+        creature.move_end_tick = self.tick + delay;
 
         // Advance stored path.
         if let Some(ref mut path) = creature.path {
@@ -854,8 +927,15 @@ impl SimState {
         // Move creature to the destination.
         let dest_pos = self.nav_graph.node(dest_node).position;
         let creature = self.creatures.get_mut(&creature_id).unwrap();
+        let old_pos = creature.position;
         creature.position = dest_pos;
         creature.current_node = Some(dest_node);
+
+        // Set movement interpolation metadata for smooth rendering.
+        creature.move_from = Some(old_pos);
+        creature.move_to = Some(dest_pos);
+        creature.move_start_tick = self.tick;
+        creature.move_end_tick = self.tick + delay;
 
         // Schedule next activation based on edge traversal time.
         self.event_queue.schedule(
@@ -882,6 +962,10 @@ impl SimState {
         // Update position and current node.
         creature.position = node_pos;
         creature.current_node = Some(arrived_at);
+
+        // Clear movement interpolation metadata on arrival.
+        creature.move_from = None;
+        creature.move_to = None;
 
         // Advance path.
         let should_continue = if let Some(ref mut path) = creature.path {
@@ -910,7 +994,15 @@ impl SimState {
             };
             let delay = ((next_edge.distance * tpv as f32).ceil() as u64).max(1);
             let next_dest = path.remaining_nodes[0];
+            let next_dest_pos = self.nav_graph.node(next_dest).position;
             let arrival_tick = self.tick + delay;
+
+            // Set movement interpolation metadata for the next leg.
+            let creature = self.creatures.get_mut(&creature_id).unwrap();
+            creature.move_from = Some(node_pos);
+            creature.move_to = Some(next_dest_pos);
+            creature.move_start_tick = self.tick;
+            creature.move_end_tick = arrival_tick;
 
             self.event_queue.schedule(
                 arrival_tick,
@@ -2090,5 +2182,150 @@ mod tests {
             .find(|c| c.species == Species::Elf)
             .unwrap();
         assert_eq!(elf.food, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Movement interpolation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpolated_position_midpoint() {
+        let creature = Creature {
+            id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
+            species: Species::Elf,
+            position: VoxelCoord::new(10, 0, 0),
+            current_node: None,
+            path: None,
+            current_task: None,
+            food: 1000,
+            move_from: Some(VoxelCoord::new(0, 0, 0)),
+            move_to: Some(VoxelCoord::new(10, 0, 0)),
+            move_start_tick: 100,
+            move_end_tick: 200,
+        };
+        let (x, y, z) = creature.interpolated_position(150.0);
+        assert!((x - 5.0).abs() < 0.001, "x should be 5.0, got {x}");
+        assert!((y - 0.0).abs() < 0.001, "y should be 0.0, got {y}");
+        assert!((z - 0.0).abs() < 0.001, "z should be 0.0, got {z}");
+    }
+
+    #[test]
+    fn interpolated_position_at_start() {
+        let creature = Creature {
+            id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
+            species: Species::Elf,
+            position: VoxelCoord::new(10, 0, 0),
+            current_node: None,
+            path: None,
+            current_task: None,
+            food: 1000,
+            move_from: Some(VoxelCoord::new(0, 0, 0)),
+            move_to: Some(VoxelCoord::new(10, 0, 0)),
+            move_start_tick: 100,
+            move_end_tick: 200,
+        };
+        let (x, _, _) = creature.interpolated_position(100.0);
+        assert!((x - 0.0).abs() < 0.001, "At t=0 should be at from, got {x}");
+    }
+
+    #[test]
+    fn interpolated_position_at_end() {
+        let creature = Creature {
+            id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
+            species: Species::Elf,
+            position: VoxelCoord::new(10, 0, 0),
+            current_node: None,
+            path: None,
+            current_task: None,
+            food: 1000,
+            move_from: Some(VoxelCoord::new(0, 0, 0)),
+            move_to: Some(VoxelCoord::new(10, 0, 0)),
+            move_start_tick: 100,
+            move_end_tick: 200,
+        };
+        let (x, _, _) = creature.interpolated_position(200.0);
+        assert!((x - 10.0).abs() < 0.001, "At t=1 should be at to, got {x}");
+    }
+
+    #[test]
+    fn interpolated_position_clamped_past_end() {
+        let creature = Creature {
+            id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
+            species: Species::Elf,
+            position: VoxelCoord::new(10, 0, 0),
+            current_node: None,
+            path: None,
+            current_task: None,
+            food: 1000,
+            move_from: Some(VoxelCoord::new(0, 0, 0)),
+            move_to: Some(VoxelCoord::new(10, 0, 0)),
+            move_start_tick: 100,
+            move_end_tick: 200,
+        };
+        let (x, _, _) = creature.interpolated_position(999.0);
+        assert!((x - 10.0).abs() < 0.001, "Past end should clamp to destination, got {x}");
+    }
+
+    #[test]
+    fn interpolated_position_stationary() {
+        let creature = Creature {
+            id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
+            species: Species::Elf,
+            position: VoxelCoord::new(5, 3, 7),
+            current_node: None,
+            path: None,
+            current_task: None,
+            food: 1000,
+            move_from: None,
+            move_to: None,
+            move_start_tick: 0,
+            move_end_tick: 0,
+        };
+        let (x, y, z) = creature.interpolated_position(50.0);
+        assert!((x - 5.0).abs() < 0.001);
+        assert!((y - 3.0).abs() < 0.001);
+        assert!((z - 7.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn wander_sets_movement_metadata() {
+        let mut sim = SimState::new(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Spawn an elf at tick 1, step only to tick 1 so the first activation
+        // (scheduled at tick 2) hasn't fired yet.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnElf {
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Before the first activation, the elf should have no movement metadata.
+        let elf = &sim.creatures[&elf_id];
+        assert!(elf.move_from.is_none());
+        assert!(elf.move_to.is_none());
+
+        let initial_pos = elf.position;
+
+        // Step to tick 2 — the first activation fires and the elf wanders.
+        sim.step(&[], 2);
+
+        let elf = &sim.creatures[&elf_id];
+        assert!(elf.move_from.is_some(), "move_from should be set after wander");
+        assert!(elf.move_to.is_some(), "move_to should be set after wander");
+        assert_eq!(elf.move_from.unwrap(), initial_pos, "move_from should be the spawn position");
+        assert_eq!(elf.move_to.unwrap(), elf.position, "move_to should be the new position");
+        assert_eq!(elf.move_start_tick, 2, "move_start_tick should be the activation tick");
+        assert!(elf.move_end_tick > elf.move_start_tick, "move_end_tick should be after start");
     }
 }

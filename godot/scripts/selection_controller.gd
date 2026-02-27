@@ -2,9 +2,9 @@
 ##
 ## On left-click (when not in placement mode), casts a ray from the camera
 ## through the mouse position and finds the closest creature sprite using
-## perpendicular distance. This is the same algorithm used by
-## placement_controller.gd for nav node snapping, with a tighter threshold
-## suited to sprite-sized targets.
+## perpendicular distance. Uses the interpolated render_tick positions (via
+## set_render_tick(), called by main.gd each frame) so click targets match
+## the smooth visual positions.
 ##
 ## Selection state: tracks species ("Elf" / "Capybara") and index (matching
 ## the position array order from SimBridge). When a creature is selected,
@@ -27,6 +27,7 @@ signal creature_deselected
 var _bridge: SimBridge
 var _camera: Camera3D
 var _placement_controller: Node3D
+var _render_tick: float = 0.0
 
 var _selected_species: String = ""
 var _selected_index: int = -1
@@ -35,6 +36,12 @@ var _selected_index: int = -1
 func setup(bridge: SimBridge, camera: Camera3D) -> void:
 	_bridge = bridge
 	_camera = camera
+
+
+## Set the fractional render tick for smooth movement interpolation.
+## Called by main.gd each frame after stepping the sim.
+func set_render_tick(tick: float) -> void:
+	_render_tick = tick
 
 
 func set_placement_controller(controller: Node3D) -> void:
@@ -81,7 +88,7 @@ func _try_select_creature(mouse_pos: Vector2) -> void:
 	var best_index := -1
 
 	# Check elf sprites (Y offset +0.48, matching elf_renderer.gd).
-	var elf_positions := _bridge.get_elf_positions()
+	var elf_positions := _bridge.get_elf_positions(_render_tick)
 	for i in elf_positions.size():
 		var pos := elf_positions[i]
 		var world_pos := Vector3(pos.x + 0.5, pos.y + 0.48, pos.z + 0.5)
@@ -92,7 +99,7 @@ func _try_select_creature(mouse_pos: Vector2) -> void:
 			best_index = i
 
 	# Check capybara sprites (Y offset +0.32, matching capybara_renderer.gd).
-	var capybara_positions := _bridge.get_capybara_positions()
+	var capybara_positions := _bridge.get_capybara_positions(_render_tick)
 	for i in capybara_positions.size():
 		var pos := capybara_positions[i]
 		var world_pos := Vector3(pos.x + 0.5, pos.y + 0.32, pos.z + 0.5)
