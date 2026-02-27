@@ -40,7 +40,9 @@
 // See also: `lib.rs` for the GDExtension entry point, the
 // `elven_canopy_sim` crate for all simulation logic, `command.rs` for
 // `SimCommand`/`SimAction`, `placement_controller.gd` and
-// `spawn_toolbar.gd` for the GDScript callers.
+// `spawn_toolbar.gd` for spawning/placement callers,
+// `selection_controller.gd` and `creature_info_panel.gd` for creature
+// query callers.
 
 use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::config::{GameConfig, TreeProfile};

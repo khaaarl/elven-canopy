@@ -8,6 +8,7 @@
 //
 // Architecture:
 // - grid.rs: Core score representation (SATB voices on an eighth-note grid)
+// - mode.rs: Church mode definitions (dorian through ionian), pitch mapping + snapping
 // - markov.rs: Loaded Markov transition tables for melodic/harmonic guidance
 // - structure.rs: High-level form planning (motifs, imitation, dai/thol responses)
 // - draft.rs: Initial grid filling using Markov-guided sampling + final cadence

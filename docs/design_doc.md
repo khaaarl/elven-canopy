@@ -100,12 +100,13 @@ Trees are ancient, patient beings. The player's tree has accumulated memories ac
 
 ### Crate Structure
 
-The Rust code is split into two crates:
+The Rust code is split into three crates:
 
 - **`elven_canopy_sim`** — a pure Rust library with zero Godot dependencies. Contains all simulation logic: world state, elf AI, pathfinding, task scheduling, events, mana economy. Fully testable standalone, runnable headless.
 - **`elven_canopy_gdext`** — depends on both `elven_canopy_sim` and `gdext`. Exposes the simulation to Godot as GDExtension classes. Thin wrapper only.
+- **`elven_canopy_music`** — a standalone Palestrina-style polyphonic music generator with Vaelith (elvish) lyrics. Produces MIDI and LilyPond output. Independent of both the sim and Godot; will be integrated into the game runtime in a future phase (see §21).
 
-This separation is enforced at the compiler level. The sim crate cannot accidentally depend on rendering state, frame timing, or Godot's RNG. It also enables headless testing, fast-forward stress tests, and replay verification.
+The sim/gdext separation is enforced at the compiler level. The sim crate cannot accidentally depend on rendering state, frame timing, or Godot's RNG. It also enables headless testing, fast-forward stress tests, and replay verification.
 
 ### Architecture: Simulation / Rendering Split
 
