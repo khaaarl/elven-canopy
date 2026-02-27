@@ -4,6 +4,9 @@
 ## "Load Game" button (enabled when saves exist), and "Quit Game" button.
 ## Transitions to the new-game screen or loads a save via GameSession.
 ##
+## Keyboard hotkeys: N = New Game, L = Load Game (if saves exist), Q = Quit.
+## Hotkeys are suppressed while the load dialog is open (_dialog_open flag).
+##
 ## All UI elements are built programmatically in _ready(), consistent with
 ## the project's existing UI style (see spawn_toolbar.gd).
 ##
@@ -12,6 +15,9 @@
 ## (modal save browser).
 
 extends Control
+
+var _load_btn: Button
+var _dialog_open: bool = false
 
 
 func _ready() -> void:
@@ -50,12 +56,12 @@ func _ready() -> void:
 	vbox.add_child(new_game_btn)
 
 	# Load Game button — enabled only when saves exist.
-	var load_game_btn := Button.new()
-	load_game_btn.text = "Load Game"
-	load_game_btn.custom_minimum_size = Vector2(200, 50)
-	load_game_btn.disabled = not _has_save_files()
-	load_game_btn.pressed.connect(_on_load_game_pressed)
-	vbox.add_child(load_game_btn)
+	_load_btn = Button.new()
+	_load_btn.text = "Load Game"
+	_load_btn.custom_minimum_size = Vector2(200, 50)
+	_load_btn.disabled = not _has_save_files()
+	_load_btn.pressed.connect(_on_load_game_pressed)
+	vbox.add_child(_load_btn)
 
 	# Quit Game button.
 	var quit_btn := Button.new()
@@ -80,6 +86,20 @@ func _has_save_files() -> bool:
 	return false
 
 
+func _unhandled_input(event: InputEvent) -> void:
+	if _dialog_open:
+		return
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_N:
+			get_viewport().set_input_as_handled()
+			_on_new_game_pressed()
+		elif event.keycode == KEY_L and not _load_btn.disabled:
+			_on_load_game_pressed()
+			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_Q:
+			get_tree().quit()
+
+
 func _on_new_game_pressed() -> void:
 	get_tree().change_scene_to_file("res://scenes/new_game.tscn")
 
@@ -90,6 +110,8 @@ func _on_load_game_pressed() -> void:
 	dialog.set_script(dialog_script)
 	add_child(dialog)
 	dialog.load_requested.connect(_on_load_selected)
+	_dialog_open = true
+	dialog.tree_exiting.connect(func(): _dialog_open = false)
 
 
 func _on_load_selected(save_path: String) -> void:

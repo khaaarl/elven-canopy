@@ -7,7 +7,7 @@
 ## - WASD: move the focal point horizontally, relative to camera facing.
 ## - Q/E or Left/Right arrows: rotate the camera around the focal point.
 ## - Up/Down arrows or middle-mouse drag: tilt the camera up/down.
-## - Scroll wheel: zoom (distance from focal point to camera).
+## - Scroll wheel or +/- keys: zoom (distance from focal point to camera).
 ## - Page Up/Down: move the focal point vertically (clamped to world bounds).
 ##
 ## Follow mode: main.gd calls start_follow() / update_follow_target() to lock
@@ -102,6 +102,17 @@ func _unhandled_input(event: InputEvent) -> void:
 			_update_camera_transform()
 		elif mb.button_index == MOUSE_BUTTON_MIDDLE:
 			_rotating = mb.pressed
+
+	# Keyboard zoom (+/= to zoom in, -/_ to zoom out).
+	if event is InputEventKey and event.pressed:
+		if event.physical_keycode == KEY_EQUAL:
+			_zoom = max(_zoom - zoom_speed, zoom_min)
+			_update_camera_transform()
+			get_viewport().set_input_as_handled()
+		elif event.physical_keycode == KEY_MINUS:
+			_zoom = min(_zoom + zoom_speed, zoom_max)
+			_update_camera_transform()
+			get_viewport().set_input_as_handled()
 
 	# Middle-mouse drag rotation and tilt.
 	if event is InputEventMouseMotion and _rotating:

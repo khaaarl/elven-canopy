@@ -4,6 +4,10 @@
 ## with the current date/time) and Save/Cancel buttons. Emits
 ## `save_requested(save_name)` when the player confirms.
 ##
+## Keyboard: ESC cancels the dialog (caught via _input before it reaches
+## pause_menu). An _unhandled_input catch-all blocks stray keys (not consumed
+## by the LineEdit) from triggering pause_menu hotkeys.
+##
 ## Created dynamically by pause_menu.gd when the Save button is pressed.
 ## The dialog runs in PROCESS_MODE_ALWAYS so it works while the tree is paused.
 ##
@@ -76,6 +80,17 @@ func _ready() -> void:
 
 	# Focus the name field.
 	_name_edit.call_deferred("grab_focus")
+
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+		queue_free()
+		get_viewport().set_input_as_handled()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		get_viewport().set_input_as_handled()
 
 
 func _on_save_confirmed(save_name: String) -> void:

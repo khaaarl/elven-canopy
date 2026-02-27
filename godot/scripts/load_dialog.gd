@@ -3,6 +3,12 @@
 ## A semi-transparent full-screen overlay listing save files from
 ## `user://saves/` with Load, Delete, and Cancel buttons. Emits
 ## `load_requested(save_path)` when the player selects a save and clicks Load.
+## The most recent save is auto-selected on open.
+##
+## Keyboard hotkeys: L or Enter = Load selected save, ESC = close dialog.
+## Uses _input() (not _unhandled_input) for L/Enter/ESC so they fire before
+## the ItemList's type-to-search consumes letter keys. An _unhandled_input
+## catch-all blocks stray keys from reaching main_menu.gd.
 ##
 ## Created dynamically by main_menu.gd when the Load button is pressed.
 ##
@@ -83,6 +89,11 @@ func _ready() -> void:
 
 	_refresh_list()
 
+	# Auto-select the most recent save so Load/Delete are immediately usable.
+	if _item_list.item_count > 0:
+		_item_list.select(0)
+		_on_item_selected(0)
+
 
 func _refresh_list() -> void:
 	_item_list.clear()
@@ -115,6 +126,21 @@ func _refresh_list() -> void:
 		var display_name: String = entry["name"].get_basename()
 		_item_list.add_item(display_name)
 		_save_paths.append(entry["path"])
+
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed:
+		if event.keycode == KEY_ESCAPE:
+			queue_free()
+			get_viewport().set_input_as_handled()
+		elif not event.echo and (event.keycode == KEY_L or event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER):
+			get_viewport().set_input_as_handled()
+			_on_load_pressed()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		get_viewport().set_input_as_handled()
 
 
 func _on_item_selected(_index: int) -> void:

@@ -12,7 +12,8 @@
 ## ESC key toggles the menu via _unhandled_input. When the menu is hidden,
 ## placement_controller.gd and selection_controller.gd consume ESC first
 ## (via set_input_as_handled), so the pause menu only opens when nothing
-## else claims ESC.
+## else claims ESC. While visible: Q = Quit, S = Save (if enabled). These
+## hotkeys are suppressed while the save dialog is open (_save_dialog_open).
 ##
 ## Call `setup(bridge)` after construction to enable saving. Without it,
 ## the Save button remains disabled.
@@ -26,6 +27,7 @@ extends ColorRect
 
 var _bridge: SimBridge
 var _save_btn: Button
+var _save_dialog_open: bool = false
 
 
 func _ready() -> void:
@@ -95,6 +97,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		toggle()
 		get_viewport().set_input_as_handled()
+	elif visible and not _save_dialog_open and event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_Q:
+			get_tree().quit()
+		elif event.keycode == KEY_S and not _save_btn.disabled:
+			_on_save_pressed()
+			get_viewport().set_input_as_handled()
 
 
 func toggle() -> void:
@@ -120,6 +128,8 @@ func _on_save_pressed() -> void:
 	dialog.set_script(dialog_script)
 	add_child(dialog)
 	dialog.save_requested.connect(_do_save)
+	_save_dialog_open = true
+	dialog.tree_exiting.connect(func(): _save_dialog_open = false)
 
 
 func _do_save(save_name: String) -> void:
