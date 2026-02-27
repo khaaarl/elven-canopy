@@ -18,6 +18,9 @@
 // - `task.rs`:        Task entities — units of work assigned to creatures.
 // - `prng.rs`:        Xoshiro256++ PRNG with SplitMix64 seeding.
 // - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.
+// - `tree_mesh.rs`:   Read-only rendering utility — generates beveled mesh
+//                     geometry and bark textures from voxel data. Not subject
+//                     to the determinism constraint.
 //
 // The companion crate `elven_canopy_gdext` wraps this library for Godot
 // via GDExtension. That boundary is enforced at the compiler level — this
@@ -38,5 +41,6 @@ pub mod sim;
 pub mod species;
 pub mod task;
 pub mod tree_gen;
+pub mod tree_mesh;
 pub mod types;
 pub mod world;

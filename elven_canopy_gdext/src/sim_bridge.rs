@@ -13,7 +13,13 @@
 //   File I/O is handled in GDScript via Godot's `user://` paths.
 // - **World data:** `get_trunk_voxels()`, `get_branch_voxels()`,
 //   `get_root_voxels()`, `get_leaf_voxels()`, `get_fruit_voxels()` — flat
-//   `PackedInt32Array` of (x,y,z) triples for voxel mesh rendering.
+//   `PackedInt32Array` of (x,y,z) triples. The raw voxel getters still exist
+//   but wood rendering now uses the beveled mesh API (see below).
+// - **Mesh generation:** `set_mesh_config_json(json)` loads bevel/bark config,
+//   `generate_wood_meshes()` builds beveled ArrayMesh geometry for all wood
+//   types, then per-type getters (`get_trunk_mesh_vertices()`, etc.) return
+//   the cached results as packed arrays. `get_bark_texture(type)` returns a
+//   procedural RGBA8 bark texture as `[width_le, height_le, pixels...]`.
 // - **Creature positions:** `get_elf_positions()`, `get_capybara_positions()`
 //   — `PackedVector3Array` for billboard sprite placement. Internally, all
 //   creatures are unified `Creature` entities with a `species` field; the
@@ -47,6 +53,7 @@
 use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::config::{GameConfig, TreeProfile};
 use elven_canopy_sim::sim::SimState;
+use elven_canopy_sim::tree_mesh::{self, MeshConfig, MeshData};
 use elven_canopy_sim::types::{Species, VoxelCoord};
 use godot::prelude::*;
 
@@ -60,12 +67,23 @@ use godot::prelude::*;
 pub struct SimBridge {
     base: Base<Node>,
     sim: Option<SimState>,
+    mesh_config: MeshConfig,
+    trunk_mesh: Option<MeshData>,
+    branch_mesh: Option<MeshData>,
+    root_mesh: Option<MeshData>,
 }
 
 #[godot_api]
 impl INode for SimBridge {
     fn init(base: Base<Node>) -> Self {
-        Self { base, sim: None }
+        Self {
+            base,
+            sim: None,
+            mesh_config: MeshConfig::default(),
+            trunk_mesh: None,
+            branch_mesh: None,
+            root_mesh: None,
+        }
     }
 }
 
@@ -486,4 +504,180 @@ impl SimBridge {
         };
         sim.step(&[cmd], next_tick);
     }
+
+    // -----------------------------------------------------------------------
+    // Beveled wood mesh generation
+    // -----------------------------------------------------------------------
+
+    /// Parse mesh config JSON (bevel, bark texture params) into the cached
+    /// `MeshConfig`. On parse failure, warns and keeps the existing defaults.
+    #[func]
+    fn set_mesh_config_json(&mut self, json: GString) {
+        match serde_json::from_str::<MeshConfig>(&json.to_string()) {
+            Ok(cfg) => {
+                self.mesh_config = cfg;
+                godot_print!("SimBridge: loaded mesh config (bevel_inset={})", self.mesh_config.bevel_inset);
+            }
+            Err(e) => {
+                godot_warn!("SimBridge: failed to parse mesh config JSON: {e}, keeping defaults");
+            }
+        }
+    }
+
+    /// Generate beveled meshes for all 3 wood types (trunk, branch, root)
+    /// from the sim's voxel world and tree voxel lists. Results are cached;
+    /// call the `get_*_mesh_*()` getters to retrieve them.
+    #[func]
+    fn generate_wood_meshes(&mut self) {
+        let Some(sim) = &self.sim else { return };
+        let tree = match sim.trees.get(&sim.player_tree_id) {
+            Some(t) => t,
+            None => return,
+        };
+        self.trunk_mesh = Some(tree_mesh::generate_tree_mesh(
+            &sim.world,
+            &tree.trunk_voxels,
+            &self.mesh_config,
+        ));
+        self.branch_mesh = Some(tree_mesh::generate_tree_mesh(
+            &sim.world,
+            &tree.branch_voxels,
+            &self.mesh_config,
+        ));
+        self.root_mesh = Some(tree_mesh::generate_tree_mesh(
+            &sim.world,
+            &tree.root_voxels,
+            &self.mesh_config,
+        ));
+        godot_print!(
+            "SimBridge: generated wood meshes (trunk={} verts, branch={} verts, root={} verts)",
+            self.trunk_mesh.as_ref().map_or(0, |m| m.vertices.len() / 3),
+            self.branch_mesh.as_ref().map_or(0, |m| m.vertices.len() / 3),
+            self.root_mesh.as_ref().map_or(0, |m| m.vertices.len() / 3),
+        );
+    }
+
+    // --- Trunk mesh getters ---
+
+    #[func]
+    fn get_trunk_mesh_vertices(&self) -> PackedFloat32Array {
+        mesh_data_to_float_array(self.trunk_mesh.as_ref(), |m| &m.vertices)
+    }
+
+    #[func]
+    fn get_trunk_mesh_normals(&self) -> PackedFloat32Array {
+        mesh_data_to_float_array(self.trunk_mesh.as_ref(), |m| &m.normals)
+    }
+
+    #[func]
+    fn get_trunk_mesh_uvs(&self) -> PackedFloat32Array {
+        mesh_data_to_float_array(self.trunk_mesh.as_ref(), |m| &m.uvs)
+    }
+
+    #[func]
+    fn get_trunk_mesh_indices(&self) -> PackedInt32Array {
+        mesh_data_to_int_array(self.trunk_mesh.as_ref(), |m| &m.indices)
+    }
+
+    // --- Branch mesh getters ---
+
+    #[func]
+    fn get_branch_mesh_vertices(&self) -> PackedFloat32Array {
+        mesh_data_to_float_array(self.branch_mesh.as_ref(), |m| &m.vertices)
+    }
+
+    #[func]
+    fn get_branch_mesh_normals(&self) -> PackedFloat32Array {
+        mesh_data_to_float_array(self.branch_mesh.as_ref(), |m| &m.normals)
+    }
+
+    #[func]
+    fn get_branch_mesh_uvs(&self) -> PackedFloat32Array {
+        mesh_data_to_float_array(self.branch_mesh.as_ref(), |m| &m.uvs)
+    }
+
+    #[func]
+    fn get_branch_mesh_indices(&self) -> PackedInt32Array {
+        mesh_data_to_int_array(self.branch_mesh.as_ref(), |m| &m.indices)
+    }
+
+    // --- Root mesh getters ---
+
+    #[func]
+    fn get_root_mesh_vertices(&self) -> PackedFloat32Array {
+        mesh_data_to_float_array(self.root_mesh.as_ref(), |m| &m.vertices)
+    }
+
+    #[func]
+    fn get_root_mesh_normals(&self) -> PackedFloat32Array {
+        mesh_data_to_float_array(self.root_mesh.as_ref(), |m| &m.normals)
+    }
+
+    #[func]
+    fn get_root_mesh_uvs(&self) -> PackedFloat32Array {
+        mesh_data_to_float_array(self.root_mesh.as_ref(), |m| &m.uvs)
+    }
+
+    #[func]
+    fn get_root_mesh_indices(&self) -> PackedInt32Array {
+        mesh_data_to_int_array(self.root_mesh.as_ref(), |m| &m.indices)
+    }
+
+    // --- Bark texture ---
+
+    /// Generate a bark texture for the given wood type ("trunk", "branch", or
+    /// "root"). Returns a PackedByteArray: first 8 bytes are width and height
+    /// as little-endian u32, followed by RGBA8 pixel data.
+    #[func]
+    fn get_bark_texture(&self, wood_type: GString) -> PackedByteArray {
+        let base_color = match wood_type.to_string().as_str() {
+            "trunk" => self.mesh_config.trunk_color,
+            "branch" => self.mesh_config.branch_color,
+            "root" => self.mesh_config.root_color,
+            _ => {
+                godot_warn!("SimBridge: unknown wood type '{wood_type}', using trunk color");
+                self.mesh_config.trunk_color
+            }
+        };
+        let tex = tree_mesh::generate_bark_texture(&self.mesh_config, base_color);
+        let mut arr = PackedByteArray::new();
+        arr.extend(tex.width.to_le_bytes());
+        arr.extend(tex.height.to_le_bytes());
+        arr.extend(tex.pixels.iter().copied());
+        arr
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for packing mesh data into Godot arrays
+// ---------------------------------------------------------------------------
+
+fn mesh_data_to_float_array(
+    mesh: Option<&MeshData>,
+    field: fn(&MeshData) -> &Vec<f32>,
+) -> PackedFloat32Array {
+    let Some(m) = mesh else {
+        return PackedFloat32Array::new();
+    };
+    let data = field(m);
+    let mut arr = PackedFloat32Array::new();
+    for &v in data {
+        arr.push(v);
+    }
+    arr
+}
+
+fn mesh_data_to_int_array(
+    mesh: Option<&MeshData>,
+    field: fn(&MeshData) -> &Vec<u32>,
+) -> PackedInt32Array {
+    let Some(m) = mesh else {
+        return PackedInt32Array::new();
+    };
+    let data = field(m);
+    let mut arr = PackedInt32Array::new();
+    for &v in data {
+        arr.push(v as i32);
+    }
+    arr
 }

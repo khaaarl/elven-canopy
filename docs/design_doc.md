@@ -120,7 +120,9 @@ The sim/gdext separation is enforced at the compiler level. The sim crate cannot
 - All randomness (seeded PRNG)
 
 **Godot (GDScript glue + scene tree) owns:**
-- Rendering voxel geometry as meshes (with visual smoothing/rounding)
+- Rendering voxel geometry as meshes (wood voxel mesh generation happens in
+  Rust via `tree_mesh.rs`; GDScript builds the final ArrayMesh from the
+  returned geometry buffers)
 - Rendering creature sprites as billboarded quads
 - Camera control
 - Player input → SimCommand translation
@@ -347,9 +349,11 @@ Coordinates are represented as a newtype or type alias so the underlying represe
 
 The voxel grid is the simulation truth, but **visual rendering applies smoothing and rounding** to produce the organic, curved aesthetic appropriate for elven architecture.
 
-- Platforms designated as round/oval are still rectangular voxel clusters in the sim, but rendered with rounded meshes derived from the cluster's bounding shape.
+For tree wood (trunk, branch, root), this is implemented via neighbor-aware **beveled mesh generation** in Rust (`tree_mesh.rs`). Hidden faces between adjacent wood voxels are culled, and each exposed face is decomposed into a center quad plus 4 chamfered edge strips, producing softer edges. A procedural bark texture is applied. Bevel amount, bark colors, and texture parameters are configurable in `godot/mesh_config.json`.
+
+Platforms and walkways (future) may use different smoothing approaches:
+- Platforms designated as round/oval are still rectangular voxel clusters in the sim, but could be rendered with rounded meshes derived from the cluster's bounding shape.
 - Walkways and staircases can follow curves visually while remaining grid-aligned underneath.
-- Approaches: marching cubes, or simpler cluster-to-rounded-mesh generation.
 - Rectangular construction is always available but carries an aesthetic penalty (see §18, Mood System).
 
 ### Trees

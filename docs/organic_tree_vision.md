@@ -90,7 +90,7 @@ Large trees develop hollow interiors over time. Interior spaces could serve as s
 Multiple trees growing close together can fuse at contact points, creating shared canopy structures. Implementation: detect voxel overlap between trees and merge their nav graphs.
 
 ### Bark Color Parameters
-Per-species bark coloration driven by config. The renderer would read color values from the tree profile rather than using hardcoded browns.
+**Implemented.** Per-wood-type bark coloration is configurable in `godot/mesh_config.json` as `trunk_color`, `branch_color`, `root_color` arrays (RGB floats) with per-channel variation ranges. A procedural bark texture with vertical streaks and noise is generated in `tree_mesh.rs` and applied to each wood type's ArrayMesh.
 
 ### Dynamic Growth
 Trees that grow over time in response to mana investment. Segments extend gradually, new splits appear, the canopy fills out. Implementation: store the `SegmentJob` queue as part of tree state and process a few jobs per heartbeat.

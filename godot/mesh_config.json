@@ -1,0 +1,12 @@
+{
+  "bevel_inset": 0.12,
+  "bark_texture_size": 64,
+  "bark_streak_count": 8,
+  "bark_noise_intensity": 0.15,
+  "trunk_color": [0.35, 0.22, 0.10],
+  "trunk_color_variation": 0.05,
+  "branch_color": [0.45, 0.30, 0.15],
+  "branch_color_variation": 0.05,
+  "root_color": [0.30, 0.20, 0.12],
+  "root_color_variation": 0.05
+}

@@ -49,6 +49,7 @@ elven-canopy/
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
 │       ├── pathfinding.rs      # A* search over NavGraph
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
+│       ├── tree_mesh.rs        # Beveled mesh generation + bark textures (rendering utility)
 │       └── world.rs            # Dense 3D voxel grid
 ├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
 │   └── src/
@@ -87,7 +88,7 @@ elven-canopy/
 │       ├── orbital_camera.gd   # Camera controls (orbit + follow mode)
 │       ├── elf_renderer.gd     # Billboard chibi elf sprites (pool pattern)
 │       ├── capybara_renderer.gd # Billboard chibi capybara sprites
-│       ├── tree_renderer.gd    # Tree voxel mesh rendering (MultiMesh)
+│       ├── tree_renderer.gd    # Tree mesh rendering (beveled ArrayMesh for wood, MultiMesh for leaves/fruit)
 │       ├── sprite_factory.gd   # Procedural chibi sprite generation from seed
 │       ├── spawn_toolbar.gd    # Toolbar UI for spawning creatures/tasks
 │       ├── placement_controller.gd  # Click-to-place for spawns and tasks
