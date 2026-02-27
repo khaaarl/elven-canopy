@@ -109,8 +109,9 @@ When making changes to a file, consider whether documentation elsewhere needs up
 **NEVER make code changes directly on `main` without explicit user permission.** Before writing ANY code, you MUST:
 
 1. Create a feature branch: `git checkout -b feature/descriptive-branch-name`
-2. Verify you are on the feature branch: `git branch --show-current`
-3. ONLY THEN start making changes
+2. Push the branch to origin: `git push -u origin feature/descriptive-branch-name`
+3. Verify you are on the feature branch: `git branch --show-current`
+4. ONLY THEN start making changes
 
 **This is non-negotiable.** If you realize you are on `main` and have already made changes, STOP immediately and ask the user how to proceed — do NOT commit to `main`.
 
@@ -118,17 +119,18 @@ The only exception is editing `CLAUDE.md` itself, which can be done on `main` if
 
 ## Committing Code
 
-ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FEATURE BRANCHES DOES NOT REQUIRE PERMISSION.
+ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FEATURE BRANCHES DOES NOT REQUIRE PERMISSION. When committing to a feature branch, always push to origin immediately after committing (`git push`).
 
 ## Merging to Main
 
 When the user asks to merge a feature branch to main, follow this procedure:
 
 ```bash
-# 1. Create a temporary branch and squash all feature commits into one
+# 1. Create a temporary LOCAL branch and squash all feature commits into one
 #    (This way conflicts only need to be resolved once, not per-commit)
 #    IMPORTANT: The REAL commit message goes HERE — step 4 is a fast-forward
 #    merge which does NOT create a new commit, so any -m there is ignored.
+#    NOTE: The -rebase branch is local only — do NOT push it to origin.
 git checkout -b feature/my-branch-rebase feature/my-branch
 git merge-base main feature/my-branch-rebase  # Learn the common ancestor!
 git reset --soft THAT-COMMON-ANCESTOR
@@ -150,6 +152,7 @@ git merge --ff-only feature/my-branch-rebase
 git push
 git branch -d feature/my-branch-rebase
 git branch -D feature/my-branch
+git push origin --delete feature/my-branch
 ```
 
 **Why squash first, then rebase?** Rebasing a multi-commit branch onto main can require resolving the same conflict repeatedly (once per commit). By squashing into one commit first, you only resolve conflicts once. The `git reset --soft ...` in step 1 is safe — it collapses our own feature commits back to the branch point, without touching main's state. The rebase in step 3 then does proper 3-way conflict detection against latest main.
