@@ -418,6 +418,9 @@ impl SimBridge {
                 dict.set("y", c.position.y);
                 dict.set("z", c.position.z);
                 dict.set("has_task", c.current_task.is_some());
+                dict.set("food", c.food);
+                let food_max = sim.species_table[&species].food_max;
+                dict.set("food_max", food_max);
                 dict
             }
             None => VarDictionary::new(),

@@ -400,6 +400,8 @@ impl Default for GameConfig {
                 heartbeat_interval_ticks: 30,
                 allowed_edge_types: None, // elves can traverse all edges
                 ground_only: false,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 333_333_333_333,
             },
         );
         species.insert(
@@ -409,6 +411,8 @@ impl Default for GameConfig {
                 heartbeat_interval_ticks: 40,
                 allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
                 ground_only: true,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 333_333_333_333,
             },
         );
 

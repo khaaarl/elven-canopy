@@ -209,6 +209,14 @@ pub struct Creature {
     pub path: Option<CreaturePath>,
     /// The task this creature is currently assigned to, or `None` for wandering.
     pub current_task: Option<TaskId>,
+    /// Food gauge. Starts at species `food_max`, decreases by
+    /// `food_decay_per_tick` each tick (batch-applied at heartbeat). 0 = starving.
+    #[serde(default = "default_food")]
+    pub food: i64,
+}
+
+fn default_food() -> i64 {
+    1_000_000_000_000_000
 }
 
 /// The result of processing commands and advancing the simulation.
@@ -413,11 +421,14 @@ impl SimState {
             ScheduledEventKind::CreatureHeartbeat { creature_id } => {
                 // Heartbeat is for periodic non-movement checks (mood, mana, etc.).
                 // Movement is driven by CreatureActivation, not heartbeats.
-                if let Some(creature) = self.creatures.get(&creature_id) {
+                if let Some(creature) = self.creatures.get_mut(&creature_id) {
                     let species = creature.species;
-                    let interval = self.species_table[&species].heartbeat_interval_ticks;
+                    let species_data = &self.species_table[&species];
+                    let interval = species_data.heartbeat_interval_ticks;
+                    let decay = species_data.food_decay_per_tick * interval as i64;
+                    creature.food = (creature.food - decay).max(0);
 
-                    // TODO: mood decay, mana generation, need updates.
+                    // TODO: mood decay, mana generation.
 
                     // Reschedule the next heartbeat.
                     let next_tick = self.tick + interval;
@@ -483,6 +494,7 @@ impl SimState {
             current_node: Some(nearest_node),
             path: None,
             current_task: None,
+            food: species_data.food_max,
         };
 
         self.creatures.insert(creature_id, creature);
@@ -1730,5 +1742,77 @@ mod tests {
             .find(|c| c.species == Species::Capybara)
             .unwrap();
         assert_eq!(capy.species, Species::Capybara);
+    }
+
+    #[test]
+    fn food_decreases_over_heartbeats() {
+        let mut sim = SimState::new(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let food_max = sim.species_table[&Species::Elf].food_max;
+        let decay_per_tick = sim.species_table[&Species::Elf].food_decay_per_tick;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnElf {
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Verify food starts at food_max.
+        let elf = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap();
+        assert_eq!(elf.food, food_max);
+
+        // Advance past 3 heartbeats.
+        let target_tick = 1 + heartbeat_interval * 3 + 1;
+        sim.step(&[], target_tick);
+
+        let elf = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap();
+        let expected_decay = decay_per_tick * heartbeat_interval as i64 * 3;
+        assert_eq!(elf.food, food_max - expected_decay);
+    }
+
+    #[test]
+    fn food_does_not_go_below_zero() {
+        // Use a custom config with aggressive decay so food depletes quickly.
+        let mut config = GameConfig::default();
+        config.species.get_mut(&Species::Elf).unwrap().food_decay_per_tick =
+            1_000_000_000_000_000; // Depletes in 1 tick
+        let mut sim = SimState::with_config(42, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnElf {
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Advance well past full depletion (many heartbeats).
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        let target_tick = 1 + heartbeat_interval * 5;
+        sim.step(&[], target_tick);
+
+        let elf = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap();
+        assert_eq!(elf.food, 0);
     }
 }
