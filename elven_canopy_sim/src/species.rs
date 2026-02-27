@@ -6,8 +6,12 @@
 // from the species table at runtime — no code branching per species.
 //
 // Current parameters:
-// - `base_speed` — movement speed multiplier. Edge traversal cost is divided
-//   by this, so higher = faster.
+// - `walk_ticks_per_voxel` — ticks to traverse 1.0 units of euclidean distance
+//   on flat ground. Higher = slower. At 1000 ticks/sec, a value of 500 means
+//   the creature walks 2 voxels per second.
+// - `climb_ticks_per_voxel` — ticks per 1.0 units on TrunkClimb/GroundToTrunk
+//   edges. `None` means the species cannot climb (e.g. capybara). At 1000
+//   ticks/sec, a value of 1250 means 0.8 voxels per second climbing.
 // - `heartbeat_interval_ticks` — interval for `CreatureHeartbeat` events.
 //   Note: heartbeats do NOT drive movement (that's the activation chain in
 //   `sim.rs`); they handle periodic non-movement checks like mood and mana.
@@ -34,8 +38,14 @@ use serde::{Deserialize, Serialize};
 /// Data-driven behavioral parameters for a creature species.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpeciesData {
-    /// Movement speed in voxels per tick on flat surfaces.
-    pub base_speed: f32,
+    /// Ticks to traverse 1.0 units of euclidean distance on flat ground.
+    /// Higher = slower. At 1000 ticks/sec, 500 = 2 voxels/sec.
+    pub walk_ticks_per_voxel: u64,
+
+    /// Ticks per 1.0 units on TrunkClimb/GroundToTrunk edges. `None` means
+    /// the species cannot climb (e.g. capybara). At 1000 ticks/sec, 1250 =
+    /// 0.8 voxels/sec climbing.
+    pub climb_ticks_per_voxel: Option<u64>,
 
     /// Ticks between heartbeat events (mood, mana, need updates — NOT movement).
     pub heartbeat_interval_ticks: u64,
@@ -64,5 +74,5 @@ fn default_food_max() -> i64 {
 }
 
 fn default_food_decay_per_tick() -> i64 {
-    333_333_333_333
+    3_333_333_333
 }

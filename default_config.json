@@ -1,9 +1,6 @@
 {
-  "tick_duration_ms": 100,
-  "tree_heartbeat_interval_ticks": 100,
-  "nav_base_speed": 0.1,
-  "climb_speed_multiplier": 0.4,
-  "stair_speed_multiplier": 0.7,
+  "tick_duration_ms": 1,
+  "tree_heartbeat_interval_ticks": 10000,
   "mana_base_generation_rate": 1.0,
   "mana_mood_multiplier_range": [0.2, 2.0],
   "platform_mana_cost_per_voxel": 10.0,
@@ -56,20 +53,22 @@
   },
   "species": {
     "Elf": {
-      "base_speed": 0.1,
-      "heartbeat_interval_ticks": 30,
+      "walk_ticks_per_voxel": 500,
+      "climb_ticks_per_voxel": 1250,
+      "heartbeat_interval_ticks": 3000,
       "allowed_edge_types": null,
       "ground_only": false,
       "food_max": 1000000000000000,
-      "food_decay_per_tick": 333333333333
+      "food_decay_per_tick": 3333333333
     },
     "Capybara": {
-      "base_speed": 0.06,
-      "heartbeat_interval_ticks": 40,
+      "walk_ticks_per_voxel": 800,
+      "climb_ticks_per_voxel": null,
+      "heartbeat_interval_ticks": 4000,
       "allowed_edge_types": ["ForestFloor"],
       "ground_only": true,
       "food_max": 1000000000000000,
-      "food_decay_per_tick": 333333333333
+      "food_decay_per_tick": 3333333333
     }
   }
 }

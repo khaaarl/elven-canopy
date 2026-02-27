@@ -174,6 +174,11 @@ When making changes to a file, consider whether documentation elsewhere needs up
 
 Things that are non-obvious or surprising about this codebase:
 
+**Tick rate and sim decoupling:**
+- The sim runs at **1000 ticks per simulated second** (`tick_duration_ms = 1`). All tick-denominated config values (heartbeat intervals, food decay rates, species speed params) are calibrated for this rate.
+- The sim is decoupled from the frame rate. `main.gd` uses a time-based accumulator to compute how many ticks to advance per frame, capped at 5000 to prevent spiral-of-death.
+- Movement speed is per-species: `walk_ticks_per_voxel` (ticks per 1.0 units of euclidean distance on flat ground) and `climb_ticks_per_voxel` (ticks per 1.0 units on TrunkClimb/GroundToTrunk edges). Nav graph edges store euclidean distance, not time-cost — speed config is not needed for graph construction.
+
 **Voxel coordinate system:**
 - Y is up. The world is (x, z) horizontal, y vertical.
 - Flat array indexing: `x + z * size_x + y * size_x * size_z`. Y is the outermost axis, not the middle one.

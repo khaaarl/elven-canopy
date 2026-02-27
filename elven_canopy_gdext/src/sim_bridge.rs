@@ -7,7 +7,8 @@
 // ## What it exposes
 //
 // - **Lifecycle:** `init_sim(seed)`, `init_sim_with_tree_profile_json(seed, json)`,
-//   `step_to_tick(tick)`, `current_tick()`, `is_initialized()`.
+//   `step_to_tick(tick)`, `current_tick()`, `is_initialized()`,
+//   `tick_duration_ms()`.
 // - **Save/load:** `save_game_json()` returns the sim state as a JSON string,
 //   `load_game_json(json)` replaces the current sim from a JSON string.
 //   File I/O is handled in GDScript via Godot's `user://` paths.
@@ -124,6 +125,16 @@ impl SimBridge {
     #[func]
     fn is_initialized(&self) -> bool {
         self.sim.is_some()
+    }
+
+    /// Return the simulation tick duration in milliseconds. The GDScript
+    /// frame loop uses this to compute how many ticks to advance per frame
+    /// (tick_duration_ms=1 → 1000 ticks/sec).
+    #[func]
+    fn tick_duration_ms(&self) -> i32 {
+        self.sim
+            .as_ref()
+            .map_or(1, |s| s.config.tick_duration_ms as i32)
     }
 
     /// Return trunk voxel positions as a flat PackedInt32Array (x,y,z triples).

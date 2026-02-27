@@ -1,8 +1,15 @@
 // Navigation graph for creature pathfinding.
 //
 // The nav graph is a set of `NavNode`s (positions) connected by `NavEdge`s
-// (typed, weighted connections). It is built from the voxel world by
-// `build_nav_graph()` and used by `pathfinding.rs` for A* search.
+// (typed connections with euclidean distance). It is built from the voxel
+// world by `build_nav_graph()` and used by `pathfinding.rs` for A* search.
+//
+// **Edges store distance, not time-cost.** Each edge records the euclidean
+// distance between its endpoints and the edge type (ForestFloor, TrunkClimb,
+// etc.). The pathfinder computes actual traversal time at search time using
+// per-species speed parameters (walk_ticks_per_voxel, climb_ticks_per_voxel
+// from `species.rs`). This means graph construction needs only the voxel
+// world — no speed config required.
 //
 // **Voxel-derived construction:** Every air voxel that is face-adjacent to at
 // least one solid voxel becomes a nav node. Edges connect face-adjacent nav
@@ -11,9 +18,9 @@
 // topology (via incremental rebuild).
 //
 // Each nav node carries a `surface_type` derived from the solid voxel it
-// touches (see `derive_surface_type()`). Edge types and costs are derived from
-// the surface types of the two endpoints (see `derive_edge_type()`). Root
-// voxels are treated as walkable surfaces (BranchWalk), with ForestFloor and
+// touches (see `derive_surface_type()`). Edge types are derived from the
+// surface types of the two endpoints (see `derive_edge_type()`). Root voxels
+// are treated as walkable surfaces (BranchWalk), with ForestFloor and
 // TrunkClimb transitions at boundaries.
 //
 // All storage uses `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
@@ -27,7 +34,6 @@
 // in fixed order (matching the flat index of `VoxelWorld`). Node/edge IDs are
 // sequential integers assigned in that order.
 
-use crate::config::GameConfig;
 use crate::types::{NavEdgeId, NavNodeId, VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
 use serde::{Deserialize, Serialize};
@@ -67,8 +73,8 @@ pub struct NavEdge {
     pub from: NavNodeId,
     pub to: NavNodeId,
     pub edge_type: EdgeType,
-    /// Traversal cost in ticks (based on distance and speed multiplier).
-    pub cost: f32,
+    /// Euclidean distance between the two endpoints (in voxel units).
+    pub distance: f32,
 }
 
 /// The navigation graph container.
@@ -103,7 +109,7 @@ impl NavGraph {
         from: NavNodeId,
         to: NavNodeId,
         edge_type: EdgeType,
-        cost: f32,
+        distance: f32,
     ) -> NavEdgeId {
         let forward_id = NavEdgeId(self.edges.len() as u32);
         let reverse_id = NavEdgeId(self.edges.len() as u32 + 1);
@@ -114,7 +120,7 @@ impl NavGraph {
             from,
             to,
             edge_type,
-            cost,
+            distance,
         });
 
         let reverse_idx = self.edges.len();
@@ -123,7 +129,7 @@ impl NavGraph {
             from: to,
             to: from,
             edge_type,
-            cost,
+            distance,
         });
 
         self.nodes[from.0 as usize].edge_indices.push(forward_idx);
@@ -296,14 +302,15 @@ fn derive_edge_type(
 /// 3. **Pass 2 — edges:** Iterate again. For each nav node, check the 13
 ///    positive-half neighbors (26-connectivity) to avoid duplicate
 ///    bidirectional edges. If the neighbor is also a nav node, derive the
-///    edge type and cost, then add a bidirectional edge. 26-connectivity
-///    (vs face-only) is needed because the air shell around thin geometry
-///    (radius-1 branches) would be disconnected with face-only edges.
+///    edge type, compute euclidean distance, and add a bidirectional edge.
+///    26-connectivity (vs face-only) is needed because the air shell around
+///    thin geometry (radius-1 branches) would be disconnected with
+///    face-only edges.
 ///
 /// With the default 256×128×256 world, expect ~3000–5000 nav nodes (air
 /// voxels touching the tree surface and forest floor). The spatial index
 /// is ~32 MB and freed after construction.
-pub fn build_nav_graph(world: &VoxelWorld, config: &GameConfig) -> NavGraph {
+pub fn build_nav_graph(world: &VoxelWorld) -> NavGraph {
     let mut graph = NavGraph::new();
 
     let sx = world.size_x as usize;
@@ -363,9 +370,6 @@ pub fn build_nav_graph(world: &VoxelWorld, config: &GameConfig) -> NavGraph {
         // dx == 0, dy == 0, dz > 0 (1 offset)
         ( 0,  0,  1),
     ];
-    let base_speed = config.nav_base_speed;
-    let climb_speed = base_speed * config.climb_speed_multiplier;
-
     for y in 1..sy {
         for z in 0..sz {
             for x in 0..sx {
@@ -406,15 +410,8 @@ pub fn build_nav_graph(world: &VoxelWorld, config: &GameConfig) -> NavGraph {
                         to_node.position,
                     );
 
-                    let speed = match edge_type {
-                        EdgeType::TrunkClimb | EdgeType::GroundToTrunk => climb_speed,
-                        _ => base_speed,
-                    };
-                    // Euclidean distance for the edge cost.
                     let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
-                    let cost = dist / speed;
-
-                    graph.add_edge(from, to, edge_type, cost);
+                    graph.add_edge(from, to, edge_type, dist);
                 }
             }
         }
@@ -619,7 +616,8 @@ mod tests {
     /// Helper: create a VoxelWorld with a generated tree.
     /// Uses the default fantasy_mega profile with leaves disabled and
     /// a small 64^3 world.
-    fn test_world_and_config() -> (VoxelWorld, GameConfig) {
+    fn test_world() -> VoxelWorld {
+        use crate::config::GameConfig;
         use crate::prng::GameRng;
         use crate::tree_gen;
 
@@ -634,13 +632,13 @@ mod tests {
         let mut rng = GameRng::new(42);
         tree_gen::generate_tree(&mut world, &config, &mut rng);
 
-        (world, config)
+        world
     }
 
     #[test]
     fn nav_nodes_are_air_voxels() {
-        let (world, config) = test_world_and_config();
-        let graph = build_nav_graph(&world, &config);
+        let world = test_world();
+        let graph = build_nav_graph(&world);
 
         for node in &graph.nodes {
             assert_eq!(
@@ -655,8 +653,8 @@ mod tests {
 
     #[test]
     fn nav_nodes_adjacent_to_solid() {
-        let (world, config) = test_world_and_config();
-        let graph = build_nav_graph(&world, &config);
+        let world = test_world();
+        let graph = build_nav_graph(&world);
 
         for node in &graph.nodes {
             let has_solid = FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
@@ -677,8 +675,8 @@ mod tests {
 
     #[test]
     fn build_nav_graph_has_ground_nodes() {
-        let (world, config) = test_world_and_config();
-        let graph = build_nav_graph(&world, &config);
+        let world = test_world();
+        let graph = build_nav_graph(&world);
 
         let ground_nodes: Vec<_> = graph
             .nodes
@@ -702,8 +700,8 @@ mod tests {
 
     #[test]
     fn build_nav_graph_has_trunk_nodes() {
-        let (world, config) = test_world_and_config();
-        let graph = build_nav_graph(&world, &config);
+        let world = test_world();
+        let graph = build_nav_graph(&world);
 
         let trunk_nodes: Vec<_> = graph
             .nodes
@@ -715,8 +713,8 @@ mod tests {
 
     #[test]
     fn build_nav_graph_is_connected() {
-        let (world, config) = test_world_and_config();
-        let graph = build_nav_graph(&world, &config);
+        let world = test_world();
+        let graph = build_nav_graph(&world);
 
         assert!(graph.node_count() > 0, "Graph should have nodes");
 
@@ -759,6 +757,7 @@ mod tests {
 
     #[test]
     fn build_nav_graph_is_connected_with_splits() {
+        use crate::config::GameConfig;
         use crate::prng::GameRng;
         use crate::tree_gen;
 
@@ -775,7 +774,7 @@ mod tests {
         let mut rng = GameRng::new(42);
         tree_gen::generate_tree(&mut world, &config, &mut rng);
 
-        let graph = build_nav_graph(&world, &config);
+        let graph = build_nav_graph(&world);
         assert!(graph.node_count() > 0);
 
         // BFS flood fill from node 0.
@@ -805,6 +804,7 @@ mod tests {
 
     #[test]
     fn voxel_nav_determinism() {
+        use crate::config::GameConfig;
         use crate::prng::GameRng;
         use crate::tree_gen;
 
@@ -817,12 +817,12 @@ mod tests {
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
         tree_gen::generate_tree(&mut world_a, &config, &mut rng_a);
-        let graph_a = build_nav_graph(&world_a, &config);
+        let graph_a = build_nav_graph(&world_a);
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(42);
         tree_gen::generate_tree(&mut world_b, &config, &mut rng_b);
-        let graph_b = build_nav_graph(&world_b, &config);
+        let graph_b = build_nav_graph(&world_b);
 
         assert_eq!(graph_a.node_count(), graph_b.node_count());
         assert_eq!(graph_a.edges.len(), graph_b.edges.len());
@@ -837,6 +837,7 @@ mod tests {
 
     #[test]
     fn nav_graph_connected_with_leaves() {
+        use crate::config::GameConfig;
         use crate::prng::GameRng;
         use crate::tree_gen;
 
@@ -849,7 +850,7 @@ mod tests {
         let mut rng = GameRng::new(42);
         tree_gen::generate_tree(&mut world, &config, &mut rng);
 
-        let graph = build_nav_graph(&world, &config);
+        let graph = build_nav_graph(&world);
         assert!(graph.node_count() > 0);
 
         // BFS flood fill from node 0.
@@ -879,6 +880,7 @@ mod tests {
 
     #[test]
     fn nav_graph_connected_with_roots() {
+        use crate::config::GameConfig;
         use crate::prng::GameRng;
         use crate::tree_gen;
 
@@ -893,7 +895,7 @@ mod tests {
         let mut rng = GameRng::new(42);
         tree_gen::generate_tree(&mut world, &config, &mut rng);
 
-        let graph = build_nav_graph(&world, &config);
+        let graph = build_nav_graph(&world);
         assert!(graph.node_count() > 0);
 
         // BFS flood fill from node 0.

@@ -15,16 +15,21 @@
 // Creature movement uses an **activation chain**: each creature has a
 // `CreatureActivation` event that fires, performs one action (walk 1 nav edge
 // or do 1 unit of task work), and schedules the next activation based on how
-// long the action takes. This replaces the older heartbeat-driven wandering
-// model entirely — `CreatureHeartbeat` still exists but is decoupled from
-// movement; it handles periodic non-movement checks (mood, mana, etc.).
+// long the action takes. The sim runs at **1000 ticks per simulated second**
+// (`tick_duration_ms = 1`). Edge traversal time is computed as
+// `ceil(edge.distance * species_ticks_per_voxel)` where ticks_per_voxel is
+// `walk_ticks_per_voxel` for flat edges or `climb_ticks_per_voxel` for
+// TrunkClimb/GroundToTrunk edges (from `species.rs`).
+//
+// `CreatureHeartbeat` still exists but is decoupled from movement; it handles
+// periodic non-movement checks (mood, mana, food decay, etc.).
 //
 // The activation loop (`process_creature_activation`) runs this logic:
 //
 //   1. If the creature has no task (`current_task == None`), check for an
 //      available task to claim. If none found, **wander**: pick a random
 //      adjacent nav node, move there, and schedule the next activation at
-//      `now + edge_cost / speed`.
+//      `now + ceil(edge.distance * ticks_per_voxel)`.
 //   2. If the creature has a task, run its **behavior script** (see below).
 //
 // Wandering is intentionally local and aimless — no pathfinding, just 1 random
@@ -274,7 +279,7 @@ impl SimState {
         };
 
         // Build nav graph from voxel world geometry.
-        let nav_graph = nav::build_nav_graph(&world, &config);
+        let nav_graph = nav::build_nav_graph(&world);
 
         let mut trees = BTreeMap::new();
         trees.insert(player_tree_id, home_tree);
@@ -690,21 +695,30 @@ impl SimState {
             None
         };
 
+        let walk_tpv = species_data.walk_ticks_per_voxel;
+        let climb_tpv = species_data.climb_ticks_per_voxel;
+
         let (edge_idx, dest_node) = if let Some(step) = next_step {
             step
         } else {
             // Compute path to task location.
-            let max_speed = self.config.nav_base_speed / self.config.climb_speed_multiplier;
             let path_result = if let Some(ref allowed) = species_data.allowed_edge_types {
                 pathfinding::astar_filtered(
                     &self.nav_graph,
                     current_node,
                     task_location,
-                    max_speed,
+                    walk_tpv,
+                    climb_tpv,
                     allowed,
                 )
             } else {
-                pathfinding::astar(&self.nav_graph, current_node, task_location, max_speed)
+                pathfinding::astar(
+                    &self.nav_graph,
+                    current_node,
+                    task_location,
+                    walk_tpv,
+                    climb_tpv,
+                )
             };
 
             let path_result = match path_result {
@@ -730,8 +744,15 @@ impl SimState {
             (first_edge, first_dest)
         };
 
-        // Move one edge.
-        let edge_cost = self.nav_graph.edge(edge_idx).cost;
+        // Move one edge. Compute traversal time from distance * ticks-per-voxel.
+        let edge = self.nav_graph.edge(edge_idx);
+        let tpv = match edge.edge_type {
+            crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
+                climb_tpv.unwrap_or(walk_tpv)
+            }
+            _ => walk_tpv,
+        };
+        let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
         let dest_pos = self.nav_graph.node(dest_node).position;
 
         let creature = self.creatures.get_mut(&creature_id).unwrap();
@@ -749,7 +770,6 @@ impl SimState {
         }
 
         // Schedule next activation.
-        let delay = (edge_cost.ceil() as u64).max(1);
         self.event_queue.schedule(
             self.tick + delay,
             ScheduledEventKind::CreatureActivation { creature_id },
@@ -790,7 +810,7 @@ impl SimState {
         let edge_indices = self.nav_graph.neighbors(current_node);
         if edge_indices.is_empty() {
             self.event_queue.schedule(
-                self.tick + 10,
+                self.tick + 1000,
                 ScheduledEventKind::CreatureActivation { creature_id },
             );
             return;
@@ -810,7 +830,7 @@ impl SimState {
 
         if eligible_edges.is_empty() {
             self.event_queue.schedule(
-                self.tick + 10,
+                self.tick + 1000,
                 ScheduledEventKind::CreatureActivation { creature_id },
             );
             return;
@@ -821,7 +841,15 @@ impl SimState {
         let edge_idx = eligible_edges[chosen_idx];
         let edge = self.nav_graph.edge(edge_idx);
         let dest_node = edge.to;
-        let edge_cost = edge.cost;
+
+        // Compute traversal time from distance * species ticks-per-voxel.
+        let tpv = match edge.edge_type {
+            crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
+                species_data.climb_ticks_per_voxel.unwrap_or(species_data.walk_ticks_per_voxel)
+            }
+            _ => species_data.walk_ticks_per_voxel,
+        };
+        let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
 
         // Move creature to the destination.
         let dest_pos = self.nav_graph.node(dest_node).position;
@@ -830,7 +858,6 @@ impl SimState {
         creature.current_node = Some(dest_node);
 
         // Schedule next activation based on edge traversal time.
-        let delay = (edge_cost.ceil() as u64).max(1);
         self.event_queue.schedule(
             self.tick + delay,
             ScheduledEventKind::CreatureActivation { creature_id },
@@ -850,6 +877,8 @@ impl SimState {
             None => return, // Creature was removed.
         };
 
+        let species = creature.species;
+
         // Update position and current node.
         creature.position = node_pos;
         creature.current_node = Some(arrived_at);
@@ -868,12 +897,20 @@ impl SimState {
         };
 
         if should_continue {
-            // Schedule next movement.
+            // Schedule next movement using distance * species ticks-per-voxel.
+            let species_data = &self.species_table[&species];
             let path = self.creatures[&creature_id].path.as_ref().unwrap();
             let next_edge_idx = path.remaining_edge_indices[0];
-            let next_edge_cost = self.nav_graph.edge(next_edge_idx).cost;
+            let next_edge = self.nav_graph.edge(next_edge_idx);
+            let tpv = match next_edge.edge_type {
+                crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
+                    species_data.climb_ticks_per_voxel.unwrap_or(species_data.walk_ticks_per_voxel)
+                }
+                _ => species_data.walk_ticks_per_voxel,
+            };
+            let delay = ((next_edge.distance * tpv as f32).ceil() as u64).max(1);
             let next_dest = path.remaining_nodes[0];
-            let arrival_tick = self.tick + (next_edge_cost.ceil() as u64).max(1);
+            let arrival_tick = self.tick + delay;
 
             self.event_queue.schedule(
                 arrival_tick,
@@ -992,7 +1029,7 @@ impl SimState {
     /// `nav_graph` (from rebuilt world geometry), `species_table` (from config).
     pub fn rebuild_transient_state(&mut self) {
         self.world = Self::rebuild_world(&self.config, &self.trees);
-        self.nav_graph = nav::build_nav_graph(&self.world, &self.config);
+        self.nav_graph = nav::build_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
     }
 
@@ -1164,8 +1201,9 @@ mod tests {
         };
         sim.step(&[spawn_cmd], 2);
 
-        // Step far enough for many activations.
-        sim.step(&[], 2000);
+        // Step far enough for many activations (each ground edge costs ~500
+        // ticks at walk_ticks_per_voxel=500).
+        sim.step(&[], 200000);
 
         assert_eq!(sim.creature_count(Species::Elf), 1);
         let elf = sim
@@ -1253,7 +1291,7 @@ mod tests {
         sim.step(&[cmd], 2);
 
         // Step far enough for heartbeat + movement.
-        sim.step(&[], 2000);
+        sim.step(&[], 200000);
 
         assert_eq!(sim.creature_count(Species::Capybara), 1);
         let capybara = sim
@@ -1281,7 +1319,7 @@ mod tests {
         sim.step(&[cmd], 2);
 
         // Run for many ticks — capybara must never leave y=1 (air above ForestFloor).
-        for target in (100..5000).step_by(100) {
+        for target in (10000..500000).step_by(10000) {
             sim.step(&[], target);
             let capybara = sim
                 .creatures
@@ -1346,8 +1384,8 @@ mod tests {
         let initial_pos = elf.position;
 
         // Step enough for many activations (each moves 1 edge; ground edges
-        // cost ~80 ticks, so 2000 ticks ≈ 25 activations).
-        sim.step(&[], 2000);
+        // cost ~500 ticks at walk_ticks_per_voxel=500).
+        sim.step(&[], 200000);
 
         let elf = sim
             .creatures
@@ -1387,7 +1425,7 @@ mod tests {
         sim.step(&[cmd], 2);
 
         // Run for many ticks, periodically checking node validity.
-        for target in (100..5000).step_by(100) {
+        for target in (10000..500000).step_by(10000) {
             sim.step(&[], target);
             let elf = sim
                 .creatures
@@ -1455,9 +1493,9 @@ mod tests {
         let far_node = NavNodeId((sim.nav_graph.node_count() - 1) as u32);
         let task_id = insert_goto_task(&mut sim, far_node);
 
-        // Tick just enough for one activation (~80 ticks for a ground edge).
-        // The elf claims the task and walks 1 edge toward it, but won't arrive.
-        sim.step(&[], sim.tick + 100);
+        // Tick enough for one activation (~500 ticks for a ground edge at
+        // walk_ticks_per_voxel=500).
+        sim.step(&[], sim.tick + 10000);
 
         let elf = &sim.creatures[&elf_id];
         assert_eq!(
@@ -1488,7 +1526,7 @@ mod tests {
             .manhattan_distance(task_location);
 
         // Step a moderate amount — creature should be closer to the target.
-        sim.step(&[], sim.tick + 500);
+        sim.step(&[], sim.tick + 50000);
 
         let mid_dist = sim.creatures[&elf_id]
             .position
@@ -1510,7 +1548,7 @@ mod tests {
         let task_id = insert_goto_task(&mut sim, elf_node);
 
         // One activation should be enough: elf claims task, is already there, completes.
-        sim.step(&[], sim.tick + 100);
+        sim.step(&[], sim.tick + 10000);
 
         let task = &sim.tasks[&task_id];
         assert_eq!(task.state, TaskState::Complete, "GoTo task should be complete");
@@ -1531,11 +1569,11 @@ mod tests {
         let _task_id = insert_goto_task(&mut sim, elf_node);
 
         // Complete the task.
-        sim.step(&[], sim.tick + 100);
+        sim.step(&[], sim.tick + 10000);
         let pos_after_task = sim.creatures[&elf_id].position;
 
         // Continue ticking — elf should resume wandering (position changes).
-        sim.step(&[], sim.tick + 2000);
+        sim.step(&[], sim.tick + 200000);
 
         let pos_after_wander = sim.creatures[&elf_id].position;
         assert_ne!(
@@ -1600,7 +1638,7 @@ mod tests {
         let task_id = *sim.tasks.keys().next().unwrap();
 
         // Tick until the elf completes the task.
-        sim.step(&[], 10000);
+        sim.step(&[], 1000000);
 
         let task = &sim.tasks[&task_id];
         assert_eq!(
@@ -1650,7 +1688,7 @@ mod tests {
         let task_id = insert_goto_task(&mut sim, far_node);
 
         // Tick enough for all creatures to have several activations.
-        sim.step(&[], sim.tick + 500);
+        sim.step(&[], sim.tick + 50000);
 
         // Exactly one elf should have claimed it.
         let task = &sim.tasks[&task_id];
@@ -1730,8 +1768,8 @@ mod tests {
             "Should start with no fruit when initial_attempts = 0"
         );
 
-        // Step past several heartbeats (interval = 100 ticks).
-        sim.step(&[], 500);
+        // Step past several heartbeats (interval = 10000 ticks).
+        sim.step(&[], 50000);
 
         assert!(
             !sim.trees[&tree_id].fruit_positions.is_empty(),

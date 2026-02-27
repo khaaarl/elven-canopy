@@ -13,9 +13,11 @@
 ## 4. Common path: set up renderers, toolbar, placement controller, selection
 ##    controller, creature info panel, menu button, and pause menu.
 ##
-## Per-frame (_process): advances the sim by one tick via
-## SimBridge.step_to_tick(). If the camera is following a creature, updates
-## the follow target and refreshes the info panel.
+## Per-frame (_process): uses a time-based accumulator to advance the sim by
+## the correct number of ticks, decoupled from the frame rate. The sim runs
+## at 1000 ticks per simulated second (tick_duration_ms = 1). Each frame,
+## delta time is accumulated and converted to ticks. A cap of 5000 ticks per
+## frame prevents spiral-of-death on slow frames.
 ##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
@@ -36,6 +38,11 @@ extends Node3D
 var _selector: Node3D
 var _panel: PanelContainer
 var _camera_pivot: Node3D
+## Fractional seconds of unprocessed sim time. Accumulates each frame,
+## converted to ticks by dividing by tick_duration_ms / 1000.
+var _sim_accumulator: float = 0.0
+## Seconds per sim tick, cached from bridge.tick_duration_ms().
+var _seconds_per_tick: float = 0.001
 
 
 func _ready() -> void:
@@ -77,6 +84,9 @@ func _ready() -> void:
 		print("Elven Canopy: spawned %d capybaras near (%d, 0, %d)" % [bridge.capybara_count(), cx, cz])
 
 	# --- Common setup (new game and loaded game) ---
+
+	# Cache tick duration for the frame accumulator.
+	_seconds_per_tick = bridge.tick_duration_ms() / 1000.0
 
 	# Set up tree renderer.
 	var tree_renderer = $TreeRenderer
@@ -186,10 +196,16 @@ func _try_load_save(bridge: SimBridge, save_path: String) -> bool:
 	return ok
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	var bridge: SimBridge = $SimBridge
 	if bridge.is_initialized():
-		bridge.step_to_tick(bridge.current_tick() + 1)
+		_sim_accumulator += delta
+		var ticks_to_advance := int(_sim_accumulator / _seconds_per_tick)
+		if ticks_to_advance > 5000:
+			ticks_to_advance = 5000
+		if ticks_to_advance > 0:
+			_sim_accumulator -= ticks_to_advance * _seconds_per_tick
+			bridge.step_to_tick(bridge.current_tick() + ticks_to_advance)
 
 	# Update follow target each frame so the camera tracks creature movement.
 	if _camera_pivot and _camera_pivot.is_following():

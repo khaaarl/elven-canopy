@@ -5,8 +5,11 @@
 // are stored in `Vec`s indexed by `NavNodeId` for O(1) access and
 // deterministic behavior (no `HashMap`).
 //
-// The heuristic is Manhattan distance divided by max speed, which is
-// admissible (never overestimates).
+// Edge costs are species-dependent: `edge.distance * ticks_per_voxel`, where
+// `ticks_per_voxel` is `walk_ticks_per_voxel` for flat edges and
+// `climb_ticks_per_voxel` for TrunkClimb/GroundToTrunk edges (from
+// `species.rs`). The heuristic uses `manhattan_distance * walk_ticks_per_voxel`
+// — the fastest speed — to remain admissible.
 //
 // See also: `nav.rs` for the `NavGraph` being searched, `sim.rs` which
 // calls pathfinding during creature AI decisions.
@@ -65,12 +68,15 @@ impl Ord for OpenEntry {
 /// Find the shortest path from `start` to `goal` using A*.
 ///
 /// Returns `None` if no path exists or if the graph is empty.
-/// The `max_speed` parameter is used for the heuristic (Manhattan / max_speed).
+/// `walk_tpv` and `climb_tpv` are the species' ticks-per-voxel for flat and
+/// climb edges respectively. `climb_tpv = None` means climb edges are
+/// impassable (species cannot climb).
 pub fn astar(
     graph: &NavGraph,
     start: NavNodeId,
     goal: NavNodeId,
-    max_speed: f32,
+    walk_tpv: u64,
+    climb_tpv: Option<u64>,
 ) -> Option<PathResult> {
     let n = graph.node_count();
     if n == 0 {
@@ -84,6 +90,8 @@ pub fn astar(
         });
     }
 
+    let walk_tpv_f = walk_tpv as f32;
+
     // g_score[node] = cost of cheapest known path from start to node.
     let mut g_score = vec![f32::INFINITY; n];
     // came_from[node] = (previous node, edge index used to get there).
@@ -93,7 +101,7 @@ pub fn astar(
     g_score[start.0 as usize] = 0.0;
 
     let mut open = BinaryHeap::new();
-    let h_start = heuristic(graph, start, goal, max_speed);
+    let h_start = heuristic(graph, start, goal, walk_tpv_f);
     open.push(OpenEntry {
         node: start,
         f_score: h_start,
@@ -124,12 +132,19 @@ pub fn astar(
                 continue;
             }
 
-            let tentative_g = current_g + edge.cost;
+            let tpv = match edge.edge_type {
+                EdgeType::TrunkClimb | EdgeType::GroundToTrunk => match climb_tpv {
+                    Some(c) => c as f32,
+                    None => continue, // species cannot climb
+                },
+                _ => walk_tpv_f,
+            };
+            let tentative_g = current_g + edge.distance * tpv;
 
             if tentative_g < g_score[ni] {
                 g_score[ni] = tentative_g;
                 came_from[ni] = Some((current_id, edge_idx));
-                let f = tentative_g + heuristic(graph, neighbor, goal, max_speed);
+                let f = tentative_g + heuristic(graph, neighbor, goal, walk_tpv_f);
                 open.push(OpenEntry {
                     node: neighbor,
                     f_score: f,
@@ -147,7 +162,8 @@ pub fn astar_filtered(
     graph: &NavGraph,
     start: NavNodeId,
     goal: NavNodeId,
-    max_speed: f32,
+    walk_tpv: u64,
+    climb_tpv: Option<u64>,
     allowed_edges: &[EdgeType],
 ) -> Option<PathResult> {
     let n = graph.node_count();
@@ -162,6 +178,8 @@ pub fn astar_filtered(
         });
     }
 
+    let walk_tpv_f = walk_tpv as f32;
+
     let mut g_score = vec![f32::INFINITY; n];
     let mut came_from: Vec<Option<(NavNodeId, usize)>> = vec![None; n];
     let mut closed = vec![false; n];
@@ -169,7 +187,7 @@ pub fn astar_filtered(
     g_score[start.0 as usize] = 0.0;
 
     let mut open = BinaryHeap::new();
-    let h_start = heuristic(graph, start, goal, max_speed);
+    let h_start = heuristic(graph, start, goal, walk_tpv_f);
     open.push(OpenEntry {
         node: start,
         f_score: h_start,
@@ -204,12 +222,19 @@ pub fn astar_filtered(
                 continue;
             }
 
-            let tentative_g = current_g + edge.cost;
+            let tpv = match edge.edge_type {
+                EdgeType::TrunkClimb | EdgeType::GroundToTrunk => match climb_tpv {
+                    Some(c) => c as f32,
+                    None => continue,
+                },
+                _ => walk_tpv_f,
+            };
+            let tentative_g = current_g + edge.distance * tpv;
 
             if tentative_g < g_score[ni] {
                 g_score[ni] = tentative_g;
                 came_from[ni] = Some((current_id, edge_idx));
-                let f = tentative_g + heuristic(graph, neighbor, goal, max_speed);
+                let f = tentative_g + heuristic(graph, neighbor, goal, walk_tpv_f);
                 open.push(OpenEntry {
                     node: neighbor,
                     f_score: f,
@@ -221,11 +246,13 @@ pub fn astar_filtered(
     None
 }
 
-/// Admissible heuristic: Manhattan distance / max_speed.
-fn heuristic(graph: &NavGraph, from: NavNodeId, to: NavNodeId, max_speed: f32) -> f32 {
+/// Admissible heuristic: Manhattan distance * walk_ticks_per_voxel.
+/// Uses the fastest speed (flat walk) to ensure the heuristic never
+/// overestimates.
+fn heuristic(graph: &NavGraph, from: NavNodeId, to: NavNodeId, walk_tpv: f32) -> f32 {
     let a = graph.node(from).position;
     let b = graph.node(to).position;
-    a.manhattan_distance(b) as f32 / max_speed
+    a.manhattan_distance(b) as f32 * walk_tpv
 }
 
 /// Reconstruct the path from came_from data.
@@ -276,7 +303,7 @@ mod tests {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         // Path from a to a.
-        let result = astar(&graph, a, a, 1.0);
+        let result = astar(&graph, a, a, 1, Some(2));
         assert!(result.is_some());
         let path = result.unwrap();
         assert_eq!(path.nodes, vec![a]);
@@ -290,10 +317,12 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
+        // Edges store euclidean distance.
         graph.add_edge(a, b, EdgeType::ForestFloor, 5.0);
         graph.add_edge(b, c, EdgeType::ForestFloor, 5.0);
 
-        let result = astar(&graph, a, c, 1.0);
+        // walk_tpv=1 → cost = distance * 1 = distance.
+        let result = astar(&graph, a, c, 1, Some(2));
         assert!(result.is_some());
         let path = result.unwrap();
         assert_eq!(path.nodes, vec![a, b, c]);
@@ -307,13 +336,13 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
-        // Direct expensive edge a->c.
+        // Direct long-distance edge a->c.
         graph.add_edge(a, c, EdgeType::ForestFloor, 20.0);
-        // Cheaper via b.
+        // Shorter via b.
         graph.add_edge(a, b, EdgeType::ForestFloor, 3.0);
         graph.add_edge(b, c, EdgeType::ForestFloor, 3.0);
 
-        let result = astar(&graph, a, c, 1.0).unwrap();
+        let result = astar(&graph, a, c, 1, Some(2)).unwrap();
         assert_eq!(result.nodes, vec![a, b, c]);
         assert_eq!(result.total_cost, 6.0);
     }
@@ -324,7 +353,7 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // No edges — no path.
-        let result = astar(&graph, a, b, 1.0);
+        let result = astar(&graph, a, b, 1, Some(2));
         assert!(result.is_none());
     }
 
@@ -339,7 +368,7 @@ mod tests {
         graph.add_edge(b, c, EdgeType::TrunkClimb, 5.0);
 
         // Only allow ForestFloor — path a->c should fail (can't cross TrunkClimb).
-        let result = astar_filtered(&graph, a, c, 1.0, &[EdgeType::ForestFloor]);
+        let result = astar_filtered(&graph, a, c, 1, Some(2), &[EdgeType::ForestFloor]);
         assert!(result.is_none());
 
         // Allow both — should succeed.
@@ -347,7 +376,8 @@ mod tests {
             &graph,
             a,
             c,
-            1.0,
+            1,
+            Some(2),
             &[EdgeType::ForestFloor, EdgeType::TrunkClimb],
         );
         assert!(result.is_some());
@@ -358,7 +388,7 @@ mod tests {
     fn astar_filtered_same_start_and_goal() {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
-        let result = astar_filtered(&graph, a, a, 1.0, &[EdgeType::ForestFloor]);
+        let result = astar_filtered(&graph, a, a, 1, Some(2), &[EdgeType::ForestFloor]);
         assert!(result.is_some());
         assert_eq!(result.unwrap().total_cost, 0.0);
     }
@@ -375,8 +405,8 @@ mod tests {
         graph.add_edge(a, d, EdgeType::TrunkClimb, 4.0);
         graph.add_edge(d, c, EdgeType::TrunkClimb, 4.0);
 
-        let r1 = astar(&graph, a, c, 1.0).unwrap();
-        let r2 = astar(&graph, a, c, 1.0).unwrap();
+        let r1 = astar(&graph, a, c, 500, Some(1250)).unwrap();
+        let r2 = astar(&graph, a, c, 500, Some(1250)).unwrap();
         assert_eq!(r1.nodes, r2.nodes);
         assert_eq!(r1.total_cost, r2.total_cost);
     }

@@ -6,15 +6,20 @@
 // multiplayer all clients must have identical configs (enforced via hash
 // comparison at session handshake).
 //
+// **The sim runs at 1000 ticks per simulated second.** `tick_duration_ms = 1`
+// means each tick represents 1 millisecond of game time. All tick-denominated
+// config values (heartbeat intervals, food decay rates, species speed params)
+// are calibrated for this rate.
+//
 // Tree generation parameters are grouped into a `TreeProfile` struct with
 // nested sub-structs: `GrowthParams`, `SplitParams`, `CurvatureParams`,
 // `RootParams`, `LeafParams`, and `TrunkParams`. Named preset constructors
 // (`TreeProfile::fantasy_mega()`, `::oak()`, etc.) produce different tree
 // archetypes by tuning the same parameter set.
 //
-// Species-specific behavioral data (speed, heartbeat interval, edge
-// restrictions) lives in `SpeciesData` entries keyed by `Species` in the
-// `species` map — see `species.rs`.
+// Species-specific behavioral data (walk/climb speed as ticks-per-voxel,
+// heartbeat interval, edge restrictions) lives in `SpeciesData` entries
+// keyed by `Species` in the `species` map — see `species.rs`.
 //
 // See also: `sim.rs` which owns the `GameConfig` as part of `SimState`,
 // `species.rs` for the `SpeciesData` struct, `tree_gen.rs` for the
@@ -331,23 +336,14 @@ impl TreeProfile {
 /// Top-level game configuration. Loaded from JSON, never mutated at runtime.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GameConfig {
-    /// Number of real-world milliseconds per simulation tick.
+    /// Number of real-world milliseconds per simulation tick. At 1000
+    /// ticks/sec this is 1. Used by the GDScript frame loop to compute how
+    /// many ticks to advance per frame.
     pub tick_duration_ms: u32,
 
     /// Interval (in ticks) between tree heartbeat events (fruit production,
     /// mana capacity updates).
     pub tree_heartbeat_interval_ticks: u64,
-
-    /// Reference movement speed used for nav graph edge cost computation.
-    /// This is the flat-surface speed used when building the graph; individual
-    /// creature species may move faster or slower.
-    pub nav_base_speed: f32,
-
-    /// Multiplier applied to movement speed when climbing raw trunk.
-    pub climb_speed_multiplier: f32,
-
-    /// Multiplier applied to movement speed when using stairs/ramps.
-    pub stair_speed_multiplier: f32,
 
     /// Base mana generated per elf per heartbeat tick.
     pub mana_base_generation_rate: f32,
@@ -402,32 +398,31 @@ impl Default for GameConfig {
         species.insert(
             Species::Elf,
             SpeciesData {
-                base_speed: 0.1,
-                heartbeat_interval_ticks: 30,
+                walk_ticks_per_voxel: 500,
+                climb_ticks_per_voxel: Some(1250),
+                heartbeat_interval_ticks: 3000,
                 allowed_edge_types: None, // elves can traverse all edges
                 ground_only: false,
                 food_max: 1_000_000_000_000_000,
-                food_decay_per_tick: 333_333_333_333,
+                food_decay_per_tick: 3_333_333_333,
             },
         );
         species.insert(
             Species::Capybara,
             SpeciesData {
-                base_speed: 0.06,
-                heartbeat_interval_ticks: 40,
+                walk_ticks_per_voxel: 800,
+                climb_ticks_per_voxel: None,
+                heartbeat_interval_ticks: 4000,
                 allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
                 ground_only: true,
                 food_max: 1_000_000_000_000_000,
-                food_decay_per_tick: 333_333_333_333,
+                food_decay_per_tick: 3_333_333_333,
             },
         );
 
         Self {
-            tick_duration_ms: 100,
-            tree_heartbeat_interval_ticks: 100,
-            nav_base_speed: 0.1,
-            climb_speed_multiplier: 0.4,
-            stair_speed_multiplier: 0.7,
+            tick_duration_ms: 1,
+            tree_heartbeat_interval_ticks: 10000,
             mana_base_generation_rate: 1.0,
             mana_mood_multiplier_range: (0.2, 2.0),
             platform_mana_cost_per_voxel: 10.0,
@@ -469,17 +464,14 @@ mod tests {
         // Verify species data survived.
         assert_eq!(config.species.len(), restored.species.len());
         let elf_data = &restored.species[&Species::Elf];
-        assert_eq!(elf_data.heartbeat_interval_ticks, 30);
+        assert_eq!(elf_data.heartbeat_interval_ticks, 3000);
     }
 
     #[test]
     fn config_loads_from_json_string() {
         let json = r#"{
-            "tick_duration_ms": 50,
-            "tree_heartbeat_interval_ticks": 200,
-            "nav_base_speed": 0.2,
-            "climb_speed_multiplier": 0.3,
-            "stair_speed_multiplier": 0.6,
+            "tick_duration_ms": 1,
+            "tree_heartbeat_interval_ticks": 10000,
             "mana_base_generation_rate": 2.0,
             "mana_mood_multiplier_range": [0.1, 3.0],
             "platform_mana_cost_per_voxel": 8.0,
@@ -532,25 +524,27 @@ mod tests {
             },
             "species": {
                 "Elf": {
-                    "base_speed": 0.2,
-                    "heartbeat_interval_ticks": 100,
+                    "walk_ticks_per_voxel": 500,
+                    "climb_ticks_per_voxel": 1250,
+                    "heartbeat_interval_ticks": 3000,
                     "allowed_edge_types": null,
                     "ground_only": false
                 },
                 "Capybara": {
-                    "base_speed": 0.05,
-                    "heartbeat_interval_ticks": 200,
+                    "walk_ticks_per_voxel": 800,
+                    "climb_ticks_per_voxel": null,
+                    "heartbeat_interval_ticks": 4000,
                     "allowed_edge_types": ["ForestFloor"],
                     "ground_only": true
                 }
             }
         }"#;
         let config: GameConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.tick_duration_ms, 50);
+        assert_eq!(config.tick_duration_ms, 1);
         assert_eq!(config.world_size, (128, 64, 128));
         assert_eq!(config.tree_profile.growth.initial_energy, 300.0);
         let capy = &config.species[&Species::Capybara];
-        assert_eq!(capy.heartbeat_interval_ticks, 200);
+        assert_eq!(capy.heartbeat_interval_ticks, 4000);
         assert!(capy.ground_only);
     }
 
