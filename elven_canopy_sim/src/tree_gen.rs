@@ -243,7 +243,7 @@ pub fn generate_tree(
     let center_z = world.size_z as f32 / 2.0;
 
     // --- Forest floor at y=0 ---
-    let floor_extent = 20;
+    let floor_extent = config.floor_extent;
     for dx in -floor_extent..=floor_extent {
         for dz in -floor_extent..=floor_extent {
             let coord = VoxelCoord::new(center_x as i32 + dx, 0, center_z as i32 + dz);

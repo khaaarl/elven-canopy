@@ -8,6 +8,9 @@
 //
 // - **Lifecycle:** `init_sim(seed)`, `init_sim_with_tree_profile_json(seed, json)`,
 //   `step_to_tick(tick)`, `current_tick()`, `is_initialized()`.
+// - **Save/load:** `save_game_json()` returns the sim state as a JSON string,
+//   `load_game_json(json)` replaces the current sim from a JSON string.
+//   File I/O is handled in GDScript via Godot's `user://` paths.
 // - **World data:** `get_trunk_voxels()`, `get_branch_voxels()`,
 //   `get_root_voxels()`, `get_leaf_voxels()`, `get_fruit_voxels()` — flat
 //   `PackedInt32Array` of (x,y,z) triples for voxel mesh rendering.
@@ -421,6 +424,45 @@ impl SimBridge {
                 dict
             }
             None => VarDictionary::new(),
+        }
+    }
+
+    /// Serialize the current simulation state to a JSON string.
+    ///
+    /// Returns the JSON string, or an empty string on error. The caller
+    /// (GDScript) is responsible for writing the string to disk via Godot's
+    /// file I/O — the sim crate has no filesystem access.
+    #[func]
+    fn save_game_json(&self) -> GString {
+        let Some(sim) = &self.sim else {
+            return GString::new();
+        };
+        match sim.to_json() {
+            Ok(json) => GString::from(&json),
+            Err(e) => {
+                godot_error!("SimBridge: failed to serialize sim state: {e}");
+                GString::new()
+            }
+        }
+    }
+
+    /// Replace the current simulation state with one deserialized from JSON.
+    ///
+    /// Returns `true` on success. On failure, the previous sim state is
+    /// preserved (or cleared if there was none).
+    #[func]
+    fn load_game_json(&mut self, json: GString) -> bool {
+        match SimState::from_json(&json.to_string()) {
+            Ok(state) => {
+                godot_print!("SimBridge: loaded save (tick={}, creatures={})",
+                    state.tick, state.creatures.len());
+                self.sim = Some(state);
+                true
+            }
+            Err(e) => {
+                godot_error!("SimBridge: failed to load save: {e}");
+                false
+            }
         }
     }
 
