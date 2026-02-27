@@ -270,6 +270,10 @@ git push origin --delete feature/my-branch
 
 The squashed commit message should summarize the entire feature, not repeat individual commit messages. Always ask the user before pushing to main.
 
+## Conversation Flow
+
+**When the user asks a question, ONLY answer the question.** Do not continue with previous work, do not "move on." Stop and wait for the user to explicitly tell you to proceed.
+
 ## Key Constraints
 
 - **Determinism (sim crate)**: `elven_canopy_sim` must produce identical results given the same seed. No hash-order dependence, no set iteration, no stdlib PRNG. The sim uses a hand-rolled xoshiro256++ (with SplitMix64 seeding) — no external PRNG crate dependencies. This enables consistency in multiplayer and verification of optimizations. **Scope:** This constraint applies strictly to `elven_canopy_sim`. The music crate (`elven_canopy_music`) uses the `rand` crate for seed-based generation, which is fine since it doesn't participate in lockstep multiplayer or replay verification.
