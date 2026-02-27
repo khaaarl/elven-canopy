@@ -133,8 +133,11 @@ func _do_save(save_name: String) -> void:
 	# Ensure saves directory exists.
 	DirAccess.make_dir_recursive_absolute("user://saves")
 
-	# Sanitize file name: replace path separators and other unsafe chars.
-	var safe_name := save_name.replace("/", "_").replace("\\", "_")
+	# Sanitize file name: replace characters unsafe on Windows/macOS/Linux.
+	# Windows forbids: \ / : * ? " < > |
+	var safe_name := save_name
+	for ch in ["\\", "/", ":", "*", "?", "\"", "<", ">", "|"]:
+		safe_name = safe_name.replace(ch, "_")
 	var path := "user://saves/" + safe_name + ".json"
 
 	var file := FileAccess.open(path, FileAccess.WRITE)

@@ -47,8 +47,10 @@ func _ready() -> void:
 	# Name input.
 	_name_edit = LineEdit.new()
 	var now := Time.get_datetime_dict_from_system()
-	_name_edit.text = "%04d-%02d-%02d %02d:%02d" % [
-		now["year"], now["month"], now["day"], now["hour"], now["minute"]
+	var msec := Time.get_ticks_msec() % 1000
+	_name_edit.text = "%04d-%02d-%02d %02d.%02d.%02d.%03d" % [
+		now["year"], now["month"], now["day"], now["hour"], now["minute"],
+		now["second"], msec
 	]
 	_name_edit.select_all_on_focus = true
 	vbox.add_child(_name_edit)
