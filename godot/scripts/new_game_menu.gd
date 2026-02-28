@@ -228,8 +228,6 @@ func _ready() -> void:
 	_seed_input.placeholder_text = "e.g. 42"
 	_seed_input.custom_minimum_size = Vector2(300, 40)
 	vbox.add_child(_seed_input)
-	# Defer focus grab — the control may not be ready for focus during _ready().
-	_seed_input.call_deferred("grab_focus")
 
 	# Spacer.
 	var spacer2 := Control.new()
@@ -350,6 +348,12 @@ func _on_slider_changed(value: float, slider_label: String) -> void:
 	else:
 		display = "%.3f" % value
 	_value_labels[slider_label].text = display
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_accept"):
+		get_viewport().set_input_as_handled()
+		_on_start_pressed()
 
 
 func _on_back_pressed() -> void:
