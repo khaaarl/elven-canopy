@@ -63,6 +63,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-creature-tooltip     Creature hover tooltip
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
+[ ] F-debug-menu           Move spawn/summon into debug menu
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-elf-names            Elf name generation from conlang rules
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
@@ -878,6 +879,27 @@ small floating tooltip. Reduces friction compared to the full selection +
 info panel flow for casual inspection.
 
 **Related:** F-selection, F-creature-info, F-elf-names
+
+#### F-debug-menu — Move spawn/summon into debug menu
+**Status:** Todo · **Phase:** 2
+
+The top toolbar (`spawn_toolbar.gd`) currently has 11 buttons: 6 creature
+spawn buttons (Elf, Capybara, Boar, Deer, Monkey, Squirrel), Summon Elf,
+Build, Tasks, Structures, and Tree Info. Most of the bar is dev/debug tools
+(spawning creatures on demand) that won't exist in the real game — they
+clutter the toolbar and push gameplay buttons off to the side.
+
+Move all 6 creature spawn buttons and the Summon Elf button into a toggleable
+debug menu (collapsible panel, dropdown, or separate overlay triggered by a
+"Debug" button or a key like F12). The main toolbar keeps only gameplay
+actions: Build, Tasks, Structures, Tree Info (and future gameplay buttons
+like speed controls). Rename `spawn_toolbar.gd` → `action_toolbar.gd` (and
+update references in `main.gd`, `placement_controller.gd`, CLAUDE.md project
+structure) to reflect that it's no longer spawn-centric.
+
+The debug menu should be easy to hide entirely for non-dev builds later.
+
+**Related:** F-spawn-toolbar
 
 #### F-godot-setup — Godot 4 project setup
 **Status:** Done · **Phase:** 0 · **Refs:** §3
