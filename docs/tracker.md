@@ -47,12 +47,15 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridges              Bridge construction between tree parts
+[ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-carve-holes          Remove material (doors, storage hollows)
 [ ] F-cascade-fail         Cascading structural failure
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-combat               Combat and invader threat system
 [ ] F-crafting             Non-construction jobs and crafting
+[ ] F-creature-death       Basic creature death (starvation)
+[ ] F-creature-tooltip     Creature hover tooltip
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
@@ -66,6 +69,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fire-structure       Fire x structural integrity cascades
 [ ] F-flying-nav           3D flight navigation system
 [ ] F-fog-of-war           Visibility via tree and root network
+[ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-variety        Food storage, cooking, magical brewing
 [ ] F-furnishing           Building geometry + purpose furnishing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
@@ -87,23 +91,29 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-narrative-log        Events and narrative log
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-poetry-reading       Social gatherings and poetry readings
+[ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-seasons              Seasonal visual and gameplay effects
+[ ] F-sim-speed            Simulation speed controls UI
 [ ] F-social-graph         Relationships and social contagion
+[ ] F-sound-effects        Basic ambient and action sound effects
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-basic         Basic structural integrity (flood fill)
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
+[ ] F-tree-info            Tree stats/info panel
 [ ] F-tree-memory          Ancient tree knowledge/vision system
 [ ] F-tree-overlap         Construction overlap with tree geometry
 [ ] F-tree-species         Multiple tree species with properties
+[ ] F-undo-designate       Undo last construction designation
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-visual-smooth        Smooth voxel surface rendering
 [ ] F-voxel-fem            Voxel FEM structural analysis
 [ ] F-weather              Weather within seasons
+[ ] F-world-boundary       World boundary visualization
 [ ] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 ```
 
@@ -272,6 +282,16 @@ model but not yet used for scheduling.
 
 **Related:** F-elf-needs
 
+#### F-undo-designate — Undo last construction designation
+**Status:** Todo · **Phase:** 2
+
+Undo the most recent construction designation (Ctrl+Z or similar). Currently
+players can cancel in-progress builds, but a misclicked designation requires
+manually selecting and cancelling. A simple undo stack (last-in-first-out)
+for designations would prevent frustration from placement mistakes.
+
+**Related:** F-construction
+
 #### F-tree-overlap — Construction overlap with tree geometry
 **Status:** Todo · **Phase:** 2 · **Refs:** §11, §12
 **Draft:** `docs/drafts/construction_tree_overlap.md`
@@ -397,6 +417,17 @@ computed from edge distance and per-species speed config.
 
 ### Creatures & Needs
 
+#### F-creature-death — Basic creature death (starvation)
+**Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
+
+When a creature's food gauge reaches zero, it dies and is removed from the
+simulation. Basic death mechanic without the spiritual dimension (soul
+passage, resurrection) covered by F-soul-mech. Needs: death event, creature
+removal, corpse cleanup, UI notification. A prerequisite for food scarcity
+having real consequences.
+
+**Related:** F-food-gauge, F-soul-mech, F-elf-needs
+
 #### F-capybara — Capybara species
 **Status:** Done · **Refs:** §15
 
@@ -431,7 +462,29 @@ Creatures glide between nav nodes instead of teleporting. Each creature
 stores `move_from`/`move_to`/`move_start_tick`/`move_end_tick` as rendering
 metadata. `interpolated_position()` lerps based on `render_tick`.
 
+#### F-population — Natural population growth/immigration
+**Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
+
+Elves arrive naturally rather than only via the debug spawn toolbar.
+Immigration attracted by tree quality (size, fruit production, shelter,
+mana level). Possible birth mechanic for established populations. Rate
+limited by tree carrying capacity and available food/shelter.
+
+**Related:** F-mana-system, F-tree-capacity, F-fruit-prod
+
 ### Economy & Logistics
+
+#### F-fruit-prod — Basic fruit production and harvesting
+**Status:** Todo · **Phase:** 2 · **Refs:** §13
+
+Tree produces fruit at Leaf voxels over time. Elves harvest fruit to refill
+their food gauge. Production rate depends on number of Leaf voxels
+(photosynthesis capacity). Basic version: fruit spawns periodically at
+random Leaf-adjacent positions, elves pathfind to harvest. Bridges the gap
+between the existing food decay mechanic (F-food-gauge) and the advanced
+food system (F-fruit-variety).
+
+**Related:** F-food-gauge, F-elf-needs, F-fruit-variety, F-branch-growth
 
 #### F-crafting — Non-construction jobs and crafting
 **Status:** Todo · **Phase:** 8+ · **Refs:** §11
@@ -610,6 +663,17 @@ social events and mana.
 
 **Blocked by:** F-vaelith-expand
 
+#### F-sound-effects — Basic ambient and action sound effects
+**Status:** Todo · **Phase:** 3
+
+Basic audio feedback: ambient forest sounds (wind, birds, rustling leaves),
+construction sounds (singing, wood growing), footstep sounds, UI feedback
+sounds. Distinct from F-audio-synth (which renders music from note data) —
+this covers simple sampled sound effects loaded and played through Godot's
+AudioStreamPlayer. Placeholder sounds initially, replaceable later.
+
+**Related:** F-audio-synth
+
 #### F-vaelith-expand — Expand Vaelith language for runtime use
 **Status:** Todo · **Phase:** 6 · **Refs:** §20
 
@@ -709,6 +773,16 @@ soul-powered constructs (golems, animated defenses).
 
 ### UI & Presentation
 
+#### F-build-queue-ui — Construction queue/progress UI
+**Status:** Todo · **Phase:** 2
+
+UI panel showing all pending and in-progress construction projects: blueprint
+name/type, progress bar, assigned workers, and option to cancel or reprioritize.
+Currently players can see individual blueprints in the world but have no
+overview of the construction pipeline. Small overlay or sidebar panel.
+
+**Related:** F-construction, F-task-priority
+
 #### F-ai-sprites — AI-generated sprite art pipeline
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
 
@@ -726,6 +800,16 @@ panel button.
 
 Right-side panel showing creature details (species, food level, task,
 position). Follow button to lock camera.
+
+#### F-creature-tooltip — Creature hover tooltip
+**Status:** Todo · **Phase:** 2
+
+Quick info on mouse hover over a creature without requiring click-to-select.
+Shows species, name (once F-elf-names exists), and current activity in a
+small floating tooltip. Reduces friction compared to the full selection +
+info panel flow for casual inspection.
+
+**Related:** F-selection, F-creature-info, F-elf-names
 
 #### F-godot-setup — Godot 4 project setup
 **Status:** Done · **Phase:** 0 · **Refs:** §3
@@ -759,17 +843,48 @@ Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 
 ESC-triggered pause menu with Resume, Save, Load, and Quit options.
 
+#### F-sim-speed — Simulation speed controls UI
+**Status:** Todo · **Phase:** 2
+
+Pause/1x/2x/3x speed controls for the simulation. The sim architecture
+already supports variable tick rates (time-based accumulator in `main.gd`).
+This adds UI buttons and keyboard shortcuts (e.g., Space for pause, 1/2/3
+for speed) to control the tick multiplier. Essential for both slow
+observation and fast-forwarding through idle periods.
+
+**Related:** F-event-loop
+
 #### F-selection — Click-to-select creatures
 **Status:** Done · **Refs:** §26
 
 Ray-based selection with billboard sprite hit detection. ESC to deselect.
 Input precedence chain with placement and pause systems.
 
+#### F-tree-info — Tree stats/info panel
+**Status:** Todo · **Phase:** 2
+
+Panel showing the player's tree statistics: total voxels, height, branch
+count, leaf count, fruit production rate, mana level (once F-mana-system
+exists), and carrying capacity. The player *is* the tree but currently has
+no introspective view of their own state. Could be a toggleable overlay
+or a persistent sidebar element.
+
+**Related:** F-creature-info, F-mana-system
+
 #### F-spawn-toolbar — Spawn toolbar and placement UI
 **Status:** Done · **Refs:** §26
 
 Toolbar with creature spawn buttons and keyboard shortcuts. Placement
 controller handles click-to-place with nav node highlighting.
+
+#### F-world-boundary — World boundary visualization
+**Status:** Todo · **Phase:** 2
+
+Visual indication of the voxel world's finite boundaries. The world grid has
+fixed dimensions but nothing shows the player where the edges are. Could be
+subtle ground grid lines, edge fog, fading terrain, or a visible border
+when the camera approaches the edge. Prevents confusion when placing
+construction near world limits.
 
 #### F-zlevel-vis — Z-level visibility (cutaway/toggle)
 **Status:** Todo · **Refs:** §27
