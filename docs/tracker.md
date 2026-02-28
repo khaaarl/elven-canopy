@@ -34,6 +34,10 @@ This reduces merge conflicts when parallel work streams add items.
 
 ### In Progress
 
+```
+[~] F-structure-reg      Completed structure registry + UI panel
+```
+
 ### Todo
 
 ```
@@ -921,6 +925,26 @@ or a persistent sidebar element.
 
 Toolbar with creature spawn buttons and keyboard shortcuts. Placement
 controller handles click-to-place with nav node highlighting.
+
+#### F-structure-reg — Completed structure registry + UI panel
+**Status:** In Progress · **Phase:** 2
+**Branch:** `feature/F-structure-registry`
+
+Registry of completed structures in the sim (`SimState.structures`) with a
+browsable UI panel. Tracks all build types (Platform, Bridge, Stairs, Wall,
+Enclosure, Building) with sequential IDs (#0, #1, ...) and bounding box
+for zoom-to-location.
+
+Implementation complete on branch, awaiting in-game testing:
+- `StructureId` replaced from UUID to sequential `u64` newtype
+- `CompletedStructure` struct with `from_blueprint()` bounding box computation
+- `SimState.structures` registry populated on `complete_build()`, cleaned on `cancel_build()`
+- `get_structures()` GDExt bridge method
+- `structure_list_panel.gd` overlay with reconciliation pattern
+- "Structures [S]" toolbar button wired in `main.gd`
+- 5 new tests (all passing), 200 total tests pass
+
+**Related:** F-construction, F-building
 
 #### F-world-boundary — World boundary visualization
 **Status:** Todo · **Phase:** 2
