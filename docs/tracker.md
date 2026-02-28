@@ -110,6 +110,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### Done
 
 ```
+[x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
 [x] F-capybara             Capybara species
 [x] F-construction         Platform construction (designate/build/cancel)
@@ -184,6 +185,26 @@ build type UI for specifying start/end anchor points and path.
 
 **Related:** F-tree-overlap, F-struct-basic
 
+#### F-building — Building construction (paper-thin walls)
+**Status:** Done · **Phase:** 2 · **Refs:** §11
+
+Buildings with paper-thin walls using per-face restrictions on passable
+`BuildingInterior` voxels. Unlike platforms (solid cubes), building walls
+don't consume voxel space — each face of a `BuildingInterior` voxel can
+be Wall, Window, Door, Ceiling, Floor, or Open. Exterior sides are
+windows, one auto-placed door at center of +Z edge, floor on bottom,
+ceiling on top. Min footprint 3x3, height 1-5.
+
+Nav graph is face-aware: walls/windows block movement, doors allow
+passage, creatures can climb exterior walls and walk on roofs. Rendered
+as oriented quads per face type with MultiMesh batching. Construction UI
+adds Building [G] mode alongside Platform [P]. Full construction
+lifecycle: designate, build (incremental voxel materialization by elves),
+cancel (reverts voxels and face data). Save/load preserves buildings.
+
+**New files:** `building.rs`, `building_renderer.gd`
+**Related:** F-construction, F-furnishing
+
 #### F-carve-holes — Remove material (doors, storage hollows)
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
 
@@ -210,6 +231,8 @@ construction controller UI, sim validates (all voxels Air, at least one
 adjacent to solid), creates a blueprint + Build task, elves claim the task
 and incrementally materialize voxels. Cancellation reverts placed voxels.
 Incremental nav graph updates keep pathfinding current during construction.
+
+**Related:** F-building
 
 #### F-furnishing — Building geometry + purpose furnishing
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
