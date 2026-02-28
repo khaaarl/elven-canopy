@@ -80,9 +80,7 @@ func _refresh_platforms() -> void:
 	if count == 0:
 		return
 
-	_platform_instance = _build_multimesh(
-		voxels, count, _platform_material, "PlatformMultiMesh"
-	)
+	_platform_instance = _build_multimesh(voxels, count, _platform_material, "PlatformMultiMesh")
 	add_child(_platform_instance)
 
 

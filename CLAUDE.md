@@ -277,6 +277,8 @@ The only exception is editing `CLAUDE.md` itself, which can be done on `main` if
 
 ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FEATURE BRANCHES DOES NOT REQUIRE PERMISSION. When committing to a feature branch, always push to origin immediately after committing (`git push`).
 
+**Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.sh check` and fix any issues. Do NOT commit code that fails formatting or linting. For commits that change Rust sim or music crate code, also run `scripts/build.sh test` and ensure all tests pass. Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
+
 ## Merging to Main
 
 When the user asks to merge a feature branch to main, follow this procedure:
