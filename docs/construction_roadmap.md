@@ -35,34 +35,29 @@ Done — large platform blueprints can be created and are displayed in the UI.
 
 ## Step 5: Blueprint → Build Job (sim)
 
-**This is the next step.** When a blueprint is designated, create a `Build` task in the task system so an elf can be assigned to construct it.
+When a blueprint is designated, create a `Build` task in the task system so an elf can be assigned to construct it.
 
 **Sub-steps:**
 
 ### 5a: Instant placement (cheat mode)
 
-When a blueprint is designated, immediately place `GrownPlatform` voxels in the world. Rebuild the nav graph. Mark the blueprint as `Complete`. This temporary shortcut lets us verify that:
-- Voxels appear in the world correctly
-- Nav graph updates and creatures can walk on platforms
-- Save/load works with placed platforms
+Skipped — went directly to incremental construction.
 
-### 5b: Build task creation
+### 5b: Build task creation ✓ DONE
 
-Replace instant placement with a `Build` task kind in the task system:
-- `DesignateBuild` creates the blueprint AND a `Build` task at the blueprint location
-- The task has a target position (adjacent walkable voxel near the blueprint)
+`DesignateBuild` creates the blueprint AND a `Build { project_id }` task at the nearest nav node. The task's `total_cost = build_work_ticks_per_voxel * num_voxels`. Blueprint stores `task_id: Option<TaskId>` for linkage.
 
-### 5c: Elf assignment + pathfinding
+Done on branch `feature/construction-build-tasks`. New `TaskKind::Build` variant in `task.rs`, `build_work_ticks_per_voxel` config field, `placed_voxels` on `SimState` for persistence.
 
-- An idle elf claims the `Build` task
-- Elf pathfinds to the build site (nearest walkable voxel adjacent to the blueprint)
-- Verify the elf walks to the correct location
+### 5c: Elf assignment + pathfinding ✓ DONE
 
-### 5d: Construction work
+An idle elf claims the Build task (elf-only via `required_species`), pathfinds to the build site using the existing A* task system. No new code needed — the existing `execute_task_behavior` walk-toward-location logic handles it.
 
-- On arrival, the elf does work (progress increments per activation tick)
-- When progress reaches total_cost, voxels are placed and nav graph rebuilds
-- Blueprint transitions to `Complete`
+### 5d: Construction work ✓ DONE
+
+`do_build_work()` increments progress by 1.0 per activation. Every `build_work_ticks_per_voxel` units, `materialize_next_build_voxel()` picks an adjacency-valid voxel (preferring unoccupied ones), places it as solid, updates the nav graph, and resnaps displaced creatures. When all voxels are placed, the blueprint transitions to `Complete` and the elf is freed. `cancel_build()` reverts materialized voxels, removes the task, and unassigns workers.
+
+Done on branch `feature/construction-build-tasks`. 13 new tests (155 total).
 
 ### 5e: Mana cost (deferred)
 
@@ -70,13 +65,17 @@ Replace instant placement with a `Build` task kind in the task system:
 - Insufficient mana pauses construction
 - (Can be deferred until the mana economy exists)
 
-## Step 6: Incremental Nav Graph Update
+## Step 6: Incremental Nav Graph Update ✓ DONE
 
-Replace the full `build_nav_graph()` call with an incremental update:
-- When voxels change, invalidate nav nodes within Manhattan distance 1
-- Re-derive affected nodes and edges
-- Re-check connectivity
-- This is deterministic because voxel changes go through SimCommand
+Replace the full `build_nav_graph()` call in `materialize_next_build_voxel()` with an incremental update that touches only ~7 affected positions instead of scanning the entire 8.4M-voxel world.
+
+Done on branch `feature/incremental-nav-update`. Changes:
+- `NavGraph.nodes` refactored to `Vec<Option<NavNode>>` for stable IDs across incremental updates.
+- Persistent `spatial_index` (flat voxel index → node slot) for O(1) coord→node lookup.
+- `update_after_voxel_solidified(world, coord)` adds/removes/updates nodes at the changed coord + 6 face neighbors, then recomputes edges for the dirty set + their 26-neighbors.
+- `resnap_removed_nodes()` only resnaps creatures whose specific node was removed.
+- `pathfinding.rs` uses `node_slot_count()` for A* array sizing (accounts for dead slots).
+- 3 new tests (158 total).
 
 ## Future Steps (not yet detailed)
 

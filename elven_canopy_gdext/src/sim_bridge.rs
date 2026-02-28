@@ -42,8 +42,11 @@
 //   in-bounds + Air (no adjacency), and `has_solid_neighbor(x,y,z)`
 //   checks adjacency alone — used together for multi-voxel rectangle
 //   validation where adjacency applies to the rectangle as a whole.
-//   `get_blueprint_voxels()` returns flat (x,y,z) triples for all
-//   `Designated` blueprints, consumed by `blueprint_renderer.gd`.
+//   `get_blueprint_voxels()` returns flat (x,y,z) triples for unplaced
+//   voxels in `Designated` blueprints (excludes already-materialized
+//   voxels). `get_platform_voxels()` returns flat (x,y,z) triples for
+//   voxels materialized by elf construction work. Both consumed by
+//   `blueprint_renderer.gd`.
 // - **Stats:** `creature_count_by_name(species_name)` — generic replacement
 //   for `elf_count()` / `capybara_count()` (which remain as thin wrappers).
 //   Also `fruit_count()`, `home_tree_mana()`.
@@ -338,7 +341,7 @@ impl SimBridge {
             return PackedVector3Array::new();
         };
         let mut arr = PackedVector3Array::new();
-        for node in &sim.nav_graph.nodes {
+        for node in sim.nav_graph.live_nodes() {
             arr.push(Vector3::new(
                 node.position.x as f32,
                 node.position.y as f32,
@@ -376,7 +379,7 @@ impl SimBridge {
         };
         let cam = [camera_pos.x, camera_pos.y, camera_pos.z];
         let mut arr = PackedVector3Array::new();
-        for node in &sim.nav_graph.nodes {
+        for node in sim.nav_graph.live_nodes() {
             let p = node.position;
             let target = [p.x as f32 + 0.5, p.y as f32 + 0.5, p.z as f32 + 0.5];
             if !sim.world.raycast_hits_solid(cam, target) {
@@ -673,11 +676,14 @@ impl SimBridge {
         sim.step(&[cmd], next_tick);
     }
 
-    /// Return all voxels from `Designated` blueprints as a flat
+    /// Return unplaced voxels from `Designated` blueprints as a flat
     /// PackedInt32Array of (x,y,z) triples.
     ///
+    /// Only includes voxels that are still Air in the world — voxels that
+    /// have already been materialized by construction work are excluded.
     /// Used by the blueprint renderer to show translucent ghost cubes for
-    /// planned construction. Same format as `get_trunk_voxels()` etc.
+    /// planned (not-yet-built) construction. Same format as
+    /// `get_trunk_voxels()` etc.
     #[func]
     fn get_blueprint_voxels(&self) -> PackedInt32Array {
         let Some(sim) = &self.sim else {
@@ -687,11 +693,33 @@ impl SimBridge {
         for bp in sim.blueprints.values() {
             if bp.state == BlueprintState::Designated {
                 for v in &bp.voxels {
-                    arr.push(v.x);
-                    arr.push(v.y);
-                    arr.push(v.z);
+                    if sim.world.get(*v) == VoxelType::Air {
+                        arr.push(v.x);
+                        arr.push(v.y);
+                        arr.push(v.z);
+                    }
                 }
             }
+        }
+        arr
+    }
+
+    /// Return materialized construction voxels (platforms, walls, etc.) as a
+    /// flat PackedInt32Array of (x,y,z) triples.
+    ///
+    /// These are voxels that have been placed by elf construction work — they
+    /// exist as solid geometry in the world but are not part of the original
+    /// tree. Used by the blueprint renderer to show built voxels as wood.
+    #[func]
+    fn get_platform_voxels(&self) -> PackedInt32Array {
+        let Some(sim) = &self.sim else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for &(coord, _voxel_type) in &sim.placed_voxels {
+            arr.push(coord.x);
+            arr.push(coord.y);
+            arr.push(coord.z);
         }
         arr
     }

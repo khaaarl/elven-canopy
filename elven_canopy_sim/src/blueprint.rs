@@ -9,13 +9,15 @@
 //
 // 1. Player issues a `DesignateBuild` command (see `command.rs`).
 // 2. `sim.rs` validates the designation (in-bounds, Air, adjacent to solid)
-//    and creates a `Blueprint` in `Designated` state.
-// 3. (Future) Construction tasks are created for creatures to work on.
-// 4. (Future) On completion, the blueprint transitions to `Complete` and
-//    voxels are placed in the world.
+//    and creates a `Blueprint` in `Designated` state, plus a `Build` task
+//    (linked via `task_id`).
+// 3. An idle elf claims the Build task, pathfinds to the site, and does work.
+//    Each activation increments progress; every `build_work_ticks_per_voxel`
+//    units, one blueprint voxel materializes as solid.
+// 4. When all voxels are placed, the blueprint transitions to `Complete`.
 //
-// The `Complete` state exists for forward compatibility but is not yet used.
-// Cancellation removes the blueprint entirely (see `CancelBuild` in `sim.rs`).
+// Cancellation removes the blueprint, reverts any materialized voxels to Air,
+// unassigns workers, and removes the Build task (see `cancel_build` in `sim.rs`).
 //
 // See also: `sim.rs` for the `blueprints` map and command handlers,
 // `command.rs` for `DesignateBuild` / `CancelBuild`, `event.rs` for
@@ -25,7 +27,7 @@
 // `ProjectId`s generated from the sim's PRNG. Blueprint storage uses
 // `BTreeMap` for deterministic iteration order.
 
-use crate::types::{BuildType, Priority, ProjectId, VoxelCoord};
+use crate::types::{BuildType, Priority, ProjectId, TaskId, VoxelCoord};
 use serde::{Deserialize, Serialize};
 
 /// The lifecycle state of a blueprint.
@@ -46,6 +48,9 @@ pub struct Blueprint {
     pub voxels: Vec<VoxelCoord>,
     pub priority: Priority,
     pub state: BlueprintState,
+    /// The Build task linked to this blueprint, if one has been created.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
 }
 
 #[cfg(test)]
@@ -64,6 +69,7 @@ mod tests {
             voxels: vec![VoxelCoord::new(5, 1, 5), VoxelCoord::new(6, 1, 5)],
             priority: Priority::Normal,
             state: BlueprintState::Designated,
+            task_id: None,
         };
 
         assert_eq!(bp.id, id);
@@ -79,6 +85,26 @@ mod tests {
     }
 
     #[test]
+    fn blueprint_with_task_id_serialization_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let id = ProjectId::new(&mut rng);
+        let task_id = crate::types::TaskId::new(&mut rng);
+        let bp = Blueprint {
+            id,
+            build_type: BuildType::Platform,
+            voxels: vec![VoxelCoord::new(5, 1, 5)],
+            priority: Priority::Normal,
+            state: BlueprintState::Designated,
+            task_id: Some(task_id),
+        };
+
+        let json = serde_json::to_string(&bp).unwrap();
+        let restored: Blueprint = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.task_id, Some(task_id));
+    }
+
+    #[test]
     fn blueprint_serialization_roundtrip() {
         let mut rng = GameRng::new(99);
         let id = ProjectId::new(&mut rng);
@@ -88,6 +114,7 @@ mod tests {
             voxels: vec![VoxelCoord::new(10, 1, 10)],
             priority: Priority::High,
             state: BlueprintState::Designated,
+            task_id: None,
         };
 
         let json = serde_json::to_string(&bp).unwrap();

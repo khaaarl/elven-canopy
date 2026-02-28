@@ -254,6 +254,18 @@ pub enum BuildType {
     Enclosure,
 }
 
+impl BuildType {
+    /// Map a build type to the voxel type it produces when materialized.
+    pub fn to_voxel_type(self) -> VoxelType {
+        match self {
+            BuildType::Platform => VoxelType::GrownPlatform,
+            BuildType::Bridge => VoxelType::Bridge,
+            BuildType::Stairs => VoxelType::GrownStairs,
+            BuildType::Wall | BuildType::Enclosure => VoxelType::GrownWall,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Voxel types
 // ---------------------------------------------------------------------------
@@ -344,6 +356,18 @@ mod tests {
         let b = VoxelCoord::new(3, 4, 5);
         assert_eq!(a.manhattan_distance(b), 12);
         assert_eq!(b.manhattan_distance(a), 12);
+    }
+
+    #[test]
+    fn build_type_to_voxel_type() {
+        assert_eq!(
+            BuildType::Platform.to_voxel_type(),
+            VoxelType::GrownPlatform
+        );
+        assert_eq!(BuildType::Bridge.to_voxel_type(), VoxelType::Bridge);
+        assert_eq!(BuildType::Stairs.to_voxel_type(), VoxelType::GrownStairs);
+        assert_eq!(BuildType::Wall.to_voxel_type(), VoxelType::GrownWall);
+        assert_eq!(BuildType::Enclosure.to_voxel_type(), VoxelType::GrownWall);
     }
 
     #[test]

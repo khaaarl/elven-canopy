@@ -8,6 +8,7 @@
   "fruit_production_base_rate": 0.5,
   "fruit_max_per_tree": 20,
   "fruit_initial_attempts": 12,
+  "build_work_ticks_per_voxel": 1000,
   "world_size": [256, 128, 256],
   "floor_extent": 20,
   "starting_mana": 100.0,

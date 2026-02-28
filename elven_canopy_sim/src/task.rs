@@ -22,9 +22,10 @@
 //
 // - `GoTo` — walk toward `location`; complete instantly on arrival. Used by
 //   the "Summon Elf" UI button to direct an elf to a clicked location.
-//
-// Future kinds (Build, Harvest, etc.) would add variants here and corresponding
-// match arms in `sim.rs`.
+// - `Build { project_id }` — walk to the build site, then do incremental
+//   work. Each activation adds 1.0 to progress; every
+//   `build_work_ticks_per_voxel` units, one blueprint voxel materializes.
+//   Linked to a `Blueprint` via `project_id`. See `sim.rs` `do_build_work()`.
 //
 // ## Lifecycle
 //
@@ -45,7 +46,7 @@
 // **Critical constraint: determinism.** Tasks are stored in `BTreeMap` and
 // iterated in deterministic order. Task IDs come from the sim PRNG.
 
-use crate::types::{CreatureId, NavNodeId, Species, TaskId};
+use crate::types::{CreatureId, NavNodeId, ProjectId, Species, TaskId};
 use serde::{Deserialize, Serialize};
 
 /// The type of work a task represents. Each variant carries kind-specific data
@@ -54,7 +55,10 @@ use serde::{Deserialize, Serialize};
 pub enum TaskKind {
     /// Walk to a location. Completes instantly on arrival (total_cost = 0).
     GoTo,
-    // Future: Build { build_type, voxels }, Harvest { source }, etc.
+    /// Build a structure from a blueprint. The elf pathfinds to the site,
+    /// then does work over multiple activations, materializing one voxel
+    /// per `build_work_ticks_per_voxel` units of progress.
+    Build { project_id: ProjectId },
 }
 
 /// Lifecycle state of a task.
@@ -90,6 +94,36 @@ pub struct Task {
 mod tests {
     use super::*;
     use crate::prng::GameRng;
+
+    #[test]
+    fn build_task_serialization_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let project_id = crate::types::ProjectId::new(&mut rng);
+        let location = NavNodeId(3);
+
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::Build { project_id },
+            state: TaskState::Available,
+            location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: 5000.0,
+            required_species: Some(Species::Elf),
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.id, task_id);
+        match &restored.kind {
+            TaskKind::Build { project_id: pid } => assert_eq!(*pid, project_id),
+            _ => panic!("Expected Build task kind"),
+        }
+        assert_eq!(restored.total_cost, 5000.0);
+        assert_eq!(restored.required_species, Some(Species::Elf));
+    }
 
     #[test]
     fn task_creation_and_lookup() {

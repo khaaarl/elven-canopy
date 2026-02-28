@@ -384,6 +384,11 @@ pub struct GameConfig {
     /// Maximum mana the starting tree can hold.
     pub starting_mana_capacity: f32,
 
+    /// Ticks of work per voxel during construction. An elf must accumulate
+    /// this many activations-worth of work before one blueprint voxel
+    /// materializes as solid.
+    pub build_work_ticks_per_voxel: u64,
+
     /// Tree generation parameters — energy-based recursive growth profile.
     pub tree_profile: TreeProfile,
 
@@ -482,6 +487,7 @@ impl Default for GameConfig {
             floor_extent: 20,
             starting_mana: 100.0,
             starting_mana_capacity: 500.0,
+            build_work_ticks_per_voxel: 1000,
             tree_profile: TreeProfile::fantasy_mega(),
             species,
         }
@@ -528,6 +534,7 @@ mod tests {
             "fruit_production_base_rate": 0.8,
             "fruit_max_per_tree": 25,
             "fruit_initial_attempts": 15,
+            "build_work_ticks_per_voxel": 2000,
             "world_size": [128, 64, 128],
             "floor_extent": 15,
             "starting_mana": 200.0,
@@ -591,6 +598,7 @@ mod tests {
         let config: GameConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.tick_duration_ms, 1);
         assert_eq!(config.world_size, (128, 64, 128));
+        assert_eq!(config.build_work_ticks_per_voxel, 2000);
         assert_eq!(config.tree_profile.growth.initial_energy, 300.0);
         let capy = &config.species[&Species::Capybara];
         assert_eq!(capy.heartbeat_interval_ticks, 4000);

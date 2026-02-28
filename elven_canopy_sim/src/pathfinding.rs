@@ -77,7 +77,7 @@ pub fn astar(
     walk_tpv: u64,
     climb_tpv: Option<u64>,
 ) -> Option<PathResult> {
-    let n = graph.node_count();
+    let n = graph.node_slot_count();
     if n == 0 {
         return None;
     }
@@ -165,7 +165,7 @@ pub fn astar_filtered(
     climb_tpv: Option<u64>,
     allowed_edges: &[EdgeType],
 ) -> Option<PathResult> {
-    let n = graph.node_count();
+    let n = graph.node_slot_count();
     if n == 0 {
         return None;
     }

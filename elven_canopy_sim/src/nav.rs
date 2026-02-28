@@ -12,16 +12,29 @@
 // world — no speed config required.
 //
 // **Voxel-derived construction:** Every air voxel that is face-adjacent to at
-// least one solid voxel becomes a nav node. Edges connect face-adjacent nav
-// nodes. This means the nav graph reflects actual world geometry — future
-// construction or destruction of voxels naturally changes the navigable
-// topology (via incremental rebuild).
+// least one solid voxel becomes a nav node. Edges connect 26-neighbors among
+// nav nodes. This means the nav graph reflects actual world geometry —
+// construction changes the navigable topology via incremental updates.
 //
 // Each nav node carries a `surface_type` derived from the solid voxel it
 // touches (see `derive_surface_type()`). Edge types are derived from the
 // surface types of the two endpoints (see `derive_edge_type()`). Root voxels
 // are treated as walkable surfaces (BranchWalk), with ForestFloor and
 // TrunkClimb transitions at boundaries.
+//
+// **Stable node IDs and incremental updates.** Nodes are stored as
+// `Vec<Option<NavNode>>` — `Some` for live nodes, `None` for removed (dead)
+// slots. This allows `update_after_voxel_solidified()` to add/remove nodes
+// without shifting IDs, so creatures' `current_node` references remain valid
+// unless their specific node was removed. Dead slots are recycled via
+// `free_slots`. A persistent `spatial_index` (flat voxel index → node slot)
+// enables O(1) coord→node lookup for both incremental updates and
+// `has_node_at()` queries.
+//
+// The full `build_nav_graph()` is used at startup and save/load. During
+// gameplay, `materialize_next_build_voxel()` in `sim.rs` calls
+// `update_after_voxel_solidified()` which touches only ~7 positions and their
+// 26-neighbor edges — O(1) instead of O(world_size).
 //
 // All storage uses `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
 // and deterministic iteration order. No `HashMap`.
@@ -32,7 +45,8 @@
 //
 // **Critical constraint: determinism.** The graph is built by iterating voxels
 // in fixed order (matching the flat index of `VoxelWorld`). Node/edge IDs are
-// sequential integers assigned in that order.
+// sequential integers assigned in that order. Incremental updates are also
+// deterministic — they process affected positions in a fixed order.
 
 use crate::types::{NavEdgeId, NavNodeId, VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
@@ -78,10 +92,18 @@ pub struct NavEdge {
 }
 
 /// The navigation graph container.
+///
+/// Nodes are stored as `Option<NavNode>` slots — `Some` for live nodes, `None`
+/// for removed nodes. This allows incremental updates (removing/adding nodes)
+/// without shifting IDs. The `spatial_index` maps flat voxel indices to node
+/// slots for O(1) coord→node lookup; `free_slots` tracks recyclable slots.
 #[derive(Clone, Debug, Default)]
 pub struct NavGraph {
-    pub nodes: Vec<NavNode>,
+    nodes: Vec<Option<NavNode>>,
     pub edges: Vec<NavEdge>,
+    spatial_index: Vec<u32>,
+    free_slots: Vec<usize>,
+    world_size: (usize, usize, usize),
 }
 
 impl NavGraph {
@@ -93,12 +115,12 @@ impl NavGraph {
     /// its ID.
     pub fn add_node(&mut self, position: VoxelCoord, surface_type: VoxelType) -> NavNodeId {
         let id = NavNodeId(self.nodes.len() as u32);
-        self.nodes.push(NavNode {
+        self.nodes.push(Some(NavNode {
             id,
             position,
             surface_type,
             edge_indices: Vec::new(),
-        });
+        }));
         id
     }
 
@@ -132,20 +154,28 @@ impl NavGraph {
             distance,
         });
 
-        self.nodes[from.0 as usize].edge_indices.push(forward_idx);
-        self.nodes[to.0 as usize].edge_indices.push(reverse_idx);
+        self.nodes[from.0 as usize]
+            .as_mut()
+            .unwrap()
+            .edge_indices
+            .push(forward_idx);
+        self.nodes[to.0 as usize]
+            .as_mut()
+            .unwrap()
+            .edge_indices
+            .push(reverse_idx);
 
         forward_id
     }
 
     /// Get all edges originating from a node.
     pub fn neighbors(&self, node: NavNodeId) -> &[usize] {
-        &self.nodes[node.0 as usize].edge_indices
+        &self.nodes[node.0 as usize].as_ref().unwrap().edge_indices
     }
 
-    /// Get a node by ID.
+    /// Get a node by ID. Panics if the slot is dead (`None`).
     pub fn node(&self, id: NavNodeId) -> &NavNode {
-        &self.nodes[id.0 as usize]
+        self.nodes[id.0 as usize].as_ref().unwrap()
     }
 
     /// Get an edge by index.
@@ -153,16 +183,25 @@ impl NavGraph {
         &self.edges[idx]
     }
 
-    /// Number of nodes.
+    /// Number of live nodes (excludes dead slots).
     pub fn node_count(&self) -> usize {
+        self.nodes.iter().filter(|n| n.is_some()).count()
+    }
+
+    /// Total node slots including dead ones (for A* array sizing).
+    pub fn node_slot_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Iterate over all live nodes (skips dead `None` slots).
+    pub fn live_nodes(&self) -> impl Iterator<Item = &NavNode> {
+        self.nodes.iter().filter_map(|n| n.as_ref())
     }
 
     /// Find the nearest node to a given position (by Manhattan distance).
     /// Returns `None` if the graph is empty.
     pub fn find_nearest_node(&self, pos: VoxelCoord) -> Option<NavNodeId> {
-        self.nodes
-            .iter()
+        self.live_nodes()
             .min_by_key(|n| n.position.manhattan_distance(pos))
             .map(|n| n.id)
     }
@@ -170,8 +209,7 @@ impl NavGraph {
     /// Find the nearest ground-level node (surface type `ForestFloor`) to the
     /// given position. Returns `None` if no ground nodes exist.
     pub fn find_nearest_ground_node(&self, pos: VoxelCoord) -> Option<NavNodeId> {
-        self.nodes
-            .iter()
+        self.live_nodes()
             .filter(|n| n.surface_type == VoxelType::ForestFloor)
             .min_by_key(|n| n.position.manhattan_distance(pos))
             .map(|n| n.id)
@@ -179,11 +217,247 @@ impl NavGraph {
 
     /// Return all ground-level node IDs (surface type `ForestFloor`).
     pub fn ground_node_ids(&self) -> Vec<NavNodeId> {
-        self.nodes
-            .iter()
+        self.live_nodes()
             .filter(|n| n.surface_type == VoxelType::ForestFloor)
             .map(|n| n.id)
             .collect()
+    }
+
+    /// Number of edges in the graph.
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
+
+    /// O(1) check whether a coordinate has a live nav node.
+    pub fn has_node_at(&self, coord: VoxelCoord) -> bool {
+        let (sx, sy, sz) = self.world_size;
+        if sx == 0 {
+            return false;
+        }
+        let x = coord.x as usize;
+        let y = coord.y as usize;
+        let z = coord.z as usize;
+        if x >= sx || y >= sy || z >= sz {
+            return false;
+        }
+        let flat = x + z * sx + y * sx * sz;
+        flat < self.spatial_index.len() && self.spatial_index[flat] != u32::MAX
+    }
+
+    /// Compute the flat voxel index for a coordinate within this graph's
+    /// world. Returns `None` if out of bounds.
+    fn flat_index(&self, coord: VoxelCoord) -> Option<usize> {
+        let (sx, sy, sz) = self.world_size;
+        let x = coord.x as usize;
+        let y = coord.y as usize;
+        let z = coord.z as usize;
+        if coord.x < 0 || coord.y < 0 || coord.z < 0 || x >= sx || y >= sy || z >= sz {
+            return None;
+        }
+        Some(x + z * sx + y * sx * sz)
+    }
+
+    /// Incrementally update the nav graph after a single voxel changed from
+    /// Air to solid (e.g. construction materialization).
+    ///
+    /// Only touches the changed coord + 6 face neighbors (7 positions total)
+    /// and their 26-neighbor edges. Returns the IDs of nodes that were removed
+    /// (callers should resnap any creatures on those nodes).
+    ///
+    /// **Algorithm:**
+    /// 1. For each of the 7 affected positions, determine whether a nav node
+    ///    should exist (Air + solid face neighbor + y≥1). Add/remove/update
+    ///    nodes accordingly.
+    /// 2. Collect a "dirty set" of all live nodes at affected positions plus
+    ///    their live 26-neighbors.
+    /// 3. Clear all edges touching dirty nodes (both directions).
+    /// 4. Recompute edges between dirty nodes and their 26-neighbors.
+    pub fn update_after_voxel_solidified(
+        &mut self,
+        world: &VoxelWorld,
+        coord: VoxelCoord,
+    ) -> Vec<NavNodeId> {
+        let mut removed_ids = Vec::new();
+
+        // Step 1: Determine the 7 affected positions (changed + 6 face neighbors).
+        let mut affected: Vec<VoxelCoord> = Vec::with_capacity(7);
+        affected.push(coord);
+        for &(dx, dy, dz) in &FACE_OFFSETS {
+            let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+            if self.flat_index(neighbor).is_some() {
+                affected.push(neighbor);
+            }
+        }
+
+        // Step 2: For each affected position, add/remove/update nav node.
+        for &pos in &affected {
+            let should_be_node = pos.y >= 1
+                && world.get(pos) == VoxelType::Air
+                && FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
+                    world
+                        .get(VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz))
+                        .is_solid()
+                });
+            let flat = match self.flat_index(pos) {
+                Some(f) => f,
+                None => continue,
+            };
+            let current_slot = self.spatial_index[flat];
+            let is_node = current_slot != u32::MAX;
+
+            if should_be_node && !is_node {
+                // Add new node.
+                let surface = derive_surface_type(world, pos);
+                let slot = if let Some(free) = self.free_slots.pop() {
+                    let id = NavNodeId(free as u32);
+                    self.nodes[free] = Some(NavNode {
+                        id,
+                        position: pos,
+                        surface_type: surface,
+                        edge_indices: Vec::new(),
+                    });
+                    free
+                } else {
+                    let slot = self.nodes.len();
+                    let id = NavNodeId(slot as u32);
+                    self.nodes.push(Some(NavNode {
+                        id,
+                        position: pos,
+                        surface_type: surface,
+                        edge_indices: Vec::new(),
+                    }));
+                    slot
+                };
+                self.spatial_index[flat] = slot as u32;
+            } else if !should_be_node && is_node {
+                // Remove node.
+                let slot = current_slot as usize;
+                let id = NavNodeId(current_slot);
+                removed_ids.push(id);
+                self.nodes[slot] = None;
+                self.spatial_index[flat] = u32::MAX;
+                self.free_slots.push(slot);
+            } else if should_be_node && is_node {
+                // Update surface type (solid below may have changed).
+                let surface = derive_surface_type(world, pos);
+                if let Some(node) = self.nodes[current_slot as usize].as_mut() {
+                    node.surface_type = surface;
+                }
+            }
+        }
+
+        // Step 3: Collect dirty set — all live nodes at affected positions
+        // plus their live 26-neighbors.
+        let mut dirty_set: Vec<usize> = Vec::new();
+        let mut is_dirty = vec![false; self.nodes.len()];
+        for &pos in &affected {
+            // Add the node at this position (if live).
+            if let Some(flat) = self.flat_index(pos) {
+                let slot = self.spatial_index[flat];
+                if slot != u32::MAX {
+                    let s = slot as usize;
+                    if !is_dirty[s] {
+                        is_dirty[s] = true;
+                        dirty_set.push(s);
+                    }
+                }
+            }
+            // Add live 26-neighbors of this position.
+            for dy in -1i32..=1 {
+                for dz in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if dx == 0 && dy == 0 && dz == 0 {
+                            continue;
+                        }
+                        let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+                        if let Some(nflat) = self.flat_index(np) {
+                            let nslot = self.spatial_index[nflat];
+                            if nslot != u32::MAX {
+                                let ns = nslot as usize;
+                                if ns < is_dirty.len() && !is_dirty[ns] {
+                                    is_dirty[ns] = true;
+                                    dirty_set.push(ns);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 4: Clear all edges touching dirty nodes.
+        for &slot in &dirty_set {
+            if let Some(node) = &self.nodes[slot] {
+                let edge_indices: Vec<usize> = node.edge_indices.clone();
+                for &eidx in &edge_indices {
+                    let edge = &self.edges[eidx];
+                    let other_slot = edge.to.0 as usize;
+                    // Remove the reverse edge from the other endpoint.
+                    if let Some(other_node) = self.nodes[other_slot].as_mut() {
+                        other_node
+                            .edge_indices
+                            .retain(|&rev_idx| self.edges[rev_idx].to != NavNodeId(slot as u32));
+                    }
+                }
+                // Clear this node's edge list.
+                if let Some(node) = self.nodes[slot].as_mut() {
+                    node.edge_indices.clear();
+                }
+            }
+        }
+
+        // Step 5: Recompute edges for dirty nodes.
+        // For each dirty node, check 26 neighbors. If the neighbor is live,
+        // add a bidirectional edge. To avoid duplicate edges between two dirty
+        // nodes, only create the pair when processing the smaller slot index.
+        for &slot in &dirty_set {
+            let node = match &self.nodes[slot] {
+                Some(n) => n,
+                None => continue,
+            };
+            let pos = node.position;
+
+            for dy in -1i32..=1 {
+                for dz in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if dx == 0 && dy == 0 && dz == 0 {
+                            continue;
+                        }
+                        let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+                        let nflat = match self.flat_index(np) {
+                            Some(f) => f,
+                            None => continue,
+                        };
+                        let nslot = self.spatial_index[nflat];
+                        if nslot == u32::MAX {
+                            continue;
+                        }
+                        let ns = nslot as usize;
+
+                        // If both are dirty, only create edge from smaller slot.
+                        if is_dirty[ns] && ns < slot {
+                            continue;
+                        }
+
+                        let from_id = NavNodeId(slot as u32);
+                        let to_id = NavNodeId(ns as u32);
+                        let from_node = self.nodes[slot].as_ref().unwrap();
+                        let to_node = self.nodes[ns].as_ref().unwrap();
+
+                        let edge_type = derive_edge_type(
+                            from_node.surface_type,
+                            to_node.surface_type,
+                            from_node.position,
+                            to_node.position,
+                        );
+                        let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+                        self.add_edge(from_id, to_id, edge_type, dist);
+                    }
+                }
+            }
+        }
+
+        removed_ids
     }
 }
 
@@ -315,8 +589,8 @@ pub fn build_nav_graph(world: &VoxelWorld) -> NavGraph {
         return graph;
     }
 
-    // Spatial index: flat voxel index → NavNodeId (u32::MAX = no node).
-    let mut spatial_index: Vec<u32> = vec![u32::MAX; total];
+    graph.world_size = (sx, sy, sz);
+    graph.spatial_index = vec![u32::MAX; total];
 
     // --- Pass 1: create nav nodes ---
     // Start at y=1: y=0 is the floor layer (ForestFloor), so air at y=0
@@ -340,7 +614,7 @@ pub fn build_nav_graph(world: &VoxelWorld) -> NavGraph {
                     let surface = derive_surface_type(world, coord);
                     let node_id = graph.add_node(coord, surface);
                     let flat_idx = x + z * sx + y * sx * sz;
-                    spatial_index[flat_idx] = node_id.0;
+                    graph.spatial_index[flat_idx] = node_id.0;
                 }
             }
         }
@@ -367,7 +641,7 @@ pub fn build_nav_graph(world: &VoxelWorld) -> NavGraph {
         for z in 0..sz {
             for x in 0..sx {
                 let flat_idx = x + z * sx + y * sx * sz;
-                let from_id = spatial_index[flat_idx];
+                let from_id = graph.spatial_index[flat_idx];
                 if from_id == u32::MAX {
                     continue;
                 }
@@ -386,7 +660,7 @@ pub fn build_nav_graph(world: &VoxelWorld) -> NavGraph {
                     }
 
                     let n_flat = nxu + nzu * sx + nyu * sx * sz;
-                    let to_id = spatial_index[n_flat];
+                    let to_id = graph.spatial_index[n_flat];
                     if to_id == u32::MAX {
                         continue;
                     }
@@ -633,7 +907,7 @@ mod tests {
         let world = test_world();
         let graph = build_nav_graph(&world);
 
-        for node in &graph.nodes {
+        for node in graph.live_nodes() {
             assert_eq!(
                 world.get(node.position),
                 VoxelType::Air,
@@ -649,7 +923,7 @@ mod tests {
         let world = test_world();
         let graph = build_nav_graph(&world);
 
-        for node in &graph.nodes {
+        for node in graph.live_nodes() {
             let has_solid = FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
                 let n = VoxelCoord::new(
                     node.position.x + dx,
@@ -672,8 +946,7 @@ mod tests {
         let graph = build_nav_graph(&world);
 
         let ground_nodes: Vec<_> = graph
-            .nodes
-            .iter()
+            .live_nodes()
             .filter(|n| n.surface_type == VoxelType::ForestFloor)
             .collect();
         assert!(
@@ -697,8 +970,7 @@ mod tests {
         let graph = build_nav_graph(&world);
 
         let trunk_nodes: Vec<_> = graph
-            .nodes
-            .iter()
+            .live_nodes()
             .filter(|n| n.surface_type == VoxelType::Trunk)
             .collect();
         assert!(!trunk_nodes.is_empty(), "Should have trunk surface nodes");
@@ -818,11 +1090,11 @@ mod tests {
         let graph_b = build_nav_graph(&world_b);
 
         assert_eq!(graph_a.node_count(), graph_b.node_count());
-        assert_eq!(graph_a.edges.len(), graph_b.edges.len());
+        assert_eq!(graph_a.edge_count(), graph_b.edge_count());
 
         for i in 0..graph_a.node_count() {
-            let na = &graph_a.nodes[i];
-            let nb = &graph_b.nodes[i];
+            let na = graph_a.node(NavNodeId(i as u32));
+            let nb = graph_b.node(NavNodeId(i as u32));
             assert_eq!(na.position, nb.position);
             assert_eq!(na.surface_type, nb.surface_type);
         }
@@ -913,6 +1185,113 @@ mod tests {
         assert!(
             unreachable_count == 0,
             "Found {unreachable_count} unreachable nodes (out of {n}) with roots enabled",
+        );
+    }
+
+    // --- Incremental update tests ---
+
+    /// Helper: build a small world with a 3x1 platform at y=0, producing nav
+    /// nodes at y=1. World size 8x8x8 keeps tests fast.
+    fn platform_world() -> VoxelWorld {
+        let mut world = VoxelWorld::new(8, 8, 8);
+        // Solid floor at y=0: (3,0,3), (4,0,3), (5,0,3)
+        world.set(VoxelCoord::new(3, 0, 3), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(4, 0, 3), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(5, 0, 3), VoxelType::ForestFloor);
+        world
+    }
+
+    #[test]
+    fn incremental_update_removes_solidified_node() {
+        let mut world = platform_world();
+        let mut graph = build_nav_graph(&world);
+
+        // There should be a nav node at (4,1,3) — air above floor.
+        assert!(
+            graph.has_node_at(VoxelCoord::new(4, 1, 3)),
+            "Expected nav node at (4,1,3) before solidification",
+        );
+
+        // Solidify (4,1,3) — it should no longer be a nav node.
+        world.set(VoxelCoord::new(4, 1, 3), VoxelType::GrownPlatform);
+        let removed = graph.update_after_voxel_solidified(&world, VoxelCoord::new(4, 1, 3));
+
+        assert!(
+            !graph.has_node_at(VoxelCoord::new(4, 1, 3)),
+            "Nav node at (4,1,3) should be removed after solidification",
+        );
+        // The solidified position was a nav node, so it must be in the removed list.
+        assert!(!removed.is_empty(), "Should have removed at least one node");
+    }
+
+    #[test]
+    fn incremental_update_adds_new_neighbor_nodes() {
+        let mut world = platform_world();
+        let mut graph = build_nav_graph(&world);
+
+        // (4,1,3) is a nav node (air above floor). Solidifying it should
+        // create a new nav node at (4,2,3) — air above the new solid.
+        assert!(
+            !graph.has_node_at(VoxelCoord::new(4, 2, 3)),
+            "No nav node at (4,2,3) before solidification",
+        );
+
+        world.set(VoxelCoord::new(4, 1, 3), VoxelType::GrownPlatform);
+        graph.update_after_voxel_solidified(&world, VoxelCoord::new(4, 1, 3));
+
+        assert!(
+            graph.has_node_at(VoxelCoord::new(4, 2, 3)),
+            "Should have a nav node at (4,2,3) after solidification — air above new solid",
+        );
+    }
+
+    #[test]
+    fn incremental_update_matches_full_rebuild() {
+        let mut world = platform_world();
+        let mut graph = build_nav_graph(&world);
+
+        // Solidify (4,1,3).
+        world.set(VoxelCoord::new(4, 1, 3), VoxelType::GrownPlatform);
+        graph.update_after_voxel_solidified(&world, VoxelCoord::new(4, 1, 3));
+
+        // Full rebuild on the same world state.
+        let rebuilt = build_nav_graph(&world);
+
+        // Compare node positions (order-independent).
+        let mut inc_positions: Vec<VoxelCoord> = graph.live_nodes().map(|n| n.position).collect();
+        let mut full_positions: Vec<VoxelCoord> =
+            rebuilt.live_nodes().map(|n| n.position).collect();
+        inc_positions.sort();
+        full_positions.sort();
+        assert_eq!(
+            inc_positions, full_positions,
+            "Incremental and full rebuild should produce the same node positions",
+        );
+
+        // Compare edge connectivity (by position pairs, order-independent).
+        let mut inc_edges: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
+        for node in graph.live_nodes() {
+            for &edge_idx in &node.edge_indices {
+                let edge = graph.edge(edge_idx);
+                let from_pos = graph.node(edge.from).position;
+                let to_pos = graph.node(edge.to).position;
+                inc_edges.push((from_pos, to_pos));
+            }
+        }
+        let mut full_edges: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
+        for node in rebuilt.live_nodes() {
+            for &edge_idx in &node.edge_indices {
+                let edge = rebuilt.edge(edge_idx);
+                let from_pos = rebuilt.node(edge.from).position;
+                let to_pos = rebuilt.node(edge.to).position;
+                full_edges.push((from_pos, to_pos));
+            }
+        }
+        inc_edges.sort();
+        full_edges.sort();
+        assert_eq!(
+            inc_edges, full_edges,
+            "Incremental and full rebuild should produce the same edges",
         );
     }
 }

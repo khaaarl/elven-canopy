@@ -54,7 +54,7 @@
 // ### Task entity (`task.rs`)
 //
 // A `Task` has:
-// - `kind: TaskKind` — determines behavior (currently only `GoTo`).
+// - `kind: TaskKind` — determines behavior (`GoTo`, `Build`).
 // - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
 // - `location: NavNodeId` — where creatures go to work on the task.
 // - `assignees: Vec<CreatureId>` — supports multiple workers.
@@ -91,9 +91,15 @@
 //     - If at `task.location` → complete instantly (total_cost is 0).
 //     - Otherwise → walk 1 edge along the A* path toward the location.
 //
-// Future kinds (Build, Harvest, etc.) would follow the same pattern: walk
-// toward location if not there, otherwise do one increment of work per
-// activation, completing when `progress >= total_cost`.
+//   Build { project_id }:
+//     - If not at `task.location` → walk 1 edge toward it (same as GoTo).
+//     - If at location → `do_build_work()`: increment progress by 1.0 per
+//       activation. Every `build_work_ticks_per_voxel` units of progress,
+//       one blueprint voxel materializes as solid (adjacency-first order,
+//       preferring unoccupied voxels). Each materialization incrementally
+//       updates the nav graph (only ~7 affected positions) and resnaps
+//       displaced creatures. When `progress >= total_cost`, the blueprint
+//       is marked Complete and the elf is freed.
 //
 // ### Task assignment details
 //
@@ -119,7 +125,8 @@
 // must be rebuilt after deserialization via `rebuild_transient_state()`.
 // Convenience methods `to_json()` and `from_json()` handle the full
 // serialize/deserialize + rebuild cycle. `rebuild_world()` reconstructs the
-// voxel grid from stored tree voxel lists and config (forest floor extent).
+// voxel grid from stored tree voxel lists, `placed_voxels` (construction
+// progress), and config (forest floor extent).
 //
 // See also: `event.rs` for the event queue, `command.rs` for `SimCommand`,
 // `config.rs` for `GameConfig`, `types.rs` for entity IDs, `world.rs` for
@@ -177,6 +184,12 @@ pub struct SimState {
     /// All build blueprints (designated or complete), keyed by ProjectId.
     #[serde(default)]
     pub blueprints: BTreeMap<ProjectId, Blueprint>,
+
+    /// Voxels placed by construction (persisted for save/load).
+    /// Each entry is `(coord, voxel_type)`. On world rebuild, these are
+    /// placed after tree voxels to restore construction progress.
+    #[serde(default)]
+    pub placed_voxels: Vec<(VoxelCoord, VoxelType)>,
 
     /// The player's tree ID.
     pub player_tree_id: TreeId,
@@ -365,6 +378,7 @@ impl SimState {
             creatures: BTreeMap::new(),
             tasks: BTreeMap::new(),
             blueprints: BTreeMap::new(),
+            placed_voxels: Vec::new(),
             player_tree_id,
             player_id,
             world,
@@ -507,12 +521,34 @@ impl SimState {
         }
 
         let project_id = ProjectId::new(&mut self.rng);
+
+        // Create a Build task at the nearest nav node to the blueprint.
+        let task_location = match self.nav_graph.find_nearest_node(voxels[0]) {
+            Some(n) => n,
+            None => return,
+        };
+        let task_id = TaskId::new(&mut self.rng);
+        let num_voxels = voxels.len() as u64;
+        let total_cost = self.config.build_work_ticks_per_voxel * num_voxels;
+        let build_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::Build { project_id },
+            state: task::TaskState::Available,
+            location: task_location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: total_cost as f32,
+            required_species: Some(Species::Elf),
+        };
+        self.tasks.insert(task_id, build_task);
+
         let bp = Blueprint {
             id: project_id,
             build_type,
             voxels: voxels.to_vec(),
             priority,
             state: BlueprintState::Designated,
+            task_id: Some(task_id),
         };
         self.blueprints.insert(project_id, bp);
         events.push(SimEvent {
@@ -521,15 +557,51 @@ impl SimState {
         });
     }
 
-    /// Cancel a blueprint by ProjectId. Emits `BuildCancelled` if found.
+    /// Cancel a blueprint by ProjectId. Removes the associated Build task,
+    /// unassigns any workers, reverts materialized voxels to Air, and rebuilds
+    /// the nav graph. Emits `BuildCancelled` if found.
     /// Silent no-op if the ProjectId doesn't exist (idempotent for multiplayer).
     fn cancel_build(&mut self, project_id: ProjectId, events: &mut Vec<SimEvent>) {
-        if self.blueprints.remove(&project_id).is_some() {
-            events.push(SimEvent {
-                tick: self.tick,
-                kind: SimEventKind::BuildCancelled { project_id },
-            });
+        let bp = match self.blueprints.remove(&project_id) {
+            Some(bp) => bp,
+            None => return,
+        };
+
+        // Remove the associated Build task and unassign workers.
+        if let Some(task_id) = bp.task_id
+            && let Some(task) = self.tasks.remove(&task_id)
+        {
+            for cid in &task.assignees {
+                if let Some(creature) = self.creatures.get_mut(cid) {
+                    creature.current_task = None;
+                    creature.path = None;
+                }
+            }
         }
+
+        // Revert any already-materialized blueprint voxels to Air.
+        let bp_voxels: Vec<VoxelCoord> = bp.voxels.clone();
+        let mut any_reverted = false;
+        for &coord in &bp_voxels {
+            if self.world.get(coord) != VoxelType::Air {
+                self.world.set(coord, VoxelType::Air);
+                any_reverted = true;
+            }
+        }
+        // Remove from placed_voxels.
+        self.placed_voxels
+            .retain(|(coord, _)| !bp_voxels.contains(coord));
+
+        // Rebuild nav graph if geometry changed.
+        if any_reverted {
+            self.nav_graph = nav::build_nav_graph(&self.world);
+            self.resnap_creature_nodes();
+        }
+
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::BuildCancelled { project_id },
+        });
     }
 
     /// Create a task at the nearest nav node to the given position.
@@ -768,11 +840,15 @@ impl SimState {
             None => return,
         };
 
-        match task.kind {
+        match task.kind.clone() {
             task::TaskKind::GoTo => {
                 // GoTo completes instantly on arrival.
                 self.complete_task(task_id);
-            } // Future: Build → do_work_increment, etc.
+            }
+            task::TaskKind::Build { project_id } => {
+                self.do_build_work(creature_id, task_id, project_id);
+                return; // do_build_work handles its own next-activation scheduling.
+            }
         }
 
         // Schedule next activation (creature is now idle, will wander or pick
@@ -1133,17 +1209,175 @@ impl SimState {
     }
 
     // -----------------------------------------------------------------------
+    // Build work — incremental voxel materialization
+    // -----------------------------------------------------------------------
+
+    /// Perform one activation's worth of build work on a blueprint.
+    ///
+    /// Increments the task's `progress`. When enough progress accumulates
+    /// (every `build_work_ticks_per_voxel` units), one blueprint voxel is
+    /// materialized as solid. When all voxels are placed, the blueprint is
+    /// marked Complete and the task finishes.
+    fn do_build_work(&mut self, creature_id: CreatureId, task_id: TaskId, project_id: ProjectId) {
+        let ticks_per_voxel = self.config.build_work_ticks_per_voxel as f32;
+
+        // Increment progress.
+        let task = match self.tasks.get_mut(&task_id) {
+            Some(t) => t,
+            None => return,
+        };
+        let old_progress = task.progress;
+        task.progress += 1.0;
+        let new_progress = task.progress;
+        let total_cost = task.total_cost;
+
+        // Check if we crossed a voxel-placement threshold.
+        let old_voxels = (old_progress / ticks_per_voxel).floor() as u64;
+        let new_voxels = (new_progress / ticks_per_voxel).floor() as u64;
+
+        if new_voxels > old_voxels {
+            self.materialize_next_build_voxel(project_id);
+        }
+
+        // Check if the build is complete.
+        if new_progress >= total_cost {
+            self.complete_build(project_id, task_id);
+        }
+
+        // Schedule next activation.
+        self.event_queue.schedule(
+            self.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
+    }
+
+    /// Pick the next blueprint voxel to materialize and place it.
+    ///
+    /// Selection criteria:
+    /// 1. Must still be Air in the world (not yet placed).
+    /// 2. Must have at least one face-adjacent solid neighbor (adjacency
+    ///    invariant — connects to existing geometry).
+    /// 3. Prefer voxels NOT occupied by any creature.
+    /// 4. If all eligible are occupied, pick randomly using the sim PRNG.
+    fn materialize_next_build_voxel(&mut self, project_id: ProjectId) {
+        let bp = match self.blueprints.get(&project_id) {
+            Some(bp) => bp,
+            None => return,
+        };
+        let build_type = bp.build_type;
+        let voxel_type = build_type.to_voxel_type();
+
+        // Find unplaced voxels that are adjacent to existing solid geometry.
+        let eligible: Vec<VoxelCoord> = bp
+            .voxels
+            .iter()
+            .copied()
+            .filter(|&coord| {
+                self.world.get(coord) == VoxelType::Air && self.world.has_solid_face_neighbor(coord)
+            })
+            .collect();
+
+        if eligible.is_empty() {
+            return;
+        }
+
+        // Collect creature positions for occupancy check.
+        let creature_positions: Vec<VoxelCoord> =
+            self.creatures.values().map(|c| c.position).collect();
+
+        // Prefer unoccupied voxels.
+        let unoccupied: Vec<VoxelCoord> = eligible
+            .iter()
+            .copied()
+            .filter(|coord| !creature_positions.contains(coord))
+            .collect();
+
+        let chosen = if !unoccupied.is_empty() {
+            let idx = self.rng.range_u64(0, unoccupied.len() as u64) as usize;
+            unoccupied[idx]
+        } else {
+            let idx = self.rng.range_u64(0, eligible.len() as u64) as usize;
+            eligible[idx]
+        };
+
+        // Place the voxel.
+        self.world.set(chosen, voxel_type);
+        self.placed_voxels.push((chosen, voxel_type));
+
+        // Incrementally update nav graph (touches only ~7 affected positions
+        // instead of scanning the entire world) and resnap displaced creatures.
+        let removed = self
+            .nav_graph
+            .update_after_voxel_solidified(&self.world, chosen);
+        self.resnap_removed_nodes(&removed);
+    }
+
+    /// Mark a blueprint as Complete and complete its associated task.
+    fn complete_build(&mut self, project_id: ProjectId, task_id: TaskId) {
+        if let Some(bp) = self.blueprints.get_mut(&project_id) {
+            bp.state = BlueprintState::Complete;
+        }
+        self.complete_task(task_id);
+    }
+
+    /// After a nav graph rebuild, re-resolve every creature's `current_node`
+    /// by finding the nearest node to its position. Clears stored paths since
+    /// NavNodeIds change when the graph is rebuilt.
+    fn resnap_creature_nodes(&mut self) {
+        let creature_ids: Vec<CreatureId> = self.creatures.keys().copied().collect();
+        for cid in creature_ids {
+            let creature = self.creatures.get_mut(&cid).unwrap();
+            creature.current_node = self.nav_graph.find_nearest_node(creature.position);
+            creature.path = None;
+            // Update position to match the new node (the creature might have
+            // been displaced if its old position became solid).
+            if let Some(node_id) = creature.current_node {
+                creature.position = self.nav_graph.node(node_id).position;
+            }
+        }
+    }
+
+    /// Resnap only creatures whose `current_node` was among the removed IDs.
+    /// Used after incremental nav graph updates where most creatures are
+    /// unaffected — much cheaper than resnapping all creatures.
+    fn resnap_removed_nodes(&mut self, removed: &[NavNodeId]) {
+        if removed.is_empty() {
+            return;
+        }
+        let creature_ids: Vec<CreatureId> = self.creatures.keys().copied().collect();
+        for cid in creature_ids {
+            let creature = self.creatures.get_mut(&cid).unwrap();
+            let needs_resnap = match creature.current_node {
+                Some(node_id) => removed.contains(&node_id),
+                None => false,
+            };
+            if needs_resnap {
+                creature.current_node = self.nav_graph.find_nearest_node(creature.position);
+                creature.path = None;
+                if let Some(node_id) = creature.current_node {
+                    creature.position = self.nav_graph.node(node_id).position;
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Save/load helpers
     // -----------------------------------------------------------------------
 
-    /// Rebuild the voxel world from config and stored tree entity data.
+    /// Rebuild the voxel world from config, stored tree entity data, and
+    /// construction-placed voxels.
     ///
     /// Recreates the `VoxelWorld` from scratch: lays the forest floor at y=0
     /// using `config.floor_extent`, then places every tree's trunk, branch,
-    /// root, leaf, and fruit voxels. This is the inverse of tree generation —
-    /// instead of growing the tree procedurally, we replay the stored voxel
-    /// lists.
-    pub fn rebuild_world(config: &GameConfig, trees: &BTreeMap<TreeId, Tree>) -> VoxelWorld {
+    /// root, leaf, and fruit voxels, then places any construction voxels from
+    /// `placed_voxels`. This is the inverse of tree generation — instead of
+    /// growing the tree procedurally, we replay the stored voxel lists.
+    pub fn rebuild_world(
+        config: &GameConfig,
+        trees: &BTreeMap<TreeId, Tree>,
+        placed_voxels: &[(VoxelCoord, VoxelType)],
+    ) -> VoxelWorld {
         let (ws_x, ws_y, ws_z) = config.world_size;
         let mut world = VoxelWorld::new(ws_x, ws_y, ws_z);
 
@@ -1177,6 +1411,11 @@ impl SimState {
             }
         }
 
+        // Place construction voxels.
+        for &(coord, voxel_type) in placed_voxels {
+            world.set(coord, voxel_type);
+        }
+
         world
     }
 
@@ -1185,7 +1424,7 @@ impl SimState {
     /// Restores: `world` (voxel grid from stored tree voxels + config),
     /// `nav_graph` (from rebuilt world geometry), `species_table` (from config).
     pub fn rebuild_transient_state(&mut self) {
-        self.world = Self::rebuild_world(&self.config, &self.trees);
+        self.world = Self::rebuild_world(&self.config, &self.trees, &self.placed_voxels);
         self.nav_graph = nav::build_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
     }
@@ -2004,7 +2243,7 @@ mod tests {
         let tree = &sim.trees[&sim.player_tree_id];
 
         // Rebuild world from stored tree voxels and config.
-        let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees);
+        let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &sim.placed_voxels);
 
         // Check trunk voxels.
         for coord in &tree.trunk_voxels {
@@ -2044,6 +2283,22 @@ mod tests {
         let center_z = ws_z as i32 / 2;
         let floor_coord = VoxelCoord::new(center_x, 0, center_z);
         assert_eq!(rebuilt.get(floor_coord), VoxelType::ForestFloor);
+    }
+
+    #[test]
+    fn rebuild_world_includes_placed_voxels() {
+        let sim = SimState::new(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Manually construct placed_voxels and rebuild.
+        let placed = vec![(air_coord, VoxelType::GrownPlatform)];
+        let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &placed);
+
+        assert_eq!(
+            rebuilt.get(air_coord),
+            VoxelType::GrownPlatform,
+            "Rebuilt world should contain the placed platform voxel"
+        );
     }
 
     #[test]
@@ -2543,6 +2798,42 @@ mod tests {
     }
 
     #[test]
+    fn designate_build_creates_build_task() {
+        let mut sim = SimState::new(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Blueprint should exist and have a linked task.
+        assert_eq!(sim.blueprints.len(), 1);
+        let bp = sim.blueprints.values().next().unwrap();
+        assert!(
+            bp.task_id.is_some(),
+            "Blueprint should have a linked task_id"
+        );
+
+        // Task should exist.
+        let task_id = bp.task_id.unwrap();
+        let task = &sim.tasks[&task_id];
+        assert!(matches!(task.kind, crate::task::TaskKind::Build { .. }));
+        assert_eq!(task.state, TaskState::Available);
+        assert_eq!(
+            task.total_cost,
+            sim.config.build_work_ticks_per_voxel as f32
+        );
+        assert_eq!(task.required_species, Some(Species::Elf));
+    }
+
+    #[test]
     fn designate_build_rejects_out_of_bounds() {
         let mut sim = SimState::new(42);
         let oob = VoxelCoord::new(-1, 0, 0);
@@ -2677,6 +2968,127 @@ mod tests {
                 .events
                 .iter()
                 .any(|e| matches!(e.kind, SimEventKind::BuildCancelled { .. }))
+        );
+    }
+
+    #[test]
+    fn cancel_build_removes_associated_task() {
+        let mut sim = SimState::new(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Designate a build.
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+
+        let project_id = *sim.blueprints.keys().next().unwrap();
+        let task_id = sim.blueprints[&project_id].task_id.unwrap();
+        assert!(sim.tasks.contains_key(&task_id));
+
+        // Cancel.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::CancelBuild { project_id },
+        };
+        sim.step(&[cmd2], 2);
+
+        assert!(sim.blueprints.is_empty());
+        assert!(!sim.tasks.contains_key(&task_id));
+    }
+
+    #[test]
+    fn cancel_build_unassigns_elf() {
+        let mut sim = SimState::new(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Spawn elf.
+        let elf_id = spawn_elf(&mut sim);
+
+        // Designate a build.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        let project_id = *sim.blueprints.keys().next().unwrap();
+
+        // Tick enough for the elf to claim the task.
+        sim.step(&[], sim.tick + 50000);
+
+        let task_id = sim.blueprints[&project_id].task_id.unwrap();
+        let task = &sim.tasks[&task_id];
+        // The elf should have claimed it (it's the only available task).
+        assert!(
+            task.assignees.contains(&elf_id),
+            "Elf should have claimed the build task"
+        );
+
+        // Cancel the build.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::CancelBuild { project_id },
+        };
+        sim.step(&[cmd2], sim.tick + 2);
+
+        // Elf should be unassigned.
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_none(),
+            "Elf should have no task after cancel"
+        );
+    }
+
+    #[test]
+    fn cancel_build_reverts_partial_voxels() {
+        let mut sim = SimState::new(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Designate a build.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let project_id = *sim.blueprints.keys().next().unwrap();
+
+        // Simulate partial construction by manually placing a voxel.
+        sim.placed_voxels
+            .push((air_coord, VoxelType::GrownPlatform));
+        sim.world.set(air_coord, VoxelType::GrownPlatform);
+
+        // Cancel the build.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::CancelBuild { project_id },
+        };
+        sim.step(&[cmd2], 2);
+
+        // Voxel should be reverted to Air.
+        assert_eq!(sim.world.get(air_coord), VoxelType::Air);
+        assert!(
+            sim.placed_voxels.is_empty(),
+            "placed_voxels should be cleared"
         );
     }
 
@@ -3018,6 +3430,305 @@ mod tests {
                 creature.current_node.is_some(),
                 "{:?} has no current node",
                 creature.species
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Build work + incremental materialization tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: find N air voxels adjacent to trunk, all face-adjacent to
+    /// each other or to solid geometry (valid for a multi-voxel blueprint).
+    fn find_air_strip_adjacent_to_trunk(sim: &SimState, count: usize) -> Vec<VoxelCoord> {
+        let tree = &sim.trees[&sim.player_tree_id];
+        // Find a trunk voxel with an air voxel to the +x side, then extend
+        // in the +x direction.
+        for &trunk_coord in &tree.trunk_voxels {
+            let start = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
+            if !sim.world.in_bounds(start) || sim.world.get(start) != VoxelType::Air {
+                continue;
+            }
+            let mut strip = vec![start];
+            for i in 1..count {
+                let next = VoxelCoord::new(start.x + i as i32, start.y, start.z);
+                if !sim.world.in_bounds(next) || sim.world.get(next) != VoxelType::Air {
+                    break;
+                }
+                strip.push(next);
+            }
+            if strip.len() == count {
+                return strip;
+            }
+        }
+        panic!("Could not find {count} air voxels adjacent to trunk");
+    }
+
+    /// Helper: create a sim with fast build speed for testing.
+    fn build_test_sim() -> SimState {
+        let mut config = GameConfig::default();
+        // Fast builds: 1 tick per voxel for quick test completion.
+        config.build_work_ticks_per_voxel = 1;
+        SimState::with_config(42, config)
+    }
+
+    #[test]
+    fn build_task_completes_and_all_voxels_placed() {
+        let mut sim = build_test_sim();
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Spawn elf.
+        let elf_id = spawn_elf(&mut sim);
+
+        // Designate a 1-voxel platform.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        let project_id = *sim.blueprints.keys().next().unwrap();
+        let task_id = sim.blueprints[&project_id].task_id.unwrap();
+
+        // Tick until completion (elf needs to pathfind + do work).
+        sim.step(&[], sim.tick + 2_000_000);
+
+        // Blueprint should be Complete.
+        let bp = &sim.blueprints[&project_id];
+        assert_eq!(
+            bp.state,
+            BlueprintState::Complete,
+            "Blueprint should be Complete"
+        );
+
+        // Voxel should be solid.
+        assert_eq!(
+            sim.world.get(air_coord),
+            VoxelType::GrownPlatform,
+            "Build voxel should be GrownPlatform"
+        );
+
+        // Task should be Complete.
+        let task = &sim.tasks[&task_id];
+        assert_eq!(task.state, TaskState::Complete);
+
+        // Elf should be freed (no current task).
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_none(),
+            "Elf should be free after build completion"
+        );
+
+        // placed_voxels should contain the coord.
+        assert!(
+            sim.placed_voxels
+                .contains(&(air_coord, VoxelType::GrownPlatform))
+        );
+    }
+
+    #[test]
+    fn build_task_materializes_voxels_incrementally() {
+        let mut config = GameConfig::default();
+        // Slow build: 50000 ticks per voxel (elf walk_tpv is 500, so the elf
+        // needs to arrive first, then do 50000 ticks of work per voxel).
+        config.build_work_ticks_per_voxel = 50000;
+        let mut sim = SimState::with_config(42, config);
+
+        let strip = find_air_strip_adjacent_to_trunk(&sim, 3);
+
+        // Spawn elf.
+        spawn_elf(&mut sim);
+
+        // Designate a 3-voxel platform.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: strip.clone(),
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        let project_id = *sim.blueprints.keys().next().unwrap();
+
+        // Tick enough for the elf to arrive and do partial work (enough for
+        // 1 voxel but not all 3). Elf walk speed is 500 tpv, so a few
+        // thousand ticks should let it arrive. Then 50000 more for 1 voxel.
+        sim.step(&[], sim.tick + 200_000);
+
+        // At least 1 voxel should be placed, but not all 3.
+        let placed_count = strip
+            .iter()
+            .filter(|c| sim.world.get(**c) != VoxelType::Air)
+            .count();
+
+        // With 200k ticks and 50k per voxel, we'd expect 1-3 placed.
+        // The exact count depends on pathfinding time, but at least 1.
+        assert!(
+            placed_count >= 1,
+            "Expected at least 1 voxel placed, got {placed_count}"
+        );
+
+        // Blueprint should still be Designated (not all voxels done).
+        if placed_count < 3 {
+            let bp = &sim.blueprints[&project_id];
+            assert_eq!(bp.state, BlueprintState::Designated);
+        }
+    }
+
+    #[test]
+    fn build_voxels_maintain_adjacency() {
+        let mut sim = build_test_sim();
+
+        let strip = find_air_strip_adjacent_to_trunk(&sim, 3);
+
+        // Spawn elf.
+        spawn_elf(&mut sim);
+
+        // Designate a 3-voxel strip.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: strip.clone(),
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        // Tick to completion.
+        sim.step(&[], sim.tick + 2_000_000);
+
+        // All 3 voxels should be solid.
+        for coord in &strip {
+            assert_eq!(
+                sim.world.get(*coord),
+                VoxelType::GrownPlatform,
+                "Voxel at {coord} should be GrownPlatform"
+            );
+        }
+
+        // Verify each placed voxel is adjacent to at least one solid neighbor
+        // that existed BEFORE it was placed (the trunk or a previously-placed
+        // voxel). Since we can't replay the order, we verify the weaker
+        // property: each voxel has at least one solid face neighbor now.
+        for coord in &strip {
+            assert!(
+                sim.world.has_solid_face_neighbor(*coord),
+                "Placed voxel at {coord} should have a solid face neighbor"
+            );
+        }
+    }
+
+    #[test]
+    fn build_displaces_creature_on_occupied_voxel() {
+        let mut sim = build_test_sim();
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Spawn an elf, then manually place it at the blueprint voxel.
+        let elf_id = spawn_elf(&mut sim);
+
+        // Find the nav node at air_coord (if one exists).
+        let node_at_build = sim.nav_graph.find_nearest_node(air_coord);
+        if let Some(node_id) = node_at_build {
+            let node_pos = sim.nav_graph.node(node_id).position;
+            if node_pos == air_coord {
+                // Move the elf there.
+                let elf = sim.creatures.get_mut(&elf_id).unwrap();
+                elf.position = air_coord;
+                elf.current_node = Some(node_id);
+            }
+        }
+
+        // Spawn a SECOND elf to do the building (the first one is standing
+        // on the build site, so we need another builder).
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        // Designate the build at the occupied voxel.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        // Tick to completion.
+        sim.step(&[], sim.tick + 2_000_000);
+
+        // The voxel should be solid.
+        assert_eq!(sim.world.get(air_coord), VoxelType::GrownPlatform);
+
+        // The first elf should have been displaced — its position should not
+        // be at air_coord (which is now solid).
+        let elf = &sim.creatures[&elf_id];
+        assert_ne!(
+            elf.position, air_coord,
+            "Elf should have been displaced from the now-solid voxel"
+        );
+        // It should still have a valid nav node.
+        assert!(elf.current_node.is_some());
+    }
+
+    #[test]
+    fn save_load_preserves_partially_built_platform() {
+        let mut config = GameConfig::default();
+        config.build_work_ticks_per_voxel = 50000;
+        let mut sim = SimState::with_config(42, config);
+
+        let strip = find_air_strip_adjacent_to_trunk(&sim, 3);
+
+        spawn_elf(&mut sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: strip.clone(),
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        // Tick for partial construction.
+        sim.step(&[], sim.tick + 200_000);
+
+        let placed_before = sim.placed_voxels.len();
+
+        // Save and load.
+        let json = sim.to_json().unwrap();
+        let restored = SimState::from_json(&json).unwrap();
+
+        // placed_voxels should be preserved.
+        assert_eq!(restored.placed_voxels.len(), placed_before);
+
+        // The world should contain the placed voxels.
+        for &(coord, vt) in &restored.placed_voxels {
+            assert_eq!(
+                restored.world.get(coord),
+                vt,
+                "Restored world should contain placed voxel at {coord}"
             );
         }
     }

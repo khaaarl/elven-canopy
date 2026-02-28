@@ -65,6 +65,7 @@ var _construction_controller: Node
 ## Renderers for new species (Boar, Deer, Monkey, Squirrel). Receive
 ## render_tick each frame for smooth creature interpolation.
 var _extra_renderers: Array = []
+var _bp_renderer: Node3D
 ## Fractional seconds of unprocessed sim time. Accumulates each frame,
 ## converted to ticks by dividing by tick_duration_ms / 1000.
 var _sim_accumulator: float = 0.0
@@ -207,13 +208,14 @@ func _ready() -> void:
 				_camera_pivot.stop_follow()
 	)
 
-	# Set up blueprint renderer (shows designated blueprints as ghost cubes).
+	# Set up blueprint renderer (ghost cubes for unplaced blueprints,
+	# solid brown cubes for materialized construction voxels).
 	var bp_renderer_script = load("res://scripts/blueprint_renderer.gd")
-	var bp_renderer := Node3D.new()
-	bp_renderer.set_script(bp_renderer_script)
-	add_child(bp_renderer)
-	bp_renderer.setup(bridge)
-	_construction_controller.blueprint_placed.connect(bp_renderer.refresh)
+	_bp_renderer = Node3D.new()
+	_bp_renderer.set_script(bp_renderer_script)
+	add_child(_bp_renderer)
+	_bp_renderer.setup(bridge)
+	_construction_controller.blueprint_placed.connect(_bp_renderer.refresh)
 
 	# Set up creature info panel (on the same CanvasLayer as the toolbar).
 	var panel_script = load("res://scripts/creature_info_panel.gd")
@@ -321,6 +323,11 @@ func _process(delta: float) -> void:
 	for r in _extra_renderers:
 		r.set_render_tick(render_tick)
 	_selector.set_render_tick(render_tick)
+
+	# Refresh blueprint/construction renderer so materialized voxels appear
+	# as solid wood and ghost cubes disappear as voxels are placed.
+	if _bp_renderer:
+		_bp_renderer.refresh()
 
 	# Update follow target each frame so the camera tracks creature movement.
 	if _camera_pivot and _camera_pivot.is_following():
