@@ -5,9 +5,8 @@ Paxos-like consensus model described in `design_doc.md` §4 with a simpler
 relay-coordinator approach. The deterministic sim foundations (command-driven
 mutation, seeded PRNG, no HashMap, serializable state) remain unchanged.
 
-**UI is not yet designed.** Section 8 collects initial ideas, but lobby UI,
-in-game multiplayer controls, and session management screens need their own
-design pass before implementation.
+Section 8 covers the UI design: main menu flow, lobby, in-game multiplayer
+controls, ESC menu behavior, and save/load semantics.
 
 ---
 
@@ -155,9 +154,51 @@ a compact "advance N ticks" message rather than a full turn struct.
 ### Session creation
 
 One player (or a dedicated server operator) starts the relay. The relay
-generates a **session token** — a short human-readable code (e.g., 6
-alphanumeric characters) that other players use to join. The relay listens on
-a configurable port.
+listens on a configurable port.
+
+### Session naming and access
+
+Sessions have a **name** — a human-readable identifier displayed in session
+lists and used for coordination between players ("join my session, it's called
+amber-willow-42"). The relay generates a random default name (two-word-number
+pattern) which the host can customize. Session names must be unique within a
+relay (relevant for dedicated servers hosting multiple sessions).
+
+Sessions optionally have a **password**. If set, the relay requires it during
+the handshake. This provides basic access control — not cryptographic
+security, just a barrier against accidental joins or casual griefing on public
+relays.
+
+### Game modes
+
+Initial multiplayer supports one mode:
+
+**Shared tree (co-op).** All players control the same tree spirit. Any player
+can designate construction, assign tasks, spawn creatures, and issue commands.
+Elves and resources belong to the shared pool. No per-player entity ownership,
+no per-player fog of war. This requires no changes to the sim's world model —
+it's just multiple command sources feeding into one sim.
+
+**Separate trees** are part of the long-term vision but require F-multi-tree
+(Phase 7). In this mode, each player controls their own tree spirit with their
+own elves, mana, and construction. Trees can be allied (cooperative, shared
+elf access) or rival (competitive, fog of war between players). This needs:
+per-player entity ownership in the sim, per-player command validation (can't
+issue commands to another player's elves), per-player fog of war rendering
+(§17), and lobby UI for tree position selection. The separate-tree mode should
+be configured during world setup, choosing the number and placement of player
+trees and whether the game is cooperative or competitive. See `design_doc.md`
+§1 for the vision (co-op shared tree, allied adjacent trees, rival groves,
+asymmetric established-vs-sapling). Separate-tree multiplayer is out of scope
+for F-multiplayer and will be tracked as part of F-multi-tree.
+
+### Player identity
+
+Each player has a **display name** shown in the lobby, player list overlay,
+and notification toasts. Defaults to the OS username, customizable in settings
+or at join time. The relay assigns each player a stable `PlayerId` (integer)
+and a distinguishing **color** (from a palette of visually distinct colors,
+auto-assigned, swappable in the lobby).
 
 ### Pre-game join (lobby phase)
 
@@ -197,18 +238,52 @@ a rare event like a player joining.
 When a client disconnects (intentionally or via timeout), the relay:
 1. Removes the player from the active player list.
 2. Broadcasts a `PlayerLeft` message to remaining clients.
-3. The sim handles player departure as a game-level event (their elves become
-   idle, their tree goes dormant, etc. — game design TBD).
+3. Remaining players see a toast notification ("Player 2 disconnected").
 
-### Pause and save
+In shared-tree mode, the departure has no sim-level effect — the remaining
+players continue with full control over the shared tree. If all players
+disconnect, the relay can keep the session alive for a configurable timeout
+(allowing reconnection) or close it.
 
-Any player can request a pause (sends a `RequestPause` message). The relay
-stops advancing turns. All players see the game paused. Unpausing requires
-the requesting player (or majority vote — design TBD) to send `RequestResume`.
+In separate-tree mode (future, with F-multi-tree), the departing player's
+elves go idle (wander, continue current tasks but accept no new ones) and
+their tree goes dormant. The player can reconnect and resume control. Design
+details deferred to F-multi-tree.
 
-Saving in multiplayer: one client performs the save (same as single-player),
-triggered by the host or by consensus. The relay doesn't need to be involved
-beyond pausing the sim during the save.
+### Pause
+
+In multiplayer, the ESC menu opens **without pausing the simulation** — the
+game continues running for all players. The menu provides a "Request Pause"
+button that sends a pause request to the relay. The relay pauses turn
+advancement and broadcasts a notification ("Player 2 requested a pause"). Any
+player can send a resume request to unpause.
+
+Exception: if you are the only connected player in the session (all others
+have disconnected), ESC pauses the sim immediately, matching single-player
+behavior.
+
+### Save
+
+Any player can save the game at any time via the ESC menu. The save writes to
+the saving player's local disk — no relay involvement, no pause needed. Since
+all clients maintain identical sim state, the save file is valid regardless of
+who creates it. Other players see a toast notification ("Player 2 saved the
+game").
+
+### Load
+
+Loading a save replaces the entire sim state for all players. Because this is
+disruptive, loading requires **confirmation from the session host** (or from
+all players — policy TBD). Flow:
+
+1. A player selects "Load Game" from the ESC menu and picks a local save file.
+2. The client sends a `RequestLoad` message to the relay with the save file's
+   metadata (timestamp, sim tick, session name).
+3. The relay broadcasts a confirmation dialog to the host (or all players).
+4. If approved: the relay pauses turns, the loading player sends the save data
+   through the relay, all clients load the state, the relay resumes.
+5. If rejected: the requesting player sees "Load request denied" and the game
+   continues.
 
 ---
 
@@ -323,54 +398,127 @@ original players.
 
 ---
 
-## 8. UI Considerations (Not Yet Designed)
+## 8. UI Design
 
-UI for multiplayer has not been discussed in detail. The following are initial
-ideas to be refined in a separate design pass.
+### Main menu flow
 
-### Lobby / session management
+The main menu gains a top-level split between single player and multiplayer:
 
-- **Host Game screen:** Configure game settings (seed, tree params, sim
-  speed), start the relay, display the session token / relay address for
-  sharing. Option to start as embedded relay or connect to an external relay.
-- **Join Game screen:** Enter relay address + session token, or paste a
-  combined connection string. Version/config mismatch errors displayed here.
-- **Lobby view:** After connecting, show connected players, their readiness
-  status, and basic info (player name, chosen tree position). Chat optional
-  but nice. Host can kick players, start the game, or adjust settings.
+```
+Main Menu
+├── Single Player
+│   ├── New Game → seed/tree config → play
+│   └── Load Game → pick save → play
+├── Multiplayer
+│   ├── Host Game → new/load → game config → lobby → play
+│   └── Connect to Relay → address input → session list → lobby → play
+└── Quit
+```
+
+**Single Player** is unchanged from the current flow. No networking, no relay,
+no turns. The existing New Game and Load Game screens work as-is.
+
+**Multiplayer** has two paths:
+
+### Host Game
+
+The player runs the relay in their game process (embedded). Steps:
+
+1. Choose **New Game** (configure seed, tree params) or **Load Game** (pick a
+   save file from a previous session).
+2. Configure session settings: session name (random default, editable),
+   optional password, max players.
+3. The relay starts. The screen shows the relay address (IP:port) and session
+   name for sharing with other players.
+4. The host enters the lobby as the first player. Other players connect.
+5. The host clicks "Start Game" when ready.
+
+### Connect to Relay
+
+The player connects to an existing relay (player-hosted or dedicated server).
+Steps:
+
+1. Enter relay address (IP:port or hostname:port).
+2. The client connects and sees a **session list** — all active sessions on
+   that relay with name, player count, and status (lobby / in-progress). For
+   a player-hosted relay, there's exactly one session. For a dedicated server,
+   there may be several.
+3. Pick a session to join (enter password if required), or **Create New
+   Session** (same flow as Host Game step 1–2, but the relay runs remotely).
+4. Enter the lobby.
+
+This merges "join an existing game" and "create a new game on a dedicated
+server" into one flow — the choice happens after connecting, based on what the
+relay offers. There's no need for separate menu items.
+
+### Lobby
+
+The lobby is shown after session creation or joining, before the game starts:
+
+- **Player list:** Connected players with display names, assigned colors, and
+  ready status.
+- **Game settings:** Seed, tree params, session name (visible to all, editable
+  by host only).
+- **Session info:** Relay address (for sharing), password status, max players.
+- **Chat:** Simple text chat between lobby members.
+- **Ready / Start:** Players toggle ready status. Host clicks "Start Game"
+  (enabled when the host decides the group is ready).
+- **Host controls:** Kick player, change settings, transfer host role.
 
 ### In-game multiplayer UI
 
-- **Player list:** Small overlay showing connected players (name, color,
-  maybe ping/latency indicator).
-- **Sim speed controls:** Need to handle consensus — if one player changes
-  speed, it affects everyone. Could require host approval, or use "slowest
-  player wins" policy.
-- **Pause:** Any player can pause? Or only host? Needs a policy decision.
-- **Desync notification:** If detected, a prominent warning with options
-  (resync, disconnect, ignore).
-- **Player join/leave notifications:** Toast messages when players connect
-  or disconnect.
-- **Chat:** Text chat between players. Optional but standard.
+#### Player list overlay
 
-### Connection flow integration
+Small persistent element (top-left or similar) showing connected players:
+display name, color dot, and optionally a latency indicator. Compact — should
+not interfere with gameplay.
 
-The existing scene flow is: main menu → new game / load → game. Multiplayer
-would add:
-- Main menu gains "Host Game" and "Join Game" buttons (or a "Multiplayer"
-  submenu).
-- "Host Game" goes to a lobby screen (extended new game screen).
-- "Join Game" goes to a connection screen, then to the lobby.
-- The lobby transitions to the game scene when the host starts.
-- Mid-game join goes directly to the game scene after state sync.
+#### Toast notifications
+
+Brief messages for multiplayer events, fading after a few seconds:
+- "Player 2 connected" / "Player 2 disconnected"
+- "Player 2 saved the game"
+- "Player 2 requested a pause" / "Player 2 resumed the game"
+- "Desync detected — resyncing..."
+
+Confirmation dialogs for disruptive actions:
+- "Player 2 wants to load a save from [timestamp]. Approve?"
+
+#### ESC menu (multiplayer variant)
+
+ESC opens an overlay **without pausing the game** (see section 4, Pause).
+Items:
+
+- **Resume** — close the menu.
+- **Save Game** — save to local disk. Other players see a toast.
+- **Load Game** — pick a local save, send load request (requires host
+  approval, see section 4, Load).
+- **Request Pause** / **Resume Game** — toggle pause for all players via
+  relay.
+- **Disconnect** — leave the session, return to main menu.
+- **Quit to Desktop** — disconnect and exit.
+
+When you're the last connected player, ESC pauses immediately and the menu
+shows standard single-player items without multiplayer-specific options.
+
+#### Sim speed
+
+Sim speed changes affect all players (the relay controls pacing). For
+simplicity, **only the host can change sim speed**. Speed controls (pause,
+1x, 2x, 3x) appear in the host's UI only. Other players see the current
+speed but cannot change it. This avoids consensus complexity. Can be revisited
+later if a voting or "slowest wins" model proves desirable.
 
 ### Open UI questions
 
-- How does the player choose their tree position in a multi-tree setup?
-- How are tree spirits visually distinguished (color, icon, name)?
+- How are tree spirits visually distinguished in shared-tree mode?
+  Color-coded cursors or command highlights could show who issued which
+  construction designation.
 - Should there be a pre-game map/seed preview in the lobby?
-- How does save/load work in multiplayer (who initiates, where is it stored)?
-- What happens to a player's elves/tree when they disconnect mid-game?
+- Should the session list on a dedicated relay show game age, world size, etc.?
+- How much lobby state persists if the relay stays running but all players
+  leave?
+- Should there be a recent-connections history for quick rejoin?
 
 ---
 
@@ -405,8 +553,9 @@ crate, exposed to GDScript as a node or set of methods on `SimBridge`.
 
 ### GDScript UI
 
-New scripts and scenes for lobby, connection, and in-game multiplayer UI.
-These depend on the UI design pass (section 8) and are not specified here.
+New scripts and scenes for lobby, connection, and in-game multiplayer UI
+per section 8: main menu split, lobby screen, session list, player list
+overlay, toast notifications, multiplayer ESC menu variant.
 
 ### Phasing
 

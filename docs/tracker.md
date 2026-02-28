@@ -776,7 +776,14 @@ social norms over time.
 **Status:** Todo · **Phase:** 7 · **Refs:** §2, §7
 
 Multiple trees in the world, each with personality traits (preferences,
-aversions) that affect mana generation and elf morale.
+aversions) that affect mana generation and elf morale. Also enables
+**separate-tree multiplayer** — each player controls their own tree with
+their own elves and mana, in cooperative or competitive configurations
+(see `design_doc.md` §1 and `docs/drafts/multiplayer_relay.md` §4). Requires
+per-player entity ownership, per-player command validation, and per-player
+fog of war rendering.
+
+**Related:** F-multiplayer
 
 #### F-root-network — Root network expansion and diplomacy
 **Status:** Todo · **Phase:** 7 · **Refs:** §2
@@ -997,10 +1004,14 @@ traversal issues. Supersedes the Paxos-like model originally described in
 §4 — simpler, same guarantees for 2–4 player scale. Steam integration
 possible as a discovery mechanism (lobby browser, friend invites) without
 replacing the relay architecture. Periodic state checksums detect desync.
-Architecture foundations are ready (deterministic sim, command interface)
-but networking layer, relay crate, and **UI are not yet designed**.
+Architecture foundations are ready (deterministic sim, command interface).
+Initial multiplayer mode is shared-tree co-op (all players control one
+tree). Separate-tree multiplayer (cooperative or competitive with per-player
+trees) deferred to F-multi-tree. Draft doc covers relay architecture,
+session management, and UI design (main menu flow, lobby, in-game controls,
+ESC menu behavior, save/load semantics, sim speed policy).
 
-**Related:** F-save-load
+**Related:** F-save-load, F-multi-tree
 
 #### F-save-load — Save/load to JSON with versioning
 **Status:** Done · **Phase:** 2 · **Refs:** §4, §5
