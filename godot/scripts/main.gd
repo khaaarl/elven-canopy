@@ -28,9 +28,10 @@
 ## 2. construction_controller — if placing: exit placing sub-mode;
 ##    if active: exit construction mode
 ## 3. selection_controller — deselect creature
-## 4. task_panel — close task list (if visible, on CanvasLayer layer 2)
+## 4. tree_info_panel — close tree info (if visible, on CanvasLayer layer 1)
 ## 5. structure_list_panel — close structure list (if visible, on CanvasLayer layer 2)
-## 6. pause_menu — open/close (on CanvasLayer layer 2, added after task panel)
+## 6. task_panel — close task list (if visible, on CanvasLayer layer 2)
+## 7. pause_menu — open/close (on CanvasLayer layer 2, added first)
 ##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
@@ -38,7 +39,8 @@
 ## spawn_toolbar.gd for the toolbar UI, placement_controller.gd for
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
-## creature_info_panel.gd for the creature info panel, task_panel.gd for
+## creature_info_panel.gd for the creature info panel,
+## tree_info_panel.gd for the tree stats panel, task_panel.gd for
 ## the task list overlay, structure_list_panel.gd for the structure list
 ## overlay, game_session.gd for the autoload that carries the seed/load
 ## path from the menu, pause_menu.gd for the ESC pause overlay.
@@ -63,6 +65,7 @@ const SPECIES_Y_OFFSETS = {
 
 var _selector: Node3D
 var _panel: PanelContainer
+var _tree_info_panel: PanelContainer
 var _task_panel: ColorRect
 var _structure_panel: ColorRect
 var _camera_pivot: Node3D
@@ -202,7 +205,7 @@ func _ready() -> void:
 	# Construction panel lives on the CanvasLayer for UI rendering.
 	canvas_layer.add_child(_construction_controller.get_panel())
 
-	# Entering construction mode: deselect creature, cancel placement.
+	# Entering construction mode: deselect creature, cancel placement, hide tree info.
 	_construction_controller.construction_mode_entered.connect(
 		func():
 			if _placement_controller.is_placing():
@@ -211,6 +214,8 @@ func _ready() -> void:
 				_selector.deselect()
 			if _panel:
 				_panel.hide_panel()
+			if _tree_info_panel and _tree_info_panel.visible:
+				_tree_info_panel.hide_panel()
 			if _camera_pivot:
 				_camera_pivot.stop_follow()
 	)
@@ -251,6 +256,9 @@ func _ready() -> void:
 	_camera_pivot = $CameraPivot
 	_selector.creature_selected.connect(
 		func(species: String, index: int):
+			# Mutual exclusion: selecting a creature hides the tree info panel.
+			if _tree_info_panel and _tree_info_panel.visible:
+				_tree_info_panel.hide_panel()
 			var tick := float(bridge.current_tick())
 			var info := bridge.get_creature_info(species, index, tick)
 			if not info.is_empty():
@@ -304,6 +312,17 @@ func _ready() -> void:
 	_structure_panel.set_script(structure_panel_script)
 	structure_panel_layer.add_child(_structure_panel)
 
+	# Tree info panel (on its own CanvasLayer, added after structure panel
+	# so its ESC handler fires first in reverse tree order).
+	var tree_panel_layer := CanvasLayer.new()
+	tree_panel_layer.layer = 1
+	add_child(tree_panel_layer)
+
+	var tree_panel_script = load("res://scripts/tree_info_panel.gd")
+	_tree_info_panel = PanelContainer.new()
+	_tree_info_panel.set_script(tree_panel_script)
+	tree_panel_layer.add_child(_tree_info_panel)
+
 	# Wire structure panel zoom-to-location -> move camera pivot.
 	_structure_panel.zoom_to_location.connect(
 		func(x: float, y: float, z: float):
@@ -311,13 +330,23 @@ func _ready() -> void:
 			_look_at_position(Vector3(x + 0.5, y, z + 0.5))
 	)
 
-	# Wire toolbar "Tasks" and "Structures" actions -> panel toggles.
+	# Wire toolbar "Tasks", "Structures", and "TreeInfo" actions -> panel toggles.
 	toolbar.action_requested.connect(
 		func(action: String):
 			if action == "Tasks":
 				_task_panel.toggle()
 			elif action == "Structures":
 				_structure_panel.toggle()
+			elif action == "TreeInfo":
+				# Mutual exclusion: opening tree info deselects creature.
+				if not _tree_info_panel.visible:
+					if _selector:
+						_selector.deselect()
+					if _panel and _panel.visible:
+						_panel.hide_panel()
+					if _camera_pivot:
+						_camera_pivot.stop_follow()
+				_tree_info_panel.toggle()
 	)
 
 	# Wire task panel zoom-to-creature -> select creature + camera follow.
@@ -436,6 +465,11 @@ func _process(delta: float) -> void:
 	if _structure_panel and _structure_panel.visible:
 		var structures := bridge.get_structures()
 		_structure_panel.update_structures(structures)
+
+	# Refresh tree info panel while visible.
+	if _tree_info_panel and _tree_info_panel.visible:
+		var tree_data := bridge.get_home_tree_info()
+		_tree_info_panel.update_info(tree_data)
 
 	# Refresh panel info while a creature is selected.
 	if _panel and _panel.visible and _selector.get_selected_index() >= 0:

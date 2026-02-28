@@ -105,7 +105,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-struct-basic         Basic structural integrity (flood fill)
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
-[ ] F-tree-info            Tree stats/info panel
 [ ] F-tree-memory          Ancient tree knowledge/vision system
 [ ] F-tree-overlap         Construction overlap with tree geometry
 [ ] F-tree-species         Multiple tree species with properties
@@ -150,6 +149,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
 [x] F-structure-reg        Completed structure registry + UI panel
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
+[x] F-tree-info            Tree stats/info panel
 ```
 
 ---
@@ -907,7 +907,7 @@ Ray-based selection with billboard sprite hit detection. ESC to deselect.
 Input precedence chain with placement and pause systems.
 
 #### F-tree-info — Tree stats/info panel
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 Panel showing the player's tree statistics: total voxels, height, branch
 count, leaf count, fruit production rate, mana level (once F-mana-system

@@ -54,6 +54,10 @@
 // - **Stats:** `creature_count_by_name(species_name)` — generic replacement
 //   for `elf_count()` / `capybara_count()` (which remain as thin wrappers).
 //   Also `fruit_count()`, `home_tree_mana()`.
+// - **Tree info:** `get_home_tree_info()` — returns a `VarDictionary` with
+//   the player's home tree stats: health, growth, mana, fruit, carrying
+//   capacity, voxel counts by type, height, spread, and anchor position.
+//   Used by `tree_info_panel.gd`.
 // - **Species queries:** `is_species_ground_only(species_name)` — used by
 //   the placement controller to decide which nav nodes to show.
 //   `get_all_species_names()` — returns all species names for UI iteration.
@@ -284,6 +288,84 @@ impl SimBridge {
             arr.push(v.z);
         }
         arr
+    }
+
+    /// Return stats about the player's home tree as a dictionary.
+    ///
+    /// Keys: health, growth_level, mana_stored, mana_capacity,
+    /// fruit_count, fruit_production_rate, carrying_capacity, current_load,
+    /// trunk_voxels, branch_voxels, leaf_voxels, root_voxels, total_voxels,
+    /// height, spread_x, spread_z, position_x, position_y, position_z.
+    #[func]
+    fn get_home_tree_info(&self) -> VarDictionary {
+        let Some(sim) = &self.sim else {
+            return VarDictionary::new();
+        };
+        let Some(tree) = sim.trees.get(&sim.player_tree_id) else {
+            return VarDictionary::new();
+        };
+
+        let mut dict = VarDictionary::new();
+        dict.set("health", tree.health);
+        dict.set("growth_level", tree.growth_level as i32);
+        dict.set("mana_stored", tree.mana_stored);
+        dict.set("mana_capacity", tree.mana_capacity);
+        dict.set("fruit_count", tree.fruit_positions.len() as i32);
+        dict.set("fruit_production_rate", tree.fruit_production_rate);
+        dict.set("carrying_capacity", tree.carrying_capacity);
+        dict.set("current_load", tree.current_load);
+
+        let trunk = tree.trunk_voxels.len() as i32;
+        let branch = tree.branch_voxels.len() as i32;
+        let leaf = tree.leaf_voxels.len() as i32;
+        let root = tree.root_voxels.len() as i32;
+        dict.set("trunk_voxels", trunk);
+        dict.set("branch_voxels", branch);
+        dict.set("leaf_voxels", leaf);
+        dict.set("root_voxels", root);
+        dict.set("total_voxels", trunk + branch + leaf + root);
+
+        // Compute height and spread from all wood voxels.
+        let all_voxels = tree
+            .trunk_voxels
+            .iter()
+            .chain(&tree.branch_voxels)
+            .chain(&tree.root_voxels)
+            .chain(&tree.leaf_voxels);
+
+        let mut min_x = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut min_y = i32::MAX;
+        let mut max_y = i32::MIN;
+        let mut min_z = i32::MAX;
+        let mut max_z = i32::MIN;
+        let mut count = 0;
+
+        for v in all_voxels {
+            min_x = min_x.min(v.x);
+            max_x = max_x.max(v.x);
+            min_y = min_y.min(v.y);
+            max_y = max_y.max(v.y);
+            min_z = min_z.min(v.z);
+            max_z = max_z.max(v.z);
+            count += 1;
+        }
+
+        if count > 0 {
+            dict.set("height", max_y - min_y + 1);
+            dict.set("spread_x", max_x - min_x + 1);
+            dict.set("spread_z", max_z - min_z + 1);
+        } else {
+            dict.set("height", 0);
+            dict.set("spread_x", 0);
+            dict.set("spread_z", 0);
+        }
+
+        dict.set("position_x", tree.position.x);
+        dict.set("position_y", tree.position.y);
+        dict.set("position_z", tree.position.z);
+
+        dict
     }
 
     /// Return the number of fruit on the player's home tree.

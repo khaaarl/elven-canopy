@@ -6,7 +6,7 @@
 ## Keyboard shortcuts:
 ## [1] Spawn Elf, [2] Spawn Capybara, [3] Spawn Boar, [4] Spawn Deer,
 ## [5] Spawn Monkey, [6] Spawn Squirrel, [7] Summon Elf, [B] Build,
-## [T] Tasks
+## [T] Tasks, [I] Tree Info
 ##
 ## Emits two signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
@@ -39,6 +39,7 @@ var _summon_button: Button
 var _build_button: Button
 var _tasks_button: Button
 var _structures_button: Button
+var _tree_info_button: Button
 
 
 func _ready() -> void:
@@ -100,6 +101,11 @@ func _ready() -> void:
 	_structures_button.pressed.connect(_on_structures_pressed)
 	hbox.add_child(_structures_button)
 
+	_tree_info_button = Button.new()
+	_tree_info_button.text = "Tree [I]"
+	_tree_info_button.pressed.connect(_on_tree_info_pressed)
+	hbox.add_child(_tree_info_button)
+
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -131,6 +137,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif key.keycode == KEY_T:
 			_on_tasks_pressed()
 			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_I:
+			_on_tree_info_pressed()
+			get_viewport().set_input_as_handled()
 
 
 func _on_spawn(species_name: String) -> void:
@@ -151,3 +160,7 @@ func _on_tasks_pressed() -> void:
 
 func _on_structures_pressed() -> void:
 	action_requested.emit("Structures")
+
+
+func _on_tree_info_pressed() -> void:
+	action_requested.emit("TreeInfo")
