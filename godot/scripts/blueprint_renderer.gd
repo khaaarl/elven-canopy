@@ -4,7 +4,9 @@
 ## - **Ghost cubes** (translucent light-blue, no_depth_test): unplaced blueprint
 ##   voxels — the player's designated intent that hasn't been built yet.
 ## - **Platform cubes** (solid brown): voxels that elves have already
-##   materialized through construction work.
+##   materialized through construction work. Excludes BuildingInterior
+##   voxels, which are rendered by building_renderer.gd as oriented face
+##   quads instead of solid cubes.
 ##
 ## Follows the same MultiMeshInstance3D pattern as tree_renderer.gd: reads
 ## voxel positions from SimBridge as flat PackedInt32Array of (x,y,z) triples

@@ -102,6 +102,21 @@ impl VoxelWorld {
         })
     }
 
+    /// Returns `true` if any of the 6 face-adjacent voxels is the given type.
+    pub fn has_face_neighbor_of_type(&self, coord: VoxelCoord, voxel_type: VoxelType) -> bool {
+        const FACE_OFFSETS: [(i32, i32, i32); 6] = [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ];
+        FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
+            self.get(VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz)) == voxel_type
+        })
+    }
+
     /// 3D DDA raycast: returns `true` if any solid (non-Air) voxel lies on the
     /// line segment from `from` to `to` (both in world-space floats).
     ///

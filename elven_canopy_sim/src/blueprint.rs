@@ -27,8 +27,9 @@
 // `ProjectId`s generated from the sim's PRNG. Blueprint storage uses
 // `BTreeMap` for deterministic iteration order.
 
-use crate::types::{BuildType, Priority, ProjectId, TaskId, VoxelCoord};
+use crate::types::{BuildType, FaceData, Priority, ProjectId, TaskId, VoxelCoord};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The lifecycle state of a blueprint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +52,21 @@ pub struct Blueprint {
     /// The Build task linked to this blueprint, if one has been created.
     #[serde(default)]
     pub task_id: Option<TaskId>,
+    /// Per-face layout for Building blueprints. `None` for non-building types.
+    /// Stored as a Vec of (coord, face_data) pairs since VoxelCoord can't be
+    /// a JSON map key. Use `face_layout_map()` for O(1) lookup.
+    #[serde(default)]
+    pub face_layout: Option<Vec<(VoxelCoord, FaceData)>>,
+}
+
+impl Blueprint {
+    /// Get the face layout as a BTreeMap for O(1) lookup. Returns None if
+    /// this is not a Building blueprint.
+    pub fn face_layout_map(&self) -> Option<BTreeMap<VoxelCoord, FaceData>> {
+        self.face_layout
+            .as_ref()
+            .map(|list| list.iter().cloned().collect())
+    }
 }
 
 #[cfg(test)]
@@ -70,6 +86,7 @@ mod tests {
             priority: Priority::Normal,
             state: BlueprintState::Designated,
             task_id: None,
+            face_layout: None,
         };
 
         assert_eq!(bp.id, id);
@@ -96,6 +113,7 @@ mod tests {
             priority: Priority::Normal,
             state: BlueprintState::Designated,
             task_id: Some(task_id),
+            face_layout: None,
         };
 
         let json = serde_json::to_string(&bp).unwrap();
@@ -115,6 +133,7 @@ mod tests {
             priority: Priority::High,
             state: BlueprintState::Designated,
             task_id: None,
+            face_layout: None,
         };
 
         let json = serde_json::to_string(&bp).unwrap();

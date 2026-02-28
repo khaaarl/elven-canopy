@@ -68,6 +68,7 @@ var _construction_controller: Node
 ## render_tick each frame for smooth creature interpolation.
 var _extra_renderers: Array = []
 var _bp_renderer: Node3D
+var _bldg_renderer: Node3D
 ## Fractional seconds of unprocessed sim time. Accumulates each frame,
 ## converted to ticks by dividing by tick_duration_ms / 1000.
 var _sim_accumulator: float = 0.0
@@ -219,6 +220,15 @@ func _ready() -> void:
 	_bp_renderer.setup(bridge)
 	_construction_controller.blueprint_placed.connect(_bp_renderer.refresh)
 
+	# Set up building renderer (oriented quads for building faces).
+	var bldg_renderer_script = load("res://scripts/building_renderer.gd")
+	_bldg_renderer = Node3D.new()
+	_bldg_renderer.set_script(bldg_renderer_script)
+	_bldg_renderer.name = "BuildingRenderer"
+	add_child(_bldg_renderer)
+	_bldg_renderer.setup(bridge)
+	_construction_controller.blueprint_placed.connect(_bldg_renderer.refresh)
+
 	# Set up creature info panel (on the same CanvasLayer as the toolbar).
 	var panel_script = load("res://scripts/creature_info_panel.gd")
 	_panel = PanelContainer.new()
@@ -366,6 +376,8 @@ func _process(delta: float) -> void:
 	# as solid wood and ghost cubes disappear as voxels are placed.
 	if _bp_renderer:
 		_bp_renderer.refresh()
+	if _bldg_renderer:
+		_bldg_renderer.refresh()
 
 	# Update follow target each frame so the camera tracks creature movement.
 	if _camera_pivot and _camera_pivot.is_following():

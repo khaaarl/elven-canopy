@@ -191,6 +191,17 @@ pub struct SimState {
     #[serde(default)]
     pub placed_voxels: Vec<(VoxelCoord, VoxelType)>,
 
+    /// Per-face data for `BuildingInterior` voxels. Persisted as a flat list
+    /// of (coord, face_data) pairs since `VoxelCoord` can't be a JSON map key.
+    /// At runtime, `face_data` (transient BTreeMap) is the primary lookup.
+    #[serde(default)]
+    pub face_data_list: Vec<(VoxelCoord, FaceData)>,
+
+    /// Per-face data indexed by coordinate for O(1) lookup at runtime.
+    /// Rebuilt from `face_data_list` after deserialization.
+    #[serde(skip)]
+    pub face_data: BTreeMap<VoxelCoord, FaceData>,
+
     /// The player's tree ID.
     pub player_tree_id: TreeId,
 
@@ -360,7 +371,7 @@ impl SimState {
         };
 
         // Build nav graph from voxel world geometry.
-        let nav_graph = nav::build_nav_graph(&world);
+        let nav_graph = nav::build_nav_graph(&world, &BTreeMap::new());
 
         let mut trees = BTreeMap::new();
         trees.insert(player_tree_id, home_tree);
@@ -379,6 +390,8 @@ impl SimState {
             tasks: BTreeMap::new(),
             blueprints: BTreeMap::new(),
             placed_voxels: Vec::new(),
+            face_data_list: Vec::new(),
+            face_data: BTreeMap::new(),
             player_tree_id,
             player_id,
             world,
@@ -485,6 +498,15 @@ impl SimState {
             } => {
                 self.create_task(kind.clone(), *position, *required_species);
             }
+            SimAction::DesignateBuilding {
+                anchor,
+                width,
+                depth,
+                height,
+                priority,
+            } => {
+                self.designate_building(*anchor, *width, *depth, *height, *priority, events);
+            }
         }
     }
 
@@ -549,6 +571,93 @@ impl SimState {
             priority,
             state: BlueprintState::Designated,
             task_id: Some(task_id),
+            face_layout: None,
+        };
+        self.blueprints.insert(project_id, bp);
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::BlueprintDesignated { project_id },
+        });
+    }
+
+    /// Validate and create a blueprint for a building with paper-thin walls.
+    ///
+    /// Validation (silent no-op on failure):
+    /// - width and depth must be >= 3 (minimum building size)
+    /// - height must be >= 1
+    /// - All foundation voxels (anchor.y level) must be solid
+    /// - All interior voxels (above foundation) must be Air
+    /// - All interior voxels must be in-bounds
+    fn designate_building(
+        &mut self,
+        anchor: VoxelCoord,
+        width: i32,
+        depth: i32,
+        height: i32,
+        priority: Priority,
+        events: &mut Vec<SimEvent>,
+    ) {
+        if width < 3 || depth < 3 || height < 1 {
+            return;
+        }
+
+        // Validate foundation (all must be solid).
+        for x in anchor.x..anchor.x + width {
+            for z in anchor.z..anchor.z + depth {
+                let coord = VoxelCoord::new(x, anchor.y, z);
+                if !self.world.in_bounds(coord) || !self.world.get(coord).is_solid() {
+                    return;
+                }
+            }
+        }
+
+        // Validate interior (all must be Air and in-bounds).
+        for y in anchor.y + 1..anchor.y + 1 + height {
+            for x in anchor.x..anchor.x + width {
+                for z in anchor.z..anchor.z + depth {
+                    let coord = VoxelCoord::new(x, y, z);
+                    if !self.world.in_bounds(coord) || self.world.get(coord) != VoxelType::Air {
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Compute face layout.
+        let face_layout =
+            crate::building::compute_building_face_layout(anchor, width, depth, height);
+        let voxels: Vec<VoxelCoord> = face_layout.keys().copied().collect();
+
+        let project_id = ProjectId::new(&mut self.rng);
+
+        // Create a Build task at the nearest nav node.
+        let task_location = match self.nav_graph.find_nearest_node(voxels[0]) {
+            Some(n) => n,
+            None => return,
+        };
+        let task_id = TaskId::new(&mut self.rng);
+        let num_voxels = voxels.len() as u64;
+        let total_cost = self.config.build_work_ticks_per_voxel * num_voxels;
+        let build_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::Build { project_id },
+            state: task::TaskState::Available,
+            location: task_location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: total_cost as f32,
+            required_species: Some(Species::Elf),
+        };
+        self.tasks.insert(task_id, build_task);
+
+        let bp = Blueprint {
+            id: project_id,
+            build_type: BuildType::Building,
+            voxels,
+            priority,
+            state: BlueprintState::Designated,
+            task_id: Some(task_id),
+            face_layout: Some(face_layout.into_iter().collect()),
         };
         self.blueprints.insert(project_id, bp);
         events.push(SimEvent {
@@ -581,6 +690,7 @@ impl SimState {
 
         // Revert any already-materialized blueprint voxels to Air.
         let bp_voxels: Vec<VoxelCoord> = bp.voxels.clone();
+        let is_building = bp.build_type == BuildType::Building;
         let mut any_reverted = false;
         for &coord in &bp_voxels {
             if self.world.get(coord) != VoxelType::Air {
@@ -592,9 +702,18 @@ impl SimState {
         self.placed_voxels
             .retain(|(coord, _)| !bp_voxels.contains(coord));
 
+        // For buildings, also remove face_data entries.
+        if is_building {
+            for &coord in &bp_voxels {
+                self.face_data.remove(&coord);
+            }
+            self.face_data_list
+                .retain(|(coord, _)| !bp_voxels.contains(coord));
+        }
+
         // Rebuild nav graph if geometry changed.
         if any_reverted {
-            self.nav_graph = nav::build_nav_graph(&self.world);
+            self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
             self.resnap_creature_nodes();
         }
 
@@ -1266,14 +1385,30 @@ impl SimState {
         };
         let build_type = bp.build_type;
         let voxel_type = build_type.to_voxel_type();
+        let is_building = build_type == BuildType::Building;
 
-        // Find unplaced voxels that are adjacent to existing solid geometry.
+        // Find unplaced voxels that are adjacent to existing geometry.
+        // For buildings, adjacency accepts BuildingInterior face neighbors in
+        // addition to solid neighbors (building interior voxels grow from the
+        // foundation and from each other).
         let eligible: Vec<VoxelCoord> = bp
             .voxels
             .iter()
             .copied()
             .filter(|&coord| {
-                self.world.get(coord) == VoxelType::Air && self.world.has_solid_face_neighbor(coord)
+                if self.world.get(coord) != VoxelType::Air {
+                    return false;
+                }
+                if self.world.has_solid_face_neighbor(coord) {
+                    return true;
+                }
+                // For buildings, also accept BuildingInterior face neighbors.
+                if is_building {
+                    return self
+                        .world
+                        .has_face_neighbor_of_type(coord, VoxelType::BuildingInterior);
+                }
+                false
             })
             .collect();
 
@@ -1304,12 +1439,29 @@ impl SimState {
         self.world.set(chosen, voxel_type);
         self.placed_voxels.push((chosen, voxel_type));
 
-        // Incrementally update nav graph (touches only ~7 affected positions
-        // instead of scanning the entire world) and resnap displaced creatures.
-        let removed = self
-            .nav_graph
-            .update_after_voxel_solidified(&self.world, chosen);
-        self.resnap_removed_nodes(&removed);
+        // For buildings, copy face data from the blueprint into sim state.
+        if is_building {
+            if let Some(bp) = self.blueprints.get(&project_id)
+                && let Some(layout) = bp.face_layout_map()
+                && let Some(fd) = layout.get(&chosen)
+            {
+                self.face_data.insert(chosen, fd.clone());
+                self.face_data_list.push((chosen, fd.clone()));
+            }
+            let removed = self.nav_graph.update_after_building_voxel_set(
+                &self.world,
+                &self.face_data,
+                chosen,
+            );
+            self.resnap_removed_nodes(&removed);
+        } else {
+            // Incrementally update nav graph (touches only ~7 affected positions
+            // instead of scanning the entire world) and resnap displaced creatures.
+            let removed =
+                self.nav_graph
+                    .update_after_voxel_solidified(&self.world, &self.face_data, chosen);
+            self.resnap_removed_nodes(&removed);
+        }
     }
 
     /// Mark a blueprint as Complete and complete its associated task.
@@ -1425,7 +1577,8 @@ impl SimState {
     /// `nav_graph` (from rebuilt world geometry), `species_table` (from config).
     pub fn rebuild_transient_state(&mut self) {
         self.world = Self::rebuild_world(&self.config, &self.trees, &self.placed_voxels);
-        self.nav_graph = nav::build_nav_graph(&self.world);
+        self.face_data = self.face_data_list.iter().cloned().collect();
+        self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
         self.species_table = self.config.species.clone();
     }
 
@@ -3758,5 +3911,326 @@ mod tests {
                 "Restored world should contain placed voxel at {coord}"
             );
         }
+    }
+
+    // --- DesignateBuilding tests ---
+
+    /// Find a ground-level position where a 3x3 building can be placed.
+    /// Needs solid foundation at y=0 and air above at y=1.
+    fn find_building_site(sim: &SimState) -> VoxelCoord {
+        let (sx, _, sz) = sim.config.world_size;
+        for x in 1..(sx as i32 - 4) {
+            for z in 1..(sz as i32 - 4) {
+                let mut all_solid = true;
+                let mut all_air = true;
+                for dx in 0..3 {
+                    for dz in 0..3 {
+                        let foundation = VoxelCoord::new(x + dx, 0, z + dz);
+                        if !sim.world.get(foundation).is_solid() {
+                            all_solid = false;
+                        }
+                        let above = VoxelCoord::new(x + dx, 1, z + dz);
+                        if sim.world.get(above) != VoxelType::Air {
+                            all_air = false;
+                        }
+                    }
+                }
+                if all_solid && all_air {
+                    return VoxelCoord::new(x, 0, z);
+                }
+            }
+        }
+        panic!("No valid 3x3 building site found");
+    }
+
+    #[test]
+    fn designate_building_creates_blueprint() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuilding {
+                anchor,
+                width: 3,
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(sim.blueprints.len(), 1);
+        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(bp.build_type, BuildType::Building);
+        assert_eq!(bp.voxels.len(), 9); // 3x3x1
+        assert!(bp.face_layout.is_some());
+        assert_eq!(bp.face_layout.as_ref().unwrap().len(), 9);
+    }
+
+    #[test]
+    fn designate_building_creates_task() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuilding {
+                anchor,
+                width: 3,
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(sim.tasks.len(), 1);
+        let task = sim.tasks.values().next().unwrap();
+        assert_eq!(task.state, TaskState::Available);
+        match &task.kind {
+            TaskKind::Build { project_id } => {
+                assert!(sim.blueprints.contains_key(project_id));
+            }
+            _ => panic!("Expected Build task"),
+        }
+    }
+
+    #[test]
+    fn designate_building_rejects_small_width() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuilding {
+                anchor,
+                width: 2, // too small
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert!(sim.blueprints.is_empty());
+    }
+
+    #[test]
+    fn designate_building_rejects_non_solid_foundation() {
+        let mut sim = test_sim(42);
+        // Place anchor at a position where foundation is Air.
+        // y=10 should have Air below.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuilding {
+                anchor: VoxelCoord::new(1, 10, 1),
+                width: 3,
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert!(sim.blueprints.is_empty());
+    }
+
+    #[test]
+    fn building_materialization_sets_building_interior() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuilding {
+                anchor,
+                width: 3,
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let project_id = *sim.blueprints.keys().next().unwrap();
+
+        // Manually materialize one voxel.
+        sim.materialize_next_build_voxel(project_id);
+
+        // At least one voxel should now be BuildingInterior.
+        let has_building = sim
+            .placed_voxels
+            .iter()
+            .any(|(_, vt)| *vt == VoxelType::BuildingInterior);
+        assert!(has_building, "Should have placed a BuildingInterior voxel");
+
+        // The placed voxel should have face_data.
+        let placed_coord = sim.placed_voxels[0].0;
+        assert!(
+            sim.face_data.contains_key(&placed_coord),
+            "Placed building voxel should have face_data",
+        );
+    }
+
+    #[test]
+    fn building_materialization_creates_nav_node() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuilding {
+                anchor,
+                width: 3,
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let project_id = *sim.blueprints.keys().next().unwrap();
+
+        sim.materialize_next_build_voxel(project_id);
+
+        let placed_coord = sim.placed_voxels[0].0;
+        assert!(
+            sim.nav_graph.has_node_at(placed_coord),
+            "BuildingInterior voxel should be a nav node",
+        );
+    }
+
+    #[test]
+    fn cancel_building_removes_face_data() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuilding {
+                anchor,
+                width: 3,
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let project_id = *sim.blueprints.keys().next().unwrap();
+
+        // Materialize some voxels.
+        sim.materialize_next_build_voxel(project_id);
+        sim.materialize_next_build_voxel(project_id);
+        assert!(!sim.face_data.is_empty(), "Should have face_data");
+        assert!(!sim.placed_voxels.is_empty(), "Should have placed voxels");
+
+        // Cancel the build.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::CancelBuild { project_id },
+        };
+        sim.step(&[cmd2], 2);
+
+        assert!(sim.face_data.is_empty(), "face_data should be cleared");
+        assert!(
+            sim.placed_voxels.is_empty(),
+            "placed_voxels should be cleared",
+        );
+        assert!(sim.blueprints.is_empty(), "blueprint should be removed");
+
+        // Verify voxels reverted to Air.
+        for x in anchor.x..anchor.x + 3 {
+            for z in anchor.z..anchor.z + 3 {
+                assert_eq!(
+                    sim.world.get(VoxelCoord::new(x, anchor.y + 1, z)),
+                    VoxelType::Air,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn save_load_preserves_building() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuilding {
+                anchor,
+                width: 3,
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let project_id = *sim.blueprints.keys().next().unwrap();
+
+        // Materialize some voxels.
+        sim.materialize_next_build_voxel(project_id);
+        sim.materialize_next_build_voxel(project_id);
+        sim.materialize_next_build_voxel(project_id);
+
+        let original_face_data_len = sim.face_data.len();
+        let original_placed_len = sim.placed_voxels.len();
+        assert!(original_face_data_len > 0);
+        assert!(original_placed_len > 0);
+
+        // Save and reload.
+        let json = sim.to_json().unwrap();
+        let restored = SimState::from_json(&json).unwrap();
+
+        // Check face_data preserved.
+        assert_eq!(restored.face_data.len(), original_face_data_len);
+        for (coord, fd) in &sim.face_data {
+            let restored_fd = restored.face_data.get(coord).unwrap();
+            assert_eq!(fd, restored_fd);
+        }
+
+        // Check placed voxels preserved in rebuilt world.
+        for &(coord, vt) in &sim.placed_voxels {
+            assert_eq!(restored.world.get(coord), vt);
+        }
+
+        // Check nav graph has nodes at building voxels.
+        for &(coord, vt) in &sim.placed_voxels {
+            if vt == VoxelType::BuildingInterior {
+                assert!(
+                    restored.nav_graph.has_node_at(coord),
+                    "Restored nav graph should have node at {coord}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn designate_building_rejects_non_air_interior() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+
+        // Place a solid voxel in the interior area.
+        let interior = VoxelCoord::new(anchor.x + 1, anchor.y + 1, anchor.z + 1);
+        sim.world.set(interior, VoxelType::Trunk);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuilding {
+                anchor,
+                width: 3,
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert!(sim.blueprints.is_empty());
     }
 }

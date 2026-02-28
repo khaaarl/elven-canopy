@@ -1,21 +1,30 @@
-## Construction mode controller with adjustable-size platform placement.
+## Construction mode controller with adjustable-size platform and building placement.
 ##
 ## Manages the construction mode lifecycle: toggling on/off, showing a
 ## right-side panel with build options, enabling voxel-snap on the orbital
-## camera, and handling multi-voxel rectangular platform blueprint placement.
+## camera, and handling multi-voxel rectangular blueprint placement for
+## platforms (solid voxels) and buildings (paper-thin walls with per-face
+## restrictions).
 ##
 ## State machine:
 ##   _active=false                  → INACTIVE (panel hidden, no ghost)
 ##   _active=true,  _placing=false  → ACTIVE   (panel shown, no ghost)
 ##   _active=true,  _placing=true   → PLACING  (panel shown, ghost visible)
 ##
+## Two build modes:
+##   "platform" — flat rectangular platform (Width x Depth, 1 voxel high).
+##     Validation: all air + at least one face-adjacent solid.
+##   "building" — enclosed room (Width x Depth x Height, min 3x3x1).
+##     Foundation row is solid, interior has BuildingInterior voxels with
+##     per-face restrictions (windows, door, ceiling, floor).
+##     Validation: solid foundation + air interior.
+##
 ## In PLACING mode, a translucent ghost rectangle follows the camera's focus
 ## voxel (centered). Width/Depth dimension controls (with +/- buttons) let
-## the player size the rectangle from 1x1 up to 10x10. The ghost is blue
-## when ALL voxels in the rectangle are valid (air + adjacent to solid) and
-## red when ANY voxel is invalid. The Construct button (or Enter/left-click)
-## confirms placement at valid positions; ESC/right-click cancels back to
-## ACTIVE mode and resets dimensions to 1x1.
+## the player size the rectangle. For buildings, a Height control is also
+## shown. The ghost is blue when valid and red when invalid. The Construct
+## button (or Enter/left-click) confirms placement; ESC/right-click cancels
+## back to ACTIVE mode and resets dimensions.
 ##
 ## Input handling: ESC exits the current sub-mode first (PLACING → ACTIVE),
 ## then exits construction mode entirely (ACTIVE → INACTIVE). This sits
@@ -26,8 +35,9 @@
 ## orbital_camera.gd which provides set_voxel_snap() / get_focus_voxel(),
 ## main.gd which wires this controller into the scene,
 ## blueprint_renderer.gd for rendering designated blueprints,
-## sim_bridge.rs for designate_build_rect() which handles the multi-voxel
-## command, placement_controller.gd for the ESC precedence pattern.
+## building_renderer.gd for rendering building faces (walls/windows/doors),
+## sim_bridge.rs for designate_build_rect() and designate_building(),
+## placement_controller.gd for the ESC precedence pattern.
 
 extends Node
 
@@ -47,14 +57,21 @@ var _ghost_material: StandardMaterial3D
 var _focus_voxel: Vector3i = Vector3i.ZERO
 var _focus_valid: bool = false
 
-## Platform dimensions (X and Z axes), range [1, 10].
+## Current build mode: "platform" or "building".
+var _build_mode: String = "platform"
+
+## Platform/building dimensions. Width and Depth range depends on mode:
+## platform [1, 10], building [3, 10]. Height is building-only [1, 5].
 var _width: int = 1
 var _depth: int = 1
+var _height: int = 1
 
 ## UI references for dimension controls (created in _build_panel).
 var _placing_controls: VBoxContainer
 var _width_label: Label
 var _depth_label: Label
+var _height_row: HBoxContainer
+var _height_label: Label
 var _construct_btn: Button
 
 
@@ -128,8 +145,14 @@ func _build_panel() -> void:
 	# Platform build button.
 	var platform_btn := Button.new()
 	platform_btn.text = "Platform [P]"
-	platform_btn.pressed.connect(_enter_placing)
+	platform_btn.pressed.connect(_enter_placing_platform)
 	vbox.add_child(platform_btn)
+
+	# Building build button.
+	var building_btn := Button.new()
+	building_btn.text = "Building [G]"
+	building_btn.pressed.connect(_enter_placing_building)
+	vbox.add_child(building_btn)
 
 	# Placing controls (dimension spinners + Construct button).
 	# Hidden by default, shown when entering PLACING mode.
@@ -194,6 +217,35 @@ func _build_panel() -> void:
 	depth_plus.pressed.connect(_depth_increase)
 	depth_row.add_child(depth_plus)
 
+	# Height row (building mode only): Label "Height:" + [-] + value label + [+]
+	_height_row = HBoxContainer.new()
+	_height_row.add_theme_constant_override("separation", 4)
+	_height_row.visible = false
+	_placing_controls.add_child(_height_row)
+
+	var height_text := Label.new()
+	height_text.text = "Height:"
+	height_text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_height_row.add_child(height_text)
+
+	var height_minus := Button.new()
+	height_minus.text = "-"
+	height_minus.custom_minimum_size = Vector2(30, 0)
+	height_minus.pressed.connect(_height_decrease)
+	_height_row.add_child(height_minus)
+
+	_height_label = Label.new()
+	_height_label.text = "1"
+	_height_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_height_label.custom_minimum_size = Vector2(24, 0)
+	_height_row.add_child(_height_label)
+
+	var height_plus := Button.new()
+	height_plus.text = "+"
+	height_plus.custom_minimum_size = Vector2(30, 0)
+	height_plus.pressed.connect(_height_increase)
+	_height_row.add_child(height_plus)
+
 	# Construct button.
 	_construct_btn = Button.new()
 	_construct_btn.text = "Construct"
@@ -247,10 +299,28 @@ func _deactivate() -> void:
 	construction_mode_exited.emit()
 
 
-func _enter_placing() -> void:
+func _enter_placing_platform() -> void:
+	_enter_placing("platform")
+
+
+func _enter_placing_building() -> void:
+	_enter_placing("building")
+
+
+func _enter_placing(mode: String) -> void:
+	_build_mode = mode
 	_placing = true
 	_ghost.visible = true
 	_placing_controls.visible = true
+	if _build_mode == "building":
+		_height_row.visible = true
+		_set_width(3)
+		_set_depth(3)
+		_set_height(1)
+	else:
+		_height_row.visible = false
+		_set_width(1)
+		_set_depth(1)
 	_update_ghost_size()
 
 
@@ -258,10 +328,13 @@ func _exit_placing() -> void:
 	_placing = false
 	_ghost.visible = false
 	_placing_controls.visible = false
+	_height_row.visible = false
 	_width = 1
 	_depth = 1
+	_height = 1
 	_width_label.text = "1"
 	_depth_label.text = "1"
+	_height_label.text = "1"
 
 
 func _width_decrease() -> void:
@@ -281,20 +354,40 @@ func _depth_increase() -> void:
 
 
 func _set_width(value: int) -> void:
-	_width = clampi(value, 1, 10)
+	var min_val := 3 if _build_mode == "building" else 1
+	_width = clampi(value, min_val, 10)
 	_width_label.text = str(_width)
 	_update_ghost_size()
 
 
 func _set_depth(value: int) -> void:
-	_depth = clampi(value, 1, 10)
+	var min_val := 3 if _build_mode == "building" else 1
+	_depth = clampi(value, min_val, 10)
 	_depth_label.text = str(_depth)
+	_update_ghost_size()
+
+
+func _height_decrease() -> void:
+	_set_height(_height - 1)
+
+
+func _height_increase() -> void:
+	_set_height(_height + 1)
+
+
+func _set_height(value: int) -> void:
+	_height = clampi(value, 1, 5)
+	_height_label.text = str(_height)
 	_update_ghost_size()
 
 
 func _update_ghost_size() -> void:
 	if _ghost and _ghost.mesh:
-		_ghost.mesh.size = Vector3(_width, 1.0, _depth)
+		if _build_mode == "building":
+			# Building ghost: width x (height + 1 for foundation) x depth.
+			_ghost.mesh.size = Vector3(_width, _height + 1, _depth)
+		else:
+			_ghost.mesh.size = Vector3(_width, 1.0, _depth)
 
 
 ## Compute the min-corner of the rectangle from the focus voxel (center).
@@ -315,27 +408,43 @@ func _process(_delta: float) -> void:
 
 	# Compute min-corner and position the ghost mesh centered on the rect.
 	var min_corner := _get_min_corner()
-	_ghost.global_position = Vector3(
-		min_corner.x + _width / 2.0, _focus_voxel.y + 0.5, min_corner.z + _depth / 2.0
-	)
+	if _build_mode == "building":
+		# Building ghost includes foundation row below + height rooms above.
+		var ghost_h := _height + 1
+		_ghost.global_position = Vector3(
+			min_corner.x + _width / 2.0,
+			_focus_voxel.y + ghost_h / 2.0,
+			min_corner.z + _depth / 2.0,
+		)
+	else:
+		_ghost.global_position = Vector3(
+			min_corner.x + _width / 2.0,
+			_focus_voxel.y + 0.5,
+			min_corner.z + _depth / 2.0,
+		)
 
-	# Validate the rectangle: ALL voxels must be in-bounds + Air, and
-	# AT LEAST ONE voxel must have a face-adjacent solid (tree contact).
-	var all_air := true
-	var any_adjacent := false
-	for dx in range(_width):
-		for dz in range(_depth):
-			var vx: int = min_corner.x + dx
-			var vz: int = min_corner.z + dz
-			if not _bridge.validate_build_air(vx, min_corner.y, vz):
-				all_air = false
+	if _build_mode == "building":
+		_focus_valid = _bridge.validate_building_position(
+			min_corner.x, _focus_voxel.y, min_corner.z, _width, _depth, _height
+		)
+	else:
+		# Platform validation: ALL voxels must be in-bounds + Air, and
+		# AT LEAST ONE voxel must have a face-adjacent solid (tree contact).
+		var all_air := true
+		var any_adjacent := false
+		for dx in range(_width):
+			for dz in range(_depth):
+				var vx: int = min_corner.x + dx
+				var vz: int = min_corner.z + dz
+				if not _bridge.validate_build_air(vx, min_corner.y, vz):
+					all_air = false
+					break
+				if not any_adjacent and _bridge.has_solid_neighbor(vx, min_corner.y, vz):
+					any_adjacent = true
+			if not all_air:
 				break
-			if not any_adjacent and _bridge.has_solid_neighbor(vx, min_corner.y, vz):
-				any_adjacent = true
-		if not all_air:
-			break
+		_focus_valid = all_air and any_adjacent
 
-	_focus_valid = all_air and any_adjacent
 	_construct_btn.disabled = not _focus_valid
 	if _focus_valid:
 		_ghost_material.albedo_color = Color(0.3, 0.5, 1.0, 0.4)
@@ -352,9 +461,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		if not key.pressed:
 			return
 
-		# P shortcut to enter placing mode (only when active but not placing).
+		# P shortcut to enter platform placing mode (only when active but not placing).
 		if key.keycode == KEY_P and not _placing:
-			_enter_placing()
+			_enter_placing_platform()
+			get_viewport().set_input_as_handled()
+			return
+
+		# G shortcut to enter building placing mode (only when active but not placing).
+		if key.keycode == KEY_G and not _placing:
+			_enter_placing_building()
 			get_viewport().set_input_as_handled()
 			return
 
@@ -387,5 +502,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _confirm_placement() -> void:
 	var min_corner := _get_min_corner()
-	_bridge.designate_build_rect(min_corner.x, min_corner.y, min_corner.z, _width, _depth)
+	if _build_mode == "building":
+		_bridge.designate_building(
+			min_corner.x, _focus_voxel.y, min_corner.z, _width, _depth, _height
+		)
+	else:
+		_bridge.designate_build_rect(min_corner.x, min_corner.y, min_corner.z, _width, _depth)
 	blueprint_placed.emit()

@@ -13,7 +13,9 @@
 //
 // A `SimCommand` carries a `player_id`, a `tick` (when to apply), and a
 // `SimAction` enum. Current actions:
-// - `DesignateBuild` — validate and create a blueprint (see `blueprint.rs`).
+// - `DesignateBuild` — validate and create a platform blueprint (see `blueprint.rs`).
+// - `DesignateBuilding` — validate and create a building blueprint with per-face
+//   layout (see `building.rs`).
 // - `CancelBuild` — remove a blueprint by ProjectId.
 // - `SetTaskPriority` — build system (placeholder, not yet wired).
 // - `SetSimSpeed` — pause / play / fast-forward.
@@ -75,6 +77,16 @@ pub enum SimAction {
         kind: TaskKind,
         position: VoxelCoord,
         required_species: Option<Species>,
+    },
+    /// Designate a building with paper-thin walls. `anchor` is the minimum
+    /// corner of the footprint at foundation level. Interior voxels are placed
+    /// above it. Width/depth must be >= 3.
+    DesignateBuilding {
+        anchor: VoxelCoord,
+        width: i32,
+        depth: i32,
+        height: i32,
+        priority: Priority,
     },
 }
 

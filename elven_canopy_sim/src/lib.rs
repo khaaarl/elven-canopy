@@ -30,6 +30,7 @@
 // no OS entropy. Use `BTreeMap` for ordered collections.
 
 pub mod blueprint;
+pub mod building;
 pub mod command;
 pub mod config;
 pub mod event;

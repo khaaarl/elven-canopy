@@ -252,6 +252,9 @@ pub enum BuildType {
     Stairs,
     Wall,
     Enclosure,
+    /// A building with paper-thin walls. Produces `BuildingInterior` voxels
+    /// with per-face restrictions stored in `SimState.face_data`.
+    Building,
 }
 
 impl BuildType {
@@ -262,7 +265,141 @@ impl BuildType {
             BuildType::Bridge => VoxelType::Bridge,
             BuildType::Stairs => VoxelType::GrownStairs,
             BuildType::Wall | BuildType::Enclosure => VoxelType::GrownWall,
+            BuildType::Building => VoxelType::BuildingInterior,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Face types for building construction
+// ---------------------------------------------------------------------------
+
+/// A cardinal direction on a voxel face. Used to describe per-face properties
+/// of `BuildingInterior` voxels (walls, windows, doors, etc.).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum FaceDirection {
+    PosX,
+    NegX,
+    PosY,
+    NegY,
+    PosZ,
+    NegZ,
+}
+
+impl FaceDirection {
+    /// All six face directions in a fixed order.
+    pub const ALL: [FaceDirection; 6] = [
+        FaceDirection::PosX,
+        FaceDirection::NegX,
+        FaceDirection::PosY,
+        FaceDirection::NegY,
+        FaceDirection::PosZ,
+        FaceDirection::NegZ,
+    ];
+
+    /// Return the opposite face direction.
+    pub fn opposite(self) -> FaceDirection {
+        match self {
+            FaceDirection::PosX => FaceDirection::NegX,
+            FaceDirection::NegX => FaceDirection::PosX,
+            FaceDirection::PosY => FaceDirection::NegY,
+            FaceDirection::NegY => FaceDirection::PosY,
+            FaceDirection::PosZ => FaceDirection::NegZ,
+            FaceDirection::NegZ => FaceDirection::PosZ,
+        }
+    }
+
+    /// Convert a face direction to a unit offset vector.
+    pub fn to_offset(self) -> (i32, i32, i32) {
+        match self {
+            FaceDirection::PosX => (1, 0, 0),
+            FaceDirection::NegX => (-1, 0, 0),
+            FaceDirection::PosY => (0, 1, 0),
+            FaceDirection::NegY => (0, -1, 0),
+            FaceDirection::PosZ => (0, 0, 1),
+            FaceDirection::NegZ => (0, 0, -1),
+        }
+    }
+
+    /// Convert a unit offset to a face direction, if the offset is cardinal.
+    pub fn from_offset(dx: i32, dy: i32, dz: i32) -> Option<FaceDirection> {
+        match (dx, dy, dz) {
+            (1, 0, 0) => Some(FaceDirection::PosX),
+            (-1, 0, 0) => Some(FaceDirection::NegX),
+            (0, 1, 0) => Some(FaceDirection::PosY),
+            (0, -1, 0) => Some(FaceDirection::NegY),
+            (0, 0, 1) => Some(FaceDirection::PosZ),
+            (0, 0, -1) => Some(FaceDirection::NegZ),
+            _ => None,
+        }
+    }
+
+    /// Return the index of this direction in `FaceDirection::ALL`.
+    pub fn index(self) -> usize {
+        match self {
+            FaceDirection::PosX => 0,
+            FaceDirection::NegX => 1,
+            FaceDirection::PosY => 2,
+            FaceDirection::NegY => 3,
+            FaceDirection::PosZ => 4,
+            FaceDirection::NegZ => 5,
+        }
+    }
+}
+
+/// The type of a voxel face. Determines visibility and movement restrictions
+/// for `BuildingInterior` voxels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum FaceType {
+    /// No barrier — movement passes freely.
+    Open,
+    /// Opaque barrier — blocks movement and sight.
+    Wall,
+    /// Transparent barrier — blocks movement, allows sight.
+    Window,
+    /// Passable barrier — allows movement, visually distinct.
+    Door,
+    /// Horizontal barrier above — blocks upward movement.
+    Ceiling,
+    /// Horizontal barrier below — blocks downward movement, walkable.
+    Floor,
+}
+
+impl FaceType {
+    /// Returns true if this face type blocks creature movement through it.
+    pub fn blocks_movement(self) -> bool {
+        match self {
+            FaceType::Open | FaceType::Door => false,
+            FaceType::Wall | FaceType::Window | FaceType::Ceiling | FaceType::Floor => true,
+        }
+    }
+}
+
+/// Per-face data for a `BuildingInterior` voxel. Stores one `FaceType` per
+/// cardinal direction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FaceData {
+    /// Face types indexed by `FaceDirection::index()`.
+    pub faces: [FaceType; 6],
+}
+
+impl Default for FaceData {
+    fn default() -> Self {
+        Self {
+            faces: [FaceType::Open; 6],
+        }
+    }
+}
+
+impl FaceData {
+    /// Get the face type for a given direction.
+    pub fn get(&self, dir: FaceDirection) -> FaceType {
+        self.faces[dir.index()]
+    }
+
+    /// Set the face type for a given direction.
+    pub fn set(&mut self, dir: FaceDirection, face_type: FaceType) {
+        self.faces[dir.index()] = face_type;
     }
 }
 
@@ -285,12 +422,17 @@ pub enum VoxelType {
     Leaf,
     Fruit,
     Root,
+    /// A passable voxel inside a building. Movement restrictions come from
+    /// per-face `FaceData` stored separately in `SimState.face_data`, not from
+    /// the voxel type itself. This means `is_solid()` returns false.
+    BuildingInterior,
 }
 
 impl VoxelType {
-    /// Returns `true` for any voxel type that isn't `Air`.
+    /// Returns `true` for any voxel type that blocks occupancy (not `Air` or
+    /// `BuildingInterior`).
     pub fn is_solid(self) -> bool {
-        self != VoxelType::Air
+        !matches!(self, VoxelType::Air | VoxelType::BuildingInterior)
     }
 }
 
@@ -368,6 +510,60 @@ mod tests {
         assert_eq!(BuildType::Stairs.to_voxel_type(), VoxelType::GrownStairs);
         assert_eq!(BuildType::Wall.to_voxel_type(), VoxelType::GrownWall);
         assert_eq!(BuildType::Enclosure.to_voxel_type(), VoxelType::GrownWall);
+        assert_eq!(
+            BuildType::Building.to_voxel_type(),
+            VoxelType::BuildingInterior
+        );
+    }
+
+    #[test]
+    fn building_interior_not_solid() {
+        assert!(!VoxelType::BuildingInterior.is_solid());
+        assert!(!VoxelType::Air.is_solid());
+        assert!(VoxelType::Trunk.is_solid());
+        assert!(VoxelType::GrownPlatform.is_solid());
+    }
+
+    #[test]
+    fn face_type_blocks_movement() {
+        assert!(!FaceType::Open.blocks_movement());
+        assert!(!FaceType::Door.blocks_movement());
+        assert!(FaceType::Wall.blocks_movement());
+        assert!(FaceType::Window.blocks_movement());
+        assert!(FaceType::Ceiling.blocks_movement());
+        assert!(FaceType::Floor.blocks_movement());
+    }
+
+    #[test]
+    fn face_direction_opposite() {
+        assert_eq!(FaceDirection::PosX.opposite(), FaceDirection::NegX);
+        assert_eq!(FaceDirection::NegX.opposite(), FaceDirection::PosX);
+        assert_eq!(FaceDirection::PosY.opposite(), FaceDirection::NegY);
+        assert_eq!(FaceDirection::NegY.opposite(), FaceDirection::PosY);
+        assert_eq!(FaceDirection::PosZ.opposite(), FaceDirection::NegZ);
+        assert_eq!(FaceDirection::NegZ.opposite(), FaceDirection::PosZ);
+        // Double opposite is identity.
+        for dir in FaceDirection::ALL {
+            assert_eq!(dir.opposite().opposite(), dir);
+        }
+    }
+
+    #[test]
+    fn face_data_default_all_open() {
+        let fd = FaceData::default();
+        for dir in FaceDirection::ALL {
+            assert_eq!(fd.get(dir), FaceType::Open);
+        }
+    }
+
+    #[test]
+    fn face_data_get_set() {
+        let mut fd = FaceData::default();
+        fd.set(FaceDirection::PosX, FaceType::Wall);
+        fd.set(FaceDirection::NegY, FaceType::Floor);
+        assert_eq!(fd.get(FaceDirection::PosX), FaceType::Wall);
+        assert_eq!(fd.get(FaceDirection::NegY), FaceType::Floor);
+        assert_eq!(fd.get(FaceDirection::PosZ), FaceType::Open);
     }
 
     #[test]

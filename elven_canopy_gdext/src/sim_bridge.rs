@@ -781,6 +781,105 @@ impl SimBridge {
         sim.step(&[cmd], next_tick);
     }
 
+    /// Designate a building at the given anchor position.
+    ///
+    /// `x, y, z` is the anchor (min corner at foundation level). `width` and
+    /// `depth` are the building footprint, `height` is the number of floors.
+    /// Same command pattern as `designate_build()`.
+    #[func]
+    fn designate_building(&mut self, x: i32, y: i32, z: i32, width: i32, depth: i32, height: i32) {
+        let Some(sim) = &mut self.sim else { return };
+        let player_id = sim.player_id;
+        let next_tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_id,
+            tick: next_tick,
+            action: SimAction::DesignateBuilding {
+                anchor: VoxelCoord::new(x, y, z),
+                width,
+                depth,
+                height,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], next_tick);
+    }
+
+    /// Validate whether a building can be placed at the given anchor.
+    ///
+    /// Checks that all foundation voxels (at anchor.y) are solid and all
+    /// interior voxels (above foundation) are Air and in-bounds.
+    #[func]
+    fn validate_building_position(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        width: i32,
+        depth: i32,
+        height: i32,
+    ) -> bool {
+        let Some(sim) = &self.sim else { return false };
+        if width < 3 || depth < 3 || height < 1 {
+            return false;
+        }
+        // Check foundation.
+        for dx in 0..width {
+            for dz in 0..depth {
+                let coord = VoxelCoord::new(x + dx, y, z + dz);
+                if !sim.world.in_bounds(coord) || !sim.world.get(coord).is_solid() {
+                    return false;
+                }
+            }
+        }
+        // Check interior.
+        for dy in 1..=height {
+            for dx in 0..width {
+                for dz in 0..depth {
+                    let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
+                    if !sim.world.in_bounds(coord) || sim.world.get(coord) != VoxelType::Air {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Return building face data as a flat PackedInt32Array of quintuples:
+    /// (x, y, z, face_direction, face_type) for every non-Open face.
+    ///
+    /// face_direction: 0=PosX, 1=NegX, 2=PosY, 3=NegY, 4=PosZ, 5=NegZ
+    /// face_type: 0=Open, 1=Wall, 2=Window, 3=Door, 4=Ceiling, 5=Floor
+    #[func]
+    fn get_building_face_data(&self) -> PackedInt32Array {
+        let Some(sim) = &self.sim else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for (coord, fd) in &sim.face_data {
+            for (dir_idx, &face) in fd.faces.iter().enumerate() {
+                if face == elven_canopy_sim::types::FaceType::Open {
+                    continue;
+                }
+                arr.push(coord.x);
+                arr.push(coord.y);
+                arr.push(coord.z);
+                arr.push(dir_idx as i32);
+                let face_int = match face {
+                    elven_canopy_sim::types::FaceType::Open => 0,
+                    elven_canopy_sim::types::FaceType::Wall => 1,
+                    elven_canopy_sim::types::FaceType::Window => 2,
+                    elven_canopy_sim::types::FaceType::Door => 3,
+                    elven_canopy_sim::types::FaceType::Ceiling => 4,
+                    elven_canopy_sim::types::FaceType::Floor => 5,
+                };
+                arr.push(face_int);
+            }
+        }
+        arr
+    }
+
     /// Return unplaced voxels from `Designated` blueprints as a flat
     /// PackedInt32Array of (x,y,z) triples.
     ///
@@ -815,13 +914,19 @@ impl SimBridge {
     /// These are voxels that have been placed by elf construction work — they
     /// exist as solid geometry in the world but are not part of the original
     /// tree. Used by the blueprint renderer to show built voxels as wood.
+    ///
+    /// Excludes `BuildingInterior` voxels — those are rendered by the building
+    /// renderer as oriented face quads, not solid cubes.
     #[func]
     fn get_platform_voxels(&self) -> PackedInt32Array {
         let Some(sim) = &self.sim else {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
-        for &(coord, _voxel_type) in &sim.placed_voxels {
+        for &(coord, voxel_type) in &sim.placed_voxels {
+            if voxel_type == VoxelType::BuildingInterior {
+                continue;
+            }
             arr.push(coord.x);
             arr.push(coord.y);
             arr.push(coord.z);

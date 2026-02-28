@@ -12,9 +12,13 @@
 // world — no speed config required.
 //
 // **Voxel-derived construction:** Every air voxel that is face-adjacent to at
-// least one solid voxel becomes a nav node. Edges connect 26-neighbors among
-// nav nodes. This means the nav graph reflects actual world geometry —
-// construction changes the navigable topology via incremental updates.
+// least one solid voxel becomes a nav node. `BuildingInterior` voxels are
+// always nav nodes (face data provides surfaces). Air voxels adjacent to a
+// `BuildingInterior` face that blocks movement also become nav nodes. Edges
+// connect 26-neighbors among nav nodes, subject to face-blocking checks
+// (`is_edge_blocked_by_faces()`). This means the nav graph reflects actual
+// world geometry — construction changes the navigable topology via
+// incremental updates.
 //
 // Each nav node carries a `surface_type` derived from the solid voxel it
 // touches (see `derive_surface_type()`). Edge types are derived from the
@@ -48,9 +52,12 @@
 // sequential integers assigned in that order. Incremental updates are also
 // deterministic — they process affected positions in a fixed order.
 
-use crate::types::{NavEdgeId, NavNodeId, VoxelCoord, VoxelType};
+use crate::types::{
+    FaceData, FaceDirection, FaceType, NavEdgeId, NavNodeId, VoxelCoord, VoxelType,
+};
 use crate::world::VoxelWorld;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// A node in the navigation graph — a position a creature can occupy.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -275,6 +282,7 @@ impl NavGraph {
     pub fn update_after_voxel_solidified(
         &mut self,
         world: &VoxelWorld,
+        face_data: &BTreeMap<VoxelCoord, FaceData>,
         coord: VoxelCoord,
     ) -> Vec<NavNodeId> {
         let mut removed_ids = Vec::new();
@@ -291,13 +299,7 @@ impl NavGraph {
 
         // Step 2: For each affected position, add/remove/update nav node.
         for &pos in &affected {
-            let should_be_node = pos.y >= 1
-                && world.get(pos) == VoxelType::Air
-                && FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
-                    world
-                        .get(VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz))
-                        .is_solid()
-                });
+            let should_be_node = should_be_nav_node(world, face_data, pos);
             let flat = match self.flat_index(pos) {
                 Some(f) => f,
                 None => continue,
@@ -307,7 +309,7 @@ impl NavGraph {
 
             if should_be_node && !is_node {
                 // Add new node.
-                let surface = derive_surface_type(world, pos);
+                let surface = derive_surface_type(world, face_data, pos);
                 let slot = if let Some(free) = self.free_slots.pop() {
                     let id = NavNodeId(free as u32);
                     self.nodes[free] = Some(NavNode {
@@ -339,7 +341,7 @@ impl NavGraph {
                 self.free_slots.push(slot);
             } else if should_be_node && is_node {
                 // Update surface type (solid below may have changed).
-                let surface = derive_surface_type(world, pos);
+                let surface = derive_surface_type(world, face_data, pos);
                 if let Some(node) = self.nodes[current_slot as usize].as_mut() {
                     node.surface_type = surface;
                 }
@@ -439,6 +441,196 @@ impl NavGraph {
                             continue;
                         }
 
+                        // Check if face data blocks this edge.
+                        if is_edge_blocked_by_faces(face_data, pos, np) {
+                            continue;
+                        }
+
+                        let from_id = NavNodeId(slot as u32);
+                        let to_id = NavNodeId(ns as u32);
+                        let from_node = self.nodes[slot].as_ref().unwrap();
+                        let to_node = self.nodes[ns].as_ref().unwrap();
+
+                        let edge_type = derive_edge_type(
+                            from_node.surface_type,
+                            to_node.surface_type,
+                            from_node.position,
+                            to_node.position,
+                        );
+                        let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+                        self.add_edge(from_id, to_id, edge_type, dist);
+                    }
+                }
+            }
+        }
+
+        removed_ids
+    }
+
+    /// Incrementally update the nav graph after a `BuildingInterior` voxel
+    /// is placed at `coord`.
+    ///
+    /// Unlike `update_after_voxel_solidified` (which handles solid voxels that
+    /// remove their own node), building interior voxels are passable — so this
+    /// method creates/updates the node at `coord` rather than removing it.
+    /// Same 7-position + dirty-set + edge recomputation structure, but uses
+    /// `should_be_nav_node` and `is_edge_blocked_by_faces`.
+    ///
+    /// Returns the IDs of nodes that were removed (callers should resnap any
+    /// creatures on those nodes).
+    pub fn update_after_building_voxel_set(
+        &mut self,
+        world: &VoxelWorld,
+        face_data: &BTreeMap<VoxelCoord, FaceData>,
+        coord: VoxelCoord,
+    ) -> Vec<NavNodeId> {
+        let mut removed_ids = Vec::new();
+
+        // Step 1: Determine the 7 affected positions (changed + 6 face neighbors).
+        let mut affected: Vec<VoxelCoord> = Vec::with_capacity(7);
+        affected.push(coord);
+        for &(dx, dy, dz) in &FACE_OFFSETS {
+            let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+            if self.flat_index(neighbor).is_some() {
+                affected.push(neighbor);
+            }
+        }
+
+        // Step 2: For each affected position, add/remove/update nav node.
+        for &pos in &affected {
+            let should_exist = should_be_nav_node(world, face_data, pos);
+            let flat = match self.flat_index(pos) {
+                Some(f) => f,
+                None => continue,
+            };
+            let current_slot = self.spatial_index[flat];
+            let is_node = current_slot != u32::MAX;
+
+            if should_exist && !is_node {
+                let surface = derive_surface_type(world, face_data, pos);
+                let slot = if let Some(free) = self.free_slots.pop() {
+                    let id = NavNodeId(free as u32);
+                    self.nodes[free] = Some(NavNode {
+                        id,
+                        position: pos,
+                        surface_type: surface,
+                        edge_indices: Vec::new(),
+                    });
+                    free
+                } else {
+                    let slot = self.nodes.len();
+                    let id = NavNodeId(slot as u32);
+                    self.nodes.push(Some(NavNode {
+                        id,
+                        position: pos,
+                        surface_type: surface,
+                        edge_indices: Vec::new(),
+                    }));
+                    slot
+                };
+                self.spatial_index[flat] = slot as u32;
+            } else if !should_exist && is_node {
+                let slot = current_slot as usize;
+                let id = NavNodeId(current_slot);
+                removed_ids.push(id);
+                self.nodes[slot] = None;
+                self.spatial_index[flat] = u32::MAX;
+                self.free_slots.push(slot);
+            } else if should_exist && is_node {
+                let surface = derive_surface_type(world, face_data, pos);
+                if let Some(node) = self.nodes[current_slot as usize].as_mut() {
+                    node.surface_type = surface;
+                }
+            }
+        }
+
+        // Steps 3-5: Same dirty-set + edge recomputation as
+        // update_after_voxel_solidified.
+        let mut dirty_set: Vec<usize> = Vec::new();
+        let mut is_dirty = vec![false; self.nodes.len()];
+        for &pos in &affected {
+            if let Some(flat) = self.flat_index(pos) {
+                let slot = self.spatial_index[flat];
+                if slot != u32::MAX {
+                    let s = slot as usize;
+                    if !is_dirty[s] {
+                        is_dirty[s] = true;
+                        dirty_set.push(s);
+                    }
+                }
+            }
+            for dy in -1i32..=1 {
+                for dz in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if dx == 0 && dy == 0 && dz == 0 {
+                            continue;
+                        }
+                        let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+                        if let Some(nflat) = self.flat_index(np) {
+                            let nslot = self.spatial_index[nflat];
+                            if nslot != u32::MAX {
+                                let ns = nslot as usize;
+                                if ns < is_dirty.len() && !is_dirty[ns] {
+                                    is_dirty[ns] = true;
+                                    dirty_set.push(ns);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for &slot in &dirty_set {
+            if let Some(node) = &self.nodes[slot] {
+                let edge_indices: Vec<usize> = node.edge_indices.clone();
+                for &eidx in &edge_indices {
+                    let edge = &self.edges[eidx];
+                    let other_slot = edge.to.0 as usize;
+                    if let Some(other_node) = self.nodes[other_slot].as_mut() {
+                        other_node
+                            .edge_indices
+                            .retain(|&rev_idx| self.edges[rev_idx].to != NavNodeId(slot as u32));
+                    }
+                }
+                if let Some(node) = self.nodes[slot].as_mut() {
+                    node.edge_indices.clear();
+                }
+            }
+        }
+
+        for &slot in &dirty_set {
+            let node = match &self.nodes[slot] {
+                Some(n) => n,
+                None => continue,
+            };
+            let pos = node.position;
+
+            for dy in -1i32..=1 {
+                for dz in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if dx == 0 && dy == 0 && dz == 0 {
+                            continue;
+                        }
+                        let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+                        let nflat = match self.flat_index(np) {
+                            Some(f) => f,
+                            None => continue,
+                        };
+                        let nslot = self.spatial_index[nflat];
+                        if nslot == u32::MAX {
+                            continue;
+                        }
+                        let ns = nslot as usize;
+
+                        if is_dirty[ns] && ns < slot {
+                            continue;
+                        }
+
+                        if is_edge_blocked_by_faces(face_data, pos, np) {
+                            continue;
+                        }
+
                         let from_id = NavNodeId(slot as u32);
                         let to_id = NavNodeId(ns as u32);
                         let from_node = self.nodes[slot].as_ref().unwrap();
@@ -475,21 +667,109 @@ const FACE_OFFSETS: [(i32, i32, i32); 6] = [
     (0, 0, -1),
 ];
 
+/// Determine whether a voxel at `pos` should be a nav node.
+///
+/// Rules:
+/// - y < 1 or solid → false
+/// - `BuildingInterior` → always true (face data provides surfaces)
+/// - Air with a solid face neighbor → true (existing behavior)
+/// - Air next to a `BuildingInterior` neighbor whose blocking face points
+///   toward `pos` → true (the face acts as a virtual solid surface)
+/// - Otherwise → false
+fn should_be_nav_node(
+    world: &VoxelWorld,
+    face_data: &BTreeMap<VoxelCoord, FaceData>,
+    pos: VoxelCoord,
+) -> bool {
+    if pos.y < 1 {
+        return false;
+    }
+    let voxel = world.get(pos);
+    if voxel.is_solid() {
+        return false;
+    }
+    if voxel == VoxelType::BuildingInterior {
+        return true;
+    }
+    // Air voxel: check face neighbors for solid or blocking building faces.
+    FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
+        let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+        let ntype = world.get(neighbor);
+        if ntype.is_solid() {
+            return true;
+        }
+        // Check if neighbor is BuildingInterior with a blocking face toward us.
+        if ntype == VoxelType::BuildingInterior
+            && let Some(fd) = face_data.get(&neighbor)
+        {
+            // The face on the neighbor pointing toward pos.
+            let dir = FaceDirection::from_offset(-dx, -dy, -dz);
+            if let Some(d) = dir {
+                return fd.get(d).blocks_movement();
+            }
+        }
+        false
+    })
+}
+
 /// Determine what surface a creature at `pos` is touching.
 ///
 /// Priority: the voxel directly below takes precedence (creature standing on
 /// it). Otherwise check horizontal neighbors and above in a fixed order and
 /// return the first solid type found (creature clinging to it).
 ///
-/// This means ground-level nodes at y=1 above `ForestFloor` get surface type
-/// `ForestFloor` even when they're also adjacent to the trunk — capybaras can
-/// walk near the trunk base.
-fn derive_surface_type(world: &VoxelWorld, pos: VoxelCoord) -> VoxelType {
+/// For `BuildingInterior` voxels, face data determines the surface type:
+/// - Floor face → `GrownPlatform` (walkable)
+/// - Wall/Window side → `GrownWall` (climbable)
+/// - Ceiling face → `GrownPlatform` (walkable on top)
+///
+/// For Air voxels next to `BuildingInterior` with blocking faces, the face
+/// type determines the surface similarly.
+fn derive_surface_type(
+    world: &VoxelWorld,
+    face_data: &BTreeMap<VoxelCoord, FaceData>,
+    pos: VoxelCoord,
+) -> VoxelType {
+    let voxel = world.get(pos);
+
+    // BuildingInterior voxels derive surface from their own face data.
+    if voxel == VoxelType::BuildingInterior
+        && let Some(fd) = face_data.get(&pos)
+    {
+        // Check Floor first (standing on it).
+        if fd.get(FaceDirection::NegY).blocks_movement() {
+            return VoxelType::GrownPlatform;
+        }
+        // Check side faces for walls.
+        for &dir in &[
+            FaceDirection::PosX,
+            FaceDirection::NegX,
+            FaceDirection::PosZ,
+            FaceDirection::NegZ,
+        ] {
+            if fd.get(dir).blocks_movement() {
+                return VoxelType::GrownWall;
+            }
+        }
+        // Check ceiling.
+        if fd.get(FaceDirection::PosY).blocks_movement() {
+            return VoxelType::GrownPlatform;
+        }
+        // Fallback: check solid neighbors like normal Air.
+    }
+
     // Check below first (creature standing on this surface).
     let below = VoxelCoord::new(pos.x, pos.y - 1, pos.z);
     let below_type = world.get(below);
     if below_type.is_solid() {
         return below_type;
+    }
+    // Check if below is BuildingInterior with a Ceiling face pointing up.
+    if below_type == VoxelType::BuildingInterior
+        && let Some(fd) = face_data.get(&below)
+        && fd.get(FaceDirection::PosY).blocks_movement()
+    {
+        return VoxelType::GrownPlatform;
     }
 
     // Check horizontal neighbors and above in fixed order.
@@ -501,10 +781,72 @@ fn derive_surface_type(world: &VoxelWorld, pos: VoxelCoord) -> VoxelType {
         if ntype.is_solid() {
             return ntype;
         }
+        // Check if neighbor is BuildingInterior with blocking face toward pos.
+        if ntype == VoxelType::BuildingInterior
+            && let Some(fd) = face_data.get(&neighbor)
+        {
+            let dir = FaceDirection::from_offset(-dx, -dy, -dz);
+            if let Some(d) = dir {
+                let ft = fd.get(d);
+                if ft.blocks_movement() {
+                    return match ft {
+                        FaceType::Floor | FaceType::Ceiling => VoxelType::GrownPlatform,
+                        _ => VoxelType::GrownWall,
+                    };
+                }
+            }
+        }
     }
 
-    // Shouldn't happen — only called for air voxels with solid face neighbors.
+    // Shouldn't happen — only called for voxels with solid face neighbors.
     VoxelType::ForestFloor
+}
+
+/// Check whether face data blocks movement from `from` to `to`.
+///
+/// For each nonzero component of the offset (dx, dy, dz):
+/// - Check the source voxel's face in that component direction
+/// - Check the dest voxel's face in the opposite direction
+/// - If any checked face blocks movement → edge is blocked
+///
+/// For diagonals: if ANY component direction is blocked, the whole diagonal
+/// is blocked (prevents corner-cutting through walls).
+fn is_edge_blocked_by_faces(
+    face_data: &BTreeMap<VoxelCoord, FaceData>,
+    from: VoxelCoord,
+    to: VoxelCoord,
+) -> bool {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    let dz = to.z - from.z;
+
+    // Check each nonzero component direction.
+    let components: [(i32, i32, i32); 3] = [
+        (dx.signum(), 0, 0),
+        (0, dy.signum(), 0),
+        (0, 0, dz.signum()),
+    ];
+
+    for (cx, cy, cz) in components {
+        if cx == 0 && cy == 0 && cz == 0 {
+            continue;
+        }
+        // Check source voxel's face in this direction.
+        if let Some(fd) = face_data.get(&from)
+            && let Some(dir) = FaceDirection::from_offset(cx, cy, cz)
+            && fd.get(dir).blocks_movement()
+        {
+            return true;
+        }
+        // Check dest voxel's face in the opposite direction.
+        if let Some(fd) = face_data.get(&to)
+            && let Some(dir) = FaceDirection::from_offset(-cx, -cy, -cz)
+            && fd.get(dir).blocks_movement()
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Determine the edge type for a connection between two nav nodes based on
@@ -528,7 +870,9 @@ fn derive_edge_type(
                     EdgeType::TrunkCircumference
                 }
             }
-            Branch | Leaf | Fruit | GrownPlatform | Bridge | Root => EdgeType::BranchWalk,
+            Branch | Leaf | Fruit | GrownPlatform | Bridge | Root | BuildingInterior => {
+                EdgeType::BranchWalk
+            }
             GrownStairs | GrownWall => EdgeType::TrunkClimb,
             Air => EdgeType::BranchWalk, // shouldn't happen
         };
@@ -577,7 +921,7 @@ fn derive_edge_type(
 /// With the default 256×128×256 world, expect ~3000–5000 nav nodes (air
 /// voxels touching the tree surface and forest floor). The spatial index
 /// is ~32 MB and freed after construction.
-pub fn build_nav_graph(world: &VoxelWorld) -> NavGraph {
+pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, FaceData>) -> NavGraph {
     let mut graph = NavGraph::new();
 
     let sx = world.size_x as usize;
@@ -600,22 +944,14 @@ pub fn build_nav_graph(world: &VoxelWorld) -> NavGraph {
         for z in 0..sz {
             for x in 0..sx {
                 let coord = VoxelCoord::new(x as i32, y as i32, z as i32);
-                if world.get(coord) != VoxelType::Air {
+                if !should_be_nav_node(world, face_data, coord) {
                     continue;
                 }
 
-                // Check if any face neighbor is solid.
-                let has_solid_neighbor = FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
-                    let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
-                    world.get(neighbor).is_solid()
-                });
-
-                if has_solid_neighbor {
-                    let surface = derive_surface_type(world, coord);
-                    let node_id = graph.add_node(coord, surface);
-                    let flat_idx = x + z * sx + y * sx * sz;
-                    graph.spatial_index[flat_idx] = node_id.0;
-                }
+                let surface = derive_surface_type(world, face_data, coord);
+                let node_id = graph.add_node(coord, surface);
+                let flat_idx = x + z * sx + y * sx * sz;
+                graph.spatial_index[flat_idx] = node_id.0;
             }
         }
     }
@@ -670,6 +1006,11 @@ pub fn build_nav_graph(world: &VoxelWorld) -> NavGraph {
                     let from_node = graph.node(from);
                     let to_node = graph.node(to);
 
+                    // Check if face data blocks this edge.
+                    if is_edge_blocked_by_faces(face_data, from_node.position, to_node.position) {
+                        continue;
+                    }
+
                     let edge_type = derive_edge_type(
                         from_node.surface_type,
                         to_node.surface_type,
@@ -690,6 +1031,11 @@ pub fn build_nav_graph(world: &VoxelWorld) -> NavGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Empty face data for tests that don't use buildings.
+    fn no_faces() -> BTreeMap<VoxelCoord, FaceData> {
+        BTreeMap::new()
+    }
 
     // --- NavGraph unit tests ---
 
@@ -776,7 +1122,7 @@ mod tests {
         let mut world = VoxelWorld::new(8, 8, 8);
         world.set(VoxelCoord::new(4, 0, 4), VoxelType::ForestFloor);
         // Air at y=1 is above ForestFloor.
-        let surface = derive_surface_type(&world, VoxelCoord::new(4, 1, 4));
+        let surface = derive_surface_type(&world, &no_faces(), VoxelCoord::new(4, 1, 4));
         assert_eq!(surface, VoxelType::ForestFloor);
     }
 
@@ -785,7 +1131,7 @@ mod tests {
         let mut world = VoxelWorld::new(8, 8, 8);
         world.set(VoxelCoord::new(4, 5, 4), VoxelType::Trunk);
         // Air at y=6 is above trunk.
-        let surface = derive_surface_type(&world, VoxelCoord::new(4, 6, 4));
+        let surface = derive_surface_type(&world, &no_faces(), VoxelCoord::new(4, 6, 4));
         assert_eq!(surface, VoxelType::Trunk);
     }
 
@@ -794,7 +1140,7 @@ mod tests {
         let mut world = VoxelWorld::new(8, 8, 8);
         // Trunk at x=3, air at x=4 clinging to trunk side.
         world.set(VoxelCoord::new(3, 5, 4), VoxelType::Trunk);
-        let surface = derive_surface_type(&world, VoxelCoord::new(4, 5, 4));
+        let surface = derive_surface_type(&world, &no_faces(), VoxelCoord::new(4, 5, 4));
         // Nothing below, but trunk to the -x side.
         assert_eq!(surface, VoxelType::Trunk);
     }
@@ -806,7 +1152,7 @@ mod tests {
         let mut world = VoxelWorld::new(8, 8, 8);
         world.set(VoxelCoord::new(4, 0, 4), VoxelType::ForestFloor);
         world.set(VoxelCoord::new(3, 1, 4), VoxelType::Trunk);
-        let surface = derive_surface_type(&world, VoxelCoord::new(4, 1, 4));
+        let surface = derive_surface_type(&world, &no_faces(), VoxelCoord::new(4, 1, 4));
         assert_eq!(surface, VoxelType::ForestFloor);
     }
 
@@ -905,7 +1251,7 @@ mod tests {
     #[test]
     fn nav_nodes_are_air_voxels() {
         let world = test_world();
-        let graph = build_nav_graph(&world);
+        let graph = build_nav_graph(&world, &no_faces());
 
         for node in graph.live_nodes() {
             assert_eq!(
@@ -921,7 +1267,7 @@ mod tests {
     #[test]
     fn nav_nodes_adjacent_to_solid() {
         let world = test_world();
-        let graph = build_nav_graph(&world);
+        let graph = build_nav_graph(&world, &no_faces());
 
         for node in graph.live_nodes() {
             let has_solid = FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
@@ -943,7 +1289,7 @@ mod tests {
     #[test]
     fn build_nav_graph_has_ground_nodes() {
         let world = test_world();
-        let graph = build_nav_graph(&world);
+        let graph = build_nav_graph(&world, &no_faces());
 
         let ground_nodes: Vec<_> = graph
             .live_nodes()
@@ -967,7 +1313,7 @@ mod tests {
     #[test]
     fn build_nav_graph_has_trunk_nodes() {
         let world = test_world();
-        let graph = build_nav_graph(&world);
+        let graph = build_nav_graph(&world, &no_faces());
 
         let trunk_nodes: Vec<_> = graph
             .live_nodes()
@@ -979,7 +1325,7 @@ mod tests {
     #[test]
     fn build_nav_graph_is_connected() {
         let world = test_world();
-        let graph = build_nav_graph(&world);
+        let graph = build_nav_graph(&world, &no_faces());
 
         assert!(graph.node_count() > 0, "Graph should have nodes");
 
@@ -1039,7 +1385,7 @@ mod tests {
         let mut rng = GameRng::new(42);
         tree_gen::generate_tree(&mut world, &config, &mut rng);
 
-        let graph = build_nav_graph(&world);
+        let graph = build_nav_graph(&world, &no_faces());
         assert!(graph.node_count() > 0);
 
         // BFS flood fill from node 0.
@@ -1082,12 +1428,12 @@ mod tests {
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
         tree_gen::generate_tree(&mut world_a, &config, &mut rng_a);
-        let graph_a = build_nav_graph(&world_a);
+        let graph_a = build_nav_graph(&world_a, &no_faces());
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(42);
         tree_gen::generate_tree(&mut world_b, &config, &mut rng_b);
-        let graph_b = build_nav_graph(&world_b);
+        let graph_b = build_nav_graph(&world_b, &no_faces());
 
         assert_eq!(graph_a.node_count(), graph_b.node_count());
         assert_eq!(graph_a.edge_count(), graph_b.edge_count());
@@ -1115,7 +1461,7 @@ mod tests {
         let mut rng = GameRng::new(42);
         tree_gen::generate_tree(&mut world, &config, &mut rng);
 
-        let graph = build_nav_graph(&world);
+        let graph = build_nav_graph(&world, &no_faces());
         assert!(graph.node_count() > 0);
 
         // BFS flood fill from node 0.
@@ -1160,7 +1506,7 @@ mod tests {
         let mut rng = GameRng::new(42);
         tree_gen::generate_tree(&mut world, &config, &mut rng);
 
-        let graph = build_nav_graph(&world);
+        let graph = build_nav_graph(&world, &no_faces());
         assert!(graph.node_count() > 0);
 
         // BFS flood fill from node 0.
@@ -1204,7 +1550,7 @@ mod tests {
     #[test]
     fn incremental_update_removes_solidified_node() {
         let mut world = platform_world();
-        let mut graph = build_nav_graph(&world);
+        let mut graph = build_nav_graph(&world, &no_faces());
 
         // There should be a nav node at (4,1,3) — air above floor.
         assert!(
@@ -1214,7 +1560,8 @@ mod tests {
 
         // Solidify (4,1,3) — it should no longer be a nav node.
         world.set(VoxelCoord::new(4, 1, 3), VoxelType::GrownPlatform);
-        let removed = graph.update_after_voxel_solidified(&world, VoxelCoord::new(4, 1, 3));
+        let removed =
+            graph.update_after_voxel_solidified(&world, &no_faces(), VoxelCoord::new(4, 1, 3));
 
         assert!(
             !graph.has_node_at(VoxelCoord::new(4, 1, 3)),
@@ -1227,7 +1574,7 @@ mod tests {
     #[test]
     fn incremental_update_adds_new_neighbor_nodes() {
         let mut world = platform_world();
-        let mut graph = build_nav_graph(&world);
+        let mut graph = build_nav_graph(&world, &no_faces());
 
         // (4,1,3) is a nav node (air above floor). Solidifying it should
         // create a new nav node at (4,2,3) — air above the new solid.
@@ -1237,7 +1584,7 @@ mod tests {
         );
 
         world.set(VoxelCoord::new(4, 1, 3), VoxelType::GrownPlatform);
-        graph.update_after_voxel_solidified(&world, VoxelCoord::new(4, 1, 3));
+        graph.update_after_voxel_solidified(&world, &no_faces(), VoxelCoord::new(4, 1, 3));
 
         assert!(
             graph.has_node_at(VoxelCoord::new(4, 2, 3)),
@@ -1248,14 +1595,14 @@ mod tests {
     #[test]
     fn incremental_update_matches_full_rebuild() {
         let mut world = platform_world();
-        let mut graph = build_nav_graph(&world);
+        let mut graph = build_nav_graph(&world, &no_faces());
 
         // Solidify (4,1,3).
         world.set(VoxelCoord::new(4, 1, 3), VoxelType::GrownPlatform);
-        graph.update_after_voxel_solidified(&world, VoxelCoord::new(4, 1, 3));
+        graph.update_after_voxel_solidified(&world, &no_faces(), VoxelCoord::new(4, 1, 3));
 
         // Full rebuild on the same world state.
-        let rebuilt = build_nav_graph(&world);
+        let rebuilt = build_nav_graph(&world, &no_faces());
 
         // Compare node positions (order-independent).
         let mut inc_positions: Vec<VoxelCoord> = graph.live_nodes().map(|n| n.position).collect();
@@ -1292,6 +1639,289 @@ mod tests {
         assert_eq!(
             inc_edges, full_edges,
             "Incremental and full rebuild should produce the same edges",
+        );
+    }
+
+    // --- Building face awareness tests ---
+
+    /// Helper: create a small world with a foundation and building interior.
+    fn make_building_world() -> (VoxelWorld, BTreeMap<VoxelCoord, FaceData>) {
+        use crate::building::compute_building_face_layout;
+        let mut world = VoxelWorld::new(16, 16, 16);
+        // Lay solid foundation at y=0.
+        for x in 3..6 {
+            for z in 3..6 {
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+            }
+        }
+        // Place 3x3x1 building interior at y=1.
+        let anchor = VoxelCoord::new(3, 0, 3);
+        let layout = compute_building_face_layout(anchor, 3, 3, 1);
+        for &coord in layout.keys() {
+            world.set(coord, VoxelType::BuildingInterior);
+        }
+        (world, layout)
+    }
+
+    #[test]
+    fn building_interior_creates_nav_node() {
+        let (world, faces) = make_building_world();
+        let graph = build_nav_graph(&world, &faces);
+
+        // All 9 interior voxels (3x3 at y=1) should be nav nodes.
+        for x in 3..6 {
+            for z in 3..6 {
+                assert!(
+                    graph.has_node_at(VoxelCoord::new(x, 1, z)),
+                    "Expected nav node at ({x}, 1, {z})",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wall_blocks_cardinal_edge() {
+        let (world, faces) = make_building_world();
+        let graph = build_nav_graph(&world, &faces);
+
+        // (3,1,4) is on the NegX wall edge. Its NegX face is Window (blocking).
+        // There should be no edge from (3,1,4) to (2,1,4) through the window.
+        // Actually (2,1,4) may or may not be a node. Check the interior node
+        // doesn't connect outside through a blocking face.
+        let interior = VoxelCoord::new(3, 1, 4);
+        let outside = VoxelCoord::new(2, 1, 4);
+
+        // If outside is a node, there should be no edge between them.
+        if graph.has_node_at(interior) && graph.has_node_at(outside) {
+            let interior_id = graph
+                .live_nodes()
+                .find(|n| n.position == interior)
+                .unwrap()
+                .id;
+            let has_edge_to_outside = graph.neighbors(interior_id).iter().any(|&idx| {
+                graph.edge(idx).to.0 as usize != interior_id.0 as usize && {
+                    let to = graph.node(graph.edge(idx).to);
+                    to.position == outside
+                }
+            });
+            assert!(
+                !has_edge_to_outside,
+                "Window face should block edge from interior to outside",
+            );
+        }
+    }
+
+    #[test]
+    fn door_allows_cardinal_edge() {
+        let (world, faces) = make_building_world();
+        let graph = build_nav_graph(&world, &faces);
+
+        // Door is at center of +Z edge: (4,1,5), facing PosZ.
+        // The node at (4,1,5) should connect to (4,1,6) if that's a node.
+        let door_inside = VoxelCoord::new(4, 1, 5);
+
+        // The voxel outside the door at (4,1,6) should be a nav node if it has
+        // the building wall as a surface. Check that the door node exists.
+        assert!(
+            graph.has_node_at(door_inside),
+            "Door voxel should be a nav node",
+        );
+
+        // The door face (PosZ) is not blocking, so edges should exist
+        // through it. Check that (4,1,5) has an edge going in the +Z direction.
+        let door_id = graph
+            .live_nodes()
+            .find(|n| n.position == door_inside)
+            .unwrap()
+            .id;
+
+        // Check if there's any neighbor in the +Z direction.
+        let has_posz_edge = graph.neighbors(door_id).iter().any(|&idx| {
+            let to_pos = graph.node(graph.edge(idx).to).position;
+            to_pos.z > door_inside.z
+        });
+        assert!(has_posz_edge, "Door face should allow edge in +Z direction",);
+    }
+
+    #[test]
+    fn wall_blocks_diagonal() {
+        let (world, faces) = make_building_world();
+        let graph = build_nav_graph(&world, &faces);
+
+        // Corner (3,1,3): NegX=Window, NegZ=Window. Any diagonal going both
+        // NegX and NegZ should be blocked.
+        let corner = VoxelCoord::new(3, 1, 3);
+        let diagonal = VoxelCoord::new(2, 1, 2);
+
+        if graph.has_node_at(corner) && graph.has_node_at(diagonal) {
+            let corner_id = graph
+                .live_nodes()
+                .find(|n| n.position == corner)
+                .unwrap()
+                .id;
+            let has_diag_edge = graph
+                .neighbors(corner_id)
+                .iter()
+                .any(|&idx| graph.node(graph.edge(idx).to).position == diagonal);
+            assert!(!has_diag_edge, "Window faces should block diagonal edges",);
+        }
+    }
+
+    #[test]
+    fn open_interior_faces_allow_movement() {
+        let (world, faces) = make_building_world();
+        let graph = build_nav_graph(&world, &faces);
+
+        // Interior voxel (4,1,4) has all-Open horizontal faces.
+        // It should connect to all 4 cardinal neighbors inside the building.
+        let center = VoxelCoord::new(4, 1, 4);
+        assert!(graph.has_node_at(center));
+        let center_id = graph
+            .live_nodes()
+            .find(|n| n.position == center)
+            .unwrap()
+            .id;
+
+        let cardinal_neighbors = [
+            VoxelCoord::new(5, 1, 4),
+            VoxelCoord::new(3, 1, 4),
+            VoxelCoord::new(4, 1, 5),
+            VoxelCoord::new(4, 1, 3),
+        ];
+        for &expected in &cardinal_neighbors {
+            assert!(graph.has_node_at(expected), "Expected node at {expected}");
+            let has_edge = graph
+                .neighbors(center_id)
+                .iter()
+                .any(|&idx| graph.node(graph.edge(idx).to).position == expected);
+            assert!(
+                has_edge,
+                "Center should connect to interior neighbor at {expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn exterior_air_gets_node_from_building_wall() {
+        let (world, faces) = make_building_world();
+        let graph = build_nav_graph(&world, &faces);
+
+        // Air at (2,1,3) is next to BuildingInterior (3,1,3) which has
+        // NegX=Window (blocking). The window acts as a virtual surface,
+        // so (2,1,3) should be a nav node.
+        let outside = VoxelCoord::new(2, 1, 3);
+        assert!(
+            graph.has_node_at(outside),
+            "Air next to building wall should become a nav node",
+        );
+    }
+
+    #[test]
+    fn building_surface_types_correct() {
+        let (world, faces) = make_building_world();
+        let graph = build_nav_graph(&world, &faces);
+
+        // Interior voxel with Floor face: should have GrownPlatform surface.
+        let interior = VoxelCoord::new(4, 1, 4);
+        let node = graph.live_nodes().find(|n| n.position == interior).unwrap();
+        assert_eq!(
+            node.surface_type,
+            VoxelType::GrownPlatform,
+            "Building interior with Floor should be GrownPlatform",
+        );
+    }
+
+    #[test]
+    fn building_incremental_creates_node_at_coord() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        // Foundation.
+        for x in 3..6 {
+            for z in 3..6 {
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+            }
+        }
+
+        let mut faces = BTreeMap::new();
+        let mut graph = build_nav_graph(&world, &faces);
+
+        // Place a single building interior voxel.
+        let coord = VoxelCoord::new(4, 1, 4);
+        world.set(coord, VoxelType::BuildingInterior);
+        let mut fd = FaceData::default();
+        fd.set(FaceDirection::NegY, FaceType::Floor);
+        fd.set(FaceDirection::PosY, FaceType::Ceiling);
+        fd.set(FaceDirection::PosX, FaceType::Window);
+        fd.set(FaceDirection::NegX, FaceType::Window);
+        fd.set(FaceDirection::PosZ, FaceType::Window);
+        fd.set(FaceDirection::NegZ, FaceType::Window);
+        faces.insert(coord, fd);
+
+        graph.update_after_building_voxel_set(&world, &faces, coord);
+        assert!(
+            graph.has_node_at(coord),
+            "Incremental update should create node at building voxel",
+        );
+    }
+
+    #[test]
+    fn building_incremental_matches_full_rebuild() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        for x in 3..6 {
+            for z in 3..6 {
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+            }
+        }
+
+        let mut faces = BTreeMap::new();
+        let mut graph = build_nav_graph(&world, &faces);
+
+        // Place building interior voxels one by one.
+        use crate::building::compute_building_face_layout;
+        let anchor = VoxelCoord::new(3, 0, 3);
+        let layout = compute_building_face_layout(anchor, 3, 3, 1);
+        for (&coord, fd) in &layout {
+            world.set(coord, VoxelType::BuildingInterior);
+            faces.insert(coord, fd.clone());
+            graph.update_after_building_voxel_set(&world, &faces, coord);
+        }
+
+        // Full rebuild.
+        let rebuilt = build_nav_graph(&world, &faces);
+
+        // Compare node positions.
+        let mut inc_positions: Vec<VoxelCoord> = graph.live_nodes().map(|n| n.position).collect();
+        let mut full_positions: Vec<VoxelCoord> =
+            rebuilt.live_nodes().map(|n| n.position).collect();
+        inc_positions.sort();
+        full_positions.sort();
+        assert_eq!(
+            inc_positions, full_positions,
+            "Incremental building update should match full rebuild node positions",
+        );
+
+        // Compare edges.
+        let mut inc_edges: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
+        for node in graph.live_nodes() {
+            for &edge_idx in &node.edge_indices {
+                let edge = graph.edge(edge_idx);
+                inc_edges.push((graph.node(edge.from).position, graph.node(edge.to).position));
+            }
+        }
+        let mut full_edges: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
+        for node in rebuilt.live_nodes() {
+            for &edge_idx in &node.edge_indices {
+                let edge = rebuilt.edge(edge_idx);
+                full_edges.push((
+                    rebuilt.node(edge.from).position,
+                    rebuilt.node(edge.to).position,
+                ));
+            }
+        }
+        inc_edges.sort();
+        full_edges.sort();
+        assert_eq!(
+            inc_edges, full_edges,
+            "Incremental building update should match full rebuild edges",
         );
     }
 }
