@@ -86,7 +86,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-modding              Scripting layer for modding support
 [ ] F-mood-system          Mood with escalating consequences
 [ ] F-multi-tree           NPC trees with personalities
-[ ] F-multiplayer          Lockstep multiplayer networking
+[ ] F-multiplayer          Relay-coordinator multiplayer
 [ ] F-music-runtime        Integrate music generator into game
 [ ] F-narrative-log        Events and narrative log
 [ ] F-personality          Personality axes affecting behavior
@@ -947,13 +947,22 @@ methods for commands, queries, and rendering data.
 
 Plugin/scripting system for custom structures, elf behaviors, invader
 types. Open design question (§27).
-#### F-multiplayer — Lockstep multiplayer networking
+#### F-multiplayer — Relay-coordinator multiplayer networking
 **Status:** Todo · **Phase:** 8+ · **Refs:** §4
+**Draft:** `docs/drafts/multiplayer_relay.md`
 
-Continuous simulation with synchronized command streams. Paxos-like
-canonical ordering. Periodic state checksums for desync detection.
-Architecture is ready (deterministic sim, command interface) but
-networking layer not built.
+Multiplayer via a lightweight relay coordinator that determines canonical
+command ordering and broadcasts turns to all clients. The relay can run as
+a standalone headless binary (`elven_canopy_relay` crate) or embedded in a
+player's game process. Clients connect outbound to the relay, avoiding NAT
+traversal issues. Supersedes the Paxos-like model originally described in
+§4 — simpler, same guarantees for 2–4 player scale. Steam integration
+possible as a discovery mechanism (lobby browser, friend invites) without
+replacing the relay architecture. Periodic state checksums detect desync.
+Architecture foundations are ready (deterministic sim, command interface)
+but networking layer, relay crate, and **UI are not yet designed**.
+
+**Related:** F-save-load
 
 #### F-save-load — Save/load to JSON with versioning
 **Status:** Done · **Phase:** 2 · **Refs:** §4, §5
