@@ -129,12 +129,12 @@ To generate music from the CLI: `cargo run -p elven_canopy_music -- --help` (see
 
 ### Python Tools
 
-The `python/` directory contains offline training tools for the music generator — they are **not** part of the game runtime.
+The `python/` directory contains offline training tools for the music generator — they are **not** part of the game runtime. **Never use `source .venv/bin/activate`** — always invoke tools via their full venv path (e.g., `python/.venv/bin/python`).
 
 ```bash
-cd python && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-python corpus_analysis.py   # Train Markov models from Palestrina corpus → data/
-python rate_midi.py          # Pairwise MIDI comparison for preference model training
+cd python && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # One-time setup
+cd python && .venv/bin/python corpus_analysis.py   # Train Markov models from Palestrina corpus → data/
+cd python && .venv/bin/python rate_midi.py          # Pairwise MIDI comparison for preference model training
 ```
 
 ## Toolchain Versions
@@ -170,18 +170,7 @@ cargo fmt --all               # auto-format
 
 GDScript files are checked with **gdformat** (formatter) and **gdlint** (linter) from the [gdtoolkit](https://github.com/Scony/godot-gdscript-toolkit) package.
 
-**Setup (one-time):**
-
-```bash
-cd python && python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-```
-
-If the venv already exists, just activate and install:
-
-```bash
-source python/.venv/bin/activate && pip install -r python/requirements-dev.txt
-```
+**Setup (one-time):** `scripts/build.sh check` auto-creates the venv and installs gdtoolkit if missing.
 
 Run individually:
 
@@ -197,7 +186,7 @@ python/.venv/bin/gdformat --line-length 100 godot/scripts/*.gd   # auto-format
 
 The repo's `.claude/settings.json` sets `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1`, which resets the Bash tool's working directory to the project root before every command. This means you never need to worry about working directory drift — just write commands relative to the repo root.
 
-**Keep Bash commands simple.** Do not use command substitution (`$(...)` or backticks), heredocs (`<<EOF`), shell variables, or other shell tricks. These trigger unnecessary permission prompts. Also avoid putting flag names inside quotes (e.g., `git show --stat "--format="` can trigger a "quoted flag names" permission check) — keep flags as bare arguments. Use the dedicated Read/Write/Edit tools for file operations. For `git commit`, pass the message directly with `-m "..."` using a simple quoted string.
+**Keep Bash commands simple.** Do not use `source`, command substitution (`$(...)` or backticks), heredocs (`<<EOF`), shell variables, or other shell tricks. These trigger unnecessary permission prompts. Also avoid putting flag names inside quotes (e.g., `git show --stat "--format="` can trigger a "quoted flag names" permission check) — keep flags as bare arguments. Use the dedicated Read/Write/Edit tools for file operations. For `git commit`, pass the message directly with `-m "..."` using a simple quoted string.
 
 ## Scratch Files
 
