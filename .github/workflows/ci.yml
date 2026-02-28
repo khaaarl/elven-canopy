@@ -1,12 +1,13 @@
-# CI workflow: Formatting and linting checks for Rust and GDScript.
+# CI workflow: Formatting, linting, and tests for Rust and GDScript.
 #
-# Two independent jobs:
-# - rust: cargo fmt --check + cargo clippy (no Godot needed, fast)
+# Three independent jobs:
+# - rust-lint: cargo fmt --check + cargo clippy (no Godot needed, fast)
+# - rust-test: cargo test --workspace (runs sim and music crate tests)
 # - gdscript: gdformat --check + gdlint
 #
 # Triggers on pushes and pull requests that touch relevant files.
 
-name: Lint
+name: CI
 
 on:
   push:
@@ -19,7 +20,7 @@ on:
       - "godot/scripts/**.gd"
       - ".gdlintrc"
       - "python/requirements-dev.txt"
-      - ".github/workflows/lint.yml"
+      - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "**.rs"
@@ -30,10 +31,10 @@ on:
       - "godot/scripts/**.gd"
       - ".gdlintrc"
       - "python/requirements-dev.txt"
-      - ".github/workflows/lint.yml"
+      - ".github/workflows/ci.yml"
 
 jobs:
-  rust:
+  rust-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +48,16 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --workspace -- -D warnings
+
+  rust-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --workspace
 
   gdscript:
     runs-on: ubuntu-latest

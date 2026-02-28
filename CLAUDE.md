@@ -149,10 +149,11 @@ When upgrading the `godot` crate, check for a matching `api-4-x` feature flag. T
 
 ## Code Quality Tools
 
-`cargo fmt`, `cargo clippy`, `gdformat`, and `gdlint` are all enforced in CI via `.github/workflows/lint.yml`. Run all checks locally with:
+`cargo fmt`, `cargo clippy`, `cargo test`, `gdformat`, and `gdlint` are all enforced in CI via `.github/workflows/ci.yml`. Run all checks locally with:
 
 ```bash
 scripts/build.sh check    # fmt --check + clippy + gdformat --check + gdlint
+scripts/build.sh test     # run sim tests, then debug build
 ```
 
 ### Rust
