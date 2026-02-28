@@ -19,7 +19,7 @@
 ## (see main.gd docstring).
 ##
 ## See also: main.gd (creates and wires this panel), sim_bridge.rs for
-## get_structures(), spawn_toolbar.gd for the "Structures [S]" button,
+## get_structures(), action_toolbar.gd for the "Structures" button,
 ## task_panel.gd for the similar task list pattern.
 
 extends ColorRect

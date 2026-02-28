@@ -63,7 +63,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-creature-tooltip     Creature hover tooltip
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
-[ ] F-debug-menu           Move spawn/summon into debug menu
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-elf-names            Elf name generation from conlang rules
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
@@ -131,6 +130,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crate-structure      Two-crate sim/gdext structure
 [x] F-creature-info        Creature info panel with follow button
+[x] F-debug-menu           Move spawn/summon into debug menu
 [x] F-elf-sprite           Billboard elf sprite rendering
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-food-gauge           Creature food gauge with decay
@@ -881,7 +881,7 @@ info panel flow for casual inspection.
 **Related:** F-selection, F-creature-info, F-elf-names
 
 #### F-debug-menu — Move spawn/summon into debug menu
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 The top toolbar (`spawn_toolbar.gd`) currently has 11 buttons: 6 creature
 spawn buttons (Elf, Capybara, Boar, Deer, Monkey, Squirrel), Summon Elf,

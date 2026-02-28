@@ -73,7 +73,7 @@
 // See also: `lib.rs` for the GDExtension entry point, the
 // `elven_canopy_sim` crate for all simulation logic, `command.rs` for
 // `SimCommand`/`SimAction`, `placement_controller.gd` and
-// `spawn_toolbar.gd` for spawning/placement callers,
+// `action_toolbar.gd` for spawning/placement callers,
 // `selection_controller.gd` and `creature_info_panel.gd` for creature
 // query callers, `construction_controller.gd` for build placement,
 // `blueprint_renderer.gd` for blueprint visualization.

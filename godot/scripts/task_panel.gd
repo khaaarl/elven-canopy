@@ -19,7 +19,7 @@
 ## pause_menu (see main.gd docstring).
 ##
 ## See also: main.gd (creates and wires this panel), sim_bridge.rs for
-## get_active_tasks(), spawn_toolbar.gd for the "Tasks [T]" button,
+## get_active_tasks(), action_toolbar.gd for the "Tasks [T]" button,
 ## selection_controller.gd for select_creature() used by zoom-to-assignee.
 
 extends ColorRect

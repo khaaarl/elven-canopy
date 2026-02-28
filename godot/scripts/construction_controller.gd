@@ -31,7 +31,7 @@
 ## between placement_controller.gd and selection_controller.gd in the ESC
 ## precedence chain (see main.gd docstring for the full chain).
 ##
-## See also: spawn_toolbar.gd which emits the "Build" action,
+## See also: action_toolbar.gd which emits the "Build" action,
 ## orbital_camera.gd which provides set_voxel_snap() / get_focus_voxel(),
 ## main.gd which wires this controller into the scene,
 ## blueprint_renderer.gd for rendering designated blueprints,

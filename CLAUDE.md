@@ -88,7 +88,7 @@ elven-canopy/
 │       ├── capybara_renderer.gd # Billboard chibi capybara sprites
 │       ├── tree_renderer.gd    # Tree voxel mesh rendering (MultiMesh)
 │       ├── sprite_factory.gd   # Procedural chibi sprite generation from seed
-│       ├── spawn_toolbar.gd    # Toolbar UI for spawning creatures/tasks
+│       ├── action_toolbar.gd   # Top toolbar (gameplay) + toggleable debug panel
 │       ├── placement_controller.gd  # Click-to-place for spawns and tasks
 │       ├── selection_controller.gd  # Click-to-select creatures
 │       └── creature_info_panel.gd   # Right-side creature info + follow button

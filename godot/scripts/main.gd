@@ -36,7 +36,7 @@
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
 ## capybara_renderer.gd / blueprint_renderer.gd for rendering,
-## spawn_toolbar.gd for the toolbar UI, placement_controller.gd for
+## action_toolbar.gd for the toolbar UI, placement_controller.gd for
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
 ## creature_info_panel.gd for the creature info panel,
@@ -184,11 +184,11 @@ func _ready() -> void:
 		r.setup(bridge, entry[0], entry[1])
 		_extra_renderers.append(r)
 
-	# Set up spawn toolbar UI (rendered on top of 3D via CanvasLayer).
+	# Set up action toolbar UI (rendered on top of 3D via CanvasLayer).
 	var canvas_layer := CanvasLayer.new()
 	add_child(canvas_layer)
 
-	var toolbar_script = load("res://scripts/spawn_toolbar.gd")
+	var toolbar_script = load("res://scripts/action_toolbar.gd")
 	var toolbar := MarginContainer.new()
 	toolbar.set_script(toolbar_script)
 	canvas_layer.add_child(toolbar)

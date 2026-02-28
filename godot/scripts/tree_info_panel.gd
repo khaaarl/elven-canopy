@@ -3,7 +3,7 @@
 ## Shows information about the player's home tree: dimensions, growth level,
 ## health, mana, fruit, voxel breakdown, and carrying capacity. Built
 ## programmatically as a PanelContainer with labels and progress bars.
-## Sits on the CanvasLayer alongside the spawn toolbar.
+## Sits on the CanvasLayer alongside the action toolbar.
 ##
 ## The panel is 320px wide, full height, anchored to the right edge — same
 ## style as creature_info_panel.gd. Toggled by the "Tree [I]" toolbar
@@ -12,7 +12,7 @@
 ## selecting a creature hides this panel.
 ##
 ## See also: creature_info_panel.gd for the creature equivalent,
-## spawn_toolbar.gd which emits the "TreeInfo" action,
+## action_toolbar.gd which emits the "TreeInfo" action,
 ## main.gd which wires everything together,
 ## sim_bridge.rs get_home_tree_info() for the data source.
 

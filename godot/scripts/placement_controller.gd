@@ -19,7 +19,7 @@
 ## construction_controller.gd can exit placement mode when entering
 ## construction mode.
 ##
-## See also: spawn_toolbar.gd which triggers placement mode, main.gd which
+## See also: action_toolbar.gd which triggers placement mode, main.gd which
 ## wires the two together, selection_controller.gd which checks is_placing(),
 ## construction_controller.gd which calls cancel_placement(),
 ## sim_bridge.rs for get_visible_nav_nodes/get_visible_ground_nav_nodes

@@ -8,7 +8,7 @@
 ## Hotkeys are suppressed while the load dialog is open (_dialog_open flag).
 ##
 ## All UI elements are built programmatically in _ready(), consistent with
-## the project's existing UI style (see spawn_toolbar.gd).
+## the project's existing UI style (see action_toolbar.gd).
 ##
 ## See also: new_game_menu.gd (next screen in flow), game_session.gd (autoload
 ## singleton for passing seed/load path to the game scene), load_dialog.gd
