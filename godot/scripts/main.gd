@@ -120,6 +120,13 @@ func _ready() -> void:
 		for i in 5:
 			var ox := i * 3 - 6
 			bridge.spawn_elf(cx + ox, 0, cz)
+		# Vary initial elf food so some are hungry from the start.
+		# food_max is 1_000_000_000_000_000; percentages below threshold (50%) seek fruit.
+		var food_max: int = 1_000_000_000_000_000
+		var elf_food_pcts := [100, 90, 70, 60, 48]
+		for i in elf_food_pcts.size():
+			if elf_food_pcts[i] < 100:
+				bridge.set_creature_food("Elf", i, food_max * elf_food_pcts[i] / 100)
 		print("Elven Canopy: spawned %d elves near (%d, 0, %d)" % [bridge.elf_count(), cx, cz])
 
 		for i in 5:

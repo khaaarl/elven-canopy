@@ -607,6 +607,7 @@ impl SimBridge {
             let kind_str = match &task.kind {
                 elven_canopy_sim::task::TaskKind::GoTo => "GoTo",
                 elven_canopy_sim::task::TaskKind::Build { .. } => "Build",
+                elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
             };
             dict.set("kind", GString::from(kind_str));
 
@@ -804,6 +805,30 @@ impl SimBridge {
     #[func]
     fn spawn_capybara(&mut self, x: i32, y: i32, z: i32) {
         self.spawn_creature(GString::from("Capybara"), x, y, z);
+    }
+
+    /// Set the food level of the nth creature of the given species.
+    ///
+    /// `index` is the species-filtered iteration index matching the order
+    /// used by `get_creature_positions()`. Used by `main.gd` to vary
+    /// initial food levels after spawning.
+    #[func]
+    fn set_creature_food(&mut self, species_name: GString, index: i32, food: i64) {
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return;
+        };
+        let Some(sim) = &mut self.sim else { return };
+        let creature_id = sim
+            .creatures
+            .iter()
+            .filter(|(_, c)| c.species == species)
+            .nth(index as usize)
+            .map(|(_, c)| c.id);
+        if let Some(id) = creature_id
+            && let Some(creature) = sim.creatures.get_mut(&id)
+        {
+            creature.food = food;
+        }
     }
 
     /// Check whether a single voxel is a valid build position.

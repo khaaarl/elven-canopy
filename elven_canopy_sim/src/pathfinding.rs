@@ -245,6 +245,108 @@ pub fn astar_filtered(
     None
 }
 
+/// Find the nearest reachable target from `start` using Dijkstra's algorithm.
+///
+/// Expands outward from `start` by travel cost and returns the first target
+/// node reached. This is a multi-target search: it stops as soon as *any*
+/// target in `targets` is popped from the priority queue.
+///
+/// `allowed_edges`: if `Some`, only edges of the listed types are traversed
+/// (e.g. capybaras restricted to `ForestFloor`). If `None`, all edges allowed.
+///
+/// Returns `None` if no target is reachable.
+pub fn dijkstra_nearest(
+    graph: &NavGraph,
+    start: NavNodeId,
+    targets: &[NavNodeId],
+    walk_tpv: u64,
+    climb_tpv: Option<u64>,
+    allowed_edges: Option<&[EdgeType]>,
+) -> Option<NavNodeId> {
+    let n = graph.node_slot_count();
+    if n == 0 || targets.is_empty() {
+        return None;
+    }
+
+    // Quick check: is start already a target?
+    if targets.contains(&start) {
+        return Some(start);
+    }
+
+    // Build a fast lookup for targets.
+    let mut is_target = vec![false; n];
+    for &t in targets {
+        if (t.0 as usize) < n {
+            is_target[t.0 as usize] = true;
+        }
+    }
+
+    let walk_tpv_f = walk_tpv as f32;
+
+    let mut g_score = vec![f32::INFINITY; n];
+    let mut closed = vec![false; n];
+
+    g_score[start.0 as usize] = 0.0;
+
+    let mut open = BinaryHeap::new();
+    open.push(OpenEntry {
+        node: start,
+        f_score: 0.0, // Dijkstra: f = g (no heuristic).
+    });
+
+    while let Some(current) = open.pop() {
+        let current_id = current.node;
+        let ci = current_id.0 as usize;
+
+        if is_target[ci] {
+            return Some(current_id);
+        }
+
+        if closed[ci] {
+            continue;
+        }
+        closed[ci] = true;
+
+        let current_g = g_score[ci];
+
+        for &edge_idx in graph.neighbors(current_id) {
+            let edge = graph.edge(edge_idx);
+
+            if let Some(allowed) = allowed_edges
+                && !allowed.contains(&edge.edge_type)
+            {
+                continue;
+            }
+
+            let neighbor = edge.to;
+            let ni = neighbor.0 as usize;
+
+            if closed[ni] {
+                continue;
+            }
+
+            let tpv = match edge.edge_type {
+                EdgeType::TrunkClimb | EdgeType::GroundToTrunk => match climb_tpv {
+                    Some(c) => c as f32,
+                    None => continue, // species cannot climb
+                },
+                _ => walk_tpv_f,
+            };
+            let tentative_g = current_g + edge.distance * tpv;
+
+            if tentative_g < g_score[ni] {
+                g_score[ni] = tentative_g;
+                open.push(OpenEntry {
+                    node: neighbor,
+                    f_score: tentative_g,
+                });
+            }
+        }
+    }
+
+    None // No target reachable.
+}
+
 /// Admissible heuristic: Manhattan distance * walk_ticks_per_voxel.
 /// Uses the fastest speed (flat walk) to ensure the heuristic never
 /// overestimates.
@@ -408,5 +510,87 @@ mod tests {
         let r2 = astar(&graph, a, c, 500, Some(1250)).unwrap();
         assert_eq!(r1.nodes, r2.nodes);
         assert_eq!(r1.total_cost, r2.total_cost);
+    }
+
+    // -------------------------------------------------------------------
+    // dijkstra_nearest tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn dijkstra_nearest_finds_closest_by_travel_cost() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
+        // a->b short, a->c long (but c is spatially further).
+        graph.add_edge(a, b, EdgeType::ForestFloor, 3.0);
+        graph.add_edge(b, c, EdgeType::ForestFloor, 7.0);
+
+        // Both b and c are targets — b should win (closer by travel cost).
+        let result = dijkstra_nearest(&graph, a, &[b, c], 1, Some(1), None);
+        assert_eq!(result, Some(b));
+    }
+
+    #[test]
+    fn dijkstra_nearest_respects_edge_filter() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(6, 0, 0), S);
+        // a->b via ForestFloor (short), b->c via TrunkClimb.
+        graph.add_edge(a, b, EdgeType::ForestFloor, 3.0);
+        graph.add_edge(b, c, EdgeType::TrunkClimb, 3.0);
+
+        // Only ForestFloor allowed — c is unreachable.
+        let result = dijkstra_nearest(&graph, a, &[c], 1, Some(1), Some(&[EdgeType::ForestFloor]));
+        assert_eq!(result, None);
+
+        // b is reachable via ForestFloor.
+        let result = dijkstra_nearest(&graph, a, &[b], 1, Some(1), Some(&[EdgeType::ForestFloor]));
+        assert_eq!(result, Some(b));
+    }
+
+    #[test]
+    fn dijkstra_nearest_prefers_fast_route() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(0, 5, 0), S);
+        // a->b: short distance via ForestFloor (walk speed).
+        // a->c: short distance via TrunkClimb (climb speed — slower).
+        graph.add_edge(a, b, EdgeType::ForestFloor, 5.0);
+        graph.add_edge(a, c, EdgeType::TrunkClimb, 5.0);
+
+        // walk_tpv=500, climb_tpv=1250.
+        // Cost to b: 5 * 500 = 2500. Cost to c: 5 * 1250 = 6250.
+        // b should win.
+        let result = dijkstra_nearest(&graph, a, &[b, c], 500, Some(1250), None);
+        assert_eq!(result, Some(b));
+    }
+
+    #[test]
+    fn dijkstra_nearest_start_is_target() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let result = dijkstra_nearest(&graph, a, &[a], 1, Some(1), None);
+        assert_eq!(result, Some(a));
+    }
+
+    #[test]
+    fn dijkstra_nearest_no_targets() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let result = dijkstra_nearest(&graph, a, &[], 1, Some(1), None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn dijkstra_nearest_unreachable_target() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(10, 0, 0), S);
+        // No edges — b is unreachable.
+        let result = dijkstra_nearest(&graph, a, &[b], 1, Some(1), None);
+        assert_eq!(result, None);
     }
 }

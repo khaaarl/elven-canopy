@@ -26,6 +26,11 @@
 //   work. Each activation adds 1.0 to progress; every
 //   `build_work_ticks_per_voxel` units, one blueprint voxel materializes.
 //   Linked to a `Blueprint` via `project_id`. See `sim.rs` `do_build_work()`.
+// - `EatFruit { fruit_pos }` — walk to a fruit voxel and eat it, restoring
+//   food. Created automatically by the heartbeat hunger check when a
+//   creature's food drops below `food_hunger_threshold_pct`. On arrival,
+//   `do_eat_fruit()` restores `food_restore_pct`% of `food_max`, removes
+//   the fruit from the world and tree, and completes the task.
 //
 // ## Lifecycle
 //
@@ -46,7 +51,7 @@
 // **Critical constraint: determinism.** Tasks are stored in `BTreeMap` and
 // iterated in deterministic order. Task IDs come from the sim PRNG.
 
-use crate::types::{CreatureId, NavNodeId, ProjectId, Species, TaskId};
+use crate::types::{CreatureId, NavNodeId, ProjectId, Species, TaskId, VoxelCoord};
 use serde::{Deserialize, Serialize};
 
 /// The type of work a task represents. Each variant carries kind-specific data
@@ -59,6 +64,11 @@ pub enum TaskKind {
     /// then does work over multiple activations, materializing one voxel
     /// per `build_work_ticks_per_voxel` units of progress.
     Build { project_id: ProjectId },
+    /// Walk to a fruit voxel and eat it, restoring food. Created automatically
+    /// by the heartbeat hunger check when a creature's food drops below
+    /// `food_hunger_threshold_pct`. The `fruit_pos` is the voxel coordinate
+    /// of the fruit to consume (removed from world on arrival).
+    EatFruit { fruit_pos: VoxelCoord },
 }
 
 /// Lifecycle state of a task.
@@ -122,6 +132,36 @@ mod tests {
             _ => panic!("Expected Build task kind"),
         }
         assert_eq!(restored.total_cost, 5000.0);
+        assert_eq!(restored.required_species, Some(Species::Elf));
+    }
+
+    #[test]
+    fn eat_fruit_task_serialization_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let location = NavNodeId(7);
+        let fruit_pos = VoxelCoord::new(10, 5, 10);
+
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::EatFruit { fruit_pos },
+            state: TaskState::InProgress,
+            location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.id, task_id);
+        match &restored.kind {
+            TaskKind::EatFruit { fruit_pos: fp } => assert_eq!(*fp, fruit_pos),
+            _ => panic!("Expected EatFruit task kind"),
+        }
+        assert_eq!(restored.state, TaskState::InProgress);
         assert_eq!(restored.required_species, Some(Species::Elf));
     }
 

@@ -33,7 +33,13 @@
 // and does not affect determinism.
 //
 // `CreatureHeartbeat` still exists but is decoupled from movement; it handles
-// periodic non-movement checks (mood, mana, food decay, etc.).
+// periodic non-movement checks (mood, mana, food decay, hunger-driven task
+// creation, etc.). After decaying food, the heartbeat checks whether the
+// creature is hungry (food < threshold) and idle — if so, it calls
+// `find_nearest_fruit()` which uses Dijkstra's algorithm over the nav graph
+// (respecting species edge restrictions and speeds) to find the closest
+// reachable fruit, then creates an `EatFruit` task directly assigned to the
+// creature (bypassing the Available→claim flow).
 //
 // The activation loop (`process_creature_activation`) runs this logic:
 //
@@ -54,7 +60,7 @@
 // ### Task entity (`task.rs`)
 //
 // A `Task` has:
-// - `kind: TaskKind` — determines behavior (`GoTo`, `Build`).
+// - `kind: TaskKind` — determines behavior (`GoTo`, `Build`, `EatFruit`).
 // - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
 // - `location: NavNodeId` — where creatures go to work on the task.
 // - `assignees: Vec<CreatureId>` — supports multiple workers.
@@ -100,6 +106,12 @@
 //       updates the nav graph (only ~7 affected positions) and resnaps
 //       displaced creatures. When `progress >= total_cost`, the blueprint
 //       is marked Complete and the elf is freed.
+//
+//   EatFruit { fruit_pos }:
+//     - If not at `task.location` → walk 1 edge toward it (same as GoTo).
+//     - If at location → `do_eat_fruit()`: restore food by `food_restore_pct`%
+//       of `food_max`, remove the fruit voxel from the world and the tree's
+//       `fruit_positions` list, and complete the task.
 //
 // ### Task assignment details
 //
@@ -768,14 +780,20 @@ impl SimState {
             ScheduledEventKind::CreatureHeartbeat { creature_id } => {
                 // Heartbeat is for periodic non-movement checks (mood, mana, etc.).
                 // Movement is driven by CreatureActivation, not heartbeats.
-                if let Some(creature) = self.creatures.get_mut(&creature_id) {
+
+                // Phase 1: apply food decay and read state needed for hunger check.
+                let should_seek_food = if let Some(creature) = self.creatures.get_mut(&creature_id)
+                {
                     let species = creature.species;
                     let species_data = &self.species_table[&species];
                     let interval = species_data.heartbeat_interval_ticks;
                     let decay = species_data.food_decay_per_tick * interval as i64;
                     creature.food = (creature.food - decay).max(0);
 
-                    // TODO: mood decay, mana generation.
+                    let threshold =
+                        species_data.food_max * species_data.food_hunger_threshold_pct / 100;
+                    let is_hungry = creature.food < threshold;
+                    let is_idle = creature.current_task.is_none();
 
                     // Reschedule the next heartbeat.
                     let next_tick = self.tick + interval;
@@ -783,6 +801,32 @@ impl SimState {
                         next_tick,
                         ScheduledEventKind::CreatureHeartbeat { creature_id },
                     );
+
+                    is_hungry && is_idle
+                } else {
+                    false
+                };
+
+                // Phase 2: if hungry and idle, find nearest fruit by graph
+                // travel cost (Dijkstra) and create an EatFruit task.
+                if should_seek_food
+                    && let Some((fruit_pos, nav_node)) = self.find_nearest_fruit(creature_id)
+                {
+                    let task_id = TaskId::new(&mut self.rng);
+                    let new_task = task::Task {
+                        id: task_id,
+                        kind: task::TaskKind::EatFruit { fruit_pos },
+                        state: task::TaskState::InProgress,
+                        location: nav_node,
+                        assignees: vec![creature_id],
+                        progress: 0.0,
+                        total_cost: 0.0,
+                        required_species: None,
+                    };
+                    self.tasks.insert(task_id, new_task);
+                    if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                        creature.current_task = Some(task_id);
+                    }
                 }
             }
             ScheduledEventKind::CreatureActivation { creature_id } => {
@@ -978,6 +1022,9 @@ impl SimState {
                 // GoTo completes instantly on arrival.
                 self.complete_task(task_id);
             }
+            task::TaskKind::EatFruit { fruit_pos } => {
+                self.do_eat_fruit(creature_id, task_id, fruit_pos);
+            }
             task::TaskKind::Build { project_id } => {
                 self.do_build_work(creature_id, task_id, project_id);
                 return; // do_build_work handles its own next-activation scheduling.
@@ -1007,6 +1054,73 @@ impl SimState {
                 creature.path = None;
             }
         }
+    }
+
+    /// Find the nearest reachable fruit for a creature, using Dijkstra over the
+    /// nav graph with the creature's species-specific speeds and edge restrictions.
+    ///
+    /// Returns the fruit voxel coordinate and its nearest nav node, or `None`
+    /// if no fruit exists or none is reachable by this creature.
+    fn find_nearest_fruit(&self, creature_id: CreatureId) -> Option<(VoxelCoord, NavNodeId)> {
+        let creature = self.creatures.get(&creature_id)?;
+        let start_node = creature.current_node?;
+        let species_data = &self.species_table[&creature.species];
+
+        // Map each fruit position to its nearest nav node, keeping the association.
+        let mut nav_to_fruit: Vec<(NavNodeId, VoxelCoord)> = Vec::new();
+        let mut target_nodes: Vec<NavNodeId> = Vec::new();
+        for tree in self.trees.values() {
+            for &fruit_pos in &tree.fruit_positions {
+                if let Some(nav_node) = self.nav_graph.find_nearest_node(fruit_pos) {
+                    target_nodes.push(nav_node);
+                    nav_to_fruit.push((nav_node, fruit_pos));
+                }
+            }
+        }
+
+        if target_nodes.is_empty() {
+            return None;
+        }
+
+        let nearest_node = pathfinding::dijkstra_nearest(
+            &self.nav_graph,
+            start_node,
+            &target_nodes,
+            species_data.walk_ticks_per_voxel,
+            species_data.climb_ticks_per_voxel,
+            species_data.allowed_edge_types.as_deref(),
+        )?;
+
+        // Find the fruit_pos associated with this nav node.
+        let fruit_pos = nav_to_fruit
+            .iter()
+            .find(|(n, _)| *n == nearest_node)
+            .map(|(_, fp)| *fp)?;
+
+        Some((fruit_pos, nearest_node))
+    }
+
+    /// Eat fruit at `fruit_pos`: restore food, remove the fruit voxel, and
+    /// complete the task.
+    fn do_eat_fruit(&mut self, creature_id: CreatureId, task_id: TaskId, fruit_pos: VoxelCoord) {
+        // Restore food.
+        if let Some(creature) = self.creatures.get(&creature_id) {
+            let species_data = &self.species_table[&creature.species];
+            let restore = species_data.food_max * species_data.food_restore_pct / 100;
+            let food_max = species_data.food_max;
+            let creature = self.creatures.get_mut(&creature_id).unwrap();
+            creature.food = (creature.food + restore).min(food_max);
+        }
+
+        // Remove fruit from world and tree's fruit_positions list.
+        if self.world.get(fruit_pos) == VoxelType::Fruit {
+            self.world.set(fruit_pos, VoxelType::Air);
+        }
+        for tree in self.trees.values_mut() {
+            tree.fruit_positions.retain(|&p| p != fruit_pos);
+        }
+
+        self.complete_task(task_id);
     }
 
     /// Walk one edge toward a task location using a stored or computed A* path.
@@ -4451,6 +4565,325 @@ mod tests {
         assert!(
             sim.structures.is_empty(),
             "Cancelling a completed build should remove it from structures"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Hunger / EatFruit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn find_nearest_fruit_returns_reachable() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // The tree should have fruit after initialization (fruit_initial_attempts).
+        let has_fruit = sim.trees.values().any(|t| !t.fruit_positions.is_empty());
+        assert!(has_fruit, "Test tree should have some fruit after init");
+
+        // Spawn an elf near the tree so it has a nav node.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // find_nearest_fruit should return a fruit reachable via nav graph.
+        let result = sim.find_nearest_fruit(elf_id);
+        assert!(
+            result.is_some(),
+            "Elf near tree should find reachable fruit"
+        );
+        let (fruit_pos, nav_node) = result.unwrap();
+
+        // The fruit_pos should actually be in a tree's fruit list.
+        let in_tree = sim
+            .trees
+            .values()
+            .any(|t| t.fruit_positions.contains(&fruit_pos));
+        assert!(in_tree, "Returned fruit should be in a tree's fruit list");
+
+        // The nav node should be valid.
+        let _node = sim.nav_graph.node(nav_node);
+    }
+
+    #[test]
+    fn eat_fruit_task_restores_food_on_arrival() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+        let restore_pct = sim.species_table[&Species::Elf].food_restore_pct;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+
+        // Set elf food low.
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max / 10;
+        let food_before = sim.creatures[&elf_id].food;
+
+        // Manually create an EatFruit task at the elf's current node (instant arrival).
+        let fruit_pos = VoxelCoord::new(0, 0, 0); // dummy — food restore doesn't depend on real fruit
+        let task_id = TaskId::new(&mut sim.rng);
+        let eat_task = Task {
+            id: task_id,
+            kind: TaskKind::EatFruit { fruit_pos },
+            state: TaskState::InProgress,
+            location: elf_node,
+            assignees: vec![elf_id],
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+        };
+        sim.tasks.insert(task_id, eat_task);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+
+        // Advance 1 tick — the elf's next activation should complete the task.
+        sim.step(&[], sim.tick + 2);
+
+        let elf = &sim.creatures[&elf_id];
+        let expected_restore = food_max * restore_pct / 100;
+        assert!(
+            elf.food >= food_before + expected_restore - 1, // allow tiny rounding
+            "Food should increase by ~restore_pct%: before={}, after={}, expected_restore={}",
+            food_before,
+            elf.food,
+            expected_restore,
+        );
+        assert!(elf.current_task.is_none(), "Task should be complete");
+    }
+
+    #[test]
+    fn hungry_idle_elf_creates_eat_fruit_task() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Need fruit to exist.
+        let has_fruit = sim.trees.values().any(|t| !t.fruit_positions.is_empty());
+        assert!(has_fruit, "Tree must have fruit for this test");
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set food below threshold (threshold is 50% by default).
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 30 / 100;
+
+        // Advance past the next heartbeat — hunger check should fire.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // The elf should now have an EatFruit task.
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_some(),
+            "Hungry idle elf should have been assigned an EatFruit task"
+        );
+        let task = &sim.tasks[&elf.current_task.unwrap()];
+        assert!(
+            matches!(task.kind, TaskKind::EatFruit { .. }),
+            "Task should be EatFruit, got {:?}",
+            task.kind
+        );
+    }
+
+    #[test]
+    fn well_fed_elf_does_not_create_eat_fruit_task() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Spawn an elf — starts at full food.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Advance past the heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // No EatFruit task should exist.
+        let has_eat_task = sim
+            .tasks
+            .values()
+            .any(|t| matches!(t.kind, TaskKind::EatFruit { .. }));
+        assert!(
+            !has_eat_task,
+            "Well-fed elf should not create an EatFruit task"
+        );
+    }
+
+    #[test]
+    fn busy_hungry_elf_does_not_create_eat_fruit_task() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set food very low.
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 10 / 100;
+
+        // Give the elf a GoTo task so it's busy.
+        let task_id = TaskId::new(&mut sim.rng);
+        let goto_task = Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::InProgress,
+            location: NavNodeId(0),
+            assignees: vec![elf_id],
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+        };
+        sim.tasks.insert(task_id, goto_task);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+
+        // Advance past the heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // The elf should still have its GoTo task, not an EatFruit one.
+        let elf = &sim.creatures[&elf_id];
+        assert_eq!(
+            elf.current_task,
+            Some(task_id),
+            "Busy elf should keep its existing task"
+        );
+        let eat_task_count = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::EatFruit { .. }))
+            .count();
+        assert_eq!(
+            eat_task_count, 0,
+            "No EatFruit task should be created for a busy elf"
+        );
+    }
+
+    #[test]
+    fn hungry_elf_eats_fruit_and_food_increases() {
+        // Integration test: set low food, run many ticks, verify food is higher
+        // than it would be with decay alone (i.e. eating happened).
+        let mut config = test_config();
+        // Use aggressive decay so the elf gets hungry quickly.
+        config
+            .species
+            .get_mut(&Species::Elf)
+            .unwrap()
+            .food_decay_per_tick = 100_000_000_000; // ~10x faster than default
+        let mut sim = SimState::with_config(42, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+
+        // Need fruit to exist.
+        assert!(
+            sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+            "Tree must have fruit"
+        );
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set food to 20% — well below the 50% threshold.
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 20 / 100;
+        let food_before = sim.creatures[&elf_id].food;
+
+        // Run for 50_000 ticks — enough for heartbeat + pathfind + eat.
+        sim.step(&[], 50_001);
+
+        let elf = &sim.creatures[&elf_id];
+
+        // With decay alone at 100_000_000_000/tick * 3000 ticks/heartbeat =
+        // 300_000_000_000_000 per heartbeat. 50_000 ticks = ~16 heartbeats.
+        // That would drop food to 0 quickly.
+        // But eating restores 40% = 400_000_000_000_000.
+        // So if the elf ate at least once, food should be above 0.
+        // (We can't predict exact value due to timing, but food > 0 proves eating happened.)
+        assert!(
+            elf.food > 0,
+            "Hungry elf should have eaten fruit and restored food above 0. food={}",
+            elf.food
         );
     }
 }

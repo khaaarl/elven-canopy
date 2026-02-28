@@ -410,6 +410,8 @@ impl Default for GameConfig {
                 ground_only: false,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 3_333_333_333,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 40,
             },
         );
         species.insert(
@@ -422,6 +424,8 @@ impl Default for GameConfig {
                 ground_only: true,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 3_333_333_333,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 40,
             },
         );
         species.insert(
@@ -434,6 +438,8 @@ impl Default for GameConfig {
                 ground_only: true,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 3_333_333_333,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 40,
             },
         );
         species.insert(
@@ -446,6 +452,8 @@ impl Default for GameConfig {
                 ground_only: true,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 3_333_333_333,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 40,
             },
         );
         species.insert(
@@ -458,6 +466,8 @@ impl Default for GameConfig {
                 ground_only: false,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 3_333_333_333,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 40,
             },
         );
         species.insert(
@@ -470,6 +480,8 @@ impl Default for GameConfig {
                 ground_only: false,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 3_333_333_333,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 40,
             },
         );
 
@@ -603,6 +615,23 @@ mod tests {
         let capy = &config.species[&Species::Capybara];
         assert_eq!(capy.heartbeat_interval_ticks, 4000);
         assert!(capy.ground_only);
+    }
+
+    #[test]
+    fn species_data_hunger_fields_default_from_json() {
+        // Old-format JSON without hunger fields — serde defaults must apply.
+        let json = r#"{
+            "walk_ticks_per_voxel": 500,
+            "climb_ticks_per_voxel": 1250,
+            "heartbeat_interval_ticks": 3000,
+            "allowed_edge_types": null,
+            "ground_only": false,
+            "food_max": 1000000000000000,
+            "food_decay_per_tick": 3333333333
+        }"#;
+        let data: SpeciesData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.food_hunger_threshold_pct, 50);
+        assert_eq!(data.food_restore_pct, 40);
     }
 
     #[test]

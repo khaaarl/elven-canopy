@@ -24,6 +24,10 @@
 //   floating-point determinism issues.
 // - `food_decay_per_tick` — food subtracted per sim tick, batch-applied at
 //   heartbeat time as `decay_per_tick * heartbeat_interval_ticks`.
+// - `food_hunger_threshold_pct` — percentage of `food_max` below which an
+//   idle creature will seek fruit (default 50).
+// - `food_restore_pct` — percentage of `food_max` restored when eating
+//   fruit (default 40).
 //
 // See also: `config.rs` where the species table lives as part of `GameConfig`,
 // `sim.rs` for the unified `Creature` type and activation chain that consumes
@@ -67,6 +71,24 @@ pub struct SpeciesData {
     /// `decay_per_tick * heartbeat_interval_ticks`.
     #[serde(default = "default_food_decay_per_tick")]
     pub food_decay_per_tick: i64,
+
+    /// Food percentage below which an idle creature will seek fruit.
+    /// E.g. 50 means the creature gets hungry at 50% food.
+    #[serde(default = "default_food_hunger_threshold_pct")]
+    pub food_hunger_threshold_pct: i64,
+
+    /// Percentage of food_max restored when a creature eats fruit.
+    /// E.g. 40 means eating restores 40% of food_max.
+    #[serde(default = "default_food_restore_pct")]
+    pub food_restore_pct: i64,
+}
+
+fn default_food_hunger_threshold_pct() -> i64 {
+    50
+}
+
+fn default_food_restore_pct() -> i64 {
+    40
 }
 
 fn default_food_max() -> i64 {

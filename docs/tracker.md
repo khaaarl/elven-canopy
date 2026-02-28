@@ -34,6 +34,10 @@ This reduces merge conflicts when parallel work streams add items.
 
 ### In Progress
 
+```
+[~] F-elf-needs            Hunger and rest self-direction
+```
+
 ### Todo
 
 ```
@@ -60,7 +64,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-elf-names            Elf name generation from conlang rules
-[ ] F-elf-needs            Hunger and rest self-direction
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
@@ -474,11 +477,18 @@ Capybara species with ground-only movement restriction, own sprite renderer,
 and species-specific speed config.
 
 #### F-elf-needs — Hunger and rest self-direction
-**Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
+**Status:** In Progress · **Phase:** 3 · **Refs:** §13, §15
 
 Elves autonomously seek food (eat fruit from trees) and rest (find sleeping
 spots) when needs are low. Self-directed behavior that interrupts assigned
 tasks when needs are critical.
+
+**Hunger (done):** Idle creatures with food below `food_hunger_threshold_pct`
+(default 50%) get an `EatFruit` task created at heartbeat time, pathfind to
+the nearest fruit voxel, eat it (restoring `food_restore_pct`% of food_max),
+and remove the fruit from the world.
+
+**Rest/sleep:** Not yet implemented.
 
 **Related:** F-food-gauge, F-task-priority
 
