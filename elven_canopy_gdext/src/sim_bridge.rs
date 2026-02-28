@@ -26,6 +26,10 @@
 //   task status, food level, and food_max for the creature at the given
 //   species-filtered index. Used by the creature info panel for display and
 //   follow-mode tracking.
+// - **Task list:** `get_active_tasks()` — returns a `VarArray` of
+//   `VarDictionary`, one per non-complete task. Each dict includes short/full
+//   ID, kind, state, progress/total_cost, location coordinates, and an
+//   assignees array with creature species and index. Used by `task_panel.gd`.
 // - **Nav nodes:** `get_all_nav_nodes()`, `get_ground_nav_nodes()` — for
 //   debug visualization. `get_visible_nav_nodes(cam_pos)`,
 //   `get_visible_ground_nav_nodes(cam_pos)` — filtered by voxel-based
@@ -70,6 +74,7 @@ use elven_canopy_sim::blueprint::BlueprintState;
 use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::config::{GameConfig, TreeProfile};
 use elven_canopy_sim::sim::SimState;
+use elven_canopy_sim::task::TaskState;
 use elven_canopy_sim::types::{BuildType, Priority, Species, VoxelCoord, VoxelType};
 use godot::prelude::*;
 
@@ -83,6 +88,18 @@ fn parse_species(name: &str) -> Option<Species> {
         "Monkey" => Some(Species::Monkey),
         "Squirrel" => Some(Species::Squirrel),
         _ => None,
+    }
+}
+
+/// Convert a `Species` enum variant to its display string.
+fn species_name(species: Species) -> &'static str {
+    match species {
+        Species::Elf => "Elf",
+        Species::Capybara => "Capybara",
+        Species::Boar => "Boar",
+        Species::Deer => "Deer",
+        Species::Monkey => "Monkey",
+        Species::Squirrel => "Squirrel",
     }
 }
 
@@ -472,6 +489,94 @@ impl SimBridge {
             }
             None => VarDictionary::new(),
         }
+    }
+
+    /// Return all non-complete tasks as a `VarArray` of dictionaries.
+    ///
+    /// Each dictionary contains: `id` (short hex), `id_full` (full UUID),
+    /// `kind` ("GoTo" or "Build"), `state` ("Available" or "In Progress"),
+    /// `progress`, `total_cost`, `location_x/y/z`, and `assignees` (array
+    /// of dictionaries with `id_short`, `species`, `index`).
+    ///
+    /// The creature `index` matches the species-filtered iteration order used
+    /// by `get_creature_positions()`, so GDScript can use it directly for
+    /// camera follow and selection.
+    #[func]
+    fn get_active_tasks(&self) -> VarArray {
+        let Some(sim) = &self.sim else {
+            return VarArray::new();
+        };
+
+        let mut result = VarArray::new();
+        for task in sim.tasks.values() {
+            if task.state == TaskState::Complete {
+                continue;
+            }
+
+            let mut dict = VarDictionary::new();
+
+            // Task ID — short (first 8 hex chars) and full UUID.
+            let id_full = task.id.0.to_string();
+            let id_short: String = id_full.chars().take(8).collect();
+            dict.set("id", GString::from(&id_short));
+            dict.set("id_full", GString::from(&id_full));
+
+            // Kind.
+            let kind_str = match &task.kind {
+                elven_canopy_sim::task::TaskKind::GoTo => "GoTo",
+                elven_canopy_sim::task::TaskKind::Build { .. } => "Build",
+            };
+            dict.set("kind", GString::from(kind_str));
+
+            // State.
+            let state_str = match task.state {
+                TaskState::Available => "Available",
+                TaskState::InProgress => "In Progress",
+                TaskState::Complete => unreachable!(),
+            };
+            dict.set("state", GString::from(state_str));
+
+            // Progress.
+            dict.set("progress", task.progress);
+            dict.set("total_cost", task.total_cost);
+
+            // Location — resolve NavNodeId to VoxelCoord.
+            let pos = sim.nav_graph.node(task.location).position;
+            dict.set("location_x", pos.x);
+            dict.set("location_y", pos.y);
+            dict.set("location_z", pos.z);
+
+            // Assignees — resolve CreatureId to species name + index.
+            let mut assignees_arr = VarArray::new();
+            for assignee_id in &task.assignees {
+                if let Some(creature) = sim.creatures.get(assignee_id) {
+                    let mut a = VarDictionary::new();
+                    let cid_full = assignee_id.0.to_string();
+                    let cid_short: String = cid_full.chars().take(8).collect();
+                    a.set("id_short", GString::from(&cid_short));
+
+                    let sp = species_name(creature.species);
+                    a.set("species", GString::from(sp));
+
+                    // Compute the species-filtered index: count how many
+                    // creatures of the same species come before this one in
+                    // BTreeMap iteration order.
+                    let index = sim
+                        .creatures
+                        .iter()
+                        .filter(|(_, c)| c.species == creature.species)
+                        .position(|(id, _)| *id == *assignee_id)
+                        .unwrap_or(0);
+                    a.set("index", index as i32);
+
+                    assignees_arr.push(&a.to_variant());
+                }
+            }
+            dict.set("assignees", assignees_arr);
+
+            result.push(&dict.to_variant());
+        }
+        result
     }
 
     /// Return positions for any species as a PackedVector3Array, interpolated

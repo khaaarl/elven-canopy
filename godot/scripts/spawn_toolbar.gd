@@ -5,7 +5,8 @@
 ##
 ## Keyboard shortcuts:
 ## [1] Spawn Elf, [2] Spawn Capybara, [3] Spawn Boar, [4] Spawn Deer,
-## [5] Spawn Monkey, [6] Spawn Squirrel, [7] Summon Elf, [B] Build
+## [5] Spawn Monkey, [6] Spawn Squirrel, [7] Summon Elf, [B] Build,
+## [T] Tasks
 ##
 ## Emits two signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
@@ -17,6 +18,7 @@
 ##
 ## See also: placement_controller.gd which listens for spawn/action signals,
 ## construction_controller.gd which listens for the "Build" action,
+## task_panel.gd which listens for the "Tasks" action,
 ## main.gd which wires toolbar to controllers,
 ## sim_bridge.rs for the spawn_creature/create_goto_task commands.
 
@@ -33,6 +35,7 @@ var _monkey_button: Button
 var _squirrel_button: Button
 var _summon_button: Button
 var _build_button: Button
+var _tasks_button: Button
 
 
 func _ready() -> void:
@@ -84,6 +87,11 @@ func _ready() -> void:
 	_build_button.pressed.connect(_on_build_pressed)
 	hbox.add_child(_build_button)
 
+	_tasks_button = Button.new()
+	_tasks_button.text = "Tasks [T]"
+	_tasks_button.pressed.connect(_on_tasks_pressed)
+	hbox.add_child(_tasks_button)
+
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -112,6 +120,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif key.keycode == KEY_B:
 			_on_build_pressed()
 			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_T:
+			_on_tasks_pressed()
+			get_viewport().set_input_as_handled()
 
 
 func _on_spawn(species_name: String) -> void:
@@ -124,3 +135,7 @@ func _on_summon_pressed() -> void:
 
 func _on_build_pressed() -> void:
 	action_requested.emit("Build")
+
+
+func _on_tasks_pressed() -> void:
+	action_requested.emit("Tasks")

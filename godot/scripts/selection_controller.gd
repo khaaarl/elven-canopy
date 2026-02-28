@@ -70,6 +70,14 @@ func get_selected_index() -> int:
 	return _selected_index
 
 
+## Programmatically select a creature by species and index, as if the player
+## clicked on it. Used by the task panel to trigger the full selection flow.
+func select_creature(species: String, index: int) -> void:
+	_selected_species = species
+	_selected_index = index
+	creature_selected.emit(species, index)
+
+
 func deselect() -> void:
 	_selected_species = ""
 	_selected_index = -1

@@ -28,7 +28,8 @@
 ## 2. construction_controller — if placing: exit placing sub-mode;
 ##    if active: exit construction mode
 ## 3. selection_controller — deselect creature
-## 4. pause_menu — open/close (on CanvasLayer, fires after scene tree nodes)
+## 4. task_panel — close task list (if visible, on CanvasLayer layer 2)
+## 5. pause_menu — open/close (on CanvasLayer layer 2, added after task panel)
 ##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
@@ -36,9 +37,9 @@
 ## spawn_toolbar.gd for the toolbar UI, placement_controller.gd for
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
-## creature_info_panel.gd for the creature info panel, game_session.gd
-## for the autoload that carries the seed/load path from the menu,
-## pause_menu.gd for the ESC pause overlay.
+## creature_info_panel.gd for the creature info panel, task_panel.gd for
+## the task list overlay, game_session.gd for the autoload that carries
+## the seed/load path from the menu, pause_menu.gd for the ESC pause overlay.
 
 extends Node3D
 
@@ -60,6 +61,7 @@ const SPECIES_Y_OFFSETS = {
 
 var _selector: Node3D
 var _panel: PanelContainer
+var _task_panel: ColorRect
 var _camera_pivot: Node3D
 var _construction_controller: Node
 ## Renderers for new species (Boar, Deer, Monkey, Squirrel). Receive
@@ -266,6 +268,42 @@ func _ready() -> void:
 	pause_menu.setup(bridge)
 	menu_btn.pressed.connect(pause_menu.toggle)
 
+	# Task panel overlay (on CanvasLayer 2, added after pause_layer so its
+	# ESC handler fires first in reverse tree order).
+	var task_panel_layer := CanvasLayer.new()
+	task_panel_layer.layer = 2
+	add_child(task_panel_layer)
+
+	var task_panel_script = load("res://scripts/task_panel.gd")
+	_task_panel = ColorRect.new()
+	_task_panel.set_script(task_panel_script)
+	task_panel_layer.add_child(_task_panel)
+
+	# Wire toolbar "Tasks" action -> task panel toggle.
+	toolbar.action_requested.connect(
+		func(action: String):
+			if action == "Tasks":
+				_task_panel.toggle()
+	)
+
+	# Wire task panel zoom-to-creature -> select creature + camera follow.
+	_task_panel.zoom_to_creature.connect(
+		func(species: String, index: int):
+			_task_panel.hide_panel()
+			_selector.select_creature(species, index)
+			var tick := float(bridge.current_tick())
+			var pos = _get_creature_world_pos(bridge, tick, species, index)
+			if pos != null:
+				_camera_pivot.start_follow(pos)
+	)
+
+	# Wire task panel zoom-to-location -> move camera pivot.
+	_task_panel.zoom_to_location.connect(
+		func(x: float, y: float, z: float):
+			_task_panel.hide_panel()
+			_look_at_position(Vector3(x + 0.5, y, z + 0.5))
+	)
+
 	# Wire follow button -> camera.
 	_panel.follow_requested.connect(
 		func():
@@ -344,6 +382,11 @@ func _process(delta: float) -> void:
 	if _panel and _panel.visible and not _camera_pivot.is_following():
 		_panel.set_follow_state(false)
 
+	# Refresh task panel while visible.
+	if _task_panel and _task_panel.visible:
+		var tasks := bridge.get_active_tasks()
+		_task_panel.update_tasks(tasks)
+
 	# Refresh panel info while a creature is selected.
 	if _panel and _panel.visible and _selector.get_selected_index() >= 0:
 		var info := bridge.get_creature_info(
@@ -351,6 +394,16 @@ func _process(delta: float) -> void:
 		)
 		if not info.is_empty():
 			_panel.update_info(info)
+
+
+## Move the camera to look at a world-space position, stopping any active
+## creature follow. Use this for any "jump the camera here" action that
+## isn't creature-tracking (task sites, landmarks, etc.).
+func _look_at_position(pos: Vector3) -> void:
+	_camera_pivot.stop_follow()
+	if _panel and _panel.visible:
+		_panel.set_follow_state(false)
+	_camera_pivot.position = pos
 
 
 ## Get the world-space position of a creature sprite, matching the offsets
