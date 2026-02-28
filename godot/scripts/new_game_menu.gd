@@ -21,7 +21,7 @@
 extends Control
 
 # Preset names in display order (index must match OptionButton item indices).
-const PRESET_NAMES: Array[String] = ["Fantasy Mega", "Oak", "Conifer", "Willow"]
+const PRESET_NAMES: Array[String] = ["Oak", "Conifer", "Willow"]
 
 # Slider definitions: [label, preset_field_path, min, max, step].
 # preset_field_path is used to read/write the value in the active preset dict.
@@ -37,52 +37,6 @@ const SLIDER_DEFS: Array[Array] = [
 # Full TreeProfile dictionaries matching the Rust serde JSON schema.
 # These are the 4 named presets from config.rs.
 const PRESETS: Dictionary = {
-	"Fantasy Mega":
-	{
-		"growth":
-		{
-			"initial_energy": 400.0,
-			"energy_to_radius": 0.08,
-			"min_radius": 0.5,
-			"growth_step_length": 1.0,
-			"energy_per_step": 1.0,
-		},
-		"split":
-		{
-			"split_chance_base": 0.12,
-			"split_count": 1,
-			"split_energy_ratio": 0.35,
-			"split_angle": 0.7,
-			"split_angle_variance": 0.3,
-			"min_progress_for_split": 0.15,
-		},
-		"curvature":
-		{
-			"gravitropism": 0.08,
-			"random_deflection": 0.15,
-			"deflection_coherence": 0.7,
-		},
-		"roots":
-		{
-			"root_energy_fraction": 0.15,
-			"root_initial_count": 5,
-			"root_gravitropism": 0.12,
-			"root_initial_angle": 0.3,
-			"root_surface_tendency": 0.8,
-		},
-		"leaves":
-		{
-			"leaf_shape": "Sphere",
-			"leaf_density": 0.65,
-			"leaf_size": 3,
-			"canopy_density": 1.0,
-		},
-		"trunk":
-		{
-			"base_flare": 0.5,
-			"initial_direction": [0.0, 1.0, 0.0],
-		},
-	},
 	"Oak":
 	{
 		"growth":

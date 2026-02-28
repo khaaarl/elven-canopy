@@ -17,6 +17,7 @@
 // - `species.rs`:     SpeciesData — data-driven creature behavior (DF-style).
 // - `task.rs`:        Task entities — units of work assigned to creatures.
 // - `blueprint.rs`:   Blueprint data model for the construction system.
+// - `structural.rs`:  Spring-mass structural integrity solver.
 // - `prng.rs`:        Xoshiro256++ PRNG with SplitMix64 seeding.
 // - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.
 //
@@ -39,6 +40,7 @@ pub mod pathfinding;
 pub mod prng;
 pub mod sim;
 pub mod species;
+pub mod structural;
 pub mod task;
 pub mod tree_gen;
 pub mod types;

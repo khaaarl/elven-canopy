@@ -56,6 +56,13 @@ var _ghost_material: StandardMaterial3D
 ## and ghost positioning. Updated each _process frame while placing.
 var _focus_voxel: Vector3i = Vector3i.ZERO
 var _focus_valid: bool = false
+## Structural preview tier: "Ok", "Warning", or "Blocked".
+var _validation_tier: String = "Ok"
+## Cached inputs for change-detection — only re-validate when these change.
+var _last_preview_voxel: Vector3i = Vector3i(999999, 999999, 999999)
+var _last_preview_width: int = -1
+var _last_preview_depth: int = -1
+var _last_preview_height: int = -1
 
 ## Current build mode: "platform" or "building".
 var _build_mode: String = "platform"
@@ -73,6 +80,10 @@ var _depth_label: Label
 var _height_row: HBoxContainer
 var _height_label: Label
 var _construct_btn: Button
+
+## Temporary label for build validation messages (warnings / block reasons).
+var _message_label: Label
+var _message_timer: float = 0.0
 
 
 func setup(bridge: SimBridge, camera_pivot: Node3D) -> void:
@@ -253,6 +264,14 @@ func _build_panel() -> void:
 	_construct_btn.pressed.connect(_confirm_placement)
 	_placing_controls.add_child(_construct_btn)
 
+	# Build validation message label (shown temporarily after placement).
+	_message_label = Label.new()
+	_message_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_message_label.add_theme_font_size_override("font_size", 14)
+	_message_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	_message_label.visible = false
+	_placing_controls.add_child(_message_label)
+
 	_panel.visible = false
 
 
@@ -329,12 +348,19 @@ func _exit_placing() -> void:
 	_ghost.visible = false
 	_placing_controls.visible = false
 	_height_row.visible = false
+	_message_label.visible = false
+	_message_timer = 0.0
 	_width = 1
 	_depth = 1
 	_height = 1
 	_width_label.text = "1"
 	_depth_label.text = "1"
 	_height_label.text = "1"
+	_validation_tier = "Ok"
+	_last_preview_voxel = Vector3i(999999, 999999, 999999)
+	_last_preview_width = -1
+	_last_preview_depth = -1
+	_last_preview_height = -1
 
 
 func _width_decrease() -> void:
@@ -398,6 +424,12 @@ func _get_min_corner() -> Vector3i:
 
 
 func _process(_delta: float) -> void:
+	# Fade out post-confirm messages after timeout.
+	if _message_timer > 0.0:
+		_message_timer -= _delta
+		if _message_timer <= 0.0:
+			_message_label.visible = false
+
 	if not _placing:
 		return
 	if not _camera_pivot or not _camera_pivot.has_method("get_focus_voxel"):
@@ -423,31 +455,52 @@ func _process(_delta: float) -> void:
 			min_corner.z + _depth / 2.0,
 		)
 
-	if _build_mode == "building":
-		_focus_valid = _bridge.validate_building_position(
-			min_corner.x, _focus_voxel.y, min_corner.z, _width, _depth, _height
-		)
-	else:
-		# Platform validation: ALL voxels must be in-bounds + Air, and
-		# AT LEAST ONE voxel must have a face-adjacent solid (tree contact).
-		var all_air := true
-		var any_adjacent := false
-		for dx in range(_width):
-			for dz in range(_depth):
-				var vx: int = min_corner.x + dx
-				var vz: int = min_corner.z + dz
-				if not _bridge.validate_build_air(vx, min_corner.y, vz):
-					all_air = false
-					break
-				if not any_adjacent and _bridge.has_solid_neighbor(vx, min_corner.y, vz):
-					any_adjacent = true
-			if not all_air:
-				break
-		_focus_valid = all_air and any_adjacent
+	# Only re-validate when the focus voxel or dimensions change.
+	var needs_revalidate := (
+		min_corner != _last_preview_voxel
+		or _width != _last_preview_width
+		or _depth != _last_preview_depth
+		or _height != _last_preview_height
+	)
+	if needs_revalidate:
+		_last_preview_voxel = min_corner
+		_last_preview_width = _width
+		_last_preview_depth = _depth
+		_last_preview_height = _height
+
+		var result: Dictionary
+		if _build_mode == "building":
+			result = _bridge.validate_building_preview(
+				min_corner.x, _focus_voxel.y, min_corner.z, _width, _depth, _height
+			)
+		else:
+			result = _bridge.validate_platform_preview(
+				min_corner.x, min_corner.y, min_corner.z, _width, _depth
+			)
+		_validation_tier = result.get("tier", "Blocked")
+		_focus_valid = _validation_tier != "Blocked"
+
+		# Show/hide the preview validation message.
+		var msg: String = result.get("message", "")
+		if _validation_tier == "Ok" or msg == "":
+			# Only hide if not showing a post-confirm message.
+			if _message_timer <= 0.0:
+				_message_label.visible = false
+		else:
+			_message_label.text = msg
+			_message_label.visible = true
+			# Override any post-confirm timer while hovering.
+			_message_timer = 0.0
+			if _validation_tier == "Blocked":
+				_message_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+			else:
+				_message_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
 
 	_construct_btn.disabled = not _focus_valid
-	if _focus_valid:
+	if _validation_tier == "Ok":
 		_ghost_material.albedo_color = Color(0.3, 0.5, 1.0, 0.4)
+	elif _validation_tier == "Warning":
+		_ghost_material.albedo_color = Color(1.0, 0.85, 0.3, 0.4)
 	else:
 		_ghost_material.albedo_color = Color(1.0, 0.2, 0.2, 0.4)
 
@@ -502,10 +555,22 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _confirm_placement() -> void:
 	var min_corner := _get_min_corner()
+	var msg: String
 	if _build_mode == "building":
-		_bridge.designate_building(
+		msg = _bridge.designate_building(
 			min_corner.x, _focus_voxel.y, min_corner.z, _width, _depth, _height
 		)
 	else:
-		_bridge.designate_build_rect(min_corner.x, min_corner.y, min_corner.z, _width, _depth)
+		msg = _bridge.designate_build_rect(min_corner.x, min_corner.y, min_corner.z, _width, _depth)
+	if msg != "":
+		_show_build_message(msg)
+	# Invalidate preview cache so the next frame re-validates against
+	# the changed world state.
+	_last_preview_voxel = Vector3i(999999, 999999, 999999)
 	blueprint_placed.emit()
+
+
+func _show_build_message(msg: String) -> void:
+	_message_label.text = msg
+	_message_label.visible = true
+	_message_timer = 3.0

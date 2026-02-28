@@ -160,6 +160,7 @@ use crate::nav::{self, NavGraph};
 use crate::pathfinding;
 use crate::prng::GameRng;
 use crate::species::SpeciesData;
+use crate::structural;
 use crate::task;
 use crate::tree_gen;
 use crate::types::*;
@@ -240,6 +241,13 @@ pub struct SimState {
     /// Species data table built from config. Not serialized (rebuilt from config).
     #[serde(skip)]
     pub species_table: BTreeMap<Species, SpeciesData>,
+
+    /// Transient message from the last build designation attempt. Set by
+    /// `designate_build()` / `designate_building()` and read by `sim_bridge.rs`
+    /// to surface validation feedback (warnings, block reasons) to the player.
+    /// Cleared at the start of each designation call.
+    #[serde(skip)]
+    pub last_build_message: Option<String>,
 }
 
 /// A tree entity — the primary world structure.
@@ -365,13 +373,36 @@ impl SimState {
         let player_tree_id = TreeId::new(&mut rng);
 
         let (ws_x, ws_y, ws_z) = config.world_size;
-        let mut world = VoxelWorld::new(ws_x, ws_y, ws_z);
-
-        // Generate tree geometry into the voxel world.
-        let tree_result = tree_gen::generate_tree(&mut world, &config, &mut rng);
-
         let center_x = ws_x as i32 / 2;
         let center_z = ws_z as i32 / 2;
+
+        // Generate tree geometry with structural validation retry loop.
+        // If the tree fails under its own weight, regenerate (the RNG has
+        // advanced, producing different geometry).
+        let mut world = VoxelWorld::new(ws_x, ws_y, ws_z);
+        let mut tree_result = None;
+        for _attempt in 0..config.structural.tree_gen_max_retries {
+            let candidate = tree_gen::generate_tree(&mut world, &config, &mut rng);
+            if structural::validate_tree(&world, &config) {
+                tree_result = Some(candidate);
+                break;
+            }
+            // Clear and rebuild world for retry.
+            world = VoxelWorld::new(ws_x, ws_y, ws_z);
+            let floor_extent = config.floor_extent;
+            for dx in -floor_extent..=floor_extent {
+                for dz in -floor_extent..=floor_extent {
+                    world.set(
+                        VoxelCoord::new(center_x + dx, 0, center_z + dz),
+                        VoxelType::ForestFloor,
+                    );
+                }
+            }
+        }
+        let tree_result = tree_result.expect(
+            "Tree generation failed structural validation after max retries. \
+             Tree profile parameters are incompatible with material properties.",
+        );
 
         let home_tree = Tree {
             id: player_tree_id,
@@ -420,6 +451,7 @@ impl SimState {
             world,
             nav_graph,
             species_table,
+            last_build_message: None,
         };
 
         // Fast-forward fruit spawning: run the same attempt_fruit_spawn code
@@ -547,14 +579,19 @@ impl SimState {
         priority: Priority,
         events: &mut Vec<SimEvent>,
     ) {
+        self.last_build_message = None;
+
         if voxels.is_empty() {
+            self.last_build_message = Some("No voxels to build.".to_string());
             return;
         }
         for &coord in voxels {
             if !self.world.in_bounds(coord) {
+                self.last_build_message = Some("Build position is out of bounds.".to_string());
                 return;
             }
             if self.world.get(coord) != VoxelType::Air {
+                self.last_build_message = Some("Build position is not empty.".to_string());
                 return;
             }
         }
@@ -562,7 +599,27 @@ impl SimState {
             .iter()
             .any(|&coord| self.world.has_solid_face_neighbor(coord));
         if !any_adjacent {
+            self.last_build_message =
+                Some("Must build adjacent to an existing structure.".to_string());
             return;
+        }
+
+        // Structural validation: fast BFS + weight-flow check (no full solver).
+        let validation = structural::validate_blueprint_fast(
+            &self.world,
+            &self.face_data,
+            voxels,
+            build_type.to_voxel_type(),
+            &BTreeMap::new(),
+            &self.config,
+        );
+        if matches!(validation.tier, structural::ValidationTier::Blocked) {
+            self.last_build_message = Some(validation.message);
+            return;
+        }
+        let stress_warning = matches!(validation.tier, structural::ValidationTier::Warning);
+        if stress_warning {
+            self.last_build_message = Some(validation.message);
         }
 
         let project_id = ProjectId::new(&mut self.rng);
@@ -595,6 +652,7 @@ impl SimState {
             state: BlueprintState::Designated,
             task_id: Some(task_id),
             face_layout: None,
+            stress_warning,
         };
         self.blueprints.insert(project_id, bp);
         events.push(SimEvent {
@@ -620,7 +678,10 @@ impl SimState {
         priority: Priority,
         events: &mut Vec<SimEvent>,
     ) {
+        self.last_build_message = None;
+
         if width < 3 || depth < 3 || height < 1 {
+            self.last_build_message = Some("Building too small (min 3x3x1).".to_string());
             return;
         }
 
@@ -629,6 +690,8 @@ impl SimState {
             for z in anchor.z..anchor.z + depth {
                 let coord = VoxelCoord::new(x, anchor.y, z);
                 if !self.world.in_bounds(coord) || !self.world.get(coord).is_solid() {
+                    self.last_build_message =
+                        Some("Foundation must be on solid ground.".to_string());
                     return;
                 }
             }
@@ -640,6 +703,8 @@ impl SimState {
                 for z in anchor.z..anchor.z + depth {
                     let coord = VoxelCoord::new(x, y, z);
                     if !self.world.in_bounds(coord) || self.world.get(coord) != VoxelType::Air {
+                        self.last_build_message =
+                            Some("Building interior must be clear.".to_string());
                         return;
                     }
                 }
@@ -650,6 +715,24 @@ impl SimState {
         let face_layout =
             crate::building::compute_building_face_layout(anchor, width, depth, height);
         let voxels: Vec<VoxelCoord> = face_layout.keys().copied().collect();
+
+        // Structural validation: fast BFS + weight-flow check (no full solver).
+        let validation = structural::validate_blueprint_fast(
+            &self.world,
+            &self.face_data,
+            &voxels,
+            VoxelType::BuildingInterior,
+            &face_layout,
+            &self.config,
+        );
+        if matches!(validation.tier, structural::ValidationTier::Blocked) {
+            self.last_build_message = Some(validation.message);
+            return;
+        }
+        let stress_warning = matches!(validation.tier, structural::ValidationTier::Warning);
+        if stress_warning {
+            self.last_build_message = Some(validation.message);
+        }
 
         let project_id = ProjectId::new(&mut self.rng);
 
@@ -681,6 +764,7 @@ impl SimState {
             state: BlueprintState::Designated,
             task_id: Some(task_id),
             face_layout: Some(face_layout.into_iter().collect()),
+            stress_warning,
         };
         self.blueprints.insert(project_id, bp);
         events.push(SimEvent {

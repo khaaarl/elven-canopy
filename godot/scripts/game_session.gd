@@ -16,9 +16,9 @@ extends Node
 var sim_seed: int = -1
 
 ## Tree generation profile. Written by new_game_menu.gd when the player
-## configures tree shape parameters. An empty dictionary means "use default"
-## (Fantasy Mega). When non-empty, main.gd serializes this to JSON and passes
-## it to SimBridge.init_sim_with_tree_profile_json().
+## configures tree shape parameters. An empty dictionary means "use Rust
+## default profile". When non-empty, main.gd serializes this to JSON and
+## passes it to SimBridge.init_sim_with_tree_profile_json().
 var tree_profile: Dictionary = {}
 
 ## Path to a save file to load (e.g., "user://saves/my_save.json").

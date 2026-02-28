@@ -46,6 +46,10 @@
 //   in-bounds + Air (no adjacency), and `has_solid_neighbor(x,y,z)`
 //   checks adjacency alone — used together for multi-voxel rectangle
 //   validation where adjacency applies to the rectangle as a whole.
+//   `validate_platform_preview(x,y,z,w,d)` and
+//   `validate_building_preview(x,y,z,w,d,h)` combine basic checks with
+//   structural analysis and return `{tier, message}` dictionaries for
+//   real-time 3-state ghost preview (Ok/Warning/Blocked).
 //   `get_blueprint_voxels()` returns flat (x,y,z) triples for unplaced
 //   voxels in `Designated` blueprints (excludes already-materialized
 //   voxels). `get_platform_voxels()` returns flat (x,y,z) triples for
@@ -74,10 +78,13 @@
 // query callers, `construction_controller.gd` for build placement,
 // `blueprint_renderer.gd` for blueprint visualization.
 
+use std::collections::BTreeMap;
+
 use elven_canopy_sim::blueprint::BlueprintState;
 use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::config::{GameConfig, TreeProfile};
 use elven_canopy_sim::sim::SimState;
+use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::TaskState;
 use elven_canopy_sim::types::{BuildType, Priority, Species, VoxelCoord, VoxelType};
 use godot::prelude::*;
@@ -872,11 +879,13 @@ impl SimBridge {
     ///
     /// Constructs a `DesignateBuild` command and steps the sim by one tick,
     /// following the same pattern as `spawn_elf()` / `create_goto_task()`.
-    /// The sim validates the position internally and silently ignores invalid
-    /// designations.
+    /// Returns a non-empty string if the sim produced a validation message
+    /// (warning or block reason), empty string on silent success.
     #[func]
-    fn designate_build(&mut self, x: i32, y: i32, z: i32) {
-        let Some(sim) = &mut self.sim else { return };
+    fn designate_build(&mut self, x: i32, y: i32, z: i32) -> GString {
+        let Some(sim) = &mut self.sim else {
+            return GString::new();
+        };
         let player_id = sim.player_id;
         let next_tick = sim.tick + 1;
         let cmd = SimCommand {
@@ -889,6 +898,9 @@ impl SimBridge {
             },
         };
         sim.step(&[cmd], next_tick);
+        sim.last_build_message
+            .as_deref()
+            .map_or_else(GString::new, GString::from)
     }
 
     /// Designate a rectangular platform blueprint.
@@ -896,10 +908,12 @@ impl SimBridge {
     /// `x, y, z` is the min-corner of the rectangle (GDScript computes this
     /// from the center focus voxel and the current dimensions). `width` and
     /// `depth` are the size in X and Z (clamped to >= 1). All voxels share
-    /// the same Y. Same command pattern as `designate_build()`.
+    /// the same Y. Returns a validation message (empty = success).
     #[func]
-    fn designate_build_rect(&mut self, x: i32, y: i32, z: i32, width: i32, depth: i32) {
-        let Some(sim) = &mut self.sim else { return };
+    fn designate_build_rect(&mut self, x: i32, y: i32, z: i32, width: i32, depth: i32) -> GString {
+        let Some(sim) = &mut self.sim else {
+            return GString::new();
+        };
         let w = width.max(1);
         let d = depth.max(1);
         let mut voxels = Vec::with_capacity((w * d) as usize);
@@ -920,16 +934,29 @@ impl SimBridge {
             },
         };
         sim.step(&[cmd], next_tick);
+        sim.last_build_message
+            .as_deref()
+            .map_or_else(GString::new, GString::from)
     }
 
     /// Designate a building at the given anchor position.
     ///
     /// `x, y, z` is the anchor (min corner at foundation level). `width` and
     /// `depth` are the building footprint, `height` is the number of floors.
-    /// Same command pattern as `designate_build()`.
+    /// Returns a validation message (empty = success).
     #[func]
-    fn designate_building(&mut self, x: i32, y: i32, z: i32, width: i32, depth: i32, height: i32) {
-        let Some(sim) = &mut self.sim else { return };
+    fn designate_building(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        width: i32,
+        depth: i32,
+        height: i32,
+    ) -> GString {
+        let Some(sim) = &mut self.sim else {
+            return GString::new();
+        };
         let player_id = sim.player_id;
         let next_tick = sim.tick + 1;
         let cmd = SimCommand {
@@ -944,6 +971,9 @@ impl SimBridge {
             },
         };
         sim.step(&[cmd], next_tick);
+        sim.last_build_message
+            .as_deref()
+            .map_or_else(GString::new, GString::from)
     }
 
     /// Validate whether a building can be placed at the given anchor.
@@ -985,6 +1015,152 @@ impl SimBridge {
             }
         }
         true
+    }
+
+    /// Preview-validate a rectangular platform placement.
+    ///
+    /// Combines basic checks (in-bounds, Air, adjacency) with structural
+    /// analysis via `validate_blueprint_fast()`. Returns a `VarDictionary`
+    /// with keys:
+    /// - `"tier"`: `"Ok"`, `"Warning"`, or `"Blocked"`
+    /// - `"message"`: human-readable explanation (empty for Ok)
+    ///
+    /// Read-only — does not step the sim or modify any state.
+    #[func]
+    fn validate_platform_preview(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        width: i32,
+        depth: i32,
+    ) -> VarDictionary {
+        let Some(sim) = &self.sim else {
+            return Self::preview_result("Blocked", "Simulation not initialized.");
+        };
+        let w = width.max(1);
+        let d = depth.max(1);
+        let mut voxels = Vec::with_capacity((w * d) as usize);
+        for dx in 0..w {
+            for dz in 0..d {
+                voxels.push(VoxelCoord::new(x + dx, y, z + dz));
+            }
+        }
+
+        // Basic checks: all in-bounds + Air.
+        for &coord in &voxels {
+            if !sim.world.in_bounds(coord) {
+                return Self::preview_result("Blocked", "Build position is out of bounds.");
+            }
+            if sim.world.get(coord) != VoxelType::Air {
+                return Self::preview_result("Blocked", "Build position is not empty.");
+            }
+        }
+
+        // At least one voxel must be face-adjacent to solid.
+        let any_adjacent = voxels
+            .iter()
+            .any(|&coord| sim.world.has_solid_face_neighbor(coord));
+        if !any_adjacent {
+            return Self::preview_result(
+                "Blocked",
+                "Must build adjacent to an existing structure.",
+            );
+        }
+
+        // Structural validation.
+        let validation = structural::validate_blueprint_fast(
+            &sim.world,
+            &sim.face_data,
+            &voxels,
+            BuildType::Platform.to_voxel_type(),
+            &BTreeMap::new(),
+            &sim.config,
+        );
+        Self::preview_result_from_tier(validation.tier, &validation.message)
+    }
+
+    /// Preview-validate a building placement.
+    ///
+    /// Combines basic checks (size, solid foundation, air interior) with
+    /// structural analysis via `validate_blueprint_fast()`. Returns a
+    /// `VarDictionary` with `"tier"` and `"message"` keys, same as
+    /// `validate_platform_preview()`.
+    ///
+    /// Read-only — does not step the sim or modify any state.
+    #[func]
+    fn validate_building_preview(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        width: i32,
+        depth: i32,
+        height: i32,
+    ) -> VarDictionary {
+        let Some(sim) = &self.sim else {
+            return Self::preview_result("Blocked", "Simulation not initialized.");
+        };
+
+        if width < 3 || depth < 3 || height < 1 {
+            return Self::preview_result("Blocked", "Building too small (min 3x3x1).");
+        }
+
+        // Validate foundation (all must be solid).
+        let anchor = VoxelCoord::new(x, y, z);
+        for dx in 0..width {
+            for dz in 0..depth {
+                let coord = VoxelCoord::new(x + dx, y, z + dz);
+                if !sim.world.in_bounds(coord) || !sim.world.get(coord).is_solid() {
+                    return Self::preview_result("Blocked", "Foundation must be on solid ground.");
+                }
+            }
+        }
+
+        // Validate interior (all must be Air and in-bounds).
+        for dy in 1..=height {
+            for dx in 0..width {
+                for dz in 0..depth {
+                    let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
+                    if !sim.world.in_bounds(coord) || sim.world.get(coord) != VoxelType::Air {
+                        return Self::preview_result("Blocked", "Building interior must be clear.");
+                    }
+                }
+            }
+        }
+
+        // Compute face layout and run structural validation.
+        let face_layout =
+            elven_canopy_sim::building::compute_building_face_layout(anchor, width, depth, height);
+        let voxels: Vec<VoxelCoord> = face_layout.keys().copied().collect();
+
+        let validation = structural::validate_blueprint_fast(
+            &sim.world,
+            &sim.face_data,
+            &voxels,
+            VoxelType::BuildingInterior,
+            &face_layout,
+            &sim.config,
+        );
+        Self::preview_result_from_tier(validation.tier, &validation.message)
+    }
+
+    /// Build a preview result dictionary from a tier string and message.
+    fn preview_result(tier: &str, message: &str) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("tier", GString::from(tier));
+        dict.set("message", GString::from(message));
+        dict
+    }
+
+    /// Build a preview result dictionary from a `ValidationTier`.
+    fn preview_result_from_tier(tier: ValidationTier, message: &str) -> VarDictionary {
+        let tier_str = match tier {
+            ValidationTier::Ok => "Ok",
+            ValidationTier::Warning => "Warning",
+            ValidationTier::Blocked => "Blocked",
+        };
+        Self::preview_result(tier_str, message)
     }
 
     /// Return building face data as a flat PackedInt32Array of quintuples:

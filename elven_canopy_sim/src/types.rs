@@ -426,7 +426,9 @@ impl FaceData {
 // ---------------------------------------------------------------------------
 
 /// The material/type of a single voxel in the world grid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 pub enum VoxelType {
     #[default]
     Air,

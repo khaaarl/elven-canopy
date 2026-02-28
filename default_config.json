@@ -107,5 +107,34 @@
       "food_max": 1000000000000000,
       "food_decay_per_tick": 3333333333
     }
+  },
+  "structural": {
+    "gravity": 1.0,
+    "max_iterations": 200,
+    "damping_factor": 1.0,
+    "building_interior_base_weight": 0.1,
+    "warn_stress_ratio": 0.5,
+    "block_stress_ratio": 1.0,
+    "tree_gen_max_retries": 4,
+    "materials": {
+      "Trunk":         { "density": 1.0,  "stiffness": 10000.0, "strength": 10000.0 },
+      "Branch":        { "density": 0.8,  "stiffness": 500.0,   "strength": 500.0 },
+      "Root":          { "density": 0.8,  "stiffness": 10000.0, "strength": 10000.0 },
+      "GrownPlatform": { "density": 0.6,  "stiffness": 20.0, "strength": 8.0 },
+      "GrownWall":     { "density": 0.6,  "stiffness": 20.0, "strength": 8.0 },
+      "GrownStairs":   { "density": 0.5,  "stiffness": 15.0, "strength": 6.0 },
+      "Bridge":        { "density": 0.5,  "stiffness": 15.0, "strength": 6.0 },
+      "ForestFloor":   { "density": 999.0, "stiffness": 999.0, "strength": 999.0 },
+      "Leaf":          { "density": 0.05, "stiffness": 0.1,  "strength": 0.1 },
+      "Fruit":         { "density": 0.1,  "stiffness": 0.0,  "strength": 0.0 }
+    },
+    "face_properties": {
+      "Wall":    { "weight": 0.3,  "stiffness": 15.0, "strength": 10.0 },
+      "Window":  { "weight": 0.1,  "stiffness": 3.0,  "strength": 2.0 },
+      "Door":    { "weight": 0.15, "stiffness": 1.0,  "strength": 1.0 },
+      "Floor":   { "weight": 0.4,  "stiffness": 18.0, "strength": 12.0 },
+      "Ceiling": { "weight": 0.3,  "stiffness": 15.0, "strength": 10.0 },
+      "Open":    { "weight": 0.0,  "stiffness": 0.0,  "strength": 0.0 }
+    }
   }
 }

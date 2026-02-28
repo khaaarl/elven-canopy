@@ -31,9 +31,211 @@
 
 use crate::nav::EdgeType;
 use crate::species::SpeciesData;
-use crate::types::Species;
+use crate::types::{FaceType, Species, VoxelType};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+// ---------------------------------------------------------------------------
+// Structural integrity — material and face properties
+// ---------------------------------------------------------------------------
+
+/// Per-voxel-type material properties for the structural solver.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MaterialProperties {
+    /// Mass per voxel of this material (unitless, relative).
+    pub density: f32,
+    /// Spring stiffness when two voxels of this material are face-adjacent.
+    pub stiffness: f32,
+    /// Maximum force a spring between two voxels of this material can sustain.
+    pub strength: f32,
+}
+
+/// Per-face-type structural properties for building shell elements.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FaceProperties {
+    /// Mass contribution of this face type to its parent BuildingInterior node.
+    pub weight: f32,
+    /// Spring stiffness for the face-to-neighbor connection.
+    pub stiffness: f32,
+    /// Maximum force the face spring can sustain.
+    pub strength: f32,
+}
+
+/// Configuration for the spring-mass structural integrity solver.
+///
+/// All values are unitless and relative — only ratios between materials matter.
+/// See `docs/drafts/structural_integrity.md` §5 for design rationale.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StructuralConfig {
+    /// Gravitational acceleration applied to each node (downward force = mass * gravity).
+    pub gravity: f32,
+    /// Fixed number of relaxation iterations per solve.
+    pub max_iterations: u32,
+    /// Damping scale factor. Internally scaled per-node as `damping_factor /
+    /// local_stiffness` for Gauss-Seidel convergence. 1.0 is optimal; lower
+    /// values under-relax for stability.
+    pub damping_factor: f32,
+    /// Base mass for BuildingInterior nodes (before face weight is added).
+    pub building_interior_base_weight: f32,
+    /// Stress ratio threshold for blueprint warnings (fraction of strength).
+    pub warn_stress_ratio: f32,
+    /// Stress ratio threshold for blueprint hard-block (multiple of strength).
+    pub block_stress_ratio: f32,
+    /// Maximum tree generation retry attempts before panicking.
+    pub tree_gen_max_retries: u32,
+    /// Per-voxel-type material properties.
+    pub materials: BTreeMap<VoxelType, MaterialProperties>,
+    /// Per-face-type structural properties.
+    pub face_properties: BTreeMap<FaceType, FaceProperties>,
+}
+
+impl Default for StructuralConfig {
+    fn default() -> Self {
+        let mut materials = BTreeMap::new();
+        materials.insert(
+            VoxelType::Trunk,
+            MaterialProperties {
+                density: 1.0,
+                stiffness: 50000.0,
+                strength: 50000.0,
+            },
+        );
+        materials.insert(
+            VoxelType::Branch,
+            MaterialProperties {
+                density: 0.8,
+                stiffness: 2000.0,
+                strength: 2000.0,
+            },
+        );
+        materials.insert(
+            VoxelType::Root,
+            MaterialProperties {
+                density: 0.8,
+                stiffness: 10000.0,
+                strength: 10000.0,
+            },
+        );
+        materials.insert(
+            VoxelType::GrownPlatform,
+            MaterialProperties {
+                density: 0.6,
+                stiffness: 20.0,
+                strength: 8.0,
+            },
+        );
+        materials.insert(
+            VoxelType::GrownWall,
+            MaterialProperties {
+                density: 0.6,
+                stiffness: 20.0,
+                strength: 8.0,
+            },
+        );
+        materials.insert(
+            VoxelType::GrownStairs,
+            MaterialProperties {
+                density: 0.5,
+                stiffness: 15.0,
+                strength: 6.0,
+            },
+        );
+        materials.insert(
+            VoxelType::Bridge,
+            MaterialProperties {
+                density: 0.5,
+                stiffness: 15.0,
+                strength: 6.0,
+            },
+        );
+        materials.insert(
+            VoxelType::ForestFloor,
+            MaterialProperties {
+                density: 999.0,
+                stiffness: 999.0,
+                strength: 999.0,
+            },
+        );
+        materials.insert(
+            VoxelType::Leaf,
+            MaterialProperties {
+                density: 0.05,
+                stiffness: 0.1,
+                strength: 0.1,
+            },
+        );
+        materials.insert(
+            VoxelType::Fruit,
+            MaterialProperties {
+                density: 0.1,
+                stiffness: 0.0,
+                strength: 0.0,
+            },
+        );
+
+        let mut face_props = BTreeMap::new();
+        face_props.insert(
+            FaceType::Wall,
+            FaceProperties {
+                weight: 0.3,
+                stiffness: 15.0,
+                strength: 10.0,
+            },
+        );
+        face_props.insert(
+            FaceType::Window,
+            FaceProperties {
+                weight: 0.1,
+                stiffness: 3.0,
+                strength: 2.0,
+            },
+        );
+        face_props.insert(
+            FaceType::Door,
+            FaceProperties {
+                weight: 0.15,
+                stiffness: 1.0,
+                strength: 1.0,
+            },
+        );
+        face_props.insert(
+            FaceType::Floor,
+            FaceProperties {
+                weight: 0.4,
+                stiffness: 18.0,
+                strength: 12.0,
+            },
+        );
+        face_props.insert(
+            FaceType::Ceiling,
+            FaceProperties {
+                weight: 0.3,
+                stiffness: 15.0,
+                strength: 10.0,
+            },
+        );
+        face_props.insert(
+            FaceType::Open,
+            FaceProperties {
+                weight: 0.0,
+                stiffness: 0.0,
+                strength: 0.0,
+            },
+        );
+
+        Self {
+            gravity: 1.0,
+            max_iterations: 200,
+            damping_factor: 1.0,
+            building_interior_base_weight: 0.1,
+            warn_stress_ratio: 0.5,
+            block_stress_ratio: 1.0,
+            tree_gen_max_retries: 4,
+            materials,
+            face_properties: face_props,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tree profile — nested parameter groups
@@ -140,7 +342,7 @@ pub struct TrunkParams {
 /// Complete tree generation profile — all parameters needed to grow a tree.
 ///
 /// Named preset constructors produce different tree archetypes:
-/// - `fantasy_mega()`: towering mega-tree (the default)
+/// - `fantasy_mega()`: towering mega-tree (used in tests, not in UI)
 /// - `oak()`: broad spreading crown
 /// - `conifer()`: tall and narrow
 /// - `willow()`: drooping branches
@@ -395,6 +597,11 @@ pub struct GameConfig {
     /// Per-species behavioral data (speed, heartbeat interval, edge
     /// restrictions, spawn rules). Keyed by `Species` enum.
     pub species: BTreeMap<Species, SpeciesData>,
+
+    /// Structural integrity solver configuration. Backward-compatible: older
+    /// configs without this field use `StructuralConfig::default()`.
+    #[serde(default)]
+    pub structural: StructuralConfig,
 }
 
 impl Default for GameConfig {
@@ -502,6 +709,7 @@ impl Default for GameConfig {
             build_work_ticks_per_voxel: 1000,
             tree_profile: TreeProfile::fantasy_mega(),
             species,
+            structural: StructuralConfig::default(),
         }
     }
 }
@@ -532,6 +740,57 @@ mod tests {
         assert_eq!(config.species.len(), restored.species.len());
         let elf_data = &restored.species[&Species::Elf];
         assert_eq!(elf_data.heartbeat_interval_ticks, 3000);
+        // Verify structural config survived.
+        assert_eq!(config.structural.gravity, restored.structural.gravity);
+        assert_eq!(
+            config.structural.max_iterations,
+            restored.structural.max_iterations
+        );
+        assert_eq!(
+            config.structural.materials.len(),
+            restored.structural.materials.len()
+        );
+        let trunk_mat = &restored.structural.materials[&VoxelType::Trunk];
+        assert_eq!(trunk_mat.stiffness, 50000.0);
+        assert_eq!(
+            config.structural.face_properties.len(),
+            restored.structural.face_properties.len()
+        );
+    }
+
+    #[test]
+    fn structural_config_backward_compatible() {
+        // Old configs without "structural" should deserialize with defaults.
+        let json = r#"{
+            "tick_duration_ms": 1,
+            "tree_heartbeat_interval_ticks": 10000,
+            "mana_base_generation_rate": 1.0,
+            "mana_mood_multiplier_range": [0.2, 2.0],
+            "platform_mana_cost_per_voxel": 10.0,
+            "bridge_mana_cost_per_voxel": 15.0,
+            "fruit_production_base_rate": 0.5,
+            "fruit_max_per_tree": 20,
+            "fruit_initial_attempts": 12,
+            "build_work_ticks_per_voxel": 1000,
+            "world_size": [256, 128, 256],
+            "floor_extent": 20,
+            "starting_mana": 100.0,
+            "starting_mana_capacity": 500.0,
+            "tree_profile": {
+                "growth": { "initial_energy": 200.0, "energy_to_radius": 0.07, "min_radius": 0.5, "growth_step_length": 1.0, "energy_per_step": 1.0 },
+                "split": { "split_chance_base": 0.15, "split_count": 2, "split_energy_ratio": 0.3, "split_angle": 0.5, "split_angle_variance": 0.3, "min_progress_for_split": 0.1 },
+                "curvature": { "gravitropism": -0.1, "random_deflection": 0.1, "deflection_coherence": 0.9 },
+                "roots": { "root_energy_fraction": 0.1, "root_initial_count": 4, "root_gravitropism": 0.1, "root_initial_angle": 0.3, "root_surface_tendency": 0.7 },
+                "leaves": { "leaf_shape": "Sphere", "leaf_density": 0.4, "leaf_size": 2, "canopy_density": 1.2 },
+                "trunk": { "base_flare": 0.15, "initial_direction": [0.0, 1.0, 0.0] }
+            },
+            "species": {}
+        }"#;
+        let config: GameConfig = serde_json::from_str(json).unwrap();
+        // structural should have defaulted.
+        assert_eq!(config.structural.gravity, 1.0);
+        assert_eq!(config.structural.max_iterations, 200);
+        assert!(config.structural.materials.contains_key(&VoxelType::Trunk));
     }
 
     #[test]

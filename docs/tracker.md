@@ -41,6 +41,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
+[ ] B-preview-blueprints   Preview treats blueprints as complete
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-apprentice           Skill transfer via proximity
@@ -114,7 +115,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-visual-smooth        Smooth voxel surface rendering
-[ ] F-voxel-fem            Voxel FEM structural analysis
 [ ] F-weather              Weather within seasons
 [ ] F-world-boundary       World boundary visualization
 [ ] F-zlevel-vis           Z-level visibility (cutaway/toggle)
@@ -153,6 +153,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-structure-reg        Completed structure registry + UI panel
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
+[x] F-voxel-fem            Voxel FEM structural analysis
 ```
 
 ---
@@ -320,6 +321,17 @@ shader-based rounding).
 
 ### Structural Integrity & Fire
 
+#### B-preview-blueprints — Preview treats blueprints as complete
+**Status:** Todo · **Phase:** 2
+
+Structural preview during placement (`validate_platform_preview`,
+`validate_building_preview`) currently only considers the voxels being placed.
+It should also treat any ongoing blueprints and in-progress construction as if
+they were already complete, so the player sees the cumulative structural impact
+of all planned builds — not just the one currently under the cursor.
+
+**Related:** F-voxel-fem
+
 #### F-cascade-fail — Cascading structural failure
 **Status:** Todo · **Phase:** 5 · **Refs:** §9
 **Draft:** `docs/drafts/structural_integrity.md` §11
@@ -405,7 +417,7 @@ between this feature and the FEM system.
 **Related:** F-voxel-fem
 
 #### F-voxel-fem — Voxel FEM structural analysis
-**Status:** Todo · **Phase:** 5 · **Refs:** §9
+**Status:** Done · **Phase:** 5 · **Refs:** §9
 **Draft:** `docs/drafts/structural_integrity.md`
 
 Spring-mass network structural solver (iterative relaxation, not classical

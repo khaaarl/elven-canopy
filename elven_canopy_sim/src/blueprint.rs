@@ -57,6 +57,10 @@ pub struct Blueprint {
     /// a JSON map key. Use `face_layout_map()` for O(1) lookup.
     #[serde(default)]
     pub face_layout: Option<Vec<(VoxelCoord, FaceData)>>,
+    /// Set by structural validation when the blueprint is under significant
+    /// stress (above warn threshold but below block threshold).
+    #[serde(default)]
+    pub stress_warning: bool,
 }
 
 impl Blueprint {
@@ -87,6 +91,7 @@ mod tests {
             state: BlueprintState::Designated,
             task_id: None,
             face_layout: None,
+            stress_warning: false,
         };
 
         assert_eq!(bp.id, id);
@@ -114,6 +119,7 @@ mod tests {
             state: BlueprintState::Designated,
             task_id: Some(task_id),
             face_layout: None,
+            stress_warning: false,
         };
 
         let json = serde_json::to_string(&bp).unwrap();
@@ -134,6 +140,7 @@ mod tests {
             state: BlueprintState::Designated,
             task_id: None,
             face_layout: None,
+            stress_warning: false,
         };
 
         let json = serde_json::to_string(&bp).unwrap();

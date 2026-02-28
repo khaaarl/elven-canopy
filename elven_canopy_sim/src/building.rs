@@ -318,6 +318,7 @@ mod tests {
             state: BlueprintState::Complete,
             task_id: None,
             face_layout: None,
+            stress_warning: false,
         };
 
         let structure = CompletedStructure::from_blueprint(StructureId(0), &bp, 5000);
