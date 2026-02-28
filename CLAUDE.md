@@ -262,7 +262,7 @@ Things that are non-obvious or surprising about this codebase:
 
 ## Branching (CRITICAL — DO THIS FIRST)
 
-**NEVER make code changes directly on `main` without explicit user permission.** Before writing ANY code, you MUST:
+**NEVER make ANY edits to files on `main` unless the user explicitly asks you to.** This includes "just reading and tweaking" — if you're about to use Edit or Write on any file, you must be on a feature branch. Before writing ANY code, you MUST:
 
 1. Create a feature branch: `git checkout -b feature/descriptive-branch-name`
 2. Push the branch to origin: `git push -u origin feature/descriptive-branch-name`

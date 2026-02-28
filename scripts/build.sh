@@ -92,11 +92,19 @@ case "$MODE" in
         echo "Running Clippy..."
         cargo clippy --workspace -- -D warnings
         echo ""
+        # Ensure gdformat/gdlint are available, set up venv if not
+        GDFORMAT="$REPO_ROOT/python/.venv/bin/gdformat"
+        GDLINT="$REPO_ROOT/python/.venv/bin/gdlint"
+        if [ ! -x "$GDFORMAT" ] || [ ! -x "$GDLINT" ]; then
+            echo "GDScript tools not found — setting up Python venv..."
+            python3 -m venv "$REPO_ROOT/python/.venv"
+            "$REPO_ROOT/python/.venv/bin/pip" install -r "$REPO_ROOT/python/requirements-dev.txt"
+        fi
         echo "Checking GDScript formatting..."
-        "$REPO_ROOT/python/.venv/bin/gdformat" --check --line-length 100 godot/scripts/*.gd
+        "$GDFORMAT" --check --line-length 100 godot/scripts/*.gd
         echo ""
         echo "Running GDScript linter..."
-        "$REPO_ROOT/python/.venv/bin/gdlint" godot/scripts/*.gd
+        "$GDLINT" godot/scripts/*.gd
         echo ""
         echo "All checks passed."
         ;;
