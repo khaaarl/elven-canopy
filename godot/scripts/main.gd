@@ -67,6 +67,7 @@ var _task_panel: ColorRect
 var _structure_panel: ColorRect
 var _camera_pivot: Node3D
 var _construction_controller: Node
+var _placement_controller: Node3D
 ## Renderers for new species (Boar, Deer, Monkey, Squirrel). Receive
 ## render_tick each frame for smooth creature interpolation.
 var _extra_renderers: Array = []
@@ -184,11 +185,11 @@ func _ready() -> void:
 
 	# Set up placement controller.
 	var controller_script = load("res://scripts/placement_controller.gd")
-	var controller := Node3D.new()
-	controller.set_script(controller_script)
-	add_child(controller)
-	controller.setup(bridge, $CameraPivot/Camera3D)
-	controller.connect_toolbar(toolbar)
+	_placement_controller = Node3D.new()
+	_placement_controller.set_script(controller_script)
+	add_child(_placement_controller)
+	_placement_controller.setup(bridge, $CameraPivot/Camera3D)
+	_placement_controller.connect_toolbar(toolbar)
 
 	# Set up construction controller (between placement and selection for
 	# ESC precedence — reverse tree order means later children fire first).
@@ -204,8 +205,8 @@ func _ready() -> void:
 	# Entering construction mode: deselect creature, cancel placement.
 	_construction_controller.construction_mode_entered.connect(
 		func():
-			if controller.is_placing():
-				controller.cancel_placement()
+			if _placement_controller.is_placing():
+				_placement_controller.cancel_placement()
 			if _selector:
 				_selector.deselect()
 			if _panel:
@@ -244,7 +245,7 @@ func _ready() -> void:
 	_selector.set_script(selector_script)
 	add_child(_selector)
 	_selector.setup(bridge, $CameraPivot/Camera3D)
-	_selector.set_placement_controller(controller)
+	_selector.set_placement_controller(_placement_controller)
 
 	# Wire selection -> panel.
 	_camera_pivot = $CameraPivot
@@ -353,6 +354,15 @@ func _ready() -> void:
 			_selector.deselect()
 			_camera_pivot.stop_follow()
 	)
+
+	# Fix ESC precedence. _unhandled_input fires in reverse tree order (last
+	# child first). Move the three input controllers to the end so they get
+	# ESC before panels and the pause menu. Order after move:
+	#   ... → pause_menu → task_panel → structure_panel → selector → construction → placement
+	# Reverse (input order): placement → construction → selector → panels → pause_menu
+	move_child(_selector, -1)
+	move_child(_construction_controller, -1)
+	move_child(_placement_controller, -1)
 
 
 ## Try to load a save file. Returns true on success.
