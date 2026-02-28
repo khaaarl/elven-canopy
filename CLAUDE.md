@@ -16,20 +16,17 @@ Elven Canopy is a Dwarf Fortress-inspired simulation/management game set in a fo
 - **Voxel world, graph pathfinding.** The world is a 3D voxel grid (sim truth), but pathfinding uses a nav graph of nodes and edges matching the constrained topology (platforms, bridges, stairs, trunk surfaces).
 - **Data-driven config.** All tunable parameters live in a `GameConfig` struct loaded from JSON. No magic numbers in the sim.
 
-For full details, see `docs/design_doc.md`. Note that the design doc is an aspirational planning document — many features it describes (construction, structural integrity, fire, emotional systems, etc.) are not yet implemented. See "Implementation Status" below for what actually exists today.
+For full details, see `docs/design_doc.md`. Note that the design doc is an aspirational planning document — many features it describes (construction, structural integrity, fire, emotional systems, etc.) are not yet implemented. See `docs/tracker.md` for current feature status.
 
 ## Implementation Status
 
-The design doc (§26) defines an 8-phase roadmap. Current state:
+Loose overview of where things stand. See `docs/tracker.md` for the full project tracker with per-feature status, blocking relationships, and design doc cross-references. **Keep this section roughly in sync with the tracker** — it's a quick orientation aid, not a detailed status report.
 
-- **Phase 0 (Foundations):** Complete. Godot + Rust setup, orbital camera, core types, serde.
-- **Phase 1 (A Tree and an Elf):** Complete. Tree generation, nav graph, A* pathfinding, event-driven tick loop, SimCommand pipeline.
-- **Phase 2 (Construction and Persistence):** Partial. Task system is wired (GoTo tasks work), multiple creature spawning works, save/load works (JSON to `user://saves/`), but no blueprint mode, no construction, and no mana economy gameplay.
-- **Phases 3–8:** Not started. No bridges, stairs, structural integrity, fire, emotional systems, multiplayer.
-
-**Not in any phase but implemented:** Main menu, new game screen (with tree preset sliders and seed input), in-game pause menu, creature info panel with camera follow, capybara species, game session autoload, creature food gauge (decays over time, shown in creature info panel and as overhead bar), smooth creature movement interpolation (creatures glide between nav nodes instead of teleporting).
-
-**Music crate:** Complete as a standalone generator (Palestrina-style counterpoint with Vaelith lyrics, MIDI + LilyPond output, CLI with batch/mode-scan). Not yet integrated into the game runtime. The design doc §21 describes the music vision but doesn't yet reference the `elven_canopy_music` crate.
+- **Phase 0 (Foundations):** Complete.
+- **Phase 1 (A Tree and an Elf):** Complete.
+- **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, but no blueprint mode UI, no mana economy, no visual smoothing.
+- **Phase 6 (Culture and Language):** Music crate complete as standalone generator, not yet integrated into game runtime.
+- **Phases 3–5, 7–8:** Not started.
 
 ## Project Structure
 
@@ -104,6 +101,7 @@ elven-canopy/
 │   └── requirements.txt        # music21, numpy, mido, python-rtmidi
 ├── docs/
 │   ├── design_doc.md           # Full design specification (all phases)
+│   ├── tracker.md              # Project tracker (features, bugs, status)
 │   ├── music_generator.md      # Music generator user guide + CLI reference
 │   ├── organic_tree_vision.md  # Tree generation design notes
 │   └── drafts/                 # Working design documents
@@ -265,8 +263,8 @@ Things that are non-obvious or surprising about this codebase:
 
 **NEVER make ANY edits to files on `main` unless the user explicitly asks you to.** This includes "just reading and tweaking" — if you're about to use Edit or Write on any file, you must be on a feature branch. Before writing ANY code, you MUST:
 
-1. Create a feature branch: `git checkout -b feature/descriptive-branch-name`
-2. Push the branch to origin: `git push -u origin feature/descriptive-branch-name`
+1. Create a feature branch: `git checkout -b feature/F-tracker-id` (or `bug/B-tracker-id` for bugs). If the work has a tracker ID, use it as the branch name — e.g., `feature/F-tree-overlap`. If there's no tracker ID yet (exploratory work, docs-only changes), use a descriptive name like `feature/descriptive-branch-name`.
+2. Push the branch to origin: `git push -u origin feature/F-tracker-id`
 3. Verify you are on the feature branch: `git branch --show-current`
 4. ONLY THEN start making changes
 
@@ -287,7 +285,7 @@ When the user asks to merge a feature branch to main, follow this procedure:
 ```bash
 # 1. Create a temporary LOCAL branch and squash all feature commits into one
 #    (This way conflicts only need to be resolved once, not per-commit)
-#    IMPORTANT: The REAL commit message goes HERE — step 4 is a fast-forward
+#    IMPORTANT: The REAL commit message goes HERE — step 5 is a fast-forward
 #    merge which does NOT create a new commit, so any -m there is ignored.
 #    NOTE: The -rebase branch is local only — do NOT push it to origin.
 git checkout -b feature/my-branch-rebase feature/my-branch
@@ -303,11 +301,17 @@ git checkout feature/my-branch-rebase
 git rebase main
 # If conflicts arise, resolve them carefully, then: git add <files> && git rebase --continue
 
-# 4. Fast-forward merge into main (no new commit — just moves the pointer)
+# 4. Update tracker: mark completed features as done in docs/tracker.md
+#    (move summary lines to Done, update detailed status), then amend the
+#    squashed commit to include the tracker changes.
+git add docs/tracker.md
+git commit --amend --no-edit
+
+# 5. Fast-forward merge into main (no new commit — just moves the pointer)
 git checkout main
 git merge --ff-only feature/my-branch-rebase
 
-# 5. Push and clean up
+# 6. Push and clean up
 git push
 git branch -d feature/my-branch-rebase
 git branch -D feature/my-branch
@@ -323,6 +327,8 @@ git push origin --delete feature/my-branch
 4. `git add <resolved-files> && git rebase --continue`
 5. After rebase completes, verify the code still works (run tests)
 6. **If conflicts required non-trivial edits** (e.g., integrating two features that touch the same code), ask the user for permission before completing the merge. Truly trivial conflicts (e.g., both sides added adjacent lines with no semantic interaction) can be resolved and merged without asking.
+
+**Tracker update (step 4):** After the rebase succeeds and before merging to main, update `docs/tracker.md` to reflect completed work — move summary lines from In Progress/Todo to Done, update `**Status:**` in detailed entries. Amending the squashed commit ensures the tracker update and the code land atomically.
 
 The squashed commit message should summarize the entire feature, not repeat individual commit messages. Always ask the user before pushing to main.
 
@@ -345,3 +351,31 @@ The squashed commit message should summarize the entire feature, not repeat indi
    Confirm the new test **passes** and no existing tests regress.
 
 3. Repeat steps 1–2 as needed until the fix or feature is complete.
+
+## Project Tracker (`docs/tracker.md`)
+
+The tracker is the single source of truth for feature/bug status. **Read it at the start of any work session** to understand what's in progress, what's next, and what's blocked.
+
+The tracker has two sections that must stay in sync:
+1. **Summary** — one line per item inside a fenced code block, grouped by status (In Progress → Todo → Done). Format: `[status] F-id-name` padded to 23 chars, then a short title.
+2. **Detailed Items** — full descriptions grouped by topic area, with design doc refs, draft doc links, and blocking relationships.
+
+**When starting work on a tracked feature:**
+1. In the summary: change `[ ]` to `[~]` and **move the line** from the Todo section into the In Progress section, maintaining alphabetical order by ID.
+2. In the detailed entry: change `**Status:** Todo` to `**Status:** In Progress`.
+
+**When completing a tracked feature:**
+1. In the summary: change `[~]` to `[x]` and **move the line** from In Progress to Done, maintaining alphabetical order by ID.
+2. In the detailed entry: change `**Status:** In Progress` to `**Status:** Done`.
+
+**When adding a new feature or bug:**
+1. Pick a unique `F-kebab-name` or `B-kebab-name` ID (max 20 chars). Check existing IDs to avoid collisions.
+2. Add a summary line in the correct status section, **in alphabetical order by ID**, padded to the 23-char column.
+3. Add a detailed entry in the appropriate topic group, **in alphabetical order by ID**, with status, phase, design doc refs, and any blocking relationships.
+
+**Alphabetical ordering is important** — it reduces merge conflicts when multiple work streams modify the tracker in parallel. Items within each summary section (In Progress, Todo, Done) and within each detailed topic group are sorted by ID.
+
+**Other updates:**
+- When a draft design doc is created, link it from the tracker item (`**Draft:** path`).
+- Blocking: use `**Blocked by:**` and `**Blocks:**` in the detailed entry. Remove resolved blockers.
+- If work reveals a new bug or sub-task, add it as a new tracker item rather than leaving it as a TODO comment in code.

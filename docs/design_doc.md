@@ -1251,115 +1251,115 @@ Headless fast-sim mode: run thousands of ticks per second with many elves. Verif
 
 ## 26. Iterative Development Roadmap
 
-Development follows iterative deepening — all areas developed concurrently at increasing fidelity.
+Development follows iterative deepening — all areas developed concurrently at increasing fidelity. Per-item status and blocking relationships are tracked in `docs/tracker.md`; this section provides the high-level phase structure and context.
 
 ### Phase 0: Foundations (Weeks 1–2)
 
 Status: Done
 
-- Complete Godot "Your first 3D game" tutorial.
-- Build the orbital camera controller with placeholder cubes.
-- Get gdext compiling: minimal Rust struct exposed to Godot.
-- Set up the two-crate structure (`sim` + `gdext`).
-- Define core types: `VoxelCoord`, `TreeId`/`ElfId` (UUID v4), `SimCommand`, `GameConfig`.
-- Add `serde` derives to everything from the start.
+- Complete Godot "Your first 3D game" tutorial (F-godot-setup).
+- Build the orbital camera controller with placeholder cubes (F-orbital-cam).
+- Get gdext compiling: minimal Rust struct exposed to Godot (F-gdext-bridge).
+- Set up the two-crate structure (`sim` + `gdext`) (F-crate-structure).
+- Define core types: `VoxelCoord`, `TreeId`/`ElfId` (UUID v4), `SimCommand`, `GameConfig` (F-core-types).
+- Add `serde` derives to everything from the start (F-serde).
 
 ### Phase 1: A Tree and an Elf (Weeks 2–4)
 
 Status: Done
 
-- Procedural generation of one tree (trunk + branches) in Rust, rendered as simple geometry in Godot.
-- Nav graph for the tree surface.
-- One elf as a billboard placeholder sprite, pathfinding and moving around the tree.
-- Event-driven tick loop with the priority queue model.
-- Basic SimCommand pipeline (even if the only command is "spawn elf at location").
+- Procedural generation of one tree (trunk + branches) in Rust, rendered as simple geometry in Godot (F-tree-gen).
+- Nav graph for the tree surface (F-nav-graph).
+- One elf as a billboard placeholder sprite, pathfinding and moving around the tree (F-elf-sprite, F-pathfinding).
+- Event-driven tick loop with the priority queue model (F-event-loop).
+- Basic SimCommand pipeline (even if the only command is "spawn elf at location") (F-sim-commands).
 
 ### Phase 2: Construction and Persistence (Weeks 4–8)
 
-Status: Work in Progress. Added task logic, but not blueprinting, construction, etc.
+Status: Partial. Construction loop works (designate/build/cancel), save/load works, but no blueprint mode UI, mana economy, or visual smoothing.
 
-- Blueprint mode: layer-based selection, ghost previews.
-- Platform designation (round preferred, rectangular allowed).
-- Visual smoothing on platforms (not cubes).
-- Choir-based construction singing: elves assemble into choirs, sing together, tree grows voxel by voxel.
-- Mana as a resource (tree stores it, construction spends it, elves generate it at a flat rate initially).
-- Conservation of mass: tree tracks stored wood material, construction consumes it.
-- Nav graph updates when construction completes.
-- Multiple elves, task queue with priorities, auto-assignment.
-- Save/load: serialize full sim state to JSON. Load restores the world exactly. Save versioning with migration functions for schema changes.
-- Camera follow mode: lock focal point to a selected elf.
+- Blueprint mode: layer-based selection, ghost previews (F-blueprint-mode).
+- Platform designation — round preferred, rectangular allowed. Tree overlap for structural types (F-tree-overlap).
+- Visual smoothing on platforms — not cubes (F-visual-smooth).
+- Choir-based construction singing: elves assemble into choirs, sing together, tree grows voxel by voxel (F-choir-build).
+- Mana as a resource — tree stores it, construction spends it, elves generate it at a flat rate initially (F-mana-system).
+- Conservation of mass: tree tracks stored wood material, construction consumes it (F-mass-conserve).
+- Nav graph updates when construction completes (F-nav-incremental — done).
+- Multiple elves, task queue with priorities, auto-assignment (F-task-priority).
+- Save/load: serialize full sim state to JSON. Load restores the world exactly. Save versioning with migration functions for schema changes (F-save-load — done).
+- Camera follow mode: lock focal point to a selected elf (F-cam-follow — done).
 
 ### Phase 3: Vertical Village (Weeks 8–12)
 
-- Bridges/walkways connecting different parts of the tree.
-- Stairs/ramps connecting vertical levels.
-- Ladders (rope or wood) as a cheaper vertical connector.
-- Carve holes: remove material from existing structures (doorways, storage hollows).
-- Grow branches/boughs: extend the tree for more photosynthesis and fruit capacity.
-- Basic structural integrity checks (simplified, pre-FEM — at minimum, connectivity flood fill so unsupported structures detach).
-- Basic elf needs: hunger (eat fruit), rest (find a sleeping spot). Elves self-direct to satisfy needs.
-- Buildings vs. furnishing: generic building geometry, then furnish for purpose.
-- Batch blueprinting with dependency ordering and structural warnings.
+- Bridges/walkways connecting different parts of the tree (F-bridges).
+- Stairs/ramps connecting vertical levels (F-stairs).
+- Ladders (rope or wood) as a cheaper vertical connector (F-ladders).
+- Carve holes: remove material from existing structures — doorways, storage hollows (F-carve-holes).
+- Grow branches/boughs: extend the tree for more photosynthesis and fruit capacity (F-branch-growth).
+- Basic structural integrity checks — simplified, pre-FEM; at minimum, connectivity flood fill so unsupported structures detach (F-struct-basic).
+- Basic elf needs: hunger (eat fruit), rest (find a sleeping spot). Elves self-direct to satisfy needs (F-elf-needs).
+- Buildings vs. furnishing: generic building geometry, then furnish for purpose (F-furnishing).
+- Batch blueprinting with dependency ordering and structural warnings (F-batch-blueprint).
 
 ### Phase 4: Emotional Depth (Timing Flexible)
 
-- Personality axes affecting behavior.
-- Multi-dimensional emotional state (joy, fulfillment, sorrow, stress, pain, fear, anxiety).
-- Mood system with escalating consequences.
-- Social graph, relationships, contagion.
-- Events and narrative log.
-- Hedonic adaptation (asymmetric: upward adaptation faster than downward).
-- Apprenticeships and skill transfer via proximity.
-- Poetry readings, social gatherings.
-- Mana generation tied to mood.
-- Seasonal visual changes and gameplay effects (leaf drop, snow hazards, clothing needs).
+- Personality axes affecting behavior (F-personality).
+- Multi-dimensional emotional state — joy, fulfillment, sorrow, stress, pain, fear, anxiety (F-emotions).
+- Mood system with escalating consequences (F-mood-system).
+- Social graph, relationships, contagion (F-social-graph).
+- Events and narrative log (F-narrative-log).
+- Hedonic adaptation — asymmetric: upward adaptation faster than downward (F-hedonic-adapt).
+- Apprenticeships and skill transfer via proximity (F-apprentice).
+- Poetry readings, social gatherings (F-poetry-reading).
+- Mana generation tied to mood (F-mana-mood).
+- Seasonal visual changes and gameplay effects — leaf drop, snow hazards, clothing needs (F-seasons).
 
 ### Phase 5: Structural Integrity and Fire
 
-- Voxel-based finite element modeling for structural integrity (§9).
-- Cascading structural failure: overloaded voxels fail, load redistributes, disconnected chunks fall.
-- Stress heat map in blueprint mode for construction planning.
-- Fire simulation Stage 1: basic probabilistic spread, voxel destruction.
-- Fire simulation Stage 2: heat accumulation, ignition thresholds, green vs. dry wood.
-- Structural consequences of fire: burning supports trigger collapse cascades.
+- Voxel-based finite element modeling for structural integrity — §9 (F-voxel-fem).
+- Cascading structural failure: overloaded voxels fail, load redistributes, disconnected chunks fall (F-cascade-fail).
+- Stress heat map in blueprint mode for construction planning (F-stress-heatmap).
+- Fire simulation Stage 1: basic probabilistic spread, voxel destruction (F-fire-basic).
+- Fire simulation Stage 2: heat accumulation, ignition thresholds, green vs. dry wood (F-fire-advanced).
+- Structural consequences of fire: burning supports trigger collapse cascades (F-fire-structure).
 
 ### Phase 6: Culture and Language
 
-- Constructed Elvish language (§20): phoneme inventory, dictionary, grammar.
-- Procedural poetry via simulated annealing.
-- Procedural music composition via simulated annealing (Palestrina-style counterpoint).
-- Audio rendering Phase 1: waveform synthesis for debugging and validation.
-- Elf name generation from the conlang's syllable rules.
-- Ensemble construction singing with harmony mechanics.
+- Constructed Elvish language — §20: phoneme inventory, dictionary, grammar (F-vaelith-expand).
+- Procedural poetry via simulated annealing (F-proc-poetry).
+- Procedural music composition via simulated annealing — Palestrina-style counterpoint (F-music-gen — done as standalone).
+- Audio rendering Phase 1: waveform synthesis for debugging and validation (F-audio-synth).
+- Elf name generation from the conlang's syllable rules (F-elf-names).
+- Ensemble construction singing with harmony mechanics (F-choir-harmony).
 
 ### Phase 7: Expansion and Ecology
 
-- Multiple trees in the world (NPC trees with personalities and preferences).
-- Root network expansion mechanic (grow roots toward another tree, diplomacy phase).
-- Per-tree carrying capacity.
-- Inter-tree cultural drift as elves on different trees develop distinct traditions.
-- Tree memory system: the player's tree surfaces ancient knowledge and warnings.
-- Fire simulation Stages 3–4: environmental factors, firefighting, fire as ecological force.
-- Fruit variety, food storage, cooking, and magical brewing.
-- Logistics system for spatial resource flow.
+- Multiple trees in the world — NPC trees with personalities and preferences (F-multi-tree).
+- Root network expansion mechanic — grow roots toward another tree, diplomacy phase (F-root-network).
+- Per-tree carrying capacity (F-tree-capacity).
+- Inter-tree cultural drift as elves on different trees develop distinct traditions (F-cultural-drift).
+- Tree memory system: the player's tree surfaces ancient knowledge and warnings (F-tree-memory).
+- Fire simulation Stages 3–4: environmental factors, firefighting, fire as ecological force (F-fire-ecology).
+- Fruit variety, food storage, cooking, and magical brewing (F-fruit-variety).
+- Logistics system for spatial resource flow (F-logistics).
 
 ### Phase 8+: Distant Future
 
-- Combat, invaders, and fog of war.
-- Elf weapons (bows, spears, clubs) and defensive structures (ballista turrets, magic wards).
-- Military organization and squad management.
-- Soul mechanics: death, soul passage into trees, resurrection, soul-powered constructs.
-- Magic items with personalities.
-- Multiple tree species with different properties.
-- Crafting and non-construction jobs.
-- Audio rendering Phase 2: sampled vocal syllables from the conlang.
-- Final AI-generated art replacing placeholders.
-- Multiplayer networking.
-- Large creature pathfinding (2×2 footprint nav grid).
-- Flying entity navigation.
-- **Military campaigns** — sending elves on expeditions in the wider world, with direct tactical control (unlike Dwarf Fortress's hands-off approach).
-- **Adventure mode** — control an individual elf in an RPG-like mode, exploring the world from a first/third-person perspective within the same simulation.
-- Audio rendering Phase 3: continuous vocal synthesis.
+- Combat, invaders, and fog of war (F-combat, F-fog-of-war).
+- Elf weapons — bows, spears, clubs — and defensive structures — ballista turrets, magic wards (F-elf-weapons, F-defense-struct).
+- Military organization and squad management (F-military-org).
+- Soul mechanics: death, soul passage into trees, resurrection, soul-powered constructs (F-soul-mech).
+- Magic items with personalities (F-magic-items).
+- Multiple tree species with different properties (F-tree-species).
+- Crafting and non-construction jobs (F-crafting).
+- Audio rendering Phase 2: sampled vocal syllables from the conlang (F-audio-sampled).
+- Final AI-generated art replacing placeholders (F-ai-sprites).
+- Multiplayer networking (F-multiplayer).
+- Large creature pathfinding — 2×2 footprint nav grid (F-large-pathfind).
+- Flying entity navigation (F-flying-nav).
+- **Military campaigns** — sending elves on expeditions in the wider world, with direct tactical control (F-military-campaign).
+- **Adventure mode** — control an individual elf in an RPG-like mode, exploring the world from a first/third-person perspective within the same simulation (F-adventure-mode).
+- Audio rendering Phase 3: continuous vocal synthesis (F-audio-vocal).
 
 ---
 
