@@ -12,13 +12,15 @@
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
 ##   by placement_controller.gd to enter placement mode.
 ## - action_requested(action_name: String) — for task actions ("Summon") and
-##   mode toggles ("Build"). "Summon" creates a GoTo task at the clicked
-##   location via SimBridge. "Build" toggles construction mode, handled by
-##   construction_controller.gd.
+##   mode toggles ("Build", "Structures"). "Summon" creates a GoTo task at
+##   the clicked location via SimBridge. "Build" toggles construction mode,
+##   handled by construction_controller.gd. "Structures" toggles the
+##   structure list panel.
 ##
 ## See also: placement_controller.gd which listens for spawn/action signals,
 ## construction_controller.gd which listens for the "Build" action,
 ## task_panel.gd which listens for the "Tasks" action,
+## structure_list_panel.gd which listens for the "Structures" action,
 ## main.gd which wires toolbar to controllers,
 ## sim_bridge.rs for the spawn_creature/create_goto_task commands.
 
@@ -36,6 +38,7 @@ var _squirrel_button: Button
 var _summon_button: Button
 var _build_button: Button
 var _tasks_button: Button
+var _structures_button: Button
 
 
 func _ready() -> void:
@@ -92,6 +95,11 @@ func _ready() -> void:
 	_tasks_button.pressed.connect(_on_tasks_pressed)
 	hbox.add_child(_tasks_button)
 
+	_structures_button = Button.new()
+	_structures_button.text = "Structures"
+	_structures_button.pressed.connect(_on_structures_pressed)
+	hbox.add_child(_structures_button)
+
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -139,3 +147,7 @@ func _on_build_pressed() -> void:
 
 func _on_tasks_pressed() -> void:
 	action_requested.emit("Tasks")
+
+
+func _on_structures_pressed() -> void:
+	action_requested.emit("Structures")

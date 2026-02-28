@@ -1,4 +1,8 @@
-// Building face layout computation.
+// Building face layout computation and completed structure registry types.
+//
+// This file has two concerns:
+//
+// ## Face layout computation
 //
 // Computes the per-face `FaceData` for each interior voxel of a building.
 // A building is an axis-aligned box of `BuildingInterior` voxels sitting on
@@ -18,14 +22,101 @@
 //   y: anchor.y + 1 .. anchor.y + 1 + height
 //   z: anchor.z .. anchor.z + depth
 //
+// ## Completed structure registry
+//
+// `CompletedStructure` records a completed build's metadata — type, bounding
+// box, and completion tick. Created by `SimState::complete_build()` via
+// `from_blueprint()` and stored in `SimState::structures`. The structure
+// list panel in the UI queries these to show a browsable list of all
+// completed constructions with zoom-to-location.
+//
 // See also: `types.rs` for `FaceDirection`, `FaceType`, `FaceData`,
-// `VoxelCoord`. `sim.rs` for the `DesignateBuilding` command that calls this.
-// `nav.rs` for how face data affects pathfinding.
+// `VoxelCoord`, `StructureId`. `sim.rs` for the `DesignateBuilding` command
+// that calls face layout, and `complete_build()` that creates structures.
+// `nav.rs` for how face data affects pathfinding. `blueprint.rs` for the
+// blueprint data model that `from_blueprint()` consumes.
 //
 // **Critical constraint: determinism.** Uses `BTreeMap` for output ordering.
 
-use crate::types::{FaceData, FaceDirection, FaceType, VoxelCoord};
+use crate::blueprint::Blueprint;
+use crate::types::{
+    BuildType, FaceData, FaceDirection, FaceType, ProjectId, StructureId, VoxelCoord,
+};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+// ---------------------------------------------------------------------------
+// Completed structure
+// ---------------------------------------------------------------------------
+
+/// A completed construction registered in the sim's structure list.
+///
+/// Created from a `Blueprint` when its build task finishes. Stores the
+/// bounding box (anchor + dimensions) for the UI's zoom-to-location feature.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletedStructure {
+    pub id: StructureId,
+    pub project_id: ProjectId,
+    pub build_type: BuildType,
+    /// Min corner of the voxel bounding box.
+    pub anchor: VoxelCoord,
+    pub width: i32,
+    pub depth: i32,
+    pub height: i32,
+    pub completed_tick: u64,
+}
+
+impl CompletedStructure {
+    /// Create a `CompletedStructure` from a completed blueprint.
+    ///
+    /// Computes the axis-aligned bounding box from the blueprint's voxel list.
+    /// `id` and `completed_tick` are provided by the caller (`SimState`).
+    pub fn from_blueprint(id: StructureId, blueprint: &Blueprint, completed_tick: u64) -> Self {
+        let (anchor, width, depth, height) = Self::compute_bounding_box(&blueprint.voxels);
+        Self {
+            id,
+            project_id: blueprint.id,
+            build_type: blueprint.build_type,
+            anchor,
+            width,
+            depth,
+            height,
+            completed_tick,
+        }
+    }
+
+    /// Compute the axis-aligned bounding box of a set of voxel coordinates.
+    /// Returns (min_corner, width, depth, height) where width/depth/height
+    /// are at least 1.
+    fn compute_bounding_box(voxels: &[VoxelCoord]) -> (VoxelCoord, i32, i32, i32) {
+        if voxels.is_empty() {
+            return (VoxelCoord::new(0, 0, 0), 0, 0, 0);
+        }
+        let mut min_x = voxels[0].x;
+        let mut max_x = voxels[0].x;
+        let mut min_y = voxels[0].y;
+        let mut max_y = voxels[0].y;
+        let mut min_z = voxels[0].z;
+        let mut max_z = voxels[0].z;
+        for v in &voxels[1..] {
+            min_x = min_x.min(v.x);
+            max_x = max_x.max(v.x);
+            min_y = min_y.min(v.y);
+            max_y = max_y.max(v.y);
+            min_z = min_z.min(v.z);
+            max_z = max_z.max(v.z);
+        }
+        let anchor = VoxelCoord::new(min_x, min_y, min_z);
+        let width = max_x - min_x + 1;
+        let depth = max_z - min_z + 1;
+        let height = max_y - min_y + 1;
+        (anchor, width, depth, height)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Face layout computation
+// ---------------------------------------------------------------------------
 
 /// Compute the face layout for a building.
 ///
@@ -201,5 +292,66 @@ mod tests {
         assert!(layout.contains_key(&VoxelCoord::new(10, 6, 20)));
         assert!(layout.contains_key(&VoxelCoord::new(12, 6, 22)));
         assert!(!layout.contains_key(&VoxelCoord::new(10, 5, 20))); // foundation level
+    }
+
+    // --- CompletedStructure tests ---
+
+    #[test]
+    fn completed_structure_from_blueprint() {
+        use crate::blueprint::Blueprint;
+        use crate::blueprint::BlueprintState;
+        use crate::prng::GameRng;
+        use crate::types::{BuildType, Priority, ProjectId, StructureId};
+
+        let mut rng = GameRng::new(42);
+        let project_id = ProjectId::new(&mut rng);
+        let bp = Blueprint {
+            id: project_id,
+            build_type: BuildType::Platform,
+            voxels: vec![
+                VoxelCoord::new(5, 3, 10),
+                VoxelCoord::new(6, 3, 10),
+                VoxelCoord::new(7, 3, 10),
+                VoxelCoord::new(5, 3, 11),
+            ],
+            priority: Priority::Normal,
+            state: BlueprintState::Complete,
+            task_id: None,
+            face_layout: None,
+        };
+
+        let structure = CompletedStructure::from_blueprint(StructureId(0), &bp, 5000);
+
+        assert_eq!(structure.id, StructureId(0));
+        assert_eq!(structure.project_id, project_id);
+        assert_eq!(structure.build_type, BuildType::Platform);
+        assert_eq!(structure.anchor, VoxelCoord::new(5, 3, 10));
+        assert_eq!(structure.width, 3); // x: 5..7 inclusive
+        assert_eq!(structure.depth, 2); // z: 10..11 inclusive
+        assert_eq!(structure.height, 1); // y: 3..3 inclusive
+        assert_eq!(structure.completed_tick, 5000);
+    }
+
+    #[test]
+    fn completed_structure_serialization_roundtrip() {
+        use crate::prng::GameRng;
+        use crate::types::{BuildType, ProjectId, StructureId};
+
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id: StructureId(42),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Bridge,
+            anchor: VoxelCoord::new(10, 5, 20),
+            width: 4,
+            depth: 1,
+            height: 1,
+            completed_tick: 10000,
+        };
+
+        let json = serde_json::to_string(&structure).unwrap();
+        let restored: CompletedStructure = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(structure, restored);
     }
 }

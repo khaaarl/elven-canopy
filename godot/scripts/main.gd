@@ -29,7 +29,8 @@
 ##    if active: exit construction mode
 ## 3. selection_controller — deselect creature
 ## 4. task_panel — close task list (if visible, on CanvasLayer layer 2)
-## 5. pause_menu — open/close (on CanvasLayer layer 2, added after task panel)
+## 5. structure_list_panel — close structure list (if visible, on CanvasLayer layer 2)
+## 6. pause_menu — open/close (on CanvasLayer layer 2, added after task panel)
 ##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
@@ -38,8 +39,9 @@
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
 ## creature_info_panel.gd for the creature info panel, task_panel.gd for
-## the task list overlay, game_session.gd for the autoload that carries
-## the seed/load path from the menu, pause_menu.gd for the ESC pause overlay.
+## the task list overlay, structure_list_panel.gd for the structure list
+## overlay, game_session.gd for the autoload that carries the seed/load
+## path from the menu, pause_menu.gd for the ESC pause overlay.
 
 extends Node3D
 
@@ -62,6 +64,7 @@ const SPECIES_Y_OFFSETS = {
 var _selector: Node3D
 var _panel: PanelContainer
 var _task_panel: ColorRect
+var _structure_panel: ColorRect
 var _camera_pivot: Node3D
 var _construction_controller: Node
 ## Renderers for new species (Boar, Deer, Monkey, Squirrel). Receive
@@ -289,11 +292,31 @@ func _ready() -> void:
 	_task_panel.set_script(task_panel_script)
 	task_panel_layer.add_child(_task_panel)
 
-	# Wire toolbar "Tasks" action -> task panel toggle.
+	# Structure list panel overlay (on CanvasLayer 2, added after task panel
+	# so its ESC handler fires first in reverse tree order).
+	var structure_panel_layer := CanvasLayer.new()
+	structure_panel_layer.layer = 2
+	add_child(structure_panel_layer)
+
+	var structure_panel_script = load("res://scripts/structure_list_panel.gd")
+	_structure_panel = ColorRect.new()
+	_structure_panel.set_script(structure_panel_script)
+	structure_panel_layer.add_child(_structure_panel)
+
+	# Wire structure panel zoom-to-location -> move camera pivot.
+	_structure_panel.zoom_to_location.connect(
+		func(x: float, y: float, z: float):
+			_structure_panel.hide_panel()
+			_look_at_position(Vector3(x + 0.5, y, z + 0.5))
+	)
+
+	# Wire toolbar "Tasks" and "Structures" actions -> panel toggles.
 	toolbar.action_requested.connect(
 		func(action: String):
 			if action == "Tasks":
 				_task_panel.toggle()
+			elif action == "Structures":
+				_structure_panel.toggle()
 	)
 
 	# Wire task panel zoom-to-creature -> select creature + camera follow.
@@ -398,6 +421,11 @@ func _process(delta: float) -> void:
 	if _task_panel and _task_panel.visible:
 		var tasks := bridge.get_active_tasks()
 		_task_panel.update_tasks(tasks)
+
+	# Refresh structure list panel while visible.
+	if _structure_panel and _structure_panel.visible:
+		var structures := bridge.get_structures()
+		_structure_panel.update_structures(structures)
 
 	# Refresh panel info while a creature is selected.
 	if _panel and _panel.visible and _selector.get_selected_index() >= 0:

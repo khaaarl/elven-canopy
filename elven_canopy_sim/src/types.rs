@@ -10,7 +10,10 @@
 // - **Entity IDs:** Strongly-typed UUID v4 wrappers generated via the
 //   `entity_id!` macro. Each entity type gets its own newtype around `SimUuid`
 //   so the compiler prevents mixing them up. Current IDs: `TreeId`,
-//   `CreatureId`, `PlayerId`, `StructureId`, `ProjectId`, `TaskId`.
+//   `CreatureId`, `PlayerId`, `ProjectId`, `TaskId`.
+// - **Sequential IDs:** `StructureId` is a sequential `u64` newtype (not
+//   UUID-based) for user-friendly numbering (#0, #1, #2). Assigned by
+//   `SimState` when a build completes.
 // - **Nav graph IDs:** `NavNodeId` and `NavEdgeId` — compact `u32` wrappers
 //   (not UUIDs) since nav nodes are rebuilt from world geometry and never
 //   persisted across sessions.
@@ -191,12 +194,27 @@ entity_id!(/// Unique identifier for a creature entity (elf, capybara, etc.).
 CreatureId);
 entity_id!(/// Unique identifier for a player (tree spirit).
 PlayerId);
-entity_id!(/// Unique identifier for a structure (platform, bridge, etc.).
-StructureId);
 entity_id!(/// Unique identifier for an in-progress build project.
 ProjectId);
 entity_id!(/// Unique identifier for a task (go-to, build, harvest, etc.).
 TaskId);
+
+// ---------------------------------------------------------------------------
+// Sequential IDs — user-friendly numbering, not UUIDs.
+// ---------------------------------------------------------------------------
+
+/// Unique identifier for a completed structure (platform, bridge, etc.).
+///
+/// Sequential `u64` newtype assigned by `SimState` when a build completes,
+/// providing user-friendly numbering (#0, #1, #2, ...) instead of UUIDs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct StructureId(pub u64);
+
+impl fmt::Display for StructureId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Nav graph IDs — simple integers, not UUIDs, for compactness.

@@ -579,6 +579,40 @@ impl SimBridge {
         result
     }
 
+    /// Return all completed structures as a `VarArray` of dictionaries.
+    ///
+    /// Each dictionary contains: `id` (int), `build_type` (String),
+    /// `anchor_x/y/z` (int), `width/depth/height` (int).
+    /// Used by `structure_list_panel.gd` for the browsable structure list.
+    #[func]
+    fn get_structures(&self) -> VarArray {
+        let Some(sim) = &self.sim else {
+            return VarArray::new();
+        };
+        let mut result = VarArray::new();
+        for structure in sim.structures.values() {
+            let mut dict = VarDictionary::new();
+            dict.set("id", structure.id.0 as i64);
+            let build_type_str = match structure.build_type {
+                BuildType::Platform => "Platform",
+                BuildType::Bridge => "Bridge",
+                BuildType::Stairs => "Stairs",
+                BuildType::Wall => "Wall",
+                BuildType::Enclosure => "Enclosure",
+                BuildType::Building => "Building",
+            };
+            dict.set("build_type", GString::from(build_type_str));
+            dict.set("anchor_x", structure.anchor.x);
+            dict.set("anchor_y", structure.anchor.y);
+            dict.set("anchor_z", structure.anchor.z);
+            dict.set("width", structure.width);
+            dict.set("depth", structure.depth);
+            dict.set("height", structure.height);
+            result.push(&dict.to_variant());
+        }
+        result
+    }
+
     /// Return positions for any species as a PackedVector3Array, interpolated
     /// to the given render tick for smooth movement between nav nodes.
     /// Generic replacement for `get_elf_positions()` / `get_capybara_positions()`.

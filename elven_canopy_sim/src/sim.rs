@@ -140,6 +140,7 @@
 
 use crate::blueprint::Blueprint;
 use crate::blueprint::BlueprintState;
+use crate::building::CompletedStructure;
 use crate::command::{SimAction, SimCommand};
 use crate::config::GameConfig;
 use crate::event::{EventQueue, ScheduledEventKind, SimEvent, SimEventKind};
@@ -201,6 +202,14 @@ pub struct SimState {
     /// Rebuilt from `face_data_list` after deserialization.
     #[serde(skip)]
     pub face_data: BTreeMap<VoxelCoord, FaceData>,
+
+    /// All completed structures, keyed by sequential `StructureId`.
+    #[serde(default)]
+    pub structures: BTreeMap<StructureId, CompletedStructure>,
+
+    /// Counter for the next `StructureId` to assign (monotonically increasing).
+    #[serde(default)]
+    pub next_structure_id: u64,
 
     /// The player's tree ID.
     pub player_tree_id: TreeId,
@@ -392,6 +401,8 @@ impl SimState {
             placed_voxels: Vec::new(),
             face_data_list: Vec::new(),
             face_data: BTreeMap::new(),
+            structures: BTreeMap::new(),
+            next_structure_id: 0,
             player_tree_id,
             player_id,
             world,
@@ -675,6 +686,9 @@ impl SimState {
             Some(bp) => bp,
             None => return,
         };
+
+        // Remove any completed structure for this project (linear scan — map is small).
+        self.structures.retain(|_, s| s.project_id != project_id);
 
         // Remove the associated Build task and unassign workers.
         if let Some(task_id) = bp.task_id
@@ -1464,11 +1478,21 @@ impl SimState {
         }
     }
 
-    /// Mark a blueprint as Complete and complete its associated task.
+    /// Mark a blueprint as Complete, register the completed structure, and
+    /// complete its associated task.
     fn complete_build(&mut self, project_id: ProjectId, task_id: TaskId) {
         if let Some(bp) = self.blueprints.get_mut(&project_id) {
             bp.state = BlueprintState::Complete;
         }
+
+        // Register a CompletedStructure if the blueprint exists.
+        if let Some(bp) = self.blueprints.get(&project_id) {
+            let structure_id = StructureId(self.next_structure_id);
+            self.next_structure_id += 1;
+            let structure = CompletedStructure::from_blueprint(structure_id, bp, self.tick);
+            self.structures.insert(structure_id, structure);
+        }
+
         self.complete_task(task_id);
     }
 
@@ -4232,5 +4256,201 @@ mod tests {
         };
         sim.step(&[cmd], 1);
         assert!(sim.blueprints.is_empty());
+    }
+
+    // --- CompletedStructure integration tests ---
+
+    /// Helper: designate a single-voxel platform and run the sim until the
+    /// build task is complete. Returns the sim after completion.
+    fn designate_and_complete_build(mut sim: SimState) -> SimState {
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Spawn an elf near the build site.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: air_coord,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Designate a 1-voxel platform.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 2);
+        assert_eq!(sim.blueprints.len(), 1);
+
+        // Run the sim forward until the blueprint is Complete.
+        // The elf will claim the task, walk to the site, and do build work.
+        // build_work_ticks_per_voxel * 1 voxel = total_cost ticks of work.
+        // Cap at 1 million ticks to avoid infinite loops in tests.
+        let max_tick = sim.tick + 1_000_000;
+        while sim.tick < max_tick {
+            sim.step(&[], sim.tick + 100);
+            let all_complete = sim
+                .blueprints
+                .values()
+                .all(|bp| bp.state == BlueprintState::Complete);
+            if all_complete {
+                break;
+            }
+        }
+        assert!(
+            sim.blueprints
+                .values()
+                .all(|bp| bp.state == BlueprintState::Complete),
+            "Build did not complete within tick limit"
+        );
+        sim
+    }
+
+    #[test]
+    fn completed_structure_registered_on_build_complete() {
+        let sim = designate_and_complete_build(test_sim(42));
+
+        assert_eq!(sim.structures.len(), 1);
+        let structure = sim.structures.values().next().unwrap();
+        assert_eq!(structure.id, StructureId(0));
+        assert_eq!(structure.build_type, BuildType::Platform);
+        assert_eq!(structure.width, 1);
+        assert_eq!(structure.depth, 1);
+        assert_eq!(structure.height, 1);
+        assert!(structure.completed_tick > 0);
+    }
+
+    #[test]
+    fn completed_structure_sequential_ids() {
+        let mut sim = test_sim(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: air_coord,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Designate first build.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 2);
+
+        // Run until first build completes.
+        let max_tick = sim.tick + 1_000_000;
+        while sim.tick < max_tick {
+            sim.step(&[], sim.tick + 100);
+            let all_complete = sim
+                .blueprints
+                .values()
+                .all(|bp| bp.state == BlueprintState::Complete);
+            if all_complete {
+                break;
+            }
+        }
+        assert_eq!(sim.structures.len(), 1);
+        assert_eq!(sim.structures.values().next().unwrap().id, StructureId(0));
+
+        // Find another air coord for the second build.
+        let mut second_air = None;
+        let tree = &sim.trees[&sim.player_tree_id];
+        for &trunk_coord in &tree.trunk_voxels {
+            for (dx, dy, dz) in [
+                (1, 0, 0),
+                (-1, 0, 0),
+                (0, 0, 1),
+                (0, 0, -1),
+                (0, 1, 0),
+                (0, -1, 0),
+            ] {
+                let neighbor =
+                    VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y + dy, trunk_coord.z + dz);
+                if sim.world.in_bounds(neighbor)
+                    && sim.world.get(neighbor) == VoxelType::Air
+                    && neighbor != air_coord
+                {
+                    second_air = Some(neighbor);
+                    break;
+                }
+            }
+            if second_air.is_some() {
+                break;
+            }
+        }
+        let second_coord = second_air.expect("Need a second air coord");
+
+        // Designate second build.
+        let tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![second_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], tick);
+
+        // Run until second build completes.
+        let max_tick = sim.tick + 1_000_000;
+        while sim.tick < max_tick {
+            sim.step(&[], sim.tick + 100);
+            let all_complete = sim
+                .blueprints
+                .values()
+                .all(|bp| bp.state == BlueprintState::Complete);
+            if all_complete {
+                break;
+            }
+        }
+        assert_eq!(sim.structures.len(), 2);
+
+        // IDs should be 0 and 1.
+        let ids: Vec<StructureId> = sim.structures.keys().copied().collect();
+        assert!(ids.contains(&StructureId(0)));
+        assert!(ids.contains(&StructureId(1)));
+    }
+
+    #[test]
+    fn cancel_completed_structure_removes_entry() {
+        let mut sim = designate_and_complete_build(test_sim(42));
+        assert_eq!(sim.structures.len(), 1);
+
+        // Get the project_id of the completed structure.
+        let project_id = sim.structures.values().next().unwrap().project_id;
+
+        // Cancel the build (should remove from structures too).
+        let tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick,
+            action: SimAction::CancelBuild { project_id },
+        };
+        sim.step(&[cmd], tick);
+
+        assert!(
+            sim.structures.is_empty(),
+            "Cancelling a completed build should remove it from structures"
+        );
     }
 }
