@@ -89,6 +89,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-multiplayer          Relay-coordinator multiplayer
 [ ] F-music-runtime        Integrate music generator into game
 [ ] F-narrative-log        Events and narrative log
+[ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
@@ -317,9 +318,12 @@ shader-based rounding).
 
 #### F-cascade-fail — Cascading structural failure
 **Status:** Todo · **Phase:** 5 · **Refs:** §9
+**Draft:** `docs/drafts/structural_integrity.md` §11
 
 When overloaded voxels fail, load redistributes to neighbors, potentially
-causing chain failures. Disconnected chunks fall as rigid bodies.
+causing chain failures. Disconnected chunks fall as rigid bodies. Requires
+fall physics, impact damage, and creature displacement on top of the
+spring-mass solver from F-voxel-fem. See draft §11 for scoping notes.
 
 **Blocked by:** F-voxel-fem
 
@@ -347,40 +351,74 @@ firefighting by elves, fire as an ecological renewal force.
 
 #### F-fire-structure — Fire x structural integrity cascades
 **Status:** Todo · **Phase:** 5 · **Refs:** §9, §16
+**Draft:** `docs/drafts/structural_integrity.md` §11
 
 Burning supports trigger structural collapse cascades. Performance concern:
-fire destroying load-bearing voxels triggers FEM recalculation during an
-already-expensive fire tick (§27).
+fire destroying load-bearing voxels triggers spring-mass solver
+recalculation during an already-expensive fire tick (§27). Tree voxels have
+very high but finite strength (draft §6), so fire can theoretically bring
+down branches.
 
-**Blocked by:** F-voxel-fem, F-fire-basic
+**Blocked by:** F-voxel-fem, F-fire-basic, F-cascade-fail
+
+#### F-partial-struct — Structural checks on incomplete builds
+**Status:** Todo · **Phase:** 8+ · **Refs:** §9
+**Draft:** `docs/drafts/structural_integrity.md` §12.3
+
+Detect and handle structurally unsound partial construction — e.g., a player
+designates a structurally sound arch, then cancels mid-construction leaving
+an unsound cantilever remnant. Possible mitigations: structural check on
+cancellation, periodic structural heartbeat for incomplete structures, or
+limits on how far construction can extend from support before the next
+anchor is in place.
+
+**Blocked by:** F-voxel-fem
 
 #### F-stress-heatmap — Stress visualization in blueprint mode
 **Status:** Todo · **Phase:** 5 · **Refs:** §9, §12
+**Draft:** `docs/drafts/structural_integrity.md` §7, §14-F
 
-Overlay showing structural stress levels during blueprint planning so
-players can see load-bearing capacity before committing to construction.
+Overlay showing per-voxel stress levels during blueprint planning. Color-map
+from green (safe) through yellow (moderate) to red (failure). Uses reduced
+solver iterations (~20–30) for responsive preview during placement, full
+iterations on confirm. See draft §7.2 for `BlueprintValidation` data
+structure and §7.4 for performance budget.
 
 **Blocked by:** F-voxel-fem
 **Related:** F-blueprint-mode
 
 #### F-struct-basic — Basic structural integrity (flood fill)
 **Status:** Todo · **Phase:** 3 · **Refs:** §9
+**Draft:** `docs/drafts/structural_integrity.md` §8
 
-Simplified pre-FEM structural integrity: connectivity flood fill ensures
-unsupported structures detach and fall. Minimum viable check before the
-full FEM system.
+Connectivity flood fill: can every solid voxel reach a grounded voxel
+(ForestFloor or trunk-to-ground) via face-adjacent solid voxels? Disconnected
+clusters are flagged. Used as a fast pre-filter in F-voxel-fem blueprint
+validation (draft §7.3). The `flood_fill_connected()` function is shared
+between this feature and the FEM system.
 
 **Blocks:** F-carve-holes
+**Related:** F-voxel-fem
 
 #### F-voxel-fem — Voxel FEM structural analysis
 **Status:** Todo · **Phase:** 5 · **Refs:** §9
+**Draft:** `docs/drafts/structural_integrity.md`
 
-Full voxel-based finite element modeling for structural integrity. Each
-voxel has material properties (strength, weight). Load propagates through
-connected voxels. Open question: direct sparse solve vs iterative
-relaxation; fixed-point vs floating-point (§27).
+Spring-mass network structural solver (iterative relaxation, not classical
+FEM matrices — avoids DOF mismatch with building shell elements). Solid
+voxels are mass-spring nodes; building faces (Wall, Window, Door, Floor,
+Ceiling) generate shell-like springs with per-face-type stiffness/strength.
+Tree voxels participate with very high but finite strength. Material
+properties are data-driven via `StructuralConfig` in GameConfig.
 
-**Related:** F-struct-basic
+Key deliverables: spring-mass solver (`structural.rs`), tree generation
+validation (retry up to 4 times if tree fails under own weight), tiered
+blueprint validation (OK / Warning / Blocked based on stress thresholds),
+bridge method for GDScript stress heatmap data. Construction intermediate
+states are exempt from checks (draft §12).
+
+**Related:** F-struct-basic, F-stress-heatmap, F-cascade-fail,
+F-partial-struct
 
 ### Navigation & Pathfinding
 
