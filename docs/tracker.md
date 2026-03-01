@@ -130,6 +130,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
+[x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
 [x] F-capybara             Capybara species
@@ -367,6 +368,15 @@ expose per-voxel overlap classification to GDScript. See section 4 of
 **Related:** F-tree-overlap, F-blueprint-mode
 
 ### Structural Integrity & Fire
+
+#### B-dirt-not-pinned — Dirt unpinned in fast structural validator
+**Status:** Done
+
+`build_network_from_set()` (used by `validate_blueprint_fast()`) only pins
+`ForestFloor` voxels, not `Dirt`. Since Dirt has density 999, unpinned Dirt
+acts as massive dead weight in the weight-flow analysis, causing all
+structures near hilly terrain to fail validation. One-line fix: add
+`|| vt == VoxelType::Dirt` to match the full solver's pinning logic.
 
 #### B-dead-node-panic — Panic on dead nav node in pathfinding
 **Status:** Done

@@ -790,7 +790,7 @@ fn build_network_from_set(
             pinned = false;
         } else if let Some(mat) = structural.materials.get(&vt) {
             mass = mat.density;
-            pinned = vt == VoxelType::ForestFloor;
+            pinned = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
         } else {
             continue;
         }
@@ -1730,6 +1730,66 @@ mod tests {
             fast.tier, full.tier,
             "Fast tier {:?} should match full tier {:?} (fast stress in msg: {}, full: {})",
             fast.tier, full.tier, fast.message, full.message
+        );
+    }
+
+    #[test]
+    fn fast_platform_on_dirt_terrain_ok() {
+        // A short platform on a trunk column should pass even when the floor
+        // has Dirt voxels (hilly terrain). Dirt must be pinned in the fast
+        // validator just like ForestFloor, otherwise its high density (999)
+        // causes bogus structural failure.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(16, 16, 16);
+
+        // Forest floor at y=0.
+        for x in 0..8 {
+            for z in 0..8 {
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+            }
+        }
+        // Dirt terrain at y=1 (hilly area).
+        for x in 0..8 {
+            for z in 0..8 {
+                world.set(VoxelCoord::new(x, 1, z), VoxelType::Dirt);
+            }
+        }
+        // Trunk column from y=2 to y=6.
+        for y in 2..=6 {
+            world.set(VoxelCoord::new(4, y, 4), VoxelType::Trunk);
+        }
+
+        // Propose a 2-voxel platform at y=6 adjacent to the trunk.
+        let proposed = vec![VoxelCoord::new(5, 6, 4), VoxelCoord::new(6, 6, 4)];
+
+        let fast = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::GrownPlatform,
+            &BTreeMap::new(),
+            &config,
+        );
+        let full = validate_blueprint(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::GrownPlatform,
+            &BTreeMap::new(),
+            &config,
+        );
+
+        assert_eq!(
+            full.tier,
+            ValidationTier::Ok,
+            "Full validator should approve short platform on trunk: {}",
+            full.message,
+        );
+        assert_eq!(
+            fast.tier,
+            ValidationTier::Ok,
+            "Fast validator should approve short platform on trunk with dirt: {}",
+            fast.message,
         );
     }
 }
