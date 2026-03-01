@@ -58,7 +58,9 @@ pub struct SmoothedMesh {
 
 /// Face basis vectors for the 6 cube faces.
 /// `normal` is the outward face normal, `tangent_u` and `tangent_v` span the
-/// face plane. Winding: U × V = N (CCW when viewed from outside).
+/// face plane. U × V = N for all faces. Combined with the CW-in-UV pinwheel
+/// order, this produces CW winding when viewed from outside (front-facing in
+/// Godot 4's Vulkan renderer).
 struct FaceBasis {
     normal: [i32; 3],
     tangent_u: [i32; 3],
@@ -404,19 +406,20 @@ fn emit_face(
     let i_mid_left = builder.get_or_insert_vertex(v_mid_left, face_normal);
     let i_center = builder.get_or_insert_vertex(v_center, face_normal);
 
-    // 8 triangles in pinwheel pattern. Boundary traces CCW in UV space
-    // (00→mid_bot→10→mid_right→11→mid_top→01→mid_left) so that
-    // center→boundary[i]→boundary[i+1] produces CCW winding when viewed
-    // from outside (since U×V = N).
+    // 8 triangles in pinwheel pattern. Boundary traces CW in UV space
+    // (00→mid_left→01→mid_top→11→mid_right→10→mid_bot) so that
+    // center→boundary[i]→boundary[i+1] produces CW winding when viewed
+    // from outside (since U×V = N). Godot 4's Vulkan renderer treats CW
+    // as front-facing due to the Y-axis flip in clip space.
     let tris = [
-        [i_center, i_00, i_mid_bot],
-        [i_center, i_mid_bot, i_10],
-        [i_center, i_10, i_mid_right],
-        [i_center, i_mid_right, i_11],
-        [i_center, i_11, i_mid_top],
-        [i_center, i_mid_top, i_01],
-        [i_center, i_01, i_mid_left],
-        [i_center, i_mid_left, i_00],
+        [i_center, i_00, i_mid_left],
+        [i_center, i_mid_left, i_01],
+        [i_center, i_01, i_mid_top],
+        [i_center, i_mid_top, i_11],
+        [i_center, i_11, i_mid_right],
+        [i_center, i_mid_right, i_10],
+        [i_center, i_10, i_mid_bot],
+        [i_center, i_mid_bot, i_00],
     ];
 
     for tri in &tris {
@@ -718,9 +721,11 @@ mod tests {
     }
 
     #[test]
-    fn triangles_wind_ccw_from_outside() {
-        // For each triangle, the cross product of two edges should align with
-        // the face normal (i.e., point outward from the voxel center).
+    fn triangles_wind_cw_from_outside() {
+        // Godot 4's Vulkan renderer treats CW winding as front-facing (due to
+        // the Y-axis flip in clip space). For each triangle, the cross product
+        // of two edges should point INWARD (toward the voxel center), which
+        // means vertices appear CW when viewed from outside.
         let coord = VoxelCoord::new(5, 5, 5);
         let world = world_with_voxel(coord, VoxelType::Trunk);
         let result = generate_smoothed_meshes(&world, &[coord], &[]);
@@ -760,10 +765,11 @@ mod tests {
                 centroid[2] - voxel_center[2],
             ];
 
+            // CW from outside = cross product points INWARD = dot < 0
             let dot = cross[0] * outward[0] + cross[1] * outward[1] + cross[2] * outward[2];
             assert!(
-                dot > 0.0,
-                "Triangle {} has CW winding (dot={:.6}), vertices: {:?} {:?} {:?}",
+                dot < 0.0,
+                "Triangle {} has CCW winding (dot={:.6}), vertices: {:?} {:?} {:?}",
                 tri_idx / 3,
                 dot,
                 a,
