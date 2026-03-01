@@ -130,7 +130,13 @@ pub fn generate_phrases_with_brightness(
 
         for &template in &templates {
             if let Some(phrase) = generate_phrase(
-                template, brightness, &nouns, &verbs, &adjectives, &particles, rng,
+                template,
+                brightness,
+                &nouns,
+                &verbs,
+                &adjectives,
+                &particles,
+                rng,
             ) {
                 candidates.push(phrase);
             }
@@ -277,10 +283,7 @@ fn generate_phrase(
             let obj_word = obj.with_suffix(c_suffix.front, c_suffix.back, c_suffix.tone);
             let verb_word = verb.with_suffix(a_suffix.front, a_suffix.back, a_suffix.tone);
 
-            let meaning = format!(
-                "{} {} {} {}",
-                adj.gloss, subj.gloss, verb.gloss, obj.gloss
-            );
+            let meaning = format!("{} {} {} {}", adj.gloss, subj.gloss, verb.gloss, obj.gloss);
             Some(VaelithPhrase::from_words(
                 &[adj_word, subj_word, obj_word, verb_word],
                 &meaning,
@@ -328,16 +331,7 @@ pub fn generate_single_phrase(lexicon: &Lexicon, rng: &mut GameRng) -> VaelithPh
         PhraseTemplate::PossessiveNoun,
     ];
     let template = templates[rng.range_usize(0, templates.len())];
-    generate_phrase(
-        template,
-        0.5,
-        &nouns,
-        &verbs,
-        &adjectives,
-        &particles,
-        rng,
-    )
-    .unwrap()
+    generate_phrase(template, 0.5, &nouns, &verbs, &adjectives, &particles, rng).unwrap()
 }
 
 #[cfg(test)]

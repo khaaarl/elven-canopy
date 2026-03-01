@@ -779,7 +779,6 @@ be deterministic given the same PRNG state. Adds a `name` field to the
 
 #### F-lang-crate — Shared Vaelith language crate
 **Status:** In Progress · **Phase:** 6 · **Refs:** §20
-**Draft:** `docs/drafts/lang_crate.md`
 
 Create `elven_canopy_lang`, a pure-Rust crate providing the Vaelith language
 as a programmatic resource shared by the sim and music crates. Includes:

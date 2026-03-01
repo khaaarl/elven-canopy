@@ -10,8 +10,8 @@
 //
 // Depends on `types.rs` for `LexEntry`/`NameTag` and `lib.rs` for `Lexicon`.
 
-use crate::types::NameTag;
 use crate::Lexicon;
+use crate::types::NameTag;
 use elven_canopy_prng::GameRng;
 
 /// A generated Vaelith name with given name, surname, and meanings.

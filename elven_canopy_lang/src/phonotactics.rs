@@ -110,10 +110,20 @@ mod tests {
     #[test]
     fn test_all_suffixes_are_level_tone() {
         for s in ASPECT_SUFFIXES {
-            assert_eq!(s.tone, Tone::Level, "Aspect suffix '{}' should be level", s.label);
+            assert_eq!(
+                s.tone,
+                Tone::Level,
+                "Aspect suffix '{}' should be level",
+                s.label
+            );
         }
         for s in CASE_SUFFIXES {
-            assert_eq!(s.tone, Tone::Level, "Case suffix '{}' should be level", s.label);
+            assert_eq!(
+                s.tone,
+                Tone::Level,
+                "Case suffix '{}' should be level",
+                s.label
+            );
         }
     }
 }

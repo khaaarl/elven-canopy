@@ -19,6 +19,7 @@
 // Brightness: 0.0 = dark/warm vowels, 1.0 = bright/silvery, 0.5 = neutral
 // --ly: Write a LilyPond (.ly) file alongside the MIDI output
 
+use elven_canopy_lang::default_lexicon;
 use elven_canopy_music::draft::{fill_draft, generate_final_cadence};
 use elven_canopy_music::grid::Grid;
 use elven_canopy_music::lilypond::write_lilypond;
@@ -32,7 +33,6 @@ use elven_canopy_music::scoring::{
 use elven_canopy_music::structure::{apply_responses, apply_structure, generate_structure};
 use elven_canopy_music::text_mapping::apply_text_mapping;
 use elven_canopy_music::vaelith::generate_phrases_with_brightness;
-use elven_canopy_lang::default_lexicon;
 use elven_canopy_prng::GameRng;
 use std::path::Path;
 
@@ -195,7 +195,8 @@ fn main() {
         "  Generating Vaelith text (brightness {:.1})...",
         brightness
     );
-    let phrase_candidates = generate_phrases_with_brightness(&lexicon, num_sections, brightness, &mut rng);
+    let phrase_candidates =
+        generate_phrases_with_brightness(&lexicon, num_sections, brightness, &mut rng);
     let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
     println!(
         "  {} syllable spans mapped across {} section phrases.",
