@@ -37,6 +37,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [~] F-elf-needs            Hunger and rest self-direction
 [~] F-multiplayer          Relay-coordinator multiplayer networking
+[~] F-visual-smooth        Smooth voxel surface rendering
 ```
 
 ### Todo
@@ -118,7 +119,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tree-species         Multiple tree species with properties
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
-[ ] F-visual-smooth        Smooth voxel surface rendering
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
@@ -325,7 +325,7 @@ for designations would prevent frustration from placement mistakes.
 **Related:** F-construction
 
 #### F-visual-smooth — Smooth voxel surface rendering
-**Status:** Todo · **Phase:** 2 · **Refs:** §8
+**Status:** In Progress · **Phase:** 2 · **Refs:** §8
 
 Platforms and construction should render with smoothed surfaces rather than
 raw cubes. Exact technique TBD (marching cubes variant, mesh smoothing, or

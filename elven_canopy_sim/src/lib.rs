@@ -12,6 +12,7 @@
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
 // - `pathfinding.rs`: A* pathfinding over the nav graph.
 // - `command.rs`:     SimCommand / SimAction — all sim mutations.
+// - `mesh_smooth.rs`: Smooth mesh generation for wood/root voxels (vertex displacement at diagonal neighbors).
 // - `event.rs`:       EventQueue (priority queue) + narrative SimEvents.
 // - `config.rs`:      GameConfig + TreeProfile — all tunable parameters including nested tree presets.
 // - `species.rs`:     SpeciesData — data-driven creature behavior (DF-style).
@@ -35,6 +36,7 @@ pub mod building;
 pub mod command;
 pub mod config;
 pub mod event;
+pub mod mesh_smooth;
 pub mod nav;
 pub mod pathfinding;
 pub use elven_canopy_prng as prng;

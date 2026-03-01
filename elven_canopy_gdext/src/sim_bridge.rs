@@ -15,6 +15,10 @@
 // - **World data:** `get_trunk_voxels()`, `get_branch_voxels()`,
 //   `get_root_voxels()`, `get_leaf_voxels()`, `get_fruit_voxels()` — flat
 //   `PackedInt32Array` of (x,y,z) triples for voxel mesh rendering.
+//   `get_smoothed_wood_mesh()`, `get_smoothed_root_mesh()` — smoothed
+//   triangle meshes as Dictionaries with `vertices`/`normals`/`indices`
+//   keys (see `mesh_smooth.rs`), used by `tree_renderer.gd` for organic
+//   wood and root surfaces.
 // - **Creature positions:** `get_creature_positions(species_name, render_tick)`
 //   — generic `PackedVector3Array` for billboard sprite placement, replacing
 //   the per-species `get_elf_positions()` / `get_capybara_positions()` (which
@@ -344,6 +348,58 @@ impl SimBridge {
             arr.push(v.z);
         }
         arr
+    }
+
+    /// Return the smoothed wood mesh (Trunk + Branch) as a Dictionary.
+    ///
+    /// Keys: `"vertices"` (PackedVector3Array), `"normals"` (PackedVector3Array),
+    /// `"indices"` (PackedInt32Array). Empty dict if no wood voxels exist.
+    #[func]
+    fn get_smoothed_wood_mesh(&self) -> VarDictionary {
+        let Some(sim) = &self.sim else {
+            return VarDictionary::new();
+        };
+        let Some(tree) = sim.trees.get(&sim.player_tree_id) else {
+            return VarDictionary::new();
+        };
+        let wood_voxels: Vec<_> = tree
+            .trunk_voxels
+            .iter()
+            .chain(tree.branch_voxels.iter())
+            .copied()
+            .collect();
+        let meshes = elven_canopy_sim::mesh_smooth::generate_smoothed_meshes(
+            &sim.world,
+            &wood_voxels,
+            &tree.root_voxels,
+        );
+        mesh_to_dict(meshes.get(&elven_canopy_sim::mesh_smooth::MaterialGroup::Wood))
+    }
+
+    /// Return the smoothed root mesh as a Dictionary.
+    ///
+    /// Keys: `"vertices"` (PackedVector3Array), `"normals"` (PackedVector3Array),
+    /// `"indices"` (PackedInt32Array). Empty dict if no root voxels exist.
+    #[func]
+    fn get_smoothed_root_mesh(&self) -> VarDictionary {
+        let Some(sim) = &self.sim else {
+            return VarDictionary::new();
+        };
+        let Some(tree) = sim.trees.get(&sim.player_tree_id) else {
+            return VarDictionary::new();
+        };
+        let wood_voxels: Vec<_> = tree
+            .trunk_voxels
+            .iter()
+            .chain(tree.branch_voxels.iter())
+            .copied()
+            .collect();
+        let meshes = elven_canopy_sim::mesh_smooth::generate_smoothed_meshes(
+            &sim.world,
+            &wood_voxels,
+            &tree.root_voxels,
+        );
+        mesh_to_dict(meshes.get(&elven_canopy_sim::mesh_smooth::MaterialGroup::Root))
     }
 
     /// Return stats about the player's home tree as a dictionary.
@@ -1680,6 +1736,31 @@ impl SimBridge {
             godot_error!("SimBridge: send_chat failed: {e}");
         }
     }
+}
+
+/// Convert a `SmoothedMesh` to a Godot Dictionary with `vertices`, `normals`,
+/// and `indices` keys. Returns an empty dictionary if the mesh is `None`.
+fn mesh_to_dict(mesh: Option<&elven_canopy_sim::mesh_smooth::SmoothedMesh>) -> VarDictionary {
+    let Some(mesh) = mesh else {
+        return VarDictionary::new();
+    };
+    let mut verts = PackedVector3Array::new();
+    for p in &mesh.positions {
+        verts.push(Vector3::new(p[0], p[1], p[2]));
+    }
+    let mut norms = PackedVector3Array::new();
+    for n in &mesh.normals {
+        norms.push(Vector3::new(n[0], n[1], n[2]));
+    }
+    let mut idxs = PackedInt32Array::new();
+    for &i in &mesh.indices {
+        idxs.push(i as i32);
+    }
+    let mut dict = VarDictionary::new();
+    dict.set("vertices", verts);
+    dict.set("normals", norms);
+    dict.set("indices", idxs);
+    dict
 }
 
 /// FNV-1a hash of a string, used for config hash comparison.
