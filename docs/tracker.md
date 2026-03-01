@@ -18,6 +18,17 @@ Draft docs by repo-relative path. Blocking relationships in the detailed entry
 use `Blocked by:` (things that must finish first) and `Blocks:` (things waiting
 on this).
 
+**Cleanup script:** After making any edits to this file, run:
+```
+python3 scripts/fix_tracker.py
+```
+This enforces alphabetical ordering in the summary and detailed sections,
+removes `Blocks`/`Blocked by` fields from done items, strips references to
+done items from other items' `Blocked by` fields, and ensures `Blocks`/
+`Blocked by` pairs are symmetric. If it prints `"tracker.md updated."`,
+review the diff (`git diff docs/tracker.md`) to confirm the changes are
+correct before committing.
+
 ## Summary
 
 Condensed single-line-per-item view. Grouped by status: in progress first, then
@@ -216,7 +227,7 @@ performances, audience satisfaction, or ties to the music system.
 Details to be worked out in a design doc.
 
 **Blocked by:** F-furnishing
-**Related:** F-music-runtime, F-bldg-dining
+**Related:** F-bldg-dining, F-music-runtime
 
 #### F-bldg-dining — Dining hall
 **Status:** Todo · **Phase:** 4
@@ -225,7 +236,7 @@ Communal dining building where elves eat together. Provides a social
 eating bonus compared to eating alone.
 
 **Blocked by:** F-furnishing
-**Related:** F-bldg-kitchen, F-bldg-concert, F-food-chain
+**Related:** F-bldg-concert, F-bldg-kitchen, F-food-chain
 
 #### F-bldg-dormitory — Dormitory (unassigned elf sleep)
 **Status:** Todo · **Phase:** 3
@@ -263,7 +274,7 @@ Building for storing items and resources. Items placed inside persist
 and are accessible to elves for retrieval.
 
 **Blocked by:** F-furnishing, F-items
-**Related:** F-logistics, F-food-chain
+**Related:** F-food-chain, F-logistics
 
 #### F-bldg-workshop — Craftself's workshop
 **Status:** Todo · **Phase:** 4
@@ -282,7 +293,7 @@ arbitrary shapes, and structural warnings. Currently only rectangular platform
 designation exists via `construction_controller.gd`. This item covers the
 general-purpose blueprint UI that supports all build types and freeform shapes.
 
-**Related:** F-construction, F-batch-blueprint, F-stress-heatmap
+**Related:** F-batch-blueprint, F-construction, F-stress-heatmap
 
 #### F-branch-growth — Grow branches for photosynthesis/fruit
 **Status:** Todo · **Phase:** 3 · **Refs:** §8, §13
@@ -299,7 +310,7 @@ generation algorithm with player-chosen growth direction.
 Bridges and walkways connecting different parts of the tree. Requires new
 build type UI for specifying start/end anchor points and path.
 
-**Related:** F-tree-overlap, F-struct-basic
+**Related:** F-struct-basic, F-tree-overlap
 
 #### F-building — Building construction (paper-thin walls)
 **Status:** Done · **Phase:** 2 · **Refs:** §11
@@ -319,6 +330,7 @@ lifecycle: designate, build (incremental voxel materialization by elves),
 cancel (reverts voxels and face data). Save/load preserves buildings.
 
 **New files:** `building.rs`, `building_renderer.gd`
+
 **Related:** F-construction, F-furnishing
 
 #### F-carve-holes — Remove material (doors, storage hollows)
@@ -337,7 +349,7 @@ Elves assemble into choirs to sing the tree into growing. Construction speed
 and quality depend on choir composition and harmony. Ties into the music
 system.
 
-**Related:** F-choir-harmony, F-music-runtime, F-mana-system
+**Related:** F-choir-harmony, F-mana-system, F-music-runtime
 
 #### F-construction — Platform construction (designate/build/cancel)
 **Status:** Done · **Phase:** 2 · **Refs:** §11, §12
@@ -361,7 +373,7 @@ reverting incomplete structures; this covers intentional teardown of
 finished ones. Needs to consider structural consequences — demolishing a
 load-bearing structure could affect structures above it (warn or block).
 
-**Related:** F-select-struct, F-construction, F-carve-holes, F-cascade-fail
+**Related:** F-carve-holes, F-cascade-fail, F-construction, F-select-struct
 
 #### F-furnishing — Building furnishing framework
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
@@ -388,6 +400,7 @@ tree overlap support, incremental nav graph updates, and oriented thin-panel
 rendering.
 
 **New files:** `ladder_renderer.gd`
+
 **Related:** F-rope-retract
 
 #### F-mass-conserve — Wood mass tracking and conservation
@@ -396,7 +409,7 @@ rendering.
 Tree tracks stored wood material. Construction consumes wood mass. Growth
 produces it. Conservation of mass prevents infinite building.
 
-**Related:** F-mana-system, F-branch-growth
+**Related:** F-branch-growth, F-mana-system
 
 #### F-rope-retract — Retractable rope ladders (furl/unfurl)
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
@@ -415,7 +428,7 @@ display any ongoing or queued furling/unfurling tasks.
 Stairs and ramps for connecting vertical levels. Requires nav graph edges
 with appropriate movement cost (climb speed vs walk speed).
 
-**Related:** F-tree-overlap, F-struct-basic
+**Related:** F-struct-basic, F-tree-overlap
 
 #### F-struct-names — User-editable structure names
 **Status:** Done · **Phase:** 3
@@ -459,7 +472,7 @@ wireframe edges. Invalid if 0% of voxels are exterior. Adds
 `BuildType::allows_tree_overlap()` flag to distinguish structural types from
 future furniture/decoration types. See draft doc for full plan.
 
-**Related:** F-construction, F-blueprint-mode
+**Related:** F-blueprint-mode, F-construction
 
 #### F-undo-designate — Undo last construction designation
 **Status:** Todo · **Phase:** 2
@@ -489,7 +502,7 @@ already-wood voxels) and a wireframe shader. The sim bridge needs to
 expose per-voxel overlap classification to GDScript. See section 4 of
 `docs/drafts/construction_tree_overlap.md` for rendering design notes.
 
-**Related:** F-tree-overlap, F-blueprint-mode
+**Related:** F-blueprint-mode, F-tree-overlap
 
 ### Structural Integrity & Fire
 
@@ -623,7 +636,6 @@ blueprint validation (OK / Warning / Blocked based on stress thresholds),
 bridge method for GDScript stress heatmap data. Construction intermediate
 states are exempt from checks (draft §12).
 
-**Blocks:** F-cascade-fail, F-partial-struct, F-stress-heatmap
 **Related:** F-struct-basic
 
 ### Navigation & Pathfinding
@@ -681,7 +693,7 @@ the existing food gauge (the gauge remains as the creature's internal
 hunger/satiation state; bread is the concrete item that fills it).
 
 **Blocked by:** F-items
-**Related:** F-food-gauge, F-elf-needs, F-bldg-kitchen
+**Related:** F-bldg-kitchen, F-elf-needs, F-food-gauge
 
 #### F-capybara — Capybara species
 **Status:** Done · **Refs:** §15
@@ -698,7 +710,7 @@ passage, resurrection) covered by F-soul-mech. Needs: death event, creature
 removal, corpse cleanup, UI notification. A prerequisite for food scarcity
 having real consequences.
 
-**Related:** F-food-gauge, F-soul-mech, F-elf-needs
+**Related:** F-elf-needs, F-food-gauge, F-soul-mech
 
 #### F-elf-assign — Elf-to-building assignment UI
 **Status:** Todo · **Phase:** 3
@@ -732,7 +744,7 @@ a last resort. Sleep duration restores a rest gauge. Lack of sleep affects
 mood/productivity.
 
 **Blocked by:** F-bldg-dormitory
-**Related:** F-food-gauge, F-task-priority, F-bldg-home, F-bldg-dormitory
+**Related:** F-bldg-dormitory, F-bldg-home, F-food-gauge, F-task-priority
 
 #### F-elf-sprite — Billboard elf sprite rendering
 **Status:** Done · **Phase:** 1 · **Refs:** §24
@@ -761,7 +773,7 @@ Immigration attracted by tree quality (size, fruit production, shelter,
 mana level). Possible birth mechanic for established populations. Rate
 limited by tree carrying capacity and available food/shelter.
 
-**Related:** F-mana-system, F-tree-capacity, F-fruit-prod
+**Related:** F-fruit-prod, F-mana-system, F-tree-capacity
 
 ### Economy & Logistics
 
@@ -786,7 +798,7 @@ design doc before implementation to work out pickup/delivery task
 creation, building input/output slots, and elf decision-making.
 
 **Blocked by:** F-items
-**Related:** F-fruit-prod, F-bldg-kitchen, F-bldg-storehouse, F-bldg-dining, F-bread, F-logistics
+**Related:** F-bldg-dining, F-bldg-kitchen, F-bldg-storehouse, F-bread, F-fruit-prod, F-logistics
 
 #### F-fruit-prod — Basic fruit production and harvesting
 **Status:** Todo · **Phase:** 2 · **Refs:** §13
@@ -798,7 +810,7 @@ random Leaf-adjacent positions, elves pathfind to harvest. Bridges the gap
 between the existing food decay mechanic (F-food-gauge) and the advanced
 food system (F-fruit-variety).
 
-**Related:** F-food-gauge, F-elf-needs, F-fruit-variety, F-branch-growth
+**Related:** F-branch-growth, F-elf-needs, F-food-gauge, F-fruit-variety
 
 #### F-fruit-variety — Food storage, cooking, magical brewing
 **Status:** Todo · **Phase:** 7 · **Refs:** §13
@@ -808,7 +820,7 @@ cooking recipes, and magical brewing from rare ingredients. Builds on the
 basic food pipeline (F-food-chain handles single fruit type → bread) by
 adding variety, quality, and magical dimensions.
 
-**Related:** F-food-chain, F-bldg-kitchen
+**Related:** F-bldg-kitchen, F-food-chain
 
 #### F-hauling — Item hauling task type
 **Status:** Todo · **Phase:** 3
@@ -833,7 +845,7 @@ quantity, and location (carried by creature, on ground at coord, or in
 building). Foundation for food management, crafting, and logistics.
 
 **Blocks:** F-bldg-kitchen, F-bldg-storehouse, F-bldg-workshop, F-bread, F-food-chain, F-hauling, F-recipes
-**Related:** F-logistics, F-crafting
+**Related:** F-crafting, F-logistics
 
 #### F-jobs — Elf job/role specialization
 **Status:** Todo · **Phase:** 3
@@ -845,7 +857,7 @@ restricts task claiming by role and lets the player manage workforce
 allocation. The existing `required_species` field on tasks is a precedent
 for this filtering pattern.
 
-**Related:** F-elf-assign, F-bldg-kitchen, F-bldg-workshop, F-task-priority
+**Related:** F-bldg-kitchen, F-bldg-workshop, F-elf-assign, F-task-priority
 
 #### F-logistics — Spatial resource flow (Kanban-style)
 **Status:** Todo · **Phase:** 7 · **Refs:** §14
@@ -875,7 +887,7 @@ via GameConfig so recipes can be added/tuned without code changes.
 Avoids hardcoding conversion logic per building type.
 
 **Blocked by:** F-items
-**Related:** F-bldg-kitchen, F-bldg-workshop, F-food-chain, F-crafting
+**Related:** F-bldg-kitchen, F-bldg-workshop, F-crafting, F-food-chain
 
 #### F-tree-capacity — Per-tree carrying capacity limits
 **Status:** Todo · **Phase:** 7 · **Refs:** §13
@@ -916,7 +928,7 @@ never stops being miserable.
 Replace flat-rate mana generation with mood-dependent rates. Happy elves
 generate more mana, completing the core feedback loop.
 
-**Blocked by:** F-mana-system, F-emotions
+**Blocked by:** F-emotions, F-mana-system
 
 #### F-mood-system — Mood with escalating consequences
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -1019,8 +1031,6 @@ data-driven lexicon (`data/vaelith_lexicon.json`) with part-of-speech, tones,
 vowel class, and name tags; core language types (`Tone`, `VowelClass`,
 `Syllable`, `LexEntry`) migrated from the music crate; phonotactic rules;
 and a deterministic name generator.
-
-**Blocks:** F-elf-names, F-music-use-lang, F-vaelith-expand
 
 #### F-music-gen — Palestrina-style music generator (standalone)
 **Status:** Done · **Phase:** 6 · **Refs:** §21
@@ -1167,7 +1177,7 @@ Player grows roots toward other trees. Diplomacy phase: mana offerings
 convince trees to join the network. Expands buildable space and perception
 radius.
 
-**Blocked by:** F-multi-tree, F-mana-system
+**Blocked by:** F-mana-system, F-multi-tree
 
 #### F-tree-memory — Ancient tree knowledge/vision system
 **Status:** Todo · **Phase:** 7 · **Refs:** §2
@@ -1182,7 +1192,7 @@ Different tree species with distinct properties. Needs a detailed design —
 scope, gameplay implications, and interaction with existing tree generation
 are not yet specified.
 
-**Related:** F-multi-tree, F-branch-growth
+**Related:** F-branch-growth, F-multi-tree
 
 ### Soul Mechanics & Magic
 
@@ -1192,7 +1202,7 @@ are not yet specified.
 Magic items with emergent personalities from their crafting circumstances
 and the souls/emotions imbued in them.
 
-**Related:** F-soul-mech, F-crafting
+**Related:** F-crafting, F-soul-mech
 
 #### F-soul-mech — Death, soul passage, resurrection
 **Status:** Todo · **Phase:** 8+ · **Refs:** §19
@@ -1238,7 +1248,7 @@ Shows species, name (once F-elf-names exists), and current activity in a
 small floating tooltip. Reduces friction compared to the full selection +
 info panel flow for casual inspection.
 
-**Related:** F-selection, F-creature-info, F-elf-names
+**Related:** F-creature-info, F-elf-names, F-selection
 
 #### F-debug-menu — Move spawn/summon into debug menu
 **Status:** Done · **Phase:** 2
@@ -1302,7 +1312,7 @@ structure-specific actions. Extends the existing creature selection system
 to handle structure entities. Foundation for per-structure interaction like
 rope ladder furling, building furnishing, and structure demolition.
 
-**Related:** F-selection, F-structure-reg, F-rope-retract
+**Related:** F-rope-retract, F-selection, F-structure-reg
 
 #### F-selection — Click-to-select creatures
 **Status:** Done · **Refs:** §26
@@ -1336,7 +1346,8 @@ Enclosure, Building) with sequential IDs (#0, #1, ...) and bounding box
 for zoom-to-location.
 
 **New files:** `structure_list_panel.gd`
-**Related:** F-construction, F-building
+
+**Related:** F-building, F-construction
 
 #### F-tree-info — Tree stats/info panel
 **Status:** Done · **Phase:** 2
@@ -1401,7 +1412,7 @@ Discrete event simulation with priority queue. Empty ticks are free.
 World hidden except where observed by elves or sensed through tree/root
 network. Strongest near trunk, weaker at root edges, absent beyond.
 
-**Related:** F-root-network, F-combat
+**Related:** F-combat, F-root-network
 
 #### F-game-session — Game session autoload singleton
 **Status:** Done · **Refs:** §26
@@ -1471,7 +1482,7 @@ disconnects, preserve their player slot for a timeout period and allow
 reconnection with state catchup (replaying missed turns or requesting a
 snapshot). Not yet designed in detail.
 
-**Related:** F-multiplayer, F-mp-mid-join
+**Related:** F-mp-mid-join, F-multiplayer
 
 #### F-multiplayer — Relay-coordinator multiplayer networking
 **Status:** In Progress · **Phase:** 8+ · **Refs:** §4
@@ -1492,7 +1503,7 @@ trees) deferred to F-multi-tree. Draft doc covers relay architecture,
 session management, and UI design (main menu flow, lobby, in-game controls,
 ESC menu behavior, save/load semantics, sim speed policy).
 
-**Related:** F-save-load, F-multi-tree
+**Related:** F-multi-tree, F-save-load
 
 #### F-save-load — Save/load to JSON with versioning
 **Status:** Done · **Phase:** 2 · **Refs:** §4, §5
@@ -1518,8 +1529,6 @@ corresponding convenience methods to `GameRng` as needed (`next_f64`,
 `random_bool`, etc.). The sim crate re-exports or depends on the new prng
 crate in place of its local `prng.rs`.
 
-**Blocks:** F-lang-crate, F-music-use-lang
-
 #### F-sim-commands — SimCommand pipeline
 **Status:** Done · **Phase:** 1 · **Refs:** §4
 
@@ -1538,5 +1547,5 @@ type priority prevents overwrites.
 Rain, wind, storms within seasons. Could affect mood, fire spread, and
 construction difficulty. Open design question (§27).
 
-**Related:** F-seasons, F-fire-ecology
+**Related:** F-fire-ecology, F-seasons
 
