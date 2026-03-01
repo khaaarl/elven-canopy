@@ -79,17 +79,17 @@ const FACE_BASES: [FaceBasis; 6] = [
         tangent_u: [0, 0, 1],
         tangent_v: [0, 1, 0],
     },
-    // +Y: N=(0,1,0)  U=(1,0,0)   V=(0,0,1)
+    // +Y: N=(0,1,0)  U=(0,0,1)   V=(1,0,0)
     FaceBasis {
         normal: [0, 1, 0],
-        tangent_u: [1, 0, 0],
-        tangent_v: [0, 0, 1],
+        tangent_u: [0, 0, 1],
+        tangent_v: [1, 0, 0],
     },
-    // -Y: N=(0,-1,0) U=(1,0,0)   V=(0,0,-1)
+    // -Y: N=(0,-1,0) U=(0,0,-1)  V=(1,0,0)
     FaceBasis {
         normal: [0, -1, 0],
-        tangent_u: [1, 0, 0],
-        tangent_v: [0, 0, -1],
+        tangent_u: [0, 0, -1],
+        tangent_v: [1, 0, 0],
     },
     // +Z: N=(0,0,1)  U=(1,0,0)   V=(0,1,0)
     FaceBasis {
@@ -404,24 +404,19 @@ fn emit_face(
     let i_mid_left = builder.get_or_insert_vertex(v_mid_left, face_normal);
     let i_center = builder.get_or_insert_vertex(v_center, face_normal);
 
-    // 8 triangles in pinwheel pattern (CCW when viewed from outside):
-    // Tri 1: center, 00, mid_left
-    // Tri 2: center, mid_left, 01
-    // Tri 3: center, 01, mid_top
-    // Tri 4: center, mid_top, 11
-    // Tri 5: center, 11, mid_right
-    // Tri 6: center, mid_right, 10
-    // Tri 7: center, 10, mid_bot
-    // Tri 8: center, mid_bot, 00
+    // 8 triangles in pinwheel pattern. Boundary traces CCW in UV space
+    // (00→mid_bot→10→mid_right→11→mid_top→01→mid_left) so that
+    // center→boundary[i]→boundary[i+1] produces CCW winding when viewed
+    // from outside (since U×V = N).
     let tris = [
-        [i_center, i_00, i_mid_left],
-        [i_center, i_mid_left, i_01],
-        [i_center, i_01, i_mid_top],
-        [i_center, i_mid_top, i_11],
-        [i_center, i_11, i_mid_right],
-        [i_center, i_mid_right, i_10],
-        [i_center, i_10, i_mid_bot],
-        [i_center, i_mid_bot, i_00],
+        [i_center, i_00, i_mid_bot],
+        [i_center, i_mid_bot, i_10],
+        [i_center, i_10, i_mid_right],
+        [i_center, i_mid_right, i_11],
+        [i_center, i_11, i_mid_top],
+        [i_center, i_mid_top, i_01],
+        [i_center, i_01, i_mid_left],
+        [i_center, i_mid_left, i_00],
     ];
 
     for tri in &tris {
@@ -718,6 +713,62 @@ mod tests {
                 i,
                 pos,
                 dot
+            );
+        }
+    }
+
+    #[test]
+    fn triangles_wind_ccw_from_outside() {
+        // For each triangle, the cross product of two edges should align with
+        // the face normal (i.e., point outward from the voxel center).
+        let coord = VoxelCoord::new(5, 5, 5);
+        let world = world_with_voxel(coord, VoxelType::Trunk);
+        let result = generate_smoothed_meshes(&world, &[coord], &[]);
+        let mesh = result
+            .get(&MaterialGroup::Wood)
+            .expect("should have wood mesh");
+
+        let voxel_center = [5.5_f32, 5.5, 5.5];
+
+        for tri_idx in (0..mesh.indices.len()).step_by(3) {
+            let a = mesh.positions[mesh.indices[tri_idx] as usize];
+            let b = mesh.positions[mesh.indices[tri_idx + 1] as usize];
+            let c = mesh.positions[mesh.indices[tri_idx + 2] as usize];
+
+            // Edge vectors
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+
+            // Cross product (triangle normal)
+            let cross = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+
+            // Triangle centroid
+            let centroid = [
+                (a[0] + b[0] + c[0]) / 3.0,
+                (a[1] + b[1] + c[1]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0,
+            ];
+
+            // Vector from voxel center to triangle centroid
+            let outward = [
+                centroid[0] - voxel_center[0],
+                centroid[1] - voxel_center[1],
+                centroid[2] - voxel_center[2],
+            ];
+
+            let dot = cross[0] * outward[0] + cross[1] * outward[1] + cross[2] * outward[2];
+            assert!(
+                dot > 0.0,
+                "Triangle {} has CW winding (dot={:.6}), vertices: {:?} {:?} {:?}",
+                tri_idx / 3,
+                dot,
+                a,
+                b,
+                c
             );
         }
     }
