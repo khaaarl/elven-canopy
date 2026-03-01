@@ -781,7 +781,9 @@ mod tests {
     fn test_sa_with_text() {
         use crate::text_mapping::apply_text_mapping;
         use crate::vaelith::generate_phrases;
+        use elven_canopy_lang::default_lexicon;
 
+        let lexicon = default_lexicon();
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let weights = ScoringWeights::default();
@@ -793,7 +795,7 @@ mod tests {
         let structural = apply_structure(&mut grid, &plan);
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
 
-        let phrases = generate_phrases(2, &mut rng);
+        let phrases = generate_phrases(&lexicon, 2, &mut rng);
         let mut mapping = apply_text_mapping(&mut grid, &plan, &phrases);
 
         let config = SAConfig {

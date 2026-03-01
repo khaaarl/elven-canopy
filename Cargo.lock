@@ -54,9 +54,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "elven_canopy_lang"
+version = "0.1.0"
+dependencies = [
+ "elven_canopy_prng",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "elven_canopy_music"
 version = "0.1.0"
 dependencies = [
+ "elven_canopy_lang",
  "elven_canopy_prng",
  "midly",
  "serde",
@@ -92,6 +102,7 @@ dependencies = [
 name = "elven_canopy_sim"
 version = "0.1.0"
 dependencies = [
+ "elven_canopy_lang",
  "elven_canopy_prng",
  "serde",
  "serde_json",

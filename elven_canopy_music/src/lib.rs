@@ -18,7 +18,7 @@
 //   adaptive cooling
 // - midi.rs: MIDI file output from completed grids
 // - lilypond.rs: LilyPond sheet music output (.ly files for engraving)
-// - vaelith.rs: Vaelith tonal conlang grammar engine (vocabulary + phrase gen)
+// - vaelith.rs: Vaelith phrase generation (types + vocabulary from elven_canopy_lang)
 // - text_mapping.rs: Syllable-to-grid mapping and tonal contour tracking
 //
 // The generator is deterministic given a seed, supporting reproducible output.

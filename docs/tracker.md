@@ -91,7 +91,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-items                Items and inventory system
 [ ] F-jobs                 Elf job/role specialization
-[ ] F-lang-crate           Shared Vaelith language crate
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-logistics            Spatial resource flow (Kanban-style)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -163,6 +162,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
 [x] F-ladders              Rope/wood ladders as cheap connectors
+[x] F-lang-crate           Shared Vaelith language crate
 [x] F-large-nav-tolerance  1-voxel height tolerance for large nav
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-main-menu            Main menu UI
@@ -1000,16 +1000,14 @@ be deterministic given the same PRNG state. Adds a `name` field to the
 **Related:** F-vaelith-expand
 
 #### F-lang-crate — Shared Vaelith language crate
-**Status:** Todo · **Phase:** 6 · **Refs:** §20
-**Draft:** `docs/drafts/lang_crate.md`
+**Status:** Done · **Phase:** 6 · **Refs:** §20
 
 Create `elven_canopy_lang`, a pure-Rust crate providing the Vaelith language
 as a programmatic resource shared by the sim and music crates. Includes:
 data-driven lexicon (`data/vaelith_lexicon.json`) with part-of-speech, tones,
 vowel class, and name tags; core language types (`Tone`, `VowelClass`,
 `Syllable`, `LexEntry`) migrated from the music crate; phonotactic rules;
-and a deterministic name generator. See draft doc for full design including
-lexicon schema, crate structure, and what moves vs stays in the music crate.
+and a deterministic name generator.
 
 **Blocks:** F-elf-names, F-music-use-lang, F-vaelith-expand
 

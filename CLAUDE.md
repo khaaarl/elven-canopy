@@ -9,7 +9,7 @@ Elven Canopy is a Dwarf Fortress-inspired simulation/management game set in a fo
 **Key architectural decisions:**
 
 - **Godot 4 + Rust via gdext.** Godot handles rendering, input, UI, and camera. All simulation logic lives in Rust.
-- **Shared PRNG crate + game crates.** `elven_canopy_prng` provides a hand-rolled xoshiro256++ PRNG used by all crates (no external RNG dependencies). `elven_canopy_sim` is a pure Rust library (zero Godot dependencies) containing all simulation logic. `elven_canopy_gdext` is a thin wrapper that exposes the sim to Godot via GDExtension. `elven_canopy_music` is a standalone Palestrina-style polyphonic music generator with Vaelith (elvish) lyrics. The sim/gdext separation is enforced at the compiler level; the music crate is independent of both.
+- **Shared PRNG crate + game crates.** `elven_canopy_prng` provides a hand-rolled xoshiro256++ PRNG used by all crates (no external RNG dependencies). `elven_canopy_lang` provides shared Vaelith conlang types, vocabulary (JSON lexicon), and name generation — used by both `elven_canopy_sim` (elf names) and `elven_canopy_music` (lyrics). `elven_canopy_sim` is a pure Rust library (zero Godot dependencies) containing all simulation logic. `elven_canopy_gdext` is a thin wrapper that exposes the sim to Godot via GDExtension. `elven_canopy_music` is a standalone Palestrina-style polyphonic music generator with Vaelith (elvish) lyrics. The sim/gdext separation is enforced at the compiler level; the music crate is independent of both.
 - **Deterministic simulation.** The sim is a pure function: `(state, commands) → (new_state, events)`. Hand-rolled xoshiro256++ PRNG (no external PRNG dependencies), no `HashMap` (use `BTreeMap`), no system dependencies. Designed for future lockstep multiplayer, perfect replays, and verifiable performance optimizations.
 - **Command-driven mutation.** All sim state changes go through `SimCommand`. In single-player, the GDScript glue translates UI actions into commands. In multiplayer, commands are broadcast and canonically ordered.
 - **Event-driven ticks.** The sim uses a discrete event simulation with a priority queue, not fixed-timestep iteration. Empty ticks are free, enabling efficient fast-forward.
@@ -25,7 +25,7 @@ Loose overview of where things stand. See `docs/tracker.md` for the full project
 - **Phase 0 (Foundations):** Complete.
 - **Phase 1 (A Tree and an Elf):** Complete.
 - **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, but no blueprint mode UI, no mana economy, no visual smoothing.
-- **Phase 6 (Culture and Language):** Music crate complete as standalone generator, not yet integrated into game runtime.
+- **Phase 6 (Culture and Language):** Music crate complete as standalone generator, not yet integrated into game runtime. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation.
 - **Phases 3–5, 7–8:** Not started.
 
 ## Project Structure
@@ -46,6 +46,12 @@ elven-canopy/
 │       ├── pathfinding.rs      # A* search over NavGraph
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
 │       └── world.rs            # Dense 3D voxel grid
+├── elven_canopy_lang/          # Shared Vaelith conlang (types, lexicon, name gen)
+│   └── src/
+│       ├── lib.rs              # Lexicon loader (JSON → typed struct), re-exports
+│       ├── types.rs            # Tone, VowelClass, Syllable, LexEntry, Word, PartOfSpeech
+│       ├── phonotactics.rs     # Suffix tables (aspect, case) with vowel harmony
+│       └── names.rs            # Deterministic elvish name generator
 ├── elven_canopy_prng/          # Shared xoshiro256++ PRNG (used by sim, music, lang)
 │   ├── src/
 │   │   └── lib.rs              # GameRng: xoshiro256++ with SplitMix64 seeding
@@ -95,7 +101,8 @@ elven-canopy/
 │       ├── placement_controller.gd  # Click-to-place for spawns and tasks
 │       ├── selection_controller.gd  # Click-to-select creatures
 │       └── creature_info_panel.gd   # Right-side creature info + follow button
-├── data/                       # Trained Markov models for music generator
+├── data/                       # Shared data files (lexicon, Markov models)
+│   ├── vaelith_lexicon.json    # Vaelith vocabulary (41 entries with syllables + tones)
 │   ├── markov_models.json      # Interval transition tables from Palestrina corpus
 │   └── motif_library.json      # Ranked interval n-gram motifs
 ├── python/                     # Offline tools (not part of game runtime)
@@ -125,6 +132,8 @@ scripts/build.sh run      # Debug build, then launch the game
 ```
 
 To run sim tests alone: `cargo test -p elven_canopy_sim`
+
+To run lang crate tests: `cargo test -p elven_canopy_lang`
 
 To run music crate tests: `cargo test -p elven_canopy_music`
 

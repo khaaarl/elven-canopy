@@ -45,3 +45,29 @@ pub mod task;
 pub mod tree_gen;
 pub mod types;
 pub mod world;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_lang_crate_name_generation() {
+        use elven_canopy_lang::{default_lexicon, names::generate_name};
+        use elven_canopy_prng::GameRng;
+
+        let lexicon = default_lexicon();
+        let mut rng = GameRng::new(42);
+        let name = generate_name(&lexicon, &mut rng);
+
+        assert!(!name.full_name.is_empty(), "Name should not be empty");
+        assert!(!name.given.is_empty(), "Given name should not be empty");
+        assert!(!name.surname.is_empty(), "Surname should not be empty");
+        assert!(
+            name.full_name.contains(' '),
+            "Full name should have a space"
+        );
+
+        // Determinism: same seed produces same name
+        let mut rng2 = GameRng::new(42);
+        let name2 = generate_name(&lexicon, &mut rng2);
+        assert_eq!(name.full_name, name2.full_name);
+    }
+}
