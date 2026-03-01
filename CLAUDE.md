@@ -270,6 +270,10 @@ ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FE
 
 **Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.sh check` and fix any issues. Do NOT commit code that fails formatting or linting. For commits that change Rust sim or music crate code, also run `scripts/build.sh test` and ensure all tests pass. Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
 
+## The Once-Over
+
+When a feature branch's work is done, the user will likely ask for a "once-over" -- a final check of code quality, test quality, documentation accuracy, and similar. This should happen before asking to merge a feature branch to main. You should double-check that everything correct, and not merely correct but of good quality. Especially relevant is checking that documentation/comments in related files get updated.
+
 ## Merging to Main
 
 When the user asks to merge a feature branch to main, follow this procedure:
@@ -317,7 +321,7 @@ git push origin --delete feature/my-branch
 2. Read the conflicting files — look for `<<<<<<<`, `=======`, `>>>>>>>` markers
 3. Resolve by editing to keep the correct version of each section
 4. `git add <resolved-files> && git rebase --continue`
-5. After rebase completes, verify the code still works (run tests)
+5. After rebase completes, verify the code still works (run tests) and is qualitatively coherent
 6. **If conflicts required non-trivial edits** (e.g., integrating two features that touch the same code), ask the user for permission before completing the merge. Truly trivial conflicts (e.g., both sides added adjacent lines with no semantic interaction) can be resolved and merged without asking.
 
 **Tracker update (step 4):** After the rebase succeeds and before merging to main, update `docs/tracker.md` to reflect completed work — move summary lines from In Progress/Todo to Done, update `**Status:**` in detailed entries. Amending the squashed commit ensures the tracker update and the code land atomically.
