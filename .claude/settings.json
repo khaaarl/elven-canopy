@@ -27,6 +27,8 @@
       "Write(/**/*.tscn)",
       "Write(/**/*.txt)",
       "Write(/.tmp/*)",
+      "Bash(ack:*)",
+      "Bash(awk:*)",
       "Bash(cat:*)",
       "Bash(cargo:*)",
       "Bash(cargo-clippy:*)",
@@ -72,6 +74,7 @@
       "Bash(ty:*)",
       "Bash(wc:*)",
       "Bash(which:*)",
+      "Bash(xargs dirname:*)",
       "WebFetch",
       "WebSearch"
     ],
