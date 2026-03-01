@@ -72,6 +72,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
+[ ] F-demolish             Structure demolition
 [ ] F-elf-names            Elf name generation from conlang rules
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-emotions             Multi-dimensional emotional state
@@ -81,6 +82,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fire-structure       Fire x structural integrity cascades
 [ ] F-flying-nav           3D flight navigation system
 [ ] F-fog-of-war           Visibility via tree and root network
+[ ] F-food-chain           Food production/distribution pipeline
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-variety        Food storage, cooking, magical brewing
 [ ] F-furnishing           Building furnishing framework
@@ -339,6 +341,18 @@ and incrementally materialize voxels. Cancellation reverts placed voxels.
 Incremental nav graph updates keep pathfinding current during construction.
 
 **Related:** F-building
+
+#### F-demolish — Structure demolition
+**Status:** Todo · **Phase:** 3
+
+Player selects a completed structure and orders it demolished. Elves
+perform the demolition as a task, reverting the structure's voxels to Air
+and removing it from the structure registry. Nav graph updates
+incrementally as voxels are removed. Cancel-build already handles
+reverting incomplete structures; this covers intentional teardown of
+finished ones.
+
+**Related:** F-select-struct, F-construction, F-carve-holes
 
 #### F-furnishing — Building furnishing framework
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
@@ -720,6 +734,21 @@ limited by tree carrying capacity and available food/shelter.
 Jobs beyond construction: woodworking, weaving, cooking, enchanting.
 Crafting system for tools, furniture, and magical items.
 
+#### F-food-chain — Food production/distribution pipeline
+**Status:** Todo · **Phase:** 3
+
+Design and implement the basic food logistics chain: fruit is harvested
+from trees, carried to a storehouse, kitchen converts fruit into
+shelf-stable bread, bread stored in storehouse or carried to dining hall
+for communal meals. Defines how items flow between buildings and how
+elves decide where to deliver resources. A focused near-term subset of
+the general F-logistics system, scoped to food only. Needs a draft
+design doc before implementation to work out pickup/delivery task
+creation, building input/output slots, and elf decision-making.
+
+**Blocked by:** F-items
+**Related:** F-fruit-prod, F-bldg-kitchen, F-bldg-storehouse, F-bldg-dining, F-bread, F-logistics
+
 #### F-fruit-prod — Basic fruit production and harvesting
 **Status:** Todo · **Phase:** 2 · **Refs:** §13
 
@@ -755,6 +784,8 @@ building). Foundation for food management, crafting, and logistics.
 
 Resources flow through spatial paths — stockpiles, workshops, delivery
 routes. Kanban-inspired pull system rather than global resource pools.
+
+**Related:** F-food-chain
 
 #### F-mana-system — Mana generation, storage, and spending
 **Status:** Todo · **Phase:** 2 · **Refs:** §11, §13
