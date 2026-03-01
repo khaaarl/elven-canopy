@@ -245,31 +245,39 @@ fn generate_group_mesh(
     builder.finish()
 }
 
-/// Check if direction D produces displacement for a voxel face.
+/// Compute displacement for direction D on a voxel face.
 ///
-/// Displacement occurs when:
-/// - The voxel at `coord + D + N` is the same material group (diagonal neighbor
-///   across the face exists)
-/// - AND the voxel at `coord + D` is NOT the same material group (no same-group
-///   voxel blocking the diagonal — the diagonal is "exposed")
-fn check_displacement(
+/// Returns:
+/// - `0.0` if the perpendicular neighbor is the same material group (flush)
+/// - `+0.5` if the perpendicular is NOT same group but the diagonal across the
+///   face IS same group (outward ramp at staircases)
+/// - `-0.5` if neither perpendicular nor diagonal is same group (inward chamfer
+///   at exposed edges, creating diamond cross-sections)
+fn edge_displacement(
     world: &VoxelWorld,
     coord: VoxelCoord,
     normal: [i32; 3],
     direction: [i32; 3],
     group: MaterialGroup,
-) -> bool {
-    let diag = VoxelCoord::new(
-        coord.x + direction[0] + normal[0],
-        coord.y + direction[1] + normal[1],
-        coord.z + direction[2] + normal[2],
-    );
+) -> f32 {
     let perp = VoxelCoord::new(
         coord.x + direction[0],
         coord.y + direction[1],
         coord.z + direction[2],
     );
-    material_group(world.get(diag)) == Some(group) && material_group(world.get(perp)) != Some(group)
+    if material_group(world.get(perp)) == Some(group) {
+        return 0.0;
+    }
+    let diag = VoxelCoord::new(
+        coord.x + direction[0] + normal[0],
+        coord.y + direction[1] + normal[1],
+        coord.z + direction[2] + normal[2],
+    );
+    if material_group(world.get(diag)) == Some(group) {
+        0.5
+    } else {
+        -0.5
+    }
 }
 
 /// Emit 8 triangles for one face of a voxel.
@@ -301,71 +309,31 @@ fn emit_face(
     let cy = coord.y as f32 + 0.5;
     let cz = coord.z as f32 + 0.5;
 
-    // Compute displacements for each of the 4 directions on the face plane
-    // -U, +U, -V, +V
+    // Compute displacements for the 4 cardinal directions on the face plane.
+    // Each returns -0.5 (chamfer), 0.0 (flush), or +0.5 (ramp).
     let neg_u = [-u[0], -u[1], -u[2]];
     let pos_u = u;
     let neg_v = [-v[0], -v[1], -v[2]];
     let pos_v = v;
 
-    let disp_neg_u = check_displacement(world, coord, n, neg_u, group);
-    let disp_pos_u = check_displacement(world, coord, n, pos_u, group);
-    let disp_neg_v = check_displacement(world, coord, n, neg_v, group);
-    let disp_pos_v = check_displacement(world, coord, n, pos_v, group);
+    let disp_neg_u = edge_displacement(world, coord, n, neg_u, group);
+    let disp_pos_u = edge_displacement(world, coord, n, pos_u, group);
+    let disp_neg_v = edge_displacement(world, coord, n, neg_v, group);
+    let disp_pos_v = edge_displacement(world, coord, n, pos_v, group);
 
-    // Also check the 4 diagonal directions for corner displacement
-    let diag_nu_nv = [
-        neg_u[0] + neg_v[0],
-        neg_u[1] + neg_v[1],
-        neg_u[2] + neg_v[2],
-    ];
-    let diag_pu_nv = [
-        pos_u[0] + neg_v[0],
-        pos_u[1] + neg_v[1],
-        pos_u[2] + neg_v[2],
-    ];
-    let diag_nu_pv = [
-        neg_u[0] + pos_v[0],
-        neg_u[1] + pos_v[1],
-        neg_u[2] + pos_v[2],
-    ];
-    let diag_pu_pv = [
-        pos_u[0] + pos_v[0],
-        pos_u[1] + pos_v[1],
-        pos_u[2] + pos_v[2],
-    ];
+    // Corner displacements: sum of the two adjacent edge displacements,
+    // clamped to [-0.5, 1.0] to prevent over-displacement at exposed corners.
+    let corner_disp = |a: f32, b: f32| -> f32 { (a + b).clamp(-0.5, 1.0) };
+    let corner_00_disp = corner_disp(disp_neg_u, disp_neg_v);
+    let corner_10_disp = corner_disp(disp_pos_u, disp_neg_v);
+    let corner_11_disp = corner_disp(disp_pos_u, disp_pos_v);
+    let corner_01_disp = corner_disp(disp_neg_u, disp_pos_v);
 
-    let disp_diag_nu_nv = check_displacement(world, coord, n, diag_nu_nv, group);
-    let disp_diag_pu_nv = check_displacement(world, coord, n, diag_pu_nv, group);
-    let disp_diag_nu_pv = check_displacement(world, coord, n, diag_nu_pv, group);
-    let disp_diag_pu_pv = check_displacement(world, coord, n, diag_pu_pv, group);
-
-    // 9 vertex positions on the face:
-    // Corners: (u,v) = (0,0), (1,0), (1,1), (0,1)
-    // Edge midpoints: (0.5,0), (1,0.5), (0.5,1), (0,0.5)
-    // Center: (0.5, 0.5)
-
-    // Corner displacements: each corner checks its 2 adjacent edge directions
-    // AND the diagonal direction. It accumulates from all three.
-    // corner(0,0) checks -U, -V, diag(-U,-V)
-    // corner(1,0) checks +U, -V, diag(+U,-V)
-    // corner(1,1) checks +U, +V, diag(+U,+V)
-    // corner(0,1) checks -U, +V, diag(-U,+V)
-
-    let corner_00_disp = displacement_sum(disp_neg_u, disp_neg_v, disp_diag_nu_nv);
-    let corner_10_disp = displacement_sum(disp_pos_u, disp_neg_v, disp_diag_pu_nv);
-    let corner_11_disp = displacement_sum(disp_pos_u, disp_pos_v, disp_diag_pu_pv);
-    let corner_01_disp = displacement_sum(disp_neg_u, disp_pos_v, disp_diag_nu_pv);
-
-    // Edge midpoint displacements: each checks 1 perpendicular direction
-    // mid(0.5,0) checks -V
-    // mid(1,0.5) checks +U
-    // mid(0.5,1) checks +V
-    // mid(0,0.5) checks -U
-    let mid_bot_disp: f32 = if disp_neg_v { 0.5 } else { 0.0 };
-    let mid_right_disp: f32 = if disp_pos_u { 0.5 } else { 0.0 };
-    let mid_top_disp: f32 = if disp_pos_v { 0.5 } else { 0.0 };
-    let mid_left_disp: f32 = if disp_neg_u { 0.5 } else { 0.0 };
+    // Edge midpoint displacements: directly from the perpendicular direction.
+    let mid_bot_disp = disp_neg_v;
+    let mid_right_disp = disp_pos_u;
+    let mid_top_disp = disp_pos_v;
+    let mid_left_disp = disp_neg_u;
 
     // Center: always 0.0
 
@@ -429,27 +397,6 @@ fn emit_face(
     }
 }
 
-/// Compute corner displacement: sum of 0.5 for each true direction, capped
-/// conceptually but in practice the sum of three bools * 0.5 gives 0.0..1.5.
-/// Per the plan, corners accumulate 0.0, 0.5, or 1.0 from the two edge
-/// directions, plus an additional 0.5 from the diagonal. We cap at a
-/// reasonable maximum but the plan says corners check 2 edge directions
-/// (each contributing 0.5) for a max of 1.0. The diagonal is a third
-/// independent check. Let's keep it simple: each true adds 0.5.
-fn displacement_sum(edge_a: bool, edge_b: bool, diag: bool) -> f32 {
-    let mut d = 0.0_f32;
-    if edge_a {
-        d += 0.5;
-    }
-    if edge_b {
-        d += 0.5;
-    }
-    if diag {
-        d += 0.5;
-    }
-    d
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,8 +420,11 @@ mod tests {
         // 6 faces × 8 triangles × 3 indices = 144 indices
         assert_eq!(mesh.indices.len(), 144);
 
-        // Welded vertex count: 8 corners + 12 edge midpoints + 6 face centers = 26
-        assert_eq!(mesh.positions.len(), 26);
+        // Welded vertex count with chamfering: 6 face centers (merged with
+        // displaced edge midpoints that land on adjacent face centers) + 12
+        // corner positions (pairs of opposite-face corners merge at cube edge
+        // midpoints) = 18.
+        assert_eq!(mesh.positions.len(), 18);
     }
 
     #[test]
@@ -663,21 +613,20 @@ mod tests {
             .expect("should have wood mesh");
 
         // Count how many positions are at y=6.0 (the boundary between the two voxels).
-        // Without welding, each voxel would create its own copy.
-        // With welding, edge midpoints and corners at y=6.0 should appear once.
+        // With chamfering, only 4 vertices sit at y=6.0: the side face edge
+        // midpoints (undisplaced because the perpendicular along-rod neighbor is
+        // same material) and displaced corners. These form a diamond at the
+        // boundary.
         let boundary_verts: Vec<_> = mesh
             .positions
             .iter()
             .filter(|p| (p[1] - 6.0).abs() < 1e-5)
             .collect();
 
-        // At y=6.0, there should be exactly 8 unique positions:
-        // 4 corners of the shared plane + 4 edge midpoints of that plane.
-        // (Face centers are at y=5.5 and y=6.5, not at y=6.0.)
         assert_eq!(
             boundary_verts.len(),
-            8,
-            "Expected 8 welded boundary vertices, got {:?}",
+            4,
+            "Expected 4 welded boundary vertices (diamond), got {:?}",
             boundary_verts
         );
     }
@@ -710,9 +659,12 @@ mod tests {
             ];
             let dot =
                 normal[0] * to_vertex[0] + normal[1] * to_vertex[1] + normal[2] * to_vertex[2];
+            // With chamfering, corner vertices can land at cube-edge midpoints
+            // where opposite-face normals cancel (dot ≈ 0). These are
+            // geometrically correct zero-length normals; allow them.
             assert!(
-                dot > 0.0,
-                "Normal at vertex {:?} (pos {:?}) should point outward, dot={:.4}",
+                dot >= 0.0,
+                "Normal at vertex {:?} (pos {:?}) should not point inward, dot={:.4}",
                 i,
                 pos,
                 dot
@@ -775,6 +727,54 @@ mod tests {
                 a,
                 b,
                 c
+            );
+        }
+    }
+
+    #[test]
+    fn straight_rod_has_diamond_cross_section() {
+        // A horizontal rod of 3 trunk voxels along X. The middle voxel's
+        // cross-section in the YZ plane should be a diamond: the +Y and -Y
+        // face edge midpoints perpendicular to the rod are displaced inward
+        // by -0.5, landing on adjacent face centers.
+        let v0 = VoxelCoord::new(4, 5, 5);
+        let v1 = VoxelCoord::new(5, 5, 5);
+        let v2 = VoxelCoord::new(6, 5, 5);
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(v0, VoxelType::Trunk);
+        world.set(v1, VoxelType::Trunk);
+        world.set(v2, VoxelType::Trunk);
+
+        let result = generate_smoothed_meshes(&world, &[v0, v1, v2], &[]);
+        let mesh = result
+            .get(&MaterialGroup::Wood)
+            .expect("should have wood mesh");
+
+        // The middle voxel (5,5,5) has center (5.5, 5.5, 5.5).
+        // Its +Y face center is at (5.5, 6.0, 5.5) — undisplaced (diamond top).
+        // The +Y face's mid_right (u=1, +Z edge) should be displaced inward
+        // by -0.5, landing at (5.5, 5.5, 6.0) = the +Z face center position.
+        // This confirms the chamfer creates the diamond shape.
+        let diamond_top = [5.5_f32, 6.0, 5.5];
+        let diamond_right = [5.5_f32, 5.5, 6.0]; // +Y mid_right displaced = +Z center
+        let diamond_bottom = [5.5_f32, 5.0, 5.5];
+        let diamond_left = [5.5_f32, 5.5, 5.0]; // +Y mid_left displaced = -Z center
+
+        for (label, target) in [
+            ("top", diamond_top),
+            ("right", diamond_right),
+            ("bottom", diamond_bottom),
+            ("left", diamond_left),
+        ] {
+            let found = mesh.positions.iter().any(|p| {
+                (p[0] - target[0]).abs() < 1e-5
+                    && (p[1] - target[1]).abs() < 1e-5
+                    && (p[2] - target[2]).abs() < 1e-5
+            });
+            assert!(
+                found,
+                "Diamond vertex '{}' at {:?} not found in mesh",
+                label, target
             );
         }
     }
