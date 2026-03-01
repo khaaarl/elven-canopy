@@ -116,6 +116,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-narrative-log        Events and narrative log
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
+[ ] F-placement-ui         Revamp construction placement UX
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
@@ -413,6 +414,19 @@ Tree tracks stored wood material. Construction consumes wood mass. Growth
 produces it. Conservation of mass prevents infinite building.
 
 **Related:** F-branch-growth, F-mana-system
+
+#### F-placement-ui — Revamp construction placement UX
+**Status:** Todo · **Phase:** 2
+
+Revamp the construction placement UI with mode-specific interaction models.
+Platforms are placed freely in 3D space (the current layer-based designation
+approach), but buildings are more constrained — they sit on a surface and have
+a footprint, so mouse-based click-and-drag placement (like RTS building
+placement) would be more natural. This feature covers designing and
+implementing the right interaction pattern for each construction type. Expect
+significant experimentation to find what feels good.
+
+**Related:** F-blueprint-mode, F-building, F-construction
 
 #### F-rope-retract — Retractable rope ladders (furl/unfurl)
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
