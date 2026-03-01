@@ -41,8 +41,8 @@
 //   `designate_build_rect(x,y,z,width,depth)` — each constructs a
 //   `SimCommand` and immediately steps the sim by one tick to apply it.
 //   `furnish_structure(structure_id, furnishing_type)` begins furnishing a
-//   completed building. `get_bed_positions()` returns flat (x,y,z) triples
-//   of placed beds for rendering.
+//   completed building. `get_furniture_positions()` returns flat (x,y,z,kind)
+//   quads of placed furniture for rendering.
 // - **Construction:** `validate_build_position(x,y,z)` checks whether a
 //   voxel is valid for building (Air + adjacent to solid) — used for
 //   single-voxel preview. `validate_build_air(x,y,z)` checks only
@@ -111,8 +111,8 @@ use elven_canopy_sim::sim::SimState;
 use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::TaskState;
 use elven_canopy_sim::types::{
-    BuildType, FaceDirection, FurnishingType, LadderKind, OverlapClassification, Priority, Species,
-    StructureId, VoxelCoord, VoxelType,
+    BuildType, FaceDirection, FurnishingType, FurnitureKind, LadderKind, OverlapClassification,
+    Priority, Species, StructureId, VoxelCoord, VoxelType,
 };
 use godot::prelude::*;
 
@@ -871,14 +871,22 @@ impl SimBridge {
 
         // Furnishing data.
         let furnishing_str = match &structure.furnishing {
-            Some(FurnishingType::Dormitory) => "Dormitory",
+            Some(ft) => ft.display_str(),
             None => "",
         };
         dict.set("furnishing", GString::from(furnishing_str));
-        dict.set("bed_count", structure.bed_positions.len() as i64);
+        let furniture_kind_str = match &structure.furnishing {
+            Some(ft) => ft.furniture_kind().noun_plural(),
+            None => "",
+        };
+        dict.set("furniture_noun", GString::from(furniture_kind_str));
         dict.set(
-            "planned_bed_count",
-            (structure.bed_positions.len() + structure.planned_beds.len()) as i64,
+            "furniture_count",
+            structure.furniture_positions.len() as i64,
+        );
+        dict.set(
+            "planned_furniture_count",
+            (structure.furniture_positions.len() + structure.planned_furniture.len()) as i64,
         );
         // Check if there's an active Furnish task for this structure.
         let is_furnishing = sim.tasks.values().any(|t| {
@@ -2243,12 +2251,19 @@ impl SimBridge {
     }
 
     /// Begin furnishing a completed building. `furnishing_type` is a string
-    /// ("Dormitory"). Ignored if the structure is not a building or already
-    /// furnished.
+    /// matching one of the `FurnishingType` variants ("Dormitory", "Home",
+    /// "DiningHall", "Kitchen", "Workshop", "Storehouse", "ConcertHall").
+    /// Ignored if the structure is not a building or already furnished.
     #[func]
     fn furnish_structure(&mut self, structure_id: i64, furnishing_type: GString) {
         let ft = match furnishing_type.to_string().as_str() {
+            "ConcertHall" => FurnishingType::ConcertHall,
+            "DiningHall" => FurnishingType::DiningHall,
             "Dormitory" => FurnishingType::Dormitory,
+            "Home" => FurnishingType::Home,
+            "Kitchen" => FurnishingType::Kitchen,
+            "Storehouse" => FurnishingType::Storehouse,
+            "Workshop" => FurnishingType::Workshop,
             _ => return,
         };
         self.apply_or_send(SimAction::FurnishStructure {
@@ -2257,19 +2272,26 @@ impl SimBridge {
         });
     }
 
-    /// Return all placed bed positions across all structures as a flat
-    /// PackedInt32Array of (x, y, z) triples. Used by bed_renderer.gd.
+    /// Return all placed furniture positions across all structures as a flat
+    /// PackedInt32Array of (x, y, z, kind) quads. The `kind` value is the
+    /// `FurnitureKind` discriminant (0=Bed, 1=Bench, etc.) for rendering
+    /// dispatch. Used by furniture_renderer.gd.
     #[func]
-    fn get_bed_positions(&self) -> PackedInt32Array {
+    fn get_furniture_positions(&self) -> PackedInt32Array {
         let Some(sim) = &self.sim else {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
         for structure in sim.structures.values() {
-            for bed in &structure.bed_positions {
-                arr.push(bed.x);
-                arr.push(bed.y);
-                arr.push(bed.z);
+            let kind = match &structure.furnishing {
+                Some(ft) => ft.furniture_kind() as i32,
+                None => FurnitureKind::Bed as i32,
+            };
+            for pos in &structure.furniture_positions {
+                arr.push(pos.x);
+                arr.push(pos.y);
+                arr.push(pos.z);
+                arr.push(kind);
             }
         }
         arr

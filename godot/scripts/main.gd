@@ -36,7 +36,7 @@
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
 ## capybara_renderer.gd / blueprint_renderer.gd / ladder_renderer.gd /
-## bed_renderer.gd for rendering,
+## furniture_renderer.gd for rendering,
 ## action_toolbar.gd for the toolbar UI, placement_controller.gd for
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
@@ -82,7 +82,7 @@ var _tree_renderer: Node3D
 var _bp_renderer: Node3D
 var _bldg_renderer: Node3D
 var _ladder_renderer: Node3D
-var _bed_renderer: Node3D
+var _furniture_renderer: Node3D
 var _lobby_overlay: ColorRect
 ## Fractional seconds of unprocessed sim time. Accumulates each frame,
 ## converted to ticks by dividing by tick_duration_ms / 1000.
@@ -363,13 +363,13 @@ func _setup_common(bridge: SimBridge) -> void:
 	_ladder_renderer.setup(bridge)
 	_construction_controller.blueprint_placed.connect(_ladder_renderer.refresh)
 
-	# Set up bed renderer.
-	var bed_renderer_script = load("res://scripts/bed_renderer.gd")
-	_bed_renderer = Node3D.new()
-	_bed_renderer.set_script(bed_renderer_script)
-	_bed_renderer.name = "BedRenderer"
-	add_child(_bed_renderer)
-	_bed_renderer.setup(bridge)
+	# Set up furniture renderer.
+	var furniture_renderer_script = load("res://scripts/furniture_renderer.gd")
+	_furniture_renderer = Node3D.new()
+	_furniture_renderer.set_script(furniture_renderer_script)
+	_furniture_renderer.name = "FurnitureRenderer"
+	add_child(_furniture_renderer)
+	_furniture_renderer.setup(bridge)
 
 	# Set up creature info panel.
 	var panel_script = load("res://scripts/creature_info_panel.gd")
@@ -638,8 +638,8 @@ func _process(delta: float) -> void:
 		_bldg_renderer.refresh()
 	if _ladder_renderer:
 		_ladder_renderer.refresh()
-	if _bed_renderer:
-		_bed_renderer.refresh()
+	if _furniture_renderer:
+		_furniture_renderer.refresh()
 
 	# Update follow target each frame so the camera tracks creature movement.
 	if _camera_pivot and _camera_pivot.is_following():

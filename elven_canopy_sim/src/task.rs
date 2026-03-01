@@ -70,9 +70,9 @@ pub enum TaskKind {
     /// of the fruit to consume (removed from world on arrival).
     EatFruit { fruit_pos: VoxelCoord },
     /// Furnish a completed building. The elf walks to the building interior,
-    /// then does incremental work. Each `furnish_work_ticks_per_bed` units of
-    /// progress, one bed is placed from the structure's `planned_beds` into
-    /// `bed_positions`.
+    /// then does incremental work. Each `furnish_work_ticks_per_item` units of
+    /// progress, one item is placed from the structure's `planned_furniture`
+    /// into `furniture_positions`.
     Furnish { structure_id: StructureId },
 }
 

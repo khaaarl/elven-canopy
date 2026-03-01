@@ -272,9 +272,77 @@ pub enum LadderKind {
 }
 
 /// Types of furnishing that can be applied to a completed building.
+///
+/// Each variant maps to a specific `FurnitureKind` via `furniture_kind()`.
+/// The furniture kind determines the visual representation (mesh shape and
+/// color) in the renderer, while the furnishing type drives functional
+/// behavior (future: room bonuses, elf preferences).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum FurnishingType {
+    ConcertHall,
+    DiningHall,
     Dormitory,
+    Home,
+    Kitchen,
+    Storehouse,
+    Workshop,
+}
+
+impl FurnishingType {
+    /// The kind of furniture placed in a room of this type.
+    pub fn furniture_kind(self) -> FurnitureKind {
+        match self {
+            FurnishingType::ConcertHall => FurnitureKind::Bench,
+            FurnishingType::DiningHall => FurnitureKind::Table,
+            FurnishingType::Dormitory | FurnishingType::Home => FurnitureKind::Bed,
+            FurnishingType::Kitchen => FurnitureKind::Counter,
+            FurnishingType::Storehouse => FurnitureKind::Shelf,
+            FurnishingType::Workshop => FurnitureKind::Workbench,
+        }
+    }
+
+    /// Human-readable display string for this furnishing type.
+    pub fn display_str(self) -> &'static str {
+        match self {
+            FurnishingType::ConcertHall => "Concert Hall",
+            FurnishingType::DiningHall => "Dining Hall",
+            FurnishingType::Dormitory => "Dormitory",
+            FurnishingType::Home => "Home",
+            FurnishingType::Kitchen => "Kitchen",
+            FurnishingType::Storehouse => "Storehouse",
+            FurnishingType::Workshop => "Workshop",
+        }
+    }
+}
+
+/// Visual kind of furniture placed inside a furnished building.
+///
+/// Derived from `FurnishingType::furniture_kind()` — not stored per-item.
+/// The renderer uses the discriminant value (as `i32`) for dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[repr(i32)]
+pub enum FurnitureKind {
+    Bed = 0,
+    Bench = 1,
+    Counter = 2,
+    Shelf = 3,
+    Table = 4,
+    Workbench = 5,
+}
+
+impl FurnitureKind {
+    /// Plural noun for this furniture kind, used in UI labels
+    /// (e.g. "4 beds", "2 tables").
+    pub fn noun_plural(self) -> &'static str {
+        match self {
+            FurnitureKind::Bed => "beds",
+            FurnitureKind::Bench => "benches",
+            FurnitureKind::Counter => "counters",
+            FurnitureKind::Shelf => "shelves",
+            FurnitureKind::Table => "tables",
+            FurnitureKind::Workbench => "workbenches",
+        }
+    }
 }
 
 /// Types of structures that can be built.

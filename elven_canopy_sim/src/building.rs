@@ -29,7 +29,8 @@
 // state. Created by `SimState::complete_build()` via `from_blueprint()` and
 // stored in `SimState::structures`. Buildings can be furnished (e.g. as
 // dormitories) via `SimAction::FurnishStructure`, which triggers incremental
-// bed placement tracked in `planned_beds` / `bed_positions`. The structure
+// furniture placement tracked in `planned_furniture` / `furniture_positions`.
+// The structure
 // list panel in the UI queries these to show a browsable list of all
 // completed constructions with zoom-to-location. `display_name()` returns
 // the custom name if set, or a furnishing-derived name like "Dormitory #7",
@@ -79,14 +80,14 @@ pub struct CompletedStructure {
     /// The furnishing type applied to this building, if any.
     #[serde(default)]
     pub furnishing: Option<FurnishingType>,
-    /// Voxel positions of placed beds (grows incrementally during furnishing).
-    #[serde(default)]
-    pub bed_positions: Vec<VoxelCoord>,
-    /// All planned bed positions (computed when furnishing starts). The elf
-    /// works through these one at a time; as each is placed, it moves from
-    /// `planned_beds` to `bed_positions`.
-    #[serde(default)]
-    pub planned_beds: Vec<VoxelCoord>,
+    /// Voxel positions of placed furniture (grows incrementally during furnishing).
+    #[serde(default, alias = "bed_positions")]
+    pub furniture_positions: Vec<VoxelCoord>,
+    /// All planned furniture positions (computed when furnishing starts). The
+    /// elf works through these one at a time; as each is placed, it moves from
+    /// `planned_furniture` to `furniture_positions`.
+    #[serde(default, alias = "planned_beds")]
+    pub planned_furniture: Vec<VoxelCoord>,
 }
 
 impl CompletedStructure {
@@ -107,8 +108,8 @@ impl CompletedStructure {
             completed_tick,
             name: None,
             furnishing: None,
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         }
     }
 
@@ -122,10 +123,7 @@ impl CompletedStructure {
         }
         // Furnished buildings use the furnishing type as the display name.
         if let Some(furnishing) = &self.furnishing {
-            let type_str = match furnishing {
-                FurnishingType::Dormitory => "Dormitory",
-            };
-            return format!("{} #{}", type_str, self.id.0);
+            return format!("{} #{}", furnishing.display_str(), self.id.0);
         }
         let type_str = match self.build_type {
             BuildType::Platform => "Platform",
@@ -160,13 +158,20 @@ impl CompletedStructure {
         positions
     }
 
-    /// Choose bed positions for a dormitory furnishing.
+    /// Choose furniture positions for a given furnishing type.
     ///
     /// Picks positions from the ground-floor interior, skipping the door
     /// position (center of +Z edge at ground level) and positions adjacent
-    /// to the door (to keep the doorway clear). Roughly 1 bed per 2 floor
-    /// tiles, minimum 1.
-    pub fn compute_bed_positions(&self, rng: &mut GameRng) -> Vec<VoxelCoord> {
+    /// to the door (to keep the doorway clear). Density varies by type:
+    /// - Home: exactly 1
+    /// - Dormitory, ConcertHall: ~1 per 2 tiles
+    /// - Kitchen, Storehouse: ~1 per 3 tiles
+    /// - DiningHall, Workshop: ~1 per 4 tiles
+    pub fn compute_furniture_positions(
+        &self,
+        furnishing_type: FurnishingType,
+        rng: &mut GameRng,
+    ) -> Vec<VoxelCoord> {
         let floor = self.floor_interior_positions();
         if floor.is_empty() {
             return Vec::new();
@@ -196,9 +201,22 @@ impl CompletedStructure {
             return Vec::new();
         }
 
-        // Target: 1 bed per 2 floor tiles, minimum 1, capped at eligible count.
+        // Home: exactly 1 item.
+        if furnishing_type == FurnishingType::Home {
+            let idx = rng.next_u64() as usize % eligible.len();
+            return vec![eligible[idx]];
+        }
+
+        // Density divisor: how many floor tiles per furniture item.
+        let divisor = match furnishing_type {
+            FurnishingType::Dormitory | FurnishingType::ConcertHall => 2,
+            FurnishingType::Kitchen | FurnishingType::Storehouse => 3,
+            FurnishingType::DiningHall | FurnishingType::Workshop => 4,
+            FurnishingType::Home => unreachable!(),
+        };
+
         let total_floor = (self.width * self.depth) as usize;
-        let target = (total_floor / 2).max(1).min(eligible.len());
+        let target = (total_floor / divisor).max(1).min(eligible.len());
 
         // Shuffle eligible positions using the PRNG, then take the first `target`.
         let mut shuffled = eligible;
@@ -480,8 +498,8 @@ mod tests {
             completed_tick: 10000,
             name: None,
             furnishing: None,
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         };
 
         let json = serde_json::to_string(&structure).unwrap();
@@ -507,8 +525,8 @@ mod tests {
             completed_tick: 100,
             name: None,
             furnishing: None,
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         };
         assert_eq!(structure.display_name(), "Platform #12");
     }
@@ -530,8 +548,8 @@ mod tests {
             completed_tick: 100,
             name: Some("Starlight Bridge".to_string()),
             furnishing: None,
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         };
         assert_eq!(structure.display_name(), "Starlight Bridge");
 
@@ -569,8 +587,8 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: None,
-                bed_positions: Vec::new(),
-                planned_beds: Vec::new(),
+                furniture_positions: Vec::new(),
+                planned_furniture: Vec::new(),
             };
             assert_eq!(structure.display_name(), expected);
         }
@@ -595,8 +613,8 @@ mod tests {
             completed_tick: 100,
             name: Some("Custom".to_string()),
             furnishing: None,
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         };
         let mut value: serde_json::Value = serde_json::to_value(&structure).unwrap();
         value.as_object_mut().unwrap().remove("name");

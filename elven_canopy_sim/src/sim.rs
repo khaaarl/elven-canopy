@@ -2328,9 +2328,9 @@ impl SimState {
     // -----------------------------------------------------------------------
 
     /// Start furnishing a completed building. Validates the structure is a
-    /// building with no existing furnishing, computes bed positions, sets the
-    /// furnishing type, auto-renames if no custom name, and creates a Furnish
-    /// task for an elf to work on.
+    /// building with no existing furnishing, computes furniture positions,
+    /// sets the furnishing type, auto-renames if no custom name, and creates
+    /// a Furnish task for an elf to work on.
     fn furnish_structure(&mut self, structure_id: StructureId, furnishing_type: FurnishingType) {
         // Validate: structure exists, is a Building, and has no furnishing yet.
         let structure = match self.structures.get(&structure_id) {
@@ -2344,17 +2344,18 @@ impl SimState {
             return;
         }
 
-        // Compute bed positions.
-        let planned_beds = structure.compute_bed_positions(&mut self.rng);
-        if planned_beds.is_empty() {
+        // Compute furniture positions based on furnishing type.
+        let planned_furniture =
+            structure.compute_furniture_positions(furnishing_type, &mut self.rng);
+        if planned_furniture.is_empty() {
             return;
         }
-        let planned_count = planned_beds.len();
+        let planned_count = planned_furniture.len();
 
-        // Set furnishing type and planned beds on the structure.
+        // Set furnishing type and planned furniture on the structure.
         let structure = self.structures.get_mut(&structure_id).unwrap();
         structure.furnishing = Some(furnishing_type);
-        structure.planned_beds = planned_beds;
+        structure.planned_furniture = planned_furniture;
 
         // Find a nav node inside the building to use as the task location.
         let interior_pos = structure.floor_interior_positions();
@@ -2365,8 +2366,8 @@ impl SimState {
         };
 
         // Create the Furnish task.
-        let ticks_per_bed = self.config.furnish_work_ticks_per_bed;
-        let total_cost = (ticks_per_bed as f32) * (planned_count as f32);
+        let ticks_per_item = self.config.furnish_work_ticks_per_item;
+        let total_cost = (ticks_per_item as f32) * (planned_count as f32);
         let task_id = TaskId::new(&mut self.rng);
         let new_task = task::Task {
             id: task_id,
@@ -2384,16 +2385,16 @@ impl SimState {
     /// Perform one activation's worth of furnishing work on a building.
     ///
     /// Follows the same pattern as `do_build_work()`: increments progress,
-    /// and every `furnish_work_ticks_per_bed` units, one bed is placed from
-    /// the structure's `planned_beds` into `bed_positions`. When all beds
-    /// are placed, the task completes.
+    /// and every `furnish_work_ticks_per_item` units, one furniture item is
+    /// placed from the structure's `planned_furniture` into
+    /// `furniture_positions`. When all items are placed, the task completes.
     fn do_furnish_work(
         &mut self,
         creature_id: CreatureId,
         task_id: TaskId,
         structure_id: StructureId,
     ) {
-        let ticks_per_bed = self.config.furnish_work_ticks_per_bed as f32;
+        let ticks_per_item = self.config.furnish_work_ticks_per_item as f32;
 
         // Increment progress.
         let task = match self.tasks.get_mut(&task_id) {
@@ -2405,17 +2406,17 @@ impl SimState {
         let new_progress = task.progress;
         let total_cost = task.total_cost;
 
-        // Check if we crossed a bed-placement threshold.
-        let old_beds = (old_progress / ticks_per_bed).floor() as usize;
-        let new_beds = (new_progress / ticks_per_bed).floor() as usize;
+        // Check if we crossed an item-placement threshold.
+        let old_items = (old_progress / ticks_per_item).floor() as usize;
+        let new_items = (new_progress / ticks_per_item).floor() as usize;
 
-        if new_beds > old_beds {
-            // Place the next bed.
+        if new_items > old_items {
+            // Place the next furniture item.
             if let Some(structure) = self.structures.get_mut(&structure_id)
-                && let Some(bed_pos) = structure.planned_beds.first().copied()
+                && let Some(pos) = structure.planned_furniture.first().copied()
             {
-                structure.planned_beds.remove(0);
-                structure.bed_positions.push(bed_pos);
+                structure.planned_furniture.remove(0);
+                structure.furniture_positions.push(pos);
             }
         }
 
@@ -7479,8 +7480,8 @@ mod tests {
             completed_tick: sim.tick,
             name: None,
             furnishing: None,
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         };
         sim.structures.insert(id, structure);
 
@@ -7491,7 +7492,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_bed_positions_3x3_building() {
+    fn compute_furniture_positions_3x3_dormitory() {
         let mut rng = GameRng::new(42);
         let structure = CompletedStructure {
             id: StructureId(0),
@@ -7504,26 +7505,26 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         };
 
-        let beds = structure.compute_bed_positions(&mut rng);
+        let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
 
-        // 3x3 = 9 floor tiles, target ~4 beds. Door at (1,0,2) and its
+        // 3x3 = 9 floor tiles, target ~4 items. Door at (1,0,2) and its
         // neighbors are excluded, so fewer eligible positions.
-        assert!(!beds.is_empty());
-        // All beds should be at y=0 (anchor.y, the interior level).
-        for bed in &beds {
-            assert_eq!(bed.y, 0);
+        assert!(!items.is_empty());
+        // All items should be at y=0 (anchor.y, the interior level).
+        for item in &items {
+            assert_eq!(item.y, 0);
         }
-        // No bed should be at the door position.
+        // No item should be at the door position.
         let door = VoxelCoord::new(1, 0, 2);
-        assert!(!beds.contains(&door));
+        assert!(!items.contains(&door));
     }
 
     #[test]
-    fn compute_bed_positions_5x5_building() {
+    fn compute_furniture_positions_5x5_dormitory() {
         let mut rng = GameRng::new(42);
         let structure = CompletedStructure {
             id: StructureId(0),
@@ -7536,22 +7537,22 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         };
 
-        let beds = structure.compute_bed_positions(&mut rng);
+        let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
 
-        // 5x5 = 25 floor tiles, target ~12 beds.
+        // 5x5 = 25 floor tiles, target ~12 items (1 per 2 tiles).
         assert!(
-            beds.len() >= 8,
-            "Expected at least 8 beds for 5x5 building, got {}",
-            beds.len()
+            items.len() >= 8,
+            "Expected at least 8 items for 5x5 dormitory, got {}",
+            items.len()
         );
         assert!(
-            beds.len() <= 12,
-            "Expected at most 12 beds for 5x5 building, got {}",
-            beds.len()
+            items.len() <= 12,
+            "Expected at most 12 items for 5x5 dormitory, got {}",
+            items.len()
         );
     }
 
@@ -7594,8 +7595,8 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: Some(FurnishingType::Dormitory),
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         };
 
         assert_eq!(structure.display_name(), "Dormitory #7");
@@ -7615,8 +7616,8 @@ mod tests {
             completed_tick: 0,
             name: Some("Starlight Hall".to_string()),
             furnishing: Some(FurnishingType::Dormitory),
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         };
 
         assert_eq!(structure.display_name(), "Starlight Hall");
@@ -7649,15 +7650,15 @@ mod tests {
         assert_eq!(task.state, TaskState::Available);
         assert_eq!(task.required_species, Some(Species::Elf));
 
-        // Structure should have furnishing set and planned beds computed.
+        // Structure should have furnishing set and planned furniture computed.
         let structure = &sim.structures[&structure_id];
         assert_eq!(structure.furnishing, Some(FurnishingType::Dormitory));
-        assert!(!structure.planned_beds.is_empty());
-        assert!(structure.bed_positions.is_empty());
+        assert!(!structure.planned_furniture.is_empty());
+        assert!(structure.furniture_positions.is_empty());
 
-        // Total cost should be planned_beds * furnish_work_ticks_per_bed.
-        let expected_cost =
-            structure.planned_beds.len() as f32 * sim.config.furnish_work_ticks_per_bed as f32;
+        // Total cost should be planned_furniture * furnish_work_ticks_per_item.
+        let expected_cost = structure.planned_furniture.len() as f32
+            * sim.config.furnish_work_ticks_per_item as f32;
         assert_eq!(task.total_cost, expected_cost);
     }
 
@@ -7751,8 +7752,8 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
-            bed_positions: Vec::new(),
-            planned_beds: Vec::new(),
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
         };
         sim.structures.insert(id, structure);
 
@@ -7821,7 +7822,7 @@ mod tests {
     }
 
     #[test]
-    fn do_furnish_work_places_beds_incrementally() {
+    fn do_furnish_work_places_items_incrementally() {
         let mut sim = test_sim(42);
         let anchor = find_building_site(&sim);
         let structure_id = insert_completed_building(&mut sim, anchor);
@@ -7837,7 +7838,7 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 1);
 
-        let planned_count = sim.structures[&structure_id].planned_beds.len();
+        let planned_count = sim.structures[&structure_id].planned_furniture.len();
         assert!(planned_count > 0);
 
         // Spawn an elf near the building so it can claim the task.
@@ -7853,23 +7854,23 @@ mod tests {
         sim.step(&[spawn_cmd], sim.tick + 1);
 
         // Run the sim long enough for the elf to walk there and place at
-        // least one bed. furnish_work_ticks_per_bed = 2000, so after ~3000
-        // ticks (walk + first bed), we should see progress.
-        let ticks_per_bed = sim.config.furnish_work_ticks_per_bed;
-        let advance_ticks = ticks_per_bed * 3 + 5000; // generous for walking
+        // least one item. furnish_work_ticks_per_item = 2000, so after ~3000
+        // ticks (walk + first item), we should see progress.
+        let ticks_per_item = sim.config.furnish_work_ticks_per_item;
+        let advance_ticks = ticks_per_item * 3 + 5000; // generous for walking
         sim.step(&[], sim.tick + advance_ticks);
 
         let structure = &sim.structures[&structure_id];
         assert!(
-            !structure.bed_positions.is_empty(),
-            "Expected at least one bed placed after {} ticks, got 0. planned={}",
+            !structure.furniture_positions.is_empty(),
+            "Expected at least one item placed after {} ticks, got 0. planned={}",
             advance_ticks,
             planned_count
         );
     }
 
     #[test]
-    fn furnish_completes_all_beds() {
+    fn furnish_completes_all_items() {
         let mut sim = test_sim(42);
         let anchor = find_building_site(&sim);
         let structure_id = insert_completed_building(&mut sim, anchor);
@@ -7885,8 +7886,8 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 1);
 
-        let total_planned = sim.structures[&structure_id].planned_beds.len()
-            + sim.structures[&structure_id].bed_positions.len();
+        let total_planned = sim.structures[&structure_id].planned_furniture.len()
+            + sim.structures[&structure_id].furniture_positions.len();
         assert!(total_planned > 0);
 
         // Spawn an elf near the building.
@@ -7901,22 +7902,22 @@ mod tests {
         };
         sim.step(&[spawn_cmd], sim.tick + 1);
 
-        // Run long enough for all beds to be placed.
-        let ticks_per_bed = sim.config.furnish_work_ticks_per_bed;
-        let advance_ticks = ticks_per_bed * (total_planned as u64 + 2) + 10000;
+        // Run long enough for all items to be placed.
+        let ticks_per_item = sim.config.furnish_work_ticks_per_item;
+        let advance_ticks = ticks_per_item * (total_planned as u64 + 2) + 10000;
         sim.step(&[], sim.tick + advance_ticks);
 
         let structure = &sim.structures[&structure_id];
         assert_eq!(
-            structure.bed_positions.len(),
+            structure.furniture_positions.len(),
             total_planned,
-            "Expected all {} beds placed, got {}",
+            "Expected all {} items placed, got {}",
             total_planned,
-            structure.bed_positions.len()
+            structure.furniture_positions.len()
         );
         assert!(
-            structure.planned_beds.is_empty(),
-            "Expected planned_beds empty after completion"
+            structure.planned_furniture.is_empty(),
+            "Expected planned_furniture empty after completion"
         );
 
         // The Furnish task should be complete.
@@ -7956,7 +7957,126 @@ mod tests {
         let orig = &sim.structures[&structure_id];
         let rest = &restored.structures[&structure_id];
         assert_eq!(orig.furnishing, rest.furnishing);
-        assert_eq!(orig.planned_beds, rest.planned_beds);
-        assert_eq!(orig.bed_positions, rest.bed_positions);
+        assert_eq!(orig.planned_furniture, rest.planned_furniture);
+        assert_eq!(orig.furniture_positions, rest.furniture_positions);
+    }
+
+    #[test]
+    fn compute_furniture_positions_home_single_item() {
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id: StructureId(0),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Building,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 5,
+            depth: 5,
+            height: 1,
+            completed_tick: 0,
+            name: None,
+            furnishing: None,
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
+        };
+
+        let items = structure.compute_furniture_positions(FurnishingType::Home, &mut rng);
+
+        // Home always produces exactly 1 item regardless of building size.
+        assert_eq!(items.len(), 1, "Home should produce exactly 1 item");
+        assert_eq!(items[0].y, 0);
+    }
+
+    #[test]
+    fn compute_furniture_positions_dining_hall_density() {
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id: StructureId(0),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Building,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 5,
+            depth: 5,
+            height: 1,
+            completed_tick: 0,
+            name: None,
+            furnishing: None,
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
+        };
+
+        let items = structure.compute_furniture_positions(FurnishingType::DiningHall, &mut rng);
+
+        // 5x5 = 25 tiles, 1 per 4 = ~6 tables. Should be fewer than dormitory.
+        assert!(
+            items.len() >= 3,
+            "Expected at least 3 tables for 5x5 dining hall, got {}",
+            items.len()
+        );
+        assert!(
+            items.len() <= 6,
+            "Expected at most 6 tables for 5x5 dining hall, got {}",
+            items.len()
+        );
+    }
+
+    #[test]
+    fn display_name_all_furnishing_types() {
+        let mut rng = GameRng::new(42);
+        let types_and_names = [
+            (FurnishingType::ConcertHall, "Concert Hall #0"),
+            (FurnishingType::DiningHall, "Dining Hall #0"),
+            (FurnishingType::Dormitory, "Dormitory #0"),
+            (FurnishingType::Home, "Home #0"),
+            (FurnishingType::Kitchen, "Kitchen #0"),
+            (FurnishingType::Storehouse, "Storehouse #0"),
+            (FurnishingType::Workshop, "Workshop #0"),
+        ];
+        for (furnishing_type, expected) in types_and_names {
+            let structure = CompletedStructure {
+                id: StructureId(0),
+                project_id: ProjectId::new(&mut rng),
+                build_type: BuildType::Building,
+                anchor: VoxelCoord::new(0, 0, 0),
+                width: 3,
+                depth: 3,
+                height: 1,
+                completed_tick: 0,
+                name: None,
+                furnishing: Some(furnishing_type),
+                furniture_positions: Vec::new(),
+                planned_furniture: Vec::new(),
+            };
+            assert_eq!(
+                structure.display_name(),
+                expected,
+                "display_name() for {:?}",
+                furnishing_type
+            );
+        }
+    }
+
+    #[test]
+    fn furnish_structure_workshop() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Workshop,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let structure = &sim.structures[&structure_id];
+        assert_eq!(structure.furnishing, Some(FurnishingType::Workshop));
+        assert!(!structure.planned_furniture.is_empty());
+        assert_eq!(
+            structure.display_name(),
+            format!("Workshop #{}", structure_id.0)
+        );
     }
 }

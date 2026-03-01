@@ -11,10 +11,11 @@
 ## auto-generated default.
 ##
 ## For Building-type structures without a furnishing, a "Furnish" button is
-## shown. Clicking it opens a sub-panel with furnishing type buttons (just
-## "Dormitory" for now). For buildings with a furnishing in progress, shows
-## progress ("Furnishing: Dormitory (3/8 beds)"). For fully furnished
-## buildings, shows "Dormitory (8 beds)".
+## shown. Clicking it opens a sub-panel with furnishing type buttons (Concert
+## Hall, Dining Hall, Dormitory, Home, Kitchen, Storehouse, Workshop). For
+## buildings with a furnishing in progress, shows progress like "Furnishing:
+## Dormitory (3/8 beds)". For fully furnished buildings, shows "Dormitory
+## (8 beds)". The furniture noun is returned by the bridge per furnishing type.
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Updated every frame by main.gd while visible.
@@ -124,10 +125,21 @@ func _ready() -> void:
 	_furnish_picker.visible = false
 	vbox.add_child(_furnish_picker)
 
-	var dormitory_btn := Button.new()
-	dormitory_btn.text = "Dormitory"
-	dormitory_btn.pressed.connect(_on_dormitory_pressed)
-	_furnish_picker.add_child(dormitory_btn)
+	var furnishing_types := [
+		["Concert Hall", "ConcertHall"],
+		["Dining Hall", "DiningHall"],
+		["Dormitory", "Dormitory"],
+		["Home", "Home"],
+		["Kitchen", "Kitchen"],
+		["Storehouse", "Storehouse"],
+		["Workshop", "Workshop"],
+	]
+	for entry in furnishing_types:
+		var btn := Button.new()
+		btn.text = entry[0]
+		var type_id: String = entry[1]
+		btn.pressed.connect(_on_furnishing_type_pressed.bind(type_id))
+		_furnish_picker.add_child(btn)
 
 	# Spacer to push the zoom button toward the bottom-ish area.
 	var spacer := Control.new()
@@ -145,6 +157,7 @@ func _ready() -> void:
 
 func show_structure(info: Dictionary) -> void:
 	_editing_name = false
+	_furnish_picker.visible = false
 	_update_info(info)
 	visible = true
 
@@ -183,24 +196,29 @@ func _update_info(info: Dictionary) -> void:
 
 	# Furnishing state.
 	var furnishing: String = info.get("furnishing", "")
-	var bed_count: int = info.get("bed_count", 0)
-	var planned_bed_count: int = info.get("planned_bed_count", 0)
+	var furniture_noun: String = info.get("furniture_noun", "items")
+	var furniture_count: int = info.get("furniture_count", 0)
+	var planned_furniture_count: int = info.get("planned_furniture_count", 0)
 	var is_furnishing: bool = info.get("is_furnishing", false)
 
 	if furnishing != "":
 		if is_furnishing:
 			_furnish_label.text = (
-				"Furnishing: %s (%d/%d beds)" % [furnishing, bed_count, planned_bed_count]
+				"Furnishing: %s (%d/%d %s)"
+				% [furnishing, furniture_count, planned_furniture_count, furniture_noun]
 			)
 		else:
-			_furnish_label.text = "%s (%d beds)" % [furnishing, bed_count]
+			_furnish_label.text = "%s (%d %s)" % [furnishing, furniture_count, furniture_noun]
 		_furnish_label.visible = true
 		_furnish_button.visible = false
 		_furnish_picker.visible = false
 	elif build_type == "Building":
 		_furnish_label.visible = false
 		_furnish_button.visible = true
-		_furnish_picker.visible = false
+		# Don't touch _furnish_picker.visible here — it's toggled by
+		# _on_furnish_pressed() and must survive per-frame refreshes.
+		# It's reset to hidden in show_structure() when a new structure
+		# is selected.
 	else:
 		_furnish_label.visible = false
 		_furnish_button.visible = false
@@ -230,10 +248,10 @@ func _on_furnish_pressed() -> void:
 	_furnish_picker.visible = not _furnish_picker.visible
 
 
-func _on_dormitory_pressed() -> void:
+func _on_furnishing_type_pressed(type_id: String) -> void:
 	_furnish_picker.visible = false
 	if _current_structure_id >= 0:
-		furnish_requested.emit(_current_structure_id, "Dormitory")
+		furnish_requested.emit(_current_structure_id, type_id)
 
 
 func _on_close_pressed() -> void:

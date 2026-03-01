@@ -625,11 +625,14 @@ pub struct GameConfig {
     #[serde(default = "default_carve_ticks")]
     pub carve_work_ticks_per_voxel: u64,
 
-    /// Ticks of work per bed when furnishing a building. An elf must
-    /// accumulate this many activations-worth of work before one bed is
-    /// placed in a dormitory.
-    #[serde(default = "default_furnish_ticks")]
-    pub furnish_work_ticks_per_bed: u64,
+    /// Ticks of work per furniture item when furnishing a building. An elf
+    /// must accumulate this many activations-worth of work before one item
+    /// is placed.
+    #[serde(
+        default = "default_furnish_ticks",
+        alias = "furnish_work_ticks_per_bed"
+    )]
+    pub furnish_work_ticks_per_item: u64,
 
     /// Tree generation parameters — energy-based recursive growth profile.
     pub tree_profile: TreeProfile,
@@ -807,7 +810,7 @@ impl Default for GameConfig {
             starting_mana_capacity: 500.0,
             build_work_ticks_per_voxel: 1000,
             carve_work_ticks_per_voxel: 1000,
-            furnish_work_ticks_per_bed: 2000,
+            furnish_work_ticks_per_item: 2000,
             tree_profile: TreeProfile::fantasy_mega(),
             species,
             terrain_max_height: 4,
