@@ -50,8 +50,16 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-audio-synth          Waveform synthesis for audio rendering
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
+[ ] F-bldg-concert         Concert hall
+[ ] F-bldg-dining          Dining hall
+[ ] F-bldg-dormitory       Dormitory (unassigned elf sleep)
+[ ] F-bldg-home            Home (single elf dwelling)
+[ ] F-bldg-kitchen         Kitchen (cooking from ingredients)
+[ ] F-bldg-storehouse      Storehouse (item storage)
+[ ] F-bldg-workshop        Craftself's workshop
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
+[ ] F-bread                Bread items and elf food management
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-cascade-fail         Cascading structural failure
@@ -75,8 +83,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-variety        Food storage, cooking, magical brewing
-[ ] F-furnishing           Building geometry + purpose furnishing
+[ ] F-furnishing           Building furnishing framework
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
+[ ] F-items                Items and inventory system
 [ ] F-lang-crate           Shared Vaelith language crate
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-logistics            Spatial resource flow (Kanban-style)
@@ -111,6 +120,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-basic         Basic structural integrity (flood fill)
+[ ] F-struct-names         User-editable structure names
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
@@ -190,6 +200,70 @@ blueprints that would create unsupported geometry.
 
 **Related:** F-blueprint-mode, F-struct-basic
 
+#### F-bldg-concert — Concert hall
+**Status:** Todo · **Phase:** 4
+
+Furnished building where elves gather for musical performances. Provides
+a social/cultural need satisfaction bonus.
+
+**Blocked by:** F-furnishing
+**Related:** F-music-runtime, F-bldg-dining
+
+#### F-bldg-dining — Dining hall
+**Status:** Todo · **Phase:** 4
+
+Communal dining building where elves eat together. Provides a social
+eating bonus compared to eating alone.
+
+**Blocked by:** F-furnishing
+**Related:** F-bldg-kitchen, F-bldg-concert
+
+#### F-bldg-dormitory — Dormitory (unassigned elf sleep)
+**Status:** Todo · **Phase:** 3
+
+Communal sleeping building for elves without assigned homes. Any elf not
+assigned to a specific Home can sleep here.
+
+**Blocked by:** F-furnishing
+**Related:** F-bldg-home, F-elf-needs
+
+#### F-bldg-home — Home (single elf dwelling)
+**Status:** Todo · **Phase:** 3
+
+Personal dwelling for a single elf (families in the future). The player
+assigns which elf lives in each home. Provides rest and comfort need
+satisfaction.
+
+**Blocked by:** F-furnishing
+**Related:** F-bldg-dormitory, F-elf-needs
+
+#### F-bldg-kitchen — Kitchen (cooking from ingredients)
+**Status:** Todo · **Phase:** 4
+
+Building where elves convert raw ingredients into processed foods (e.g.,
+one large fruit into many shelf-stable breads).
+
+**Blocked by:** F-furnishing, F-items
+**Related:** F-bread, F-fruit-variety
+
+#### F-bldg-storehouse — Storehouse (item storage)
+**Status:** Todo · **Phase:** 4
+
+Building for storing items and resources. Items placed inside persist
+and are accessible to elves for retrieval.
+
+**Blocked by:** F-furnishing, F-items
+**Related:** F-logistics
+
+#### F-bldg-workshop — Craftself's workshop
+**Status:** Todo · **Phase:** 4
+
+Workshop where craftself elves create tools and equipment (bows, spears,
+and other gear).
+
+**Blocked by:** F-furnishing, F-items
+**Related:** F-crafting, F-elf-weapons
+
 #### F-blueprint-mode — Layer-based blueprint selection UI
 **Status:** Todo · **Phase:** 2 · **Refs:** §12
 
@@ -266,12 +340,19 @@ Incremental nav graph updates keep pathfinding current during construction.
 
 **Related:** F-building
 
-#### F-furnishing — Building geometry + purpose furnishing
+#### F-furnishing — Building furnishing framework
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
 
-Separate building geometry (walls, floors, roofs) from furnishing (beds,
-tables, workshops). Generic enclosed spaces are built first, then furnished
-to give them purpose.
+Framework for assigning purpose to generic building shells. Buildings
+start as empty enclosed spaces (from F-building) and are furnished to
+become specific building types (homes, dormitories, workshops, etc.).
+Defines what makes each building type functional: required interior size,
+placed furniture objects, and behavior hooks. Individual building types
+(F-bldg-home, F-bldg-dormitory, etc.) depend on this framework.
+Structures track whether they are furnished and what type they are.
+
+**Blocks:** F-bldg-home, F-bldg-dormitory, F-bldg-kitchen, F-bldg-storehouse, F-bldg-workshop, F-bldg-dining, F-bldg-concert
+**Related:** F-building
 
 #### F-ladders — Rope/wood ladders as cheap connectors
 **Status:** Done · **Phase:** 3 · **Refs:** §11
@@ -299,12 +380,11 @@ produces it. Conservation of mass prevents infinite building.
 
 Rope ladders can be furled (retracted) and unfurled by elves as a task/job.
 Furled ladders are impassable and visually show their rolled-up state.
-Requires selectable structures so the player can click a rope ladder to see
-its furled/unfurled status and request a state change. The structure's
-selection UI should display any ongoing or queued furling/unfurling tasks.
+Player clicks a rope ladder (via F-select-struct) to see its furled/unfurled
+status and request a state change. The structure's selection UI should
+display any ongoing or queued furling/unfurling tasks.
 
-**Blocked by:** F-select-struct
-**Related:** F-ladders
+**Related:** F-ladders, F-select-struct
 
 #### F-stairs — Stairs and ramps for vertical movement
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
@@ -313,6 +393,17 @@ Stairs and ramps for connecting vertical levels. Requires nav graph edges
 with appropriate movement cost (climb speed vs walk speed).
 
 **Related:** F-tree-overlap, F-struct-basic
+
+#### F-struct-names — User-editable structure names
+**Status:** Todo · **Phase:** 3
+
+Structures get user-editable names. Default names are bland sequential
+labels (e.g., "Building #5", "Platform #12"). Each structure tracks
+whether its name was set by the player or is still the auto-generated
+default. Player can rename via the structure info panel. Renamed
+structures show their custom name in the structure list and info panel.
+
+**Related:** F-select-struct, F-structure-reg
 
 #### F-task-priority — Priority queue and auto-assignment
 **Status:** Todo · **Phase:** 2 · **Refs:** §11, §15
@@ -547,6 +638,18 @@ computed from edge distance and per-species speed config.
 
 ### Creatures & Needs
 
+#### F-bread — Bread items and elf food management
+**Status:** Todo · **Phase:** 3
+
+Elves carry bread as a portable food source. Each elf starts with a varying
+amount of bread. Elves eat bread to satisfy hunger (replacing or
+supplementing the current abstract food gauge). Bread is an item that
+follows the items system — elves carry it, it can be dropped, and kitchens
+produce it from fruit.
+
+**Blocked by:** F-items
+**Related:** F-food-gauge, F-elf-needs, F-bldg-kitchen
+
 #### F-capybara — Capybara species
 **Status:** Done · **Refs:** §15
 
@@ -634,6 +737,18 @@ food system (F-fruit-variety).
 
 Multiple fruit types, food storage infrastructure, cooking for better food
 quality, and magical brewing from rare ingredients.
+
+#### F-items — Items and inventory system
+**Status:** Todo · **Phase:** 3
+
+Core item/inventory system. Elves can carry items on their person. Items
+can pile on the ground at a location (a generic heap of stuff). Later,
+buildings (especially storehouses) can hold items. Each item has a type,
+quantity, and location (carried by creature, on ground at coord, or in
+building). Foundation for food management, crafting, and logistics.
+
+**Blocks:** F-bldg-storehouse, F-bldg-kitchen, F-bldg-workshop, F-bread
+**Related:** F-logistics, F-crafting
 
 #### F-logistics — Spatial resource flow (Kanban-style)
 **Status:** Todo · **Phase:** 7 · **Refs:** §14
