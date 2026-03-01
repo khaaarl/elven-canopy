@@ -32,6 +32,7 @@ use elven_canopy_music::scoring::{
 use elven_canopy_music::structure::{apply_responses, apply_structure, generate_structure};
 use elven_canopy_music::text_mapping::apply_text_mapping;
 use elven_canopy_music::vaelith::generate_phrases_with_brightness;
+use elven_canopy_lang::default_lexicon;
 use elven_canopy_prng::GameRng;
 use std::path::Path;
 
@@ -105,8 +106,9 @@ fn main() {
         GameRng::new(nanos)
     };
 
-    // Load models
+    // Load lexicon and models
     println!("[1/5] Loading models...");
+    let lexicon = default_lexicon();
     let models = MarkovModels::default_models();
     let motif_library = MotifLibrary::default_library();
     let weights = ScoringWeights::default();
@@ -193,7 +195,7 @@ fn main() {
         "  Generating Vaelith text (brightness {:.1})...",
         brightness
     );
-    let phrase_candidates = generate_phrases_with_brightness(num_sections, brightness, &mut rng);
+    let phrase_candidates = generate_phrases_with_brightness(&lexicon, num_sections, brightness, &mut rng);
     let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
     println!(
         "  {} syllable spans mapped across {} section phrases.",
@@ -419,7 +421,8 @@ fn run_batch(args: &[String]) {
     // Create output directory
     std::fs::create_dir_all(&output_dir).expect("Failed to create output directory");
 
-    // Load models once
+    // Load lexicon and models once
+    let lexicon = default_lexicon();
     let models = if Path::new("data/markov_models.json").exists() {
         MarkovModels::load(Path::new("data/markov_models.json"))
             .unwrap_or_else(|_| MarkovModels::default_models())
@@ -458,7 +461,7 @@ fn run_batch(args: &[String]) {
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
         let phrase_candidates =
-            generate_phrases_with_brightness(num_sections, brightness, &mut rng);
+            generate_phrases_with_brightness(&lexicon, num_sections, brightness, &mut rng);
         let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
 
         let draft_score =
@@ -532,6 +535,7 @@ fn run_mode_scan(args: &[String]) {
 
     std::fs::create_dir_all(&output_dir).expect("Failed to create output directory");
 
+    let lexicon = default_lexicon();
     let models = if Path::new("data/markov_models.json").exists() {
         MarkovModels::load(Path::new("data/markov_models.json"))
             .unwrap_or_else(|_| MarkovModels::default_models())
@@ -579,7 +583,7 @@ fn run_mode_scan(args: &[String]) {
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
         let phrase_candidates =
-            generate_phrases_with_brightness(num_sections, brightness, &mut rng);
+            generate_phrases_with_brightness(&lexicon, num_sections, brightness, &mut rng);
         let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
 
         let draft_score =

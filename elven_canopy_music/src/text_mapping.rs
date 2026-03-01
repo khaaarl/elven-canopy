@@ -382,10 +382,12 @@ mod tests {
     use crate::mode::ModeInstance;
     use crate::structure::{apply_structure, generate_structure};
     use crate::vaelith::generate_phrases;
+    use elven_canopy_lang::default_lexicon;
     use elven_canopy_prng::GameRng;
 
     #[test]
     fn test_apply_text_mapping() {
+        let lexicon = default_lexicon();
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let mode = ModeInstance::d_dorian();
@@ -396,7 +398,7 @@ mod tests {
         let structural = apply_structure(&mut grid, &plan);
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
 
-        let phrases = generate_phrases(2, &mut rng);
+        let phrases = generate_phrases(&lexicon, 2, &mut rng);
         let mapping = apply_text_mapping(&mut grid, &plan, &phrases);
 
         // Should have mapped some syllable spans
@@ -429,6 +431,7 @@ mod tests {
 
     #[test]
     fn test_syllable_onsets_set_on_grid() {
+        let lexicon = default_lexicon();
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let mode = ModeInstance::d_dorian();
@@ -439,7 +442,7 @@ mod tests {
         let structural = apply_structure(&mut grid, &plan);
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
 
-        let phrases = generate_phrases(2, &mut rng);
+        let phrases = generate_phrases(&lexicon, 2, &mut rng);
         let mapping = apply_text_mapping(&mut grid, &plan, &phrases);
 
         // Count syllable onsets in the grid
@@ -464,6 +467,7 @@ mod tests {
 
     #[test]
     fn test_swap_section_phrase() {
+        let lexicon = default_lexicon();
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let mode = ModeInstance::d_dorian();
@@ -474,11 +478,11 @@ mod tests {
         let structural = apply_structure(&mut grid, &plan);
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
 
-        let phrases = generate_phrases(2, &mut rng);
+        let phrases = generate_phrases(&lexicon, 2, &mut rng);
         let mut mapping = apply_text_mapping(&mut grid, &plan, &phrases);
 
         // Generate a new phrase to swap in
-        let new_phrase = crate::vaelith::generate_single_phrase(&mut rng);
+        let new_phrase = crate::vaelith::generate_single_phrase(&lexicon, &mut rng);
         let _old_span_count = mapping.spans.len();
 
         swap_section_phrase(&mut grid, &mut mapping, &plan, 0, &new_phrase);

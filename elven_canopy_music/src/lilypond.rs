@@ -582,8 +582,10 @@ mod tests {
         use crate::structure::{apply_responses, apply_structure, generate_structure};
         use crate::text_mapping::apply_text_mapping;
         use crate::vaelith::generate_phrases_with_brightness;
+        use elven_canopy_lang::default_lexicon;
         use elven_canopy_prng::GameRng;
 
+        let lexicon = default_lexicon();
         let mut rng = GameRng::new(42);
         let models = MarkovModels::default_models();
         let motif_library = MotifLibrary::default_library();
@@ -597,7 +599,7 @@ mod tests {
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
-        let phrases = generate_phrases_with_brightness(2, 0.5, &mut rng);
+        let phrases = generate_phrases_with_brightness(&lexicon, 2, 0.5, &mut rng);
         let mapping = apply_text_mapping(&mut grid, &plan, &phrases);
 
         let ly = grid_to_lilypond(&grid, &mode, &mapping, None);
