@@ -111,7 +111,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-modding              Scripting layer for modding support
 [ ] F-mood-system          Mood with escalating consequences
 [ ] F-mp-chat              Multiplayer in-game chat
-[ ] F-mp-mid-join          Mid-game join with state snapshot
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-music-runtime        Integrate music generator into game
@@ -178,6 +177,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-mp-checksums         Multiplayer state checksums for desync detection
 [x] F-mp-integ-test        Multiplayer integration test harness
+[x] F-mp-mid-join          Mid-game join with state snapshot
 [x] F-music-gen            Palestrina-style music generator (standalone)
 [x] F-nav-graph            Navigation graph construction
 [x] F-nav-incremental      Incremental nav graph updates
@@ -1479,13 +1479,13 @@ host→relay→join→command→turn→apply pipeline.
 **Related:** F-multiplayer
 
 #### F-mp-mid-join — Mid-game join with state snapshot
-**Status:** Todo · **Phase:** 8+ · **Refs:** §4
+**Status:** Done · **Phase:** 8+ · **Refs:** §4
 
 Allow players to join a multiplayer session that has already started.
-Requires a snapshot protocol: the relay requests a full sim state from an
-existing client and sends it to the joining player. Protocol support exists
-(`SnapshotRequest`/`SnapshotResponse`/`SnapshotLoad` messages) but the
-snapshot flow is not yet implemented.
+The relay requests a full sim state snapshot from the host, pauses turn
+flushing during the transfer, and forwards it to the joining player.
+Pending joiner is excluded from checksum comparisons. Only one mid-game
+join can be in flight at a time.
 
 **Related:** F-multiplayer, F-save-load
 

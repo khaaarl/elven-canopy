@@ -12,7 +12,11 @@
 // - Turn flushing: package pending commands into a `Turn` message, broadcast
 //   to all clients, advance the sim tick target.
 // - Desync detection: collect per-player checksums for each tick, compare when
-//   all connected players have reported.
+//   all active players have reported.
+// - Mid-game join: when a player joins after the game has started, the session
+//   requests a sim state snapshot from the host, pauses turn flushing during
+//   the transfer, and forwards the snapshot to the joiner. The pending joiner
+//   is excluded from checksum comparisons until the snapshot is delivered.
 //
 // Writing to client streams: `Session` holds cloned `TcpStream` write halves
 // wrapped in `BufWriter`. The `send_to` / `broadcast` helpers serialize a
@@ -53,6 +57,17 @@ pub struct Session {
 
     // Lobby state — turns only flush after the host starts the game.
     game_started: bool,
+
+    // Mid-game join: when a player joins after game_started, we request a
+    // snapshot from the host and forward it to the joiner. Turn flushing is
+    // paused while a snapshot is pending to ensure consistency.
+    snapshot_pending: Option<SnapshotPending>,
+}
+
+/// Tracks a pending mid-game join snapshot transfer.
+struct SnapshotPending {
+    joiner_id: RelayPlayerId,
+    requested_from: RelayPlayerId,
 }
 
 struct PlayerState {
@@ -83,6 +98,7 @@ impl Session {
             sim_version_hash: None,
             config_hash: None,
             game_started: false,
+            snapshot_pending: None,
         }
     }
 
@@ -108,6 +124,12 @@ impl Session {
         // Max players check.
         if self.players.len() as u32 >= self.max_players {
             return Err("session is full".into());
+        }
+
+        // Reject if a mid-game join snapshot transfer is already in flight.
+        // Only one at a time to avoid overwriting the pending state.
+        if self.game_started && self.snapshot_pending.is_some() {
+            return Err("another player is joining, try again".into());
         }
 
         // Version check (first player sets the reference).
@@ -173,6 +195,16 @@ impl Session {
         };
         self.send_to(id, &welcome);
 
+        // Mid-game join: if the game has already started, request a snapshot
+        // from the host so the joiner can initialize their sim.
+        if self.game_started {
+            self.snapshot_pending = Some(SnapshotPending {
+                joiner_id: id,
+                requested_from: self.host_id,
+            });
+            self.send_to(self.host_id, &ServerMessage::SnapshotRequest);
+        }
+
         Ok(id)
     }
 
@@ -189,6 +221,13 @@ impl Session {
             for tick_checksums in self.checksums.values_mut() {
                 tick_checksums.remove(&player_id);
             }
+
+            // Clear snapshot pending if the disconnecting player is involved.
+            if let Some(ref pending) = self.snapshot_pending
+                && (pending.joiner_id == player_id || pending.requested_from == player_id)
+            {
+                self.snapshot_pending = None;
+            }
         }
     }
 
@@ -199,9 +238,10 @@ impl Session {
 
     /// Flush pending commands into a turn and broadcast to all clients.
     /// Advances the sim tick target by `ticks_per_turn`.
-    /// No-op if the game hasn't started yet (still in lobby).
+    /// No-op if the game hasn't started yet (still in lobby) or if a
+    /// mid-game join snapshot transfer is in progress.
     pub fn flush_turn(&mut self) {
-        if !self.game_started {
+        if !self.game_started || self.snapshot_pending.is_some() {
             return;
         }
         self.current_tick += u64::from(self.ticks_per_turn);
@@ -219,14 +259,20 @@ impl Session {
         self.broadcast(&turn_msg);
     }
 
-    /// Record a checksum from a client. If all connected players have reported
+    /// Record a checksum from a client. If all active players have reported
     /// for the same tick and checksums disagree, broadcasts `DesyncDetected`.
+    /// A player waiting for a mid-game join snapshot is excluded from the count.
     pub fn record_checksum(&mut self, player_id: RelayPlayerId, tick: u64, hash: u64) {
+        // Compute active count before borrowing checksums to satisfy the
+        // borrow checker (active_player_count reads snapshot_pending/players,
+        // not checksums).
+        let active = self.active_player_count();
+
         let tick_entry = self.checksums.entry(tick).or_default();
         tick_entry.insert(player_id, hash);
 
-        // Check if all connected players have reported.
-        if tick_entry.len() == self.players.len() && self.players.len() > 1 {
+        // Check if all active players have reported (excludes pending joiner).
+        if tick_entry.len() == active && active > 1 {
             let mut values = tick_entry.values();
             let first = values.next().unwrap();
             let all_match = values.all(|v| v == first);
@@ -334,6 +380,48 @@ impl Session {
                 name: ps.name.clone(),
             })
             .collect()
+    }
+
+    /// Handle a snapshot response from a client (expected to be the host).
+    /// Verifies the sender matches the pending request, forwards the snapshot
+    /// to the joiner as `SnapshotLoad`, and clears the pending state so turn
+    /// flushing resumes.
+    pub fn handle_snapshot_response(&mut self, from: RelayPlayerId, data: Vec<u8>) {
+        let Some(ref pending) = self.snapshot_pending else {
+            return;
+        };
+        if from != pending.requested_from {
+            return;
+        }
+        // Verify the joiner is still connected before forwarding.
+        if !self.players.contains_key(&pending.joiner_id) {
+            self.snapshot_pending = None;
+            return;
+        }
+        let joiner_id = pending.joiner_id;
+        let msg = ServerMessage::SnapshotLoad {
+            tick: self.current_tick,
+            data,
+        };
+        self.send_to(joiner_id, &msg);
+        self.snapshot_pending = None;
+    }
+
+    /// Returns true if a mid-game join snapshot transfer is in progress.
+    pub fn is_snapshot_pending(&self) -> bool {
+        self.snapshot_pending.is_some()
+    }
+
+    /// Returns the number of active players (excludes any player waiting for
+    /// a mid-game join snapshot, since they can't participate in checksums yet).
+    pub fn active_player_count(&self) -> usize {
+        let total = self.players.len();
+        if let Some(ref pending) = self.snapshot_pending
+            && self.players.contains_key(&pending.joiner_id)
+        {
+            return total - 1;
+        }
+        total
     }
 
     /// Send a message to a specific player. Silently ignores write errors
@@ -909,5 +997,234 @@ mod tests {
     #[test]
     fn client_message_importable() {
         let _msg = ClientMessage::Goodbye;
+    }
+
+    // -----------------------------------------------------------------------
+    // Mid-game join snapshot tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: set up a 2-player session with the game already started.
+    /// Returns (session, host_client_stream, host_reader, joiner_client_stream).
+    fn started_session() -> (Session, TcpStream, BufReader<TcpStream>, TcpStream) {
+        let (client1, server1) = tcp_pair();
+        let (client2, server2) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+        session
+            .add_player("Bob".into(), 100, 200, None, server2)
+            .unwrap();
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into());
+
+        let mut reader1 = BufReader::new(client1.try_clone().unwrap());
+        // Drain Alice's Welcome + PlayerJoined + GameStart.
+        let _welcome = recv_server_msg(&mut reader1);
+        let _joined = recv_server_msg(&mut reader1);
+        let _game_start = recv_server_msg(&mut reader1);
+
+        // Drain Bob's Welcome + GameStart.
+        let mut reader2 = BufReader::new(client2.try_clone().unwrap());
+        let _welcome = recv_server_msg(&mut reader2);
+        let _game_start = recv_server_msg(&mut reader2);
+
+        (session, client1, reader1, client2)
+    }
+
+    #[test]
+    fn mid_join_sends_snapshot_request() {
+        let (mut session, _client1, mut reader1, _client2) = started_session();
+
+        // A third player joins after the game has started.
+        let (_client3, server3) = tcp_pair();
+        session
+            .add_player("Charlie".into(), 100, 200, None, server3)
+            .unwrap();
+
+        assert!(session.is_snapshot_pending());
+
+        // Host (Alice) should receive PlayerJoined then SnapshotRequest.
+        let msg = recv_server_msg(&mut reader1);
+        assert!(
+            matches!(msg, ServerMessage::PlayerJoined { .. }),
+            "expected PlayerJoined, got {msg:?}"
+        );
+        let msg = recv_server_msg(&mut reader1);
+        assert!(
+            matches!(msg, ServerMessage::SnapshotRequest),
+            "expected SnapshotRequest, got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn mid_join_snapshot_response_forwarded() {
+        let (mut session, _client1, _reader1, _client2) = started_session();
+
+        // Advance a few ticks so current_tick is nonzero.
+        session.flush_turn();
+        session.flush_turn();
+        let expected_tick = session.current_tick();
+        assert!(expected_tick > 0);
+
+        // Third player joins mid-game.
+        let (client3, server3) = tcp_pair();
+        session
+            .add_player("Charlie".into(), 100, 200, None, server3)
+            .unwrap();
+        assert!(session.is_snapshot_pending());
+
+        // Host sends snapshot response.
+        let snapshot_data = b"fake-sim-state".to_vec();
+        session.handle_snapshot_response(RelayPlayerId(0), snapshot_data.clone());
+        assert!(!session.is_snapshot_pending());
+
+        // Charlie should receive Welcome + SnapshotLoad.
+        let mut reader3 = BufReader::new(client3);
+        let msg = recv_server_msg(&mut reader3);
+        assert!(
+            matches!(msg, ServerMessage::Welcome { .. }),
+            "expected Welcome, got {msg:?}"
+        );
+        let msg = recv_server_msg(&mut reader3);
+        match msg {
+            ServerMessage::SnapshotLoad { tick, data } => {
+                assert_eq!(tick, expected_tick);
+                assert_eq!(data, snapshot_data);
+            }
+            other => panic!("expected SnapshotLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn flush_turn_paused_during_snapshot() {
+        let (mut session, _client1, _reader1, _client2) = started_session();
+
+        // Advance one turn to establish a baseline tick.
+        session.flush_turn();
+        let tick_before = session.current_tick();
+
+        // Third player joins mid-game — snapshot pending.
+        let (_client3, server3) = tcp_pair();
+        session
+            .add_player("Charlie".into(), 100, 200, None, server3)
+            .unwrap();
+        assert!(session.is_snapshot_pending());
+
+        // flush_turn should be a no-op while snapshot is pending.
+        session.flush_turn();
+        assert_eq!(
+            session.current_tick(),
+            tick_before,
+            "tick should not advance while snapshot is pending"
+        );
+    }
+
+    #[test]
+    fn flush_turn_resumes_after_snapshot() {
+        let (mut session, _client1, _reader1, _client2) = started_session();
+
+        session.flush_turn();
+        let tick_before = session.current_tick();
+
+        // Third player joins mid-game.
+        let (_client3, server3) = tcp_pair();
+        session
+            .add_player("Charlie".into(), 100, 200, None, server3)
+            .unwrap();
+
+        // Complete the snapshot transfer.
+        session.handle_snapshot_response(RelayPlayerId(0), b"data".to_vec());
+        assert!(!session.is_snapshot_pending());
+
+        // flush_turn should work normally again.
+        session.flush_turn();
+        assert!(
+            session.current_tick() > tick_before,
+            "tick should advance after snapshot completes"
+        );
+    }
+
+    #[test]
+    fn snapshot_cleared_on_joiner_disconnect() {
+        let (mut session, _client1, _reader1, _client2) = started_session();
+
+        let (_client3, server3) = tcp_pair();
+        let joiner_id = session
+            .add_player("Charlie".into(), 100, 200, None, server3)
+            .unwrap();
+        assert!(session.is_snapshot_pending());
+
+        // Joiner disconnects before snapshot completes.
+        session.remove_player(joiner_id);
+        assert!(
+            !session.is_snapshot_pending(),
+            "snapshot should be cleared when joiner disconnects"
+        );
+    }
+
+    #[test]
+    fn snapshot_cleared_on_host_disconnect() {
+        let (mut session, _client1, _reader1, _client2) = started_session();
+
+        let (_client3, server3) = tcp_pair();
+        session
+            .add_player("Charlie".into(), 100, 200, None, server3)
+            .unwrap();
+        assert!(session.is_snapshot_pending());
+
+        // Host disconnects before snapshot completes.
+        session.remove_player(RelayPlayerId(0));
+        assert!(
+            !session.is_snapshot_pending(),
+            "snapshot should be cleared when host disconnects"
+        );
+    }
+
+    #[test]
+    fn checksum_excludes_pending_joiner() {
+        let (mut session, _client1, _reader1, _client2) = started_session();
+
+        // Third player joins mid-game — snapshot pending.
+        let (_client3, server3) = tcp_pair();
+        session
+            .add_player("Charlie".into(), 100, 200, None, server3)
+            .unwrap();
+        assert!(session.is_snapshot_pending());
+
+        // 3 players connected, but only 2 are active (Charlie is pending).
+        assert_eq!(session.player_count(), 3);
+        assert_eq!(session.active_player_count(), 2);
+
+        // Alice and Bob send matching checksums — should complete without
+        // waiting for Charlie (who can't compute a checksum yet).
+        session.record_checksum(RelayPlayerId(0), 1000, 0xABCD);
+        session.record_checksum(RelayPlayerId(1), 1000, 0xABCD);
+
+        // Checksums matched, so the tick entry should be cleaned up.
+        // Verify no panic and the session is in a good state.
+        assert_eq!(session.player_count(), 3);
+    }
+
+    #[test]
+    fn concurrent_mid_join_rejected() {
+        let (mut session, _client1, _reader1, _client2) = started_session();
+
+        // First mid-game join — accepted.
+        let (_client3, server3) = tcp_pair();
+        session
+            .add_player("Charlie".into(), 100, 200, None, server3)
+            .unwrap();
+        assert!(session.is_snapshot_pending());
+
+        // Second mid-game join while first is still pending — rejected.
+        let (_client4, server4) = tcp_pair();
+        let result = session.add_player("Dave".into(), 100, 200, None, server4);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "another player is joining, try again");
+
+        // First joiner's snapshot is still pending and session state is clean.
+        assert!(session.is_snapshot_pending());
+        assert_eq!(session.player_count(), 3); // Alice, Bob, Charlie (not Dave)
     }
 }

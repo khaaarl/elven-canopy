@@ -157,6 +157,16 @@ impl NetClient {
         send_msg(&mut self.writer, &msg).map_err(|e| format!("send Checksum failed: {e}"))
     }
 
+    /// Send a snapshot response (serialized sim state) back to the relay.
+    /// Used during mid-game join: the relay sends SnapshotRequest to the host,
+    /// and the host replies with SnapshotResponse containing the full sim state.
+    pub fn send_snapshot_response(&mut self, data: &[u8]) -> Result<(), String> {
+        let msg = ClientMessage::SnapshotResponse {
+            data: data.to_vec(),
+        };
+        send_msg(&mut self.writer, &msg).map_err(|e| format!("send SnapshotResponse failed: {e}"))
+    }
+
     /// Send a chat message.
     pub fn send_chat(&mut self, text: &str) -> Result<(), String> {
         let msg = ClientMessage::Chat { text: text.into() };

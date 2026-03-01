@@ -2206,8 +2206,36 @@ impl SimBridge {
                         .unwrap_or_default(),
                     );
                 }
-                // Welcome, Rejected, SnapshotRequest, SnapshotLoad, SpeedChanged
-                // are either handled during connect or not yet implemented.
+                ServerMessage::SnapshotRequest => {
+                    // Mid-game join: the relay asks us (as host) for a sim
+                    // snapshot. Serialize and send it back.
+                    if let Some(sim) = &self.sim
+                        && let Ok(json) = sim.to_json()
+                    {
+                        let data = json.into_bytes();
+                        if let Some(client) = &mut self.net_client {
+                            let _ = client.send_snapshot_response(&data);
+                        }
+                    }
+                }
+                ServerMessage::SnapshotLoad { tick: _, data } => {
+                    // Mid-game join: we are the late joiner receiving a sim
+                    // snapshot from the relay. Deserialize and replace our sim.
+                    if let Ok(json) = String::from_utf8(data)
+                        && let Ok(sim) = SimState::from_json(&json)
+                    {
+                        self.sim = Some(sim);
+                        self.game_started = true;
+                        self.mp_events.push(
+                            serde_json::to_string(&serde_json::json!({
+                                "type": "snapshot_loaded",
+                            }))
+                            .unwrap_or_default(),
+                        );
+                    }
+                }
+                // Welcome, Rejected, SpeedChanged are handled during connect
+                // or not yet surfaced to GDScript.
                 _ => {}
             }
         }

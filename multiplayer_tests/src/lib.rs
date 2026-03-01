@@ -8,7 +8,9 @@
 // Also provides checksum helpers (`send_checksum()`, `state_checksum()`) for
 // testing desync detection: compute the sim's FNV-1a hash and send it to the
 // relay, which compares hashes from all players and broadcasts `DesyncDetected`
-// on mismatch.
+// on mismatch. Snapshot helpers (`handle_snapshot_request()`,
+// `poll_until_snapshot_load()`) support mid-game join tests where a late
+// joiner receives a full sim state from the host.
 //
 // The only test-specific code here is the synchronous polling wrappers
 // (blocking loops around `NetClient::poll()`). All networking and sim
@@ -172,6 +174,73 @@ impl TestGameClient {
             .as_ref()
             .expect("sim not initialized")
             .state_checksum()
+    }
+
+    /// Handle a mid-game join snapshot request from the relay. Blocking poll
+    /// until `SnapshotRequest` arrives (applying any in-flight turns while
+    /// waiting), then serialize the local sim and send a `SnapshotResponse`.
+    pub fn handle_snapshot_request(&mut self) {
+        let start = Instant::now();
+        loop {
+            assert!(
+                start.elapsed() < POLL_TIMEOUT,
+                "timed out waiting for SnapshotRequest"
+            );
+            for msg in self.client.poll() {
+                match msg {
+                    ServerMessage::SnapshotRequest => {
+                        let sim = self.sim.as_ref().expect("sim not initialized");
+                        let json = sim.to_json().expect("sim serialization failed");
+                        let data = json.into_bytes();
+                        self.client
+                            .send_snapshot_response(&data)
+                            .expect("send_snapshot_response failed");
+                        return;
+                    }
+                    ServerMessage::Turn {
+                        sim_tick_target,
+                        commands,
+                        ..
+                    } => {
+                        // Apply in-flight turns while waiting for the request.
+                        let sim = self.sim.as_mut().expect("sim not initialized");
+                        let payloads: Vec<&[u8]> =
+                            commands.iter().map(|tc| tc.payload.as_slice()).collect();
+                        sim.apply_turn_payloads(sim_tick_target, &payloads);
+                    }
+                    _ => {}
+                }
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// Blocking poll until a `SnapshotLoad` message arrives. Deserializes the
+    /// snapshot to initialize the local sim. Returns the tick from the snapshot.
+    pub fn poll_until_snapshot_load(&mut self) -> u64 {
+        let start = Instant::now();
+        loop {
+            assert!(
+                start.elapsed() < POLL_TIMEOUT,
+                "timed out waiting for SnapshotLoad"
+            );
+            for msg in self.client.poll() {
+                if let ServerMessage::SnapshotLoad { tick, data } = msg {
+                    let json = String::from_utf8(data).expect("snapshot data not UTF-8");
+                    let sim = SimState::from_json(&json).expect("snapshot deserialization failed");
+                    self.sim = Some(sim);
+                    return tick;
+                }
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// Send a raw snapshot response (for edge-case tests).
+    pub fn send_snapshot_response(&mut self, data: &[u8]) {
+        self.client
+            .send_snapshot_response(data)
+            .expect("send_snapshot_response failed");
     }
 
     /// Send Goodbye and close the connection.

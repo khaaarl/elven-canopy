@@ -319,8 +319,8 @@ fn handle_message(session: &mut Session, player_id: RelayPlayerId, message: Clie
         ClientMessage::StartGame { seed, config_json } => {
             session.handle_start_game(player_id, seed, config_json);
         }
-        ClientMessage::SnapshotResponse { .. } => {
-            // Mid-game join snapshot handling — not yet implemented.
+        ClientMessage::SnapshotResponse { data } => {
+            session.handle_snapshot_response(player_id, data);
         }
         ClientMessage::Hello { .. } | ClientMessage::Goodbye => {
             // Hello is handled during connection setup, Goodbye in the reader loop.
