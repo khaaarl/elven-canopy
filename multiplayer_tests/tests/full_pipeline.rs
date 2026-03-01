@@ -285,6 +285,84 @@ fn empty_turns_advance_tick() {
     handle.stop();
 }
 
+/// Both clients compute and send identical checksums — no DesyncDetected.
+#[test]
+fn checksum_agreement() {
+    let (handle, mut host, mut joiner) = start_test_session();
+    start_game(&mut host, &mut joiner);
+
+    // Both sims are identical at this point — checksums should match.
+    let host_hash = host.state_checksum();
+    let joiner_hash = joiner.state_checksum();
+    assert_eq!(host_hash, joiner_hash, "initial checksums should match");
+
+    // Send matching checksums to the relay.
+    let tick = host.sim.as_ref().unwrap().tick;
+    host.send_checksum(tick, host_hash);
+    joiner.send_checksum(tick, joiner_hash);
+
+    // Give the relay time to process and (not) broadcast DesyncDetected.
+    thread::sleep(Duration::from_millis(200));
+
+    // Drain turns and other messages — should NOT contain DesyncDetected.
+    let (_, host_other) = host.drain_turns();
+    let (_, joiner_other) = joiner.drain_turns();
+
+    let host_desync = host_other
+        .iter()
+        .any(|m| matches!(m, ServerMessage::DesyncDetected { .. }));
+    let joiner_desync = joiner_other
+        .iter()
+        .any(|m| matches!(m, ServerMessage::DesyncDetected { .. }));
+
+    assert!(!host_desync, "host should not receive DesyncDetected");
+    assert!(!joiner_desync, "joiner should not receive DesyncDetected");
+
+    host.disconnect();
+    joiner.disconnect();
+    handle.stop();
+}
+
+/// Two clients send deliberately different hashes — DesyncDetected received.
+#[test]
+fn checksum_desync_detected() {
+    let (handle, mut host, mut joiner) = start_test_session();
+    start_game(&mut host, &mut joiner);
+
+    let tick = host.sim.as_ref().unwrap().tick;
+
+    // Send deliberately different checksums.
+    host.send_checksum(tick, 0xAAAA);
+    joiner.send_checksum(tick, 0xBBBB);
+
+    // Give the relay time to detect the mismatch and broadcast.
+    thread::sleep(Duration::from_millis(200));
+
+    // Drain turns and other messages — should contain DesyncDetected.
+    let (_, host_other) = host.drain_turns();
+    let (_, joiner_other) = joiner.drain_turns();
+
+    let host_desync = host_other
+        .iter()
+        .any(|m| matches!(m, ServerMessage::DesyncDetected { .. }));
+    let joiner_desync = joiner_other
+        .iter()
+        .any(|m| matches!(m, ServerMessage::DesyncDetected { .. }));
+
+    assert!(
+        host_desync,
+        "host should receive DesyncDetected, got: {host_other:?}"
+    );
+    assert!(
+        joiner_desync,
+        "joiner should receive DesyncDetected, got: {joiner_other:?}"
+    );
+
+    host.disconnect();
+    joiner.disconnect();
+    handle.stop();
+}
+
 /// After some commands, the joiner disconnects. Host should receive
 /// PlayerLeft and continue receiving turns.
 #[test]

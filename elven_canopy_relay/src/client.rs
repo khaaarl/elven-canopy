@@ -151,6 +151,12 @@ impl NetClient {
         send_msg(&mut self.writer, &msg).map_err(|e| format!("send StartGame failed: {e}"))
     }
 
+    /// Send a state checksum for desync detection.
+    pub fn send_checksum(&mut self, tick: u64, hash: u64) -> Result<(), String> {
+        let msg = ClientMessage::Checksum { tick, hash };
+        send_msg(&mut self.writer, &msg).map_err(|e| format!("send Checksum failed: {e}"))
+    }
+
     /// Send a chat message.
     pub fn send_chat(&mut self, text: &str) -> Result<(), String> {
         let msg = ClientMessage::Chat { text: text.into() };

@@ -5,6 +5,11 @@
 // test-friendly API for exercising the full multiplayer pipeline:
 // host → relay → join → command → turn → sim.step() → verify state.
 //
+// Also provides checksum helpers (`send_checksum()`, `state_checksum()`) for
+// testing desync detection: compute the sim's FNV-1a hash and send it to the
+// relay, which compares hashes from all players and broadcasts `DesyncDetected`
+// on mismatch.
+//
 // The only test-specific code here is the synchronous polling wrappers
 // (blocking loops around `NetClient::poll()`). All networking and sim
 // logic uses the same code paths as the real game.
@@ -152,6 +157,21 @@ impl TestGameClient {
     /// Only use before the sim is initialized (e.g., draining lobby events).
     pub fn poll_raw(&self) -> Vec<ServerMessage> {
         self.client.poll()
+    }
+
+    /// Send a state checksum to the relay for desync detection.
+    pub fn send_checksum(&mut self, tick: u64, hash: u64) {
+        self.client
+            .send_checksum(tick, hash)
+            .expect("send_checksum failed");
+    }
+
+    /// Compute the state checksum of the local sim.
+    pub fn state_checksum(&self) -> u64 {
+        self.sim
+            .as_ref()
+            .expect("sim not initialized")
+            .state_checksum()
     }
 
     /// Send Goodbye and close the connection.

@@ -101,6 +101,7 @@ use std::collections::BTreeMap;
 use elven_canopy_protocol::message::ServerMessage;
 use elven_canopy_relay::server::{RelayConfig, RelayHandle, start_relay};
 use elven_canopy_sim::blueprint::BlueprintState;
+use elven_canopy_sim::checksum::CHECKSUM_INTERVAL_TICKS;
 use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::config::{GameConfig, TreeProfile};
 use elven_canopy_sim::sim::SimState;
@@ -149,7 +150,10 @@ fn species_name(species: Species) -> &'static str {
 /// Add this as a child node in your main scene. Call `init_sim()` from
 /// GDScript to create the simulation, then `step_to_tick()` each frame
 /// to advance it. In multiplayer mode, call `host_game()` or `join_game()`
-/// instead, then `poll_network()` each frame to receive turns.
+/// instead, then `poll_network()` each frame to receive turns. After
+/// applying turns, `poll_network()` automatically sends a state checksum
+/// to the relay every `CHECKSUM_INTERVAL_TICKS` (1000 ticks) for desync
+/// detection (see `checksum.rs` in the sim crate).
 #[derive(GodotClass)]
 #[class(base=Node)]
 pub struct SimBridge {
@@ -2171,6 +2175,20 @@ impl SimBridge {
                 // Welcome, Rejected, SnapshotRequest, SnapshotLoad, SpeedChanged
                 // are either handled during connect or not yet implemented.
                 _ => {}
+            }
+        }
+
+        // After applying turns, check if the sim tick is on a checksum boundary.
+        // Compute hash first (immutable borrow), then send (mutable borrow).
+        if turns_applied > 0
+            && let Some(sim) = &self.sim
+        {
+            let tick = sim.tick;
+            if tick > 0 && tick % CHECKSUM_INTERVAL_TICKS == 0 {
+                let hash = sim.state_checksum();
+                if let Some(client) = &mut self.net_client {
+                    let _ = client.send_checksum(tick, hash);
+                }
             }
         }
 

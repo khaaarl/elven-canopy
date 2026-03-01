@@ -112,7 +112,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-modding              Scripting layer for modding support
 [ ] F-mood-system          Mood with escalating consequences
 [ ] F-mp-chat              Multiplayer in-game chat
-[ ] F-mp-checksums         Multiplayer state checksums for desync detection
 [ ] F-mp-mid-join          Mid-game join with state snapshot
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
@@ -176,6 +175,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-main-menu            Main menu UI
 [x] F-move-interp          Smooth creature movement interpolation
+[x] F-mp-checksums         Multiplayer state checksums for desync detection
 [x] F-mp-integ-test        Multiplayer integration test harness
 [x] F-music-gen            Palestrina-style music generator (standalone)
 [x] F-nav-graph            Navigation graph construction
@@ -1441,12 +1441,15 @@ sending chat messages is not yet implemented.
 **Related:** F-multiplayer
 
 #### F-mp-checksums — Multiplayer state checksums for desync detection
-**Status:** Todo · **Phase:** 8+ · **Refs:** §4
+**Status:** Done · **Phase:** 8+ · **Refs:** §4
 
 Periodic sim-state checksums sent via the relay to detect desync between
-clients. Protocol support exists (`Checksum`/`DesyncDetected` messages) but
-the sim does not yet compute or send checksums. Needs a fast deterministic
-hash over relevant sim state (creature positions, voxel grid, etc.).
+clients. `SimState::state_checksum()` serializes state to JSON and hashes with
+FNV-1a 64-bit (`checksum.rs`). `NetClient::send_checksum()` sends the hash to
+the relay, which compares per-player hashes and broadcasts `DesyncDetected` on
+mismatch. The GDExtension bridge (`sim_bridge.rs`) sends checksums
+automatically every `CHECKSUM_INTERVAL_TICKS` (1000 ticks = 1 sim-second)
+after applying turns.
 
 **Related:** F-multiplayer
 

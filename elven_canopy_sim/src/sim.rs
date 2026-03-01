@@ -2547,6 +2547,15 @@ impl SimState {
         serde_json::to_string(self)
     }
 
+    /// Compute a deterministic checksum of the simulation state for desync
+    /// detection. Serializes all non-`#[serde(skip)]` fields to JSON bytes,
+    /// then hashes with FNV-1a. Deterministic because `BTreeMap` produces
+    /// sorted keys and Ryu produces stable float formatting.
+    pub fn state_checksum(&self) -> u64 {
+        let bytes = serde_json::to_vec(self).expect("SimState serialization should not fail");
+        crate::checksum::fnv1a_64(&bytes)
+    }
+
     /// Deserialize a simulation state from a JSON string and rebuild
     /// transient fields (world, nav_graph, species_table, lexicon).
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
@@ -7275,5 +7284,54 @@ mod tests {
         let orig = bp.original_voxels.iter().find(|(c, _)| *c == solid);
         assert!(orig.is_some());
         assert_eq!(orig.unwrap().1, original_type);
+    }
+
+    #[test]
+    fn state_checksum_deterministic() {
+        let sim_a = test_sim(42);
+        let sim_b = test_sim(42);
+        let hash_a = sim_a.state_checksum();
+        let hash_b = sim_b.state_checksum();
+        assert_eq!(
+            hash_a, hash_b,
+            "same seed should produce identical checksum"
+        );
+        assert_ne!(hash_a, 0, "checksum should not be zero");
+    }
+
+    #[test]
+    fn state_checksum_different_seeds() {
+        let sim_a = test_sim(42);
+        let sim_b = test_sim(99);
+        assert_ne!(
+            sim_a.state_checksum(),
+            sim_b.state_checksum(),
+            "different seeds should produce different checksums"
+        );
+    }
+
+    #[test]
+    fn state_checksum_changes_after_mutation() {
+        let mut sim = test_sim(42);
+        let before = sim.state_checksum();
+
+        // Spawn an elf to mutate state.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: spawn_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let after = sim.state_checksum();
+        assert_ne!(
+            before, after,
+            "checksum should change after spawning a creature"
+        );
     }
 }
