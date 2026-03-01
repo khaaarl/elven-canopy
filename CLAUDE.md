@@ -281,7 +281,7 @@ ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FE
 
 ## The Once-Over
 
-When a feature branch's work is done, the user will likely ask for a "once-over" -- a final check of code quality, test quality, documentation accuracy, and similar. This should happen before asking to merge a feature branch to main. You should double-check that everything correct, and not merely correct but of good quality. Especially relevant is checking that documentation/comments in related files get updated.
+When a feature branch's work is done, the user will likely ask for a "once-over" — a final quality review before merging. Use the `/once-over` slash command, which delegates the review to a subagent to keep the main context clean. See `.claude/commands/once-over.md` for the full checklist.
 
 ## Merging to Main
 
