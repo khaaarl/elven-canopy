@@ -42,11 +42,13 @@
 //
 // **Dual-graph pattern for large creatures.** `build_large_nav_graph()` builds
 // a separate `NavGraph` for 2x2x2 footprint creatures (e.g. elephants). Nodes
-// exist at anchor `(x, 1, z)` where the 2x2x2 volume is all air and the 2x2
-// ground at y=0 is all solid. Edges connect 8-neighbors with union-footprint
-// clearance checks. The large graph uses the same `NavGraph` struct so all
-// existing pathfinding code works unchanged. `sim.rs` stores both graphs and
-// dispatches via `graph_for_species()` based on the species' footprint.
+// exist at anchor `(x, y, z)` where the 2x2 ground footprint has solid voxels
+// within 1 voxel of height variation and 2 voxels of air clearance above the
+// highest ground point. Edges connect 8-neighbors with union-footprint
+// clearance checks, allowing up to 1 voxel of height change between adjacent
+// nodes. The large graph uses the same `NavGraph` struct so all existing
+// pathfinding code works unchanged. `sim.rs` stores both graphs and dispatches
+// via `graph_for_species()` based on the species' footprint.
 //
 // All storage uses `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
 // and deterministic iteration order. No `HashMap`.
@@ -1051,32 +1053,37 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
 // Large creature nav graph (2x2x2 footprint)
 // ---------------------------------------------------------------------------
 
-/// Find the highest solid y in a 2x2 footprint at (ax, az). Returns `None`
-/// if the four columns have different surface heights (large creatures need
-/// flat ground) or if any column has no solid ground at all. Returns the y
-/// of the air layer above the surface.
+/// Find the surface y for a 2x2 large-creature footprint at anchor (ax, az).
+///
+/// Scans each of the 4 columns to find the topmost solid voxel. Returns
+/// `None` if any column has no solid ground or if the height variation
+/// across the 4 columns exceeds 1 voxel. Otherwise returns `max_surface + 1`
+/// (the air layer above the highest ground point — the creature stands at
+/// its tallest point, straddling any minor unevenness).
 fn large_node_surface_y(world: &VoxelWorld, ax: i32, az: i32) -> Option<i32> {
     let sy = world.size_y as i32;
-    let mut surface_y: Option<i32> = None;
+    let mut min_surface = i32::MAX;
+    let mut max_surface = i32::MIN;
     for dz in 0..2 {
         for dx in 0..2 {
-            // Scan down from a reasonable height to find the top solid voxel.
-            let mut found_y = None;
+            let mut found = false;
             for y in (0..sy).rev() {
                 if world.get(VoxelCoord::new(ax + dx, y, az + dz)).is_solid() {
-                    found_y = Some(y + 1); // air layer above surface
+                    min_surface = min_surface.min(y);
+                    max_surface = max_surface.max(y);
+                    found = true;
                     break;
                 }
             }
-            let fy = found_y?; // No solid ground at all → invalid.
-            match surface_y {
-                None => surface_y = Some(fy),
-                Some(sy) if sy != fy => return None, // uneven ground
-                _ => {}
+            if !found {
+                return None; // No solid ground in this column.
             }
         }
     }
-    surface_y
+    if max_surface - min_surface > 1 {
+        return None; // Height variation exceeds 1-voxel tolerance.
+    }
+    Some(max_surface + 1)
 }
 
 fn is_large_node_valid(world: &VoxelWorld, ax: i32, az: i32) -> bool {
@@ -1116,11 +1123,12 @@ fn is_large_node_valid(world: &VoxelWorld, ax: i32, az: i32) -> bool {
 
 /// Check whether a large creature can move from anchor `from` to anchor `to`.
 ///
-/// Both anchors must have the same surface height, and the union of the two
-/// 2x2 footprints must have solid ground at that level and 2 voxels of air
-/// clearance above it.
+/// Both anchors must have valid surface heights differing by at most 1 voxel.
+/// Each column in the union of the two 2x2 footprints must have solid ground,
+/// all column surfaces must be within 1 voxel of each other, and there must
+/// be 2 voxels of air clearance above the highest surface in the union.
 fn is_large_edge_valid(world: &VoxelWorld, from: (i32, i32), to: (i32, i32)) -> bool {
-    // Both endpoints must have a valid, equal surface height.
+    // Both endpoints must have valid surface heights within 1 voxel of each other.
     let from_y = match large_node_surface_y(world, from.0, from.1) {
         Some(y) => y,
         None => return false,
@@ -1129,10 +1137,10 @@ fn is_large_edge_valid(world: &VoxelWorld, from: (i32, i32), to: (i32, i32)) -> 
         Some(y) => y,
         None => return false,
     };
-    if from_y != to_y {
+    if (from_y - to_y).abs() > 1 {
         return false;
     }
-    let air_y = from_y;
+    let max_air_y = from_y.max(to_y);
 
     let min_x = from.0.min(to.0);
     let max_x = from.0.max(to.0) + 2;
@@ -1142,22 +1150,36 @@ fn is_large_edge_valid(world: &VoxelWorld, from: (i32, i32), to: (i32, i32)) -> 
     let sx = world.size_x as i32;
     let sy = world.size_y as i32;
     let sz = world.size_z as i32;
-    if max_x > sx || max_z > sz || air_y + 2 > sy {
+    if max_x > sx || max_z > sz || max_air_y + 2 > sy {
         return false;
     }
 
-    // All ground cells in the union footprint must be solid at air_y - 1.
-    let ground_y = air_y - 1;
+    // Check each column in the union footprint: find its surface, verify all
+    // surfaces are within 1 voxel of each other.
+    let mut union_min_surface = i32::MAX;
+    let mut union_max_surface = i32::MIN;
     for z in min_z..max_z {
         for x in min_x..max_x {
-            if !world.get(VoxelCoord::new(x, ground_y, z)).is_solid() {
-                return false;
+            let mut found = false;
+            for y in (0..sy).rev() {
+                if world.get(VoxelCoord::new(x, y, z)).is_solid() {
+                    union_min_surface = union_min_surface.min(y);
+                    union_max_surface = union_max_surface.max(y);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return false; // No ground in this column.
             }
         }
     }
+    if union_max_surface - union_min_surface > 1 {
+        return false; // Union footprint has too much height variation.
+    }
 
-    // All cells at air_y and air_y+1 in the union footprint must be non-solid.
-    for y in air_y..air_y + 2 {
+    // Air clearance: 2 voxels above max_air_y across the entire union.
+    for y in max_air_y..max_air_y + 2 {
         for z in min_z..max_z {
             for x in min_x..max_x {
                 if world.get(VoxelCoord::new(x, y, z)).is_solid() {
@@ -1172,10 +1194,14 @@ fn is_large_edge_valid(world: &VoxelWorld, from: (i32, i32), to: (i32, i32)) -> 
 
 /// Build a navigation graph for large (2x2x2 footprint) creatures.
 ///
-/// Nodes exist at anchor positions `(x, 1, z)` where the 2x2x2 volume
-/// `[x..x+2, 1..3, z..z+2]` is all air and the 2x2 ground at y=0 is all solid.
-/// Edges connect horizontal 8-neighbors (dx,dz in {-1,0,1}²\{0,0}), validated
-/// by checking the union of source and destination footprints.
+/// Nodes exist at anchor positions `(x, y, z)` where the 2x2 ground footprint
+/// has solid voxels within 1 voxel of height variation and 2 voxels of air
+/// clearance above the highest ground point. The node y is `max_surface + 1`
+/// (the creature stands at its tallest point, straddling minor unevenness).
+///
+/// Edges connect horizontal 8-neighbors (dx,dz in {-1,0,1}²\{0,0}), allowing
+/// up to 1 voxel of height change between adjacent nodes. Edge distances use
+/// `sqrt(dx² + dy² + dz²)` so height-changing edges are slightly more costly.
 ///
 /// All edges are `ForestFloor` type since large creatures are ground-only.
 /// The resulting graph uses the same `NavGraph` struct as the standard graph,
@@ -1264,7 +1290,8 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
 
                 let from = NavNodeId(from_slot);
                 let to = NavNodeId(to_slot);
-                let dist = ((dx * dx + dz * dz) as f32).sqrt();
+                let dy = n_air_y as i32 - air_y as i32;
+                let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
                 graph.add_edge(from, to, EdgeType::ForestFloor, dist);
             }
         }
@@ -1333,6 +1360,49 @@ pub fn update_large_after_voxel_solidified(
                 graph.spatial_index[flat] = u32::MAX;
             }
             graph.free_slots.push(current_slot as usize);
+        } else if should_exist && is_node {
+            // Node exists — check if it needs to move to a different y
+            // (surface height may have changed due to height tolerance).
+            let expected_air_y = large_node_surface_y(world, ax, az).unwrap();
+            let existing_y = graph.nodes[current_slot as usize]
+                .as_ref()
+                .unwrap()
+                .position
+                .y;
+            if existing_y != expected_air_y {
+                // Remove old node at wrong y.
+                let id = NavNodeId(current_slot);
+                removed_ids.push(id);
+                graph.nodes[current_slot as usize] = None;
+                if let Some(flat) = existing_flat {
+                    graph.spatial_index[flat] = u32::MAX;
+                }
+                graph.free_slots.push(current_slot as usize);
+                // Add new node at correct y.
+                let anchor_coord = VoxelCoord::new(ax, expected_air_y, az);
+                let flat = ax as usize + az as usize * sx + expected_air_y as usize * sx * sz;
+                let slot = if let Some(free) = graph.free_slots.pop() {
+                    let id = NavNodeId(free as u32);
+                    graph.nodes[free] = Some(NavNode {
+                        id,
+                        position: anchor_coord,
+                        surface_type: VoxelType::ForestFloor,
+                        edge_indices: Vec::new(),
+                    });
+                    free
+                } else {
+                    let slot = graph.nodes.len();
+                    let id = NavNodeId(slot as u32);
+                    graph.nodes.push(Some(NavNode {
+                        id,
+                        position: anchor_coord,
+                        surface_type: VoxelType::ForestFloor,
+                        edge_indices: Vec::new(),
+                    }));
+                    slot
+                };
+                graph.spatial_index[flat] = slot as u32;
+            }
         } else if should_exist && !is_node {
             let air_y = large_node_surface_y(world, ax, az).unwrap();
             let anchor_coord = VoxelCoord::new(ax, air_y, az);
@@ -1466,7 +1536,10 @@ pub fn update_large_after_voxel_solidified(
 
             let from_id = NavNodeId(slot as u32);
             let to_id = NavNodeId(ns as u32);
-            let dist = ((dx * dx + dz * dz) as f32).sqrt();
+            let from_node_y = graph.nodes[slot].as_ref().unwrap().position.y;
+            let to_node_y = graph.nodes[ns].as_ref().unwrap().position.y;
+            let dy = to_node_y - from_node_y;
+            let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
             graph.add_edge(from_id, to_id, EdgeType::ForestFloor, dist);
         }
     }
@@ -2153,19 +2226,22 @@ mod tests {
 
     #[test]
     fn large_nav_obstacle_blocks_node() {
-        // Solid at (5,1,5) blocks large anchors at (4,5), (5,5), (4,4), (5,4)
-        // because each of those 2x2 footprints includes (5,1,5).
+        // A 2-voxel tall obstacle at (5,1..2,5) creates a surface height of
+        // y=2 in that column, while surrounding columns are at y=0. The
+        // 2-voxel height difference exceeds the 1-voxel tolerance, blocking
+        // anchors (4,4), (5,4), (4,5), (5,5).
         let mut world = flat_floor_world(10, 6, 10);
         world.set(VoxelCoord::new(5, 1, 5), VoxelType::Trunk);
+        world.set(VoxelCoord::new(5, 2, 5), VoxelType::Trunk);
         let graph = build_large_nav_graph(&world);
 
         // 81 - 4 = 77 nodes.
         assert_eq!(
             graph.live_nodes().count(),
             77,
-            "Obstacle at (5,1,5) should remove 4 anchor positions",
+            "2-voxel obstacle at (5,1..2,5) should remove 4 anchor positions",
         );
-        // Verify the specific removed anchors.
+        // Verify the specific removed anchors (none at any y).
         assert!(!graph.has_node_at(VoxelCoord::new(4, 1, 4)));
         assert!(!graph.has_node_at(VoxelCoord::new(5, 1, 4)));
         assert!(!graph.has_node_at(VoxelCoord::new(4, 1, 5)));
@@ -2285,10 +2361,14 @@ mod tests {
 
         assert!(graph.has_node_at(VoxelCoord::new(3, 1, 3)));
 
-        // Solidify (3,1,3) — blocks anchors (2,2),(3,2),(2,3),(3,3).
+        // Solidify (3,1,3) and (3,2,3) — a 2-voxel tall obstacle creates a
+        // surface at y=2 in that column, which exceeds the 1-voxel tolerance
+        // relative to y=0 neighbors. Blocks anchors (2,2),(3,2),(2,3),(3,3).
         world.set(VoxelCoord::new(3, 1, 3), VoxelType::GrownPlatform);
+        update_large_after_voxel_solidified(&mut graph, &world, VoxelCoord::new(3, 1, 3));
+        world.set(VoxelCoord::new(3, 2, 3), VoxelType::GrownPlatform);
         let removed =
-            update_large_after_voxel_solidified(&mut graph, &world, VoxelCoord::new(3, 1, 3));
+            update_large_after_voxel_solidified(&mut graph, &world, VoxelCoord::new(3, 2, 3));
 
         assert!(!removed.is_empty(), "Should have removed at least one node");
         assert!(!graph.has_node_at(VoxelCoord::new(3, 1, 3)));
@@ -2325,6 +2405,191 @@ mod tests {
         assert!(graph.has_node_at(VoxelCoord::new(5, 1, 4)));
         assert!(graph.has_node_at(VoxelCoord::new(4, 1, 5)));
         assert!(graph.has_node_at(VoxelCoord::new(5, 1, 5)));
+    }
+
+    // --- Large nav height tolerance tests ---
+
+    /// Helper: create a world with controlled terrain heights for large nav tests.
+    /// Sets ForestFloor at y=0 everywhere, then stacks Dirt up to the given
+    /// height at each (x, z). Heights are given as (x, z, surface_y) tuples
+    /// where surface_y is the y of the topmost solid voxel.
+    fn hilly_world(sx: u32, sy: u32, sz: u32, hills: &[(i32, i32, i32)]) -> VoxelWorld {
+        let mut world = VoxelWorld::new(sx, sy, sz);
+        // Base floor everywhere.
+        for z in 0..sz {
+            for x in 0..sx {
+                world.set(
+                    VoxelCoord::new(x as i32, 0, z as i32),
+                    VoxelType::ForestFloor,
+                );
+            }
+        }
+        // Add dirt columns to reach desired heights.
+        for &(x, z, surface_y) in hills {
+            for y in 1..=surface_y {
+                world.set(VoxelCoord::new(x, y, z), VoxelType::Dirt);
+            }
+        }
+        world
+    }
+
+    #[test]
+    fn large_node_valid_on_flat_ground() {
+        // Baseline: 2x2 flat ground at y=0 with plenty of air clearance.
+        let world = flat_floor_world(10, 10, 10);
+        assert!(
+            is_large_node_valid(&world, 3, 3),
+            "2x2 flat ground should be a valid large node",
+        );
+        let y = large_node_surface_y(&world, 3, 3);
+        assert_eq!(y, Some(1), "Surface y should be 1 (air above y=0 floor)");
+    }
+
+    #[test]
+    fn large_node_valid_with_one_voxel_step() {
+        // One corner of the 2x2 footprint is 1 voxel higher than the rest.
+        // Anchor (3, 3): footprint covers (3,3), (4,3), (3,4), (4,4).
+        // Raise (4, 4) by 1 voxel (surface at y=1 instead of y=0).
+        let world = hilly_world(10, 10, 10, &[(4, 4, 1)]);
+        assert!(
+            is_large_node_valid(&world, 3, 3),
+            "1-voxel height difference within footprint should be valid",
+        );
+        // Node y should be max_surface + 1 = 1 + 1 = 2.
+        let y = large_node_surface_y(&world, 3, 3);
+        assert_eq!(y, Some(2), "Surface y should be max_surface + 1 = 2",);
+    }
+
+    #[test]
+    fn large_node_invalid_with_two_voxel_step() {
+        // One corner is 2 voxels higher — exceeds tolerance.
+        let world = hilly_world(10, 10, 10, &[(4, 4, 2)]);
+        assert!(
+            !is_large_node_valid(&world, 3, 3),
+            "2-voxel height difference within footprint should be invalid",
+        );
+        assert_eq!(
+            large_node_surface_y(&world, 3, 3),
+            None,
+            "large_node_surface_y should return None for 2-voxel step",
+        );
+    }
+
+    #[test]
+    fn large_edge_valid_between_different_heights() {
+        // Two adjacent anchors at heights differing by 1 should connect.
+        // Ramp: columns x<=1 at y=0, columns x>=2 at y=1.
+        // Anchor (0, 0): footprint (0,0),(1,0),(0,1),(1,1) all at y=0 → surface_y=1.
+        // Anchor (1, 0): footprint (1,0),(2,0),(1,1),(2,1) → mixed y=0/y=1 → surface_y=2.
+        let world = hilly_world(
+            10,
+            10,
+            10,
+            &[
+                (2, 0, 1),
+                (2, 1, 1),
+                (3, 0, 1),
+                (3, 1, 1),
+                (4, 0, 1),
+                (4, 1, 1),
+                (5, 0, 1),
+                (5, 1, 1),
+                (6, 0, 1),
+                (6, 1, 1),
+                (7, 0, 1),
+                (7, 1, 1),
+                (8, 0, 1),
+                (8, 1, 1),
+                (9, 0, 1),
+                (9, 1, 1),
+            ],
+        );
+
+        let from_y = large_node_surface_y(&world, 0, 0);
+        let to_y = large_node_surface_y(&world, 1, 0);
+        assert_eq!(from_y, Some(1));
+        assert_eq!(to_y, Some(2));
+
+        assert!(
+            is_large_edge_valid(&world, (0, 0), (1, 0)),
+            "Edge between nodes at heights 1 and 2 should be valid",
+        );
+    }
+
+    #[test]
+    fn large_edge_invalid_between_heights_too_far() {
+        // Two anchors with surface y differing by 2 should NOT connect.
+        // Anchor (0, 0): all columns at y=0 → surface_y=1.
+        // Anchor (5, 0): all columns raised to y=2 → surface_y=3.
+        // (Non-adjacent, but is_large_edge_valid is a pure geometric check.)
+        let world = hilly_world(10, 10, 10, &[(5, 0, 2), (6, 0, 2), (5, 1, 2), (6, 1, 2)]);
+
+        let from_y = large_node_surface_y(&world, 0, 0);
+        let to_y = large_node_surface_y(&world, 5, 0);
+        assert_eq!(from_y, Some(1));
+        assert_eq!(to_y, Some(3));
+
+        assert!(
+            !is_large_edge_valid(&world, (0, 0), (5, 0)),
+            "Edge between nodes at heights 1 and 3 should be invalid",
+        );
+    }
+
+    #[test]
+    fn large_edge_distance_includes_height() {
+        // Edge between anchors at different heights should include dy in distance.
+        // Same ramp as large_edge_valid_between_different_heights.
+        // Anchor (0, 0) at surface_y=1, anchor (1, 0) at surface_y=2.
+        // dx=1, dy=1, dz=0 → distance = sqrt(1+1+0) = sqrt(2) ≈ 1.414.
+        let world = hilly_world(
+            10,
+            10,
+            10,
+            &[
+                (2, 0, 1),
+                (2, 1, 1),
+                (3, 0, 1),
+                (3, 1, 1),
+                (4, 0, 1),
+                (4, 1, 1),
+                (5, 0, 1),
+                (5, 1, 1),
+                (6, 0, 1),
+                (6, 1, 1),
+                (7, 0, 1),
+                (7, 1, 1),
+                (8, 0, 1),
+                (8, 1, 1),
+                (9, 0, 1),
+                (9, 1, 1),
+            ],
+        );
+        let graph = build_large_nav_graph(&world);
+
+        // Find node at anchor (0, 0) with surface_y=1.
+        let from_node = graph
+            .live_nodes()
+            .find(|n| n.position.x == 0 && n.position.z == 0 && n.position.y == 1)
+            .expect("Should have node at anchor (0, 0)");
+        let to_pos = VoxelCoord::new(1, 2, 0);
+
+        let edge = from_node.edge_indices.iter().find_map(|&idx| {
+            let e = graph.edge(idx);
+            if graph.node(e.to).position == to_pos {
+                Some(e)
+            } else {
+                None
+            }
+        });
+        let edge = edge.expect("Should have edge from (0,0) to (1,0)");
+
+        // dx=1, dy=1, dz=0 → sqrt(2)
+        let expected = (2.0_f32).sqrt();
+        assert!(
+            (edge.distance - expected).abs() < 0.001,
+            "Edge distance should be sqrt(2) ≈ {expected}, got {}",
+            edge.distance,
+        );
     }
 
     // --- Building face awareness tests ---

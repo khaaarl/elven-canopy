@@ -143,6 +143,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
+[x] F-large-nav-tolerance  1-voxel height tolerance for large nav
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-main-menu            Main menu UI
 [x] F-move-interp          Smooth creature movement interpolation
@@ -475,6 +476,14 @@ Separate pre-baked `NavGraph` for 2x2x2 footprint creatures (elephants).
 Nodes only where a 2x2x2 volume is clear and all 4 ground cells are solid.
 Includes `Species::Elephant`, `graph_for_species()` dispatch, incremental
 updates, SimBridge queries, GDScript spawn/render/placement, and sprite.
+
+#### F-large-nav-tolerance — 1-voxel height tolerance for large nav
+**Status:** Done · **Phase:** 8+
+
+Allow up to 1 voxel of height variation within a large creature's 2x2
+footprint and between adjacent large nav nodes. Fixes elephant navigation
+on hilly terrain (F-hilly-terrain) where variable-height dirt voxels
+fragmented the large nav graph.
 
 #### F-nav-graph — Navigation graph construction
 **Status:** Done · **Phase:** 1 · **Refs:** §10
