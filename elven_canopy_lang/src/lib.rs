@@ -26,12 +26,10 @@ pub mod types;
 // Re-export key types at crate root for convenience.
 pub use types::{LexEntry, NameTag, PartOfSpeech, Syllable, SyllableDef, Tone, VowelClass, Word};
 
-use types::LexEntry as LexEntryType;
-
 /// The top-level JSON structure for the lexicon file.
 #[derive(Debug, serde::Deserialize)]
 struct LexiconFile {
-    words: Vec<LexEntryType>,
+    words: Vec<LexEntry>,
 }
 
 /// A loaded Vaelith lexicon with query methods.
@@ -41,7 +39,7 @@ struct LexiconFile {
 /// in the music crate's brightness-biased word selection).
 #[derive(Debug, Clone)]
 pub struct Lexicon {
-    entries: Vec<LexEntryType>,
+    entries: Vec<LexEntry>,
 }
 
 impl Lexicon {

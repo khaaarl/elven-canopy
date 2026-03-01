@@ -11,6 +11,7 @@
 // Depends on `types.rs` for `LexEntry`/`NameTag` and `lib.rs` for `Lexicon`.
 
 use crate::Lexicon;
+use crate::types::LexEntry;
 use crate::types::NameTag;
 use elven_canopy_prng::GameRng;
 
@@ -54,7 +55,7 @@ pub fn generate_name(lexicon: &Lexicon, rng: &mut GameRng) -> VaelithName {
 
 /// Generate one name part (given or surname) from a pool of entries.
 /// Returns (name_text, meaning).
-fn generate_name_part(pool: &[&crate::types::LexEntry], rng: &mut GameRng) -> (String, String) {
+fn generate_name_part(pool: &[&LexEntry], rng: &mut GameRng) -> (String, String) {
     if pool.is_empty() {
         return ("Unnamed".to_string(), "unknown".to_string());
     }
@@ -148,7 +149,6 @@ mod tests {
     fn test_generate_name_capitalized() {
         let json = include_str!("../../data/vaelith_lexicon.json");
         let lexicon = Lexicon::from_json(json).unwrap();
-        let mut rng = GameRng::new(99);
 
         for seed in 0..20 {
             let mut rng = GameRng::new(seed);
@@ -164,8 +164,6 @@ mod tests {
                 name.surname
             );
         }
-        // Use the rng we declared
-        let _ = generate_name(&lexicon, &mut rng);
     }
 
     #[test]
