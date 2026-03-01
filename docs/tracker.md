@@ -96,7 +96,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-variety        Food storage, cooking, magical brewing
-[ ] F-furnishing           Building furnishing framework
 [ ] F-hauling              Item hauling task type
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-items                Items and inventory system
@@ -139,6 +138,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tree-memory          Ancient tree knowledge/vision system
 [ ] F-tree-species         Multiple tree species with properties
 [ ] F-undo-designate       Undo last construction designation
+[ ] F-unfurnish            Unfurnish/refurnish a building
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-visual-smooth        Smooth voxel surface rendering
 [ ] F-weather              Weather within seasons
@@ -165,6 +165,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-elf-sprite           Billboard elf sprite rendering
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-food-gauge           Creature food gauge with decay
+[x] F-furnish              Building furnishing framework (dormitories)
 [x] F-game-session         Game session autoload singleton
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-godot-setup          Godot 4 project setup
@@ -226,7 +227,7 @@ mechanics uncertain — may involve assigned musician elves, scheduled
 performances, audience satisfaction, or ties to the music system.
 Details to be worked out in a design doc.
 
-**Blocked by:** F-furnishing
+**Blocked by:** F-furnish
 **Related:** F-bldg-dining, F-music-runtime
 
 #### F-bldg-dining — Dining hall
@@ -235,7 +236,7 @@ Details to be worked out in a design doc.
 Communal dining building where elves eat together. Provides a social
 eating bonus compared to eating alone.
 
-**Blocked by:** F-furnishing
+**Blocked by:** F-furnish
 **Related:** F-bldg-concert, F-bldg-kitchen, F-food-chain
 
 #### F-bldg-dormitory — Dormitory (unassigned elf sleep)
@@ -244,7 +245,7 @@ eating bonus compared to eating alone.
 Communal sleeping building for elves without assigned homes. Any elf not
 assigned to a specific Home can sleep here.
 
-**Blocked by:** F-furnishing
+**Blocked by:** F-furnish
 **Blocks:** F-elf-needs
 **Related:** F-bldg-home
 
@@ -255,7 +256,7 @@ Personal dwelling for a single elf (families in the future). The player
 assigns which elf lives in each home. Provides rest and comfort need
 satisfaction.
 
-**Blocked by:** F-furnishing
+**Blocked by:** F-furnish
 **Related:** F-bldg-dormitory, F-elf-needs
 
 #### F-bldg-kitchen — Kitchen (cooking from ingredients)
@@ -264,7 +265,7 @@ satisfaction.
 Building where elves convert raw ingredients into processed foods (e.g.,
 one large fruit into many shelf-stable breads).
 
-**Blocked by:** F-furnishing, F-items
+**Blocked by:** F-furnish, F-items
 **Related:** F-bread, F-fruit-variety
 
 #### F-bldg-storehouse — Storehouse (item storage)
@@ -273,7 +274,7 @@ one large fruit into many shelf-stable breads).
 Building for storing items and resources. Items placed inside persist
 and are accessible to elves for retrieval.
 
-**Blocked by:** F-furnishing, F-items
+**Blocked by:** F-furnish, F-items
 **Related:** F-food-chain, F-logistics
 
 #### F-bldg-workshop — Craftself's workshop
@@ -282,7 +283,7 @@ and are accessible to elves for retrieval.
 Workshop where craftself elves create tools and equipment (bows, spears,
 and other gear).
 
-**Blocked by:** F-furnishing, F-items
+**Blocked by:** F-furnish, F-items
 **Related:** F-crafting, F-elf-weapons
 
 #### F-blueprint-mode — Layer-based blueprint selection UI
@@ -330,8 +331,7 @@ lifecycle: designate, build (incremental voxel materialization by elves),
 cancel (reverts voxels and face data). Save/load preserves buildings.
 
 **New files:** `building.rs`, `building_renderer.gd`
-
-**Related:** F-construction, F-furnishing
+**Related:** F-construction, F-furnish
 
 #### F-carve-holes — Remove material (doors, storage hollows)
 **Status:** Done · **Phase:** 3 · **Refs:** §11
@@ -375,19 +375,23 @@ load-bearing structure could affect structures above it (warn or block).
 
 **Related:** F-carve-holes, F-cascade-fail, F-construction, F-select-struct
 
-#### F-furnishing — Building furnishing framework
-**Status:** Todo · **Phase:** 3 · **Refs:** §11
+#### F-furnish — Building furnishing framework (dormitories)
+**Status:** Done · **Phase:** 3 · **Refs:** §11
 
 Framework for assigning purpose to generic building shells. Buildings
 start as empty enclosed spaces (from F-building) and are furnished to
-become specific building types (homes, dormitories, workshops, etc.).
-Defines what makes each building type functional: required interior size,
-placed furniture objects, and behavior hooks. Individual building types
-(F-bldg-home, F-bldg-dormitory, etc.) depend on this framework.
-Structures track whether they are furnished and what type they are.
+become specific building types (dormitories first, then homes, workshops,
+etc.). An elf is dispatched to furnish the building, placing beds (or
+other furniture) one at a time as a `Furnish` task. Currently implements
+the Dormitory furnishing type: player clicks Furnish → Dormitory on a
+building's info panel, an elf walks there and incrementally places beds
+(rendered as MultiMesh boxes via `bed_renderer.gd`). Bed count is
+proportional to floor area (~1 per 2 floor tiles). Auto-renames the
+building to "Dormitory #N" unless the player has set a custom name.
 
+**New files:** `bed_renderer.gd`
 **Blocks:** F-bldg-concert, F-bldg-dining, F-bldg-dormitory, F-bldg-home, F-bldg-kitchen, F-bldg-storehouse, F-bldg-workshop, F-elf-assign
-**Related:** F-building
+**Related:** F-building, F-unfurnish
 
 #### F-ladders — Rope/wood ladders as cheap connectors
 **Status:** Done · **Phase:** 3 · **Refs:** §11
@@ -483,6 +487,18 @@ manually selecting and cancelling. A simple undo stack (last-in-first-out)
 for designations would prevent frustration from placement mistakes.
 
 **Related:** F-construction
+
+#### F-unfurnish — Unfurnish/refurnish a building
+**Status:** Todo · **Phase:** 3
+
+Remove a building's furnishing, reverting it to an empty shell. Also
+enables refurnishing — changing a dormitory into a workshop, for example.
+Should remove placed furniture objects (beds, etc.) and reset the
+building's furnishing type. May require an Unfurnish task where an elf
+walks to the building and removes furniture incrementally.
+
+**Blocked by:** F-furnish
+**Related:** F-furnish, F-demolish
 
 #### F-visual-smooth — Smooth voxel surface rendering
 **Status:** Todo · **Phase:** 2 · **Refs:** §8
@@ -722,7 +738,7 @@ here), kitchens (which elf is the cook), workshops (which elf is the
 craftself), etc. A shared pattern rather than reimplemented per building
 type.
 
-**Blocked by:** F-furnishing
+**Blocked by:** F-furnish
 **Related:** F-bldg-home, F-bldg-kitchen, F-bldg-workshop, F-jobs, F-select-struct
 
 #### F-elf-needs — Hunger and rest self-direction

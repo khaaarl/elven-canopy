@@ -51,7 +51,7 @@
 // **Critical constraint: determinism.** Tasks are stored in `BTreeMap` and
 // iterated in deterministic order. Task IDs come from the sim PRNG.
 
-use crate::types::{CreatureId, NavNodeId, ProjectId, Species, TaskId, VoxelCoord};
+use crate::types::{CreatureId, NavNodeId, ProjectId, Species, StructureId, TaskId, VoxelCoord};
 use serde::{Deserialize, Serialize};
 
 /// The type of work a task represents. Each variant carries kind-specific data
@@ -69,6 +69,11 @@ pub enum TaskKind {
     /// `food_hunger_threshold_pct`. The `fruit_pos` is the voxel coordinate
     /// of the fruit to consume (removed from world on arrival).
     EatFruit { fruit_pos: VoxelCoord },
+    /// Furnish a completed building. The elf walks to the building interior,
+    /// then does incremental work. Each `furnish_work_ticks_per_bed` units of
+    /// progress, one bed is placed from the structure's `planned_beds` into
+    /// `bed_positions`.
+    Furnish { structure_id: StructureId },
 }
 
 /// Lifecycle state of a task.

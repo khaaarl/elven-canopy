@@ -40,6 +40,9 @@
 //   thin wrappers). Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
 //   `designate_build_rect(x,y,z,width,depth)` — each constructs a
 //   `SimCommand` and immediately steps the sim by one tick to apply it.
+//   `furnish_structure(structure_id, furnishing_type)` begins furnishing a
+//   completed building. `get_bed_positions()` returns flat (x,y,z) triples
+//   of placed beds for rendering.
 // - **Construction:** `validate_build_position(x,y,z)` checks whether a
 //   voxel is valid for building (Air + adjacent to solid) — used for
 //   single-voxel preview. `validate_build_air(x,y,z)` checks only
@@ -108,8 +111,8 @@ use elven_canopy_sim::sim::SimState;
 use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::TaskState;
 use elven_canopy_sim::types::{
-    BuildType, FaceDirection, LadderKind, OverlapClassification, Priority, Species, StructureId,
-    VoxelCoord, VoxelType,
+    BuildType, FaceDirection, FurnishingType, LadderKind, OverlapClassification, Priority, Species,
+    StructureId, VoxelCoord, VoxelType,
 };
 use godot::prelude::*;
 
@@ -720,6 +723,7 @@ impl SimBridge {
                 elven_canopy_sim::task::TaskKind::GoTo => "GoTo",
                 elven_canopy_sim::task::TaskKind::Build { .. } => "Build",
                 elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
+                elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
             };
             dict.set("kind", GString::from(kind_str));
 
@@ -864,6 +868,28 @@ impl SimBridge {
         dict.set("depth", structure.depth);
         dict.set("height", structure.height);
         dict.set("completed_tick", structure.completed_tick as i64);
+
+        // Furnishing data.
+        let furnishing_str = match &structure.furnishing {
+            Some(FurnishingType::Dormitory) => "Dormitory",
+            None => "",
+        };
+        dict.set("furnishing", GString::from(furnishing_str));
+        dict.set("bed_count", structure.bed_positions.len() as i64);
+        dict.set(
+            "planned_bed_count",
+            (structure.bed_positions.len() + structure.planned_beds.len()) as i64,
+        );
+        // Check if there's an active Furnish task for this structure.
+        let is_furnishing = sim.tasks.values().any(|t| {
+            matches!(
+                &t.kind,
+                elven_canopy_sim::task::TaskKind::Furnish { structure_id }
+                    if *structure_id == sid
+            ) && t.state != elven_canopy_sim::task::TaskState::Complete
+        });
+        dict.set("is_furnishing", is_furnishing);
+
         dict
     }
 
@@ -2214,6 +2240,39 @@ impl SimBridge {
         {
             godot_error!("SimBridge: send_chat failed: {e}");
         }
+    }
+
+    /// Begin furnishing a completed building. `furnishing_type` is a string
+    /// ("Dormitory"). Ignored if the structure is not a building or already
+    /// furnished.
+    #[func]
+    fn furnish_structure(&mut self, structure_id: i64, furnishing_type: GString) {
+        let ft = match furnishing_type.to_string().as_str() {
+            "Dormitory" => FurnishingType::Dormitory,
+            _ => return,
+        };
+        self.apply_or_send(SimAction::FurnishStructure {
+            structure_id: StructureId(structure_id as u64),
+            furnishing_type: ft,
+        });
+    }
+
+    /// Return all placed bed positions across all structures as a flat
+    /// PackedInt32Array of (x, y, z) triples. Used by bed_renderer.gd.
+    #[func]
+    fn get_bed_positions(&self) -> PackedInt32Array {
+        let Some(sim) = &self.sim else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for structure in sim.structures.values() {
+            for bed in &structure.bed_positions {
+                arr.push(bed.x);
+                arr.push(bed.y);
+                arr.push(bed.z);
+            }
+        }
+        arr
     }
 }
 

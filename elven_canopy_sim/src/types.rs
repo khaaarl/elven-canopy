@@ -271,6 +271,12 @@ pub enum LadderKind {
     Rope,
 }
 
+/// Types of furnishing that can be applied to a completed building.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum FurnishingType {
+    Dormitory,
+}
+
 /// Types of structures that can be built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildType {

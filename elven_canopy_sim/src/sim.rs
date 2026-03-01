@@ -648,6 +648,12 @@ impl SimState {
                     structure.name = name.clone();
                 }
             }
+            SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type,
+            } => {
+                self.furnish_structure(*structure_id, *furnishing_type);
+            }
         }
     }
 
@@ -1575,6 +1581,10 @@ impl SimState {
                 self.do_build_work(creature_id, task_id, project_id);
                 return; // do_build_work handles its own next-activation scheduling.
             }
+            task::TaskKind::Furnish { structure_id } => {
+                self.do_furnish_work(creature_id, task_id, structure_id);
+                return; // do_furnish_work handles its own next-activation scheduling.
+            }
         }
 
         // Schedule next activation (creature is now idle, will wander or pick
@@ -2311,6 +2321,114 @@ impl SimState {
         }
 
         self.complete_task(task_id);
+    }
+
+    // -----------------------------------------------------------------------
+    // Furnishing — assign function to completed buildings
+    // -----------------------------------------------------------------------
+
+    /// Start furnishing a completed building. Validates the structure is a
+    /// building with no existing furnishing, computes bed positions, sets the
+    /// furnishing type, auto-renames if no custom name, and creates a Furnish
+    /// task for an elf to work on.
+    fn furnish_structure(&mut self, structure_id: StructureId, furnishing_type: FurnishingType) {
+        // Validate: structure exists, is a Building, and has no furnishing yet.
+        let structure = match self.structures.get(&structure_id) {
+            Some(s) => s,
+            None => return,
+        };
+        if structure.build_type != BuildType::Building {
+            return;
+        }
+        if structure.furnishing.is_some() {
+            return;
+        }
+
+        // Compute bed positions.
+        let planned_beds = structure.compute_bed_positions(&mut self.rng);
+        if planned_beds.is_empty() {
+            return;
+        }
+        let planned_count = planned_beds.len();
+
+        // Set furnishing type and planned beds on the structure.
+        let structure = self.structures.get_mut(&structure_id).unwrap();
+        structure.furnishing = Some(furnishing_type);
+        structure.planned_beds = planned_beds;
+
+        // Find a nav node inside the building to use as the task location.
+        let interior_pos = structure.floor_interior_positions();
+        let task_pos = interior_pos.first().copied().unwrap_or(structure.anchor);
+        let location = match self.nav_graph.find_nearest_node(task_pos) {
+            Some(n) => n,
+            None => return,
+        };
+
+        // Create the Furnish task.
+        let ticks_per_bed = self.config.furnish_work_ticks_per_bed;
+        let total_cost = (ticks_per_bed as f32) * (planned_count as f32);
+        let task_id = TaskId::new(&mut self.rng);
+        let new_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::Furnish { structure_id },
+            state: task::TaskState::Available,
+            location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost,
+            required_species: Some(Species::Elf),
+        };
+        self.tasks.insert(task_id, new_task);
+    }
+
+    /// Perform one activation's worth of furnishing work on a building.
+    ///
+    /// Follows the same pattern as `do_build_work()`: increments progress,
+    /// and every `furnish_work_ticks_per_bed` units, one bed is placed from
+    /// the structure's `planned_beds` into `bed_positions`. When all beds
+    /// are placed, the task completes.
+    fn do_furnish_work(
+        &mut self,
+        creature_id: CreatureId,
+        task_id: TaskId,
+        structure_id: StructureId,
+    ) {
+        let ticks_per_bed = self.config.furnish_work_ticks_per_bed as f32;
+
+        // Increment progress.
+        let task = match self.tasks.get_mut(&task_id) {
+            Some(t) => t,
+            None => return,
+        };
+        let old_progress = task.progress;
+        task.progress += 1.0;
+        let new_progress = task.progress;
+        let total_cost = task.total_cost;
+
+        // Check if we crossed a bed-placement threshold.
+        let old_beds = (old_progress / ticks_per_bed).floor() as usize;
+        let new_beds = (new_progress / ticks_per_bed).floor() as usize;
+
+        if new_beds > old_beds {
+            // Place the next bed.
+            if let Some(structure) = self.structures.get_mut(&structure_id)
+                && let Some(bed_pos) = structure.planned_beds.first().copied()
+            {
+                structure.planned_beds.remove(0);
+                structure.bed_positions.push(bed_pos);
+            }
+        }
+
+        // Check if furnishing is complete.
+        if new_progress >= total_cost {
+            self.complete_task(task_id);
+        }
+
+        // Schedule next activation.
+        self.event_queue.schedule(
+            self.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
     }
 
     /// After a nav graph rebuild, re-resolve every creature's `current_node`
@@ -7310,6 +7428,133 @@ mod tests {
         );
     }
 
+    // --- Furnishing tests ---
+
+    /// Insert a completed building into the sim's structures. Returns the
+    /// StructureId. The `anchor` parameter is the foundation level (solid
+    /// ground); the CompletedStructure's anchor is set one level higher to
+    /// match `from_blueprint()`, which computes the bounding box from the
+    /// BuildingInterior voxels (not the foundation). The building is 3x3x1
+    /// with solid foundation below and BuildingInterior above.
+    fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) -> StructureId {
+        let id = StructureId(sim.next_structure_id);
+        sim.next_structure_id += 1;
+
+        // Place BuildingInterior voxels in the world and record face data.
+        // compute_building_face_layout treats `anchor` as foundation level
+        // and creates interior voxels at anchor.y + 1.
+        let face_layout = crate::building::compute_building_face_layout(anchor, 3, 3, 1);
+        for (&coord, fd) in &face_layout {
+            sim.world.set(coord, VoxelType::BuildingInterior);
+            sim.face_data.insert(coord, fd.clone());
+            sim.face_data_list.push((coord, fd.clone()));
+            sim.placed_voxels.push((coord, VoxelType::BuildingInterior));
+            sim.structure_voxels.insert(coord, id);
+        }
+
+        // Place the foundation as solid GrownWall underneath.
+        for z in anchor.z..anchor.z + 3 {
+            for x in anchor.x..anchor.x + 3 {
+                let foundation = VoxelCoord::new(x, anchor.y, z);
+                if sim.world.get(foundation) == VoxelType::Air {
+                    sim.world.set(foundation, VoxelType::GrownWall);
+                    sim.placed_voxels.push((foundation, VoxelType::GrownWall));
+                }
+            }
+        }
+
+        // The CompletedStructure anchor is the bounding-box min of the
+        // blueprint voxels (BuildingInterior), which is one above foundation.
+        let interior_anchor = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z);
+
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id,
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Building,
+            anchor: interior_anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            completed_tick: sim.tick,
+            name: None,
+            furnishing: None,
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
+        };
+        sim.structures.insert(id, structure);
+
+        // Rebuild nav graph so there are nav nodes inside the building.
+        sim.nav_graph = nav::build_nav_graph(&sim.world, &sim.face_data);
+
+        id
+    }
+
+    #[test]
+    fn compute_bed_positions_3x3_building() {
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id: StructureId(0),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Building,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 3,
+            depth: 3,
+            height: 1,
+            completed_tick: 0,
+            name: None,
+            furnishing: None,
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
+        };
+
+        let beds = structure.compute_bed_positions(&mut rng);
+
+        // 3x3 = 9 floor tiles, target ~4 beds. Door at (1,0,2) and its
+        // neighbors are excluded, so fewer eligible positions.
+        assert!(!beds.is_empty());
+        // All beds should be at y=0 (anchor.y, the interior level).
+        for bed in &beds {
+            assert_eq!(bed.y, 0);
+        }
+        // No bed should be at the door position.
+        let door = VoxelCoord::new(1, 0, 2);
+        assert!(!beds.contains(&door));
+    }
+
+    #[test]
+    fn compute_bed_positions_5x5_building() {
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id: StructureId(0),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Building,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 5,
+            depth: 5,
+            height: 1,
+            completed_tick: 0,
+            name: None,
+            furnishing: None,
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
+        };
+
+        let beds = structure.compute_bed_positions(&mut rng);
+
+        // 5x5 = 25 floor tiles, target ~12 beds.
+        assert!(
+            beds.len() >= 8,
+            "Expected at least 8 beds for 5x5 building, got {}",
+            beds.len()
+        );
+        assert!(
+            beds.len() <= 12,
+            "Expected at most 12 beds for 5x5 building, got {}",
+            beds.len()
+        );
+    }
+
     #[test]
     fn state_checksum_changes_after_mutation() {
         let mut sim = test_sim(42);
@@ -7333,5 +7578,385 @@ mod tests {
             before, after,
             "checksum should change after spawning a creature"
         );
+    }
+
+    #[test]
+    fn display_name_dormitory_when_furnished() {
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id: StructureId(7),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Building,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 3,
+            depth: 3,
+            height: 1,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::Dormitory),
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
+        };
+
+        assert_eq!(structure.display_name(), "Dormitory #7");
+    }
+
+    #[test]
+    fn display_name_custom_overrides_dormitory() {
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id: StructureId(7),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Building,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 3,
+            depth: 3,
+            height: 1,
+            completed_tick: 0,
+            name: Some("Starlight Hall".to_string()),
+            furnishing: Some(FurnishingType::Dormitory),
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
+        };
+
+        assert_eq!(structure.display_name(), "Starlight Hall");
+    }
+
+    #[test]
+    fn furnish_structure_creates_task() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Dormitory,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        // Should have created a Furnish task.
+        let furnish_tasks: Vec<_> = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Furnish { .. }))
+            .collect();
+        assert_eq!(furnish_tasks.len(), 1);
+        let task = furnish_tasks[0];
+        assert_eq!(task.state, TaskState::Available);
+        assert_eq!(task.required_species, Some(Species::Elf));
+
+        // Structure should have furnishing set and planned beds computed.
+        let structure = &sim.structures[&structure_id];
+        assert_eq!(structure.furnishing, Some(FurnishingType::Dormitory));
+        assert!(!structure.planned_beds.is_empty());
+        assert!(structure.bed_positions.is_empty());
+
+        // Total cost should be planned_beds * furnish_work_ticks_per_bed.
+        let expected_cost =
+            structure.planned_beds.len() as f32 * sim.config.furnish_work_ticks_per_bed as f32;
+        assert_eq!(task.total_cost, expected_cost);
+    }
+
+    #[test]
+    fn furnish_structure_display_name_changes() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        // Before furnishing: "Building #N"
+        assert_eq!(
+            sim.structures[&structure_id].display_name(),
+            format!("Building #{}", structure_id.0)
+        );
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Dormitory,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        // After furnishing: "Dormitory #N"
+        assert_eq!(
+            sim.structures[&structure_id].display_name(),
+            format!("Dormitory #{}", structure_id.0)
+        );
+    }
+
+    #[test]
+    fn furnish_preserves_custom_name() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        // Give it a custom name first.
+        let rename_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::RenameStructure {
+                structure_id,
+                name: Some("Starlight Hall".to_string()),
+            },
+        };
+        sim.step(&[rename_cmd], sim.tick + 1);
+        assert_eq!(
+            sim.structures[&structure_id].display_name(),
+            "Starlight Hall"
+        );
+
+        // Furnish as dormitory — custom name should be preserved.
+        let furnish_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Dormitory,
+            },
+        };
+        sim.step(&[furnish_cmd], sim.tick + 1);
+
+        assert_eq!(
+            sim.structures[&structure_id].furnishing,
+            Some(FurnishingType::Dormitory)
+        );
+        assert_eq!(
+            sim.structures[&structure_id].display_name(),
+            "Starlight Hall"
+        );
+    }
+
+    #[test]
+    fn furnish_rejects_non_building() {
+        let mut sim = test_sim(42);
+
+        // Insert a platform structure (not a Building).
+        let id = StructureId(sim.next_structure_id);
+        sim.next_structure_id += 1;
+        let mut rng = GameRng::new(99);
+        let structure = CompletedStructure {
+            id,
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Platform,
+            anchor: VoxelCoord::new(10, 5, 10),
+            width: 3,
+            depth: 3,
+            height: 1,
+            completed_tick: 0,
+            name: None,
+            furnishing: None,
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
+        };
+        sim.structures.insert(id, structure);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id: id,
+                furnishing_type: FurnishingType::Dormitory,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        // Should NOT have created a task or set furnishing.
+        assert!(
+            sim.tasks
+                .values()
+                .all(|t| !matches!(t.kind, TaskKind::Furnish { .. }))
+        );
+        assert_eq!(sim.structures[&id].furnishing, None);
+    }
+
+    #[test]
+    fn furnish_rejects_already_furnished() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        // Furnish once.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Dormitory,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+        assert_eq!(
+            sim.tasks
+                .values()
+                .filter(|t| matches!(t.kind, TaskKind::Furnish { .. }))
+                .count(),
+            1
+        );
+
+        // Try to furnish again.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Dormitory,
+            },
+        };
+        sim.step(&[cmd2], sim.tick + 1);
+
+        // Should still have exactly one Furnish task (second was rejected).
+        assert_eq!(
+            sim.tasks
+                .values()
+                .filter(|t| matches!(t.kind, TaskKind::Furnish { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn do_furnish_work_places_beds_incrementally() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        // Furnish the building.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Dormitory,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let planned_count = sim.structures[&structure_id].planned_beds.len();
+        assert!(planned_count > 0);
+
+        // Spawn an elf near the building so it can claim the task.
+        let spawn_pos = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z + 3);
+        let spawn_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: spawn_pos,
+            },
+        };
+        sim.step(&[spawn_cmd], sim.tick + 1);
+
+        // Run the sim long enough for the elf to walk there and place at
+        // least one bed. furnish_work_ticks_per_bed = 2000, so after ~3000
+        // ticks (walk + first bed), we should see progress.
+        let ticks_per_bed = sim.config.furnish_work_ticks_per_bed;
+        let advance_ticks = ticks_per_bed * 3 + 5000; // generous for walking
+        sim.step(&[], sim.tick + advance_ticks);
+
+        let structure = &sim.structures[&structure_id];
+        assert!(
+            !structure.bed_positions.is_empty(),
+            "Expected at least one bed placed after {} ticks, got 0. planned={}",
+            advance_ticks,
+            planned_count
+        );
+    }
+
+    #[test]
+    fn furnish_completes_all_beds() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        // Furnish the building.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Dormitory,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let total_planned = sim.structures[&structure_id].planned_beds.len()
+            + sim.structures[&structure_id].bed_positions.len();
+        assert!(total_planned > 0);
+
+        // Spawn an elf near the building.
+        let spawn_pos = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z + 3);
+        let spawn_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: spawn_pos,
+            },
+        };
+        sim.step(&[spawn_cmd], sim.tick + 1);
+
+        // Run long enough for all beds to be placed.
+        let ticks_per_bed = sim.config.furnish_work_ticks_per_bed;
+        let advance_ticks = ticks_per_bed * (total_planned as u64 + 2) + 10000;
+        sim.step(&[], sim.tick + advance_ticks);
+
+        let structure = &sim.structures[&structure_id];
+        assert_eq!(
+            structure.bed_positions.len(),
+            total_planned,
+            "Expected all {} beds placed, got {}",
+            total_planned,
+            structure.bed_positions.len()
+        );
+        assert!(
+            structure.planned_beds.is_empty(),
+            "Expected planned_beds empty after completion"
+        );
+
+        // The Furnish task should be complete.
+        let furnish_tasks: Vec<_> = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Furnish { .. }))
+            .collect();
+        assert!(
+            furnish_tasks.is_empty()
+                || furnish_tasks.iter().all(|t| t.state == TaskState::Complete),
+            "Furnish task should be Complete"
+        );
+    }
+
+    #[test]
+    fn furnish_serialization_roundtrip() {
+        let mut sim = test_sim(42);
+        let anchor = find_building_site(&sim);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        // Furnish the building.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Dormitory,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        // Serialize and restore.
+        let json = serde_json::to_string(&sim).unwrap();
+        let restored: SimState = serde_json::from_str(&json).unwrap();
+
+        let orig = &sim.structures[&structure_id];
+        let rest = &restored.structures[&structure_id];
+        assert_eq!(orig.furnishing, rest.furnishing);
+        assert_eq!(orig.planned_beds, rest.planned_beds);
+        assert_eq!(orig.bed_positions, rest.bed_positions);
     }
 }

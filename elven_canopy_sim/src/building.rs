@@ -25,12 +25,15 @@
 // ## Completed structure registry
 //
 // `CompletedStructure` records a completed build's metadata — type, bounding
-// box, completion tick, and optional user-editable name. Created by
-// `SimState::complete_build()` via `from_blueprint()` and stored in
-// `SimState::structures`. The structure list panel in the UI queries these
-// to show a browsable list of all completed constructions with
-// zoom-to-location. `display_name()` returns the custom name if set, or
-// an auto-generated default like "Platform #12".
+// box, completion tick, optional user-editable name, and optional furnishing
+// state. Created by `SimState::complete_build()` via `from_blueprint()` and
+// stored in `SimState::structures`. Buildings can be furnished (e.g. as
+// dormitories) via `SimAction::FurnishStructure`, which triggers incremental
+// bed placement tracked in `planned_beds` / `bed_positions`. The structure
+// list panel in the UI queries these to show a browsable list of all
+// completed constructions with zoom-to-location. `display_name()` returns
+// the custom name if set, or a furnishing-derived name like "Dormitory #7",
+// or a build-type default like "Platform #12".
 //
 // See also: `types.rs` for `FaceDirection`, `FaceType`, `FaceData`,
 // `VoxelCoord`, `StructureId`. `sim.rs` for the `DesignateBuilding` command
@@ -41,8 +44,10 @@
 // **Critical constraint: determinism.** Uses `BTreeMap` for output ordering.
 
 use crate::blueprint::Blueprint;
+use crate::prng::GameRng;
 use crate::types::{
-    BuildType, FaceData, FaceDirection, FaceType, ProjectId, StructureId, VoxelCoord,
+    BuildType, FaceData, FaceDirection, FaceType, FurnishingType, ProjectId, StructureId,
+    VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -71,6 +76,17 @@ pub struct CompletedStructure {
     /// without this field deserialize correctly.
     #[serde(default)]
     pub name: Option<String>,
+    /// The furnishing type applied to this building, if any.
+    #[serde(default)]
+    pub furnishing: Option<FurnishingType>,
+    /// Voxel positions of placed beds (grows incrementally during furnishing).
+    #[serde(default)]
+    pub bed_positions: Vec<VoxelCoord>,
+    /// All planned bed positions (computed when furnishing starts). The elf
+    /// works through these one at a time; as each is placed, it moves from
+    /// `planned_beds` to `bed_positions`.
+    #[serde(default)]
+    pub planned_beds: Vec<VoxelCoord>,
 }
 
 impl CompletedStructure {
@@ -90,6 +106,9 @@ impl CompletedStructure {
             height,
             completed_tick,
             name: None,
+            furnishing: None,
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
         }
     }
 
@@ -100,6 +119,13 @@ impl CompletedStructure {
     pub fn display_name(&self) -> String {
         if let Some(ref custom) = self.name {
             return custom.clone();
+        }
+        // Furnished buildings use the furnishing type as the display name.
+        if let Some(furnishing) = &self.furnishing {
+            let type_str = match furnishing {
+                FurnishingType::Dormitory => "Dormitory",
+            };
+            return format!("{} #{}", type_str, self.id.0);
         }
         let type_str = match self.build_type {
             BuildType::Platform => "Platform",
@@ -113,6 +139,78 @@ impl CompletedStructure {
             BuildType::Carve => "Carve",
         };
         format!("{} #{}", type_str, self.id.0)
+    }
+
+    /// Compute the ground-floor interior voxel positions.
+    ///
+    /// These are the voxels at y = anchor.y, spanning
+    /// x in [anchor.x .. anchor.x + width) and
+    /// z in [anchor.z .. anchor.z + depth). The anchor of a CompletedStructure
+    /// is the bounding-box minimum of the blueprint voxels, which for buildings
+    /// are the BuildingInterior voxels (one level above the foundation).
+    /// Only meaningful for Building structures.
+    pub fn floor_interior_positions(&self) -> Vec<VoxelCoord> {
+        let y = self.anchor.y;
+        let mut positions = Vec::new();
+        for z in self.anchor.z..self.anchor.z + self.depth {
+            for x in self.anchor.x..self.anchor.x + self.width {
+                positions.push(VoxelCoord::new(x, y, z));
+            }
+        }
+        positions
+    }
+
+    /// Choose bed positions for a dormitory furnishing.
+    ///
+    /// Picks positions from the ground-floor interior, skipping the door
+    /// position (center of +Z edge at ground level) and positions adjacent
+    /// to the door (to keep the doorway clear). Roughly 1 bed per 2 floor
+    /// tiles, minimum 1.
+    pub fn compute_bed_positions(&self, rng: &mut GameRng) -> Vec<VoxelCoord> {
+        let floor = self.floor_interior_positions();
+        if floor.is_empty() {
+            return Vec::new();
+        }
+
+        // Door is at center of +Z edge, ground level (same Y as anchor).
+        let door_x = self.anchor.x + self.width / 2;
+        let door_y = self.anchor.y;
+        let door_z = self.anchor.z + self.depth - 1;
+        let door_pos = VoxelCoord::new(door_x, door_y, door_z);
+
+        // Filter out door position and its immediate horizontal neighbors.
+        let eligible: Vec<VoxelCoord> = floor
+            .into_iter()
+            .filter(|pos| {
+                if *pos == door_pos {
+                    return false;
+                }
+                // Skip positions adjacent to door (manhattan distance 1 on xz plane).
+                let dx = (pos.x - door_pos.x).abs();
+                let dz = (pos.z - door_pos.z).abs();
+                dx + dz > 1
+            })
+            .collect();
+
+        if eligible.is_empty() {
+            return Vec::new();
+        }
+
+        // Target: 1 bed per 2 floor tiles, minimum 1, capped at eligible count.
+        let total_floor = (self.width * self.depth) as usize;
+        let target = (total_floor / 2).max(1).min(eligible.len());
+
+        // Shuffle eligible positions using the PRNG, then take the first `target`.
+        let mut shuffled = eligible;
+        for i in (1..shuffled.len()).rev() {
+            let j = rng.next_u64() as usize % (i + 1);
+            shuffled.swap(i, j);
+        }
+        shuffled.truncate(target);
+
+        // Sort for deterministic ordering (BTreeMap-friendly).
+        shuffled.sort();
+        shuffled
     }
 
     /// Compute the axis-aligned bounding box of a set of voxel coordinates.
@@ -381,6 +479,9 @@ mod tests {
             height: 1,
             completed_tick: 10000,
             name: None,
+            furnishing: None,
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
         };
 
         let json = serde_json::to_string(&structure).unwrap();
@@ -405,6 +506,9 @@ mod tests {
             height: 1,
             completed_tick: 100,
             name: None,
+            furnishing: None,
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
         };
         assert_eq!(structure.display_name(), "Platform #12");
     }
@@ -425,6 +529,9 @@ mod tests {
             height: 1,
             completed_tick: 100,
             name: Some("Starlight Bridge".to_string()),
+            furnishing: None,
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
         };
         assert_eq!(structure.display_name(), "Starlight Bridge");
 
@@ -461,6 +568,9 @@ mod tests {
                 height: 1,
                 completed_tick: 0,
                 name: None,
+                furnishing: None,
+                bed_positions: Vec::new(),
+                planned_beds: Vec::new(),
             };
             assert_eq!(structure.display_name(), expected);
         }
@@ -484,6 +594,9 @@ mod tests {
             height: 1,
             completed_tick: 100,
             name: Some("Custom".to_string()),
+            furnishing: None,
+            bed_positions: Vec::new(),
+            planned_beds: Vec::new(),
         };
         let mut value: serde_json::Value = serde_json::to_value(&structure).unwrap();
         value.as_object_mut().unwrap().remove("name");

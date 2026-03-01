@@ -2,13 +2,19 @@
 ##
 ## Shows information about the currently selected structure. Built
 ## programmatically as a PanelContainer with an editable name LineEdit,
-## type/ID labels, dimensions, position, and a Zoom button. Sits on the
-## CanvasLayer alongside the creature info panel.
+## type/ID labels, dimensions, position, a Zoom button, and furnishing
+## controls. Sits on the CanvasLayer alongside the creature info panel.
 ##
 ## The editable name LineEdit shows the structure's display name (custom or
 ## auto-generated). On Enter or focus loss, emits rename_requested so main.gd
 ## can call bridge.rename_structure(). Clearing the field resets to the
 ## auto-generated default.
+##
+## For Building-type structures without a furnishing, a "Furnish" button is
+## shown. Clicking it opens a sub-panel with furnishing type buttons (just
+## "Dormitory" for now). For buildings with a furnishing in progress, shows
+## progress ("Furnishing: Dormitory (3/8 beds)"). For fully furnished
+## buildings, shows "Dormitory (8 beds)".
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Updated every frame by main.gd while visible.
@@ -16,19 +22,23 @@
 ## See also: selection_controller.gd which triggers show/hide,
 ## creature_info_panel.gd for the creature equivalent,
 ## main.gd which wires everything together,
-## sim_bridge.rs for rename_structure().
+## sim_bridge.rs for rename_structure() and furnish_structure().
 
 extends PanelContainer
 
 signal zoom_requested(x: float, y: float, z: float)
 signal panel_closed
 signal rename_requested(structure_id: int, new_name: String)
+signal furnish_requested(structure_id: int, furnishing_type: String)
 
 var _name_edit: LineEdit
 var _type_label: Label
 var _id_label: Label
 var _dimensions_label: Label
 var _position_label: Label
+var _furnish_label: Label
+var _furnish_button: Button
+var _furnish_picker: VBoxContainer
 var _zoom_button: Button
 var _anchor_x: float = 0.0
 var _anchor_y: float = 0.0
@@ -99,6 +109,26 @@ func _ready() -> void:
 	_position_label = Label.new()
 	vbox.add_child(_position_label)
 
+	# Furnishing status label (visible when furnishing is set).
+	_furnish_label = Label.new()
+	vbox.add_child(_furnish_label)
+
+	# Furnish button (visible for unfurnished buildings).
+	_furnish_button = Button.new()
+	_furnish_button.text = "Furnish..."
+	_furnish_button.pressed.connect(_on_furnish_pressed)
+	vbox.add_child(_furnish_button)
+
+	# Furnishing type picker (hidden by default, shown when Furnish is clicked).
+	_furnish_picker = VBoxContainer.new()
+	_furnish_picker.visible = false
+	vbox.add_child(_furnish_picker)
+
+	var dormitory_btn := Button.new()
+	dormitory_btn.text = "Dormitory"
+	dormitory_btn.pressed.connect(_on_dormitory_pressed)
+	_furnish_picker.add_child(dormitory_btn)
+
 	# Spacer to push the zoom button toward the bottom-ish area.
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -151,6 +181,31 @@ func _update_info(info: Dictionary) -> void:
 		"Position: (%d, %d, %d)" % [int(_anchor_x), int(_anchor_y), int(_anchor_z)]
 	)
 
+	# Furnishing state.
+	var furnishing: String = info.get("furnishing", "")
+	var bed_count: int = info.get("bed_count", 0)
+	var planned_bed_count: int = info.get("planned_bed_count", 0)
+	var is_furnishing: bool = info.get("is_furnishing", false)
+
+	if furnishing != "":
+		if is_furnishing:
+			_furnish_label.text = (
+				"Furnishing: %s (%d/%d beds)" % [furnishing, bed_count, planned_bed_count]
+			)
+		else:
+			_furnish_label.text = "%s (%d beds)" % [furnishing, bed_count]
+		_furnish_label.visible = true
+		_furnish_button.visible = false
+		_furnish_picker.visible = false
+	elif build_type == "Building":
+		_furnish_label.visible = false
+		_furnish_button.visible = true
+		_furnish_picker.visible = false
+	else:
+		_furnish_label.visible = false
+		_furnish_button.visible = false
+		_furnish_picker.visible = false
+
 
 func _on_name_submitted(new_text: String) -> void:
 	_editing_name = false
@@ -169,6 +224,16 @@ func _on_name_focus_exited() -> void:
 
 func _on_zoom_pressed() -> void:
 	zoom_requested.emit(_anchor_x, _anchor_y, _anchor_z)
+
+
+func _on_furnish_pressed() -> void:
+	_furnish_picker.visible = not _furnish_picker.visible
+
+
+func _on_dormitory_pressed() -> void:
+	_furnish_picker.visible = false
+	if _current_structure_id >= 0:
+		furnish_requested.emit(_current_structure_id, "Dormitory")
 
 
 func _on_close_pressed() -> void:

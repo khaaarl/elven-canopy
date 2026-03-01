@@ -112,6 +112,11 @@ pub enum SimAction {
         structure_id: StructureId,
         name: Option<String>,
     },
+    /// Begin furnishing a completed building with the given type (e.g. Dormitory).
+    FurnishStructure {
+        structure_id: StructureId,
+        furnishing_type: FurnishingType,
+    },
 }
 
 #[cfg(test)]
