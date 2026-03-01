@@ -319,6 +319,7 @@ mod tests {
             task_id: None,
             face_layout: None,
             stress_warning: false,
+            original_voxels: Vec::new(),
         };
 
         let structure = CompletedStructure::from_blueprint(StructureId(0), &bp, 5000);

@@ -276,6 +276,18 @@ pub enum BuildType {
 }
 
 impl BuildType {
+    /// Returns true for structural build types that can overlap tree geometry.
+    ///
+    /// When true, designation allows Trunk/Branch/Root voxels (skipped) and
+    /// Leaf/Fruit voxels (converted during construction). When false, all
+    /// voxels must be Air (existing behavior).
+    pub fn allows_tree_overlap(self) -> bool {
+        matches!(
+            self,
+            BuildType::Platform | BuildType::Bridge | BuildType::Stairs
+        )
+    }
+
     /// Map a build type to the voxel type it produces when materialized.
     pub fn to_voxel_type(self) -> VoxelType {
         match self {
@@ -448,11 +460,45 @@ pub enum VoxelType {
     BuildingInterior,
 }
 
+/// Classification of a voxel for construction overlap with tree geometry.
+///
+/// Used by `designate_build()` when `BuildType::allows_tree_overlap()` is true
+/// to decide which voxels need blueprint entries, which are skipped, and which
+/// block placement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverlapClassification {
+    /// Air — normal blueprint voxel, will be built.
+    Exterior,
+    /// Leaf or Fruit — will be replaced with the target type during construction.
+    Convertible,
+    /// Trunk, Branch, or Root — already wood, skip (no blueprint voxel needed).
+    AlreadyWood,
+    /// ForestFloor, existing construction — blocks placement.
+    Blocked,
+}
+
 impl VoxelType {
     /// Returns `true` for any voxel type that blocks occupancy (not `Air` or
     /// `BuildingInterior`).
     pub fn is_solid(self) -> bool {
         !matches!(self, VoxelType::Air | VoxelType::BuildingInterior)
+    }
+
+    /// Classify this voxel type for construction overlap with tree geometry.
+    pub fn classify_for_overlap(self) -> OverlapClassification {
+        match self {
+            VoxelType::Air => OverlapClassification::Exterior,
+            VoxelType::Leaf | VoxelType::Fruit => OverlapClassification::Convertible,
+            VoxelType::Trunk | VoxelType::Branch | VoxelType::Root => {
+                OverlapClassification::AlreadyWood
+            }
+            VoxelType::ForestFloor
+            | VoxelType::GrownPlatform
+            | VoxelType::GrownWall
+            | VoxelType::GrownStairs
+            | VoxelType::Bridge
+            | VoxelType::BuildingInterior => OverlapClassification::Blocked,
+        }
     }
 }
 
@@ -584,6 +630,84 @@ mod tests {
         assert_eq!(fd.get(FaceDirection::PosX), FaceType::Wall);
         assert_eq!(fd.get(FaceDirection::NegY), FaceType::Floor);
         assert_eq!(fd.get(FaceDirection::PosZ), FaceType::Open);
+    }
+
+    #[test]
+    fn allows_tree_overlap_structural_types() {
+        assert!(BuildType::Platform.allows_tree_overlap());
+        assert!(BuildType::Bridge.allows_tree_overlap());
+        assert!(BuildType::Stairs.allows_tree_overlap());
+    }
+
+    #[test]
+    fn allows_tree_overlap_non_structural_types() {
+        assert!(!BuildType::Wall.allows_tree_overlap());
+        assert!(!BuildType::Enclosure.allows_tree_overlap());
+        assert!(!BuildType::Building.allows_tree_overlap());
+    }
+
+    #[test]
+    fn classify_for_overlap_exterior() {
+        assert_eq!(
+            VoxelType::Air.classify_for_overlap(),
+            OverlapClassification::Exterior
+        );
+    }
+
+    #[test]
+    fn classify_for_overlap_convertible() {
+        assert_eq!(
+            VoxelType::Leaf.classify_for_overlap(),
+            OverlapClassification::Convertible
+        );
+        assert_eq!(
+            VoxelType::Fruit.classify_for_overlap(),
+            OverlapClassification::Convertible
+        );
+    }
+
+    #[test]
+    fn classify_for_overlap_already_wood() {
+        assert_eq!(
+            VoxelType::Trunk.classify_for_overlap(),
+            OverlapClassification::AlreadyWood
+        );
+        assert_eq!(
+            VoxelType::Branch.classify_for_overlap(),
+            OverlapClassification::AlreadyWood
+        );
+        assert_eq!(
+            VoxelType::Root.classify_for_overlap(),
+            OverlapClassification::AlreadyWood
+        );
+    }
+
+    #[test]
+    fn classify_for_overlap_blocked() {
+        assert_eq!(
+            VoxelType::ForestFloor.classify_for_overlap(),
+            OverlapClassification::Blocked
+        );
+        assert_eq!(
+            VoxelType::GrownPlatform.classify_for_overlap(),
+            OverlapClassification::Blocked
+        );
+        assert_eq!(
+            VoxelType::GrownWall.classify_for_overlap(),
+            OverlapClassification::Blocked
+        );
+        assert_eq!(
+            VoxelType::GrownStairs.classify_for_overlap(),
+            OverlapClassification::Blocked
+        );
+        assert_eq!(
+            VoxelType::Bridge.classify_for_overlap(),
+            OverlapClassification::Blocked
+        );
+        assert_eq!(
+            VoxelType::BuildingInterior.classify_for_overlap(),
+            OverlapClassification::Blocked
+        );
     }
 
     #[test]

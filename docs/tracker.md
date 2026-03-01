@@ -115,12 +115,12 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
-[ ] F-tree-overlap         Construction overlap with tree geometry
 [ ] F-tree-species         Multiple tree species with properties
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-visual-smooth        Smooth voxel surface rendering
 [ ] F-weather              Weather within seasons
+[ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
 [ ] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 ```
@@ -159,6 +159,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-structure-reg        Completed structure registry + UI panel
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
+[x] F-tree-overlap         Construction overlap with tree geometry
 [x] F-voxel-fem            Voxel FEM structural analysis
 ```
 
@@ -305,7 +306,7 @@ for designations would prevent frustration from placement mistakes.
 **Related:** F-construction
 
 #### F-tree-overlap — Construction overlap with tree geometry
-**Status:** Todo · **Phase:** 2 · **Refs:** §11, §12
+**Status:** Done · **Phase:** 2 · **Refs:** §11, §12
 **Draft:** `docs/drafts/construction_tree_overlap.md`
 
 Structural build types (platforms, bridges, stairs) should be allowed to
@@ -324,6 +325,19 @@ future furniture/decoration types. See draft doc for full plan.
 Platforms and construction should render with smoothed surfaces rather than
 raw cubes. Exact technique TBD (marching cubes variant, mesh smoothing, or
 shader-based rounding).
+
+#### F-wireframe-ghost — Wireframe ghost for overlap preview
+**Status:** Todo · **Phase:** 2
+
+During placement preview, voxels that overlap existing tree wood
+(Trunk/Branch/Root) should render as wireframe edges instead of solid
+translucent cubes. Requires splitting the blueprint renderer's ghost
+MultiMesh into two layers (solid for buildable voxels, wireframe for
+already-wood voxels) and a wireframe shader. The sim bridge needs to
+expose per-voxel overlap classification to GDScript. See section 4 of
+`docs/drafts/construction_tree_overlap.md` for rendering design notes.
+
+**Related:** F-tree-overlap, F-blueprint-mode
 
 ### Structural Integrity & Fire
 

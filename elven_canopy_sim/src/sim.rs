@@ -590,12 +590,53 @@ impl SimState {
                 self.last_build_message = Some("Build position is out of bounds.".to_string());
                 return;
             }
-            if self.world.get(coord) != VoxelType::Air {
-                self.last_build_message = Some("Build position is not empty.".to_string());
+        }
+
+        // Branch validation: overlap-enabled types classify voxels, others
+        // require all Air.
+        let build_voxels: Vec<VoxelCoord>;
+        let original_voxels: Vec<(VoxelCoord, VoxelType)>;
+
+        if build_type.allows_tree_overlap() {
+            let mut bv = Vec::new();
+            let mut ov = Vec::new();
+            for &coord in voxels {
+                match self.world.get(coord).classify_for_overlap() {
+                    OverlapClassification::Exterior => {
+                        bv.push(coord);
+                    }
+                    OverlapClassification::Convertible => {
+                        ov.push((coord, self.world.get(coord)));
+                        bv.push(coord);
+                    }
+                    OverlapClassification::AlreadyWood => {
+                        // Skip — already wood, no blueprint voxel needed.
+                    }
+                    OverlapClassification::Blocked => {
+                        self.last_build_message = Some("Build position is not empty.".to_string());
+                        return;
+                    }
+                }
+            }
+            if bv.is_empty() {
+                self.last_build_message =
+                    Some("Nothing to build — all voxels are already wood.".to_string());
                 return;
             }
+            build_voxels = bv;
+            original_voxels = ov;
+        } else {
+            for &coord in voxels {
+                if self.world.get(coord) != VoxelType::Air {
+                    self.last_build_message = Some("Build position is not empty.".to_string());
+                    return;
+                }
+            }
+            build_voxels = voxels.to_vec();
+            original_voxels = Vec::new();
         }
-        let any_adjacent = voxels
+
+        let any_adjacent = build_voxels
             .iter()
             .any(|&coord| self.world.has_solid_face_neighbor(coord));
         if !any_adjacent {
@@ -608,7 +649,7 @@ impl SimState {
         let validation = structural::validate_blueprint_fast(
             &self.world,
             &self.face_data,
-            voxels,
+            &build_voxels,
             build_type.to_voxel_type(),
             &BTreeMap::new(),
             &self.config,
@@ -625,12 +666,12 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest nav node to the blueprint.
-        let task_location = match self.nav_graph.find_nearest_node(voxels[0]) {
+        let task_location = match self.nav_graph.find_nearest_node(build_voxels[0]) {
             Some(n) => n,
             None => return,
         };
         let task_id = TaskId::new(&mut self.rng);
-        let num_voxels = voxels.len() as u64;
+        let num_voxels = build_voxels.len() as u64;
         let total_cost = self.config.build_work_ticks_per_voxel * num_voxels;
         let build_task = task::Task {
             id: task_id,
@@ -647,12 +688,13 @@ impl SimState {
         let bp = Blueprint {
             id: project_id,
             build_type,
-            voxels: voxels.to_vec(),
+            voxels: build_voxels,
             priority,
             state: BlueprintState::Designated,
             task_id: Some(task_id),
             face_layout: None,
             stress_warning,
+            original_voxels,
         };
         self.blueprints.insert(project_id, bp);
         events.push(SimEvent {
@@ -765,6 +807,7 @@ impl SimState {
             task_id: Some(task_id),
             face_layout: Some(face_layout.into_iter().collect()),
             stress_warning,
+            original_voxels: Vec::new(),
         };
         self.blueprints.insert(project_id, bp);
         events.push(SimEvent {
@@ -798,13 +841,18 @@ impl SimState {
             }
         }
 
-        // Revert any already-materialized blueprint voxels to Air.
+        // Revert any already-materialized blueprint voxels. For overlap builds,
+        // convertible voxels (Leaf/Fruit) revert to their original type instead
+        // of Air.
         let bp_voxels: Vec<VoxelCoord> = bp.voxels.clone();
+        let original_map: BTreeMap<VoxelCoord, VoxelType> =
+            bp.original_voxels.iter().copied().collect();
         let is_building = bp.build_type == BuildType::Building;
         let mut any_reverted = false;
         for &coord in &bp_voxels {
             if self.world.get(coord) != VoxelType::Air {
-                self.world.set(coord, VoxelType::Air);
+                let revert_to = original_map.get(&coord).copied().unwrap_or(VoxelType::Air);
+                self.world.set(coord, revert_to);
                 any_reverted = true;
             }
         }
@@ -1585,7 +1633,7 @@ impl SimState {
     /// Pick the next blueprint voxel to materialize and place it.
     ///
     /// Selection criteria:
-    /// 1. Must still be Air in the world (not yet placed).
+    /// 1. Must not already be the target type (not yet placed).
     /// 2. Must have at least one face-adjacent solid neighbor (adjacency
     ///    invariant — connects to existing geometry).
     /// 3. Prefer voxels NOT occupied by any creature.
@@ -1598,17 +1646,35 @@ impl SimState {
         let build_type = bp.build_type;
         let voxel_type = build_type.to_voxel_type();
         let is_building = build_type == BuildType::Building;
+        let allows_overlap = build_type.allows_tree_overlap();
 
         // Find unplaced voxels that are adjacent to existing geometry.
         // For buildings, adjacency accepts BuildingInterior face neighbors in
         // addition to solid neighbors (building interior voxels grow from the
         // foundation and from each other).
+        // For overlap-enabled types, a voxel is "unplaced" if it hasn't been
+        // converted to the target type yet (it may be Air, Leaf, or Fruit).
         let eligible: Vec<VoxelCoord> = bp
             .voxels
             .iter()
             .copied()
             .filter(|&coord| {
-                if self.world.get(coord) != VoxelType::Air {
+                let current = self.world.get(coord);
+                if allows_overlap {
+                    // Already materialized to target type → skip.
+                    if current == voxel_type {
+                        return false;
+                    }
+                    // Must be Air or Convertible (Leaf/Fruit).
+                    if current != VoxelType::Air
+                        && !matches!(
+                            current.classify_for_overlap(),
+                            OverlapClassification::Convertible
+                        )
+                    {
+                        return false;
+                    }
+                } else if current != VoxelType::Air {
                     return false;
                 }
                 if self.world.has_solid_face_neighbor(coord) {
@@ -4968,6 +5034,323 @@ mod tests {
             elf.food > 0,
             "Hungry elf should have eaten fruit and restored food above 0. food={}",
             elf.food
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tree overlap construction tests
+    // -----------------------------------------------------------------------
+
+    /// Find a Leaf voxel that is face-adjacent to a Trunk, Branch, or Root
+    /// voxel (not just any solid — must be adjacent to structural wood so the
+    /// structural validator can reach the ground).
+    fn find_leaf_adjacent_to_wood(sim: &SimState) -> VoxelCoord {
+        let tree = &sim.trees[&sim.player_tree_id];
+        for &leaf_coord in &tree.leaf_voxels {
+            for &(dx, dy, dz) in &[
+                (1, 0, 0),
+                (-1, 0, 0),
+                (0, 1, 0),
+                (0, -1, 0),
+                (0, 0, 1),
+                (0, 0, -1),
+            ] {
+                let neighbor =
+                    VoxelCoord::new(leaf_coord.x + dx, leaf_coord.y + dy, leaf_coord.z + dz);
+                let vt = sim.world.get(neighbor);
+                if matches!(vt, VoxelType::Trunk | VoxelType::Branch | VoxelType::Root) {
+                    return leaf_coord;
+                }
+            }
+        }
+        panic!("No leaf voxel adjacent to wood found");
+    }
+
+    #[test]
+    fn overlap_platform_at_leaf_creates_blueprint() {
+        let mut sim = test_sim(42);
+        let leaf_coord = find_leaf_adjacent_to_wood(&sim);
+        assert_eq!(sim.world.get(leaf_coord), VoxelType::Leaf);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![leaf_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(sim.blueprints.len(), 1, "Blueprint should be created");
+        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(bp.voxels, vec![leaf_coord]);
+        assert_eq!(bp.original_voxels.len(), 1);
+        assert_eq!(bp.original_voxels[0], (leaf_coord, VoxelType::Leaf));
+    }
+
+    #[test]
+    fn overlap_all_trunk_rejects_nothing_to_build() {
+        let mut sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        let trunk_coord = tree.trunk_voxels[0];
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![trunk_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert!(sim.blueprints.is_empty(), "All-trunk should be rejected");
+        assert_eq!(
+            sim.last_build_message.as_deref(),
+            Some("Nothing to build — all voxels are already wood.")
+        );
+    }
+
+    #[test]
+    fn overlap_mixed_air_trunk_only_builds_air() {
+        let mut sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        // Find a trunk voxel with an air neighbor.
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+        // Find which trunk voxel is adjacent.
+        let mut trunk_coord = None;
+        for &(dx, dy, dz) in &[
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ] {
+            let neighbor = VoxelCoord::new(air_coord.x + dx, air_coord.y + dy, air_coord.z + dz);
+            if sim.world.in_bounds(neighbor)
+                && matches!(
+                    sim.world.get(neighbor),
+                    VoxelType::Trunk | VoxelType::Branch | VoxelType::Root
+                )
+            {
+                trunk_coord = Some(neighbor);
+                break;
+            }
+        }
+        let trunk_coord = trunk_coord.expect("Should find adjacent trunk");
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord, trunk_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(sim.blueprints.len(), 1);
+        let bp = sim.blueprints.values().next().unwrap();
+        // Only the air voxel should be in the blueprint.
+        assert_eq!(bp.voxels, vec![air_coord]);
+        assert!(bp.original_voxels.is_empty());
+    }
+
+    #[test]
+    fn overlap_blocked_voxel_rejects() {
+        let mut sim = test_sim(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // First build a platform at the air coord.
+        sim.world.set(air_coord, VoxelType::GrownPlatform);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert!(
+            sim.blueprints.is_empty(),
+            "Blocked voxel should reject build"
+        );
+    }
+
+    #[test]
+    fn overlap_leaf_materializes_to_grown_platform() {
+        let mut sim = build_test_sim();
+        let leaf_coord = find_leaf_adjacent_to_wood(&sim);
+        assert_eq!(sim.world.get(leaf_coord), VoxelType::Leaf);
+
+        // Spawn elf.
+        spawn_elf(&mut sim);
+
+        // Designate platform at the leaf voxel.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![leaf_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        let project_id = *sim.blueprints.keys().next().unwrap();
+
+        // Tick until completion.
+        sim.step(&[], sim.tick + 200_000);
+
+        // Leaf should have been converted to GrownPlatform.
+        assert_eq!(
+            sim.world.get(leaf_coord),
+            VoxelType::GrownPlatform,
+            "Leaf voxel should be converted to GrownPlatform"
+        );
+
+        // Blueprint should be Complete.
+        let bp = &sim.blueprints[&project_id];
+        assert_eq!(bp.state, BlueprintState::Complete);
+    }
+
+    #[test]
+    fn overlap_cancel_reverts_to_original_type() {
+        let mut sim = test_sim(42);
+        let leaf_coord = find_leaf_adjacent_to_wood(&sim);
+        assert_eq!(sim.world.get(leaf_coord), VoxelType::Leaf);
+
+        // Designate platform at the leaf voxel.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![leaf_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let project_id = *sim.blueprints.keys().next().unwrap();
+
+        // Simulate partial construction by manually placing the voxel.
+        sim.placed_voxels
+            .push((leaf_coord, VoxelType::GrownPlatform));
+        sim.world.set(leaf_coord, VoxelType::GrownPlatform);
+
+        // Cancel the build.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::CancelBuild { project_id },
+        };
+        sim.step(&[cmd2], 2);
+
+        // Voxel should revert to Leaf, not Air.
+        assert_eq!(
+            sim.world.get(leaf_coord),
+            VoxelType::Leaf,
+            "Cancelled overlap build should revert to original Leaf, not Air"
+        );
+    }
+
+    #[test]
+    fn overlap_save_load_preserves_original_voxels() {
+        let mut sim = test_sim(42);
+        let leaf_coord = find_leaf_adjacent_to_wood(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![leaf_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.blueprints.len(), 1);
+
+        let json = sim.to_json().unwrap();
+        let restored = SimState::from_json(&json).unwrap();
+
+        assert_eq!(restored.blueprints.len(), 1);
+        let bp = restored.blueprints.values().next().unwrap();
+        assert_eq!(bp.original_voxels.len(), 1);
+        assert_eq!(bp.original_voxels[0], (leaf_coord, VoxelType::Leaf));
+    }
+
+    #[test]
+    fn overlap_determinism() {
+        let mut sim_a = test_sim(42);
+        let mut sim_b = test_sim(42);
+
+        let leaf_a = find_leaf_adjacent_to_wood(&sim_a);
+        let leaf_b = find_leaf_adjacent_to_wood(&sim_b);
+        assert_eq!(leaf_a, leaf_b);
+
+        let cmd_a = SimCommand {
+            player_id: sim_a.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![leaf_a],
+                priority: Priority::Normal,
+            },
+        };
+        let cmd_b = SimCommand {
+            player_id: sim_b.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![leaf_b],
+                priority: Priority::Normal,
+            },
+        };
+        sim_a.step(&[cmd_a], 1);
+        sim_b.step(&[cmd_b], 1);
+
+        let id_a = *sim_a.blueprints.keys().next().unwrap();
+        let id_b = *sim_b.blueprints.keys().next().unwrap();
+        assert_eq!(id_a, id_b);
+
+        let bp_a = &sim_a.blueprints[&id_a];
+        let bp_b = &sim_b.blueprints[&id_b];
+        assert_eq!(bp_a.voxels, bp_b.voxels);
+        assert_eq!(bp_a.original_voxels, bp_b.original_voxels);
+        assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
+    }
+
+    #[test]
+    fn overlap_wall_at_leaf_rejects() {
+        let mut sim = test_sim(42);
+        let leaf_coord = find_leaf_adjacent_to_wood(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Wall,
+                voxels: vec![leaf_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert!(
+            sim.blueprints.is_empty(),
+            "Wall does not allow overlap, should reject leaf"
         );
     }
 }

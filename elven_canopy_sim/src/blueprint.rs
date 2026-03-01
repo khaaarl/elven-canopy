@@ -27,7 +27,7 @@
 // `ProjectId`s generated from the sim's PRNG. Blueprint storage uses
 // `BTreeMap` for deterministic iteration order.
 
-use crate::types::{BuildType, FaceData, Priority, ProjectId, TaskId, VoxelCoord};
+use crate::types::{BuildType, FaceData, Priority, ProjectId, TaskId, VoxelCoord, VoxelType};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -61,6 +61,11 @@ pub struct Blueprint {
     /// stress (above warn threshold but below block threshold).
     #[serde(default)]
     pub stress_warning: bool,
+    /// Original voxel types for convertible voxels (Leaf/Fruit) that will be
+    /// replaced during construction. Used by `cancel_build()` to restore the
+    /// original type instead of reverting to Air.
+    #[serde(default)]
+    pub original_voxels: Vec<(VoxelCoord, VoxelType)>,
 }
 
 impl Blueprint {
@@ -92,6 +97,7 @@ mod tests {
             task_id: None,
             face_layout: None,
             stress_warning: false,
+            original_voxels: Vec::new(),
         };
 
         assert_eq!(bp.id, id);
@@ -120,6 +126,7 @@ mod tests {
             task_id: Some(task_id),
             face_layout: None,
             stress_warning: false,
+            original_voxels: Vec::new(),
         };
 
         let json = serde_json::to_string(&bp).unwrap();
@@ -141,6 +148,7 @@ mod tests {
             task_id: None,
             face_layout: None,
             stress_warning: false,
+            original_voxels: Vec::new(),
         };
 
         let json = serde_json::to_string(&bp).unwrap();
@@ -150,5 +158,31 @@ mod tests {
         assert_eq!(restored.state, BlueprintState::Designated);
         assert_eq!(restored.voxels.len(), 1);
         assert_eq!(restored.priority, Priority::High);
+    }
+
+    #[test]
+    fn blueprint_original_voxels_serialization_roundtrip() {
+        let mut rng = GameRng::new(99);
+        let id = ProjectId::new(&mut rng);
+        let original_voxels = vec![
+            (VoxelCoord::new(10, 1, 10), VoxelType::Leaf),
+            (VoxelCoord::new(11, 1, 10), VoxelType::Fruit),
+        ];
+        let bp = Blueprint {
+            id,
+            build_type: BuildType::Platform,
+            voxels: vec![VoxelCoord::new(10, 1, 10), VoxelCoord::new(11, 1, 10)],
+            priority: Priority::Normal,
+            state: BlueprintState::Designated,
+            task_id: None,
+            face_layout: None,
+            stress_warning: false,
+            original_voxels: original_voxels.clone(),
+        };
+
+        let json = serde_json::to_string(&bp).unwrap();
+        let restored: Blueprint = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.original_voxels, original_voxels);
     }
 }

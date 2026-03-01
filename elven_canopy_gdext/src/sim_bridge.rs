@@ -88,7 +88,9 @@ use elven_canopy_sim::config::{GameConfig, TreeProfile};
 use elven_canopy_sim::sim::SimState;
 use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::TaskState;
-use elven_canopy_sim::types::{BuildType, Priority, Species, VoxelCoord, VoxelType};
+use elven_canopy_sim::types::{
+    BuildType, OverlapClassification, Priority, Species, VoxelCoord, VoxelType,
+};
 use godot::prelude::*;
 
 use crate::net_client::NetClient;
@@ -1095,18 +1097,37 @@ impl SimBridge {
             }
         }
 
-        // Basic checks: all in-bounds + Air.
+        // Basic bounds check.
         for &coord in &voxels {
             if !sim.world.in_bounds(coord) {
                 return Self::preview_result("Blocked", "Build position is out of bounds.");
             }
-            if sim.world.get(coord) != VoxelType::Air {
-                return Self::preview_result("Blocked", "Build position is not empty.");
-            }
         }
 
-        // At least one voxel must be face-adjacent to solid.
-        let any_adjacent = voxels
+        // Overlap-aware classification: Platform allows tree overlap.
+        let mut build_voxels = Vec::new();
+        for &coord in &voxels {
+            match sim.world.get(coord).classify_for_overlap() {
+                OverlapClassification::Exterior | OverlapClassification::Convertible => {
+                    build_voxels.push(coord);
+                }
+                OverlapClassification::AlreadyWood => {
+                    // Skip — already wood.
+                }
+                OverlapClassification::Blocked => {
+                    return Self::preview_result("Blocked", "Build position is not empty.");
+                }
+            }
+        }
+        if build_voxels.is_empty() {
+            return Self::preview_result(
+                "Blocked",
+                "Nothing to build — all voxels are already wood.",
+            );
+        }
+
+        // At least one buildable voxel must be face-adjacent to solid.
+        let any_adjacent = build_voxels
             .iter()
             .any(|&coord| sim.world.has_solid_face_neighbor(coord));
         if !any_adjacent {
@@ -1116,11 +1137,11 @@ impl SimBridge {
             );
         }
 
-        // Structural validation.
+        // Structural validation on buildable voxels only.
         let validation = structural::validate_blueprint_fast(
             &sim.world,
             &sim.face_data,
-            &voxels,
+            &build_voxels,
             BuildType::Platform.to_voxel_type(),
             &BTreeMap::new(),
             &sim.config,
@@ -1261,8 +1282,11 @@ impl SimBridge {
         let mut arr = PackedInt32Array::new();
         for bp in sim.blueprints.values() {
             if bp.state == BlueprintState::Designated {
+                let target = bp.build_type.to_voxel_type();
                 for v in &bp.voxels {
-                    if sim.world.get(*v) == VoxelType::Air {
+                    // A voxel is "unbuilt" if it hasn't been converted to the
+                    // target type yet (whether currently Air, Leaf, or Fruit).
+                    if sim.world.get(*v) != target {
                         arr.push(v.x);
                         arr.push(v.y);
                         arr.push(v.z);
