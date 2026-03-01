@@ -80,6 +80,8 @@
 
 use std::collections::BTreeMap;
 
+use elven_canopy_protocol::message::ServerMessage;
+use elven_canopy_relay::server::{RelayConfig, RelayHandle, start_relay};
 use elven_canopy_sim::blueprint::BlueprintState;
 use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::config::{GameConfig, TreeProfile};
@@ -88,6 +90,11 @@ use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::TaskState;
 use elven_canopy_sim::types::{BuildType, Priority, Species, VoxelCoord, VoxelType};
 use godot::prelude::*;
+
+use crate::net_client::NetClient;
+
+/// Compile-time version hash. Bump when making breaking protocol changes.
+const SIM_VERSION_HASH: u64 = 1;
 
 /// Parse a species name string into a `Species` enum variant.
 fn parse_species(name: &str) -> Option<Species> {
@@ -118,18 +125,37 @@ fn species_name(species: Species) -> &'static str {
 ///
 /// Add this as a child node in your main scene. Call `init_sim()` from
 /// GDScript to create the simulation, then `step_to_tick()` each frame
-/// to advance it.
+/// to advance it. In multiplayer mode, call `host_game()` or `join_game()`
+/// instead, then `poll_network()` each frame to receive turns.
 #[derive(GodotClass)]
 #[class(base=Node)]
 pub struct SimBridge {
     base: Base<Node>,
     sim: Option<SimState>,
+    // Multiplayer state
+    net_client: Option<NetClient>,
+    relay_handle: Option<RelayHandle>,
+    is_multiplayer_mode: bool,
+    is_host: bool,
+    game_started: bool,
+    mp_events: Vec<String>,
+    mp_ticks_per_turn: u32,
 }
 
 #[godot_api]
 impl INode for SimBridge {
     fn init(base: Base<Node>) -> Self {
-        Self { base, sim: None }
+        Self {
+            base,
+            sim: None,
+            net_client: None,
+            relay_handle: None,
+            is_multiplayer_mode: false,
+            is_host: false,
+            game_started: false,
+            mp_events: Vec::new(),
+            mp_ticks_per_turn: 50,
+        }
     }
 }
 
@@ -397,6 +423,29 @@ impl SimBridge {
         self.creature_count_by_name(GString::from("Elf"))
     }
 
+    /// Apply a SimAction locally (single-player) or send it to the relay
+    /// (multiplayer). In multiplayer, the action will come back in a Turn
+    /// message and be applied then.
+    fn apply_or_send(&mut self, action: SimAction) {
+        if self.is_multiplayer_mode {
+            if let Some(client) = &mut self.net_client
+                && let Ok(json) = serde_json::to_vec(&action)
+                && let Err(e) = client.send_command(&json)
+            {
+                godot_error!("SimBridge: send_command failed: {e}");
+            }
+        } else if let Some(sim) = &mut self.sim {
+            let player_id = sim.player_id;
+            let next_tick = sim.tick + 1;
+            let cmd = SimCommand {
+                player_id,
+                tick: next_tick,
+                action,
+            };
+            sim.step(&[cmd], next_tick);
+        }
+    }
+
     /// Spawn a creature of the named species at the given voxel position.
     ///
     /// Generic replacement for `spawn_elf()` / `spawn_capybara()`. Species
@@ -407,18 +456,10 @@ impl SimBridge {
         let Some(species) = parse_species(&species_name.to_string()) else {
             return;
         };
-        let Some(sim) = &mut self.sim else { return };
-        let player_id = sim.player_id;
-        let next_tick = sim.tick + 1;
-        let cmd = SimCommand {
-            player_id,
-            tick: next_tick,
-            action: SimAction::SpawnCreature {
-                species,
-                position: VoxelCoord::new(x, y, z),
-            },
-        };
-        sim.step(&[cmd], next_tick);
+        self.apply_or_send(SimAction::SpawnCreature {
+            species,
+            position: VoxelCoord::new(x, y, z),
+        });
     }
 
     /// Spawn an elf at the given voxel position.
@@ -519,19 +560,11 @@ impl SimBridge {
     /// Only an idle elf will claim it and walk to that location.
     #[func]
     fn create_goto_task(&mut self, x: i32, y: i32, z: i32) {
-        let Some(sim) = &mut self.sim else { return };
-        let player_id = sim.player_id;
-        let next_tick = sim.tick + 1;
-        let cmd = SimCommand {
-            player_id,
-            tick: next_tick,
-            action: SimAction::CreateTask {
-                kind: elven_canopy_sim::task::TaskKind::GoTo,
-                position: VoxelCoord::new(x, y, z),
-                required_species: Some(Species::Elf),
-            },
-        };
-        sim.step(&[cmd], next_tick);
+        self.apply_or_send(SimAction::CreateTask {
+            kind: elven_canopy_sim::task::TaskKind::GoTo,
+            position: VoxelCoord::new(x, y, z),
+            required_species: Some(Species::Elf),
+        });
     }
 
     /// Return info about the creature at the given species-filtered index.
@@ -883,6 +916,15 @@ impl SimBridge {
     /// (warning or block reason), empty string on silent success.
     #[func]
     fn designate_build(&mut self, x: i32, y: i32, z: i32) -> GString {
+        let action = SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![VoxelCoord::new(x, y, z)],
+            priority: Priority::Normal,
+        };
+        if self.is_multiplayer_mode {
+            self.apply_or_send(action);
+            return GString::new();
+        }
         let Some(sim) = &mut self.sim else {
             return GString::new();
         };
@@ -891,11 +933,7 @@ impl SimBridge {
         let cmd = SimCommand {
             player_id,
             tick: next_tick,
-            action: SimAction::DesignateBuild {
-                build_type: BuildType::Platform,
-                voxels: vec![VoxelCoord::new(x, y, z)],
-                priority: Priority::Normal,
-            },
+            action,
         };
         sim.step(&[cmd], next_tick);
         sim.last_build_message
@@ -911,9 +949,6 @@ impl SimBridge {
     /// the same Y. Returns a validation message (empty = success).
     #[func]
     fn designate_build_rect(&mut self, x: i32, y: i32, z: i32, width: i32, depth: i32) -> GString {
-        let Some(sim) = &mut self.sim else {
-            return GString::new();
-        };
         let w = width.max(1);
         let d = depth.max(1);
         let mut voxels = Vec::with_capacity((w * d) as usize);
@@ -922,16 +957,24 @@ impl SimBridge {
                 voxels.push(VoxelCoord::new(x + dx, y, z + dz));
             }
         }
+        let action = SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels,
+            priority: Priority::Normal,
+        };
+        if self.is_multiplayer_mode {
+            self.apply_or_send(action);
+            return GString::new();
+        }
+        let Some(sim) = &mut self.sim else {
+            return GString::new();
+        };
         let player_id = sim.player_id;
         let next_tick = sim.tick + 1;
         let cmd = SimCommand {
             player_id,
             tick: next_tick,
-            action: SimAction::DesignateBuild {
-                build_type: BuildType::Platform,
-                voxels,
-                priority: Priority::Normal,
-            },
+            action,
         };
         sim.step(&[cmd], next_tick);
         sim.last_build_message
@@ -954,6 +997,17 @@ impl SimBridge {
         depth: i32,
         height: i32,
     ) -> GString {
+        let action = SimAction::DesignateBuilding {
+            anchor: VoxelCoord::new(x, y, z),
+            width,
+            depth,
+            height,
+            priority: Priority::Normal,
+        };
+        if self.is_multiplayer_mode {
+            self.apply_or_send(action);
+            return GString::new();
+        }
         let Some(sim) = &mut self.sim else {
             return GString::new();
         };
@@ -962,13 +1016,7 @@ impl SimBridge {
         let cmd = SimCommand {
             player_id,
             tick: next_tick,
-            action: SimAction::DesignateBuilding {
-                anchor: VoxelCoord::new(x, y, z),
-                width,
-                depth,
-                height,
-                priority: Priority::Normal,
-            },
+            action,
         };
         sim.step(&[cmd], next_tick);
         sim.last_build_message
@@ -1250,4 +1298,323 @@ impl SimBridge {
         }
         arr
     }
+
+    // ========================================================================
+    // Multiplayer methods
+    // ========================================================================
+
+    /// Host a multiplayer game: start an embedded relay server and connect
+    /// as the first client. Returns true on success.
+    #[func]
+    fn host_game(
+        &mut self,
+        port: i32,
+        session_name: GString,
+        password: GString,
+        max_players: i32,
+        ticks_per_turn: i32,
+    ) -> bool {
+        let pw = if password.to_string().is_empty() {
+            None
+        } else {
+            Some(password.to_string())
+        };
+        let config = RelayConfig {
+            port: port as u16,
+            session_name: session_name.to_string(),
+            password: pw.clone(),
+            ticks_per_turn: ticks_per_turn as u32,
+            max_players: max_players as u32,
+        };
+
+        let (handle, addr) = match start_relay(config) {
+            Ok(result) => result,
+            Err(e) => {
+                godot_error!("SimBridge: failed to start relay: {e}");
+                return false;
+            }
+        };
+
+        // Small delay to let the listener thread start.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let addr_str = format!("{addr}");
+        let config_hash = fnv1a_hash("{}");
+        match NetClient::connect(&addr_str, "Host", SIM_VERSION_HASH, config_hash, pw) {
+            Ok((client, info)) => {
+                self.mp_ticks_per_turn = info.ticks_per_turn;
+                self.net_client = Some(client);
+                self.relay_handle = Some(handle);
+                self.is_multiplayer_mode = true;
+                self.is_host = true;
+                self.game_started = false;
+                godot_print!(
+                    "SimBridge: hosting on {addr_str} as player {}",
+                    info.player_id.0
+                );
+                true
+            }
+            Err(e) => {
+                godot_error!("SimBridge: failed to connect to own relay: {e}");
+                handle.stop();
+                false
+            }
+        }
+    }
+
+    /// Join a remote multiplayer game. Returns true on success.
+    #[func]
+    fn join_game(&mut self, address: GString, player_name: GString, password: GString) -> bool {
+        let pw = if password.to_string().is_empty() {
+            None
+        } else {
+            Some(password.to_string())
+        };
+        let config_hash = fnv1a_hash("{}");
+        match NetClient::connect(
+            &address.to_string(),
+            &player_name.to_string(),
+            SIM_VERSION_HASH,
+            config_hash,
+            pw,
+        ) {
+            Ok((client, info)) => {
+                self.mp_ticks_per_turn = info.ticks_per_turn;
+                self.net_client = Some(client);
+                self.is_multiplayer_mode = true;
+                self.is_host = false;
+                self.game_started = false;
+                godot_print!(
+                    "SimBridge: joined '{}' as player {}",
+                    info.session_name,
+                    info.player_id.0
+                );
+                true
+            }
+            Err(e) => {
+                godot_error!("SimBridge: join_game failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Disconnect from multiplayer. Stops the relay if hosting.
+    #[func]
+    fn disconnect_multiplayer(&mut self) {
+        if let Some(client) = &mut self.net_client {
+            client.disconnect();
+        }
+        self.net_client = None;
+        if let Some(handle) = self.relay_handle.take() {
+            handle.stop();
+        }
+        self.is_multiplayer_mode = false;
+        self.is_host = false;
+        self.game_started = false;
+        self.mp_events.clear();
+        godot_print!("SimBridge: disconnected from multiplayer");
+    }
+
+    /// Return true if in multiplayer mode.
+    #[func]
+    fn is_multiplayer(&self) -> bool {
+        self.is_multiplayer_mode
+    }
+
+    /// Return true if this client is the host.
+    #[func]
+    fn is_host(&self) -> bool {
+        self.is_host
+    }
+
+    /// Return true if the multiplayer game has started (past lobby).
+    #[func]
+    fn is_game_started(&self) -> bool {
+        self.game_started
+    }
+
+    /// Return the ticks_per_turn for the multiplayer session.
+    #[func]
+    fn mp_ticks_per_turn(&self) -> i32 {
+        self.mp_ticks_per_turn as i32
+    }
+
+    /// Host only: send StartGame to begin the multiplayer game.
+    /// The sim will be initialized when the GameStart message comes back.
+    #[func]
+    fn start_multiplayer_game(&mut self, seed: i64, config_json: GString) {
+        if !self.is_host {
+            godot_warn!("SimBridge: only the host can start the game");
+            return;
+        }
+        if let Some(client) = &mut self.net_client
+            && let Err(e) = client.send_start_game(seed, &config_json.to_string())
+        {
+            godot_error!("SimBridge: send_start_game failed: {e}");
+        }
+    }
+
+    /// Return the list of players in the lobby as an array of dictionaries
+    /// with "id" and "name" keys. Only meaningful before game start.
+    #[func]
+    fn get_lobby_players(&self) -> VarArray {
+        // The relay sends PlayerJoined/PlayerLeft which we track as events.
+        // For now, return a minimal implementation — the lobby overlay will
+        // poll this each frame. We'd need to track the player list from
+        // Welcome + join/leave events; for v1 this returns empty and the
+        // lobby overlay reads mp_events for join/leave notifications.
+        VarArray::new()
+    }
+
+    /// Poll the network for incoming messages. Processes Turn messages by
+    /// applying their commands to the sim. Returns the number of turns applied.
+    ///
+    /// Other message types (PlayerJoined, PlayerLeft, ChatBroadcast, etc.)
+    /// are pushed into `mp_events` as JSON strings for GDScript to read.
+    #[func]
+    fn poll_network(&mut self) -> i32 {
+        let Some(client) = &self.net_client else {
+            return 0;
+        };
+        let messages = client.poll();
+        let mut turns_applied = 0;
+
+        for msg in messages {
+            match msg {
+                ServerMessage::GameStart { seed, config_json } => {
+                    self.game_started = true;
+                    // Initialize the sim with the received seed/config.
+                    let profile: TreeProfile = serde_json::from_str(&config_json)
+                        .unwrap_or_else(|_| TreeProfile::fantasy_mega());
+                    let config = GameConfig {
+                        tree_profile: profile,
+                        ..Default::default()
+                    };
+                    self.sim = Some(SimState::with_config(seed as u64, config));
+                    godot_print!("SimBridge: game started with seed {seed}");
+                    self.mp_events.push(
+                        serde_json::to_string(&serde_json::json!({
+                            "type": "game_start",
+                            "seed": seed,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                ServerMessage::Turn {
+                    sim_tick_target,
+                    commands,
+                    ..
+                } => {
+                    if let Some(sim) = &mut self.sim {
+                        let mut sim_commands = Vec::new();
+                        for tc in &commands {
+                            if let Ok(action) = serde_json::from_slice::<SimAction>(&tc.payload) {
+                                sim_commands.push(SimCommand {
+                                    player_id: sim.player_id,
+                                    tick: sim_tick_target,
+                                    action,
+                                });
+                            }
+                        }
+                        sim.step(&sim_commands, sim_tick_target);
+                        turns_applied += 1;
+                    }
+                }
+                ServerMessage::PlayerJoined { player } => {
+                    self.mp_events.push(
+                        serde_json::to_string(&serde_json::json!({
+                            "type": "player_joined",
+                            "id": player.id.0,
+                            "name": player.name,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                ServerMessage::PlayerLeft { player_id, name } => {
+                    self.mp_events.push(
+                        serde_json::to_string(&serde_json::json!({
+                            "type": "player_left",
+                            "id": player_id.0,
+                            "name": name,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                ServerMessage::ChatBroadcast { from, name, text } => {
+                    self.mp_events.push(
+                        serde_json::to_string(&serde_json::json!({
+                            "type": "chat",
+                            "from": from.0,
+                            "name": name,
+                            "text": text,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                ServerMessage::DesyncDetected { tick } => {
+                    self.mp_events.push(
+                        serde_json::to_string(&serde_json::json!({
+                            "type": "desync",
+                            "tick": tick,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                ServerMessage::Paused { by } => {
+                    self.mp_events.push(
+                        serde_json::to_string(&serde_json::json!({
+                            "type": "paused",
+                            "by": by.0,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                ServerMessage::Resumed { by } => {
+                    self.mp_events.push(
+                        serde_json::to_string(&serde_json::json!({
+                            "type": "resumed",
+                            "by": by.0,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                // Welcome, Rejected, SnapshotRequest, SnapshotLoad, SpeedChanged
+                // are either handled during connect or not yet implemented.
+                _ => {}
+            }
+        }
+
+        turns_applied
+    }
+
+    /// Drain queued multiplayer events as a PackedStringArray of JSON strings.
+    /// GDScript parses each string to handle join/leave/chat/desync notifications.
+    #[func]
+    fn poll_mp_events(&mut self) -> PackedStringArray {
+        let mut arr = PackedStringArray::new();
+        for event in self.mp_events.drain(..) {
+            arr.push(&event);
+        }
+        arr
+    }
+
+    /// Send a chat message in multiplayer.
+    #[func]
+    fn send_chat(&mut self, text: GString) {
+        if let Some(client) = &mut self.net_client
+            && let Err(e) = client.send_chat(&text.to_string())
+        {
+            godot_error!("SimBridge: send_chat failed: {e}");
+        }
+    }
+}
+
+/// FNV-1a hash of a string, used for config hash comparison.
+fn fnv1a_hash(s: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in s.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }

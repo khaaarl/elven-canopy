@@ -52,6 +52,8 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 name = "elven_canopy_gdext"
 version = "0.1.0"
 dependencies = [
+ "elven_canopy_protocol",
+ "elven_canopy_relay",
  "elven_canopy_sim",
  "godot",
  "serde_json",
@@ -63,6 +65,23 @@ version = "0.1.0"
 dependencies = [
  "midly",
  "rand",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "elven_canopy_protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "elven_canopy_relay"
+version = "0.1.0"
+dependencies = [
+ "elven_canopy_protocol",
  "serde",
  "serde_json",
 ]

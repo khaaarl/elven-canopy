@@ -63,6 +63,13 @@ func _ready() -> void:
 	_load_btn.pressed.connect(_on_load_game_pressed)
 	vbox.add_child(_load_btn)
 
+	# Multiplayer button.
+	var mp_btn := Button.new()
+	mp_btn.text = "Multiplayer"
+	mp_btn.custom_minimum_size = Vector2(200, 50)
+	mp_btn.pressed.connect(_on_multiplayer_pressed)
+	vbox.add_child(mp_btn)
+
 	# Quit Game button.
 	var quit_btn := Button.new()
 	quit_btn.text = "Quit Game"
@@ -96,12 +103,19 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.keycode == KEY_L and not _load_btn.disabled:
 			_on_load_game_pressed()
 			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_M:
+			get_viewport().set_input_as_handled()
+			_on_multiplayer_pressed()
 		elif event.keycode == KEY_Q:
 			get_tree().quit()
 
 
 func _on_new_game_pressed() -> void:
 	get_tree().change_scene_to_file("res://scenes/new_game.tscn")
+
+
+func _on_multiplayer_pressed() -> void:
+	get_tree().change_scene_to_file("res://scenes/multiplayer_menu.tscn")
 
 
 func _on_load_game_pressed() -> void:

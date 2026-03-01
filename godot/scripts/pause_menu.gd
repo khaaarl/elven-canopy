@@ -27,7 +27,9 @@ extends ColorRect
 
 var _bridge: SimBridge
 var _save_btn: Button
+var _main_menu_btn: Button
 var _save_dialog_open: bool = false
+var _is_multiplayer: bool = false
 
 
 func _ready() -> void:
@@ -69,12 +71,12 @@ func _ready() -> void:
 	_save_btn.pressed.connect(_on_save_pressed)
 	vbox.add_child(_save_btn)
 
-	# Main Menu button.
-	var main_menu_btn := Button.new()
-	main_menu_btn.text = "Main Menu"
-	main_menu_btn.custom_minimum_size = Vector2(200, 50)
-	main_menu_btn.pressed.connect(_on_main_menu_pressed)
-	vbox.add_child(main_menu_btn)
+	# Main Menu / Disconnect button.
+	_main_menu_btn = Button.new()
+	_main_menu_btn.text = "Main Menu"
+	_main_menu_btn.custom_minimum_size = Vector2(200, 50)
+	_main_menu_btn.pressed.connect(_on_main_menu_pressed)
+	vbox.add_child(_main_menu_btn)
 
 	# Quit Game button.
 	var quit_btn := Button.new()
@@ -91,6 +93,9 @@ func _ready() -> void:
 func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
 	_save_btn.disabled = false
+	_is_multiplayer = bridge.is_multiplayer()
+	if _is_multiplayer:
+		_main_menu_btn.text = "Disconnect"
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -120,12 +125,14 @@ func toggle() -> void:
 
 func open() -> void:
 	visible = true
-	get_tree().paused = true
+	if not _is_multiplayer:
+		get_tree().paused = true
 
 
 func close() -> void:
 	visible = false
-	get_tree().paused = false
+	if not _is_multiplayer:
+		get_tree().paused = false
 
 
 func _on_save_pressed() -> void:
@@ -166,5 +173,8 @@ func _do_save(save_name: String) -> void:
 
 
 func _on_main_menu_pressed() -> void:
+	if _is_multiplayer and _bridge:
+		_bridge.disconnect_multiplayer()
+		GameSession.multiplayer_mode = ""
 	get_tree().paused = false
 	get_tree().change_scene_to_file("res://scenes/main_menu.tscn")

@@ -7,6 +7,12 @@
 ## For loading saves, main_menu.gd sets `load_save_path` before transitioning
 ## to main.tscn. main.gd checks this field to decide whether to start a new
 ## game or load from a save file.
+##
+## For multiplayer, the host/join menu screens set `multiplayer_mode` and
+## related fields before transitioning to main.tscn. main.gd checks
+## `multiplayer_mode` to decide between single-player and multiplayer startup.
+##
+## See also: new_game_menu.gd, host_game_menu.gd, join_game_menu.gd, main.gd.
 
 extends Node
 
@@ -25,3 +31,17 @@ var tree_profile: Dictionary = {}
 ## When non-empty, main.gd loads this file instead of starting a new game,
 ## then clears the field. Set by main_menu.gd's load dialog.
 var load_save_path: String = ""
+
+## Multiplayer mode: "" (single-player), "host", or "join".
+var multiplayer_mode: String = ""
+
+## Multiplayer session config (host mode).
+var mp_port: int = 7878
+var mp_session_name: String = ""
+var mp_password: String = ""
+var mp_max_players: int = 4
+var mp_ticks_per_turn: int = 50
+
+## Multiplayer join config (join mode).
+var mp_relay_address: String = ""
+var mp_player_name: String = ""

@@ -36,6 +36,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [~] F-elf-needs            Hunger and rest self-direction
+[~] F-multiplayer          Relay-coordinator multiplayer networking
 ```
 
 ### Todo
@@ -89,8 +90,12 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-military-org         Squad management and organization
 [ ] F-modding              Scripting layer for modding support
 [ ] F-mood-system          Mood with escalating consequences
+[ ] F-mp-chat              Multiplayer in-game chat
+[ ] F-mp-checksums         Multiplayer state checksums for desync detection
+[ ] F-mp-integ-test        Multiplayer integration test harness
+[ ] F-mp-mid-join          Mid-game join with state snapshot
+[ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
-[ ] F-multiplayer          Relay-coordinator multiplayer
 [ ] F-music-runtime        Integrate music generator into game
 [ ] F-narrative-log        Events and narrative log
 [ ] F-partial-struct       Structural checks on incomplete builds
@@ -1048,8 +1053,62 @@ methods for commands, queries, and rendering data.
 
 Plugin/scripting system for custom structures, elf behaviors, invader
 types. Open design question (§27).
-#### F-multiplayer — Relay-coordinator multiplayer networking
+
+#### F-mp-chat — Multiplayer in-game chat
 **Status:** Todo · **Phase:** 8+ · **Refs:** §4
+
+Text chat between players in multiplayer sessions. Protocol support exists
+(`Chat`/`ChatBroadcast` messages) but the GDScript UI for displaying and
+sending chat messages is not yet implemented.
+
+**Related:** F-multiplayer
+
+#### F-mp-checksums — Multiplayer state checksums for desync detection
+**Status:** Todo · **Phase:** 8+ · **Refs:** §4
+
+Periodic sim-state checksums sent via the relay to detect desync between
+clients. Protocol support exists (`Checksum`/`DesyncDetected` messages) but
+the sim does not yet compute or send checksums. Needs a fast deterministic
+hash over relevant sim state (creature positions, voxel grid, etc.).
+
+**Related:** F-multiplayer
+
+#### F-mp-integ-test — Multiplayer integration test harness
+**Status:** Todo · **Phase:** 8+ · **Refs:** §4
+
+End-to-end integration tests for multiplayer workflows: hosting a game,
+joining, issuing commands, verifying both sides see the same state. Should
+run entirely in Rust (no Godot dependency) by exercising the relay, net
+client, and sim directly. Consider moving UI-adjacent logic (button press
+→ command dispatch) into testable Rust functions to maximize coverage
+without requiring Godot automation. Goal: catch regressions in the full
+host→relay→join→command→turn→apply pipeline.
+
+**Related:** F-multiplayer
+
+#### F-mp-mid-join — Mid-game join with state snapshot
+**Status:** Todo · **Phase:** 8+ · **Refs:** §4
+
+Allow players to join a multiplayer session that has already started.
+Requires a snapshot protocol: the relay requests a full sim state from an
+existing client and sends it to the joining player. Protocol support exists
+(`SnapshotRequest`/`SnapshotResponse`/`SnapshotLoad` messages) but the
+snapshot flow is not yet implemented.
+
+**Related:** F-multiplayer, F-save-load
+
+#### F-mp-reconnect — Multiplayer reconnection after disconnect
+**Status:** Todo · **Phase:** 8+ · **Refs:** §4
+
+Graceful handling of temporary disconnections in multiplayer. When a client
+disconnects, preserve their player slot for a timeout period and allow
+reconnection with state catchup (replaying missed turns or requesting a
+snapshot). Not yet designed in detail.
+
+**Related:** F-multiplayer, F-mp-mid-join
+
+#### F-multiplayer — Relay-coordinator multiplayer networking
+**Status:** In Progress · **Phase:** 8+ · **Refs:** §4
 **Draft:** `docs/drafts/multiplayer_relay.md`
 
 Multiplayer via a lightweight relay coordinator that determines canonical

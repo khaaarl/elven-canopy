@@ -1,0 +1,17 @@
+[package]
+name = "elven_canopy_relay"
+version = "0.1.0"
+edition = "2024"
+description = "Multiplayer relay coordinator for Elven Canopy"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "relay"
+path = "src/main.rs"
+
+[dependencies]
+elven_canopy_protocol = { path = "../elven_canopy_protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -76,16 +76,60 @@ var _placement_controller: Node3D
 var _extra_renderers: Array = []
 var _bp_renderer: Node3D
 var _bldg_renderer: Node3D
+var _lobby_overlay: ColorRect
 ## Fractional seconds of unprocessed sim time. Accumulates each frame,
 ## converted to ticks by dividing by tick_duration_ms / 1000.
 var _sim_accumulator: float = 0.0
 ## Seconds per sim tick, cached from bridge.tick_duration_ms().
 var _seconds_per_tick: float = 0.001
+## Multiplayer: seconds since last turn was received. Used for smooth
+## render_tick interpolation between turns.
+var _mp_time_since_turn: float = 0.0
 
 
 func _ready() -> void:
 	var bridge: SimBridge = $SimBridge
 	var is_loaded_game := false
+
+	# --- Branch: multiplayer ---
+	if GameSession.multiplayer_mode == "host":
+		var ok := (
+			bridge
+			. host_game(
+				GameSession.mp_port,
+				GameSession.mp_session_name,
+				GameSession.mp_password,
+				GameSession.mp_max_players,
+				GameSession.mp_ticks_per_turn,
+			)
+		)
+		if not ok:
+			push_error("main: failed to host game, returning to menu")
+			GameSession.multiplayer_mode = ""
+			get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
+			return
+		# Read seed from GameSession for use when starting.
+		if GameSession.sim_seed >= 0:
+			sim_seed = GameSession.sim_seed
+		_show_lobby(bridge)
+		return
+
+	if GameSession.multiplayer_mode == "join":
+		var ok := (
+			bridge
+			. join_game(
+				GameSession.mp_relay_address,
+				GameSession.mp_player_name,
+				GameSession.mp_password,
+			)
+		)
+		if not ok:
+			push_error("main: failed to join game, returning to menu")
+			GameSession.multiplayer_mode = ""
+			get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
+			return
+		_show_lobby(bridge)
+		return
 
 	# --- Branch: load a saved game or start a new one ---
 	if GameSession.load_save_path != "":
@@ -158,8 +202,61 @@ func _ready() -> void:
 			)
 		)
 
-	# --- Common setup (new game and loaded game) ---
+	_setup_common(bridge)
 
+
+## Show the lobby overlay and wait for the game to start.
+## When game_started fires, proceed with common setup.
+func _show_lobby(bridge: SimBridge) -> void:
+	var lobby_layer := CanvasLayer.new()
+	lobby_layer.layer = 3
+	add_child(lobby_layer)
+
+	var lobby_script = load("res://scripts/lobby_overlay.gd")
+	_lobby_overlay = ColorRect.new()
+	_lobby_overlay.set_script(lobby_script)
+	lobby_layer.add_child(_lobby_overlay)
+	_lobby_overlay.setup(bridge)
+	_lobby_overlay.game_started.connect(_on_mp_game_started)
+
+
+## Called when the multiplayer game starts (lobby's game_started signal).
+## Now the sim is initialized — set up renderers and UI.
+func _on_mp_game_started() -> void:
+	var bridge: SimBridge = $SimBridge
+
+	# Spawn initial creatures (host only).
+	if bridge.is_host():
+		var cx := 128
+		var cz := 128
+		for i in 5:
+			var ox := i * 3 - 6
+			bridge.spawn_elf(cx + ox, 0, cz)
+		# Vary initial elf food so some are hungry from the start.
+		var food_max: int = 1_000_000_000_000_000
+		var elf_food_pcts := [100, 90, 70, 60, 48]
+		for i in elf_food_pcts.size():
+			if elf_food_pcts[i] < 100:
+				bridge.set_creature_food("Elf", i, food_max * elf_food_pcts[i] / 100)
+		for i in 5:
+			bridge.spawn_capybara(cx, 0, cz)
+		for i in 3:
+			bridge.spawn_creature("Boar", cx, 0, cz)
+		for i in 3:
+			bridge.spawn_creature("Deer", cx, 0, cz)
+		for i in 3:
+			bridge.spawn_creature("Monkey", cx, 0, cz)
+		for i in 3:
+			bridge.spawn_creature("Squirrel", cx, 0, cz)
+		print("Elven Canopy: multiplayer game started, spawned initial creatures")
+
+	_setup_common(bridge)
+	print("Elven Canopy: multiplayer game ready")
+
+
+## Set up renderers, toolbar, controllers, and menus. Called for both
+## single-player (immediately in _ready) and multiplayer (after game_started).
+func _setup_common(bridge: SimBridge) -> void:
 	# Cache tick duration for the frame accumulator.
 	_seconds_per_tick = bridge.tick_duration_ms() / 1000.0
 
@@ -201,15 +298,13 @@ func _ready() -> void:
 	_placement_controller.setup(bridge, $CameraPivot/Camera3D)
 	_placement_controller.connect_toolbar(toolbar)
 
-	# Set up construction controller (between placement and selection for
-	# ESC precedence — reverse tree order means later children fire first).
+	# Set up construction controller.
 	var construction_script = load("res://scripts/construction_controller.gd")
 	_construction_controller = Node.new()
 	_construction_controller.set_script(construction_script)
 	add_child(_construction_controller)
 	_construction_controller.setup(bridge, $CameraPivot)
 	_construction_controller.connect_toolbar(toolbar)
-	# Construction panel lives on the CanvasLayer for UI rendering.
 	canvas_layer.add_child(_construction_controller.get_panel())
 
 	# Entering construction mode: deselect creature, cancel placement, hide tree info.
@@ -227,8 +322,7 @@ func _ready() -> void:
 				_camera_pivot.stop_follow()
 	)
 
-	# Set up blueprint renderer (ghost cubes for unplaced blueprints,
-	# solid brown cubes for materialized construction voxels).
+	# Set up blueprint renderer.
 	var bp_renderer_script = load("res://scripts/blueprint_renderer.gd")
 	_bp_renderer = Node3D.new()
 	_bp_renderer.set_script(bp_renderer_script)
@@ -236,7 +330,7 @@ func _ready() -> void:
 	_bp_renderer.setup(bridge)
 	_construction_controller.blueprint_placed.connect(_bp_renderer.refresh)
 
-	# Set up building renderer (oriented quads for building faces).
+	# Set up building renderer.
 	var bldg_renderer_script = load("res://scripts/building_renderer.gd")
 	_bldg_renderer = Node3D.new()
 	_bldg_renderer.set_script(bldg_renderer_script)
@@ -245,7 +339,7 @@ func _ready() -> void:
 	_bldg_renderer.setup(bridge)
 	_construction_controller.blueprint_placed.connect(_bldg_renderer.refresh)
 
-	# Set up creature info panel (on the same CanvasLayer as the toolbar).
+	# Set up creature info panel.
 	var panel_script = load("res://scripts/creature_info_panel.gd")
 	_panel = PanelContainer.new()
 	_panel.set_script(panel_script)
@@ -277,7 +371,7 @@ func _ready() -> void:
 			_camera_pivot.stop_follow()
 	)
 
-	# Menu button (top-right corner, on the same CanvasLayer as toolbar).
+	# Menu button.
 	var menu_btn := Button.new()
 	menu_btn.text = "Menu"
 	menu_btn.custom_minimum_size = Vector2(80, 40)
@@ -285,7 +379,7 @@ func _ready() -> void:
 	menu_btn.position = Vector2(-90, 10)
 	canvas_layer.add_child(menu_btn)
 
-	# Pause menu overlay (on a higher CanvasLayer so it covers toolbar/panel).
+	# Pause menu overlay.
 	var pause_layer := CanvasLayer.new()
 	pause_layer.layer = 2
 	add_child(pause_layer)
@@ -297,8 +391,7 @@ func _ready() -> void:
 	pause_menu.setup(bridge)
 	menu_btn.pressed.connect(pause_menu.toggle)
 
-	# Task panel overlay (on CanvasLayer 2, added after pause_layer so its
-	# ESC handler fires first in reverse tree order).
+	# Task panel overlay.
 	var task_panel_layer := CanvasLayer.new()
 	task_panel_layer.layer = 2
 	add_child(task_panel_layer)
@@ -356,7 +449,6 @@ func _ready() -> void:
 				_tree_info_panel.toggle()
 	)
 
-	# Wire task panel zoom-to-creature -> select creature + camera follow.
 	_task_panel.zoom_to_creature.connect(
 		func(species: String, index: int):
 			_task_panel.hide_panel()
@@ -367,14 +459,12 @@ func _ready() -> void:
 				_camera_pivot.start_follow(pos)
 	)
 
-	# Wire task panel zoom-to-location -> move camera pivot.
 	_task_panel.zoom_to_location.connect(
 		func(x: float, y: float, z: float):
 			_task_panel.hide_panel()
 			_look_at_position(Vector3(x + 0.5, y, z + 0.5))
 	)
 
-	# Wire follow button -> camera.
 	_panel.follow_requested.connect(
 		func():
 			var tick := float(bridge.current_tick())
@@ -420,7 +510,30 @@ func _try_load_save(bridge: SimBridge, save_path: String) -> bool:
 
 func _process(delta: float) -> void:
 	var bridge: SimBridge = $SimBridge
-	if bridge.is_initialized():
+	if not bridge.is_initialized():
+		return
+
+	var render_tick: float = float(bridge.current_tick())
+
+	if bridge.is_multiplayer():
+		# Multiplayer: poll_network handles sim stepping via turns.
+		var turns_applied := bridge.poll_network()
+		if turns_applied > 0:
+			_mp_time_since_turn = 0.0
+		else:
+			_mp_time_since_turn += delta
+		# Smooth interpolation: advance render_tick up to ticks_per_turn ahead.
+		var ticks_ahead := int(_mp_time_since_turn / _seconds_per_tick)
+		var max_ticks := bridge.mp_ticks_per_turn()
+		if ticks_ahead > max_ticks:
+			ticks_ahead = max_ticks
+		render_tick = float(bridge.current_tick()) + float(ticks_ahead)
+		# Process multiplayer events (player join/leave, chat).
+		var events := bridge.poll_mp_events()
+		for event_json in events:
+			print("MP event: %s" % event_json)
+	else:
+		# Single-player: time-based accumulator.
 		_sim_accumulator += delta
 		var ticks_to_advance := int(_sim_accumulator / _seconds_per_tick)
 		if ticks_to_advance > 5000:
@@ -428,11 +541,7 @@ func _process(delta: float) -> void:
 		if ticks_to_advance > 0:
 			_sim_accumulator -= ticks_to_advance * _seconds_per_tick
 			bridge.step_to_tick(bridge.current_tick() + ticks_to_advance)
-
-	# Compute the fractional render tick for smooth creature interpolation.
-	# This is the sim's current tick plus the fraction of an unprocessed tick
-	# remaining in the accumulator.
-	var render_tick: float = float(bridge.current_tick()) + (_sim_accumulator / _seconds_per_tick)
+		render_tick = float(bridge.current_tick()) + (_sim_accumulator / _seconds_per_tick)
 
 	# Distribute render_tick to all consumers that read creature positions.
 	$ElfRenderer.set_render_tick(render_tick)
