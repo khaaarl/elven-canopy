@@ -92,7 +92,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mood-system          Mood with escalating consequences
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-checksums         Multiplayer state checksums for desync detection
-[ ] F-mp-integ-test        Multiplayer integration test harness
 [ ] F-mp-mid-join          Mid-game join with state snapshot
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
@@ -146,6 +145,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-godot-setup          Godot 4 project setup
 [x] F-main-menu            Main menu UI
 [x] F-move-interp          Smooth creature movement interpolation
+[x] F-mp-integ-test        Multiplayer integration test harness
 [x] F-music-gen            Palestrina-style music generator (standalone)
 [x] F-nav-graph            Navigation graph construction
 [x] F-nav-incremental      Incremental nav graph updates
@@ -1129,7 +1129,7 @@ hash over relevant sim state (creature positions, voxel grid, etc.).
 **Related:** F-multiplayer
 
 #### F-mp-integ-test — Multiplayer integration test harness
-**Status:** Todo · **Phase:** 8+ · **Refs:** §4
+**Status:** Done · **Phase:** 8+ · **Refs:** §4
 
 End-to-end integration tests for multiplayer workflows: hosting a game,
 joining, issuing commands, verifying both sides see the same state. Should

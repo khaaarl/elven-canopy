@@ -74,6 +74,9 @@ case "$MODE" in
         echo "Running sim tests..."
         cargo test -p elven_canopy_sim $CARGO_JOBS
         echo ""
+        echo "Running multiplayer integration tests..."
+        cargo test -p multiplayer_tests $CARGO_JOBS -- --test-threads=16
+        echo ""
         echo "Building elven_canopy_gdext (debug)..."
         cargo build -p elven_canopy_gdext $CARGO_JOBS
         echo "Done. Run: cd godot && godot"

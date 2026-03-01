@@ -219,6 +219,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "multiplayer_tests"
+version = "0.1.0"
+dependencies = [
+ "elven_canopy_protocol",
+ "elven_canopy_relay",
+ "elven_canopy_sim",
+ "serde_json",
+]
+
+[[package]]
 name = "nanoserde"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

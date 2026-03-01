@@ -1,0 +1,13 @@
+[package]
+name = "multiplayer_tests"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+elven_canopy_sim = { path = "../elven_canopy_sim" }
+elven_canopy_protocol = { path = "../elven_canopy_protocol" }
+elven_canopy_relay = { path = "../elven_canopy_relay" }
+serde_json = "1"

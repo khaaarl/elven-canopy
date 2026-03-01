@@ -8,6 +8,10 @@
 // clients.
 //
 // Module overview:
+// - `client.rs`:   TCP client for connecting to the relay. Background reader
+//                  thread + non-blocking `poll()` for the main thread. Has
+//                  zero Godot dependency — lives here so integration tests
+//                  and the gdext crate can both use it.
 // - `session.rs`:  Session state — player roster, turn batching, command
 //                  queuing, checksum-based desync detection. The core data
 //                  structure that `server.rs` drives.
@@ -22,6 +26,7 @@
 // The relay can run as a standalone binary (`main.rs`) or be embedded in a
 // game process via the library API (`start_relay`).
 
+pub mod client;
 pub mod server;
 pub mod session;
 

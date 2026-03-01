@@ -93,7 +93,7 @@ use elven_canopy_sim::types::{
 };
 use godot::prelude::*;
 
-use crate::net_client::NetClient;
+use elven_canopy_relay::client::NetClient;
 
 /// Compile-time version hash. Bump when making breaking protocol changes.
 const SIM_VERSION_HASH: u64 = 1;
@@ -1568,17 +1568,9 @@ impl SimBridge {
                     ..
                 } => {
                     if let Some(sim) = &mut self.sim {
-                        let mut sim_commands = Vec::new();
-                        for tc in &commands {
-                            if let Ok(action) = serde_json::from_slice::<SimAction>(&tc.payload) {
-                                sim_commands.push(SimCommand {
-                                    player_id: sim.player_id,
-                                    tick: sim_tick_target,
-                                    action,
-                                });
-                            }
-                        }
-                        sim.step(&sim_commands, sim_tick_target);
+                        let payloads: Vec<&[u8]> =
+                            commands.iter().map(|tc| tc.payload.as_slice()).collect();
+                        sim.apply_turn_payloads(sim_tick_target, &payloads);
                         turns_applied += 1;
                     }
                 }

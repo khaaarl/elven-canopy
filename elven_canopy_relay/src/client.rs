@@ -1,6 +1,6 @@
 // TCP client for connecting to the multiplayer relay.
 //
-// Provides a non-blocking interface for the main Godot thread to communicate
+// Provides a non-blocking interface for the main thread to communicate
 // with the relay server. Architecture:
 // - `connect()` performs TCP connect + Hello handshake on the calling thread,
 //   then spawns a background reader thread.
@@ -9,12 +9,17 @@
 // - The main thread holds a `BufWriter<TcpStream>` for sending.
 // - `poll()` drains the inbox non-blocking, returning all queued messages.
 //
-// This separation ensures the main thread (Godot's _process) never blocks on
-// network I/O. The reader thread handles the blocking reads, and the writer
-// flushes synchronously (acceptable for the small messages we send).
+// This separation ensures the main thread never blocks on network I/O. The
+// reader thread handles the blocking reads, and the writer flushes
+// synchronously (acceptable for the small messages we send).
 //
-// See also: `sim_bridge.rs` which owns a `NetClient` and calls its methods
-// from `#[func]` methods exposed to GDScript.
+// This module lives in the relay crate (not gdext) because it has zero Godot
+// dependencies — it's purely std TCP + protocol framing + mpsc. Living here
+// makes it available to any crate (including integration tests) without
+// pulling in Godot.
+//
+// See also: `sim_bridge.rs` in the gdext crate, which owns a `NetClient`
+// and calls its methods from `#[func]` methods exposed to GDScript.
 
 use std::io::{BufReader, BufWriter};
 use std::net::TcpStream;

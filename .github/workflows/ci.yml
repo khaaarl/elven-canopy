@@ -2,7 +2,7 @@
 #
 # Three independent jobs:
 # - rust-lint: cargo fmt --check + cargo clippy (no Godot needed, fast)
-# - rust-test: cargo test --workspace (runs sim and music crate tests)
+# - rust-test: unit tests + multiplayer integration tests (high thread count)
 # - gdscript: gdformat --check + gdlint
 #
 # Triggers on pushes and pull requests that touch relevant files.
@@ -17,6 +17,7 @@ on:
       - "Cargo.lock"
       - "rustfmt.toml"
       - "elven_canopy_*/Cargo.toml"
+      - "multiplayer_tests/**"
       - "godot/scripts/**.gd"
       - ".gdlintrc"
       - "python/requirements-dev.txt"
@@ -28,6 +29,7 @@ on:
       - "Cargo.lock"
       - "rustfmt.toml"
       - "elven_canopy_*/Cargo.toml"
+      - "multiplayer_tests/**"
       - "godot/scripts/**.gd"
       - ".gdlintrc"
       - "python/requirements-dev.txt"
@@ -56,8 +58,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
-        run: cargo test --workspace
+      - name: Run unit tests
+        run: cargo test --workspace --exclude multiplayer_tests
+
+      - name: Run multiplayer integration tests
+        run: cargo test -p multiplayer_tests -- --test-threads=16
 
   gdscript:
     runs-on: ubuntu-latest

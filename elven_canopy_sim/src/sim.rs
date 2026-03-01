@@ -1939,6 +1939,29 @@ impl SimState {
             .filter(|c| c.species == species)
             .count()
     }
+
+    /// Apply a batch of serialized command payloads (JSON-encoded `SimAction`s)
+    /// to the sim at the given tick. Used by both `SimBridge` (multiplayer mode)
+    /// and integration tests to ensure identical turn-application logic.
+    ///
+    /// Each payload is deserialized independently; malformed payloads are
+    /// silently skipped (matching the relay's opaque-payload semantics).
+    /// Returns the number of commands successfully deserialized and applied.
+    pub fn apply_turn_payloads(&mut self, tick: u64, payloads: &[&[u8]]) -> usize {
+        let mut commands = Vec::new();
+        for payload in payloads {
+            if let Ok(action) = serde_json::from_slice::<SimAction>(payload) {
+                commands.push(SimCommand {
+                    player_id: self.player_id,
+                    tick,
+                    action,
+                });
+            }
+        }
+        let count = commands.len();
+        self.step(&commands, tick);
+        count
+    }
 }
 
 #[cfg(test)]

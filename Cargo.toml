@@ -6,6 +6,7 @@ members = [
     "elven_canopy_music",
     "elven_canopy_protocol",
     "elven_canopy_relay",
+    "multiplayer_tests",
 ]
 resolver = "2"
 
