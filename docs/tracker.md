@@ -95,7 +95,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-logistics            Spatial resource flow (Kanban-style)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
-[ ] F-recipes              Recipe system for crafting/cooking
 [ ] F-mana-system          Mana generation, storage, and spending
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-military-campaign    Send elves on world expeditions
@@ -115,16 +114,16 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
+[ ] F-recipes              Recipe system for crafting/cooking
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-sim-speed            Simulation speed controls UI
 [ ] F-social-graph         Relationships and social contagion
-[ ] F-sound-effects        Basic ambient and action sound effects
 [ ] F-soul-mech            Death, soul passage, resurrection
+[ ] F-sound-effects        Basic ambient and action sound effects
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
-[ ] F-struct-basic         Basic structural integrity (flood fill)
 [ ] F-struct-names         User-editable structure names
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-task-priority        Priority queue and auto-assignment
@@ -147,8 +146,8 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
-[x] F-carve-holes          Remove material (doors, storage hollows)
 [x] F-capybara             Capybara species
+[x] F-carve-holes          Remove material (doors, storage hollows)
 [x] F-construction         Platform construction (designate/build/cancel)
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crate-structure      Two-crate sim/gdext structure
@@ -182,6 +181,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-shared-prng          Shared PRNG crate across all Rust crates
 [x] F-sim-commands         SimCommand pipeline
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
+[x] F-struct-basic         Basic structural integrity (flood fill)
 [x] F-structure-reg        Completed structure registry + UI panel
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
@@ -234,7 +234,8 @@ Communal sleeping building for elves without assigned homes. Any elf not
 assigned to a specific Home can sleep here.
 
 **Blocked by:** F-furnishing
-**Related:** F-bldg-home, F-elf-needs
+**Blocks:** F-elf-needs
+**Related:** F-bldg-home
 
 #### F-bldg-home — Home (single elf dwelling)
 **Status:** Todo · **Phase:** 3
@@ -373,7 +374,7 @@ placed furniture objects, and behavior hooks. Individual building types
 (F-bldg-home, F-bldg-dormitory, etc.) depend on this framework.
 Structures track whether they are furnished and what type they are.
 
-**Blocks:** F-bldg-home, F-bldg-dormitory, F-bldg-kitchen, F-bldg-storehouse, F-bldg-workshop, F-bldg-dining, F-bldg-concert
+**Blocks:** F-bldg-concert, F-bldg-dining, F-bldg-dormitory, F-bldg-home, F-bldg-kitchen, F-bldg-storehouse, F-bldg-workshop, F-elf-assign
 **Related:** F-building
 
 #### F-ladders — Rope/wood ladders as cheap connectors
@@ -492,15 +493,6 @@ expose per-voxel overlap classification to GDScript. See section 4 of
 
 ### Structural Integrity & Fire
 
-#### B-dirt-not-pinned — Dirt unpinned in fast structural validator
-**Status:** Done
-
-`build_network_from_set()` (used by `validate_blueprint_fast()`) only pins
-`ForestFloor` voxels, not `Dirt`. Since Dirt has density 999, unpinned Dirt
-acts as massive dead weight in the weight-flow analysis, causing all
-structures near hilly terrain to fail validation. One-line fix: add
-`|| vt == VoxelType::Dirt` to match the full solver's pinning logic.
-
 #### B-dead-node-panic — Panic on dead nav node in pathfinding
 **Status:** Done
 
@@ -509,6 +501,15 @@ nav node has been removed by an incremental nav graph update (e.g.
 construction solidifying a voxel). Fix: guard `execute_task_behavior` and
 `process_creature_activation` to check node liveness before pathfinding,
 resnapping or abandoning the task if the node is dead.
+
+#### B-dirt-not-pinned — Dirt unpinned in fast structural validator
+**Status:** Done
+
+`build_network_from_set()` (used by `validate_blueprint_fast()`) only pins
+`ForestFloor` voxels, not `Dirt`. Since Dirt has density 999, unpinned Dirt
+acts as massive dead weight in the weight-flow analysis, causing all
+structures near hilly terrain to fail validation. One-line fix: add
+`|| vt == VoxelType::Dirt` to match the full solver's pinning logic.
 
 #### B-preview-blueprints — Preview treats blueprints as complete
 **Status:** Todo · **Phase:** 2
@@ -530,7 +531,7 @@ causing chain failures. Disconnected chunks fall as rigid bodies. Requires
 fall physics, impact damage, and creature displacement on top of the
 spring-mass solver from F-voxel-fem. See draft §11 for scoping notes.
 
-**Blocked by:** F-voxel-fem
+**Blocks:** F-fire-structure
 
 #### F-fire-advanced — Heat accumulation and ignition thresholds
 **Status:** Todo · **Phase:** 5 · **Refs:** §16
@@ -539,12 +540,15 @@ Fire Stage 2: heat accumulation model, per-material ignition thresholds,
 green wood vs dry wood distinction.
 
 **Blocked by:** F-fire-basic
+**Blocks:** F-fire-ecology
 
 #### F-fire-basic — Fire spread and voxel destruction
 **Status:** Todo · **Phase:** 5 · **Refs:** §16
 
 Fire simulation Stage 1: basic probabilistic spread between adjacent
 flammable voxels, voxel destruction when fully burned.
+
+**Blocks:** F-fire-advanced, F-fire-structure
 
 #### F-fire-ecology — Fire as ecological force, firefighting
 **Status:** Todo · **Phase:** 7 · **Refs:** §16
@@ -564,7 +568,7 @@ recalculation during an already-expensive fire tick (§27). Tree voxels have
 very high but finite strength (draft §6), so fire can theoretically bring
 down branches.
 
-**Blocked by:** F-voxel-fem, F-fire-basic, F-cascade-fail
+**Blocked by:** F-cascade-fail, F-fire-basic
 
 #### F-partial-struct — Structural checks on incomplete builds
 **Status:** Todo · **Phase:** 8+ · **Refs:** §9
@@ -577,8 +581,6 @@ cancellation, periodic structural heartbeat for incomplete structures, or
 limits on how far construction can extend from support before the next
 anchor is in place.
 
-**Blocked by:** F-voxel-fem
-
 #### F-stress-heatmap — Stress visualization in blueprint mode
 **Status:** Todo · **Phase:** 5 · **Refs:** §9, §12
 **Draft:** `docs/drafts/structural_integrity.md` §7, §14-F
@@ -589,20 +591,19 @@ solver iterations (~20–30) for responsive preview during placement, full
 iterations on confirm. See draft §7.2 for `BlueprintValidation` data
 structure and §7.4 for performance budget.
 
-**Blocked by:** F-voxel-fem
 **Related:** F-blueprint-mode
 
 #### F-struct-basic — Basic structural integrity (flood fill)
-**Status:** Todo · **Phase:** 3 · **Refs:** §9
+**Status:** Done · **Phase:** 3 · **Refs:** §9
 **Draft:** `docs/drafts/structural_integrity.md` §8
 
 Connectivity flood fill: can every solid voxel reach a grounded voxel
 (ForestFloor or trunk-to-ground) via face-adjacent solid voxels? Disconnected
 clusters are flagged. Used as a fast pre-filter in F-voxel-fem blueprint
 validation (draft §7.3). The `flood_fill_connected()` function is shared
-between this feature and the FEM system.
+between this feature and the FEM system. Implemented as part of F-voxel-fem
+in `structural.rs`.
 
-**Blocks:** F-carve-holes
 **Related:** F-voxel-fem
 
 #### F-voxel-fem — Voxel FEM structural analysis
@@ -622,8 +623,8 @@ blueprint validation (OK / Warning / Blocked based on stress thresholds),
 bridge method for GDScript stress heatmap data. Construction intermediate
 states are exempt from checks (draft §12).
 
-**Related:** F-struct-basic, F-stress-heatmap, F-cascade-fail,
-F-partial-struct
+**Blocks:** F-cascade-fail, F-partial-struct, F-stress-heatmap
+**Related:** F-struct-basic
 
 ### Navigation & Pathfinding
 
@@ -633,14 +634,6 @@ F-partial-struct
 Full 3D movement for birds and winged elves. Separate from the
 surface-based nav graph — likely a volumetric approach.
 
-#### F-large-pathfind — 2x2 footprint nav grid
-**Status:** Done · **Phase:** 8+ · **Refs:** §10
-
-Separate pre-baked `NavGraph` for 2x2x2 footprint creatures (elephants).
-Nodes only where a 2x2x2 volume is clear and all 4 ground cells are solid.
-Includes `Species::Elephant`, `graph_for_species()` dispatch, incremental
-updates, SimBridge queries, GDScript spawn/render/placement, and sprite.
-
 #### F-large-nav-tolerance — 1-voxel height tolerance for large nav
 **Status:** Done · **Phase:** 8+
 
@@ -648,6 +641,14 @@ Allow up to 1 voxel of height variation within a large creature's 2x2
 footprint and between adjacent large nav nodes. Fixes elephant navigation
 on hilly terrain (F-hilly-terrain) where variable-height dirt voxels
 fragmented the large nav graph.
+
+#### F-large-pathfind — 2x2 footprint nav grid
+**Status:** Done · **Phase:** 8+ · **Refs:** §10
+
+Separate pre-baked `NavGraph` for 2x2x2 footprint creatures (elephants).
+Nodes only where a 2x2x2 volume is clear and all 4 ground cells are solid.
+Includes `Species::Elephant`, `graph_for_species()` dispatch, incremental
+updates, SimBridge queries, GDScript spawn/render/placement, and sprite.
 
 #### F-nav-graph — Navigation graph construction
 **Status:** Done · **Phase:** 1 · **Refs:** §10
@@ -724,10 +725,11 @@ tasks when needs are critical.
 the nearest fruit voxel, eat it (restoring `food_restore_pct`% of food_max),
 and remove the fruit from the world.
 
-**Rest/sleep:** Not yet implemented. Elves get tired over time and seek a
-sleeping spot — their assigned home (F-bldg-home) if they have one, a
-dormitory (F-bldg-dormitory) otherwise, or the ground as a last resort.
-Sleep duration restores a rest gauge. Lack of sleep affects mood/productivity.
+**Rest/sleep (blocked by F-bldg-dormitory):** Not yet implemented. Elves get
+tired over time and seek a sleeping spot — their assigned home (F-bldg-home)
+if they have one, a dormitory (F-bldg-dormitory) otherwise, or the ground as
+a last resort. Sleep duration restores a rest gauge. Lack of sleep affects
+mood/productivity.
 
 **Blocked by:** F-bldg-dormitory
 **Related:** F-food-gauge, F-task-priority, F-bldg-home, F-bldg-dormitory
@@ -768,6 +770,8 @@ limited by tree carrying capacity and available food/shelter.
 
 Jobs beyond construction: woodworking, weaving, cooking, enchanting.
 Crafting system for tools, furniture, and magical items.
+
+**Blocks:** F-elf-weapons
 
 #### F-food-chain — Food production/distribution pipeline
 **Status:** Todo · **Phase:** 3
@@ -828,7 +832,7 @@ buildings (especially storehouses) can hold items. Each item has a type,
 quantity, and location (carried by creature, on ground at coord, or in
 building). Foundation for food management, crafting, and logistics.
 
-**Blocks:** F-bldg-storehouse, F-bldg-kitchen, F-bldg-workshop, F-bread, F-food-chain
+**Blocks:** F-bldg-kitchen, F-bldg-storehouse, F-bldg-workshop, F-bread, F-food-chain, F-hauling, F-recipes
 **Related:** F-logistics, F-crafting
 
 #### F-jobs — Elf job/role specialization
@@ -858,7 +862,8 @@ Core mana economy: tree stores mana, elves generate it (flat rate initially),
 construction and growth spend it. The central feedback loop — happy elves
 produce more mana, mana enables growth, growth makes elves happier.
 
-**Related:** F-mana-mood, F-choir-build, F-mass-conserve
+**Blocks:** F-mana-mood, F-root-network
+**Related:** F-choir-build, F-mass-conserve
 
 #### F-recipes — Recipe system for crafting/cooking
 **Status:** Todo · **Phase:** 3
@@ -893,6 +898,8 @@ emergent social/economic system.
 
 Emotions as multiple simultaneous dimensions: joy, fulfillment, sorrow,
 stress, pain, fear, anxiety. Not a single "happiness" number.
+
+**Blocks:** F-hedonic-adapt, F-mana-mood, F-mood-system
 
 #### F-hedonic-adapt — Asymmetric hedonic adaptation
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -932,6 +939,8 @@ Log viewable by player, drives emergent storytelling.
 Multi-axis personality model affecting task preferences, social behavior,
 stress responses, and creative output.
 
+**Blocks:** F-cultural-drift
+
 #### F-poetry-reading — Social gatherings and poetry readings
 **Status:** Todo · **Phase:** 4 · **Refs:** §18, §20
 
@@ -964,12 +973,15 @@ Phase 2 audio: pre-recorded or AI-generated vocal syllables from the Vaelith
 phoneme inventory, concatenated for singing.
 
 **Blocked by:** F-audio-synth, F-vaelith-expand
+**Blocks:** F-audio-vocal
 
 #### F-audio-synth — Waveform synthesis for audio rendering
 **Status:** Todo · **Phase:** 6 · **Refs:** §21
 
 Phase 1 audio: generate waveforms from MIDI-like note data for playback in
 Godot. Debugging and validation tool, placeholder for richer audio later.
+
+**Blocks:** F-audio-sampled, F-music-runtime
 
 #### F-audio-vocal — Continuous vocal synthesis
 **Status:** Todo · **Phase:** 8+ · **Refs:** §21
@@ -996,7 +1008,6 @@ name + surname structure. Names should sound consistent with the conlang and
 be deterministic given the same PRNG state. Adds a `name` field to the
 `Creature` struct, assigned at spawn time.
 
-**Blocked by:** F-lang-crate
 **Related:** F-vaelith-expand
 
 #### F-lang-crate — Shared Vaelith language crate
@@ -1037,10 +1048,7 @@ types and lexicon data instead of maintaining its own hardcoded vocabulary.
 The music crate keeps its phrase-generation templates, brightness-biased
 selection, and SA text-swap logic, but delegates to the lang crate for
 vocabulary lookup, core types (`Tone`, `VowelClass`, `Syllable`), and
-phonotactic rules. Also switches from `rand` to `elven_canopy_prng` as part
-of this migration (the `rand` → `elven_canopy_prng` migration is already done via F-shared-prng).
-
-**Blocked by:** F-lang-crate
+phonotactic rules.
 
 #### F-proc-poetry — Procedural poetry via simulated annealing
 **Status:** Todo · **Phase:** 6 · **Refs:** §20
@@ -1072,9 +1080,8 @@ poetry and elf dialogue. Intersects with voice recording work (phoneme
 inventory may still change). Builds on the `elven_canopy_lang` crate
 infrastructure.
 
-**Blocked by:** F-lang-crate
-**Blocks:** F-proc-poetry
-**Related:** F-elf-names, F-audio-sampled
+**Blocks:** F-audio-sampled, F-proc-poetry
+**Related:** F-elf-names
 
 ### Combat & Defense
 
@@ -1084,6 +1091,7 @@ infrastructure.
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
+**Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
 #### F-defense-struct — Defensive structures (ballista, wards)
@@ -1116,6 +1124,7 @@ Organize elves into military squads with patrol routes, defensive
 positions, and alert levels.
 
 **Blocked by:** F-combat
+**Blocks:** F-military-campaign
 
 ### World Expansion & Ecology
 
@@ -1148,6 +1157,7 @@ their own elves and mana, in cooperative or competitive configurations
 per-player entity ownership, per-player command validation, and per-player
 fog of war rendering.
 
+**Blocks:** F-cultural-drift, F-root-network
 **Related:** F-multiplayer
 
 #### F-root-network — Root network expansion and diplomacy
@@ -1164,6 +1174,15 @@ radius.
 
 The player's tree surfaces ancient memories: hints about threats, lost
 construction techniques, forest history. Journal or vision system.
+
+#### F-tree-species — Multiple tree species with properties
+**Status:** Todo · **Refs:** §8
+
+Different tree species with distinct properties. Needs a detailed design —
+scope, gameplay implications, and interaction with existing tree generation
+are not yet specified.
+
+**Related:** F-multi-tree, F-branch-growth
 
 ### Soul Mechanics & Magic
 
@@ -1274,6 +1293,17 @@ Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 
 ESC-triggered pause menu with Resume, Save, Load, and Quit options.
 
+#### F-select-struct — Selectable structures with interaction UI
+**Status:** Done · **Phase:** 3
+
+Click-to-select completed structures (platforms, buildings, ladders, etc.)
+with an info panel showing structure type, dimensions, health/stress, and
+structure-specific actions. Extends the existing creature selection system
+to handle structure entities. Foundation for per-structure interaction like
+rope ladder furling, building furnishing, and structure demolition.
+
+**Related:** F-selection, F-structure-reg, F-rope-retract
+
 #### F-selection — Click-to-select creatures
 **Status:** Done · **Refs:** §26
 
@@ -1290,17 +1320,6 @@ for speed) to control the tick multiplier. Essential for both slow
 observation and fast-forwarding through idle periods.
 
 **Related:** F-event-loop
-
-#### F-select-struct — Selectable structures with interaction UI
-**Status:** Done · **Phase:** 3
-
-Click-to-select completed structures (platforms, buildings, ladders, etc.)
-with an info panel showing structure type, dimensions, health/stress, and
-structure-specific actions. Extends the existing creature selection system
-to handle structure entities. Foundation for per-structure interaction like
-rope ladder furling, building furnishing, and structure demolition.
-
-**Related:** F-selection, F-structure-reg, F-rope-retract
 
 #### F-spawn-toolbar — Spawn toolbar and placement UI
 **Status:** Done · **Refs:** §26
