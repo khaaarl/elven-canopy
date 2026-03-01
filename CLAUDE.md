@@ -285,57 +285,12 @@ When a feature branch's work is done, the user will likely ask for a "once-over"
 
 ## Merging to Main
 
-When the user asks to merge a feature branch to main, follow this procedure:
+When the user asks to merge a feature branch to main, use the `/merge-to-main` slash command. It follows a squash-rebase-ff workflow that keeps main's history clean. Conflict resolution is delegated to a subagent when needed. See `.claude/commands/merge-to-main.md` for the full procedure.
 
-```bash
-# 1. Create a temporary LOCAL branch and squash all feature commits into one
-#    (This way conflicts only need to be resolved once, not per-commit)
-#    IMPORTANT: The REAL commit message goes HERE — step 5 is a fast-forward
-#    merge which does NOT create a new commit, so any -m there is ignored.
-#    NOTE: The -rebase branch is local only — do NOT push it to origin.
-git checkout -b feature/my-branch-rebase feature/my-branch
-git merge-base main feature/my-branch-rebase  # Learn the common ancestor!
-git reset --soft THAT-COMMON-ANCESTOR
-git commit -m "Your descriptive commit message here"
-
-# 2. Pull latest main
-git checkout main && git pull
-
-# 3. Rebase the single squashed commit onto main (conflict detection here)
-git checkout feature/my-branch-rebase
-git rebase main
-# If conflicts arise, resolve them carefully, then: git add <files> && git rebase --continue
-
-# 4. Update tracker: mark completed features as done in docs/tracker.md
-#    (move summary lines to Done, update detailed status), then amend the
-#    squashed commit to include the tracker changes.
-git add docs/tracker.md
-git commit --amend --no-edit
-
-# 5. Fast-forward merge into main (no new commit — just moves the pointer)
-git checkout main
-git merge --ff-only feature/my-branch-rebase
-
-# 6. Push and clean up
-git push
-git branch -d feature/my-branch-rebase
-git branch -D feature/my-branch
-git push origin --delete feature/my-branch
-```
-
-**Why squash first, then rebase?** Rebasing a multi-commit branch onto main can require resolving the same conflict repeatedly (once per commit). By squashing into one commit first, you only resolve conflicts once. The `git reset --soft ...` in step 1 is safe — it collapses our own feature commits back to the branch point, without touching main's state. The rebase in step 3 then does proper 3-way conflict detection against latest main.
-
-**Handling rebase conflicts:** When `git rebase main` reports conflicts:
-1. Run `git status` to see which files conflict
-2. Read the conflicting files — look for `<<<<<<<`, `=======`, `>>>>>>>` markers
-3. Resolve by editing to keep the correct version of each section
-4. `git add <resolved-files> && git rebase --continue`
-5. After rebase completes, verify the code still works (run tests) and is qualitatively coherent
-6. **If conflicts required non-trivial edits** (e.g., integrating two features that touch the same code), ask the user for permission before completing the merge. Truly trivial conflicts (e.g., both sides added adjacent lines with no semantic interaction) can be resolved and merged without asking.
-
-**Tracker update (step 4):** After the rebase succeeds and before merging to main, update `docs/tracker.md` to reflect completed work — move summary lines from In Progress/Todo to Done, update `**Status:**` in detailed entries. Amending the squashed commit ensures the tracker update and the code land atomically.
-
-The squashed commit message should summarize the entire feature, not repeat individual commit messages. Always ask the user for permission before step 5 (merging to main).
+Key points (always apply, even without the command):
+- Always squash feature commits into one before rebasing onto main.
+- Always ask the user for permission before the final fast-forward merge.
+- Update `docs/tracker.md` (move to Done) and amend the squashed commit before merging.
 
 ## Conversation Flow
 
