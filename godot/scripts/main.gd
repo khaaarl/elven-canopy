@@ -427,6 +427,9 @@ func _setup_common(bridge: SimBridge) -> void:
 			if _selector.get_selected_structure_id() >= 0:
 				_selector.deselect()
 	)
+	_structure_info_panel.rename_requested.connect(
+		func(structure_id: int, new_name: String): bridge.rename_structure(structure_id, new_name)
+	)
 
 	# Menu button.
 	var menu_btn := Button.new()

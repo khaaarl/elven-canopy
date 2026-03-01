@@ -25,10 +25,12 @@
 // ## Completed structure registry
 //
 // `CompletedStructure` records a completed build's metadata — type, bounding
-// box, and completion tick. Created by `SimState::complete_build()` via
-// `from_blueprint()` and stored in `SimState::structures`. The structure
-// list panel in the UI queries these to show a browsable list of all
-// completed constructions with zoom-to-location.
+// box, completion tick, and optional user-editable name. Created by
+// `SimState::complete_build()` via `from_blueprint()` and stored in
+// `SimState::structures`. The structure list panel in the UI queries these
+// to show a browsable list of all completed constructions with
+// zoom-to-location. `display_name()` returns the custom name if set, or
+// an auto-generated default like "Platform #12".
 //
 // See also: `types.rs` for `FaceDirection`, `FaceType`, `FaceData`,
 // `VoxelCoord`, `StructureId`. `sim.rs` for the `DesignateBuilding` command
@@ -64,6 +66,11 @@ pub struct CompletedStructure {
     pub depth: i32,
     pub height: i32,
     pub completed_tick: u64,
+    /// User-editable name. `None` means use the auto-generated default
+    /// (e.g. "Platform #12"). Saved with `#[serde(default)]` so old saves
+    /// without this field deserialize correctly.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl CompletedStructure {
@@ -82,7 +89,30 @@ impl CompletedStructure {
             depth,
             height,
             completed_tick,
+            name: None,
         }
+    }
+
+    /// Return the display name for this structure.
+    ///
+    /// If the player has set a custom name, returns that. Otherwise returns
+    /// a default like "Platform #12" derived from `build_type` and `id`.
+    pub fn display_name(&self) -> String {
+        if let Some(ref custom) = self.name {
+            return custom.clone();
+        }
+        let type_str = match self.build_type {
+            BuildType::Platform => "Platform",
+            BuildType::Bridge => "Bridge",
+            BuildType::Stairs => "Stairs",
+            BuildType::Wall => "Wall",
+            BuildType::Enclosure => "Enclosure",
+            BuildType::Building => "Building",
+            BuildType::WoodLadder => "Wood Ladder",
+            BuildType::RopeLadder => "Rope Ladder",
+            BuildType::Carve => "Carve",
+        };
+        format!("{} #{}", type_str, self.id.0)
     }
 
     /// Compute the axis-aligned bounding box of a set of voxel coordinates.
@@ -332,6 +362,7 @@ mod tests {
         assert_eq!(structure.depth, 2); // z: 10..11 inclusive
         assert_eq!(structure.height, 1); // y: 3..3 inclusive
         assert_eq!(structure.completed_tick, 5000);
+        assert_eq!(structure.name, None);
     }
 
     #[test]
@@ -349,11 +380,115 @@ mod tests {
             depth: 1,
             height: 1,
             completed_tick: 10000,
+            name: None,
         };
 
         let json = serde_json::to_string(&structure).unwrap();
         let restored: CompletedStructure = serde_json::from_str(&json).unwrap();
 
         assert_eq!(structure, restored);
+    }
+
+    #[test]
+    fn display_name_default_when_no_custom_name() {
+        use crate::prng::GameRng;
+        use crate::types::{BuildType, ProjectId, StructureId};
+
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id: StructureId(12),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Platform,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 1,
+            depth: 1,
+            height: 1,
+            completed_tick: 100,
+            name: None,
+        };
+        assert_eq!(structure.display_name(), "Platform #12");
+    }
+
+    #[test]
+    fn display_name_returns_custom_name() {
+        use crate::prng::GameRng;
+        use crate::types::{BuildType, ProjectId, StructureId};
+
+        let mut rng = GameRng::new(42);
+        let mut structure = CompletedStructure {
+            id: StructureId(5),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Bridge,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 1,
+            depth: 1,
+            height: 1,
+            completed_tick: 100,
+            name: Some("Starlight Bridge".to_string()),
+        };
+        assert_eq!(structure.display_name(), "Starlight Bridge");
+
+        // Clearing name reverts to default.
+        structure.name = None;
+        assert_eq!(structure.display_name(), "Bridge #5");
+    }
+
+    #[test]
+    fn display_name_all_build_types() {
+        use crate::prng::GameRng;
+        use crate::types::{BuildType, ProjectId, StructureId};
+
+        let mut rng = GameRng::new(42);
+        let types_and_names = [
+            (BuildType::Platform, "Platform #0"),
+            (BuildType::Bridge, "Bridge #0"),
+            (BuildType::Stairs, "Stairs #0"),
+            (BuildType::Wall, "Wall #0"),
+            (BuildType::Enclosure, "Enclosure #0"),
+            (BuildType::Building, "Building #0"),
+            (BuildType::WoodLadder, "Wood Ladder #0"),
+            (BuildType::RopeLadder, "Rope Ladder #0"),
+            (BuildType::Carve, "Carve #0"),
+        ];
+        for (build_type, expected) in types_and_names {
+            let structure = CompletedStructure {
+                id: StructureId(0),
+                project_id: ProjectId::new(&mut rng),
+                build_type,
+                anchor: VoxelCoord::new(0, 0, 0),
+                width: 1,
+                depth: 1,
+                height: 1,
+                completed_tick: 0,
+                name: None,
+            };
+            assert_eq!(structure.display_name(), expected);
+        }
+    }
+
+    #[test]
+    fn serialization_without_name_field_deserializes_as_none() {
+        use crate::prng::GameRng;
+        use crate::types::{BuildType, ProjectId, StructureId};
+
+        // Serialize a structure, strip the "name" field, then deserialize.
+        // This simulates loading an old save that predates the name field.
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id: StructureId(0),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Platform,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 1,
+            depth: 1,
+            height: 1,
+            completed_tick: 100,
+            name: Some("Custom".to_string()),
+        };
+        let mut value: serde_json::Value = serde_json::to_value(&structure).unwrap();
+        value.as_object_mut().unwrap().remove("name");
+        let restored: CompletedStructure = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.name, None);
+        assert_eq!(restored.display_name(), "Platform #0");
     }
 }

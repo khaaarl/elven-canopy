@@ -73,10 +73,13 @@
 //   capacity, voxel counts by type, height, spread, and anchor position.
 //   Used by `tree_info_panel.gd`.
 // - **Structures:** `get_structures()` — returns a `VarArray` of
-//   `VarDictionary`, one per completed structure (id, kind, location, size).
-//   `raycast_structure(origin, dir)` — DDA voxel raycast returning the
-//   `StructureId` under the cursor (or -1 for miss). `get_structure_info(id)`
-//   — returns a `VarDictionary` with detailed info for the info panel.
+//   `VarDictionary`, one per completed structure (id, name, kind, location,
+//   size). `raycast_structure(origin, dir)` — DDA voxel raycast returning
+//   the `StructureId` under the cursor (or -1 for miss).
+//   `get_structure_info(id)` — returns a `VarDictionary` with detailed info
+//   including `name` (display name) and `has_custom_name` (bool) for the
+//   info panel. `rename_structure(id, name)` — set or clear (empty string)
+//   a structure's custom name.
 // - **Species queries:** `is_species_ground_only(species_name)` — used by
 //   the placement controller to decide which nav nodes to show.
 //   `get_all_species_names()` — returns all species names for UI iteration.
@@ -768,6 +771,7 @@ impl SimBridge {
     /// Return all completed structures as a `VarArray` of dictionaries.
     ///
     /// Each dictionary contains: `id` (int), `build_type` (String),
+    /// `name` (String — display name, custom or auto-generated),
     /// `anchor_x/y/z` (int), `width/depth/height` (int).
     /// Used by `structure_list_panel.gd` for the browsable structure list.
     #[func]
@@ -791,6 +795,7 @@ impl SimBridge {
                 BuildType::Carve => "Carve",
             };
             dict.set("build_type", GString::from(build_type_str));
+            dict.set("name", GString::from(&structure.display_name()));
             dict.set("anchor_x", structure.anchor.x);
             dict.set("anchor_y", structure.anchor.y);
             dict.set("anchor_z", structure.anchor.z);
@@ -844,6 +849,8 @@ impl SimBridge {
             BuildType::Carve => "Carve",
         };
         dict.set("build_type", GString::from(build_type_str));
+        dict.set("name", GString::from(&structure.display_name()));
+        dict.set("has_custom_name", structure.name.is_some());
         dict.set("anchor_x", structure.anchor.x);
         dict.set("anchor_y", structure.anchor.y);
         dict.set("anchor_z", structure.anchor.z);
@@ -852,6 +859,21 @@ impl SimBridge {
         dict.set("height", structure.height);
         dict.set("completed_tick", structure.completed_tick as i64);
         dict
+    }
+
+    /// Rename a completed structure. Empty string resets to auto-generated default.
+    #[func]
+    fn rename_structure(&mut self, structure_id: i64, name: GString) {
+        let name_str = name.to_string();
+        let name_opt = if name_str.is_empty() {
+            None
+        } else {
+            Some(name_str)
+        };
+        self.apply_or_send(SimAction::RenameStructure {
+            structure_id: StructureId(structure_id as u64),
+            name: name_opt,
+        });
     }
 
     /// Return positions for any species as a PackedVector3Array, interpolated

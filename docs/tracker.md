@@ -124,7 +124,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-sound-effects        Basic ambient and action sound effects
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
-[ ] F-struct-names         User-editable structure names
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
@@ -182,6 +181,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-sim-commands         SimCommand pipeline
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
 [x] F-struct-basic         Basic structural integrity (flood fill)
+[x] F-struct-names         User-editable structure names
 [x] F-structure-reg        Completed structure registry + UI panel
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
@@ -418,7 +418,7 @@ with appropriate movement cost (climb speed vs walk speed).
 **Related:** F-tree-overlap, F-struct-basic
 
 #### F-struct-names — User-editable structure names
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
 Structures get user-editable names. Default names are bland sequential
 labels (e.g., "Building #5", "Platform #12"). Each structure tracks

@@ -630,6 +630,11 @@ impl SimState {
             SimAction::DesignateCarve { voxels, priority } => {
                 self.designate_carve(voxels, *priority, events);
             }
+            SimAction::RenameStructure { structure_id, name } => {
+                if let Some(structure) = self.structures.get_mut(structure_id) {
+                    structure.name = name.clone();
+                }
+            }
         }
     }
 
@@ -5598,6 +5603,78 @@ mod tests {
         let dir = [0.0, 1.0, 0.0];
         let result = sim.raycast_structure(from, dir, 100);
         assert_eq!(result, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // RenameStructure tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rename_structure_sets_custom_name() {
+        let mut sim = designate_and_complete_build(test_sim(42));
+        assert_eq!(sim.structures.len(), 1);
+        let sid = *sim.structures.keys().next().unwrap();
+        assert_eq!(sim.structures[&sid].display_name(), "Platform #0");
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::RenameStructure {
+                structure_id: sid,
+                name: Some("Great Hall".to_string()),
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+        assert_eq!(sim.structures[&sid].display_name(), "Great Hall");
+    }
+
+    #[test]
+    fn rename_structure_to_none_resets_to_default() {
+        let mut sim = designate_and_complete_build(test_sim(42));
+        let sid = *sim.structures.keys().next().unwrap();
+
+        // Set a custom name.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::RenameStructure {
+                structure_id: sid,
+                name: Some("Great Hall".to_string()),
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+        assert_eq!(sim.structures[&sid].display_name(), "Great Hall");
+
+        // Reset to default.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::RenameStructure {
+                structure_id: sid,
+                name: None,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+        assert_eq!(sim.structures[&sid].display_name(), "Platform #0");
+    }
+
+    #[test]
+    fn rename_nonexistent_structure_is_noop() {
+        let mut sim = test_sim(42);
+        let tick_before = sim.tick;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::RenameStructure {
+                structure_id: StructureId(999),
+                name: Some("Ghost".to_string()),
+            },
+        };
+        // Should not panic.
+        sim.step(&[cmd], sim.tick + 1);
+        assert!(sim.structures.is_empty());
+        assert!(sim.tick > tick_before);
     }
 
     // -----------------------------------------------------------------------

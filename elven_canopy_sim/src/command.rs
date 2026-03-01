@@ -25,6 +25,7 @@
 // - `CreateTask` — create a task at a voxel position (see `task.rs` for
 //   `TaskKind`). The handler in `sim.rs` snaps the position to the nearest
 //   nav node.
+// - `RenameStructure` — set or clear a completed structure's user-editable name.
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -105,6 +106,11 @@ pub enum SimAction {
     DesignateCarve {
         voxels: Vec<VoxelCoord>,
         priority: Priority,
+    },
+    /// Rename a completed structure. `None` resets to the auto-generated default.
+    RenameStructure {
+        structure_id: StructureId,
+        name: Option<String>,
     },
 }
 

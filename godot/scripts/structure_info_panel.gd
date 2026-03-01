@@ -1,21 +1,30 @@
 ## Structure info panel displayed on the right side of the screen.
 ##
 ## Shows information about the currently selected structure. Built
-## programmatically as a PanelContainer with labels and a Zoom button.
-## Sits on the CanvasLayer alongside the creature info panel.
+## programmatically as a PanelContainer with an editable name LineEdit,
+## type/ID labels, dimensions, position, and a Zoom button. Sits on the
+## CanvasLayer alongside the creature info panel.
+##
+## The editable name LineEdit shows the structure's display name (custom or
+## auto-generated). On Enter or focus loss, emits rename_requested so main.gd
+## can call bridge.rename_structure(). Clearing the field resets to the
+## auto-generated default.
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
-## Shows type, ID, dimensions, and position. Updated every frame by main.gd.
+## Updated every frame by main.gd while visible.
 ##
 ## See also: selection_controller.gd which triggers show/hide,
 ## creature_info_panel.gd for the creature equivalent,
-## main.gd which wires everything together.
+## main.gd which wires everything together,
+## sim_bridge.rs for rename_structure().
 
 extends PanelContainer
 
 signal zoom_requested(x: float, y: float, z: float)
 signal panel_closed
+signal rename_requested(structure_id: int, new_name: String)
 
+var _name_edit: LineEdit
 var _type_label: Label
 var _id_label: Label
 var _dimensions_label: Label
@@ -24,6 +33,11 @@ var _zoom_button: Button
 var _anchor_x: float = 0.0
 var _anchor_y: float = 0.0
 var _anchor_z: float = 0.0
+var _current_structure_id: int = -1
+## Tracks whether the user is actively editing the name field. While true,
+## _update_info() skips overwriting the LineEdit text so the user's in-progress
+## edits aren't clobbered by per-frame refreshes.
+var _editing_name: bool = false
 
 
 func _ready() -> void:
@@ -60,6 +74,15 @@ func _ready() -> void:
 	# Separator.
 	vbox.add_child(HSeparator.new())
 
+	# Editable name.
+	_name_edit = LineEdit.new()
+	_name_edit.placeholder_text = "Structure name..."
+	_name_edit.add_theme_font_size_override("font_size", 16)
+	_name_edit.text_submitted.connect(_on_name_submitted)
+	_name_edit.focus_entered.connect(func(): _editing_name = true)
+	_name_edit.focus_exited.connect(_on_name_focus_exited)
+	vbox.add_child(_name_edit)
+
 	# Type.
 	_type_label = Label.new()
 	vbox.add_child(_type_label)
@@ -91,6 +114,7 @@ func _ready() -> void:
 
 
 func show_structure(info: Dictionary) -> void:
+	_editing_name = false
 	_update_info(info)
 	visible = true
 
@@ -100,25 +124,47 @@ func update_info(info: Dictionary) -> void:
 
 
 func hide_panel() -> void:
+	_editing_name = false
+	if _name_edit.has_focus():
+		_name_edit.release_focus()
 	visible = false
 
 
 func _update_info(info: Dictionary) -> void:
 	var build_type: String = info.get("build_type", "?")
 	var sid: int = info.get("id", 0)
+	var display_name: String = info.get("name", "")
 	var w: int = info.get("width", 0)
 	var d: int = info.get("depth", 0)
 	var h: int = info.get("height", 0)
 	_anchor_x = info.get("anchor_x", 0)
 	_anchor_y = info.get("anchor_y", 0)
 	_anchor_z = info.get("anchor_z", 0)
+	_current_structure_id = sid
 
+	if not _editing_name:
+		_name_edit.text = display_name
 	_type_label.text = "Type: %s" % build_type
 	_id_label.text = "ID: #%d" % sid
 	_dimensions_label.text = "Dimensions: %d x %d x %d" % [w, d, h]
 	_position_label.text = (
 		"Position: (%d, %d, %d)" % [int(_anchor_x), int(_anchor_y), int(_anchor_z)]
 	)
+
+
+func _on_name_submitted(new_text: String) -> void:
+	_editing_name = false
+	_name_edit.release_focus()
+	if _current_structure_id >= 0:
+		rename_requested.emit(_current_structure_id, new_text)
+
+
+func _on_name_focus_exited() -> void:
+	if not _editing_name:
+		return
+	_editing_name = false
+	if _current_structure_id >= 0:
+		rename_requested.emit(_current_structure_id, _name_edit.text)
 
 
 func _on_zoom_pressed() -> void:

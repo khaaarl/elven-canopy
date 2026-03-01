@@ -1,8 +1,9 @@
 ## Full-screen structure list overlay showing all completed structures.
 ##
 ## Displays a scrollable list of structure cards, each showing a sequential ID
-## (e.g. "#0"), the build type (Platform, Bridge, etc.), and a "Zoom" button
-## that emits zoom_to_structure to move the camera to the structure's anchor.
+## (e.g. "#0"), the display name (custom name or default like "Platform #0"),
+## and a "Zoom" button that emits zoom_to_structure to move the camera to the
+## structure's anchor.
 ## The panel does NOT pause the sim (unlike pause_menu.gd).
 ##
 ## Data flow: main.gd calls update_structures(data) each frame while the panel
@@ -162,7 +163,7 @@ func _create_card(structure: Dictionary) -> PanelContainer:
 	id_label.custom_minimum_size = Vector2(60, 0)
 	hbox.add_child(id_label)
 
-	# Build type label.
+	# Display name label (custom name or auto-generated default).
 	var type_label := Label.new()
 	type_label.name = "TypeLabel"
 	type_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -188,7 +189,7 @@ func _create_card(structure: Dictionary) -> PanelContainer:
 
 func _update_card(card: PanelContainer, structure: Dictionary) -> void:
 	var sid: int = structure.get("id", 0)
-	var build_type: String = structure.get("build_type", "?")
+	var display_name: String = structure.get("name", "")
 
 	var id_label: Label = card.find_child("IdLabel", true, false)
 	if id_label:
@@ -196,4 +197,4 @@ func _update_card(card: PanelContainer, structure: Dictionary) -> void:
 
 	var type_label: Label = card.find_child("TypeLabel", true, false)
 	if type_label:
-		type_label.text = build_type
+		type_label.text = display_name
