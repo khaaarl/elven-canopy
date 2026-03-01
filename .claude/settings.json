@@ -75,6 +75,7 @@
       "Bash(wc:*)",
       "Bash(which:*)",
       "Bash(xargs dirname:*)",
+      "Bash(xxd:*)",
       "WebFetch",
       "WebSearch"
     ],
