@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "elven_canopy_prng",
+    "elven_canopy_lang",
     "elven_canopy_sim",
     "elven_canopy_gdext",
     "elven_canopy_music",

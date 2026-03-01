@@ -1,0 +1,13 @@
+[package]
+name = "elven_canopy_lang"
+version = "0.1.0"
+edition = "2024"
+description = "Shared Vaelith constructed language types, lexicon, and name generation"
+
+[lints]
+workspace = true
+
+[dependencies]
+elven_canopy_prng = { path = "../elven_canopy_prng" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
