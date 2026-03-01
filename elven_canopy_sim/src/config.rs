@@ -619,6 +619,12 @@ pub struct GameConfig {
     /// materializes as solid.
     pub build_work_ticks_per_voxel: u64,
 
+    /// Ticks of work per voxel during carving (removal). An elf must
+    /// accumulate this many activations-worth of work before one voxel is
+    /// carved to Air. Defaults to `build_work_ticks_per_voxel` if absent.
+    #[serde(default = "default_carve_ticks")]
+    pub carve_work_ticks_per_voxel: u64,
+
     /// Tree generation parameters — energy-based recursive growth profile.
     pub tree_profile: TreeProfile,
 
@@ -642,6 +648,10 @@ pub struct GameConfig {
     /// configs without this field use `StructuralConfig::default()`.
     #[serde(default)]
     pub structural: StructuralConfig,
+}
+
+fn default_carve_ticks() -> u64 {
+    1000
 }
 
 fn default_terrain_noise_scale() -> f32 {
@@ -786,6 +796,7 @@ impl Default for GameConfig {
             starting_mana: 100.0,
             starting_mana_capacity: 500.0,
             build_work_ticks_per_voxel: 1000,
+            carve_work_ticks_per_voxel: 1000,
             tree_profile: TreeProfile::fantasy_mega(),
             species,
             terrain_max_height: 4,

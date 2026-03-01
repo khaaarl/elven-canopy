@@ -1,8 +1,9 @@
 ## Renders the tree's voxels using MultiMeshInstance3D for batched drawing.
 ##
-## Built once at startup (static mesh — not updated per frame). Reads trunk,
-## branch, root, leaf, fruit, and dirt voxel positions from SimBridge as flat
-## PackedInt32Array (x,y,z triples) and creates six MultiMeshInstance3D
+## Built at startup via setup(), then refreshed every frame via refresh() so
+## that carved voxels disappear and new fruit appears in real time. Reads
+## trunk, branch, root, leaf, fruit, and dirt voxel positions from SimBridge
+## as flat PackedInt32Array (x,y,z triples) and creates six MultiMeshInstance3D
 ## children:
 ## - Trunk voxels: dark brown (0.35, 0.22, 0.10) — unit BoxMesh
 ## - Branch voxels: lighter brown (0.45, 0.30, 0.15) — unit BoxMesh
@@ -28,82 +29,119 @@
 ## get_dirt_voxels(), tree_gen.rs
 ## (Rust) for how the voxel geometry is generated via energy-based recursive
 ## segment growth, sim.rs for fruit spawning logic, main.gd which creates
-## this node and calls setup().
+## this node and calls setup() + refresh().
 
 extends Node3D
 
+var _bridge: SimBridge
 var _trunk_mesh_instance: MultiMeshInstance3D
 var _branch_mesh_instance: MultiMeshInstance3D
 var _leaf_mesh_instance: MultiMeshInstance3D
 var _root_mesh_instance: MultiMeshInstance3D
 var _fruit_mesh_instance: MultiMeshInstance3D
 var _dirt_mesh_instance: MultiMeshInstance3D
+## Cached leaf texture — generated once, reused across refreshes.
+var _leaf_texture: ImageTexture
 
 
 ## Call after SimBridge is initialized to build the tree meshes.
 func setup(bridge: SimBridge) -> void:
-	# --- Trunk ---
-	var trunk_voxels := bridge.get_trunk_voxels()
-	var trunk_count := trunk_voxels.size() / 3
-	if trunk_count > 0:
-		_trunk_mesh_instance = _create_voxel_multimesh(
-			trunk_voxels, trunk_count, Color(0.35, 0.22, 0.10)  # Dark brown
-		)
-		_trunk_mesh_instance.name = "TrunkMultiMesh"
-		add_child(_trunk_mesh_instance)
+	_bridge = bridge
+	_leaf_texture = _generate_leaf_texture()
+	refresh()
 
-	# --- Branches ---
-	var branch_voxels := bridge.get_branch_voxels()
-	var branch_count := branch_voxels.size() / 3
-	if branch_count > 0:
-		_branch_mesh_instance = _create_voxel_multimesh(
-			branch_voxels, branch_count, Color(0.45, 0.30, 0.15)  # Lighter brown
-		)
-		_branch_mesh_instance.name = "BranchMultiMesh"
-		add_child(_branch_mesh_instance)
 
-	# --- Roots ---
-	var root_voxels := bridge.get_root_voxels()
-	var root_count := root_voxels.size() / 3
-	if root_count > 0:
-		_root_mesh_instance = _create_voxel_multimesh(
-			root_voxels, root_count, Color(0.30, 0.20, 0.12)  # Dark earthy brown
-		)
-		_root_mesh_instance.name = "RootMultiMesh"
-		add_child(_root_mesh_instance)
+## Rebuild all tree MultiMesh instances from current voxel data.
+## Called every frame by main.gd so carved voxels and new fruit are visible.
+func refresh() -> void:
+	_refresh_layer("trunk")
+	_refresh_layer("branch")
+	_refresh_layer("root")
+	_refresh_layer("leaf")
+	_refresh_layer("fruit")
+	_refresh_layer("dirt")
 
-	# --- Leaves ---
-	var leaf_voxels := bridge.get_leaf_voxels()
-	var leaf_count := leaf_voxels.size() / 3
-	if leaf_count > 0:
-		_leaf_mesh_instance = _create_leaf_multimesh(leaf_voxels, leaf_count)
-		_leaf_mesh_instance.name = "LeafMultiMesh"
-		add_child(_leaf_mesh_instance)
 
-	# --- Fruit ---
-	var fruit_voxels := bridge.get_fruit_voxels()
-	var fruit_count := fruit_voxels.size() / 3
-	if fruit_count > 0:
-		_fruit_mesh_instance = _create_fruit_multimesh(fruit_voxels, fruit_count)
-		_fruit_mesh_instance.name = "FruitMultiMesh"
-		add_child(_fruit_mesh_instance)
+func _refresh_layer(layer: String) -> void:
+	# Free old instance.
+	var old: MultiMeshInstance3D
+	match layer:
+		"trunk":
+			old = _trunk_mesh_instance
+		"branch":
+			old = _branch_mesh_instance
+		"root":
+			old = _root_mesh_instance
+		"leaf":
+			old = _leaf_mesh_instance
+		"fruit":
+			old = _fruit_mesh_instance
+		"dirt":
+			old = _dirt_mesh_instance
+	if old:
+		old.queue_free()
 
-	# --- Dirt ---
-	var dirt_voxels := bridge.get_dirt_voxels()
-	var dirt_count := dirt_voxels.size() / 3
-	if dirt_count > 0:
-		_dirt_mesh_instance = _create_voxel_multimesh(
-			dirt_voxels, dirt_count, Color(0.25, 0.45, 0.2)  # Grassy green
-		)
-		_dirt_mesh_instance.name = "DirtMultiMesh"
-		add_child(_dirt_mesh_instance)
+	# Get current voxels from bridge.
+	var voxels: PackedInt32Array
+	match layer:
+		"trunk":
+			voxels = _bridge.get_trunk_voxels()
+		"branch":
+			voxels = _bridge.get_branch_voxels()
+		"root":
+			voxels = _bridge.get_root_voxels()
+		"leaf":
+			voxels = _bridge.get_leaf_voxels()
+		"fruit":
+			voxels = _bridge.get_fruit_voxels()
+		"dirt":
+			voxels = _bridge.get_dirt_voxels()
 
-	print(
-		(
-			"TreeRenderer: %d trunk, %d branch, %d root, %d leaf, %d fruit, %d dirt voxels"
-			% [trunk_count, branch_count, root_count, leaf_count, fruit_count, dirt_count]
-		)
-	)
+	var count := voxels.size() / 3
+	if count == 0:
+		match layer:
+			"trunk":
+				_trunk_mesh_instance = null
+			"branch":
+				_branch_mesh_instance = null
+			"root":
+				_root_mesh_instance = null
+			"leaf":
+				_leaf_mesh_instance = null
+			"fruit":
+				_fruit_mesh_instance = null
+			"dirt":
+				_dirt_mesh_instance = null
+		return
+
+	var instance: MultiMeshInstance3D
+	match layer:
+		"trunk":
+			instance = _create_voxel_multimesh(voxels, count, Color(0.35, 0.22, 0.10))
+			instance.name = "TrunkMultiMesh"
+			_trunk_mesh_instance = instance
+		"branch":
+			instance = _create_voxel_multimesh(voxels, count, Color(0.45, 0.30, 0.15))
+			instance.name = "BranchMultiMesh"
+			_branch_mesh_instance = instance
+		"root":
+			instance = _create_voxel_multimesh(voxels, count, Color(0.30, 0.20, 0.12))
+			instance.name = "RootMultiMesh"
+			_root_mesh_instance = instance
+		"leaf":
+			instance = _create_leaf_multimesh(voxels, count)
+			instance.name = "LeafMultiMesh"
+			_leaf_mesh_instance = instance
+		"fruit":
+			instance = _create_fruit_multimesh(voxels, count)
+			instance.name = "FruitMultiMesh"
+			_fruit_mesh_instance = instance
+		"dirt":
+			instance = _create_voxel_multimesh(voxels, count, Color(0.25, 0.45, 0.20))
+			instance.name = "DirtMultiMesh"
+			_dirt_mesh_instance = instance
+
+	add_child(instance)
 
 
 func _create_voxel_multimesh(
@@ -141,7 +179,7 @@ func _create_leaf_multimesh(voxels: PackedInt32Array, count: int) -> MultiMeshIn
 
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(1.0, 1.0, 1.0, 1.0)
-	mat.albedo_texture = _generate_leaf_texture()
+	mat.albedo_texture = _leaf_texture
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 	mat.alpha_scissor_threshold = 0.5
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED  # Visible from inside too

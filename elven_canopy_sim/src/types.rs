@@ -286,6 +286,8 @@ pub enum BuildType {
     WoodLadder,
     /// A rope ladder — hangs from the topmost anchor point.
     RopeLadder,
+    /// Carve (remove) solid voxels to Air. The inverse of construction.
+    Carve,
 }
 
 impl BuildType {
@@ -305,6 +307,11 @@ impl BuildType {
         )
     }
 
+    /// Returns true for the Carve build type (removes voxels instead of placing them).
+    pub fn is_carve(self) -> bool {
+        matches!(self, BuildType::Carve)
+    }
+
     /// Map a build type to the voxel type it produces when materialized.
     pub fn to_voxel_type(self) -> VoxelType {
         match self {
@@ -315,6 +322,7 @@ impl BuildType {
             BuildType::Building => VoxelType::BuildingInterior,
             BuildType::WoodLadder => VoxelType::WoodLadder,
             BuildType::RopeLadder => VoxelType::RopeLadder,
+            BuildType::Carve => VoxelType::Air,
         }
     }
 }
@@ -694,6 +702,14 @@ mod tests {
         assert!(!BuildType::Wall.allows_tree_overlap());
         assert!(!BuildType::Enclosure.allows_tree_overlap());
         assert!(!BuildType::Building.allows_tree_overlap());
+        assert!(!BuildType::Carve.allows_tree_overlap());
+    }
+
+    #[test]
+    fn carve_build_type() {
+        assert_eq!(BuildType::Carve.to_voxel_type(), VoxelType::Air);
+        assert!(BuildType::Carve.is_carve());
+        assert!(!BuildType::Platform.is_carve());
     }
 
     #[test]

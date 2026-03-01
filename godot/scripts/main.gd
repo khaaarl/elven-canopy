@@ -76,6 +76,7 @@ var _placement_controller: Node3D
 ## Renderers for new species (Boar, Deer, Monkey, Squirrel). Receive
 ## render_tick each frame for smooth creature interpolation.
 var _extra_renderers: Array = []
+var _tree_renderer: Node3D
 var _bp_renderer: Node3D
 var _bldg_renderer: Node3D
 var _ladder_renderer: Node3D
@@ -263,9 +264,9 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Cache tick duration for the frame accumulator.
 	_seconds_per_tick = bridge.tick_duration_ms() / 1000.0
 
-	# Set up tree renderer.
-	var tree_renderer = $TreeRenderer
-	tree_renderer.setup(bridge)
+	# Set up tree renderer (refreshed every frame for carve updates).
+	_tree_renderer = $TreeRenderer
+	_tree_renderer.setup(bridge)
 
 	# Set up elf renderer.
 	var elf_renderer = $ElfRenderer
@@ -567,6 +568,10 @@ func _process(delta: float) -> void:
 	for r in _extra_renderers:
 		r.set_render_tick(render_tick)
 	_selector.set_render_tick(render_tick)
+
+	# Refresh tree renderer so carved voxels disappear and new fruit appears.
+	if _tree_renderer:
+		_tree_renderer.refresh()
 
 	# Refresh blueprint/construction renderer so materialized voxels appear
 	# as solid wood and ghost cubes disappear as voxels are placed.

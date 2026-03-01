@@ -55,6 +55,16 @@
 //   voxels). `get_platform_voxels()` returns flat (x,y,z) triples for
 //   voxels materialized by elf construction work. Both consumed by
 //   `blueprint_renderer.gd`.
+// - **Carving:** `designate_carve(x,y,z)` and
+//   `designate_carve_rect(x,y,z,w,d,h)` designate voxels for removal.
+//   `validate_carve_preview(x,y,z,w,d,h)` performs structural integrity
+//   analysis on the proposed carve region and returns `{tier, message}`
+//   for ghost preview coloring (Ok/Warning/Blocked).
+//   `get_carve_blueprint_voxels()` returns flat (x,y,z) triples for
+//   uncarved voxels in carve blueprints, consumed by
+//   `blueprint_renderer.gd`. All voxel getters (trunk, branch, leaf,
+//   root, dirt, fruit, platform) skip voxels carved to Air so they
+//   disappear from rendering immediately.
 // - **Stats:** `creature_count_by_name(species_name)` — generic replacement
 //   for `elf_count()` / `capybara_count()` (which remain as thin wrappers).
 //   Also `fruit_count()`, `home_tree_mana()`.
@@ -245,6 +255,10 @@ impl SimBridge {
         };
         let mut arr = PackedInt32Array::new();
         for v in &tree.trunk_voxels {
+            // Skip voxels carved to Air so the renderer doesn't draw them.
+            if sim.world.get(*v) == VoxelType::Air {
+                continue;
+            }
             arr.push(v.x);
             arr.push(v.y);
             arr.push(v.z);
@@ -264,6 +278,10 @@ impl SimBridge {
         };
         let mut arr = PackedInt32Array::new();
         for v in &tree.branch_voxels {
+            // Skip voxels carved to Air so the renderer doesn't draw them.
+            if sim.world.get(*v) == VoxelType::Air {
+                continue;
+            }
             arr.push(v.x);
             arr.push(v.y);
             arr.push(v.z);
@@ -283,6 +301,10 @@ impl SimBridge {
         };
         let mut arr = PackedInt32Array::new();
         for v in &tree.leaf_voxels {
+            // Skip voxels carved to Air so the renderer doesn't draw them.
+            if sim.world.get(*v) == VoxelType::Air {
+                continue;
+            }
             arr.push(v.x);
             arr.push(v.y);
             arr.push(v.z);
@@ -302,6 +324,10 @@ impl SimBridge {
         };
         let mut arr = PackedInt32Array::new();
         for v in &tree.root_voxels {
+            // Skip voxels carved to Air so the renderer doesn't draw them.
+            if sim.world.get(*v) == VoxelType::Air {
+                continue;
+            }
             arr.push(v.x);
             arr.push(v.y);
             arr.push(v.z);
@@ -321,6 +347,10 @@ impl SimBridge {
         };
         let mut arr = PackedInt32Array::new();
         for v in &tree.dirt_voxels {
+            // Skip voxels carved to Air so the renderer doesn't draw them.
+            if sim.world.get(*v) == VoxelType::Air {
+                continue;
+            }
             arr.push(v.x);
             arr.push(v.y);
             arr.push(v.z);
@@ -340,6 +370,10 @@ impl SimBridge {
         };
         let mut arr = PackedInt32Array::new();
         for v in &tree.fruit_positions {
+            // Skip voxels carved to Air so the renderer doesn't draw them.
+            if sim.world.get(*v) == VoxelType::Air {
+                continue;
+            }
             arr.push(v.x);
             arr.push(v.y);
             arr.push(v.z);
@@ -749,6 +783,7 @@ impl SimBridge {
                 BuildType::Building => "Building",
                 BuildType::WoodLadder => "WoodLadder",
                 BuildType::RopeLadder => "RopeLadder",
+                BuildType::Carve => "Carve",
             };
             dict.set("build_type", GString::from(build_type_str));
             dict.set("anchor_x", structure.anchor.x);
@@ -1086,6 +1121,125 @@ impl SimBridge {
             .map_or_else(GString::new, GString::from)
     }
 
+    /// Designate a rectangular prism of voxels for carving (removal to Air).
+    ///
+    /// `x, y, z` is the min-corner. `width`, `depth`, `height` are dimensions
+    /// in X, Z, Y respectively. Returns a validation message (empty = success).
+    #[func]
+    fn designate_carve(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        width: i32,
+        depth: i32,
+        height: i32,
+    ) -> GString {
+        let w = width.max(1);
+        let d = depth.max(1);
+        let h = height.max(1);
+        let mut voxels = Vec::with_capacity((w * d * h) as usize);
+        for dy in 0..h {
+            for dx in 0..w {
+                for dz in 0..d {
+                    voxels.push(VoxelCoord::new(x + dx, y + dy, z + dz));
+                }
+            }
+        }
+        let action = SimAction::DesignateCarve {
+            voxels,
+            priority: Priority::Normal,
+        };
+        if self.is_multiplayer_mode {
+            self.apply_or_send(action);
+            return GString::new();
+        }
+        let Some(sim) = &mut self.sim else {
+            return GString::new();
+        };
+        let player_id = sim.player_id;
+        let next_tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_id,
+            tick: next_tick,
+            action,
+        };
+        sim.step(&[cmd], next_tick);
+        sim.last_build_message
+            .as_deref()
+            .map_or_else(GString::new, GString::from)
+    }
+
+    /// Preview-validate a rectangular carve placement.
+    ///
+    /// Counts carvable solid voxels (not Air, not ForestFloor) in the region.
+    /// Returns a `VarDictionary` with `"tier"` and `"message"` keys.
+    #[func]
+    fn validate_carve_preview(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        width: i32,
+        depth: i32,
+        height: i32,
+    ) -> VarDictionary {
+        let Some(sim) = &self.sim else {
+            return Self::preview_result("Blocked", "Simulation not initialized.");
+        };
+        let w = width.max(1);
+        let d = depth.max(1);
+        let h = height.max(1);
+
+        // Bounds check.
+        for dy in 0..h {
+            for dx in 0..w {
+                for dz in 0..d {
+                    let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
+                    if !sim.world.in_bounds(coord) {
+                        return Self::preview_result("Blocked", "Carve position is out of bounds.");
+                    }
+                }
+            }
+        }
+
+        // Count carvable voxels (solid and not ForestFloor).
+        let mut carvable_count = 0;
+        for dy in 0..h {
+            for dx in 0..w {
+                for dz in 0..d {
+                    let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
+                    let vt = sim.world.get(coord);
+                    if vt.is_solid() && vt != VoxelType::ForestFloor {
+                        carvable_count += 1;
+                    }
+                }
+            }
+        }
+
+        if carvable_count == 0 {
+            return Self::preview_result("Blocked", "Nothing to carve.");
+        }
+
+        // Collect carvable coords for structural validation.
+        let mut carve_coords = Vec::new();
+        for dy in 0..h {
+            for dx in 0..w {
+                for dz in 0..d {
+                    let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
+                    let vt = sim.world.get(coord);
+                    if vt.is_solid() && vt != VoxelType::ForestFloor {
+                        carve_coords.push(coord);
+                    }
+                }
+            }
+        }
+
+        let validation =
+            structural::validate_carve_fast(&sim.world, &sim.face_data, &carve_coords, &sim.config);
+        Self::preview_result_from_tier(validation.tier, &validation.message)
+    }
+
     /// Validate whether a building can be placed at the given anchor.
     ///
     /// Checks that all foundation voxels (at anchor.y) are solid and all
@@ -1335,6 +1489,7 @@ impl SimBridge {
     ///
     /// Only includes voxels that are still Air in the world — voxels that
     /// have already been materialized by construction work are excluded.
+    /// Skips Carve blueprints (those are rendered separately).
     /// Used by the blueprint renderer to show translucent ghost cubes for
     /// planned (not-yet-built) construction. Same format as
     /// `get_trunk_voxels()` etc.
@@ -1345,12 +1500,37 @@ impl SimBridge {
         };
         let mut arr = PackedInt32Array::new();
         for bp in sim.blueprints.values() {
-            if bp.state == BlueprintState::Designated {
+            if bp.state == BlueprintState::Designated && bp.build_type != BuildType::Carve {
                 let target = bp.build_type.to_voxel_type();
                 for v in &bp.voxels {
                     // A voxel is "unbuilt" if it hasn't been converted to the
                     // target type yet (whether currently Air, Leaf, or Fruit).
                     if sim.world.get(*v) != target {
+                        arr.push(v.x);
+                        arr.push(v.y);
+                        arr.push(v.z);
+                    }
+                }
+            }
+        }
+        arr
+    }
+
+    /// Return voxels from `Designated` Carve blueprints that are still solid
+    /// (not yet carved) as a flat PackedInt32Array of (x,y,z) triples.
+    ///
+    /// Used by the blueprint renderer to show translucent red-orange ghost
+    /// cubes for planned carve operations.
+    #[func]
+    fn get_carve_blueprint_voxels(&self) -> PackedInt32Array {
+        let Some(sim) = &self.sim else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for bp in sim.blueprints.values() {
+            if bp.state == BlueprintState::Designated && bp.build_type == BuildType::Carve {
+                for v in &bp.voxels {
+                    if sim.world.get(*v) != VoxelType::Air {
                         arr.push(v.x);
                         arr.push(v.y);
                         arr.push(v.z);
@@ -1379,6 +1559,10 @@ impl SimBridge {
         let mut arr = PackedInt32Array::new();
         for &(coord, voxel_type) in &sim.placed_voxels {
             if voxel_type == VoxelType::BuildingInterior || voxel_type.is_ladder() {
+                continue;
+            }
+            // Skip voxels that have been carved to Air.
+            if sim.world.get(coord) == VoxelType::Air {
                 continue;
             }
             arr.push(coord.x);

@@ -6,6 +6,8 @@
 ## - **Ladder ghost panels** (translucent light-blue, thin oriented panels):
 ##   unbuilt ladder blueprint voxels, shown as thin panels on the correct face
 ##   rather than full cubes.
+## - **Carve ghost cubes** (translucent red-orange, no_depth_test): voxels
+##   designated for carving that haven't been removed yet.
 ## - **Platform cubes** (solid brown): voxels that elves have already
 ##   materialized through construction work. Excludes BuildingInterior and
 ##   ladder voxels, which are rendered by building_renderer.gd and
@@ -45,9 +47,11 @@ const DIRECTION_OFFSETS: Array[Vector3] = [
 
 var _bridge: SimBridge
 var _ghost_instance: MultiMeshInstance3D
+var _carve_ghost_instance: MultiMeshInstance3D
 var _platform_instance: MultiMeshInstance3D
 var _ladder_ghost_instance: MultiMeshInstance3D
 var _ghost_material: StandardMaterial3D
+var _carve_material: StandardMaterial3D
 var _platform_material: StandardMaterial3D
 var _face_rotations: Array[Basis] = []
 
@@ -67,6 +71,13 @@ func _build_materials() -> void:
 	_ghost_material.no_depth_test = true
 	_ghost_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 
+	# Carve ghost material: translucent red-orange for uncarved blueprint voxels.
+	_carve_material = StandardMaterial3D.new()
+	_carve_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_carve_material.albedo_color = Color(0.9, 0.4, 0.2, 0.35)
+	_carve_material.no_depth_test = true
+	_carve_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+
 	# Platform material: solid brown for materialized construction voxels.
 	_platform_material = StandardMaterial3D.new()
 	_platform_material.albedo_color = Color(0.50, 0.35, 0.18)
@@ -83,6 +94,7 @@ func _build_rotations() -> void:
 
 func refresh() -> void:
 	_refresh_ghosts()
+	_refresh_carve_ghosts()
 	_refresh_platforms()
 	_refresh_ladder_ghosts()
 
@@ -99,6 +111,20 @@ func _refresh_ghosts() -> void:
 
 	_ghost_instance = _build_multimesh(voxels, count, _ghost_material, "BlueprintMultiMesh")
 	add_child(_ghost_instance)
+
+
+func _refresh_carve_ghosts() -> void:
+	if _carve_ghost_instance:
+		_carve_ghost_instance.queue_free()
+		_carve_ghost_instance = null
+
+	var voxels := _bridge.get_carve_blueprint_voxels()
+	var count := voxels.size() / 3
+	if count == 0:
+		return
+
+	_carve_ghost_instance = _build_multimesh(voxels, count, _carve_material, "CarveMultiMesh")
+	add_child(_carve_ghost_instance)
 
 
 func _refresh_platforms() -> void:

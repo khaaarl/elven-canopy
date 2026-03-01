@@ -1,4 +1,4 @@
-## Construction mode controller with platform, building, and ladder placement.
+## Construction mode controller with platform, building, ladder, and carve placement.
 ##
 ## Manages the construction mode lifecycle: toggling on/off, showing a
 ## right-side panel with build options, enabling voxel-snap on the orbital
@@ -22,6 +22,8 @@
 ##     Wood ladders must be adjacent to solid; rope ladders hang from top.
 ##     Orientation selectable via panel button.
 ##     Validation: air/convertible column + anchoring check.
+##   "carve" — remove solid voxels to Air (Width x Depth x Height).
+##     Validation: at least one carvable solid voxel (not Air/ForestFloor).
 ##
 ## In PLACING mode, a translucent ghost follows the camera's focus voxel.
 ## For platforms/buildings it's a rectangle; for ladders it's a thin panel
@@ -91,11 +93,12 @@ var _last_preview_height: int = -1
 var _last_preview_orientation: int = -1
 var _last_preview_kind: int = -1
 
-## Current build mode: "platform", "building", or "ladder".
+## Current build mode: "platform", "building", "ladder", or "carve".
 var _build_mode: String = "platform"
 
-## Platform/building dimensions. Width and Depth range depends on mode:
-## platform [1, 10], building [3, 10]. Height is building/ladder [1, 5/10].
+## Platform/building/carve dimensions. Width and Depth range depends on mode:
+## platform [1, 10], building [3, 10], carve [1, 10]. Height is
+## building/ladder/carve [1, 5/10].
 var _width: int = 1
 var _depth: int = 1
 var _height: int = 1
@@ -220,6 +223,12 @@ func _build_panel() -> void:
 	ladder_btn.text = "Ladder [L]"
 	ladder_btn.pressed.connect(_enter_placing_ladder)
 	vbox.add_child(ladder_btn)
+
+	# Carve button.
+	var carve_btn := Button.new()
+	carve_btn.text = "Carve [C]"
+	carve_btn.pressed.connect(_enter_placing_carve)
+	vbox.add_child(carve_btn)
 
 	# Placing controls (dimension spinners + Construct button).
 	# Hidden by default, shown when entering PLACING mode.
@@ -438,6 +447,10 @@ func _enter_placing_ladder() -> void:
 	_enter_placing("ladder")
 
 
+func _enter_placing_carve() -> void:
+	_enter_placing("carve")
+
+
 func _enter_placing(mode: String) -> void:
 	_build_mode = mode
 	_placing = true
@@ -463,6 +476,15 @@ func _enter_placing(mode: String) -> void:
 		_ladder_kind = 0
 		_orientation_label.text = ORIENTATION_NAMES.get(0, "East (+X)")
 		_kind_label.text = "[Wood]"
+	elif _build_mode == "carve":
+		_width_row.visible = true
+		_depth_row.visible = true
+		_height_row.visible = true
+		_orientation_row.visible = false
+		_kind_row.visible = false
+		_set_width(1)
+		_set_depth(1)
+		_set_height(1)
 	else:
 		_width_row.visible = true
 		_depth_row.visible = true
@@ -471,6 +493,7 @@ func _enter_placing(mode: String) -> void:
 		_kind_row.visible = false
 		_set_width(1)
 		_set_depth(1)
+	_construct_btn.text = "Carve" if _build_mode == "carve" else "Construct"
 	_update_ghost_size()
 
 
@@ -579,6 +602,9 @@ func _update_ghost_size() -> void:
 			# Building ghost: width x (height + 1 for foundation) x depth.
 			_ghost.mesh.size = Vector3(_width, _height + 1, _depth)
 			_ghost.basis = Basis.IDENTITY
+		elif _build_mode == "carve":
+			_ghost.mesh.size = Vector3(_width, _height, _depth)
+			_ghost.basis = Basis.IDENTITY
 		else:
 			_ghost.mesh.size = Vector3(_width, 1.0, _depth)
 			_ghost.basis = Basis.IDENTITY
@@ -624,6 +650,12 @@ func _process(_delta: float) -> void:
 			_focus_voxel.y + ghost_h / 2.0,
 			min_corner.z + _depth / 2.0,
 		)
+	elif _build_mode == "carve":
+		_ghost.global_position = Vector3(
+			min_corner.x + _width / 2.0,
+			_focus_voxel.y + _height / 2.0,
+			min_corner.z + _depth / 2.0,
+		)
 	else:
 		_ghost.global_position = Vector3(
 			min_corner.x + _width / 2.0,
@@ -662,6 +694,10 @@ func _process(_delta: float) -> void:
 			result = _bridge.validate_building_preview(
 				min_corner.x, _focus_voxel.y, min_corner.z, _width, _depth, _height
 			)
+		elif _build_mode == "carve":
+			result = _bridge.validate_carve_preview(
+				min_corner.x, min_corner.y, min_corner.z, _width, _depth, _height
+			)
 		else:
 			result = _bridge.validate_platform_preview(
 				min_corner.x, min_corner.y, min_corner.z, _width, _depth
@@ -687,7 +723,10 @@ func _process(_delta: float) -> void:
 
 	_construct_btn.disabled = not _focus_valid
 	if _validation_tier == "Ok":
-		_ghost_material.albedo_color = Color(0.3, 0.5, 1.0, 0.4)
+		if _build_mode == "carve":
+			_ghost_material.albedo_color = Color(0.9, 0.4, 0.2, 0.4)
+		else:
+			_ghost_material.albedo_color = Color(0.3, 0.5, 1.0, 0.4)
 	elif _validation_tier == "Warning":
 		_ghost_material.albedo_color = Color(1.0, 0.85, 0.3, 0.4)
 	else:
@@ -705,7 +744,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 		# Dispatch based on placing state.
 		if not _placing:
-			# Mode-entry shortcuts: P, G, L, ESC.
+			# Mode-entry shortcuts: P, G, L, C, ESC.
 			if key.keycode == KEY_P:
 				_enter_placing_platform()
 				get_viewport().set_input_as_handled()
@@ -714,6 +753,9 @@ func _unhandled_input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 			elif key.keycode == KEY_L:
 				_enter_placing_ladder()
+				get_viewport().set_input_as_handled()
+			elif key.keycode == KEY_C:
+				_enter_placing_carve()
 				get_viewport().set_input_as_handled()
 			elif key.keycode == KEY_ESCAPE:
 				_deactivate()
@@ -754,6 +796,10 @@ func _confirm_placement() -> void:
 	elif _build_mode == "building":
 		msg = _bridge.designate_building(
 			min_corner.x, _focus_voxel.y, min_corner.z, _width, _depth, _height
+		)
+	elif _build_mode == "carve":
+		msg = _bridge.designate_carve(
+			min_corner.x, min_corner.y, min_corner.z, _width, _depth, _height
 		)
 	else:
 		msg = _bridge.designate_build_rect(min_corner.x, min_corner.y, min_corner.z, _width, _depth)

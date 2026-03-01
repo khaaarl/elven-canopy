@@ -54,7 +54,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-build-queue-ui       Construction queue/progress UI
-[ ] F-carve-holes          Remove material (doors, storage hollows)
 [ ] F-cascade-fail         Cascading structural failure
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
@@ -133,6 +132,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
+[x] F-carve-holes          Remove material (doors, storage hollows)
 [x] F-capybara             Capybara species
 [x] F-construction         Platform construction (designate/build/cancel)
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
@@ -238,13 +238,13 @@ cancel (reverts voxels and face data). Save/load preserves buildings.
 **Related:** F-construction, F-furnishing
 
 #### F-carve-holes — Remove material (doors, storage hollows)
-**Status:** Todo · **Phase:** 3 · **Refs:** §11
+**Status:** Done · **Phase:** 3 · **Refs:** §11
 
 Remove material from existing tree or construction geometry to create
-doorways, windows, storage hollows. The inverse of construction — needs
-structural integrity checks to prevent catastrophic removal.
-
-**Blocked by:** F-struct-basic
+doorways, windows, storage hollows. The inverse of construction.
+Implemented as a third build mode (Carve) in the construction panel
+with structural integrity validation (blocks disconnecting carves,
+warns on stress). Supports rectangular prism carving with width/depth/height.
 
 #### F-choir-build — Choir-based construction singing
 **Status:** Todo · **Phase:** 2 · **Refs:** §11, §21

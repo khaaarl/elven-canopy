@@ -20,6 +20,7 @@
   "starting_mana": 100.0,
   "starting_mana_capacity": 500.0,
   "build_work_ticks_per_voxel": 1000,
+  "carve_work_ticks_per_voxel": 1000,
   "terrain_max_height": 4,
   "terrain_noise_scale": 8.0,
   "tree_profile": {

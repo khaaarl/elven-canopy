@@ -11,3 +11,7 @@ disable:
 # sprite_factory.gd is a single class with many per-species sprite generators,
 # each with palette constants and drawing functions. 1000 lines is too tight.
 max-file-lines: 1200
+
+# construction_controller.gd _unhandled_input handles P/G/C shortcuts + ESC +
+# Enter + mouse buttons — each with early returns. 7 returns is reasonable.
+max-returns: 7

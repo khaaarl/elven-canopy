@@ -24,12 +24,16 @@
 // - `validate_blueprint_fast()`: Lightweight blueprint validation using BFS +
 //   weight-flow-only analysis (~700x faster). Used by `sim.rs` for interactive
 //   placement; the full solver is reserved for tree validation at startup.
+// - `validate_carve_fast()`: Like `validate_blueprint_fast()` but checks whether
+//   *removing* voxels would compromise remaining structure. Seeds BFS from
+//   neighbors of carved voxels rather than the carved voxels themselves.
 //
 // ## Integration points
 //
 // - `sim.rs`: `with_config()` wraps tree generation in a retry loop using
 //   `validate_tree()`. `designate_build()` and `designate_building()` call
-//   `validate_blueprint()` to gate construction.
+//   `validate_blueprint()` to gate construction. `designate_carve()` calls
+//   `validate_carve_fast()` to block or warn on structurally dangerous carves.
 // - `config.rs`: `StructuralConfig` holds all material/face properties and
 //   solver parameters.
 //
@@ -1030,6 +1034,203 @@ pub fn validate_blueprint_fast(
     }
 }
 
+/// Fast carve validation using BFS + weight-flow-only analysis.
+///
+/// Mirrors `validate_blueprint_fast()` but checks whether *removing* voxels
+/// would compromise the remaining structure. Seeds BFS from the face-adjacent
+/// neighbors of the carved voxels (the surviving structure), not from the
+/// carved voxels themselves.
+pub fn validate_carve_fast(
+    world: &VoxelWorld,
+    face_data: &BTreeMap<VoxelCoord, FaceData>,
+    carved_voxels: &[VoxelCoord],
+    config: &GameConfig,
+) -> BlueprintValidation {
+    if carved_voxels.is_empty() {
+        return BlueprintValidation {
+            tier: ValidationTier::Ok,
+            stress_map: BTreeMap::new(),
+            message: "No voxels to carve.".to_string(),
+        };
+    }
+
+    // Build lookup of carved voxels.
+    let carved_set: BTreeMap<VoxelCoord, ()> = carved_voxels.iter().map(|&c| (c, ())).collect();
+
+    // Hypothetical world: carved coords become Air, everything else unchanged.
+    let hypo_type = |coord: VoxelCoord| -> VoxelType {
+        if carved_set.contains_key(&coord) {
+            VoxelType::Air
+        } else {
+            world.get(coord)
+        }
+    };
+
+    let is_structural = |vt: VoxelType| -> bool {
+        vt != VoxelType::Air && vt != VoxelType::Leaf && vt != VoxelType::Fruit
+    };
+
+    // Seed BFS from face-adjacent neighbors of carved voxels that are
+    // structural in the hypothetical world and not themselves carved.
+    let mut visited: BTreeMap<VoxelCoord, VoxelType> = BTreeMap::new();
+    let mut queue = std::collections::VecDeque::new();
+    let mut reached_ground = false;
+
+    for &carved in carved_voxels {
+        for &dir in &FaceDirection::ALL {
+            let (dx, dy, dz) = dir.to_offset();
+            let neighbor = VoxelCoord::new(carved.x + dx, carved.y + dy, carved.z + dz);
+
+            if carved_set.contains_key(&neighbor) || visited.contains_key(&neighbor) {
+                continue;
+            }
+            if !world.in_bounds(neighbor) {
+                continue;
+            }
+
+            let vt = hypo_type(neighbor);
+            if is_structural(vt) {
+                // Seed from non-ground structural neighbors only.
+                // ForestFloor is ground — the question is whether the
+                // remaining *above-ground* structure can still reach it.
+                // If ForestFloor were a seed, disconnected voxels above
+                // would appear connected via the shared BFS frontier.
+                if vt == VoxelType::ForestFloor {
+                    // Mark as visited so BFS reaching this coord counts
+                    // as reaching ground, but don't enqueue — we don't
+                    // want to flood outward from the floor itself.
+                    visited.insert(neighbor, vt);
+                } else {
+                    visited.insert(neighbor, vt);
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+    }
+
+    // No structural neighbors → carving non-structural or isolated voxels.
+    if visited.is_empty() {
+        return BlueprintValidation {
+            tier: ValidationTier::Ok,
+            stress_map: BTreeMap::new(),
+            message: "Structure is sound.".to_string(),
+        };
+    }
+
+    // BFS outward through remaining structural voxels.
+    while let Some(current) = queue.pop_front() {
+        for &dir in &FaceDirection::ALL {
+            let (dx, dy, dz) = dir.to_offset();
+            let neighbor = VoxelCoord::new(current.x + dx, current.y + dy, current.z + dz);
+
+            if visited.contains_key(&neighbor) || carved_set.contains_key(&neighbor) {
+                continue;
+            }
+            if !world.in_bounds(neighbor) {
+                continue;
+            }
+
+            let vt = hypo_type(neighbor);
+            if is_structural(vt) {
+                visited.insert(neighbor, vt);
+                queue.push_back(neighbor);
+                if vt == VoxelType::ForestFloor {
+                    reached_ground = true;
+                }
+            }
+        }
+    }
+
+    // Connectivity check: remaining structure must reach ground.
+    if !reached_ground {
+        return BlueprintValidation {
+            tier: ValidationTier::Blocked,
+            stress_map: BTreeMap::new(),
+            message: "Carving would disconnect structure from the ground.".to_string(),
+        };
+    }
+
+    // Merge face data for the network (excluding carved voxels).
+    let mut merged_face_data = BTreeMap::new();
+    for &coord in visited.keys() {
+        if let Some(fd) = face_data.get(&coord) {
+            merged_face_data.insert(coord, fd.clone());
+        }
+    }
+
+    // Build network from visited set and run weight-flow-only analysis.
+    let network = build_network_from_set(&visited, &merged_face_data, config);
+    let gravity = config.structural.gravity;
+
+    let num_nodes = network.nodes.len();
+    let mut node_springs: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_nodes];
+    for (si, spring) in network.springs.iter().enumerate() {
+        node_springs[spring.node_a].push((si, spring.node_b));
+        node_springs[spring.node_b].push((si, spring.node_a));
+    }
+
+    let num_springs = network.springs.len();
+    let mut weight_stresses = vec![0.0f32; num_springs];
+    compute_weight_flow_stress(&network, gravity, &node_springs, &mut weight_stresses);
+
+    // Find max stress and build per-voxel stress map.
+    let mut max_stress_ratio: f32 = 0.0;
+    let mut stress_map = BTreeMap::new();
+
+    let node_to_coord: BTreeMap<usize, VoxelCoord> = network
+        .coord_to_node
+        .iter()
+        .map(|(&coord, &idx)| (idx, coord))
+        .collect();
+
+    for (si, spring) in network.springs.iter().enumerate() {
+        let stress = weight_stresses[si];
+        if stress > max_stress_ratio {
+            max_stress_ratio = stress;
+        }
+        if let Some(&coord_a) = node_to_coord.get(&spring.node_a) {
+            let entry = stress_map.entry(coord_a).or_insert(0.0f32);
+            if stress > *entry {
+                *entry = stress;
+            }
+        }
+        if let Some(&coord_b) = node_to_coord.get(&spring.node_b) {
+            let entry = stress_map.entry(coord_b).or_insert(0.0f32);
+            if stress > *entry {
+                *entry = stress;
+            }
+        }
+    }
+
+    // Classify based on thresholds.
+    let structural = &config.structural;
+    if max_stress_ratio >= structural.block_stress_ratio {
+        BlueprintValidation {
+            tier: ValidationTier::Blocked,
+            stress_map,
+            message: format!(
+                "Carving would cause structural failure: peak stress {:.1}x exceeds limit {:.1}x.",
+                max_stress_ratio, structural.block_stress_ratio
+            ),
+        }
+    } else if max_stress_ratio >= structural.warn_stress_ratio {
+        BlueprintValidation {
+            tier: ValidationTier::Warning,
+            stress_map,
+            message: format!(
+                "Remaining structure is under significant stress ({:.1}x of limit).",
+                max_stress_ratio
+            ),
+        }
+    } else {
+        BlueprintValidation {
+            tier: ValidationTier::Ok,
+            stress_map,
+            message: "Structure is sound.".to_string(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1790,6 +1991,44 @@ mod tests {
             ValidationTier::Ok,
             "Fast validator should approve short platform on trunk with dirt: {}",
             fast.message,
+        );
+    }
+
+    // --- Carve validation tests ---
+
+    #[test]
+    fn test_carve_structural_blocks_disconnect() {
+        // Build a vertical pillar on forest floor. Carving the base voxel
+        // (y=1) disconnects the rest from the ground → Blocked.
+        let world = make_column_world(16, 0..8, 4, 4, 5);
+        let config = GameConfig::default();
+
+        let carved = vec![VoxelCoord::new(4, 1, 4)];
+        let result = validate_carve_fast(&world, &BTreeMap::new(), &carved, &config);
+
+        assert_eq!(
+            result.tier,
+            ValidationTier::Blocked,
+            "Carving base of pillar should be Blocked, got: {}",
+            result.message
+        );
+    }
+
+    #[test]
+    fn test_carve_structural_ok_small() {
+        // Carve a single voxel from the top of a wide base — should be Ok.
+        let world = make_column_world(16, 0..8, 4, 4, 5);
+        let config = GameConfig::default();
+
+        // Carve the top voxel — base remains connected.
+        let carved = vec![VoxelCoord::new(4, 5, 4)];
+        let result = validate_carve_fast(&world, &BTreeMap::new(), &carved, &config);
+
+        assert_eq!(
+            result.tier,
+            ValidationTier::Ok,
+            "Carving top of pillar should be Ok, got: {}",
+            result.message
         );
     }
 }

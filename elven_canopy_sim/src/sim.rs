@@ -208,6 +208,11 @@ pub struct SimState {
     #[serde(default)]
     pub placed_voxels: Vec<(VoxelCoord, VoxelType)>,
 
+    /// Voxels carved (removed to Air) by the carve system. Persisted for
+    /// save/load — on world rebuild, these are set to Air after tree voxels.
+    #[serde(default)]
+    pub carved_voxels: Vec<VoxelCoord>,
+
     /// Per-face data for `BuildingInterior` and ladder voxels. Persisted as a
     /// flat list of (coord, face_data) pairs since `VoxelCoord` can't be a
     /// JSON map key. At runtime, `face_data` (transient BTreeMap) is the
@@ -480,6 +485,7 @@ impl SimState {
             tasks: BTreeMap::new(),
             blueprints: BTreeMap::new(),
             placed_voxels: Vec::new(),
+            carved_voxels: Vec::new(),
             face_data_list: Vec::new(),
             face_data: BTreeMap::new(),
             ladder_orientations_list: Vec::new(),
@@ -611,6 +617,9 @@ impl SimState {
                 priority,
             } => {
                 self.designate_ladder(*anchor, *height, *orientation, *kind, *priority, events);
+            }
+            SimAction::DesignateCarve { voxels, priority } => {
+                self.designate_carve(voxels, *priority, events);
             }
         }
     }
@@ -1007,6 +1016,101 @@ impl SimState {
         });
     }
 
+    /// Validate and create a blueprint for carving (removing) solid voxels.
+    ///
+    /// Filters the input to only carvable voxels (solid and not ForestFloor).
+    /// Air and ForestFloor voxels are silently skipped. Records original voxel
+    /// types for cancel restoration.
+    fn designate_carve(
+        &mut self,
+        voxels: &[VoxelCoord],
+        priority: Priority,
+        events: &mut Vec<SimEvent>,
+    ) {
+        self.last_build_message = None;
+
+        if voxels.is_empty() {
+            self.last_build_message = Some("No voxels to carve.".to_string());
+            return;
+        }
+        for &coord in voxels {
+            if !self.world.in_bounds(coord) {
+                self.last_build_message = Some("Carve position is out of bounds.".to_string());
+                return;
+            }
+        }
+
+        // Filter to only carvable voxels: solid and not ForestFloor.
+        let mut carve_voxels = Vec::new();
+        let mut original_voxels = Vec::new();
+        for &coord in voxels {
+            let vt = self.world.get(coord);
+            if vt.is_solid() && vt != VoxelType::ForestFloor {
+                carve_voxels.push(coord);
+                original_voxels.push((coord, vt));
+            }
+        }
+
+        if carve_voxels.is_empty() {
+            self.last_build_message = Some("Nothing to carve.".to_string());
+            return;
+        }
+
+        let validation = structural::validate_carve_fast(
+            &self.world,
+            &self.face_data,
+            &carve_voxels,
+            &self.config,
+        );
+        if matches!(validation.tier, structural::ValidationTier::Blocked) {
+            self.last_build_message = Some(validation.message);
+            return;
+        }
+        let stress_warning = matches!(validation.tier, structural::ValidationTier::Warning);
+        if stress_warning {
+            self.last_build_message = Some(validation.message);
+        }
+
+        let project_id = ProjectId::new(&mut self.rng);
+
+        // Create a Build task at the nearest nav node to the carve site.
+        let task_location = match self.nav_graph.find_nearest_node(carve_voxels[0]) {
+            Some(n) => n,
+            None => return,
+        };
+        let task_id = TaskId::new(&mut self.rng);
+        let num_voxels = carve_voxels.len() as u64;
+        let total_cost = self.config.carve_work_ticks_per_voxel * num_voxels;
+        let build_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::Build { project_id },
+            state: task::TaskState::Available,
+            location: task_location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: total_cost as f32,
+            required_species: Some(Species::Elf),
+        };
+        self.tasks.insert(task_id, build_task);
+
+        let bp = Blueprint {
+            id: project_id,
+            build_type: BuildType::Carve,
+            voxels: carve_voxels,
+            priority,
+            state: BlueprintState::Designated,
+            task_id: Some(task_id),
+            face_layout: None,
+            stress_warning,
+            original_voxels,
+        };
+        self.blueprints.insert(project_id, bp);
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::BlueprintDesignated { project_id },
+        });
+    }
+
     /// Cancel a blueprint by ProjectId. Removes the associated Build task,
     /// unassigns any workers, reverts materialized voxels to Air, and rebuilds
     /// the nav graph. Emits `BuildCancelled` if found.
@@ -1032,24 +1136,38 @@ impl SimState {
             }
         }
 
-        // Revert any already-materialized blueprint voxels. For overlap builds,
-        // convertible voxels (Leaf/Fruit) revert to their original type instead
-        // of Air.
         let bp_voxels: Vec<VoxelCoord> = bp.voxels.clone();
         let original_map: BTreeMap<VoxelCoord, VoxelType> =
             bp.original_voxels.iter().copied().collect();
         let is_building = bp.build_type == BuildType::Building;
+        let is_carve = bp.build_type == BuildType::Carve;
         let mut any_reverted = false;
-        for &coord in &bp_voxels {
-            if self.world.get(coord) != VoxelType::Air {
-                let revert_to = original_map.get(&coord).copied().unwrap_or(VoxelType::Air);
-                self.world.set(coord, revert_to);
-                any_reverted = true;
+
+        if is_carve {
+            // Carve cancel: restore carved voxels to their original types.
+            for &coord in &bp_voxels {
+                if self.world.get(coord) == VoxelType::Air
+                    && let Some(&original) = original_map.get(&coord)
+                {
+                    self.world.set(coord, original);
+                    any_reverted = true;
+                }
             }
+            self.carved_voxels.retain(|c| !bp_voxels.contains(c));
+        } else {
+            // Build cancel: revert materialized voxels to Air (or original for
+            // overlap builds with convertible Leaf/Fruit).
+            for &coord in &bp_voxels {
+                if self.world.get(coord) != VoxelType::Air {
+                    let revert_to = original_map.get(&coord).copied().unwrap_or(VoxelType::Air);
+                    self.world.set(coord, revert_to);
+                    any_reverted = true;
+                }
+            }
+            // Remove from placed_voxels.
+            self.placed_voxels
+                .retain(|(coord, _)| !bp_voxels.contains(coord));
         }
-        // Remove from placed_voxels.
-        self.placed_voxels
-            .retain(|(coord, _)| !bp_voxels.contains(coord));
 
         // For buildings and ladders, also remove face_data entries.
         let is_ladder = matches!(bp.build_type, BuildType::WoodLadder | BuildType::RopeLadder);
@@ -1844,9 +1962,13 @@ impl SimState {
         }
 
         // Pick a random leaf voxel; fruit hangs one voxel below it.
+        // Skip leaves that have been carved away.
         let leaf_count = tree.leaf_voxels.len();
         let leaf_idx = self.rng.range_u64(0, leaf_count as u64) as usize;
         let leaf_pos = tree.leaf_voxels[leaf_idx];
+        if self.world.get(leaf_pos) == VoxelType::Air {
+            return false;
+        }
         let fruit_pos = VoxelCoord::new(leaf_pos.x, leaf_pos.y - 1, leaf_pos.z);
 
         // Position must be in-bounds, currently air, and not already fruited.
@@ -1878,7 +2000,17 @@ impl SimState {
     /// materialized as solid. When all voxels are placed, the blueprint is
     /// marked Complete and the task finishes.
     fn do_build_work(&mut self, creature_id: CreatureId, task_id: TaskId, project_id: ProjectId) {
-        let ticks_per_voxel = self.config.build_work_ticks_per_voxel as f32;
+        // Look up the blueprint to determine if this is a carve or build.
+        let is_carve = self
+            .blueprints
+            .get(&project_id)
+            .is_some_and(|bp| bp.build_type.is_carve());
+
+        let ticks_per_voxel = if is_carve {
+            self.config.carve_work_ticks_per_voxel as f32
+        } else {
+            self.config.build_work_ticks_per_voxel as f32
+        };
 
         // Increment progress.
         let task = match self.tasks.get_mut(&task_id) {
@@ -1895,7 +2027,11 @@ impl SimState {
         let new_voxels = (new_progress / ticks_per_voxel).floor() as u64;
 
         if new_voxels > old_voxels {
-            self.materialize_next_build_voxel(project_id);
+            if is_carve {
+                self.materialize_next_carve_voxel(project_id);
+            } else {
+                self.materialize_next_build_voxel(project_id);
+            }
         }
 
         // Check if the build is complete.
@@ -2063,6 +2199,50 @@ impl SimState {
         }
     }
 
+    /// Pick the next blueprint voxel to carve (set to Air).
+    ///
+    /// Selection: find voxels that are still solid, pick one randomly using
+    /// the sim PRNG (no adjacency constraint for carving).
+    fn materialize_next_carve_voxel(&mut self, project_id: ProjectId) {
+        let bp = match self.blueprints.get(&project_id) {
+            Some(bp) => bp,
+            None => return,
+        };
+
+        // Find blueprint voxels that are still solid (not yet carved).
+        let still_solid: Vec<VoxelCoord> = bp
+            .voxels
+            .iter()
+            .copied()
+            .filter(|&coord| self.world.get(coord).is_solid())
+            .collect();
+
+        if still_solid.is_empty() {
+            return;
+        }
+
+        let idx = self.rng.range_u64(0, still_solid.len() as u64) as usize;
+        let chosen = still_solid[idx];
+
+        // Set to Air.
+        self.world.set(chosen, VoxelType::Air);
+        self.carved_voxels.push(chosen);
+
+        // Nav update: the algorithm is state-based and works for both
+        // solidifying and clearing voxels.
+        let removed =
+            self.nav_graph
+                .update_after_voxel_solidified(&self.world, &self.face_data, chosen);
+        let large_removed = nav::update_large_after_voxel_solidified(
+            &mut self.large_nav_graph,
+            &self.world,
+            chosen,
+        );
+        let mut all_removed = removed;
+        all_removed.extend(large_removed);
+        self.resnap_removed_nodes(&all_removed);
+    }
+
     /// Mark a blueprint as Complete, register the completed structure, and
     /// complete its associated task.
     fn complete_build(&mut self, project_id: ProjectId, task_id: TaskId) {
@@ -2145,6 +2325,7 @@ impl SimState {
         config: &GameConfig,
         trees: &BTreeMap<TreeId, Tree>,
         placed_voxels: &[(VoxelCoord, VoxelType)],
+        carved_voxels: &[VoxelCoord],
     ) -> VoxelWorld {
         let (ws_x, ws_y, ws_z) = config.world_size;
         let mut world = VoxelWorld::new(ws_x, ws_y, ws_z);
@@ -2192,6 +2373,11 @@ impl SimState {
             world.set(coord, voxel_type);
         }
 
+        // Apply carve removals (set to Air).
+        for &coord in carved_voxels {
+            world.set(coord, VoxelType::Air);
+        }
+
         world
     }
 
@@ -2200,7 +2386,12 @@ impl SimState {
     /// Restores: `world` (voxel grid from stored tree voxels + config),
     /// `nav_graph` (from rebuilt world geometry), `species_table` (from config).
     pub fn rebuild_transient_state(&mut self) {
-        self.world = Self::rebuild_world(&self.config, &self.trees, &self.placed_voxels);
+        self.world = Self::rebuild_world(
+            &self.config,
+            &self.trees,
+            &self.placed_voxels,
+            &self.carved_voxels,
+        );
         self.face_data = self.face_data_list.iter().cloned().collect();
         self.ladder_orientations = self.ladder_orientations_list.iter().cloned().collect();
         self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
@@ -3067,7 +3258,12 @@ mod tests {
         let tree = &sim.trees[&sim.player_tree_id];
 
         // Rebuild world from stored tree voxels and config.
-        let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &sim.placed_voxels);
+        let rebuilt = SimState::rebuild_world(
+            &sim.config,
+            &sim.trees,
+            &sim.placed_voxels,
+            &sim.carved_voxels,
+        );
 
         // Check trunk voxels.
         for coord in &tree.trunk_voxels {
@@ -3116,7 +3312,7 @@ mod tests {
 
         // Manually construct placed_voxels and rebuild.
         let placed = vec![(air_coord, VoxelType::GrownPlatform)];
-        let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &placed);
+        let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &placed, &[]);
 
         assert_eq!(
             rebuilt.get(air_coord),
@@ -3139,7 +3335,7 @@ mod tests {
         );
 
         // Rebuild and verify dirt is present.
-        let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &sim.placed_voxels);
+        let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &sim.placed_voxels, &[]);
         for &coord in &tree.dirt_voxels {
             let voxel = rebuilt.get(coord);
             // Dirt might be overwritten by tree voxels (trunk/branch/root),
@@ -5875,6 +6071,104 @@ mod tests {
         );
     }
 
+    // ===================================================================
+    // Carve tests
+    // ===================================================================
+
+    /// Helper: find a solid voxel that is safe to carve (won't disconnect the
+    /// structure). Picks the highest trunk voxel so removing it doesn't sever
+    /// the tree's connection to ground.
+    fn find_carvable_voxel(sim: &SimState) -> VoxelCoord {
+        let tree = &sim.trees[&sim.player_tree_id];
+        // Pick the highest trunk voxel — removing the top is structurally safe.
+        tree.trunk_voxels
+            .iter()
+            .copied()
+            .filter(|v| v.y > 0)
+            .max_by_key(|v| v.y)
+            .expect("No trunk voxel above floor")
+    }
+
+    #[test]
+    fn test_designate_carve_filters_air() {
+        let mut sim = test_sim(42);
+        let solid = find_carvable_voxel(&sim);
+        // Pick an air voxel (high up, guaranteed empty).
+        let air = VoxelCoord::new(5, 50, 5);
+        assert_eq!(sim.world.get(air), VoxelType::Air);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateCarve {
+                voxels: vec![solid, air],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // A blueprint should exist with only the solid voxel.
+        assert_eq!(sim.blueprints.len(), 1);
+        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(bp.build_type, BuildType::Carve);
+        assert_eq!(bp.voxels.len(), 1);
+        assert_eq!(bp.voxels[0], solid);
+    }
+
+    #[test]
+    fn test_carve_execution_removes_voxels() {
+        let mut config = test_config();
+        // Set carve ticks very low so the test completes quickly.
+        config.carve_work_ticks_per_voxel = 1;
+        let mut sim = SimState::with_config(42, config);
+        let solid = find_carvable_voxel(&sim);
+        assert!(sim.world.get(solid).is_solid());
+
+        // Spawn an elf near the tree so it can claim the task.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
+
+        let spawn_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: elf_pos,
+            },
+        };
+        let carve_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateCarve {
+                voxels: vec![solid],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[spawn_cmd, carve_cmd], 2);
+
+        // Ensure carve blueprint was created (not blocked by structural check).
+        assert_eq!(
+            sim.blueprints.len(),
+            1,
+            "Blueprint should exist; last_build_message: {:?}",
+            sim.last_build_message
+        );
+
+        // Run the sim long enough for the elf to reach and carve.
+        sim.step(&[], 500_000);
+
+        // The solid voxel should now be Air.
+        assert_eq!(
+            sim.world.get(solid),
+            VoxelType::Air,
+            "Carved voxel should be Air"
+        );
+        assert!(
+            sim.carved_voxels.contains(&solid),
+            "carved_voxels should track the removal"
+        );
+    }
+
     // -------------------------------------------------------------------
     // Ladder tests
     // -------------------------------------------------------------------
@@ -6136,6 +6430,91 @@ mod tests {
     }
 
     #[test]
+    fn test_carve_skips_forest_floor() {
+        let mut sim = test_sim(42);
+        let (ws_x, _, ws_z) = sim.config.world_size;
+        let center_x = ws_x as i32 / 2;
+        let center_z = ws_z as i32 / 2;
+        let floor = VoxelCoord::new(center_x, 0, center_z);
+        assert_eq!(sim.world.get(floor), VoxelType::ForestFloor);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateCarve {
+                voxels: vec![floor],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // No blueprint should be created — ForestFloor is not carvable.
+        assert!(
+            sim.blueprints.is_empty(),
+            "ForestFloor should not be carvable"
+        );
+        assert_eq!(sim.last_build_message.as_deref(), Some("Nothing to carve."));
+    }
+
+    #[test]
+    fn test_cancel_carve_restores_originals() {
+        let mut config = test_config();
+        config.carve_work_ticks_per_voxel = 1;
+        let mut sim = SimState::with_config(42, config);
+
+        // Find two adjacent trunk voxels for carving.
+        let tree = &sim.trees[&sim.player_tree_id];
+        let v1 = tree.trunk_voxels.iter().copied().find(|v| v.y > 0).unwrap();
+        let original_type = sim.world.get(v1);
+        assert!(original_type.is_solid());
+
+        // Spawn elf and designate carve.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
+        let spawn_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: elf_pos,
+            },
+        };
+        let carve_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateCarve {
+                voxels: vec![v1],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[spawn_cmd, carve_cmd], 2);
+
+        // Run long enough for the carve to complete.
+        sim.step(&[], 500_000);
+        assert_eq!(sim.world.get(v1), VoxelType::Air);
+
+        // Now cancel the build.
+        let project_id = *sim.blueprints.keys().next().unwrap();
+        let cancel_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 500_001,
+            action: SimAction::CancelBuild { project_id },
+        };
+        sim.step(&[cancel_cmd], 500_001);
+
+        // The voxel should be restored to its original type.
+        assert_eq!(
+            sim.world.get(v1),
+            original_type,
+            "Cancelled carve should restore original voxel type"
+        );
+        assert!(
+            !sim.carved_voxels.contains(&v1),
+            "carved_voxels should be cleaned up"
+        );
+    }
+
+    #[test]
     fn ladder_save_load_roundtrip() {
         let mut sim = test_sim(42);
         let (anchor, orientation) = find_ladder_column(&sim, 2);
@@ -6312,5 +6691,109 @@ mod tests {
         sim_b.step(&[cmd_b], 1);
 
         assert_eq!(sim_a.blueprints.len(), sim_b.blueprints.len());
+    }
+
+    #[test]
+    fn test_carve_nav_graph_update() {
+        let mut config = test_config();
+        config.carve_work_ticks_per_voxel = 1;
+        let mut sim = SimState::with_config(42, config);
+
+        // Find a solid voxel that is part of the tree.
+        let solid = find_carvable_voxel(&sim);
+        // Before carving, the voxel is solid — it should not be a nav node itself.
+        assert!(
+            sim.world.get(solid).is_solid(),
+            "Precondition: voxel is solid"
+        );
+
+        // Spawn elf and designate carve.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
+        let spawn_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: elf_pos,
+            },
+        };
+        let carve_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateCarve {
+                voxels: vec![solid],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[spawn_cmd, carve_cmd], 2);
+
+        // Run sim to complete the carve.
+        sim.step(&[], 500_000);
+
+        // After carving, the voxel is Air. If it has a solid face neighbor,
+        // it should now be a nav node.
+        assert_eq!(sim.world.get(solid), VoxelType::Air);
+        if sim.world.has_solid_face_neighbor(solid) {
+            let node = sim.nav_graph.find_nearest_node(solid);
+            assert!(
+                node.is_some(),
+                "Carved voxel with solid neighbor should be a nav node"
+            );
+        }
+    }
+
+    #[test]
+    fn test_carve_save_load_roundtrip() {
+        let mut config = test_config();
+        config.carve_work_ticks_per_voxel = 1;
+        let mut sim = SimState::with_config(42, config);
+
+        let solid = find_carvable_voxel(&sim);
+        let original_type = sim.world.get(solid);
+
+        // Spawn elf and designate carve.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
+        let spawn_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: elf_pos,
+            },
+        };
+        let carve_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateCarve {
+                voxels: vec![solid],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[spawn_cmd, carve_cmd], 2);
+
+        // Complete the carve.
+        sim.step(&[], 500_000);
+        assert_eq!(sim.world.get(solid), VoxelType::Air);
+        assert!(sim.carved_voxels.contains(&solid));
+
+        // Save and load.
+        let json = sim.to_json().unwrap();
+        let restored = SimState::from_json(&json).unwrap();
+
+        // Verify carved voxels survived.
+        assert!(restored.carved_voxels.contains(&solid));
+        assert_eq!(
+            restored.world.get(solid),
+            VoxelType::Air,
+            "Carved voxel should be Air after reload"
+        );
+
+        // Verify the original type is in the blueprint's original_voxels.
+        let bp = restored.blueprints.values().next().unwrap();
+        let orig = bp.original_voxels.iter().find(|(c, _)| *c == solid);
+        assert!(orig.is_some());
+        assert_eq!(orig.unwrap().1, original_type);
     }
 }

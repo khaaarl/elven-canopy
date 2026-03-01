@@ -16,6 +16,8 @@
 // - `DesignateBuild` — validate and create a platform blueprint (see `blueprint.rs`).
 // - `DesignateBuilding` — validate and create a building blueprint with per-face
 //   layout (see `building.rs`).
+// - `DesignateCarve` — validate and create a carve blueprint that removes solid
+//   voxels to Air (the inverse of construction).
 // - `CancelBuild` — remove a blueprint by ProjectId.
 // - `SetTaskPriority` — build system (placeholder, not yet wired).
 // - `SetSimSpeed` — pause / play / fast-forward.
@@ -96,6 +98,12 @@ pub enum SimAction {
         height: i32,
         orientation: FaceDirection,
         kind: LadderKind,
+        priority: Priority,
+    },
+    /// Designate a rectangular region of solid voxels for carving (removal to Air).
+    /// Air and ForestFloor voxels in the selection are silently skipped.
+    DesignateCarve {
+        voxels: Vec<VoxelCoord>,
         priority: Priority,
     },
 }
