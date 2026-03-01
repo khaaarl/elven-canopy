@@ -128,6 +128,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### Done
 
 ```
+[x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
 [x] F-capybara             Capybara species
@@ -345,6 +346,15 @@ expose per-voxel overlap classification to GDScript. See section 4 of
 **Related:** F-tree-overlap, F-blueprint-mode
 
 ### Structural Integrity & Fire
+
+#### B-dead-node-panic — Panic on dead nav node in pathfinding
+**Status:** Done
+
+Creature pathfinding panics (`unwrap()` on `None`) when a task's `location`
+nav node has been removed by an incremental nav graph update (e.g.
+construction solidifying a voxel). Fix: guard `execute_task_behavior` and
+`process_creature_activation` to check node liveness before pathfinding,
+resnapping or abandoning the task if the node is dead.
 
 #### B-preview-blueprints — Preview treats blueprints as complete
 **Status:** Todo · **Phase:** 2

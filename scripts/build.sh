@@ -86,7 +86,7 @@ case "$MODE" in
         cargo build -p elven_canopy_gdext $CARGO_JOBS
         ensure_godot_imported
         echo "Launching Elven Canopy..."
-        godot --path "$REPO_ROOT/godot"
+        RUST_BACKTRACE=1 godot --path "$REPO_ROOT/godot"
         ;;
     check)
         echo "Checking Rust formatting..."

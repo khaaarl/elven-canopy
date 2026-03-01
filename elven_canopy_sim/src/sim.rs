@@ -1086,17 +1086,34 @@ impl SimState {
     /// Species edge restrictions are respected for wandering; task pathfinding
     /// uses species-filtered A*.
     fn process_creature_activation(&mut self, creature_id: CreatureId) {
-        let creature = match self.creatures.get(&creature_id) {
-            Some(c) => c,
-            None => return,
+        let (mut current_node, species, current_task) = {
+            let creature = match self.creatures.get(&creature_id) {
+                Some(c) => c,
+                None => return,
+            };
+            let node = match creature.current_node {
+                Some(n) => n,
+                None => return,
+            };
+            (node, creature.species, creature.current_task)
         };
 
-        let current_node = match creature.current_node {
-            Some(n) => n,
-            None => return,
-        };
-
-        let current_task = creature.current_task;
+        // Guard: if current_node is a dead slot (removed by incremental nav
+        // update), resnap the creature before proceeding.
+        if !self.graph_for_species(species).is_node_alive(current_node) {
+            let pos = self.creatures[&creature_id].position;
+            let graph = self.graph_for_species(species);
+            let new_node = match graph.find_nearest_node(pos) {
+                Some(n) => n,
+                None => return,
+            };
+            let new_pos = graph.node(new_node).position;
+            let c = self.creatures.get_mut(&creature_id).unwrap();
+            c.current_node = Some(new_node);
+            c.position = new_pos;
+            c.path = None;
+            current_node = new_node;
+        }
 
         if let Some(task_id) = current_task {
             // --- Has task: run task behavior ---
@@ -1159,6 +1176,36 @@ impl SimState {
                 return;
             }
         };
+
+        // Check that both current_node and task_location are still alive in
+        // the nav graph. They can become dead slots after incremental updates
+        // (e.g. construction solidifying a voxel). If either is dead, abandon
+        // the task and wander.
+        let species = self
+            .creatures
+            .get(&creature_id)
+            .map(|c| c.species)
+            .unwrap_or(Species::Elf);
+        let graph = self.graph_for_species(species);
+        if !graph.is_node_alive(current_node) || !graph.is_node_alive(task_location) {
+            if let Some(c) = self.creatures.get_mut(&creature_id) {
+                c.current_task = None;
+                c.path = None;
+            }
+            // Resnap the creature to a live node before wandering.
+            let graph = self.graph_for_species(species);
+            if let Some(c) = self.creatures.get(&creature_id) {
+                let pos = c.position;
+                if let Some(new_node) = graph.find_nearest_node(pos) {
+                    let new_pos = graph.node(new_node).position;
+                    let c = self.creatures.get_mut(&creature_id).unwrap();
+                    c.current_node = Some(new_node);
+                    c.position = new_pos;
+                    self.wander(creature_id, new_node);
+                }
+            }
+            return;
+        }
 
         if current_node == task_location {
             // At task location — run the kind-specific completion/work logic.
@@ -5525,6 +5572,76 @@ mod tests {
         assert!(
             sim.blueprints.is_empty(),
             "Wall does not allow overlap, should reject leaf"
+        );
+    }
+
+    #[test]
+    fn walk_toward_dead_task_node_does_not_panic() {
+        // Reproduce B-dead-node-panic: a creature has a task whose location
+        // nav node gets removed by an incremental update. The creature should
+        // gracefully abandon the task instead of panicking in pathfinding.
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Spawn an elf.
+        let spawn_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[spawn_cmd], 2);
+
+        let elf_id = *sim.creatures.keys().next().unwrap();
+
+        // Find a ground nav node different from the elf's to use as task target.
+        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let task_node = sim
+            .nav_graph
+            .ground_node_ids()
+            .into_iter()
+            .find(|&nid| nid != elf_node)
+            .expect("Need at least 2 ground nodes");
+
+        // Create a GoTo task at that nav node and assign it to the elf.
+        let task_id = TaskId::new(&mut sim.rng);
+        sim.tasks.insert(
+            task_id,
+            Task {
+                id: task_id,
+                kind: TaskKind::GoTo,
+                state: TaskState::InProgress,
+                location: task_node,
+                assignees: vec![elf_id],
+                progress: 0.0,
+                total_cost: 0.0,
+                required_species: None,
+            },
+        );
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+
+        // Directly kill the task node's slot to simulate an incremental update
+        // that removed it without recycling the slot. This is the exact state
+        // that causes the panic: the NavNodeId in the task points to a dead
+        // (None) slot.
+        sim.nav_graph.kill_node(task_node);
+
+        assert!(
+            !sim.nav_graph.is_node_alive(task_node),
+            "Task node should be dead",
+        );
+
+        // Step the sim — the elf should try to walk toward the now-dead
+        // task node. This must NOT panic.
+        sim.step(&[], 50000);
+
+        // The elf should have dropped the task (can't reach dead node).
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_none(),
+            "Elf should abandon task with dead location node",
         );
     }
 }

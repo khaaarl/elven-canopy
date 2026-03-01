@@ -190,6 +190,22 @@ impl NavGraph {
         &self.nodes[node.0 as usize].as_ref().unwrap().edge_indices
     }
 
+    /// Check if a node ID refers to a live (non-removed) node.
+    pub fn is_node_alive(&self, id: NavNodeId) -> bool {
+        let idx = id.0 as usize;
+        idx < self.nodes.len() && self.nodes[idx].is_some()
+    }
+
+    /// Kill a node slot (set it to `None`). Used in tests to simulate
+    /// incremental updates that leave dead slots without recycling them.
+    #[cfg(test)]
+    pub fn kill_node(&mut self, id: NavNodeId) {
+        let idx = id.0 as usize;
+        if idx < self.nodes.len() {
+            self.nodes[idx] = None;
+        }
+    }
+
     /// Get a node by ID. Panics if the slot is dead (`None`).
     pub fn node(&self, id: NavNodeId) -> &NavNode {
         self.nodes[id.0 as usize].as_ref().unwrap()
