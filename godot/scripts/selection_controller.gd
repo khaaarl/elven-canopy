@@ -34,6 +34,7 @@ const SPECIES_Y_OFFSETS = {
 	"Capybara": 0.32,
 	"Boar": 0.38,
 	"Deer": 0.46,
+	"Elephant": 0.8,
 	"Monkey": 0.44,
 	"Squirrel": 0.28,
 }

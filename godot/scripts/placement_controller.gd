@@ -149,6 +149,11 @@ func _on_action_requested(action_name: String) -> void:
 
 func _enter_placement() -> void:
 	_state = State.PLACING
+	# Scale wireframe to creature footprint (2x2x2 for elephants, 1x1x1 default).
+	var footprint := (
+		_bridge.get_species_footprint(_species_name) if _species_name != "" else Vector3i(1, 1, 1)
+	)
+	_highlight.scale = Vector3(footprint.x, footprint.y, footprint.z)
 	_draw_wireframe_cube(_highlight.mesh as ImmediateMesh)
 	_highlight.visible = false
 	_has_snap = false
@@ -165,8 +170,14 @@ func _process(_delta: float) -> void:
 
 	# Fetch nav nodes visible from the current camera position (Rust-side
 	# voxel raycast filters out nodes occluded by solid geometry).
-	# Ground-only species (Capybara, Boar, Deer) can only target ground nodes.
-	if _species_name != "" and _bridge.is_species_ground_only(_species_name):
+	# Large creatures (footprint > 1) use the large nav graph.
+	# Ground-only species can only target ground nodes.
+	var footprint := (
+		_bridge.get_species_footprint(_species_name) if _species_name != "" else Vector3i(1, 1, 1)
+	)
+	if footprint.x > 1 or footprint.z > 1:
+		_valid_positions = _bridge.get_large_ground_nav_nodes()
+	elif _species_name != "" and _bridge.is_species_ground_only(_species_name):
 		_valid_positions = _bridge.get_visible_ground_nav_nodes(cam_pos)
 	else:
 		# Climbing species and task actions can target any nav node.

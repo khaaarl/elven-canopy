@@ -619,6 +619,7 @@ impl Default for GameConfig {
                 food_decay_per_tick: 3_333_333_333,
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
+                footprint: [1, 1, 1],
             },
         );
         species.insert(
@@ -633,6 +634,7 @@ impl Default for GameConfig {
                 food_decay_per_tick: 3_333_333_333,
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
+                footprint: [1, 1, 1],
             },
         );
         species.insert(
@@ -647,6 +649,7 @@ impl Default for GameConfig {
                 food_decay_per_tick: 3_333_333_333,
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
+                footprint: [1, 1, 1],
             },
         );
         species.insert(
@@ -661,6 +664,22 @@ impl Default for GameConfig {
                 food_decay_per_tick: 3_333_333_333,
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
+                footprint: [1, 1, 1],
+            },
+        );
+        species.insert(
+            Species::Elephant,
+            SpeciesData {
+                walk_ticks_per_voxel: 700,
+                climb_ticks_per_voxel: None,
+                heartbeat_interval_ticks: 5000,
+                allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
+                ground_only: true,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 3_333_333_333,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 40,
+                footprint: [2, 2, 2],
             },
         );
         species.insert(
@@ -675,6 +694,7 @@ impl Default for GameConfig {
                 food_decay_per_tick: 3_333_333_333,
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
+                footprint: [1, 1, 1],
             },
         );
         species.insert(
@@ -689,6 +709,7 @@ impl Default for GameConfig {
                 food_decay_per_tick: 3_333_333_333,
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
+                footprint: [1, 1, 1],
             },
         );
 
@@ -735,8 +756,8 @@ mod tests {
             config.tree_profile.growth.initial_energy,
             restored.tree_profile.growth.initial_energy
         );
-        // Verify species data survived (6 species: Elf, Capybara, Boar, Deer, Monkey, Squirrel).
-        assert_eq!(config.species.len(), 6);
+        // Verify species data survived (7 species: Elf, Capybara, Boar, Deer, Elephant, Monkey, Squirrel).
+        assert_eq!(config.species.len(), 7);
         assert_eq!(config.species.len(), restored.species.len());
         let elf_data = &restored.species[&Species::Elf];
         assert_eq!(elf_data.heartbeat_interval_ticks, 3000);
@@ -891,6 +912,22 @@ mod tests {
         let data: SpeciesData = serde_json::from_str(json).unwrap();
         assert_eq!(data.food_hunger_threshold_pct, 50);
         assert_eq!(data.food_restore_pct, 40);
+    }
+
+    #[test]
+    fn footprint_defaults_from_old_json() {
+        // Old JSON without footprint field — serde default must apply [1,1,1].
+        let json = r#"{
+            "walk_ticks_per_voxel": 500,
+            "climb_ticks_per_voxel": 1250,
+            "heartbeat_interval_ticks": 3000,
+            "allowed_edge_types": null,
+            "ground_only": false,
+            "food_max": 1000000000000000,
+            "food_decay_per_tick": 3333333333
+        }"#;
+        let data: SpeciesData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.footprint, [1, 1, 1]);
     }
 
     #[test]

@@ -81,6 +81,18 @@ pub struct SpeciesData {
     /// E.g. 40 means eating restores 40% of food_max.
     #[serde(default = "default_food_restore_pct")]
     pub food_restore_pct: i64,
+
+    /// Spatial footprint of the creature in voxels `[width_x, height_y, depth_z]`.
+    /// Default is `[1,1,1]` (single voxel). Large creatures (e.g. elephants) use
+    /// `[2,2,2]` — the anchor position is the min-corner (smallest x, z) at
+    /// walking level. A node at anchor `(x, y, z)` means the full footprint
+    /// volume must be clear and all ground cells below must be solid.
+    #[serde(default = "default_footprint")]
+    pub footprint: [u8; 3],
+}
+
+fn default_footprint() -> [u8; 3] {
+    [1, 1, 1]
 }
 
 fn default_food_hunger_threshold_pct() -> i64 {

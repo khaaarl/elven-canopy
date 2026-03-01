@@ -9,7 +9,7 @@
 ## [B] Build, [T] Tasks, [I] Tree Info, [F12] Toggle debug panel
 ## Debug-only (visible when debug panel is open):
 ## [1] Spawn Elf, [2] Spawn Capybara, [3] Spawn Boar, [4] Spawn Deer,
-## [5] Spawn Monkey, [6] Spawn Squirrel, [7] Summon Elf
+## [5] Spawn Monkey, [6] Spawn Squirrel, [7] Spawn Elephant, [8] Summon Elf
 ##
 ## Emits two signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
@@ -112,8 +112,13 @@ func _ready() -> void:
 	squirrel_button.pressed.connect(_on_spawn.bind("Squirrel"))
 	_debug_row.add_child(squirrel_button)
 
+	var elephant_button := Button.new()
+	elephant_button.text = "Elephant [7]"
+	elephant_button.pressed.connect(_on_spawn.bind("Elephant"))
+	_debug_row.add_child(elephant_button)
+
 	var summon_button := Button.new()
-	summon_button.text = "Summon Elf [7]"
+	summon_button.text = "Summon Elf [8]"
 	summon_button.pressed.connect(_on_summon_pressed)
 	_debug_row.add_child(summon_button)
 
@@ -155,6 +160,9 @@ func _unhandled_input(event: InputEvent) -> void:
 				_on_spawn("Squirrel")
 				get_viewport().set_input_as_handled()
 			elif key.keycode == KEY_7:
+				_on_spawn("Elephant")
+				get_viewport().set_input_as_handled()
+			elif key.keycode == KEY_8:
 				_on_summon_pressed()
 				get_viewport().set_input_as_handled()
 

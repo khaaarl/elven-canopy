@@ -54,6 +54,7 @@ const SPECIES_Y_OFFSETS = {
 	"Capybara": 0.32,
 	"Boar": 0.38,
 	"Deer": 0.46,
+	"Elephant": 0.8,
 	"Monkey": 0.44,
 	"Squirrel": 0.28,
 }
@@ -274,7 +275,13 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	# Set up generic renderers for new species.
 	var renderer_script = load("res://scripts/creature_renderer.gd")
-	for entry in [["Boar", 0.38], ["Deer", 0.46], ["Monkey", 0.44], ["Squirrel", 0.28]]:
+	for entry in [
+		["Boar", 0.38],
+		["Deer", 0.46],
+		["Elephant", 0.8],
+		["Monkey", 0.44],
+		["Squirrel", 0.28],
+	]:
 		var r := Node3D.new()
 		r.set_script(renderer_script)
 		add_child(r)

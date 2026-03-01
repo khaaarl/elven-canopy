@@ -240,6 +240,7 @@ pub enum Species {
     Capybara,
     Boar,
     Deer,
+    Elephant,
     Monkey,
     Squirrel,
 }

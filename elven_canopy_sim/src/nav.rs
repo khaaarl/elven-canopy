@@ -40,12 +40,20 @@
 // `update_after_voxel_solidified()` which touches only ~7 positions and their
 // 26-neighbor edges — O(1) instead of O(world_size).
 //
+// **Dual-graph pattern for large creatures.** `build_large_nav_graph()` builds
+// a separate `NavGraph` for 2x2x2 footprint creatures (e.g. elephants). Nodes
+// exist at anchor `(x, 1, z)` where the 2x2x2 volume is all air and the 2x2
+// ground at y=0 is all solid. Edges connect 8-neighbors with union-footprint
+// clearance checks. The large graph uses the same `NavGraph` struct so all
+// existing pathfinding code works unchanged. `sim.rs` stores both graphs and
+// dispatches via `graph_for_species()` based on the species' footprint.
+//
 // All storage uses `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
 // and deterministic iteration order. No `HashMap`.
 //
 // See also: `world.rs` for the voxel grid, `tree_gen.rs` for tree geometry,
 // `pathfinding.rs` for A* search over this graph, `sim.rs` which owns the
-// `NavGraph` as part of `SimState`.
+// `NavGraph` as part of `SimState`, `species.rs` for the `footprint` field.
 //
 // **Critical constraint: determinism.** The graph is built by iterating voxels
 // in fixed order (matching the flat index of `VoxelWorld`). Node/edge IDs are
@@ -1028,6 +1036,345 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
     graph
 }
 
+// ---------------------------------------------------------------------------
+// Large creature nav graph (2x2x2 footprint)
+// ---------------------------------------------------------------------------
+
+/// Check whether a 2x2x2 anchor at `(ax, 1, az)` is a valid large nav node.
+///
+/// Requirements:
+/// - All 4 cells at y=0 in `[ax..ax+2, az..az+2]` must be solid (ground support)
+/// - All 8 cells in `[ax..ax+2, 1..3, az..az+2]` must be non-solid (clearance)
+/// - Anchor must be in bounds: `ax+1 < size_x`, `az+1 < size_z`, `2 < size_y`
+fn is_large_node_valid(world: &VoxelWorld, ax: i32, az: i32) -> bool {
+    if ax < 0 || az < 0 {
+        return false;
+    }
+    let sx = world.size_x as i32;
+    let sy = world.size_y as i32;
+    let sz = world.size_z as i32;
+    if ax + 2 > sx || az + 2 > sz || 3 > sy {
+        return false;
+    }
+
+    // Check ground support at y=0.
+    for dz in 0..2 {
+        for dx in 0..2 {
+            if !world.get(VoxelCoord::new(ax + dx, 0, az + dz)).is_solid() {
+                return false;
+            }
+        }
+    }
+
+    // Check clearance at y=1 and y=2.
+    for y in 1..3 {
+        for dz in 0..2 {
+            for dx in 0..2 {
+                if world.get(VoxelCoord::new(ax + dx, y, az + dz)).is_solid() {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
+}
+
+/// Check whether a large creature can move from anchor `from` to anchor `to`.
+///
+/// The union of the two 2x2 footprints at ground level must all be solid at y=0
+/// and all air at y=1 and y=2. This ensures no solid voxel blocks the swept path.
+fn is_large_edge_valid(world: &VoxelWorld, from: (i32, i32), to: (i32, i32)) -> bool {
+    let min_x = from.0.min(to.0);
+    let max_x = from.0.max(to.0) + 2;
+    let min_z = from.1.min(to.1);
+    let max_z = from.1.max(to.1) + 2;
+
+    let sx = world.size_x as i32;
+    let sy = world.size_y as i32;
+    let sz = world.size_z as i32;
+    if max_x > sx || max_z > sz || 3 > sy {
+        return false;
+    }
+
+    // All ground cells in the union footprint must be solid.
+    for z in min_z..max_z {
+        for x in min_x..max_x {
+            if !world.get(VoxelCoord::new(x, 0, z)).is_solid() {
+                return false;
+            }
+        }
+    }
+
+    // All air cells at y=1 and y=2 in the union footprint must be non-solid.
+    for y in 1..3 {
+        for z in min_z..max_z {
+            for x in min_x..max_x {
+                if world.get(VoxelCoord::new(x, y, z)).is_solid() {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
+}
+
+/// Build a navigation graph for large (2x2x2 footprint) creatures.
+///
+/// Nodes exist at anchor positions `(x, 1, z)` where the 2x2x2 volume
+/// `[x..x+2, 1..3, z..z+2]` is all air and the 2x2 ground at y=0 is all solid.
+/// Edges connect horizontal 8-neighbors (dx,dz in {-1,0,1}²\{0,0}), validated
+/// by checking the union of source and destination footprints.
+///
+/// All edges are `ForestFloor` type since large creatures are ground-only.
+/// The resulting graph uses the same `NavGraph` struct as the standard graph,
+/// so all existing pathfinding code works unchanged.
+pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
+    let mut graph = NavGraph::new();
+
+    let sx = world.size_x as usize;
+    let sy = world.size_y as usize;
+    let sz = world.size_z as usize;
+    let total = sx * sy * sz;
+
+    if total == 0 || sx < 2 || sz < 2 || sy < 3 {
+        return graph;
+    }
+
+    graph.world_size = (sx, sy, sz);
+    graph.spatial_index = vec![u32::MAX; total];
+
+    // Pass 1: create nodes.
+    // Large nodes live at y=1 (walking level). Iterate in flat-index order.
+    for z in 0..sz.saturating_sub(1) {
+        for x in 0..sx.saturating_sub(1) {
+            if !is_large_node_valid(world, x as i32, z as i32) {
+                continue;
+            }
+            let coord = VoxelCoord::new(x as i32, 1, z as i32);
+            let node_id = graph.add_node(coord, VoxelType::ForestFloor);
+            let flat_idx = x + z * sx + sx * sz;
+            graph.spatial_index[flat_idx] = node_id.0;
+        }
+    }
+
+    // Pass 2: create edges.
+    // Use 4 positive-half horizontal offsets to avoid duplicate edges.
+    #[rustfmt::skip]
+    let positive_half: [(i32, i32); 4] = [
+        ( 1, -1), ( 1, 0), ( 1, 1),
+        ( 0,  1),
+    ];
+
+    for z in 0..sz.saturating_sub(1) {
+        for x in 0..sx.saturating_sub(1) {
+            let flat_idx = x + z * sx + sx * sz;
+            let from_slot = graph.spatial_index[flat_idx];
+            if from_slot == u32::MAX {
+                continue;
+            }
+
+            for &(dx, dz) in &positive_half {
+                let nx = x as i32 + dx;
+                let nz = z as i32 + dz;
+                if nx < 0 || nz < 0 {
+                    continue;
+                }
+                let (nxu, nzu) = (nx as usize, nz as usize);
+                if nxu + 1 >= sx || nzu + 1 >= sz {
+                    continue;
+                }
+
+                let n_flat = nxu + nzu * sx + sx * sz;
+                let to_slot = graph.spatial_index[n_flat];
+                if to_slot == u32::MAX {
+                    continue;
+                }
+
+                if !is_large_edge_valid(world, (x as i32, z as i32), (nx, nz)) {
+                    continue;
+                }
+
+                let from = NavNodeId(from_slot);
+                let to = NavNodeId(to_slot);
+                let dist = ((dx * dx + dz * dz) as f32).sqrt();
+                graph.add_edge(from, to, EdgeType::ForestFloor, dist);
+            }
+        }
+    }
+
+    graph
+}
+
+/// Incrementally update the large nav graph after a voxel changed from Air to
+/// solid (e.g. construction materialization).
+///
+/// Checks which large-creature anchor positions are affected by the changed
+/// coordinate, removes invalidated nodes, adds newly valid nodes, and
+/// recomputes edges. Returns removed node IDs for creature resnapping.
+pub fn update_large_after_voxel_solidified(
+    graph: &mut NavGraph,
+    world: &VoxelWorld,
+    coord: VoxelCoord,
+) -> Vec<NavNodeId> {
+    let mut removed_ids = Vec::new();
+    let sx = graph.world_size.0;
+    let sz = graph.world_size.2;
+    if sx < 2 || sz < 2 {
+        return removed_ids;
+    }
+
+    // A changed voxel at (cx, cy, cz) can affect large anchors at:
+    // - y=0 (ground support): anchors (cx-1..cx, 1, cz-1..cz)
+    // - y=1 or y=2 (clearance): anchors (cx-1..cx, 1, cz-1..cz)
+    // So we always check the 2x2 set of possible anchor positions.
+    let mut affected_anchors: Vec<(i32, i32)> = Vec::new();
+    for dz in -1..=0 {
+        for dx in -1..=0 {
+            let ax = coord.x + dx;
+            let az = coord.z + dz;
+            if ax >= 0 && az >= 0 && (ax as usize) + 1 < sx && (az as usize) + 1 < sz {
+                affected_anchors.push((ax, az));
+            }
+        }
+    }
+
+    // Step 1: Update nodes at affected anchors.
+    for &(ax, az) in &affected_anchors {
+        let should_exist = is_large_node_valid(world, ax, az);
+        let flat = ax as usize + az as usize * sx + sx * sz;
+        let current_slot = graph.spatial_index[flat];
+        let is_node = current_slot != u32::MAX;
+
+        if !should_exist && is_node {
+            let id = NavNodeId(current_slot);
+            removed_ids.push(id);
+            graph.nodes[current_slot as usize] = None;
+            graph.spatial_index[flat] = u32::MAX;
+            graph.free_slots.push(current_slot as usize);
+        } else if should_exist && !is_node {
+            let anchor_coord = VoxelCoord::new(ax, 1, az);
+            let slot = if let Some(free) = graph.free_slots.pop() {
+                let id = NavNodeId(free as u32);
+                graph.nodes[free] = Some(NavNode {
+                    id,
+                    position: anchor_coord,
+                    surface_type: VoxelType::ForestFloor,
+                    edge_indices: Vec::new(),
+                });
+                free
+            } else {
+                let slot = graph.nodes.len();
+                let id = NavNodeId(slot as u32);
+                graph.nodes.push(Some(NavNode {
+                    id,
+                    position: anchor_coord,
+                    surface_type: VoxelType::ForestFloor,
+                    edge_indices: Vec::new(),
+                }));
+                slot
+            };
+            graph.spatial_index[flat] = slot as u32;
+        }
+    }
+
+    // Step 2: Collect dirty set — affected anchors + their 8 horizontal neighbors.
+    let mut dirty_set: Vec<usize> = Vec::new();
+    let mut is_dirty = vec![false; graph.nodes.len()];
+
+    for &(ax, az) in &affected_anchors {
+        for dz in -1i32..=1 {
+            for dx in -1i32..=1 {
+                let nx = ax + dx;
+                let nz = az + dz;
+                if nx < 0 || nz < 0 || (nx as usize) + 1 >= sx || (nz as usize) + 1 >= sz {
+                    continue;
+                }
+                let flat = nx as usize + nz as usize * sx + sx * sz;
+                let slot = graph.spatial_index[flat];
+                if slot != u32::MAX {
+                    let s = slot as usize;
+                    if s < is_dirty.len() && !is_dirty[s] {
+                        is_dirty[s] = true;
+                        dirty_set.push(s);
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 3: Clear edges touching dirty nodes.
+    for &slot in &dirty_set {
+        if let Some(node) = &graph.nodes[slot] {
+            let edge_indices: Vec<usize> = node.edge_indices.clone();
+            for &eidx in &edge_indices {
+                let edge = &graph.edges[eidx];
+                let other_slot = edge.to.0 as usize;
+                if let Some(other_node) = graph.nodes[other_slot].as_mut() {
+                    other_node
+                        .edge_indices
+                        .retain(|&rev_idx| graph.edges[rev_idx].to != NavNodeId(slot as u32));
+                }
+            }
+            if let Some(node) = graph.nodes[slot].as_mut() {
+                node.edge_indices.clear();
+            }
+        }
+    }
+
+    // Step 4: Recompute edges for dirty nodes.
+    let offsets: [(i32, i32); 8] = [
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+    ];
+
+    for &slot in &dirty_set {
+        let node = match &graph.nodes[slot] {
+            Some(n) => n,
+            None => continue,
+        };
+        let ax = node.position.x;
+        let az = node.position.z;
+
+        for &(dx, dz) in &offsets {
+            let nx = ax + dx;
+            let nz = az + dz;
+            if nx < 0 || nz < 0 || (nx as usize) + 1 >= sx || (nz as usize) + 1 >= sz {
+                continue;
+            }
+            let n_flat = nx as usize + nz as usize * sx + sx * sz;
+            let n_slot = graph.spatial_index[n_flat];
+            if n_slot == u32::MAX {
+                continue;
+            }
+            let ns = n_slot as usize;
+
+            // Avoid duplicate edges: only create from smaller slot.
+            if is_dirty.get(ns).copied().unwrap_or(false) && ns < slot {
+                continue;
+            }
+
+            if !is_large_edge_valid(world, (ax, az), (nx, nz)) {
+                continue;
+            }
+
+            let from_id = NavNodeId(slot as u32);
+            let to_id = NavNodeId(ns as u32);
+            let dist = ((dx * dx + dz * dz) as f32).sqrt();
+            graph.add_edge(from_id, to_id, EdgeType::ForestFloor, dist);
+        }
+    }
+
+    removed_ids
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1640,6 +1987,233 @@ mod tests {
             inc_edges, full_edges,
             "Incremental and full rebuild should produce the same edges",
         );
+    }
+
+    // --- Large (2x2x2) nav graph tests ---
+
+    /// Helper: create a flat floor world of given size (solid at y=0, air above).
+    fn flat_floor_world(sx: u32, sy: u32, sz: u32) -> VoxelWorld {
+        let mut world = VoxelWorld::new(sx, sy, sz);
+        for z in 0..sz {
+            for x in 0..sx {
+                world.set(
+                    VoxelCoord::new(x as i32, 0, z as i32),
+                    VoxelType::ForestFloor,
+                );
+            }
+        }
+        world
+    }
+
+    #[test]
+    fn large_nav_no_floor() {
+        // No solid ground → no large nodes.
+        let world = VoxelWorld::new(10, 6, 10);
+        let graph = build_large_nav_graph(&world);
+        assert_eq!(graph.live_nodes().count(), 0, "No floor → no large nodes");
+    }
+
+    #[test]
+    fn large_nav_flat_floor() {
+        // 10x10 flat floor → (10-1)×(10-1) = 81 anchor positions.
+        let world = flat_floor_world(10, 6, 10);
+        let graph = build_large_nav_graph(&world);
+
+        assert_eq!(
+            graph.live_nodes().count(),
+            81,
+            "10×10 floor should produce 9×9=81 large nodes",
+        );
+
+        // Fully connected: every interior node should have 8 neighbors,
+        // corner nodes 3, edge nodes 5. Check total edges.
+        // In a 9×9 grid:
+        // - 4 corners × 3 edges = 12
+        // - (7×4) edge cells × 5 edges = 140
+        // - 7×7 interior × 8 edges = 392
+        // Total per-node half = (12+140+392)/2 = 272 bidirectional edges
+        // But we store 2 entries per edge (one per direction), so 544 total.
+        let total_edge_refs: usize = graph.live_nodes().map(|n| n.edge_indices.len()).sum();
+        assert_eq!(
+            total_edge_refs, 544,
+            "9×9 fully connected grid should have 544 edge references",
+        );
+    }
+
+    #[test]
+    fn large_nav_obstacle_blocks_node() {
+        // Solid at (5,1,5) blocks large anchors at (4,5), (5,5), (4,4), (5,4)
+        // because each of those 2x2 footprints includes (5,1,5).
+        let mut world = flat_floor_world(10, 6, 10);
+        world.set(VoxelCoord::new(5, 1, 5), VoxelType::Trunk);
+        let graph = build_large_nav_graph(&world);
+
+        // 81 - 4 = 77 nodes.
+        assert_eq!(
+            graph.live_nodes().count(),
+            77,
+            "Obstacle at (5,1,5) should remove 4 anchor positions",
+        );
+        // Verify the specific removed anchors.
+        assert!(!graph.has_node_at(VoxelCoord::new(4, 1, 4)));
+        assert!(!graph.has_node_at(VoxelCoord::new(5, 1, 4)));
+        assert!(!graph.has_node_at(VoxelCoord::new(4, 1, 5)));
+        assert!(!graph.has_node_at(VoxelCoord::new(5, 1, 5)));
+    }
+
+    #[test]
+    fn large_nav_obstacle_blocks_edge() {
+        // Remove floor at (0,0,2) — outside both anchor footprints but inside
+        // the union ground check for the diagonal edge (0,0)→(1,1).
+        // Anchor (0,0) ground = {(0,0),(1,0),(0,1),(1,1)} — doesn't include (0,2).
+        // Anchor (1,1) ground = {(1,1),(2,1),(1,2),(2,2)} — doesn't include (0,2).
+        // Union ground for diagonal = {0..3, 0..3} — includes (0,2).
+        // So both nodes remain valid, but the diagonal edge is blocked.
+        let world2 = {
+            let mut w = flat_floor_world(10, 6, 10);
+            w.set(VoxelCoord::new(0, 0, 2), VoxelType::Air);
+            w
+        };
+        let graph = build_large_nav_graph(&world2);
+
+        // Both anchors (0,0) and (1,1) should still be valid.
+        assert!(graph.has_node_at(VoxelCoord::new(0, 1, 0)));
+        assert!(graph.has_node_at(VoxelCoord::new(1, 1, 1)));
+
+        // But the diagonal edge between them should NOT exist.
+        let node_0_0 = graph
+            .live_nodes()
+            .find(|n| n.position == VoxelCoord::new(0, 1, 0))
+            .unwrap();
+        let has_edge_to_1_1 = node_0_0
+            .edge_indices
+            .iter()
+            .any(|&idx| graph.node(graph.edge(idx).to).position == VoxelCoord::new(1, 1, 1));
+        assert!(
+            !has_edge_to_1_1,
+            "Missing ground in union area should block diagonal edge",
+        );
+    }
+
+    #[test]
+    fn large_nav_headroom() {
+        // Solid at y=2 blocks the node (need 2 voxels of clearance).
+        let mut world = flat_floor_world(10, 6, 10);
+        // Place solid at (3,2,3) — blocks anchors (2,2),(3,2),(2,3),(3,3)
+        // because their 2x2x2 volume includes y=2.
+        world.set(VoxelCoord::new(3, 2, 3), VoxelType::Branch);
+        let graph = build_large_nav_graph(&world);
+
+        assert!(!graph.has_node_at(VoxelCoord::new(2, 1, 2)));
+        assert!(!graph.has_node_at(VoxelCoord::new(3, 1, 2)));
+        assert!(!graph.has_node_at(VoxelCoord::new(2, 1, 3)));
+        assert!(!graph.has_node_at(VoxelCoord::new(3, 1, 3)));
+        assert_eq!(
+            graph.live_nodes().count(),
+            77,
+            "Headroom obstacle should remove 4 nodes",
+        );
+    }
+
+    #[test]
+    fn large_nav_world_boundary() {
+        // In a 3x6x3 world, only anchor (0,0) can fit (footprint 0..2, 0..2).
+        // Anchors at x=2 or z=2 would need x+1=3 or z+1=3 which is OOB.
+        let world = flat_floor_world(3, 6, 3);
+        let graph = build_large_nav_graph(&world);
+
+        assert_eq!(
+            graph.live_nodes().count(),
+            4,
+            "3×3 floor: anchors at (0,0),(1,0),(0,1),(1,1) = 4 nodes",
+        );
+        // Specifically, max anchor is (1,1) since footprint (1..3, 1..3) fits in 3x3.
+        assert!(graph.has_node_at(VoxelCoord::new(0, 1, 0)));
+        assert!(graph.has_node_at(VoxelCoord::new(1, 1, 0)));
+        assert!(graph.has_node_at(VoxelCoord::new(0, 1, 1)));
+        assert!(graph.has_node_at(VoxelCoord::new(1, 1, 1)));
+    }
+
+    #[test]
+    fn large_nav_determinism() {
+        // Two builds from the same world produce identical results.
+        let world = flat_floor_world(10, 6, 10);
+        let g1 = build_large_nav_graph(&world);
+        let g2 = build_large_nav_graph(&world);
+
+        let pos1: Vec<VoxelCoord> = g1.live_nodes().map(|n| n.position).collect();
+        let pos2: Vec<VoxelCoord> = g2.live_nodes().map(|n| n.position).collect();
+        assert_eq!(
+            pos1, pos2,
+            "Node positions should be identical across builds"
+        );
+
+        let mut edges1: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
+        for node in g1.live_nodes() {
+            for &idx in &node.edge_indices {
+                let e = g1.edge(idx);
+                edges1.push((g1.node(e.from).position, g1.node(e.to).position));
+            }
+        }
+        let mut edges2: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
+        for node in g2.live_nodes() {
+            for &idx in &node.edge_indices {
+                let e = g2.edge(idx);
+                edges2.push((g2.node(e.from).position, g2.node(e.to).position));
+            }
+        }
+        assert_eq!(edges1, edges2, "Edges should be identical across builds");
+    }
+
+    // --- Large nav incremental update tests ---
+
+    #[test]
+    fn large_nav_incremental_remove() {
+        let mut world = flat_floor_world(10, 6, 10);
+        let mut graph = build_large_nav_graph(&world);
+
+        assert!(graph.has_node_at(VoxelCoord::new(3, 1, 3)));
+
+        // Solidify (3,1,3) — blocks anchors (2,2),(3,2),(2,3),(3,3).
+        world.set(VoxelCoord::new(3, 1, 3), VoxelType::GrownPlatform);
+        let removed =
+            update_large_after_voxel_solidified(&mut graph, &world, VoxelCoord::new(3, 1, 3));
+
+        assert!(!removed.is_empty(), "Should have removed at least one node");
+        assert!(!graph.has_node_at(VoxelCoord::new(3, 1, 3)));
+        assert!(!graph.has_node_at(VoxelCoord::new(2, 1, 2)));
+        assert!(!graph.has_node_at(VoxelCoord::new(3, 1, 2)));
+        assert!(!graph.has_node_at(VoxelCoord::new(2, 1, 3)));
+    }
+
+    #[test]
+    fn large_nav_incremental_add() {
+        // Start with a world that has a gap in the floor, then fill it in.
+        let mut world = flat_floor_world(10, 6, 10);
+        world.set(VoxelCoord::new(5, 0, 5), VoxelType::Air); // Remove one floor cell
+        let mut graph = build_large_nav_graph(&world);
+
+        // Anchors (4,4),(5,4),(4,5),(5,5) are invalid because (5,0,5) is
+        // in their ground support.
+        assert!(!graph.has_node_at(VoxelCoord::new(4, 1, 4)));
+        assert!(!graph.has_node_at(VoxelCoord::new(5, 1, 4)));
+        assert!(!graph.has_node_at(VoxelCoord::new(4, 1, 5)));
+        assert!(!graph.has_node_at(VoxelCoord::new(5, 1, 5)));
+
+        // Restore the floor cell.
+        world.set(VoxelCoord::new(5, 0, 5), VoxelType::ForestFloor);
+        let removed =
+            update_large_after_voxel_solidified(&mut graph, &world, VoxelCoord::new(5, 0, 5));
+
+        assert!(
+            removed.is_empty(),
+            "Restoring floor should not remove nodes"
+        );
+        // All 4 anchors should now exist.
+        assert!(graph.has_node_at(VoxelCoord::new(4, 1, 4)));
+        assert!(graph.has_node_at(VoxelCoord::new(5, 1, 4)));
+        assert!(graph.has_node_at(VoxelCoord::new(4, 1, 5)));
+        assert!(graph.has_node_at(VoxelCoord::new(5, 1, 5)));
     }
 
     // --- Building face awareness tests ---

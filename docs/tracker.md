@@ -80,7 +80,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-ladders              Rope/wood ladders as cheap connectors
 [ ] F-lang-crate           Shared Vaelith language crate
-[ ] F-large-pathfind       2x2 footprint nav grid
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-logistics            Spatial resource flow (Kanban-style)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -143,6 +142,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-food-gauge           Creature food gauge with decay
 [x] F-game-session         Game session autoload singleton
+[x] F-large-pathfind       2x2 footprint nav grid
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-godot-setup          Godot 4 project setup
 [x] F-main-menu            Main menu UI
@@ -468,10 +468,12 @@ Full 3D movement for birds and winged elves. Separate from the
 surface-based nav graph — likely a volumetric approach.
 
 #### F-large-pathfind — 2x2 footprint nav grid
-**Status:** Todo · **Phase:** 8+ · **Refs:** §10
+**Status:** Done · **Phase:** 8+ · **Refs:** §10
 
-Navigation for large creatures (dinosaurs, golems) with multi-voxel
-footprints. Requires clearance-annotated nav graph or separate grid.
+Separate pre-baked `NavGraph` for 2x2x2 footprint creatures (elephants).
+Nodes only where a 2x2x2 volume is clear and all 4 ground cells are solid.
+Includes `Species::Elephant`, `graph_for_species()` dispatch, incremental
+updates, SimBridge queries, GDScript spawn/render/placement, and sprite.
 
 #### F-nav-graph — Navigation graph construction
 **Status:** Done · **Phase:** 1 · **Refs:** §10

@@ -105,6 +105,7 @@ fn parse_species(name: &str) -> Option<Species> {
         "Capybara" => Some(Species::Capybara),
         "Boar" => Some(Species::Boar),
         "Deer" => Some(Species::Deer),
+        "Elephant" => Some(Species::Elephant),
         "Monkey" => Some(Species::Monkey),
         "Squirrel" => Some(Species::Squirrel),
         _ => None,
@@ -118,6 +119,7 @@ fn species_name(species: Species) -> &'static str {
         Species::Capybara => "Capybara",
         Species::Boar => "Boar",
         Species::Deer => "Deer",
+        Species::Elephant => "Elephant",
         Species::Monkey => "Monkey",
         Species::Squirrel => "Squirrel",
     }
@@ -795,8 +797,44 @@ impl SimBridge {
         arr.push("Capybara");
         arr.push("Boar");
         arr.push("Deer");
+        arr.push("Elephant");
         arr.push("Monkey");
         arr.push("Squirrel");
+        arr
+    }
+
+    /// Return the footprint `[width_x, height_y, depth_z]` for the named species.
+    /// Returns `Vector3i(1,1,1)` if the species is unknown.
+    #[func]
+    fn get_species_footprint(&self, species_name: GString) -> Vector3i {
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return Vector3i::new(1, 1, 1);
+        };
+        let Some(sim) = &self.sim else {
+            return Vector3i::new(1, 1, 1);
+        };
+        match sim.species_table.get(&species) {
+            Some(data) => Vector3i::new(
+                data.footprint[0] as i32,
+                data.footprint[1] as i32,
+                data.footprint[2] as i32,
+            ),
+            None => Vector3i::new(1, 1, 1),
+        }
+    }
+
+    /// Return all ground nav nodes from the large (2x2x2) nav graph.
+    /// Used by the placement controller for large creature spawn snapping.
+    #[func]
+    fn get_large_ground_nav_nodes(&self) -> PackedVector3Array {
+        let mut arr = PackedVector3Array::new();
+        let Some(sim) = &self.sim else {
+            return arr;
+        };
+        for node in sim.large_nav_graph.live_nodes() {
+            let p = node.position;
+            arr.push(Vector3::new(p.x as f32, p.y as f32, p.z as f32));
+        }
         arr
     }
 

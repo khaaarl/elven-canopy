@@ -7,8 +7,11 @@
 //
 // On construction (`new()`/`with_config()`), the sim generates tree geometry
 // via `tree_gen.rs`, builds the navigation graph via `nav.rs`, and initializes
-// the voxel world via `world.rs`. Creature spawning and movement are handled
-// through the command/event system.
+// the voxel world via `world.rs`. Two nav graphs are maintained: the standard
+// graph for 1x1x1 creatures and a large graph for 2x2x2 creatures (elephants).
+// `graph_for_species()` dispatches to the correct graph based on the species'
+// `footprint` field from `species.rs`. Creature spawning and movement are
+// handled through the command/event system.
 //
 // ## Activation chain
 //
@@ -238,6 +241,11 @@ pub struct SimState {
     #[serde(skip)]
     pub nav_graph: NavGraph,
 
+    /// Navigation graph for large (2x2x2 footprint) creatures. Only contains
+    /// ground-level nodes where a 2x2x2 volume is clear. Regenerated, not serialized.
+    #[serde(skip)]
+    pub large_nav_graph: NavGraph,
+
     /// Species data table built from config. Not serialized (rebuilt from config).
     #[serde(skip)]
     pub species_table: BTreeMap<Species, SpeciesData>,
@@ -366,6 +374,18 @@ impl SimState {
         Self::with_config(seed, GameConfig::default())
     }
 
+    /// Return the appropriate nav graph for a species based on its footprint.
+    /// Species with a footprint wider than 1 in x or z use the large nav graph;
+    /// all others use the standard graph.
+    pub fn graph_for_species(&self, species: Species) -> &NavGraph {
+        let data = &self.species_table[&species];
+        if data.footprint[0] > 1 || data.footprint[2] > 1 {
+            &self.large_nav_graph
+        } else {
+            &self.nav_graph
+        }
+    }
+
     /// Create a new simulation with the given seed and config.
     pub fn with_config(seed: u64, config: GameConfig) -> Self {
         let mut rng = GameRng::new(seed);
@@ -422,8 +442,9 @@ impl SimState {
             fruit_positions: Vec::new(),
         };
 
-        // Build nav graph from voxel world geometry.
+        // Build nav graphs from voxel world geometry.
         let nav_graph = nav::build_nav_graph(&world, &BTreeMap::new());
+        let large_nav_graph = nav::build_large_nav_graph(&world);
 
         let mut trees = BTreeMap::new();
         trees.insert(player_tree_id, home_tree);
@@ -450,6 +471,7 @@ impl SimState {
             player_id,
             world,
             nav_graph,
+            large_nav_graph,
             species_table,
             last_build_message: None,
         };
@@ -995,11 +1017,12 @@ impl SimState {
         events: &mut Vec<SimEvent>,
     ) {
         let species_data = &self.species_table[&species];
+        let graph = self.graph_for_species(species);
 
         let nearest_node = if species_data.ground_only {
-            self.nav_graph.find_nearest_ground_node(position)
+            graph.find_nearest_ground_node(position)
         } else {
-            self.nav_graph.find_nearest_node(position)
+            graph.find_nearest_node(position)
         };
 
         let nearest_node = match nearest_node {
@@ -1007,8 +1030,8 @@ impl SimState {
             None => return, // No suitable nav nodes — can't spawn.
         };
 
+        let node_pos = graph.node(nearest_node).position;
         let creature_id = CreatureId::new(&mut self.rng);
-        let node_pos = self.nav_graph.node(nearest_node).position;
 
         let creature = Creature {
             id: creature_id,
@@ -1197,13 +1220,14 @@ impl SimState {
         let creature = self.creatures.get(&creature_id)?;
         let start_node = creature.current_node?;
         let species_data = &self.species_table[&creature.species];
+        let graph = self.graph_for_species(creature.species);
 
         // Map each fruit position to its nearest nav node, keeping the association.
         let mut nav_to_fruit: Vec<(NavNodeId, VoxelCoord)> = Vec::new();
         let mut target_nodes: Vec<NavNodeId> = Vec::new();
         for tree in self.trees.values() {
             for &fruit_pos in &tree.fruit_positions {
-                if let Some(nav_node) = self.nav_graph.find_nearest_node(fruit_pos) {
+                if let Some(nav_node) = graph.find_nearest_node(fruit_pos) {
                     target_nodes.push(nav_node);
                     nav_to_fruit.push((nav_node, fruit_pos));
                 }
@@ -1215,7 +1239,7 @@ impl SimState {
         }
 
         let nearest_node = pathfinding::dijkstra_nearest(
-            &self.nav_graph,
+            graph,
             start_node,
             &target_nodes,
             species_data.walk_ticks_per_voxel,
@@ -1268,6 +1292,7 @@ impl SimState {
         };
         let species = creature.species;
         let species_data = &self.species_table[&species];
+        let graph = self.graph_for_species(species);
 
         // Check if we already have a path. If so, advance one step.
         // If not (or path is exhausted), compute a new one.
@@ -1290,7 +1315,7 @@ impl SimState {
             // Compute path to task location.
             let path_result = if let Some(ref allowed) = species_data.allowed_edge_types {
                 pathfinding::astar_filtered(
-                    &self.nav_graph,
+                    graph,
                     current_node,
                     task_location,
                     walk_tpv,
@@ -1298,13 +1323,7 @@ impl SimState {
                     allowed,
                 )
             } else {
-                pathfinding::astar(
-                    &self.nav_graph,
-                    current_node,
-                    task_location,
-                    walk_tpv,
-                    climb_tpv,
-                )
+                pathfinding::astar(graph, current_node, task_location, walk_tpv, climb_tpv)
             };
 
             let path_result = match path_result {
@@ -1331,7 +1350,8 @@ impl SimState {
         };
 
         // Move one edge. Compute traversal time from distance * ticks-per-voxel.
-        let edge = self.nav_graph.edge(edge_idx);
+        let graph = self.graph_for_species(species);
+        let edge = graph.edge(edge_idx);
         let tpv = match edge.edge_type {
             crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
                 climb_tpv.unwrap_or(walk_tpv)
@@ -1339,7 +1359,7 @@ impl SimState {
             _ => walk_tpv,
         };
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
-        let dest_pos = self.nav_graph.node(dest_node).position;
+        let dest_pos = graph.node(dest_node).position;
 
         let creature = self.creatures.get_mut(&creature_id).unwrap();
         let old_pos = creature.position;
@@ -1396,27 +1416,28 @@ impl SimState {
             None => return,
         };
         let species = creature.species;
-        let species_data = &self.species_table[&species];
 
-        let edge_indices = self.nav_graph.neighbors(current_node);
-        if edge_indices.is_empty() {
-            self.event_queue.schedule(
-                self.tick + 1000,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
-            return;
-        }
-
-        // Filter edges by species restrictions.
-        let eligible_edges: Vec<usize> = if let Some(ref allowed) = species_data.allowed_edge_types
-        {
-            edge_indices
-                .iter()
-                .copied()
-                .filter(|&idx| allowed.contains(&self.nav_graph.edge(idx).edge_type))
-                .collect()
-        } else {
-            edge_indices.to_vec()
+        // Collect eligible edges before mutably borrowing self (for rng).
+        let eligible_edges: Vec<usize> = {
+            let species_data = &self.species_table[&species];
+            let graph = self.graph_for_species(species);
+            let edge_indices = graph.neighbors(current_node);
+            if edge_indices.is_empty() {
+                self.event_queue.schedule(
+                    self.tick + 1000,
+                    ScheduledEventKind::CreatureActivation { creature_id },
+                );
+                return;
+            }
+            if let Some(ref allowed) = species_data.allowed_edge_types {
+                edge_indices
+                    .iter()
+                    .copied()
+                    .filter(|&idx| allowed.contains(&graph.edge(idx).edge_type))
+                    .collect()
+            } else {
+                edge_indices.to_vec()
+            }
         };
 
         if eligible_edges.is_empty() {
@@ -1430,7 +1451,10 @@ impl SimState {
         // Pick a random eligible edge.
         let chosen_idx = self.rng.range_u64(0, eligible_edges.len() as u64) as usize;
         let edge_idx = eligible_edges[chosen_idx];
-        let edge = self.nav_graph.edge(edge_idx);
+
+        let species_data = &self.species_table[&species];
+        let graph = self.graph_for_species(species);
+        let edge = graph.edge(edge_idx);
         let dest_node = edge.to;
 
         // Compute traversal time from distance * species ticks-per-voxel.
@@ -1443,7 +1467,7 @@ impl SimState {
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
 
         // Move creature to the destination.
-        let dest_pos = self.nav_graph.node(dest_node).position;
+        let dest_pos = graph.node(dest_node).position;
         let creature = self.creatures.get_mut(&creature_id).unwrap();
         let old_pos = creature.position;
         creature.position = dest_pos;
@@ -1468,14 +1492,16 @@ impl SimState {
         creature_id: CreatureId,
         arrived_at: NavNodeId,
     ) {
-        let node_pos = self.nav_graph.node(arrived_at).position;
-
         let creature = match self.creatures.get_mut(&creature_id) {
             Some(c) => c,
             None => return, // Creature was removed.
         };
 
         let species = creature.species;
+        let graph = self.graph_for_species(species);
+        let node_pos = graph.node(arrived_at).position;
+
+        let creature = self.creatures.get_mut(&creature_id).unwrap();
 
         // Update position and current node.
         creature.position = node_pos;
@@ -1501,9 +1527,10 @@ impl SimState {
         if should_continue {
             // Schedule next movement using distance * species ticks-per-voxel.
             let species_data = &self.species_table[&species];
+            let graph = self.graph_for_species(species);
             let path = self.creatures[&creature_id].path.as_ref().unwrap();
             let next_edge_idx = path.remaining_edge_indices[0];
-            let next_edge = self.nav_graph.edge(next_edge_idx);
+            let next_edge = graph.edge(next_edge_idx);
             let tpv = match next_edge.edge_type {
                 crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
                     species_data
@@ -1514,7 +1541,7 @@ impl SimState {
             };
             let delay = ((next_edge.distance * tpv as f32).ceil() as u64).max(1);
             let next_dest = path.remaining_nodes[0];
-            let next_dest_pos = self.nav_graph.node(next_dest).position;
+            let next_dest_pos = graph.node(next_dest).position;
             let arrival_tick = self.tick + delay;
 
             // Set movement interpolation metadata for the next leg.
@@ -1731,14 +1758,28 @@ impl SimState {
                 &self.face_data,
                 chosen,
             );
-            self.resnap_removed_nodes(&removed);
+            let large_removed = nav::update_large_after_voxel_solidified(
+                &mut self.large_nav_graph,
+                &self.world,
+                chosen,
+            );
+            let mut all_removed = removed;
+            all_removed.extend(large_removed);
+            self.resnap_removed_nodes(&all_removed);
         } else {
             // Incrementally update nav graph (touches only ~7 affected positions
             // instead of scanning the entire world) and resnap displaced creatures.
             let removed =
                 self.nav_graph
                     .update_after_voxel_solidified(&self.world, &self.face_data, chosen);
-            self.resnap_removed_nodes(&removed);
+            let large_removed = nav::update_large_after_voxel_solidified(
+                &mut self.large_nav_graph,
+                &self.world,
+                chosen,
+            );
+            let mut all_removed = removed;
+            all_removed.extend(large_removed);
+            self.resnap_removed_nodes(&all_removed);
         }
     }
 
@@ -1764,15 +1805,20 @@ impl SimState {
     /// by finding the nearest node to its position. Clears stored paths since
     /// NavNodeIds change when the graph is rebuilt.
     fn resnap_creature_nodes(&mut self) {
-        let creature_ids: Vec<CreatureId> = self.creatures.keys().copied().collect();
-        for cid in creature_ids {
+        let creature_info: Vec<(CreatureId, Species, VoxelCoord)> = self
+            .creatures
+            .values()
+            .map(|c| (c.id, c.species, c.position))
+            .collect();
+        for (cid, species, pos) in creature_info {
+            let graph = self.graph_for_species(species);
+            let new_node = graph.find_nearest_node(pos);
+            let new_pos = new_node.map(|nid| graph.node(nid).position);
             let creature = self.creatures.get_mut(&cid).unwrap();
-            creature.current_node = self.nav_graph.find_nearest_node(creature.position);
+            creature.current_node = new_node;
             creature.path = None;
-            // Update position to match the new node (the creature might have
-            // been displaced if its old position became solid).
-            if let Some(node_id) = creature.current_node {
-                creature.position = self.nav_graph.node(node_id).position;
+            if let Some(p) = new_pos {
+                creature.position = p;
             }
         }
     }
@@ -1784,19 +1830,21 @@ impl SimState {
         if removed.is_empty() {
             return;
         }
-        let creature_ids: Vec<CreatureId> = self.creatures.keys().copied().collect();
-        for cid in creature_ids {
+        let to_resnap: Vec<(CreatureId, Species, VoxelCoord)> = self
+            .creatures
+            .values()
+            .filter(|c| matches!(c.current_node, Some(nid) if removed.contains(&nid)))
+            .map(|c| (c.id, c.species, c.position))
+            .collect();
+        for (cid, species, pos) in to_resnap {
+            let graph = self.graph_for_species(species);
+            let new_node = graph.find_nearest_node(pos);
+            let new_pos = new_node.map(|nid| graph.node(nid).position);
             let creature = self.creatures.get_mut(&cid).unwrap();
-            let needs_resnap = match creature.current_node {
-                Some(node_id) => removed.contains(&node_id),
-                None => false,
-            };
-            if needs_resnap {
-                creature.current_node = self.nav_graph.find_nearest_node(creature.position);
-                creature.path = None;
-                if let Some(node_id) = creature.current_node {
-                    creature.position = self.nav_graph.node(node_id).position;
-                }
+            creature.current_node = new_node;
+            creature.path = None;
+            if let Some(p) = new_pos {
+                creature.position = p;
             }
         }
     }
@@ -1867,6 +1915,7 @@ impl SimState {
         self.world = Self::rebuild_world(&self.config, &self.trees, &self.placed_voxels);
         self.face_data = self.face_data_list.iter().cloned().collect();
         self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
+        self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
     }
 
@@ -2888,11 +2937,12 @@ mod tests {
     #[test]
     fn species_data_loaded_from_config() {
         let sim = test_sim(42);
-        assert_eq!(sim.species_table.len(), 6);
+        assert_eq!(sim.species_table.len(), 7);
         assert!(sim.species_table.contains_key(&Species::Elf));
         assert!(sim.species_table.contains_key(&Species::Capybara));
         assert!(sim.species_table.contains_key(&Species::Boar));
         assert!(sim.species_table.contains_key(&Species::Deer));
+        assert!(sim.species_table.contains_key(&Species::Elephant));
         assert!(sim.species_table.contains_key(&Species::Monkey));
         assert!(sim.species_table.contains_key(&Species::Squirrel));
 
@@ -2919,6 +2969,57 @@ mod tests {
         let squirrel_data = &sim.species_table[&Species::Squirrel];
         assert!(!squirrel_data.ground_only);
         assert_eq!(squirrel_data.climb_ticks_per_voxel, Some(600));
+    }
+
+    #[test]
+    fn graph_for_species_dispatch() {
+        let sim = test_sim(42);
+
+        // Elf (1x1x1) → standard graph.
+        let elf_graph = sim.graph_for_species(Species::Elf) as *const _;
+        let standard = &sim.nav_graph as *const _;
+        assert_eq!(elf_graph, standard, "Elf should use standard nav graph");
+
+        // Elephant (2x2x2) → large graph.
+        let elephant_graph = sim.graph_for_species(Species::Elephant) as *const _;
+        let large = &sim.large_nav_graph as *const _;
+        assert_eq!(elephant_graph, large, "Elephant should use large nav graph");
+    }
+
+    #[test]
+    fn new_sim_has_large_nav_graph() {
+        let sim = test_sim(42);
+        assert!(
+            sim.large_nav_graph.live_nodes().count() > 0,
+            "Large nav graph should have nodes after construction",
+        );
+    }
+
+    #[test]
+    fn elephant_spawns_on_large_graph() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+        let spawn_pos = VoxelCoord::new(10, 1, 10);
+        sim.spawn_creature(Species::Elephant, spawn_pos, &mut events);
+
+        // There should be exactly one elephant.
+        let elephants: Vec<&Creature> = sim
+            .creatures
+            .values()
+            .filter(|c| c.species == Species::Elephant)
+            .collect();
+        assert_eq!(elephants.len(), 1, "Should have spawned one elephant");
+
+        // Its current_node should be in the large nav graph.
+        let elephant = elephants[0];
+        let node_id = elephant
+            .current_node
+            .expect("Elephant should have a current_node");
+        let node = sim.large_nav_graph.node(node_id);
+        assert_eq!(
+            node.position, elephant.position,
+            "Elephant position should match its large graph node",
+        );
     }
 
     #[test]

@@ -2,17 +2,24 @@
   "tick_duration_ms": 1,
   "tree_heartbeat_interval_ticks": 10000,
   "mana_base_generation_rate": 1.0,
-  "mana_mood_multiplier_range": [0.2, 2.0],
+  "mana_mood_multiplier_range": [
+    0.2,
+    2.0
+  ],
   "platform_mana_cost_per_voxel": 10.0,
   "bridge_mana_cost_per_voxel": 15.0,
   "fruit_production_base_rate": 0.5,
   "fruit_max_per_tree": 20,
   "fruit_initial_attempts": 12,
-  "build_work_ticks_per_voxel": 1000,
-  "world_size": [256, 128, 256],
+  "world_size": [
+    256,
+    128,
+    256
+  ],
   "floor_extent": 20,
   "starting_mana": 100.0,
   "starting_mana_capacity": 500.0,
+  "build_work_ticks_per_voxel": 1000,
   "tree_profile": {
     "growth": {
       "initial_energy": 400.0,
@@ -49,7 +56,11 @@
     },
     "trunk": {
       "base_flare": 0.5,
-      "initial_direction": [0.0, 1.0, 0.0]
+      "initial_direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
     }
   },
   "species": {
@@ -60,34 +71,86 @@
       "allowed_edge_types": null,
       "ground_only": false,
       "food_max": 1000000000000000,
-      "food_decay_per_tick": 3333333333
+      "food_decay_per_tick": 3333333333,
+      "food_hunger_threshold_pct": 50,
+      "food_restore_pct": 40,
+      "footprint": [
+        1,
+        1,
+        1
+      ]
     },
     "Capybara": {
       "walk_ticks_per_voxel": 800,
       "climb_ticks_per_voxel": null,
       "heartbeat_interval_ticks": 4000,
-      "allowed_edge_types": ["ForestFloor"],
+      "allowed_edge_types": [
+        "ForestFloor"
+      ],
       "ground_only": true,
       "food_max": 1000000000000000,
-      "food_decay_per_tick": 3333333333
+      "food_decay_per_tick": 3333333333,
+      "food_hunger_threshold_pct": 50,
+      "food_restore_pct": 40,
+      "footprint": [
+        1,
+        1,
+        1
+      ]
     },
     "Boar": {
       "walk_ticks_per_voxel": 600,
       "climb_ticks_per_voxel": null,
       "heartbeat_interval_ticks": 4000,
-      "allowed_edge_types": ["ForestFloor"],
+      "allowed_edge_types": [
+        "ForestFloor"
+      ],
       "ground_only": true,
       "food_max": 1000000000000000,
-      "food_decay_per_tick": 3333333333
+      "food_decay_per_tick": 3333333333,
+      "food_hunger_threshold_pct": 50,
+      "food_restore_pct": 40,
+      "footprint": [
+        1,
+        1,
+        1
+      ]
     },
     "Deer": {
       "walk_ticks_per_voxel": 400,
       "climb_ticks_per_voxel": null,
       "heartbeat_interval_ticks": 3500,
-      "allowed_edge_types": ["ForestFloor"],
+      "allowed_edge_types": [
+        "ForestFloor"
+      ],
       "ground_only": true,
       "food_max": 1000000000000000,
-      "food_decay_per_tick": 3333333333
+      "food_decay_per_tick": 3333333333,
+      "food_hunger_threshold_pct": 50,
+      "food_restore_pct": 40,
+      "footprint": [
+        1,
+        1,
+        1
+      ]
+    },
+    "Elephant": {
+      "walk_ticks_per_voxel": 700,
+      "climb_ticks_per_voxel": null,
+      "heartbeat_interval_ticks": 5000,
+      "allowed_edge_types": [
+        "ForestFloor"
+      ],
+      "ground_only": true,
+      "food_max": 1000000000000000,
+      "food_decay_per_tick": 3333333333,
+      "food_hunger_threshold_pct": 50,
+      "food_restore_pct": 40,
+      "footprint": [
+        2,
+        2,
+        2
+      ]
     },
     "Monkey": {
       "walk_ticks_per_voxel": 550,
@@ -96,7 +159,14 @@
       "allowed_edge_types": null,
       "ground_only": false,
       "food_max": 1000000000000000,
-      "food_decay_per_tick": 3333333333
+      "food_decay_per_tick": 3333333333,
+      "food_hunger_threshold_pct": 50,
+      "food_restore_pct": 40,
+      "footprint": [
+        1,
+        1,
+        1
+      ]
     },
     "Squirrel": {
       "walk_ticks_per_voxel": 700,
@@ -105,7 +175,14 @@
       "allowed_edge_types": null,
       "ground_only": false,
       "food_max": 1000000000000000,
-      "food_decay_per_tick": 3333333333
+      "food_decay_per_tick": 3333333333,
+      "food_hunger_threshold_pct": 50,
+      "food_restore_pct": 40,
+      "footprint": [
+        1,
+        1,
+        1
+      ]
     }
   },
   "structural": {
@@ -117,24 +194,88 @@
     "block_stress_ratio": 1.0,
     "tree_gen_max_retries": 4,
     "materials": {
-      "Trunk":         { "density": 1.0,  "stiffness": 10000.0, "strength": 10000.0 },
-      "Branch":        { "density": 0.8,  "stiffness": 500.0,   "strength": 500.0 },
-      "Root":          { "density": 0.8,  "stiffness": 10000.0, "strength": 10000.0 },
-      "GrownPlatform": { "density": 0.6,  "stiffness": 20.0, "strength": 8.0 },
-      "GrownWall":     { "density": 0.6,  "stiffness": 20.0, "strength": 8.0 },
-      "GrownStairs":   { "density": 0.5,  "stiffness": 15.0, "strength": 6.0 },
-      "Bridge":        { "density": 0.5,  "stiffness": 15.0, "strength": 6.0 },
-      "ForestFloor":   { "density": 999.0, "stiffness": 999.0, "strength": 999.0 },
-      "Leaf":          { "density": 0.05, "stiffness": 0.1,  "strength": 0.1 },
-      "Fruit":         { "density": 0.1,  "stiffness": 0.0,  "strength": 0.0 }
+      "Trunk": {
+        "density": 1.0,
+        "stiffness": 50000.0,
+        "strength": 50000.0
+      },
+      "Branch": {
+        "density": 0.8,
+        "stiffness": 2000.0,
+        "strength": 2000.0
+      },
+      "GrownPlatform": {
+        "density": 0.6,
+        "stiffness": 20.0,
+        "strength": 8.0
+      },
+      "GrownWall": {
+        "density": 0.6,
+        "stiffness": 20.0,
+        "strength": 8.0
+      },
+      "GrownStairs": {
+        "density": 0.5,
+        "stiffness": 15.0,
+        "strength": 6.0
+      },
+      "Bridge": {
+        "density": 0.5,
+        "stiffness": 15.0,
+        "strength": 6.0
+      },
+      "ForestFloor": {
+        "density": 999.0,
+        "stiffness": 999.0,
+        "strength": 999.0
+      },
+      "Leaf": {
+        "density": 0.05,
+        "stiffness": 0.1,
+        "strength": 0.1
+      },
+      "Fruit": {
+        "density": 0.1,
+        "stiffness": 0.0,
+        "strength": 0.0
+      },
+      "Root": {
+        "density": 0.8,
+        "stiffness": 10000.0,
+        "strength": 10000.0
+      }
     },
     "face_properties": {
-      "Wall":    { "weight": 0.3,  "stiffness": 15.0, "strength": 10.0 },
-      "Window":  { "weight": 0.1,  "stiffness": 3.0,  "strength": 2.0 },
-      "Door":    { "weight": 0.15, "stiffness": 1.0,  "strength": 1.0 },
-      "Floor":   { "weight": 0.4,  "stiffness": 18.0, "strength": 12.0 },
-      "Ceiling": { "weight": 0.3,  "stiffness": 15.0, "strength": 10.0 },
-      "Open":    { "weight": 0.0,  "stiffness": 0.0,  "strength": 0.0 }
+      "Open": {
+        "weight": 0.0,
+        "stiffness": 0.0,
+        "strength": 0.0
+      },
+      "Wall": {
+        "weight": 0.3,
+        "stiffness": 15.0,
+        "strength": 10.0
+      },
+      "Window": {
+        "weight": 0.1,
+        "stiffness": 3.0,
+        "strength": 2.0
+      },
+      "Door": {
+        "weight": 0.15,
+        "stiffness": 1.0,
+        "strength": 1.0
+      },
+      "Ceiling": {
+        "weight": 0.3,
+        "stiffness": 15.0,
+        "strength": 10.0
+      },
+      "Floor": {
+        "weight": 0.4,
+        "stiffness": 18.0,
+        "strength": 12.0
+      }
     }
   }
 }

@@ -15,6 +15,7 @@
 ## - Capybara (40x32): body color, accessory variants
 ## - Boar (44x36): body color, tusk size variants
 ## - Deer (44x44): body color, antler style, spot pattern variants
+## - Elephant (48x40): body color, tusk type variants
 ## - Monkey (40x44): fur color, face marking variants
 ## - Squirrel (32x32): fur color, tail fluffiness variants
 ##
@@ -132,6 +133,19 @@ const SQUIRREL_FUR_COLORS = [
 ]
 
 const SQUIRREL_TAIL_TYPES = ["fluffy", "extra_fluffy", "curled"]
+
+# ---------------------------------------------------------------------------
+# Elephant palette constants
+# ---------------------------------------------------------------------------
+
+const ELEPHANT_BODY_COLORS = [
+	Color(0.55, 0.53, 0.50),  # classic gray
+	Color(0.48, 0.45, 0.42),  # dark gray
+	Color(0.62, 0.58, 0.55),  # light gray
+	Color(0.50, 0.47, 0.45),  # slate
+]
+
+const ELEPHANT_TUSK_TYPES = ["short", "long", "none"]
 
 # ---------------------------------------------------------------------------
 # Drawing helpers
@@ -989,6 +1003,104 @@ static func create_squirrel(params: Dictionary) -> ImageTexture:
 
 
 # ---------------------------------------------------------------------------
+# Elephant generation (48x40)
+# ---------------------------------------------------------------------------
+
+
+static func elephant_params_from_seed(seed: int) -> Dictionary:
+	var h := absi(seed * 2654435761)
+	return {
+		"body_color": ELEPHANT_BODY_COLORS[absi(h) % ELEPHANT_BODY_COLORS.size()],
+		"tusk_type": ELEPHANT_TUSK_TYPES[absi(h / 17) % ELEPHANT_TUSK_TYPES.size()],
+		"seed": seed,
+	}
+
+
+## Create a 48x40 elephant sprite — large gray body, round head,
+## trunk, big ears, thick legs, optional tusks.
+static func create_elephant(params: Dictionary) -> ImageTexture:
+	var W := 96
+	var H := 80
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var body_color: Color = params.get("body_color", ELEPHANT_BODY_COLORS[0])
+	var tusk_type: String = params.get("tusk_type", "short")
+
+	var body_dark := _darken(body_color, 0.10)
+	var body_light := _lighten(body_color, 0.10)
+	var outline := Color(0.20, 0.18, 0.16, 1.0)
+	var eye_color := Color(0.10, 0.08, 0.06, 1.0)
+	var white := Color(1.0, 1.0, 1.0, 1.0)
+	var tusk_color := Color(0.92, 0.88, 0.80, 1.0)
+	var inner_ear := Color(0.65, 0.50, 0.48, 1.0)
+
+	# Body — large oval
+	var body_cx := 48
+	var body_cy := 44
+	_draw_ellipse(img, body_cx, body_cy, 28, 20, outline)
+	_draw_ellipse(img, body_cx, body_cy, 26, 18, body_color)
+	_draw_ellipse(img, body_cx, body_cy + 2, 20, 12, body_light)
+
+	# Head — overlaps left side of body
+	var head_cx := 22
+	var head_cy := 28
+	_draw_circle(img, head_cx, head_cy, 18, outline)
+	_draw_circle(img, head_cx, head_cy, 16, body_color)
+
+	# Big ears — left and right of head
+	_draw_ellipse(img, head_cx - 16, head_cy - 2, 8, 14, outline)
+	_draw_ellipse(img, head_cx - 16, head_cy - 2, 6, 12, body_dark)
+	_draw_ellipse(img, head_cx - 16, head_cy - 2, 4, 8, inner_ear)
+
+	_draw_ellipse(img, head_cx + 16, head_cy - 2, 8, 14, outline)
+	_draw_ellipse(img, head_cx + 16, head_cy - 2, 6, 12, body_dark)
+	_draw_ellipse(img, head_cx + 16, head_cy - 2, 4, 8, inner_ear)
+
+	# Eyes
+	_draw_rect(img, head_cx - 8, head_cy - 4, 6, 6, outline)
+	_draw_rect(img, head_cx - 6, head_cy - 2, 2, 2, eye_color)
+	_draw_rect(img, head_cx - 6, head_cy - 4, 2, 2, white)
+	_draw_rect(img, head_cx + 4, head_cy - 4, 6, 6, outline)
+	_draw_rect(img, head_cx + 6, head_cy - 2, 2, 2, eye_color)
+	_draw_rect(img, head_cx + 6, head_cy - 4, 2, 2, white)
+
+	# Trunk — curving down from the head
+	for i in range(20):
+		var tx := head_cx - 2
+		var ty := head_cy + 10 + i
+		_draw_rect(img, tx, ty, 6, 1, outline)
+		_draw_rect(img, tx + 1, ty, 4, 1, body_color)
+	# Trunk tip curls slightly right
+	_draw_rect(img, head_cx + 2, head_cy + 28, 2, 2, outline)
+	_draw_rect(img, head_cx + 4, head_cy + 28, 2, 2, outline)
+
+	# Tusks
+	if tusk_type == "short":
+		_draw_rect(img, head_cx - 6, head_cy + 12, 4, 8, tusk_color)
+		_draw_rect(img, head_cx + 4, head_cy + 12, 4, 8, tusk_color)
+	elif tusk_type == "long":
+		_draw_rect(img, head_cx - 6, head_cy + 10, 4, 14, tusk_color)
+		_draw_rect(img, head_cx + 4, head_cy + 10, 4, 14, tusk_color)
+
+	# Thick legs
+	_draw_rect(img, body_cx - 20, 60, 10, 16, outline)
+	_draw_rect(img, body_cx - 18, 60, 6, 14, body_dark)
+	_draw_rect(img, body_cx - 4, 60, 10, 16, outline)
+	_draw_rect(img, body_cx - 2, 60, 6, 14, body_dark)
+	_draw_rect(img, body_cx + 8, 60, 10, 16, outline)
+	_draw_rect(img, body_cx + 10, 60, 6, 14, body_dark)
+	_draw_rect(img, body_cx + 20, 60, 10, 16, outline)
+	_draw_rect(img, body_cx + 22, 60, 6, 14, body_dark)
+
+	# Short tail
+	_draw_rect(img, body_cx + 26, 36, 4, 6, body_dark)
+	_draw_rect(img, body_cx + 28, 42, 2, 2, outline)
+
+	return ImageTexture.create_from_image(img)
+
+
+# ---------------------------------------------------------------------------
 # Generic dispatch — look up species by name
 # ---------------------------------------------------------------------------
 
@@ -1004,6 +1116,8 @@ static func species_params_from_seed(species_name: String, seed: int) -> Diction
 			return boar_params_from_seed(seed)
 		"Deer":
 			return deer_params_from_seed(seed)
+		"Elephant":
+			return elephant_params_from_seed(seed)
 		"Monkey":
 			return monkey_params_from_seed(seed)
 		"Squirrel":
@@ -1024,6 +1138,8 @@ static func create_species_sprite(species_name: String, params: Dictionary) -> I
 			return create_boar(params)
 		"Deer":
 			return create_deer(params)
+		"Elephant":
+			return create_elephant(params)
 		"Monkey":
 			return create_monkey(params)
 		"Squirrel":
