@@ -2,7 +2,7 @@
 ##
 ## Displays a scrollable list of structure cards, each showing a sequential ID
 ## (e.g. "#0"), the build type (Platform, Bridge, etc.), and a "Zoom" button
-## that emits zoom_to_location to move the camera to the structure's anchor.
+## that emits zoom_to_structure to move the camera to the structure's anchor.
 ## The panel does NOT pause the sim (unlike pause_menu.gd).
 ##
 ## Data flow: main.gd calls update_structures(data) each frame while the panel
@@ -11,7 +11,8 @@
 ## card nodes, creating/updating/removing cards as structures appear/disappear.
 ##
 ## Signals:
-## - zoom_to_location(x, y, z) — zoom camera to the structure's anchor
+## - zoom_to_structure(structure_id, x, y, z) — zoom camera to the structure's
+##   anchor and select it (structure_id used by main.gd to open the info panel)
 ## - panel_closed — emitted when the panel is hidden (ESC or close button)
 ##
 ## ESC handling: when visible, consumes ESC in _unhandled_input and closes.
@@ -24,7 +25,7 @@
 
 extends ColorRect
 
-signal zoom_to_location(x: float, y: float, z: float)
+signal zoom_to_structure(structure_id: int, x: float, y: float, z: float)
 signal panel_closed
 
 ## Maps structure id (int) -> PanelContainer card node.
@@ -171,12 +172,13 @@ func _create_card(structure: Dictionary) -> PanelContainer:
 	var zoom_btn := Button.new()
 	zoom_btn.name = "ZoomBtn"
 	zoom_btn.text = "Zoom"
+	var sid: int = structure.get("id", -1)
 	zoom_btn.pressed.connect(
 		func():
 			var ax: float = structure.get("anchor_x", 0)
 			var ay: float = structure.get("anchor_y", 0)
 			var az: float = structure.get("anchor_z", 0)
-			zoom_to_location.emit(ax, ay, az)
+			zoom_to_structure.emit(sid, ax, ay, az)
 	)
 	hbox.add_child(zoom_btn)
 

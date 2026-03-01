@@ -72,6 +72,11 @@
 //   the player's home tree stats: health, growth, mana, fruit, carrying
 //   capacity, voxel counts by type, height, spread, and anchor position.
 //   Used by `tree_info_panel.gd`.
+// - **Structures:** `get_structures()` — returns a `VarArray` of
+//   `VarDictionary`, one per completed structure (id, kind, location, size).
+//   `raycast_structure(origin, dir)` — DDA voxel raycast returning the
+//   `StructureId` under the cursor (or -1 for miss). `get_structure_info(id)`
+//   — returns a `VarDictionary` with detailed info for the info panel.
 // - **Species queries:** `is_species_ground_only(species_name)` — used by
 //   the placement controller to decide which nav nodes to show.
 //   `get_all_species_names()` — returns all species names for UI iteration.
@@ -99,8 +104,8 @@ use elven_canopy_sim::sim::SimState;
 use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::TaskState;
 use elven_canopy_sim::types::{
-    BuildType, FaceDirection, LadderKind, OverlapClassification, Priority, Species, VoxelCoord,
-    VoxelType,
+    BuildType, FaceDirection, LadderKind, OverlapClassification, Priority, Species, StructureId,
+    VoxelCoord, VoxelType,
 };
 use godot::prelude::*;
 
@@ -795,6 +800,58 @@ impl SimBridge {
             result.push(&dict.to_variant());
         }
         result
+    }
+
+    /// Cast a ray and return the `StructureId` (as i64) of the first structure
+    /// voxel hit, or -1 if no structure was hit. Used by `selection_controller.gd`
+    /// to identify which structure the player clicked on.
+    #[func]
+    fn raycast_structure(&self, origin: Vector3, dir: Vector3) -> i64 {
+        let Some(sim) = &self.sim else {
+            return -1;
+        };
+        let from = [origin.x, origin.y, origin.z];
+        let d = [dir.x, dir.y, dir.z];
+        match sim.raycast_structure(from, d, 500) {
+            Some(sid) => sid.0 as i64,
+            None => -1,
+        }
+    }
+
+    /// Return info about a completed structure as a Dictionary. Returns an
+    /// empty dict if the structure_id is not found. Used by
+    /// `structure_info_panel.gd` for display.
+    #[func]
+    fn get_structure_info(&self, structure_id: i64) -> VarDictionary {
+        let Some(sim) = &self.sim else {
+            return VarDictionary::new();
+        };
+        let sid = StructureId(structure_id as u64);
+        let Some(structure) = sim.structures.get(&sid) else {
+            return VarDictionary::new();
+        };
+        let mut dict = VarDictionary::new();
+        dict.set("id", structure.id.0 as i64);
+        let build_type_str = match structure.build_type {
+            BuildType::Platform => "Platform",
+            BuildType::Bridge => "Bridge",
+            BuildType::Stairs => "Stairs",
+            BuildType::Wall => "Wall",
+            BuildType::Enclosure => "Enclosure",
+            BuildType::Building => "Building",
+            BuildType::WoodLadder => "WoodLadder",
+            BuildType::RopeLadder => "RopeLadder",
+            BuildType::Carve => "Carve",
+        };
+        dict.set("build_type", GString::from(build_type_str));
+        dict.set("anchor_x", structure.anchor.x);
+        dict.set("anchor_y", structure.anchor.y);
+        dict.set("anchor_z", structure.anchor.z);
+        dict.set("width", structure.width);
+        dict.set("depth", structure.depth);
+        dict.set("height", structure.height);
+        dict.set("completed_tick", structure.completed_tick as i64);
+        dict
     }
 
     /// Return positions for any species as a PackedVector3Array, interpolated

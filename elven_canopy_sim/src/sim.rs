@@ -135,9 +135,10 @@
 //
 // ## Save/load
 //
-// `SimState` derives `Serialize`/`Deserialize` via serde. Three transient
-// fields (`world`, `nav_graph`, `species_table`) are `#[serde(skip)]` and
-// must be rebuilt after deserialization via `rebuild_transient_state()`.
+// `SimState` derives `Serialize`/`Deserialize` via serde. Several transient
+// fields (`world`, `nav_graph`, `large_nav_graph`, `species_table`,
+// `face_data`, `ladder_orientations`, `structure_voxels`) are `#[serde(skip)]`
+// and must be rebuilt after deserialization via `rebuild_transient_state()`.
 // Convenience methods `to_json()` and `from_json()` handle the full
 // serialize/deserialize + rebuild cycle. `rebuild_world()` reconstructs the
 // voxel grid from stored tree voxel lists, `placed_voxels` (construction
@@ -274,6 +275,13 @@ pub struct SimState {
     /// Cleared at the start of each designation call.
     #[serde(skip)]
     pub last_build_message: Option<String>,
+
+    /// Maps each voxel coordinate belonging to a completed structure back to
+    /// its `StructureId`. Transient — rebuilt from completed blueprints in
+    /// `rebuild_transient_state()`. Used by `raycast_structure()` to identify
+    /// which structure the player clicked on.
+    #[serde(skip)]
+    pub structure_voxels: BTreeMap<VoxelCoord, StructureId>,
 }
 
 /// A tree entity — the primary world structure.
@@ -499,6 +507,7 @@ impl SimState {
             large_nav_graph,
             species_table,
             last_build_message: None,
+            structure_voxels: BTreeMap::new(),
         };
 
         // Fast-forward fruit spawning: run the same attempt_fruit_spawn code
@@ -1122,6 +1131,10 @@ impl SimState {
         };
 
         // Remove any completed structure for this project (linear scan — map is small).
+        // Also remove structure_voxels entries for the cancelled blueprint.
+        for &coord in &bp.voxels {
+            self.structure_voxels.remove(&coord);
+        }
         self.structures.retain(|_, s| s.project_id != project_id);
 
         // Remove the associated Build task and unassign workers.
@@ -2254,6 +2267,10 @@ impl SimState {
         if let Some(bp) = self.blueprints.get(&project_id) {
             let structure_id = StructureId(self.next_structure_id);
             self.next_structure_id += 1;
+            // Populate structure_voxels ownership map.
+            for &coord in &bp.voxels {
+                self.structure_voxels.insert(coord, structure_id);
+            }
             let structure = CompletedStructure::from_blueprint(structure_id, bp, self.tick);
             self.structures.insert(structure_id, structure);
         }
@@ -2307,6 +2324,80 @@ impl SimState {
                 creature.position = p;
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Structure raycast
+    // -----------------------------------------------------------------------
+
+    /// DDA voxel raycast that returns the `StructureId` of the first structure
+    /// voxel hit along the ray. Uses the same Amanatides & Woo algorithm as
+    /// `VoxelWorld::raycast_hits_solid`, but checks `structure_voxels` at each
+    /// step:
+    /// - If the voxel is in `structure_voxels`, return that `StructureId`.
+    /// - If the voxel is solid but NOT a structure voxel (e.g., tree trunk),
+    ///   stop (return `None` — geometry occludes).
+    /// - If the voxel is air (and not a structure voxel), continue.
+    ///
+    /// This correctly handles non-solid structure types (ladders, building
+    /// interiors) since they're in `structure_voxels` even though
+    /// `is_solid()` returns false.
+    pub fn raycast_structure(
+        &self,
+        from: [f32; 3],
+        dir: [f32; 3],
+        max_steps: u32,
+    ) -> Option<StructureId> {
+        let mut voxel = [
+            from[0].floor() as i32,
+            from[1].floor() as i32,
+            from[2].floor() as i32,
+        ];
+
+        let mut step = [0i32; 3];
+        let mut t_max = [f32::INFINITY; 3];
+        let mut t_delta = [f32::INFINITY; 3];
+
+        for axis in 0..3 {
+            if dir[axis] > 0.0 {
+                step[axis] = 1;
+                t_delta[axis] = 1.0 / dir[axis];
+                t_max[axis] = ((voxel[axis] as f32 + 1.0) - from[axis]) / dir[axis];
+            } else if dir[axis] < 0.0 {
+                step[axis] = -1;
+                t_delta[axis] = 1.0 / (-dir[axis]);
+                t_max[axis] = (from[axis] - voxel[axis] as f32) / (-dir[axis]);
+            }
+        }
+
+        for _ in 0..max_steps {
+            let coord = VoxelCoord::new(voxel[0], voxel[1], voxel[2]);
+
+            // Check structure ownership first.
+            if let Some(&sid) = self.structure_voxels.get(&coord) {
+                return Some(sid);
+            }
+
+            // Non-structure solid voxels occlude — stop.
+            let vt = self.world.get(coord);
+            if vt.is_solid() {
+                return None;
+            }
+
+            // Advance along the axis with the smallest t_max.
+            let min_axis = if t_max[0] <= t_max[1] && t_max[0] <= t_max[2] {
+                0
+            } else if t_max[1] <= t_max[2] {
+                1
+            } else {
+                2
+            };
+
+            voxel[min_axis] += step[min_axis];
+            t_max[min_axis] += t_delta[min_axis];
+        }
+
+        None
     }
 
     // -----------------------------------------------------------------------
@@ -2384,7 +2475,8 @@ impl SimState {
     /// Rebuild all transient (`#[serde(skip)]`) fields after deserialization.
     ///
     /// Restores: `world` (voxel grid from stored tree voxels + config),
-    /// `nav_graph` (from rebuilt world geometry), `species_table` (from config).
+    /// `nav_graph` (from rebuilt world geometry), `species_table` (from config),
+    /// `structure_voxels` (from completed blueprints + structures).
     pub fn rebuild_transient_state(&mut self) {
         self.world = Self::rebuild_world(
             &self.config,
@@ -2397,6 +2489,20 @@ impl SimState {
         self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
         self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
+
+        // Rebuild structure_voxels from completed blueprints.
+        self.structure_voxels.clear();
+        for bp in self.blueprints.values() {
+            if bp.state == BlueprintState::Complete {
+                // Find the StructureId for this blueprint's project.
+                if let Some(structure) = self.structures.values().find(|s| s.project_id == bp.id) {
+                    let sid = structure.id;
+                    for &coord in &bp.voxels {
+                        self.structure_voxels.insert(coord, sid);
+                    }
+                }
+            }
+        }
     }
 
     /// Serialize the simulation state to a JSON string.
@@ -5363,6 +5469,135 @@ mod tests {
             sim.structures.is_empty(),
             "Cancelling a completed build should remove it from structures"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Structure voxels and raycast tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn structure_voxels_populated_on_complete_build() {
+        let sim = designate_and_complete_build(test_sim(42));
+
+        // The completed build should populate structure_voxels.
+        assert!(!sim.structure_voxels.is_empty());
+        let structure = sim.structures.values().next().unwrap();
+        let bp = sim
+            .blueprints
+            .values()
+            .find(|bp| bp.state == BlueprintState::Complete)
+            .unwrap();
+        for &coord in &bp.voxels {
+            assert_eq!(
+                sim.structure_voxels.get(&coord),
+                Some(&structure.id),
+                "Voxel {coord} should map to structure {}",
+                structure.id
+            );
+        }
+    }
+
+    #[test]
+    fn structure_voxels_cleared_on_cancel_build() {
+        let mut sim = designate_and_complete_build(test_sim(42));
+        assert!(!sim.structure_voxels.is_empty());
+
+        let project_id = sim.structures.values().next().unwrap().project_id;
+
+        let tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick,
+            action: SimAction::CancelBuild { project_id },
+        };
+        sim.step(&[cmd], tick);
+
+        assert!(
+            sim.structure_voxels.is_empty(),
+            "Cancelling a completed build should clear structure_voxels"
+        );
+    }
+
+    #[test]
+    fn structure_voxels_rebuilt_on_rebuild_transient_state() {
+        let sim = designate_and_complete_build(test_sim(42));
+        let voxels_before = sim.structure_voxels.clone();
+        assert!(!voxels_before.is_empty());
+
+        // Round-trip through JSON (which drops transient fields).
+        let json = sim.to_json().unwrap();
+        let restored = SimState::from_json(&json).unwrap();
+
+        assert_eq!(
+            restored.structure_voxels, voxels_before,
+            "structure_voxels should be identical after save/load"
+        );
+    }
+
+    #[test]
+    fn raycast_structure_finds_structure_voxel() {
+        let sim = designate_and_complete_build(test_sim(42));
+        let structure = sim.structures.values().next().unwrap();
+        let bp = sim
+            .blueprints
+            .values()
+            .find(|bp| bp.state == BlueprintState::Complete)
+            .unwrap();
+        let voxel = bp.voxels[0];
+
+        // Cast a ray from above the voxel straight down.
+        let from = [
+            voxel.x as f32 + 0.5,
+            voxel.y as f32 + 10.0,
+            voxel.z as f32 + 0.5,
+        ];
+        let dir = [0.0, -1.0, 0.0];
+        let result = sim.raycast_structure(from, dir, 100);
+
+        assert_eq!(
+            result,
+            Some(structure.id),
+            "Raycast should find the structure at {voxel}"
+        );
+    }
+
+    #[test]
+    fn raycast_structure_stops_at_trunk() {
+        let sim = designate_and_complete_build(test_sim(42));
+        let bp = sim
+            .blueprints
+            .values()
+            .find(|bp| bp.state == BlueprintState::Complete)
+            .unwrap();
+        let voxel = bp.voxels[0];
+
+        // Place a trunk voxel between the ray origin and the structure.
+        let mut sim = sim;
+        let blocker = VoxelCoord::new(voxel.x, voxel.y + 5, voxel.z);
+        sim.world.set(blocker, VoxelType::Trunk);
+
+        let from = [
+            voxel.x as f32 + 0.5,
+            voxel.y as f32 + 10.0,
+            voxel.z as f32 + 0.5,
+        ];
+        let dir = [0.0, -1.0, 0.0];
+        let result = sim.raycast_structure(from, dir, 100);
+
+        assert_eq!(
+            result, None,
+            "Raycast should stop at the trunk and not find the structure"
+        );
+    }
+
+    #[test]
+    fn raycast_structure_returns_none_for_empty_ray() {
+        let sim = test_sim(42);
+        // Cast a ray into empty space.
+        let from = [32.5, 50.0, 32.5];
+        let dir = [0.0, 1.0, 0.0];
+        let result = sim.raycast_structure(from, dir, 100);
+        assert_eq!(result, None);
     }
 
     // -----------------------------------------------------------------------

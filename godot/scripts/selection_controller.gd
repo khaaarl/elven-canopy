@@ -1,27 +1,32 @@
-## Handles click-to-select for all creature species.
+## Handles click-to-select for creatures and structures.
 ##
 ## On left-click (when not in placement mode), casts a ray from the camera
 ## through the mouse position and finds the closest creature sprite using
-## perpendicular distance. Uses the interpolated render_tick positions (via
+## perpendicular distance. If no creature is within snap threshold, falls
+## back to a voxel raycast via bridge.raycast_structure() to check for
+## structure hits. Uses the interpolated render_tick positions (via
 ## set_render_tick(), called by main.gd each frame) so click targets match
 ## the smooth visual positions.
 ##
-## Selection state: tracks species name and index (matching the position array
-## order from SimBridge). When a creature is selected, emits creature_selected;
-## when deselected, emits creature_deselected.
+## Selection state: tracks either a creature (species name + index) or a
+## structure (structure_id). Selecting a creature deselects any structure
+## and vice versa. ESC deselects whichever is active.
 ##
 ## Uses a data-driven SPECIES_Y_OFFSETS dict so adding new species doesn't
 ## require code changes here — just add the entry.
 ##
-## See also: creature_info_panel.gd for the UI panel, orbital_camera.gd for
-## follow mode, placement_controller.gd for the ray-snap algorithm origin,
-## elf_renderer.gd / capybara_renderer.gd / creature_renderer.gd for sprite
-## position offsets.
+## See also: creature_info_panel.gd for the creature UI panel,
+## structure_info_panel.gd for the structure UI panel, orbital_camera.gd
+## for follow mode, placement_controller.gd for the ray-snap algorithm
+## origin, elf_renderer.gd / capybara_renderer.gd / creature_renderer.gd
+## for sprite position offsets.
 
 extends Node3D
 
 signal creature_selected(species: String, index: int)
 signal creature_deselected
+signal structure_selected(structure_id: int)
+signal structure_deselected
 
 ## Maximum perpendicular distance (world units) from the mouse ray to a
 ## creature sprite center for it to count as a click hit. Tighter than
@@ -46,6 +51,7 @@ var _render_tick: float = 0.0
 
 var _selected_species: String = ""
 var _selected_index: int = -1
+var _selected_structure_id: int = -1
 
 
 func setup(bridge: SimBridge, camera: Camera3D) -> void:
@@ -71,18 +77,35 @@ func get_selected_index() -> int:
 	return _selected_index
 
 
+func get_selected_structure_id() -> int:
+	return _selected_structure_id
+
+
 ## Programmatically select a creature by species and index, as if the player
 ## clicked on it. Used by the task panel to trigger the full selection flow.
 func select_creature(species: String, index: int) -> void:
+	_deselect_structure_only()
 	_selected_species = species
 	_selected_index = index
 	creature_selected.emit(species, index)
 
 
+## Programmatically select a structure by ID. Used by the structure list
+## panel's zoom button to open the info panel alongside camera movement.
+func select_structure(id: int) -> void:
+	_deselect_creature_only()
+	_selected_structure_id = id
+	structure_selected.emit(id)
+
+
 func deselect() -> void:
-	_selected_species = ""
-	_selected_index = -1
-	creature_deselected.emit()
+	if _selected_index >= 0:
+		_selected_species = ""
+		_selected_index = -1
+		creature_deselected.emit()
+	if _selected_structure_id >= 0:
+		_selected_structure_id = -1
+		structure_deselected.emit()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -93,19 +116,24 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			_try_select_creature(mb.position)
+			_try_select(mb.position)
 
 	if event is InputEventKey:
 		var key := event as InputEventKey
-		if key.pressed and key.keycode == KEY_ESCAPE and _selected_index >= 0:
+		if (
+			key.pressed
+			and key.keycode == KEY_ESCAPE
+			and (_selected_index >= 0 or _selected_structure_id >= 0)
+		):
 			deselect()
 			get_viewport().set_input_as_handled()
 
 
-func _try_select_creature(mouse_pos: Vector2) -> void:
+func _try_select(mouse_pos: Vector2) -> void:
 	var ray_origin := _camera.project_ray_origin(mouse_pos)
 	var ray_dir := _camera.project_ray_normal(mouse_pos)
 
+	# First, try to select a creature (closest sprite within snap threshold).
 	var best_dist_sq := SNAP_THRESHOLD * SNAP_THRESHOLD
 	var best_species := ""
 	var best_index := -1
@@ -123,13 +151,42 @@ func _try_select_creature(mouse_pos: Vector2) -> void:
 				best_index = i
 
 	if best_index >= 0:
+		_deselect_structure_only()
 		_selected_species = best_species
 		_selected_index = best_index
 		creature_selected.emit(best_species, best_index)
 		get_viewport().set_input_as_handled()
-	else:
-		if _selected_index >= 0:
-			deselect()
+		return
+
+	# No creature hit — try structure raycast.
+	var sid := _bridge.raycast_structure(ray_origin, ray_dir)
+	if sid >= 0:
+		_deselect_creature_only()
+		_selected_structure_id = sid
+		structure_selected.emit(sid)
+		get_viewport().set_input_as_handled()
+		return
+
+	# Clicked on nothing — deselect whatever was active.
+	if _selected_index >= 0 or _selected_structure_id >= 0:
+		deselect()
+
+
+## Clear creature selection without touching structure state. Emits
+## creature_deselected so main.gd can hide the creature info panel.
+func _deselect_creature_only() -> void:
+	if _selected_index >= 0:
+		_selected_species = ""
+		_selected_index = -1
+		creature_deselected.emit()
+
+
+## Clear structure selection without touching creature state. Emits
+## structure_deselected so main.gd can hide the structure info panel.
+func _deselect_structure_only() -> void:
+	if _selected_structure_id >= 0:
+		_selected_structure_id = -1
+		structure_deselected.emit()
 
 
 ## Perpendicular distance squared from a point to an infinite ray.

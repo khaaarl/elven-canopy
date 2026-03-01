@@ -104,7 +104,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-seasons              Seasonal visual and gameplay effects
-[ ] F-select-struct        Selectable structures with interaction UI
 [ ] F-sim-speed            Simulation speed controls UI
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-sound-effects        Basic ambient and action sound effects
@@ -160,6 +159,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-pathfinding          A* pathfinding over nav graph
 [x] F-pause-menu           In-game pause overlay
 [x] F-save-load            Save/load to JSON with versioning
+[x] F-select-struct        Selectable structures with interaction UI
 [x] F-selection            Click-to-select creatures
 [x] F-serde                Serialization for all sim types
 [x] F-shared-prng          Shared PRNG crate across all Rust crates
@@ -1072,7 +1072,7 @@ observation and fast-forwarding through idle periods.
 **Related:** F-event-loop
 
 #### F-select-struct — Selectable structures with interaction UI
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
 Click-to-select completed structures (platforms, buildings, ladders, etc.)
 with an info panel showing structure type, dimensions, health/stress, and

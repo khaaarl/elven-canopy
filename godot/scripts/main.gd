@@ -41,6 +41,7 @@
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
 ## creature_info_panel.gd for the creature info panel,
+## structure_info_panel.gd for the structure info panel,
 ## tree_info_panel.gd for the tree stats panel, task_panel.gd for
 ## the task list overlay, structure_list_panel.gd for the structure list
 ## overlay, game_session.gd for the autoload that carries the seed/load
@@ -67,6 +68,7 @@ const SPECIES_Y_OFFSETS = {
 
 var _selector: Node3D
 var _panel: PanelContainer
+var _structure_info_panel: PanelContainer
 var _tree_info_panel: PanelContainer
 var _task_panel: ColorRect
 var _structure_panel: ColorRect
@@ -317,7 +319,7 @@ func _setup_common(bridge: SimBridge) -> void:
 	_construction_controller.connect_toolbar(toolbar)
 	canvas_layer.add_child(_construction_controller.get_panel())
 
-	# Entering construction mode: deselect creature, cancel placement, hide tree info.
+	# Entering construction mode: deselect, cancel placement, hide panels.
 	_construction_controller.construction_mode_entered.connect(
 		func():
 			if _placement_controller.is_placing():
@@ -326,6 +328,8 @@ func _setup_common(bridge: SimBridge) -> void:
 				_selector.deselect()
 			if _panel:
 				_panel.hide_panel()
+			if _structure_info_panel and _structure_info_panel.visible:
+				_structure_info_panel.hide_panel()
 			if _tree_info_panel and _tree_info_panel.visible:
 				_tree_info_panel.hide_panel()
 			if _camera_pivot:
@@ -364,6 +368,12 @@ func _setup_common(bridge: SimBridge) -> void:
 	_panel.set_script(panel_script)
 	canvas_layer.add_child(_panel)
 
+	# Set up structure info panel.
+	var struct_panel_script = load("res://scripts/structure_info_panel.gd")
+	_structure_info_panel = PanelContainer.new()
+	_structure_info_panel.set_script(struct_panel_script)
+	canvas_layer.add_child(_structure_info_panel)
+
 	# Set up selection controller.
 	var selector_script = load("res://scripts/selection_controller.gd")
 	_selector = Node3D.new()
@@ -372,13 +382,15 @@ func _setup_common(bridge: SimBridge) -> void:
 	_selector.setup(bridge, $CameraPivot/Camera3D)
 	_selector.set_placement_controller(_placement_controller)
 
-	# Wire selection -> panel.
+	# Wire creature selection -> creature info panel.
 	_camera_pivot = $CameraPivot
 	_selector.creature_selected.connect(
 		func(species: String, index: int):
-			# Mutual exclusion: selecting a creature hides the tree info panel.
+			# Mutual exclusion: hide tree info and structure info panels.
 			if _tree_info_panel and _tree_info_panel.visible:
 				_tree_info_panel.hide_panel()
+			if _structure_info_panel and _structure_info_panel.visible:
+				_structure_info_panel.hide_panel()
 			var tick := float(bridge.current_tick())
 			var info := bridge.get_creature_info(species, index, tick)
 			if not info.is_empty():
@@ -388,6 +400,32 @@ func _setup_common(bridge: SimBridge) -> void:
 		func():
 			_panel.hide_panel()
 			_camera_pivot.stop_follow()
+	)
+
+	# Wire structure selection -> structure info panel.
+	_selector.structure_selected.connect(
+		func(structure_id: int):
+			# Mutual exclusion: hide creature and tree info panels.
+			if _panel and _panel.visible:
+				_panel.hide_panel()
+			if _tree_info_panel and _tree_info_panel.visible:
+				_tree_info_panel.hide_panel()
+			if _camera_pivot:
+				_camera_pivot.stop_follow()
+			var info := bridge.get_structure_info(structure_id)
+			if not info.is_empty():
+				_structure_info_panel.show_structure(info)
+	)
+	_selector.structure_deselected.connect(func(): _structure_info_panel.hide_panel())
+
+	# Wire structure info panel signals.
+	_structure_info_panel.zoom_requested.connect(
+		func(x: float, y: float, z: float): _look_at_position(Vector3(x + 0.5, y, z + 0.5))
+	)
+	_structure_info_panel.panel_closed.connect(
+		func():
+			if _selector.get_selected_structure_id() >= 0:
+				_selector.deselect()
 	)
 
 	# Menu button.
@@ -442,11 +480,12 @@ func _setup_common(bridge: SimBridge) -> void:
 	_tree_info_panel.set_script(tree_panel_script)
 	tree_panel_layer.add_child(_tree_info_panel)
 
-	# Wire structure panel zoom-to-location -> move camera pivot.
-	_structure_panel.zoom_to_location.connect(
-		func(x: float, y: float, z: float):
+	# Wire structure panel zoom -> move camera + select structure.
+	_structure_panel.zoom_to_structure.connect(
+		func(structure_id: int, x: float, y: float, z: float):
 			_structure_panel.hide_panel()
 			_look_at_position(Vector3(x + 0.5, y, z + 0.5))
+			_selector.select_structure(structure_id)
 	)
 
 	# Wire toolbar "Tasks", "Structures", and "TreeInfo" actions -> panel toggles.
@@ -457,12 +496,14 @@ func _setup_common(bridge: SimBridge) -> void:
 			elif action == "Structures":
 				_structure_panel.toggle()
 			elif action == "TreeInfo":
-				# Mutual exclusion: opening tree info deselects creature.
+				# Mutual exclusion: opening tree info deselects creature/structure.
 				if not _tree_info_panel.visible:
 					if _selector:
 						_selector.deselect()
 					if _panel and _panel.visible:
 						_panel.hide_panel()
+					if _structure_info_panel and _structure_info_panel.visible:
+						_structure_info_panel.hide_panel()
 					if _camera_pivot:
 						_camera_pivot.stop_follow()
 				_tree_info_panel.toggle()
@@ -612,13 +653,26 @@ func _process(delta: float) -> void:
 		var tree_data := bridge.get_home_tree_info()
 		_tree_info_panel.update_info(tree_data)
 
-	# Refresh panel info while a creature is selected.
+	# Refresh creature info panel while a creature is selected.
 	if _panel and _panel.visible and _selector.get_selected_index() >= 0:
 		var info := bridge.get_creature_info(
 			_selector.get_selected_species(), _selector.get_selected_index(), render_tick
 		)
 		if not info.is_empty():
 			_panel.update_info(info)
+
+	# Refresh structure info panel while a structure is selected.
+	if (
+		_structure_info_panel
+		and _structure_info_panel.visible
+		and _selector.get_selected_structure_id() >= 0
+	):
+		var sinfo := bridge.get_structure_info(_selector.get_selected_structure_id())
+		if not sinfo.is_empty():
+			_structure_info_panel.update_info(sinfo)
+		else:
+			# Structure was demolished — deselect and hide panel.
+			_selector.deselect()
 
 
 ## Move the camera to look at a world-space position, stopping any active
