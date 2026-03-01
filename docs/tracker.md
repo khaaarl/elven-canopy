@@ -36,6 +36,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [~] F-elf-needs            Hunger and rest self-direction
+[~] F-lang-crate           Shared Vaelith language crate
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 ```
 
@@ -78,7 +79,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-variety        Food storage, cooking, magical brewing
 [ ] F-furnishing           Building geometry + purpose furnishing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
-[ ] F-lang-crate           Shared Vaelith language crate
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-logistics            Spatial resource flow (Kanban-style)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -778,7 +778,7 @@ be deterministic given the same PRNG state. Adds a `name` field to the
 **Related:** F-vaelith-expand
 
 #### F-lang-crate — Shared Vaelith language crate
-**Status:** Todo · **Phase:** 6 · **Refs:** §20
+**Status:** In Progress · **Phase:** 6 · **Refs:** §20
 **Draft:** `docs/drafts/lang_crate.md`
 
 Create `elven_canopy_lang`, a pure-Rust crate providing the Vaelith language
