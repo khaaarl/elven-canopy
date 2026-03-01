@@ -140,10 +140,10 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-food-gauge           Creature food gauge with decay
 [x] F-game-session         Game session autoload singleton
-[x] F-large-pathfind       2x2 footprint nav grid
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
+[x] F-large-pathfind       2x2 footprint nav grid
 [x] F-main-menu            Main menu UI
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-mp-integ-test        Multiplayer integration test harness
@@ -299,16 +299,6 @@ model but not yet used for scheduling.
 
 **Related:** F-elf-needs
 
-#### F-undo-designate — Undo last construction designation
-**Status:** Todo · **Phase:** 2
-
-Undo the most recent construction designation (Ctrl+Z or similar). Currently
-players can cancel in-progress builds, but a misclicked designation requires
-manually selecting and cancelling. A simple undo stack (last-in-first-out)
-for designations would prevent frustration from placement mistakes.
-
-**Related:** F-construction
-
 #### F-tree-overlap — Construction overlap with tree geometry
 **Status:** Done · **Phase:** 2 · **Refs:** §11, §12
 **Draft:** `docs/drafts/construction_tree_overlap.md`
@@ -322,6 +312,16 @@ wireframe edges. Invalid if 0% of voxels are exterior. Adds
 future furniture/decoration types. See draft doc for full plan.
 
 **Related:** F-construction, F-blueprint-mode
+
+#### F-undo-designate — Undo last construction designation
+**Status:** Todo · **Phase:** 2
+
+Undo the most recent construction designation (Ctrl+Z or similar). Currently
+players can cancel in-progress builds, but a misclicked designation requires
+manually selecting and cancelling. A simple undo stack (last-in-first-out)
+for designations would prevent frustration from placement mistakes.
+
+**Related:** F-construction
 
 #### F-visual-smooth — Smooth voxel surface rendering
 **Status:** Todo · **Phase:** 2 · **Refs:** §8
@@ -497,6 +497,12 @@ computed from edge distance and per-species speed config.
 
 ### Creatures & Needs
 
+#### F-capybara — Capybara species
+**Status:** Done · **Refs:** §15
+
+Capybara species with ground-only movement restriction, own sprite renderer,
+and species-specific speed config.
+
 #### F-creature-death — Basic creature death (starvation)
 **Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
 
@@ -507,12 +513,6 @@ removal, corpse cleanup, UI notification. A prerequisite for food scarcity
 having real consequences.
 
 **Related:** F-food-gauge, F-soul-mech, F-elf-needs
-
-#### F-capybara — Capybara species
-**Status:** Done · **Refs:** §15
-
-Capybara species with ground-only movement restriction, own sprite renderer,
-and species-specific speed config.
 
 #### F-elf-needs — Hunger and rest self-direction
 **Status:** In Progress · **Phase:** 3 · **Refs:** §13, §15
@@ -561,6 +561,12 @@ limited by tree carrying capacity and available food/shelter.
 
 ### Economy & Logistics
 
+#### F-crafting — Non-construction jobs and crafting
+**Status:** Todo · **Phase:** 8+ · **Refs:** §11
+
+Jobs beyond construction: woodworking, weaving, cooking, enchanting.
+Crafting system for tools, furniture, and magical items.
+
 #### F-fruit-prod — Basic fruit production and harvesting
 **Status:** Todo · **Phase:** 2 · **Refs:** §13
 
@@ -572,12 +578,6 @@ between the existing food decay mechanic (F-food-gauge) and the advanced
 food system (F-fruit-variety).
 
 **Related:** F-food-gauge, F-elf-needs, F-fruit-variety, F-branch-growth
-
-#### F-crafting — Non-construction jobs and crafting
-**Status:** Todo · **Phase:** 8+ · **Refs:** §11
-
-Jobs beyond construction: woodworking, weaving, cooking, enchanting.
-Crafting system for tools, furniture, and magical items.
 
 #### F-fruit-variety — Food storage, cooking, magical brewing
 **Status:** Todo · **Phase:** 7 · **Refs:** §13
@@ -913,6 +913,12 @@ soul-powered constructs (golems, animated defenses).
 
 ### UI & Presentation
 
+#### F-ai-sprites — AI-generated sprite art pipeline
+**Status:** Todo · **Phase:** 8+ · **Refs:** §24
+
+Replace placeholder sprites with AI-generated layered art: base body
+templates + composited clothing/hair/face layers for visual variety.
+
 #### F-build-queue-ui — Construction queue/progress UI
 **Status:** Todo · **Phase:** 2
 
@@ -922,12 +928,6 @@ Currently players can see individual blueprints in the world but have no
 overview of the construction pipeline. Small overlay or sidebar panel.
 
 **Related:** F-construction, F-task-priority
-
-#### F-ai-sprites — AI-generated sprite art pipeline
-**Status:** Todo · **Phase:** 8+ · **Refs:** §24
-
-Replace placeholder sprites with AI-generated layered art: base body
-templates + composited clothing/hair/face layers for visual variety.
 
 #### F-cam-follow — Camera follow mode for creatures
 **Status:** Done · **Phase:** 2 · **Refs:** §23
@@ -1004,6 +1004,12 @@ Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 
 ESC-triggered pause menu with Resume, Save, Load, and Quit options.
 
+#### F-selection — Click-to-select creatures
+**Status:** Done · **Refs:** §26
+
+Ray-based selection with billboard sprite hit detection. ESC to deselect.
+Input precedence chain with placement and pause systems.
+
 #### F-sim-speed — Simulation speed controls UI
 **Status:** Todo · **Phase:** 2
 
@@ -1014,23 +1020,6 @@ for speed) to control the tick multiplier. Essential for both slow
 observation and fast-forwarding through idle periods.
 
 **Related:** F-event-loop
-
-#### F-selection — Click-to-select creatures
-**Status:** Done · **Refs:** §26
-
-Ray-based selection with billboard sprite hit detection. ESC to deselect.
-Input precedence chain with placement and pause systems.
-
-#### F-tree-info — Tree stats/info panel
-**Status:** Done · **Phase:** 2
-
-Panel showing the player's tree statistics: total voxels, height, branch
-count, leaf count, fruit production rate, mana level (once F-mana-system
-exists), and carrying capacity. The player *is* the tree but currently has
-no introspective view of their own state. Could be a toggleable overlay
-or a persistent sidebar element.
-
-**Related:** F-creature-info, F-mana-system
 
 #### F-spawn-toolbar — Spawn toolbar and placement UI
 **Status:** Done · **Refs:** §26
@@ -1048,6 +1037,17 @@ for zoom-to-location.
 
 **New files:** `structure_list_panel.gd`
 **Related:** F-construction, F-building
+
+#### F-tree-info — Tree stats/info panel
+**Status:** Done · **Phase:** 2
+
+Panel showing the player's tree statistics: total voxels, height, branch
+count, leaf count, fruit production rate, mana level (once F-mana-system
+exists), and carrying capacity. The player *is* the tree but currently has
+no introspective view of their own state. Could be a toggleable overlay
+or a persistent sidebar element.
+
+**Related:** F-creature-info, F-mana-system
 
 #### F-world-boundary — World boundary visualization
 **Status:** Todo · **Phase:** 2
