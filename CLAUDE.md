@@ -335,7 +335,7 @@ git push origin --delete feature/my-branch
 
 **Tracker update (step 4):** After the rebase succeeds and before merging to main, update `docs/tracker.md` to reflect completed work — move summary lines from In Progress/Todo to Done, update `**Status:**` in detailed entries. Amending the squashed commit ensures the tracker update and the code land atomically.
 
-The squashed commit message should summarize the entire feature, not repeat individual commit messages. Always ask the user before pushing to main.
+The squashed commit message should summarize the entire feature, not repeat individual commit messages. Always ask the user for permission before step 5 (merging to main).
 
 ## Conversation Flow
 
