@@ -731,6 +731,165 @@ mod tests {
         }
     }
 
+    /// Assert that a mesh forms a closed manifold surface (watertight).
+    ///
+    /// For every triangle edge (a, b), there must be exactly one triangle with
+    /// the reverse edge (b, a). This guarantees no gaps, T-junctions, or
+    /// missing faces in the mesh.
+    fn assert_mesh_watertight(mesh: &SmoothedMesh) {
+        // Check no degenerate triangles.
+        for tri in (0..mesh.indices.len()).step_by(3) {
+            let i0 = mesh.indices[tri];
+            let i1 = mesh.indices[tri + 1];
+            let i2 = mesh.indices[tri + 2];
+            assert!(
+                i0 != i1 && i1 != i2 && i0 != i2,
+                "Degenerate triangle at index {}: indices ({}, {}, {})",
+                tri / 3,
+                i0,
+                i1,
+                i2
+            );
+        }
+
+        // Collect all directed edges with counts.
+        let mut edge_counts: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+        for tri in (0..mesh.indices.len()).step_by(3) {
+            let verts = [
+                mesh.indices[tri],
+                mesh.indices[tri + 1],
+                mesh.indices[tri + 2],
+            ];
+            for e in 0..3 {
+                let a = verts[e];
+                let b = verts[(e + 1) % 3];
+                *edge_counts.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+
+        // Each directed edge must appear exactly once.
+        for (&(a, b), &count) in &edge_counts {
+            assert_eq!(
+                count, 1,
+                "Directed edge ({} -> {}) appears {} times (positions: {:?} -> {:?})",
+                a, b, count, mesh.positions[a as usize], mesh.positions[b as usize]
+            );
+        }
+
+        // Every edge (a, b) must have a matching reverse (b, a).
+        for &(a, b) in edge_counts.keys() {
+            assert!(
+                edge_counts.contains_key(&(b, a)),
+                "Edge ({} -> {}) has no reverse (positions: {:?} -> {:?})",
+                a,
+                b,
+                mesh.positions[a as usize],
+                mesh.positions[b as usize]
+            );
+        }
+    }
+
+    #[test]
+    fn watertight_single_voxel() {
+        let coord = VoxelCoord::new(5, 5, 5);
+        let world = world_with_voxel(coord, VoxelType::Trunk);
+        let result = generate_smoothed_meshes(&world, &[coord], &[]);
+        let mesh = result
+            .get(&MaterialGroup::Wood)
+            .expect("should have wood mesh");
+        assert_mesh_watertight(mesh);
+    }
+
+    #[test]
+    fn watertight_rod_x() {
+        let coords = [
+            VoxelCoord::new(4, 5, 5),
+            VoxelCoord::new(5, 5, 5),
+            VoxelCoord::new(6, 5, 5),
+        ];
+        let mut world = VoxelWorld::new(16, 16, 16);
+        for &c in &coords {
+            world.set(c, VoxelType::Trunk);
+        }
+        let result = generate_smoothed_meshes(&world, &coords, &[]);
+        let mesh = result
+            .get(&MaterialGroup::Wood)
+            .expect("should have wood mesh");
+        assert_mesh_watertight(mesh);
+    }
+
+    #[test]
+    fn watertight_column_y() {
+        let coords = [
+            VoxelCoord::new(5, 4, 5),
+            VoxelCoord::new(5, 5, 5),
+            VoxelCoord::new(5, 6, 5),
+        ];
+        let mut world = VoxelWorld::new(16, 16, 16);
+        for &c in &coords {
+            world.set(c, VoxelType::Trunk);
+        }
+        let result = generate_smoothed_meshes(&world, &coords, &[]);
+        let mesh = result
+            .get(&MaterialGroup::Wood)
+            .expect("should have wood mesh");
+        assert_mesh_watertight(mesh);
+    }
+
+    #[test]
+    fn watertight_l_shape() {
+        let coords = [
+            VoxelCoord::new(5, 5, 5),
+            VoxelCoord::new(6, 5, 5),
+            VoxelCoord::new(6, 6, 5),
+        ];
+        let mut world = VoxelWorld::new(16, 16, 16);
+        for &c in &coords {
+            world.set(c, VoxelType::Trunk);
+        }
+        let result = generate_smoothed_meshes(&world, &coords, &[]);
+        let mesh = result
+            .get(&MaterialGroup::Wood)
+            .expect("should have wood mesh");
+        assert_mesh_watertight(mesh);
+    }
+
+    #[test]
+    fn watertight_staircase() {
+        let coords = [
+            VoxelCoord::new(5, 5, 5),
+            VoxelCoord::new(6, 6, 5),
+        ];
+        let mut world = VoxelWorld::new(16, 16, 16);
+        for &c in &coords {
+            world.set(c, VoxelType::Trunk);
+        }
+        let result = generate_smoothed_meshes(&world, &coords, &[]);
+        let mesh = result
+            .get(&MaterialGroup::Wood)
+            .expect("should have wood mesh");
+        assert_mesh_watertight(mesh);
+    }
+
+    #[test]
+    fn watertight_2x2_block() {
+        let coords = [
+            VoxelCoord::new(5, 5, 5),
+            VoxelCoord::new(6, 5, 5),
+            VoxelCoord::new(5, 6, 5),
+            VoxelCoord::new(6, 6, 5),
+        ];
+        let mut world = VoxelWorld::new(16, 16, 16);
+        for &c in &coords {
+            world.set(c, VoxelType::Trunk);
+        }
+        let result = generate_smoothed_meshes(&world, &coords, &[]);
+        let mesh = result
+            .get(&MaterialGroup::Wood)
+            .expect("should have wood mesh");
+        assert_mesh_watertight(mesh);
+    }
+
     #[test]
     fn straight_rod_has_diamond_cross_section() {
         // A horizontal rod of 3 trunk voxels along X. The middle voxel's
