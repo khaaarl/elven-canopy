@@ -88,6 +88,16 @@ pub enum SimAction {
         height: i32,
         priority: Priority,
     },
+    /// Designate a ladder (wood or rope). `anchor` is the bottom voxel.
+    /// The ladder extends upward for `height` voxels. `orientation` is the
+    /// face the ladder panel is on (must be horizontal: PosX/NegX/PosZ/NegZ).
+    DesignateLadder {
+        anchor: VoxelCoord,
+        height: i32,
+        orientation: FaceDirection,
+        kind: LadderKind,
+        priority: Priority,
+    },
 }
 
 #[cfg(test)]

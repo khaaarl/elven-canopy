@@ -208,16 +208,29 @@ pub struct SimState {
     #[serde(default)]
     pub placed_voxels: Vec<(VoxelCoord, VoxelType)>,
 
-    /// Per-face data for `BuildingInterior` voxels. Persisted as a flat list
-    /// of (coord, face_data) pairs since `VoxelCoord` can't be a JSON map key.
-    /// At runtime, `face_data` (transient BTreeMap) is the primary lookup.
+    /// Per-face data for `BuildingInterior` and ladder voxels. Persisted as a
+    /// flat list of (coord, face_data) pairs since `VoxelCoord` can't be a
+    /// JSON map key. At runtime, `face_data` (transient BTreeMap) is the
+    /// primary lookup.
     #[serde(default)]
     pub face_data_list: Vec<(VoxelCoord, FaceData)>,
 
-    /// Per-face data indexed by coordinate for O(1) lookup at runtime.
-    /// Rebuilt from `face_data_list` after deserialization.
+    /// Per-face data indexed by coordinate for O(1) lookup at runtime
+    /// (buildings and ladders). Rebuilt from `face_data_list` after
+    /// deserialization.
     #[serde(skip)]
     pub face_data: BTreeMap<VoxelCoord, FaceData>,
+
+    /// Ladder orientation data. Persisted as a flat list of (coord, face_direction)
+    /// pairs since `VoxelCoord` can't be a JSON map key. Records which face
+    /// each ladder panel is on (needed for rendering and validation).
+    #[serde(default)]
+    pub ladder_orientations_list: Vec<(VoxelCoord, FaceDirection)>,
+
+    /// Ladder orientations indexed by coordinate for O(1) lookup at runtime.
+    /// Rebuilt from `ladder_orientations_list` after deserialization.
+    #[serde(skip)]
+    pub ladder_orientations: BTreeMap<VoxelCoord, FaceDirection>,
 
     /// All completed structures, keyed by sequential `StructureId`.
     #[serde(default)]
@@ -469,6 +482,8 @@ impl SimState {
             placed_voxels: Vec::new(),
             face_data_list: Vec::new(),
             face_data: BTreeMap::new(),
+            ladder_orientations_list: Vec::new(),
+            ladder_orientations: BTreeMap::new(),
             structures: BTreeMap::new(),
             next_structure_id: 0,
             player_tree_id,
@@ -587,6 +602,15 @@ impl SimState {
                 priority,
             } => {
                 self.designate_building(*anchor, *width, *depth, *height, *priority, events);
+            }
+            SimAction::DesignateLadder {
+                anchor,
+                height,
+                orientation,
+                kind,
+                priority,
+            } => {
+                self.designate_ladder(*anchor, *height, *orientation, *kind, *priority, events);
             }
         }
     }
@@ -842,6 +866,147 @@ impl SimState {
         });
     }
 
+    /// Validate and create a blueprint for a ladder (wood or rope).
+    ///
+    /// Validation:
+    /// - height >= 1
+    /// - orientation must be horizontal (PosX/NegX/PosZ/NegZ)
+    /// - All column voxels must be Air or Convertible (Leaf/Fruit)
+    /// - Wood: at least one voxel's ladder face is adjacent to solid
+    /// - Rope: topmost voxel's ladder face is adjacent to solid
+    fn designate_ladder(
+        &mut self,
+        anchor: VoxelCoord,
+        height: i32,
+        orientation: FaceDirection,
+        kind: LadderKind,
+        priority: Priority,
+        events: &mut Vec<SimEvent>,
+    ) {
+        self.last_build_message = None;
+
+        if height < 1 {
+            self.last_build_message = Some("Ladder height must be at least 1.".to_string());
+            return;
+        }
+
+        // Orientation must be horizontal (ody == 0 after this guard).
+        let (odx, _ody, odz) = orientation.to_offset();
+        if _ody != 0 {
+            self.last_build_message = Some("Ladder orientation must be horizontal.".to_string());
+            return;
+        }
+
+        // Classify column voxels using overlap rules (ladders allow tree overlap).
+        let build_type = match kind {
+            LadderKind::Wood => BuildType::WoodLadder,
+            LadderKind::Rope => BuildType::RopeLadder,
+        };
+        let mut build_voxels = Vec::new();
+        let mut original_voxels = Vec::new();
+        for dy in 0..height {
+            let coord = VoxelCoord::new(anchor.x, anchor.y + dy, anchor.z);
+            if !self.world.in_bounds(coord) {
+                self.last_build_message = Some("Ladder extends out of bounds.".to_string());
+                return;
+            }
+            match self.world.get(coord).classify_for_overlap() {
+                OverlapClassification::Exterior => {
+                    build_voxels.push(coord);
+                }
+                OverlapClassification::Convertible => {
+                    original_voxels.push((coord, self.world.get(coord)));
+                    build_voxels.push(coord);
+                }
+                OverlapClassification::AlreadyWood => {
+                    // Skip — already wood, no blueprint voxel needed.
+                }
+                OverlapClassification::Blocked => {
+                    self.last_build_message =
+                        Some("Ladder position is blocked by existing construction.".to_string());
+                    return;
+                }
+            }
+        }
+        if build_voxels.is_empty() {
+            self.last_build_message =
+                Some("Nothing to build — all voxels are already wood.".to_string());
+            return;
+        }
+
+        // Anchoring validation.
+        match kind {
+            LadderKind::Wood => {
+                // At least one voxel's ladder face must be adjacent to solid.
+                let any_anchored = build_voxels.iter().any(|&coord| {
+                    let neighbor = VoxelCoord::new(coord.x + odx, coord.y, coord.z + odz);
+                    self.world.get(neighbor).is_solid()
+                });
+                if !any_anchored {
+                    self.last_build_message =
+                        Some("Wood ladder must be adjacent to a solid surface.".to_string());
+                    return;
+                }
+            }
+            LadderKind::Rope => {
+                // Topmost voxel's ladder face must be adjacent to solid.
+                let top = VoxelCoord::new(anchor.x + odx, anchor.y + height - 1, anchor.z + odz);
+                if !self.world.get(top).is_solid() {
+                    self.last_build_message =
+                        Some("Rope ladder must hang from a solid surface at the top.".to_string());
+                    return;
+                }
+            }
+        }
+
+        let project_id = ProjectId::new(&mut self.rng);
+
+        // Create a Build task at the nearest nav node to the bottom of the ladder.
+        let task_location = match self.nav_graph.find_nearest_node(build_voxels[0]) {
+            Some(n) => n,
+            None => return,
+        };
+        let task_id = TaskId::new(&mut self.rng);
+        let num_voxels = build_voxels.len() as u64;
+        let total_cost = self.config.build_work_ticks_per_voxel * num_voxels;
+        let build_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::Build { project_id },
+            state: task::TaskState::Available,
+            location: task_location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: total_cost as f32,
+            required_species: Some(Species::Elf),
+        };
+        self.tasks.insert(task_id, build_task);
+
+        // Store the orientation in the blueprint's face_layout field for later
+        // use during materialization. We encode it as a map from each voxel to
+        // its FaceData (computed from orientation).
+        let face_layout: Vec<(VoxelCoord, FaceData)> = build_voxels
+            .iter()
+            .map(|&coord| (coord, ladder_face_data(orientation)))
+            .collect();
+
+        let bp = Blueprint {
+            id: project_id,
+            build_type,
+            voxels: build_voxels,
+            priority,
+            state: BlueprintState::Designated,
+            task_id: Some(task_id),
+            face_layout: Some(face_layout.into_iter().collect()),
+            stress_warning: false,
+            original_voxels,
+        };
+        self.blueprints.insert(project_id, bp);
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::BlueprintDesignated { project_id },
+        });
+    }
+
     /// Cancel a blueprint by ProjectId. Removes the associated Build task,
     /// unassigns any workers, reverts materialized voxels to Air, and rebuilds
     /// the nav graph. Emits `BuildCancelled` if found.
@@ -886,12 +1051,21 @@ impl SimState {
         self.placed_voxels
             .retain(|(coord, _)| !bp_voxels.contains(coord));
 
-        // For buildings, also remove face_data entries.
-        if is_building {
+        // For buildings and ladders, also remove face_data entries.
+        let is_ladder = matches!(bp.build_type, BuildType::WoodLadder | BuildType::RopeLadder);
+        if is_building || is_ladder {
             for &coord in &bp_voxels {
                 self.face_data.remove(&coord);
             }
             self.face_data_list
+                .retain(|(coord, _)| !bp_voxels.contains(coord));
+        }
+        // For ladders, also remove ladder_orientations entries.
+        if is_ladder {
+            for &coord in &bp_voxels {
+                self.ladder_orientations.remove(&coord);
+            }
+            self.ladder_orientations_list
                 .retain(|(coord, _)| !bp_voxels.contains(coord));
         }
 
@@ -1295,6 +1469,8 @@ impl SimState {
             &target_nodes,
             species_data.walk_ticks_per_voxel,
             species_data.climb_ticks_per_voxel,
+            species_data.wood_ladder_tpv,
+            species_data.rope_ladder_tpv,
             species_data.allowed_edge_types.as_deref(),
         )?;
 
@@ -1359,6 +1535,8 @@ impl SimState {
 
         let walk_tpv = species_data.walk_ticks_per_voxel;
         let climb_tpv = species_data.climb_ticks_per_voxel;
+        let wood_ladder_tpv = species_data.wood_ladder_tpv;
+        let rope_ladder_tpv = species_data.rope_ladder_tpv;
 
         let (edge_idx, dest_node) = if let Some(step) = next_step {
             step
@@ -1371,10 +1549,20 @@ impl SimState {
                     task_location,
                     walk_tpv,
                     climb_tpv,
+                    wood_ladder_tpv,
+                    rope_ladder_tpv,
                     allowed,
                 )
             } else {
-                pathfinding::astar(graph, current_node, task_location, walk_tpv, climb_tpv)
+                pathfinding::astar(
+                    graph,
+                    current_node,
+                    task_location,
+                    walk_tpv,
+                    climb_tpv,
+                    wood_ladder_tpv,
+                    rope_ladder_tpv,
+                )
             };
 
             let path_result = match path_result {
@@ -1407,6 +1595,8 @@ impl SimState {
             crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
                 climb_tpv.unwrap_or(walk_tpv)
             }
+            crate::nav::EdgeType::WoodLadderClimb => wood_ladder_tpv.unwrap_or(walk_tpv),
+            crate::nav::EdgeType::RopeLadderClimb => rope_ladder_tpv.unwrap_or(walk_tpv),
             _ => walk_tpv,
         };
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
@@ -1513,6 +1703,12 @@ impl SimState {
             crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => species_data
                 .climb_ticks_per_voxel
                 .unwrap_or(species_data.walk_ticks_per_voxel),
+            crate::nav::EdgeType::WoodLadderClimb => species_data
+                .wood_ladder_tpv
+                .unwrap_or(species_data.walk_ticks_per_voxel),
+            crate::nav::EdgeType::RopeLadderClimb => species_data
+                .rope_ladder_tpv
+                .unwrap_or(species_data.walk_ticks_per_voxel),
             _ => species_data.walk_ticks_per_voxel,
         };
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
@@ -1588,6 +1784,12 @@ impl SimState {
                         .climb_ticks_per_voxel
                         .unwrap_or(species_data.walk_ticks_per_voxel)
                 }
+                crate::nav::EdgeType::WoodLadderClimb => species_data
+                    .wood_ladder_tpv
+                    .unwrap_or(species_data.walk_ticks_per_voxel),
+                crate::nav::EdgeType::RopeLadderClimb => species_data
+                    .rope_ladder_tpv
+                    .unwrap_or(species_data.walk_ticks_per_voxel),
                 _ => species_data.walk_ticks_per_voxel,
             };
             let delay = ((next_edge.distance * tpv as f32).ceil() as u64).max(1);
@@ -1724,12 +1926,15 @@ impl SimState {
         let build_type = bp.build_type;
         let voxel_type = build_type.to_voxel_type();
         let is_building = build_type == BuildType::Building;
+        let is_ladder = matches!(build_type, BuildType::WoodLadder | BuildType::RopeLadder);
         let allows_overlap = build_type.allows_tree_overlap();
 
         // Find unplaced voxels that are adjacent to existing geometry.
         // For buildings, adjacency accepts BuildingInterior face neighbors in
         // addition to solid neighbors (building interior voxels grow from the
         // foundation and from each other).
+        // For ladders, adjacency accepts same-type ladder face neighbors
+        // (ladder voxels grow from bottom to top or from an anchored voxel).
         // For overlap-enabled types, a voxel is "unplaced" if it hasn't been
         // converted to the target type yet (it may be Air, Leaf, or Fruit).
         let eligible: Vec<VoxelCoord> = bp
@@ -1764,6 +1969,10 @@ impl SimState {
                         .world
                         .has_face_neighbor_of_type(coord, VoxelType::BuildingInterior);
                 }
+                // For ladders, also accept same-type ladder face neighbors.
+                if is_ladder {
+                    return self.world.has_face_neighbor_of_type(coord, voxel_type);
+                }
                 false
             })
             .collect();
@@ -1795,14 +2004,34 @@ impl SimState {
         self.world.set(chosen, voxel_type);
         self.placed_voxels.push((chosen, voxel_type));
 
-        // For buildings, copy face data from the blueprint into sim state.
-        if is_building {
+        // For buildings and ladders, copy face data from the blueprint into sim state.
+        if is_building || is_ladder {
             if let Some(bp) = self.blueprints.get(&project_id)
                 && let Some(layout) = bp.face_layout_map()
                 && let Some(fd) = layout.get(&chosen)
             {
                 self.face_data.insert(chosen, fd.clone());
                 self.face_data_list.push((chosen, fd.clone()));
+            }
+            // For ladders, also store the orientation.
+            if is_ladder
+                && let Some(bp) = self.blueprints.get(&project_id)
+                && let Some(layout) = bp.face_layout_map()
+                && let Some(fd) = layout.get(&chosen)
+            {
+                // Derive orientation: the horizontal Wall face whose opposite is Open.
+                for dir in [
+                    FaceDirection::PosX,
+                    FaceDirection::NegX,
+                    FaceDirection::PosZ,
+                    FaceDirection::NegZ,
+                ] {
+                    if fd.get(dir) == FaceType::Wall && fd.get(dir.opposite()) == FaceType::Open {
+                        self.ladder_orientations.insert(chosen, dir);
+                        self.ladder_orientations_list.push((chosen, dir));
+                        break;
+                    }
+                }
             }
             let removed = self.nav_graph.update_after_building_voxel_set(
                 &self.world,
@@ -1973,6 +2202,7 @@ impl SimState {
     pub fn rebuild_transient_state(&mut self) {
         self.world = Self::rebuild_world(&self.config, &self.trees, &self.placed_voxels);
         self.face_data = self.face_data_list.iter().cloned().collect();
+        self.ladder_orientations = self.ladder_orientations_list.iter().cloned().collect();
         self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
         self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
@@ -5643,5 +5873,444 @@ mod tests {
             elf.current_task.is_none(),
             "Elf should abandon task with dead location node",
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Ladder tests
+    // -------------------------------------------------------------------
+
+    /// Find an air voxel adjacent to a trunk voxel on a horizontal face,
+    /// ensuring at least `height` air voxels above it. Returns (anchor, orientation)
+    /// where orientation is the face of the anchor pointing toward the trunk.
+    fn find_ladder_column(sim: &SimState, height: i32) -> (VoxelCoord, FaceDirection) {
+        let tree = &sim.trees[&sim.player_tree_id];
+        for &trunk_coord in &tree.trunk_voxels {
+            for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let base = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y, trunk_coord.z + dz);
+                if !sim.world.in_bounds(base) {
+                    continue;
+                }
+                // The orientation points from air toward trunk (i.e., face
+                // direction on the ladder voxel that faces the wall).
+                let orientation = FaceDirection::from_offset(-dx, 0, -dz).unwrap();
+                let all_air = (0..height).all(|dy| {
+                    let coord = VoxelCoord::new(base.x, base.y + dy, base.z);
+                    sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+                });
+                if all_air {
+                    return (base, orientation);
+                }
+            }
+        }
+        panic!("No suitable ladder column found");
+    }
+
+    #[test]
+    fn designate_wood_ladder_creates_blueprint() {
+        let mut sim = test_sim(42);
+        let (anchor, orientation) = find_ladder_column(&sim, 3);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor,
+                height: 3,
+                orientation,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        let result = sim.step(&[cmd], 1);
+
+        assert_eq!(sim.blueprints.len(), 1);
+        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(bp.build_type, BuildType::WoodLadder);
+        assert_eq!(bp.voxels.len(), 3);
+        assert_eq!(bp.state, BlueprintState::Designated);
+        assert!(
+            result
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, SimEventKind::BlueprintDesignated { .. }))
+        );
+    }
+
+    #[test]
+    fn designate_rope_ladder_creates_blueprint() {
+        let mut sim = test_sim(42);
+        // Rope ladders need top voxel adjacent to solid. Find a trunk voxel
+        // with air below and on the side.
+        let (anchor, orientation) = find_ladder_column(&sim, 1);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor,
+                height: 1,
+                orientation,
+                kind: LadderKind::Rope,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(sim.blueprints.len(), 1);
+        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(bp.build_type, BuildType::RopeLadder);
+    }
+
+    #[test]
+    fn designate_ladder_rejects_vertical_orientation() {
+        let mut sim = test_sim(42);
+        let (anchor, _) = find_ladder_column(&sim, 1);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor,
+                height: 1,
+                orientation: FaceDirection::PosY,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert!(sim.blueprints.is_empty());
+        assert_eq!(
+            sim.last_build_message.as_deref(),
+            Some("Ladder orientation must be horizontal.")
+        );
+    }
+
+    #[test]
+    fn designate_ladder_rejects_zero_height() {
+        let mut sim = test_sim(42);
+        let (anchor, orientation) = find_ladder_column(&sim, 1);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor,
+                height: 0,
+                orientation,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert!(sim.blueprints.is_empty());
+        assert_eq!(
+            sim.last_build_message.as_deref(),
+            Some("Ladder height must be at least 1.")
+        );
+    }
+
+    #[test]
+    fn designate_wood_ladder_rejects_no_anchor() {
+        let mut sim = test_sim(42);
+        // Place ladder in open air with no adjacent solid.
+        let anchor = VoxelCoord::new(1, 10, 1);
+        // Confirm it's air with no solid neighbor.
+        assert_eq!(sim.world.get(anchor), VoxelType::Air);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor,
+                height: 1,
+                orientation: FaceDirection::PosX,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert!(sim.blueprints.is_empty());
+    }
+
+    #[test]
+    fn designate_ladder_creates_build_task() {
+        let mut sim = test_sim(42);
+        let (anchor, orientation) = find_ladder_column(&sim, 2);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor,
+                height: 2,
+                orientation,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let bp = sim.blueprints.values().next().unwrap();
+        assert!(bp.task_id.is_some());
+        let task = &sim.tasks[&bp.task_id.unwrap()];
+        assert!(matches!(task.kind, crate::task::TaskKind::Build { .. }));
+        assert_eq!(task.required_species, Some(Species::Elf));
+        assert_eq!(
+            task.total_cost,
+            (sim.config.build_work_ticks_per_voxel * 2) as f32
+        );
+    }
+
+    #[test]
+    fn ladder_face_data_blocks_correctly() {
+        let fd = ladder_face_data(FaceDirection::PosX);
+        // Only the ladder face (PosX) should be Wall.
+        assert_eq!(fd.get(FaceDirection::PosX), FaceType::Wall);
+        // All other faces should be Open.
+        assert_eq!(fd.get(FaceDirection::NegX), FaceType::Open);
+        assert_eq!(fd.get(FaceDirection::PosZ), FaceType::Open);
+        assert_eq!(fd.get(FaceDirection::NegZ), FaceType::Open);
+        assert_eq!(fd.get(FaceDirection::PosY), FaceType::Open);
+        assert_eq!(fd.get(FaceDirection::NegY), FaceType::Open);
+    }
+
+    #[test]
+    fn ladder_voxel_type_not_solid() {
+        assert!(!VoxelType::WoodLadder.is_solid());
+        assert!(!VoxelType::RopeLadder.is_solid());
+    }
+
+    #[test]
+    fn ladder_voxel_type_is_ladder() {
+        assert!(VoxelType::WoodLadder.is_ladder());
+        assert!(VoxelType::RopeLadder.is_ladder());
+        assert!(!VoxelType::Air.is_ladder());
+        assert!(!VoxelType::Trunk.is_ladder());
+    }
+
+    #[test]
+    fn ladder_build_type_allows_tree_overlap() {
+        assert!(BuildType::WoodLadder.allows_tree_overlap());
+        assert!(BuildType::RopeLadder.allows_tree_overlap());
+    }
+
+    #[test]
+    fn cancel_ladder_removes_blueprint_and_data() {
+        let mut sim = test_sim(42);
+        let (anchor, orientation) = find_ladder_column(&sim, 2);
+
+        // Designate a wood ladder.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor,
+                height: 2,
+                orientation,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.blueprints.len(), 1);
+
+        let project_id = *sim.blueprints.keys().next().unwrap();
+        let cancel_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::CancelBuild { project_id },
+        };
+        let result = sim.step(&[cancel_cmd], 2);
+
+        assert!(sim.blueprints.is_empty());
+        assert!(sim.tasks.is_empty());
+        assert!(
+            result
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, SimEventKind::BuildCancelled { .. }))
+        );
+    }
+
+    #[test]
+    fn ladder_save_load_roundtrip() {
+        let mut sim = test_sim(42);
+        let (anchor, orientation) = find_ladder_column(&sim, 2);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor,
+                height: 2,
+                orientation,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let json = sim.to_json().unwrap();
+        let restored = SimState::from_json(&json).unwrap();
+        assert_eq!(restored.blueprints.len(), 1);
+        let bp = restored.blueprints.values().next().unwrap();
+        assert_eq!(bp.build_type, BuildType::WoodLadder);
+    }
+
+    #[test]
+    fn designate_rope_ladder_rejects_no_anchor() {
+        let mut sim = test_sim(42);
+        // Find a column of 3 air voxels next to trunk, then try placing a
+        // rope ladder of height 3. The top voxel's ladder face must be
+        // adjacent to solid — pick an anchor where that's not the case.
+        let (anchor, orientation) = find_ladder_column(&sim, 3);
+        // The anchor faces toward trunk, so height=1 passes (top is adjacent).
+        // But we want to fail: place the anchor 2 voxels further out from the
+        // trunk so the top voxel's neighbor is air.
+        let (odx, _, odz) = orientation.to_offset();
+        let far_anchor = VoxelCoord::new(anchor.x - odx * 2, anchor.y, anchor.z - odz * 2);
+        // Make sure the far anchor column is air (best effort — skip if not).
+        let all_air = (0..3).all(|dy| {
+            let coord = VoxelCoord::new(far_anchor.x, far_anchor.y + dy, far_anchor.z);
+            sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+        });
+        if !all_air {
+            // Can't construct the test scenario — skip gracefully.
+            return;
+        }
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor: far_anchor,
+                height: 3,
+                orientation,
+                kind: LadderKind::Rope,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(sim.blueprints.len(), 0);
+        assert!(sim.last_build_message.is_some());
+    }
+
+    #[test]
+    fn designate_rope_ladder_multiheight() {
+        let mut sim = test_sim(42);
+        // Find a column of 3 air voxels next to trunk. Rope ladder needs
+        // top voxel adjacent to solid — but the anchor is at the bottom.
+        // With height=3, the top (anchor.y+2) must have its ladder face
+        // neighbor be solid.
+        let tree = &sim.trees[&sim.player_tree_id];
+        let mut found = None;
+        for &trunk_coord in &tree.trunk_voxels {
+            for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let orientation = FaceDirection::from_offset(-dx, 0, -dz).unwrap();
+                // We need a column of 3 air voxels starting below the trunk,
+                // where the topmost voxel (base.y+2) is at trunk_coord.y.
+                let base =
+                    VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y - 2, trunk_coord.z + dz);
+                let all_air = (0..3).all(|dy| {
+                    let coord = VoxelCoord::new(base.x, base.y + dy, base.z);
+                    sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+                });
+                // Top voxel's ladder-face neighbor must be solid (the trunk).
+                let (odx, _, odz) = orientation.to_offset();
+                let top_neighbor = VoxelCoord::new(base.x + odx, base.y + 2, base.z + odz);
+                if all_air && sim.world.get(top_neighbor).is_solid() {
+                    found = Some((base, orientation));
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        let (anchor, orientation) = found.expect("No suitable multi-height rope column found");
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor,
+                height: 3,
+                orientation,
+                kind: LadderKind::Rope,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(sim.blueprints.len(), 1);
+        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(bp.build_type, BuildType::RopeLadder);
+        assert_eq!(bp.voxels.len(), 3);
+    }
+
+    #[test]
+    fn ladder_classify_for_overlap_blocked() {
+        assert_eq!(
+            VoxelType::WoodLadder.classify_for_overlap(),
+            OverlapClassification::Blocked
+        );
+        assert_eq!(
+            VoxelType::RopeLadder.classify_for_overlap(),
+            OverlapClassification::Blocked
+        );
+    }
+
+    #[test]
+    fn ladder_build_type_to_voxel_type() {
+        assert_eq!(BuildType::WoodLadder.to_voxel_type(), VoxelType::WoodLadder);
+        assert_eq!(BuildType::RopeLadder.to_voxel_type(), VoxelType::RopeLadder);
+    }
+
+    #[test]
+    fn designate_ladder_determinism() {
+        let (anchor_a, orientation_a) = {
+            let sim = test_sim(42);
+            find_ladder_column(&sim, 3)
+        };
+        let (anchor_b, orientation_b) = {
+            let sim = test_sim(42);
+            find_ladder_column(&sim, 3)
+        };
+        assert_eq!(anchor_a, anchor_b);
+        assert_eq!(orientation_a, orientation_b);
+
+        let mut sim_a = test_sim(42);
+        let mut sim_b = test_sim(42);
+
+        let cmd_a = SimCommand {
+            player_id: sim_a.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor: anchor_a,
+                height: 3,
+                orientation: orientation_a,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        let cmd_b = SimCommand {
+            player_id: sim_b.player_id,
+            tick: 1,
+            action: SimAction::DesignateLadder {
+                anchor: anchor_b,
+                height: 3,
+                orientation: orientation_b,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        sim_a.step(&[cmd_a], 1);
+        sim_b.step(&[cmd_b], 1);
+
+        assert_eq!(sim_a.blueprints.len(), sim_b.blueprints.len());
     }
 }

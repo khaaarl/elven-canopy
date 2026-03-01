@@ -180,6 +180,26 @@ impl Default for StructuralConfig {
                 strength: 0.0,
             },
         );
+        // Ladders are ~2% the mass of a solid wood voxel. Very low stiffness
+        // so the weight-flow solver won't route structural load through them
+        // (they're flexible, not load-bearing). Moderate strength relative to
+        // their negligible weight so they easily support themselves.
+        materials.insert(
+            VoxelType::WoodLadder,
+            MaterialProperties {
+                density: 0.012,
+                stiffness: 0.5,
+                strength: 5.0,
+            },
+        );
+        materials.insert(
+            VoxelType::RopeLadder,
+            MaterialProperties {
+                density: 0.005,
+                stiffness: 0.2,
+                strength: 2.0,
+            },
+        );
 
         let mut face_props = BTreeMap::new();
         face_props.insert(
@@ -644,6 +664,8 @@ impl Default for GameConfig {
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
                 footprint: [1, 1, 1],
+                wood_ladder_tpv: Some(750),
+                rope_ladder_tpv: Some(900),
             },
         );
         species.insert(
@@ -659,6 +681,8 @@ impl Default for GameConfig {
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
                 footprint: [1, 1, 1],
+                wood_ladder_tpv: None,
+                rope_ladder_tpv: None,
             },
         );
         species.insert(
@@ -674,6 +698,8 @@ impl Default for GameConfig {
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
                 footprint: [1, 1, 1],
+                wood_ladder_tpv: None,
+                rope_ladder_tpv: None,
             },
         );
         species.insert(
@@ -689,6 +715,8 @@ impl Default for GameConfig {
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
                 footprint: [1, 1, 1],
+                wood_ladder_tpv: None,
+                rope_ladder_tpv: None,
             },
         );
         species.insert(
@@ -704,6 +732,8 @@ impl Default for GameConfig {
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
                 footprint: [2, 2, 2],
+                wood_ladder_tpv: None,
+                rope_ladder_tpv: None,
             },
         );
         species.insert(
@@ -719,6 +749,8 @@ impl Default for GameConfig {
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
                 footprint: [1, 1, 1],
+                wood_ladder_tpv: Some(600),
+                rope_ladder_tpv: Some(700),
             },
         );
         species.insert(
@@ -734,6 +766,8 @@ impl Default for GameConfig {
                 food_hunger_threshold_pct: 50,
                 food_restore_pct: 40,
                 footprint: [1, 1, 1],
+                wood_ladder_tpv: Some(500),
+                rope_ladder_tpv: Some(600),
             },
         );
 

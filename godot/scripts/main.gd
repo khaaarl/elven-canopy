@@ -35,7 +35,8 @@
 ##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
-## capybara_renderer.gd / blueprint_renderer.gd for rendering,
+## capybara_renderer.gd / blueprint_renderer.gd / ladder_renderer.gd for
+## rendering,
 ## action_toolbar.gd for the toolbar UI, placement_controller.gd for
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
@@ -77,6 +78,7 @@ var _placement_controller: Node3D
 var _extra_renderers: Array = []
 var _bp_renderer: Node3D
 var _bldg_renderer: Node3D
+var _ladder_renderer: Node3D
 var _lobby_overlay: ColorRect
 ## Fractional seconds of unprocessed sim time. Accumulates each frame,
 ## converted to ticks by dividing by tick_duration_ms / 1000.
@@ -346,6 +348,15 @@ func _setup_common(bridge: SimBridge) -> void:
 	_bldg_renderer.setup(bridge)
 	_construction_controller.blueprint_placed.connect(_bldg_renderer.refresh)
 
+	# Set up ladder renderer.
+	var ladder_renderer_script = load("res://scripts/ladder_renderer.gd")
+	_ladder_renderer = Node3D.new()
+	_ladder_renderer.set_script(ladder_renderer_script)
+	_ladder_renderer.name = "LadderRenderer"
+	add_child(_ladder_renderer)
+	_ladder_renderer.setup(bridge)
+	_construction_controller.blueprint_placed.connect(_ladder_renderer.refresh)
+
 	# Set up creature info panel.
 	var panel_script = load("res://scripts/creature_info_panel.gd")
 	_panel = PanelContainer.new()
@@ -563,6 +574,8 @@ func _process(delta: float) -> void:
 		_bp_renderer.refresh()
 	if _bldg_renderer:
 		_bldg_renderer.refresh()
+	if _ladder_renderer:
+		_ladder_renderer.refresh()
 
 	# Update follow target each frame so the camera tracks creature movement.
 	if _camera_pivot and _camera_pivot.is_following():

@@ -78,7 +78,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-variety        Food storage, cooking, magical brewing
 [ ] F-furnishing           Building geometry + purpose furnishing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
-[ ] F-ladders              Rope/wood ladders as cheap connectors
 [ ] F-lang-crate           Shared Vaelith language crate
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-logistics            Spatial resource flow (Kanban-style)
@@ -104,7 +103,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-root-network         Root network expansion and diplomacy
+[ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-seasons              Seasonal visual and gameplay effects
+[ ] F-select-struct        Selectable structures with interaction UI
 [ ] F-sim-speed            Simulation speed controls UI
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-sound-effects        Basic ambient and action sound effects
@@ -144,6 +145,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
+[x] F-ladders              Rope/wood ladders as cheap connectors
 [x] F-large-nav-tolerance  1-voxel height tolerance for large nav
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-main-menu            Main menu UI
@@ -271,10 +273,17 @@ tables, workshops). Generic enclosed spaces are built first, then furnished
 to give them purpose.
 
 #### F-ladders — Rope/wood ladders as cheap connectors
-**Status:** Todo · **Phase:** 3 · **Refs:** §11
+**Status:** Done · **Phase:** 3 · **Refs:** §11
 
-Cheaper, faster-to-build vertical connectors with slower traversal speed.
-Lower priority than stairs for construction but useful early game.
+Wood and rope ladders as lightweight vertical connectors. Non-solid voxels
+with per-face orientation (FaceData). Wood ladders require adjacent solid;
+rope ladders require top anchor. Species-specific traversal speeds. Full
+construction lifecycle (designate/build/cancel) with structural validation,
+tree overlap support, incremental nav graph updates, and oriented thin-panel
+rendering.
+
+**New files:** `ladder_renderer.gd`
+**Related:** F-rope-retract
 
 #### F-mass-conserve — Wood mass tracking and conservation
 **Status:** Todo · **Phase:** 2 · **Refs:** §11
@@ -283,6 +292,18 @@ Tree tracks stored wood material. Construction consumes wood mass. Growth
 produces it. Conservation of mass prevents infinite building.
 
 **Related:** F-mana-system, F-branch-growth
+
+#### F-rope-retract — Retractable rope ladders (furl/unfurl)
+**Status:** Todo · **Phase:** 3 · **Refs:** §11
+
+Rope ladders can be furled (retracted) and unfurled by elves as a task/job.
+Furled ladders are impassable and visually show their rolled-up state.
+Requires selectable structures so the player can click a rope ladder to see
+its furled/unfurled status and request a state change. The structure's
+selection UI should display any ongoing or queued furling/unfurling tasks.
+
+**Blocked by:** F-select-struct
+**Related:** F-ladders
 
 #### F-stairs — Stairs and ramps for vertical movement
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
@@ -1039,6 +1060,17 @@ for speed) to control the tick multiplier. Essential for both slow
 observation and fast-forwarding through idle periods.
 
 **Related:** F-event-loop
+
+#### F-select-struct — Selectable structures with interaction UI
+**Status:** Todo · **Phase:** 3
+
+Click-to-select completed structures (platforms, buildings, ladders, etc.)
+with an info panel showing structure type, dimensions, health/stress, and
+structure-specific actions. Extends the existing creature selection system
+to handle structure entities. Foundation for per-structure interaction like
+rope ladder furling, building furnishing, and structure demolition.
+
+**Related:** F-selection, F-structure-reg, F-rope-retract
 
 #### F-spawn-toolbar — Spawn toolbar and placement UI
 **Status:** Done · **Refs:** §26

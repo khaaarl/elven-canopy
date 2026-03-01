@@ -95,6 +95,10 @@ pub enum EdgeType {
     TrunkCircumference,
     /// Connecting ground-level nodes to trunk surface nodes.
     GroundToTrunk,
+    /// Climbing a wood ladder.
+    WoodLadderClimb,
+    /// Climbing a rope ladder.
+    RopeLadderClimb,
 }
 
 /// A directed edge in the navigation graph.
@@ -714,7 +718,7 @@ fn should_be_nav_node(
     if voxel.is_solid() {
         return false;
     }
-    if voxel == VoxelType::BuildingInterior {
+    if voxel == VoxelType::BuildingInterior || voxel.is_ladder() {
         return true;
     }
     // Air voxel: check face neighbors for solid or blocking building faces.
@@ -757,6 +761,11 @@ fn derive_surface_type(
     pos: VoxelCoord,
 ) -> VoxelType {
     let voxel = world.get(pos);
+
+    // Ladder voxels: surface type is the ladder type itself.
+    if voxel.is_ladder() {
+        return voxel;
+    }
 
     // BuildingInterior voxels derive surface from their own face data.
     if voxel == VoxelType::BuildingInterior
@@ -908,8 +917,18 @@ fn derive_edge_type(
                 EdgeType::BranchWalk
             }
             GrownStairs | GrownWall => EdgeType::TrunkClimb,
+            WoodLadder => EdgeType::WoodLadderClimb,
+            RopeLadder => EdgeType::RopeLadderClimb,
             Air => EdgeType::BranchWalk, // shouldn't happen
         };
+    }
+
+    // Mixed surface types — one side is ladder, other is not → BranchWalk
+    // (stepping on/off the ladder).
+    if matches!(from_surface, WoodLadder | RopeLadder)
+        || matches!(to_surface, WoodLadder | RopeLadder)
+    {
+        return EdgeType::BranchWalk;
     }
 
     // Mixed surface types.
@@ -2889,5 +2908,53 @@ mod tests {
             inc_edges, full_edges,
             "Incremental building update should match full rebuild edges",
         );
+    }
+
+    #[test]
+    fn ladder_edge_types_derived_correctly() {
+        use VoxelType::*;
+        let a = VoxelCoord::new(0, 0, 0);
+        let b = VoxelCoord::new(0, 1, 0);
+
+        // Same ladder type → corresponding ladder climb.
+        assert_eq!(
+            derive_edge_type(WoodLadder, WoodLadder, a, b),
+            EdgeType::WoodLadderClimb
+        );
+        assert_eq!(
+            derive_edge_type(RopeLadder, RopeLadder, a, b),
+            EdgeType::RopeLadderClimb
+        );
+
+        // Mixed ladder/non-ladder → BranchWalk (stepping on/off).
+        assert_eq!(
+            derive_edge_type(WoodLadder, Trunk, a, b),
+            EdgeType::BranchWalk
+        );
+        assert_eq!(
+            derive_edge_type(GrownPlatform, RopeLadder, a, b),
+            EdgeType::BranchWalk
+        );
+
+        // Mixed ladder types → BranchWalk (one is ladder, other is different ladder).
+        assert_eq!(
+            derive_edge_type(WoodLadder, RopeLadder, a, b),
+            EdgeType::BranchWalk
+        );
+    }
+
+    #[test]
+    fn ladder_surface_type_derived_correctly() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let faces = no_faces();
+        // Place a WoodLadder voxel with a solid neighbor below (floor) so it
+        // qualifies as a nav node.
+        let floor = VoxelCoord::new(5, 0, 5);
+        let ladder = VoxelCoord::new(5, 1, 5);
+        world.set(floor, VoxelType::ForestFloor);
+        world.set(ladder, VoxelType::WoodLadder);
+
+        let surface = derive_surface_type(&world, &faces, ladder);
+        assert_eq!(surface, VoxelType::WoodLadder);
     }
 }

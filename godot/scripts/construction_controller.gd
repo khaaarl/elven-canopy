@@ -1,30 +1,34 @@
-## Construction mode controller with adjustable-size platform and building placement.
+## Construction mode controller with platform, building, and ladder placement.
 ##
 ## Manages the construction mode lifecycle: toggling on/off, showing a
 ## right-side panel with build options, enabling voxel-snap on the orbital
 ## camera, and handling multi-voxel rectangular blueprint placement for
-## platforms (solid voxels) and buildings (paper-thin walls with per-face
-## restrictions).
+## platforms (solid voxels), buildings (paper-thin walls with per-face
+## restrictions), and ladders (vertical thin-panel climbers).
 ##
 ## State machine:
 ##   _active=false                  → INACTIVE (panel hidden, no ghost)
 ##   _active=true,  _placing=false  → ACTIVE   (panel shown, no ghost)
 ##   _active=true,  _placing=true   → PLACING  (panel shown, ghost visible)
 ##
-## Two build modes:
+## Three build modes:
 ##   "platform" — flat rectangular platform (Width x Depth, 1 voxel high).
 ##     Validation: all air + at least one face-adjacent solid.
 ##   "building" — enclosed room (Width x Depth x Height, min 3x3x1).
 ##     Foundation row is solid, interior has BuildingInterior voxels with
 ##     per-face restrictions (windows, door, ceiling, floor).
 ##     Validation: solid foundation + air interior.
+##   "ladder" — vertical column of thin panels (Height x 1, oriented).
+##     Wood ladders must be adjacent to solid; rope ladders hang from top.
+##     Orientation selectable via panel button.
+##     Validation: air/convertible column + anchoring check.
 ##
-## In PLACING mode, a translucent ghost rectangle follows the camera's focus
-## voxel (centered). Width/Depth dimension controls (with +/- buttons) let
-## the player size the rectangle. For buildings, a Height control is also
-## shown. The ghost is blue when valid and red when invalid. The Construct
-## button (or Enter/left-click) confirms placement; ESC/right-click cancels
-## back to ACTIVE mode and resets dimensions.
+## In PLACING mode, a translucent ghost follows the camera's focus voxel.
+## For platforms/buildings it's a rectangle; for ladders it's a thin panel
+## column. Dimension controls and mode-specific options (orientation, type)
+## are shown. The ghost is blue when valid and red when invalid. The
+## Construct button (or Enter/left-click) confirms placement; ESC/right-click
+## cancels back to ACTIVE mode and resets dimensions.
 ##
 ## Input handling: ESC exits the current sub-mode first (PLACING → ACTIVE),
 ## then exits construction mode entirely (ACTIVE → INACTIVE). This sits
@@ -34,9 +38,11 @@
 ## See also: action_toolbar.gd which emits the "Build" action,
 ## orbital_camera.gd which provides set_voxel_snap() / get_focus_voxel(),
 ## main.gd which wires this controller into the scene,
-## blueprint_renderer.gd for rendering designated blueprints,
+## blueprint_renderer.gd for rendering designated blueprints and ladder ghosts,
 ## building_renderer.gd for rendering building faces (walls/windows/doors),
-## sim_bridge.rs for designate_build_rect() and designate_building(),
+## ladder_renderer.gd for rendering completed ladder panels,
+## sim_bridge.rs for designate_build_rect(), designate_building(),
+## designate_ladder(), and validate_ladder_preview(),
 ## placement_controller.gd for the ESC precedence pattern.
 
 extends Node
@@ -44,6 +50,25 @@ extends Node
 signal construction_mode_entered
 signal construction_mode_exited
 signal blueprint_placed
+
+const FACE_INSET := 0.005
+
+## Offset vectors indexed by face direction (0=PosX..5=NegZ).
+const DIRECTION_OFFSETS: Array[Vector3] = [
+	Vector3.RIGHT,  # 0 PosX
+	Vector3.LEFT,  # 1 NegX
+	Vector3.UP,  # 2 PosY
+	Vector3.DOWN,  # 3 NegY
+	Vector3.BACK,  # 4 PosZ
+	Vector3.FORWARD,  # 5 NegZ
+]
+
+## Valid horizontal face directions for ladder orientation, cycled by rotate button.
+## Order: East(+X) → South(+Z) → West(-X) → North(-Z).
+const LADDER_ORIENTATIONS: Array[int] = [0, 4, 1, 5]
+
+## Human-readable names for ladder orientations, indexed by face direction.
+const ORIENTATION_NAMES = {0: "East (+X)", 1: "West (-X)", 4: "South (+Z)", 5: "North (-Z)"}
 
 var _active: bool = false
 var _placing: bool = false
@@ -63,22 +88,37 @@ var _last_preview_voxel: Vector3i = Vector3i(999999, 999999, 999999)
 var _last_preview_width: int = -1
 var _last_preview_depth: int = -1
 var _last_preview_height: int = -1
+var _last_preview_orientation: int = -1
+var _last_preview_kind: int = -1
 
-## Current build mode: "platform" or "building".
+## Current build mode: "platform", "building", or "ladder".
 var _build_mode: String = "platform"
 
 ## Platform/building dimensions. Width and Depth range depends on mode:
-## platform [1, 10], building [3, 10]. Height is building-only [1, 5].
+## platform [1, 10], building [3, 10]. Height is building/ladder [1, 5/10].
 var _width: int = 1
 var _depth: int = 1
 var _height: int = 1
 
+## Ladder-specific state.
+var _ladder_orientation: int = 0  # Face direction index (0=PosX, 1=NegX, 4=PosZ, 5=NegZ).
+var _ladder_kind: int = 0  # 0=Wood, 1=Rope.
+
+## Pre-computed face rotations for ladder ghost orientation.
+var _face_rotations: Array[Basis] = []
+
 ## UI references for dimension controls (created in _build_panel).
 var _placing_controls: VBoxContainer
+var _width_row: HBoxContainer
+var _depth_row: HBoxContainer
 var _width_label: Label
 var _depth_label: Label
 var _height_row: HBoxContainer
 var _height_label: Label
+var _orientation_row: HBoxContainer
+var _orientation_label: Label
+var _kind_row: HBoxContainer
+var _kind_label: Label
 var _construct_btn: Button
 
 ## Temporary label for build validation messages (warnings / block reasons).
@@ -105,8 +145,18 @@ func connect_toolbar(toolbar: Node) -> void:
 
 
 func _ready() -> void:
+	_build_rotations()
 	_build_panel()
 	_build_ghost()
+
+
+func _build_rotations() -> void:
+	_face_rotations.append(Basis(Vector3.UP, deg_to_rad(90)))  # PosX
+	_face_rotations.append(Basis(Vector3.UP, deg_to_rad(-90)))  # NegX
+	_face_rotations.append(Basis(Vector3.RIGHT, deg_to_rad(-90)))  # PosY
+	_face_rotations.append(Basis(Vector3.RIGHT, deg_to_rad(90)))  # NegY
+	_face_rotations.append(Basis(Vector3.UP, deg_to_rad(180)))  # PosZ
+	_face_rotations.append(Basis.IDENTITY)  # NegZ
 
 
 func _build_panel() -> void:
@@ -165,6 +215,12 @@ func _build_panel() -> void:
 	building_btn.pressed.connect(_enter_placing_building)
 	vbox.add_child(building_btn)
 
+	# Ladder build button.
+	var ladder_btn := Button.new()
+	ladder_btn.text = "Ladder [L]"
+	ladder_btn.pressed.connect(_enter_placing_ladder)
+	vbox.add_child(ladder_btn)
+
 	# Placing controls (dimension spinners + Construct button).
 	# Hidden by default, shown when entering PLACING mode.
 	_placing_controls = VBoxContainer.new()
@@ -173,7 +229,8 @@ func _build_panel() -> void:
 	vbox.add_child(_placing_controls)
 
 	# Width row: Label "Width:" + [-] + value label + [+]
-	var width_row := HBoxContainer.new()
+	_width_row = HBoxContainer.new()
+	var width_row := _width_row
 	width_row.add_theme_constant_override("separation", 4)
 	_placing_controls.add_child(width_row)
 
@@ -201,7 +258,8 @@ func _build_panel() -> void:
 	width_row.add_child(width_plus)
 
 	# Depth row: Label "Depth:" + [-] + value label + [+]
-	var depth_row := HBoxContainer.new()
+	_depth_row = HBoxContainer.new()
+	var depth_row := _depth_row
 	depth_row.add_theme_constant_override("separation", 4)
 	_placing_controls.add_child(depth_row)
 
@@ -256,6 +314,56 @@ func _build_panel() -> void:
 	height_plus.custom_minimum_size = Vector2(30, 0)
 	height_plus.pressed.connect(_height_increase)
 	_height_row.add_child(height_plus)
+
+	# Orientation row (ladder mode only): "Face:" + label + [Rotate R] button.
+	_orientation_row = HBoxContainer.new()
+	_orientation_row.add_theme_constant_override("separation", 4)
+	_orientation_row.visible = false
+	_placing_controls.add_child(_orientation_row)
+
+	var orient_text := Label.new()
+	orient_text.text = "Face:"
+	orient_text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_orientation_row.add_child(orient_text)
+
+	_orientation_label = Label.new()
+	_orientation_label.text = ORIENTATION_NAMES.get(0, "East (+X)")
+	_orientation_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_orientation_label.custom_minimum_size = Vector2(90, 0)
+	_orientation_row.add_child(_orientation_label)
+
+	var rotate_btn := Button.new()
+	rotate_btn.text = "R"
+	rotate_btn.custom_minimum_size = Vector2(30, 0)
+	rotate_btn.pressed.connect(_rotate_ladder)
+	_orientation_row.add_child(rotate_btn)
+
+	# Kind row (ladder mode only): "Type:" + [Wood] + [Rope] toggle buttons.
+	_kind_row = HBoxContainer.new()
+	_kind_row.add_theme_constant_override("separation", 4)
+	_kind_row.visible = false
+	_placing_controls.add_child(_kind_row)
+
+	var kind_text := Label.new()
+	kind_text.text = "Type:"
+	kind_text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_kind_row.add_child(kind_text)
+
+	var wood_btn := Button.new()
+	wood_btn.text = "Wood"
+	wood_btn.pressed.connect(_set_ladder_wood)
+	_kind_row.add_child(wood_btn)
+
+	var rope_btn := Button.new()
+	rope_btn.text = "Rope"
+	rope_btn.pressed.connect(_set_ladder_rope)
+	_kind_row.add_child(rope_btn)
+
+	_kind_label = Label.new()
+	_kind_label.text = "[Wood]"
+	_kind_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_kind_label.custom_minimum_size = Vector2(50, 0)
+	_kind_row.add_child(_kind_label)
 
 	# Construct button.
 	_construct_btn = Button.new()
@@ -326,18 +434,41 @@ func _enter_placing_building() -> void:
 	_enter_placing("building")
 
 
+func _enter_placing_ladder() -> void:
+	_enter_placing("ladder")
+
+
 func _enter_placing(mode: String) -> void:
 	_build_mode = mode
 	_placing = true
 	_ghost.visible = true
 	_placing_controls.visible = true
 	if _build_mode == "building":
+		_width_row.visible = true
+		_depth_row.visible = true
 		_height_row.visible = true
+		_orientation_row.visible = false
+		_kind_row.visible = false
 		_set_width(3)
 		_set_depth(3)
 		_set_height(1)
+	elif _build_mode == "ladder":
+		_width_row.visible = false
+		_depth_row.visible = false
+		_height_row.visible = true
+		_orientation_row.visible = true
+		_kind_row.visible = true
+		_set_height(1)
+		_ladder_orientation = 0
+		_ladder_kind = 0
+		_orientation_label.text = ORIENTATION_NAMES.get(0, "East (+X)")
+		_kind_label.text = "[Wood]"
 	else:
+		_width_row.visible = true
+		_depth_row.visible = true
 		_height_row.visible = false
+		_orientation_row.visible = false
+		_kind_row.visible = false
 		_set_width(1)
 		_set_depth(1)
 	_update_ghost_size()
@@ -347,7 +478,11 @@ func _exit_placing() -> void:
 	_placing = false
 	_ghost.visible = false
 	_placing_controls.visible = false
+	_width_row.visible = true
+	_depth_row.visible = true
 	_height_row.visible = false
+	_orientation_row.visible = false
+	_kind_row.visible = false
 	_message_label.visible = false
 	_message_timer = 0.0
 	_width = 1
@@ -356,11 +491,15 @@ func _exit_placing() -> void:
 	_width_label.text = "1"
 	_depth_label.text = "1"
 	_height_label.text = "1"
+	_ladder_orientation = 0
+	_ladder_kind = 0
 	_validation_tier = "Ok"
 	_last_preview_voxel = Vector3i(999999, 999999, 999999)
 	_last_preview_width = -1
 	_last_preview_depth = -1
 	_last_preview_height = -1
+	_last_preview_orientation = -1
+	_last_preview_kind = -1
 
 
 func _width_decrease() -> void:
@@ -402,18 +541,47 @@ func _height_increase() -> void:
 
 
 func _set_height(value: int) -> void:
-	_height = clampi(value, 1, 5)
+	var max_h := 10 if _build_mode == "ladder" else 5
+	_height = clampi(value, 1, max_h)
 	_height_label.text = str(_height)
 	_update_ghost_size()
 
 
+func _rotate_ladder() -> void:
+	var idx := LADDER_ORIENTATIONS.find(_ladder_orientation)
+	idx = (idx + 1) % LADDER_ORIENTATIONS.size()
+	_ladder_orientation = LADDER_ORIENTATIONS[idx]
+	_orientation_label.text = ORIENTATION_NAMES.get(_ladder_orientation, "?")
+	_update_ghost_size()
+
+
+func _set_ladder_wood() -> void:
+	_ladder_kind = 0
+	_kind_label.text = "[Wood]"
+	# Invalidate preview cache so validation re-runs.
+	_last_preview_kind = -1
+
+
+func _set_ladder_rope() -> void:
+	_ladder_kind = 1
+	_kind_label.text = "[Rope]"
+	_last_preview_kind = -1
+
+
 func _update_ghost_size() -> void:
 	if _ghost and _ghost.mesh:
-		if _build_mode == "building":
+		if _build_mode == "ladder":
+			# Ladder ghost: thin panel (0.9 wide, height tall, 0.05 thick).
+			# The thin axis (Z) gets rotated to face the selected orientation.
+			_ghost.mesh.size = Vector3(0.9, _height, 0.05)
+			_ghost.basis = _face_rotations[_ladder_orientation]
+		elif _build_mode == "building":
 			# Building ghost: width x (height + 1 for foundation) x depth.
 			_ghost.mesh.size = Vector3(_width, _height + 1, _depth)
+			_ghost.basis = Basis.IDENTITY
 		else:
 			_ghost.mesh.size = Vector3(_width, 1.0, _depth)
+			_ghost.basis = Basis.IDENTITY
 
 
 ## Compute the min-corner of the rectangle from the focus voxel (center).
@@ -438,9 +606,17 @@ func _process(_delta: float) -> void:
 	var voxel: Vector3 = _camera_pivot.get_focus_voxel()
 	_focus_voxel = Vector3i(int(voxel.x), int(voxel.y), int(voxel.z))
 
-	# Compute min-corner and position the ghost mesh centered on the rect.
+	# Position the ghost mesh based on mode.
 	var min_corner := _get_min_corner()
-	if _build_mode == "building":
+	if _build_mode == "ladder":
+		# Ladder ghost: thin panel column at focus voxel, offset to face.
+		var face_offset := DIRECTION_OFFSETS[_ladder_orientation] * (0.5 - FACE_INSET)
+		_ghost.global_position = Vector3(
+			_focus_voxel.x + 0.5 + face_offset.x,
+			_focus_voxel.y + _height / 2.0,
+			_focus_voxel.z + 0.5 + face_offset.z,
+		)
+	elif _build_mode == "building":
 		# Building ghost includes foundation row below + height rooms above.
 		var ghost_h := _height + 1
 		_ghost.global_position = Vector3(
@@ -455,21 +631,34 @@ func _process(_delta: float) -> void:
 			min_corner.z + _depth / 2.0,
 		)
 
-	# Only re-validate when the focus voxel or dimensions change.
+	# Only re-validate when relevant inputs change.
 	var needs_revalidate := (
 		min_corner != _last_preview_voxel
 		or _width != _last_preview_width
 		or _depth != _last_preview_depth
 		or _height != _last_preview_height
+		or _ladder_orientation != _last_preview_orientation
+		or _ladder_kind != _last_preview_kind
 	)
 	if needs_revalidate:
 		_last_preview_voxel = min_corner
 		_last_preview_width = _width
 		_last_preview_depth = _depth
 		_last_preview_height = _height
+		_last_preview_orientation = _ladder_orientation
+		_last_preview_kind = _ladder_kind
 
 		var result: Dictionary
-		if _build_mode == "building":
+		if _build_mode == "ladder":
+			result = _bridge.validate_ladder_preview(
+				_focus_voxel.x,
+				_focus_voxel.y,
+				_focus_voxel.z,
+				_height,
+				_ladder_orientation,
+				_ladder_kind
+			)
+		elif _build_mode == "building":
 			result = _bridge.validate_building_preview(
 				min_corner.x, _focus_voxel.y, min_corner.z, _width, _depth, _height
 			)
@@ -514,32 +703,29 @@ func _unhandled_input(event: InputEvent) -> void:
 		if not key.pressed:
 			return
 
-		# P shortcut to enter platform placing mode (only when active but not placing).
-		if key.keycode == KEY_P and not _placing:
-			_enter_placing_platform()
-			get_viewport().set_input_as_handled()
-			return
-
-		# G shortcut to enter building placing mode (only when active but not placing).
-		if key.keycode == KEY_G and not _placing:
-			_enter_placing_building()
-			get_viewport().set_input_as_handled()
-			return
-
-		# ESC: if placing, exit placing; if just active, exit construction.
-		if key.keycode == KEY_ESCAPE:
-			if _placing:
-				_exit_placing()
-			else:
+		# Dispatch based on placing state.
+		if not _placing:
+			# Mode-entry shortcuts: P, G, L, ESC.
+			if key.keycode == KEY_P:
+				_enter_placing_platform()
+				get_viewport().set_input_as_handled()
+			elif key.keycode == KEY_G:
+				_enter_placing_building()
+				get_viewport().set_input_as_handled()
+			elif key.keycode == KEY_L:
+				_enter_placing_ladder()
+				get_viewport().set_input_as_handled()
+			elif key.keycode == KEY_ESCAPE:
 				_deactivate()
-			get_viewport().set_input_as_handled()
-			return
-
-		# Enter to confirm placement.
-		if key.keycode == KEY_ENTER and _placing and _focus_valid:
-			_confirm_placement()
-			get_viewport().set_input_as_handled()
-			return
+				get_viewport().set_input_as_handled()
+		else:
+			# While placing: ESC, Enter.
+			if key.keycode == KEY_ESCAPE:
+				_exit_placing()
+				get_viewport().set_input_as_handled()
+			elif key.keycode == KEY_ENTER and _focus_valid:
+				_confirm_placement()
+				get_viewport().set_input_as_handled()
 
 	# Left-click to confirm, right-click to cancel (while placing).
 	if _placing and event is InputEventMouseButton:
@@ -556,7 +742,16 @@ func _unhandled_input(event: InputEvent) -> void:
 func _confirm_placement() -> void:
 	var min_corner := _get_min_corner()
 	var msg: String
-	if _build_mode == "building":
+	if _build_mode == "ladder":
+		msg = _bridge.designate_ladder(
+			_focus_voxel.x,
+			_focus_voxel.y,
+			_focus_voxel.z,
+			_height,
+			_ladder_orientation,
+			_ladder_kind
+		)
+	elif _build_mode == "building":
 		msg = _bridge.designate_building(
 			min_corner.x, _focus_voxel.y, min_corner.z, _width, _depth, _height
 		)

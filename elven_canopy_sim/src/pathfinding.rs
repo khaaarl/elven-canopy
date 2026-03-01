@@ -76,6 +76,8 @@ pub fn astar(
     goal: NavNodeId,
     walk_tpv: u64,
     climb_tpv: Option<u64>,
+    wood_ladder_tpv: Option<u64>,
+    rope_ladder_tpv: Option<u64>,
 ) -> Option<PathResult> {
     let n = graph.node_slot_count();
     if n == 0 {
@@ -136,6 +138,14 @@ pub fn astar(
                     Some(c) => c as f32,
                     None => continue, // species cannot climb
                 },
+                EdgeType::WoodLadderClimb => match wood_ladder_tpv {
+                    Some(c) => c as f32,
+                    None => continue,
+                },
+                EdgeType::RopeLadderClimb => match rope_ladder_tpv {
+                    Some(c) => c as f32,
+                    None => continue,
+                },
                 _ => walk_tpv_f,
             };
             let tentative_g = current_g + edge.distance * tpv;
@@ -157,12 +167,15 @@ pub fn astar(
 
 /// Like `astar`, but only traverses edges whose `edge_type` is in
 /// `allowed_edges`. Returns `None` if no path exists using only those types.
+#[allow(clippy::too_many_arguments)]
 pub fn astar_filtered(
     graph: &NavGraph,
     start: NavNodeId,
     goal: NavNodeId,
     walk_tpv: u64,
     climb_tpv: Option<u64>,
+    wood_ladder_tpv: Option<u64>,
+    rope_ladder_tpv: Option<u64>,
     allowed_edges: &[EdgeType],
 ) -> Option<PathResult> {
     let n = graph.node_slot_count();
@@ -226,6 +239,14 @@ pub fn astar_filtered(
                     Some(c) => c as f32,
                     None => continue,
                 },
+                EdgeType::WoodLadderClimb => match wood_ladder_tpv {
+                    Some(c) => c as f32,
+                    None => continue,
+                },
+                EdgeType::RopeLadderClimb => match rope_ladder_tpv {
+                    Some(c) => c as f32,
+                    None => continue,
+                },
                 _ => walk_tpv_f,
             };
             let tentative_g = current_g + edge.distance * tpv;
@@ -255,12 +276,15 @@ pub fn astar_filtered(
 /// (e.g. capybaras restricted to `ForestFloor`). If `None`, all edges allowed.
 ///
 /// Returns `None` if no target is reachable.
+#[allow(clippy::too_many_arguments)]
 pub fn dijkstra_nearest(
     graph: &NavGraph,
     start: NavNodeId,
     targets: &[NavNodeId],
     walk_tpv: u64,
     climb_tpv: Option<u64>,
+    wood_ladder_tpv: Option<u64>,
+    rope_ladder_tpv: Option<u64>,
     allowed_edges: Option<&[EdgeType]>,
 ) -> Option<NavNodeId> {
     let n = graph.node_slot_count();
@@ -329,6 +353,14 @@ pub fn dijkstra_nearest(
                 EdgeType::TrunkClimb | EdgeType::GroundToTrunk => match climb_tpv {
                     Some(c) => c as f32,
                     None => continue, // species cannot climb
+                },
+                EdgeType::WoodLadderClimb => match wood_ladder_tpv {
+                    Some(c) => c as f32,
+                    None => continue,
+                },
+                EdgeType::RopeLadderClimb => match rope_ladder_tpv {
+                    Some(c) => c as f32,
+                    None => continue,
                 },
                 _ => walk_tpv_f,
             };
@@ -404,7 +436,7 @@ mod tests {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         // Path from a to a.
-        let result = astar(&graph, a, a, 1, Some(2));
+        let result = astar(&graph, a, a, 1, Some(2), None, None);
         assert!(result.is_some());
         let path = result.unwrap();
         assert_eq!(path.nodes, vec![a]);
@@ -423,7 +455,7 @@ mod tests {
         graph.add_edge(b, c, EdgeType::ForestFloor, 5.0);
 
         // walk_tpv=1 → cost = distance * 1 = distance.
-        let result = astar(&graph, a, c, 1, Some(2));
+        let result = astar(&graph, a, c, 1, Some(2), None, None);
         assert!(result.is_some());
         let path = result.unwrap();
         assert_eq!(path.nodes, vec![a, b, c]);
@@ -443,7 +475,7 @@ mod tests {
         graph.add_edge(a, b, EdgeType::ForestFloor, 3.0);
         graph.add_edge(b, c, EdgeType::ForestFloor, 3.0);
 
-        let result = astar(&graph, a, c, 1, Some(2)).unwrap();
+        let result = astar(&graph, a, c, 1, Some(2), None, None).unwrap();
         assert_eq!(result.nodes, vec![a, b, c]);
         assert_eq!(result.total_cost, 6.0);
     }
@@ -454,7 +486,7 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // No edges — no path.
-        let result = astar(&graph, a, b, 1, Some(2));
+        let result = astar(&graph, a, b, 1, Some(2), None, None);
         assert!(result.is_none());
     }
 
@@ -469,7 +501,16 @@ mod tests {
         graph.add_edge(b, c, EdgeType::TrunkClimb, 5.0);
 
         // Only allow ForestFloor — path a->c should fail (can't cross TrunkClimb).
-        let result = astar_filtered(&graph, a, c, 1, Some(2), &[EdgeType::ForestFloor]);
+        let result = astar_filtered(
+            &graph,
+            a,
+            c,
+            1,
+            Some(2),
+            None,
+            None,
+            &[EdgeType::ForestFloor],
+        );
         assert!(result.is_none());
 
         // Allow both — should succeed.
@@ -479,6 +520,8 @@ mod tests {
             c,
             1,
             Some(2),
+            None,
+            None,
             &[EdgeType::ForestFloor, EdgeType::TrunkClimb],
         );
         assert!(result.is_some());
@@ -489,7 +532,16 @@ mod tests {
     fn astar_filtered_same_start_and_goal() {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
-        let result = astar_filtered(&graph, a, a, 1, Some(2), &[EdgeType::ForestFloor]);
+        let result = astar_filtered(
+            &graph,
+            a,
+            a,
+            1,
+            Some(2),
+            None,
+            None,
+            &[EdgeType::ForestFloor],
+        );
         assert!(result.is_some());
         assert_eq!(result.unwrap().total_cost, 0.0);
     }
@@ -506,8 +558,8 @@ mod tests {
         graph.add_edge(a, d, EdgeType::TrunkClimb, 4.0);
         graph.add_edge(d, c, EdgeType::TrunkClimb, 4.0);
 
-        let r1 = astar(&graph, a, c, 500, Some(1250)).unwrap();
-        let r2 = astar(&graph, a, c, 500, Some(1250)).unwrap();
+        let r1 = astar(&graph, a, c, 500, Some(1250), None, None).unwrap();
+        let r2 = astar(&graph, a, c, 500, Some(1250), None, None).unwrap();
         assert_eq!(r1.nodes, r2.nodes);
         assert_eq!(r1.total_cost, r2.total_cost);
     }
@@ -527,7 +579,7 @@ mod tests {
         graph.add_edge(b, c, EdgeType::ForestFloor, 7.0);
 
         // Both b and c are targets — b should win (closer by travel cost).
-        let result = dijkstra_nearest(&graph, a, &[b, c], 1, Some(1), None);
+        let result = dijkstra_nearest(&graph, a, &[b, c], 1, Some(1), None, None, None);
         assert_eq!(result, Some(b));
     }
 
@@ -542,11 +594,29 @@ mod tests {
         graph.add_edge(b, c, EdgeType::TrunkClimb, 3.0);
 
         // Only ForestFloor allowed — c is unreachable.
-        let result = dijkstra_nearest(&graph, a, &[c], 1, Some(1), Some(&[EdgeType::ForestFloor]));
+        let result = dijkstra_nearest(
+            &graph,
+            a,
+            &[c],
+            1,
+            Some(1),
+            None,
+            None,
+            Some(&[EdgeType::ForestFloor]),
+        );
         assert_eq!(result, None);
 
         // b is reachable via ForestFloor.
-        let result = dijkstra_nearest(&graph, a, &[b], 1, Some(1), Some(&[EdgeType::ForestFloor]));
+        let result = dijkstra_nearest(
+            &graph,
+            a,
+            &[b],
+            1,
+            Some(1),
+            None,
+            None,
+            Some(&[EdgeType::ForestFloor]),
+        );
         assert_eq!(result, Some(b));
     }
 
@@ -564,7 +634,7 @@ mod tests {
         // walk_tpv=500, climb_tpv=1250.
         // Cost to b: 5 * 500 = 2500. Cost to c: 5 * 1250 = 6250.
         // b should win.
-        let result = dijkstra_nearest(&graph, a, &[b, c], 500, Some(1250), None);
+        let result = dijkstra_nearest(&graph, a, &[b, c], 500, Some(1250), None, None, None);
         assert_eq!(result, Some(b));
     }
 
@@ -572,7 +642,7 @@ mod tests {
     fn dijkstra_nearest_start_is_target() {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
-        let result = dijkstra_nearest(&graph, a, &[a], 1, Some(1), None);
+        let result = dijkstra_nearest(&graph, a, &[a], 1, Some(1), None, None, None);
         assert_eq!(result, Some(a));
     }
 
@@ -580,7 +650,7 @@ mod tests {
     fn dijkstra_nearest_no_targets() {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
-        let result = dijkstra_nearest(&graph, a, &[], 1, Some(1), None);
+        let result = dijkstra_nearest(&graph, a, &[], 1, Some(1), None, None, None);
         assert_eq!(result, None);
     }
 
@@ -590,7 +660,7 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // No edges — b is unreachable.
-        let result = dijkstra_nearest(&graph, a, &[b], 1, Some(1), None);
+        let result = dijkstra_nearest(&graph, a, &[b], 1, Some(1), None, None, None);
         assert_eq!(result, None);
     }
 }

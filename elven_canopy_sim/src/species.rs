@@ -89,6 +89,16 @@ pub struct SpeciesData {
     /// volume must be clear and all ground cells below must be solid.
     #[serde(default = "default_footprint")]
     pub footprint: [u8; 3],
+
+    /// Ticks per 1.0 units on WoodLadderClimb edges. `None` means the species
+    /// cannot use wood ladders (e.g. capybara, elephant).
+    #[serde(default)]
+    pub wood_ladder_tpv: Option<u64>,
+
+    /// Ticks per 1.0 units on RopeLadderClimb edges. `None` means the species
+    /// cannot use rope ladders.
+    #[serde(default)]
+    pub rope_ladder_tpv: Option<u64>,
 }
 
 fn default_footprint() -> [u8; 3] {

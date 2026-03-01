@@ -1,12 +1,15 @@
 ## Renders blueprint and construction voxels.
 ##
-## Two visual layers:
+## Three visual layers:
 ## - **Ghost cubes** (translucent light-blue, no_depth_test): unplaced blueprint
 ##   voxels — the player's designated intent that hasn't been built yet.
+## - **Ladder ghost panels** (translucent light-blue, thin oriented panels):
+##   unbuilt ladder blueprint voxels, shown as thin panels on the correct face
+##   rather than full cubes.
 ## - **Platform cubes** (solid brown): voxels that elves have already
-##   materialized through construction work. Excludes BuildingInterior
-##   voxels, which are rendered by building_renderer.gd as oriented face
-##   quads instead of solid cubes.
+##   materialized through construction work. Excludes BuildingInterior and
+##   ladder voxels, which are rendered by building_renderer.gd and
+##   ladder_renderer.gd respectively.
 ##
 ## Follows the same MultiMeshInstance3D pattern as tree_renderer.gd: reads
 ## voxel positions from SimBridge as flat PackedInt32Array of (x,y,z) triples
@@ -15,28 +18,44 @@
 ##
 ## The ghost material uses no_depth_test=true so blueprints are visible
 ## through solid geometry. The platform material is opaque like tree voxels.
-## Both MultiMeshes are rebuilt on each refresh() call. main.gd calls
+## All MultiMeshes are rebuilt on each refresh() call. main.gd calls
 ## refresh() every frame so materialized voxels appear as solid wood
 ## immediately.
 ##
-## See also: sim_bridge.rs for get_blueprint_voxels() and
-## get_platform_voxels(), blueprint.rs for the Blueprint data model,
+## See also: sim_bridge.rs for get_blueprint_voxels(),
+## get_platform_voxels(), and get_ladder_blueprint_data(),
+## blueprint.rs for the Blueprint data model,
 ## construction_controller.gd which emits blueprint_placed, tree_renderer.gd
-## for the MultiMesh pattern, main.gd which creates this node and calls
-## refresh().
+## for the MultiMesh pattern, ladder_renderer.gd for completed ladder
+## rendering, main.gd which creates this node and calls refresh().
 
 extends Node3D
+
+const FACE_INSET := 0.005
+
+## Offset vectors indexed by face direction (0=PosX..5=NegZ).
+const DIRECTION_OFFSETS: Array[Vector3] = [
+	Vector3.RIGHT,  # 0 PosX
+	Vector3.LEFT,  # 1 NegX
+	Vector3.UP,  # 2 PosY
+	Vector3.DOWN,  # 3 NegY
+	Vector3.BACK,  # 4 PosZ
+	Vector3.FORWARD,  # 5 NegZ
+]
 
 var _bridge: SimBridge
 var _ghost_instance: MultiMeshInstance3D
 var _platform_instance: MultiMeshInstance3D
+var _ladder_ghost_instance: MultiMeshInstance3D
 var _ghost_material: StandardMaterial3D
 var _platform_material: StandardMaterial3D
+var _face_rotations: Array[Basis] = []
 
 
 func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
 	_build_materials()
+	_build_rotations()
 	refresh()
 
 
@@ -53,9 +72,19 @@ func _build_materials() -> void:
 	_platform_material.albedo_color = Color(0.50, 0.35, 0.18)
 
 
+func _build_rotations() -> void:
+	_face_rotations.append(Basis(Vector3.UP, deg_to_rad(90)))  # PosX
+	_face_rotations.append(Basis(Vector3.UP, deg_to_rad(-90)))  # NegX
+	_face_rotations.append(Basis(Vector3.RIGHT, deg_to_rad(-90)))  # PosY
+	_face_rotations.append(Basis(Vector3.RIGHT, deg_to_rad(90)))  # NegY
+	_face_rotations.append(Basis(Vector3.UP, deg_to_rad(180)))  # PosZ
+	_face_rotations.append(Basis.IDENTITY)  # NegZ
+
+
 func refresh() -> void:
 	_refresh_ghosts()
 	_refresh_platforms()
+	_refresh_ladder_ghosts()
 
 
 func _refresh_ghosts() -> void:
@@ -110,3 +139,41 @@ func _build_multimesh(
 	instance.multimesh = multi_mesh
 	instance.name = node_name
 	return instance
+
+
+func _refresh_ladder_ghosts() -> void:
+	if _ladder_ghost_instance:
+		_ladder_ghost_instance.queue_free()
+		_ladder_ghost_instance = null
+
+	var data := _bridge.get_ladder_blueprint_data()
+	var count := data.size() / 5
+	if count == 0:
+		return
+
+	var box := BoxMesh.new()
+	box.size = Vector3(0.9, 0.9, 0.05)
+	box.material = _ghost_material
+
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = box
+	mm.instance_count = count
+
+	for i in count:
+		var idx := i * 5
+		var x := float(data[idx])
+		var y := float(data[idx + 1])
+		var z := float(data[idx + 2])
+		var dir_idx := data[idx + 3]
+
+		var rot: Basis = _face_rotations[dir_idx]
+		var center := Vector3(x + 0.5, y + 0.5, z + 0.5)
+		var offset := DIRECTION_OFFSETS[dir_idx] * (0.5 - FACE_INSET)
+		var xform := Transform3D(rot, center + offset)
+		mm.set_instance_transform(i, xform)
+
+	_ladder_ghost_instance = MultiMeshInstance3D.new()
+	_ladder_ghost_instance.multimesh = mm
+	_ladder_ghost_instance.name = "LadderGhostMultiMesh"
+	add_child(_ladder_ghost_instance)

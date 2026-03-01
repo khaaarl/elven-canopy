@@ -264,6 +264,13 @@ pub enum Priority {
     Urgent,
 }
 
+/// Subtype of ladder construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum LadderKind {
+    Wood,
+    Rope,
+}
+
 /// Types of structures that can be built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildType {
@@ -275,6 +282,10 @@ pub enum BuildType {
     /// A building with paper-thin walls. Produces `BuildingInterior` voxels
     /// with per-face restrictions stored in `SimState.face_data`.
     Building,
+    /// A wood ladder — anchored to any adjacent solid voxel along its face.
+    WoodLadder,
+    /// A rope ladder — hangs from the topmost anchor point.
+    RopeLadder,
 }
 
 impl BuildType {
@@ -286,7 +297,11 @@ impl BuildType {
     pub fn allows_tree_overlap(self) -> bool {
         matches!(
             self,
-            BuildType::Platform | BuildType::Bridge | BuildType::Stairs
+            BuildType::Platform
+                | BuildType::Bridge
+                | BuildType::Stairs
+                | BuildType::WoodLadder
+                | BuildType::RopeLadder
         )
     }
 
@@ -298,6 +313,8 @@ impl BuildType {
             BuildType::Stairs => VoxelType::GrownStairs,
             BuildType::Wall | BuildType::Enclosure => VoxelType::GrownWall,
             BuildType::Building => VoxelType::BuildingInterior,
+            BuildType::WoodLadder => VoxelType::WoodLadder,
+            BuildType::RopeLadder => VoxelType::RopeLadder,
         }
     }
 }
@@ -407,8 +424,8 @@ impl FaceType {
     }
 }
 
-/// Per-face data for a `BuildingInterior` voxel. Stores one `FaceType` per
-/// cardinal direction.
+/// Per-face data for `BuildingInterior` and ladder voxels. Stores one
+/// `FaceType` per cardinal direction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FaceData {
     /// Face types indexed by `FaceDirection::index()`.
@@ -461,6 +478,11 @@ pub enum VoxelType {
     /// per-face `FaceData` stored separately in `SimState.face_data`, not from
     /// the voxel type itself. This means `is_solid()` returns false.
     BuildingInterior,
+    /// A wood ladder voxel. Non-solid, with per-face restrictions in `face_data`
+    /// and orientation stored in `ladder_orientations`.
+    WoodLadder,
+    /// A rope ladder voxel. Non-solid, same face/orientation storage as WoodLadder.
+    RopeLadder,
 }
 
 /// Classification of a voxel for construction overlap with tree geometry.
@@ -481,10 +503,21 @@ pub enum OverlapClassification {
 }
 
 impl VoxelType {
-    /// Returns `true` for any voxel type that blocks occupancy (not `Air` or
-    /// `BuildingInterior`).
+    /// Returns `true` for any voxel type that blocks occupancy. Non-solid
+    /// types: `Air`, `BuildingInterior`, `WoodLadder`, `RopeLadder`.
     pub fn is_solid(self) -> bool {
-        !matches!(self, VoxelType::Air | VoxelType::BuildingInterior)
+        !matches!(
+            self,
+            VoxelType::Air
+                | VoxelType::BuildingInterior
+                | VoxelType::WoodLadder
+                | VoxelType::RopeLadder
+        )
+    }
+
+    /// Returns true if this voxel type is a ladder (wood or rope).
+    pub fn is_ladder(self) -> bool {
+        matches!(self, VoxelType::WoodLadder | VoxelType::RopeLadder)
     }
 
     /// Classify this voxel type for construction overlap with tree geometry.
@@ -501,9 +534,22 @@ impl VoxelType {
             | VoxelType::GrownWall
             | VoxelType::GrownStairs
             | VoxelType::Bridge
-            | VoxelType::BuildingInterior => OverlapClassification::Blocked,
+            | VoxelType::BuildingInterior
+            | VoxelType::WoodLadder
+            | VoxelType::RopeLadder => OverlapClassification::Blocked,
         }
     }
+}
+
+/// Compute the `FaceData` for a ladder voxel with the given orientation.
+///
+/// The orientation is the face the ladder panel is on (e.g., PosX means the
+/// ladder panel is on the +X face of the voxel). Only the ladder panel
+/// itself blocks movement; all other faces are open.
+pub fn ladder_face_data(orientation: FaceDirection) -> FaceData {
+    let mut fd = FaceData::default();
+    fd.set(orientation, FaceType::Wall);
+    fd
 }
 
 #[cfg(test)]
