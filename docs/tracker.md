@@ -79,6 +79,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-furnishing           Building geometry + purpose furnishing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-ladders              Rope/wood ladders as cheap connectors
+[ ] F-lang-crate           Shared Vaelith language crate
 [ ] F-large-pathfind       2x2 footprint nav grid
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-logistics            Spatial resource flow (Kanban-style)
@@ -97,6 +98,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-music-runtime        Integrate music generator into game
+[ ] F-music-use-lang       Migrate music crate to shared lang crate
 [ ] F-narrative-log        Events and narrative log
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
@@ -105,6 +107,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-seasons              Seasonal visual and gameplay effects
+[ ] F-shared-prng          Shared PRNG crate across all Rust crates
 [ ] F-sim-speed            Simulation speed controls UI
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-sound-effects        Basic ambient and action sound effects
@@ -712,10 +715,29 @@ gameplay loop.
 #### F-elf-names — Elf name generation from conlang rules
 **Status:** Todo · **Phase:** 6 · **Refs:** §20
 
-Generate elf names using Vaelith phonotactic rules. Names should sound
-consistent with the conlang and be pronounceable.
+Generate elf names using Vaelith phonotactic rules. Names are compounds of
+meaningful roots (e.g., *Thíraleth* = "star-tree"), genderless, with given
+name + surname structure. Names should sound consistent with the conlang and
+be deterministic given the same PRNG state. Adds a `name` field to the
+`Creature` struct, assigned at spawn time.
 
+**Blocked by:** F-lang-crate
 **Related:** F-vaelith-expand
+
+#### F-lang-crate — Shared Vaelith language crate
+**Status:** Todo · **Phase:** 6 · **Refs:** §20
+**Draft:** `docs/drafts/lang_crate.md`
+
+Create `elven_canopy_lang`, a pure-Rust crate providing the Vaelith language
+as a programmatic resource shared by the sim and music crates. Includes:
+data-driven lexicon (`data/vaelith_lexicon.json`) with part-of-speech, tones,
+vowel class, and name tags; core language types (`Tone`, `VowelClass`,
+`Syllable`, `LexEntry`) migrated from the music crate; phonotactic rules;
+and a deterministic name generator. See draft doc for full design including
+lexicon schema, crate structure, and what moves vs stays in the music crate.
+
+**Blocked by:** F-shared-prng
+**Blocks:** F-elf-names, F-music-use-lang, F-vaelith-expand
 
 #### F-music-gen — Palestrina-style music generator (standalone)
 **Status:** Done · **Phase:** 6 · **Refs:** §21
@@ -734,6 +756,19 @@ in response to game events (construction, celebrations, idle time). Requires
 audio output path (see F-audio-synth).
 
 **Blocked by:** F-audio-synth
+
+#### F-music-use-lang — Migrate music crate to shared lang crate
+**Status:** Todo · **Phase:** 6
+
+Migrate `elven_canopy_music` to depend on `elven_canopy_lang` for Vaelith
+types and lexicon data instead of maintaining its own hardcoded vocabulary.
+The music crate keeps its phrase-generation templates, brightness-biased
+selection, and SA text-swap logic, but delegates to the lang crate for
+vocabulary lookup, core types (`Tone`, `VowelClass`, `Syllable`), and
+phonotactic rules. Also switches from `rand` to `elven_canopy_prng` as part
+of this migration (depends on F-shared-prng completing first).
+
+**Blocked by:** F-lang-crate, F-shared-prng
 
 #### F-proc-poetry — Procedural poetry via simulated annealing
 **Status:** Todo · **Phase:** 6 · **Refs:** §20
@@ -758,11 +793,16 @@ AudioStreamPlayer. Placeholder sounds initially, replaceable later.
 #### F-vaelith-expand — Expand Vaelith language for runtime use
 **Status:** Todo · **Phase:** 6 · **Refs:** §20
 
-Extend the Vaelith conlang (already partially developed in the music crate)
-for runtime use: larger dictionary, grammar rules sufficient for procedural
-poetry and elf dialogue.
+Expand the Vaelith lexicon and grammar rules beyond the rudimentary vocabulary
+established by F-lang-crate. Larger dictionary with thematic domains, richer
+morphology (case, aspect, evidentials), grammar sufficient for procedural
+poetry and elf dialogue. Intersects with voice recording work (phoneme
+inventory may still change). Builds on the `elven_canopy_lang` crate
+infrastructure.
 
-**Related:** F-proc-poetry, F-elf-names
+**Blocked by:** F-lang-crate
+**Blocks:** F-proc-poetry
+**Related:** F-elf-names, F-audio-sampled
 
 ### Combat & Defense
 
@@ -1153,6 +1193,20 @@ for schema migration.
 
 All sim types derive Serialize/Deserialize for save/load and future
 network sync.
+
+#### F-shared-prng — Shared PRNG crate across all Rust crates
+**Status:** Todo · **Phase:** 6
+
+Extract the xoshiro256++ PRNG from `elven_canopy_sim/src/prng.rs` into a new
+`elven_canopy_prng` crate. Migrate `elven_canopy_music` from the `rand` crate
+to use `GameRng` directly, removing the `rand` dependency entirely. This is a
+full migration (~100 call sites across 6 music crate files using
+`rng.random()`, `rng.random_range()`, `rng.random_bool()`, etc.) — add
+corresponding convenience methods to `GameRng` as needed (`next_f64`,
+`random_bool`, etc.). The sim crate re-exports or depends on the new prng
+crate in place of its local `prng.rs`.
+
+**Blocks:** F-lang-crate, F-music-use-lang
 
 #### F-sim-commands — SimCommand pipeline
 **Status:** Done · **Phase:** 1 · **Refs:** §4
