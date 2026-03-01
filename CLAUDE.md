@@ -344,6 +344,8 @@ The squashed commit message should summarize the entire feature, not repeat indi
 
 3. Repeat steps 1–2 as needed until the fix or feature is complete.
 
+When tests fail unexpectedly, diagnose the root cause. Do not bypass, skip, or work around failing checks (validators, lints, assertions). Never increase retry counts, disable validation, or add #[ignore] to make a test pass. Do not ever take the "easy" route; do the right thing. If the user has not requested that you operate on your own, you may ask the user for guidance after thoroughly examining the problem.
+
 ## Project Tracker (`docs/tracker.md`)
 
 The tracker is the single source of truth for feature/bug status. **Read it at the start of any work session** to understand what's in progress, what's next, and what's blocked.
