@@ -19,7 +19,7 @@
 use crate::grid::{Grid, Voice};
 use crate::markov::{Motif, MotifLibrary};
 use crate::mode::ModeInstance;
-use rand::Rng;
+use elven_canopy_prng::GameRng;
 
 /// A planned entry for one voice in a point of imitation.
 #[derive(Debug, Clone)]
@@ -101,7 +101,7 @@ const TRANSPOSITION_SCHEMES: &[[i8; 4]] = &[
 pub fn generate_structure(
     motif_library: &MotifLibrary,
     num_sections: usize,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) -> StructurePlan {
     let mut imitation_points = Vec::new();
     let mut response_points = Vec::new();
@@ -120,19 +120,18 @@ pub fn generate_structure(
 
         // Choose reference pitch — vary between sections for pitch interest
         let reference_pitch = match section_idx % 3 {
-            0 => rng.random_range(62u8..68), // lower soprano range
-            1 => rng.random_range(67u8..74), // higher
-            _ => rng.random_range(64u8..70), // middle
+            0 => rng.range_u8(62, 68), // lower soprano range
+            1 => rng.range_u8(67, 74), // higher
+            _ => rng.range_u8(64, 70), // middle
         };
 
         // Vary entry offset slightly
         let base_offset = motif.typical_entry_offset as usize;
-        let entry_offset = base_offset + rng.random_range(0..3); // 8-10 beats typical
+        let entry_offset = base_offset + rng.range_usize(0, 3); // 8-10 beats typical
 
         // Pick entry order and transposition scheme
-        let voice_order = ENTRY_ORDERS[rng.random_range(0..ENTRY_ORDERS.len())];
-        let transpositions =
-            TRANSPOSITION_SCHEMES[rng.random_range(0..TRANSPOSITION_SCHEMES.len())];
+        let voice_order = ENTRY_ORDERS[rng.range_usize(0, ENTRY_ORDERS.len())];
+        let transpositions = TRANSPOSITION_SCHEMES[rng.range_usize(0, TRANSPOSITION_SCHEMES.len())];
 
         // Decide how many voices participate (2-4)
         let min_voices = if section_idx == 0 || section_idx == num_sections - 1 {
@@ -140,7 +139,7 @@ pub fn generate_structure(
         } else {
             2
         };
-        let num_voices = rng.random_range(min_voices..=4);
+        let num_voices = rng.range_usize_inclusive(min_voices, 4);
 
         let mut entries = Vec::new();
         let mut voices_added = 0;
@@ -173,11 +172,11 @@ pub fn generate_structure(
 
         // Advance to next section
         let section_length =
-            (voices_added * entry_offset) + motif.intervals.len() * 2 + rng.random_range(4..12);
+            (voices_added * entry_offset) + motif.intervals.len() * 2 + rng.range_usize(4, 12);
         current_beat += section_length;
 
         // Add a rest gap between sections with optional response markers
-        let gap = rng.random_range(2..7);
+        let gap = rng.range_usize(2, 7);
         current_beat += gap;
 
         // Place response markers between sections (not after the last)
@@ -188,14 +187,14 @@ pub fn generate_structure(
                     marker: ResponseMarker::Thol,
                     beat: current_beat,
                 });
-                current_beat += rng.random_range(6..10); // thol lasts 6-9 beats
+                current_beat += rng.range_usize(6, 10); // thol lasts 6-9 beats
             } else if rng.random_bool(0.5) {
                 // Dai (homophonic affirmation) at ~50% of other section boundaries
                 response_points.push(ResponsePoint {
                     marker: ResponseMarker::Dai,
                     beat: current_beat,
                 });
-                current_beat += rng.random_range(3..5); // dai lasts 3-4 beats
+                current_beat += rng.range_usize(3, 5); // dai lasts 3-4 beats
             }
         }
     }
@@ -213,9 +212,9 @@ pub fn generate_structure(
 fn pick_weighted_motif<'a>(
     library: &'a MotifLibrary,
     total_freq: u64,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) -> &'a Motif {
-    let target = rng.random_range(0..total_freq);
+    let target = rng.range_u64(0, total_freq);
     let mut cumulative = 0u64;
     for motif in &library.motifs {
         cumulative += motif.frequency as u64;
@@ -455,7 +454,7 @@ mod tests {
     #[test]
     fn test_generate_structure() {
         let library = MotifLibrary::default_library();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
         let plan = generate_structure(&library, 3, &mut rng);
 
         assert_eq!(plan.imitation_points.len(), 3);
@@ -469,7 +468,7 @@ mod tests {
     #[test]
     fn test_apply_structure() {
         let library = MotifLibrary::default_library();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
         let plan = generate_structure(&library, 2, &mut rng);
 
         let mut grid = Grid::new(plan.total_beats);
@@ -492,7 +491,7 @@ mod tests {
     fn test_apply_responses() {
         let library = MotifLibrary::default_library();
         let mode = ModeInstance::d_dorian();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
 
         // Use 4 sections to trigger thol at midpoint
         let plan = generate_structure(&library, 4, &mut rng);

@@ -28,12 +28,13 @@
 // All types derive `Serialize` and `Deserialize` for save/load and multiplayer
 // state transfer.
 //
-// See also: `prng.rs` for the PRNG that generates entity IDs, `sim.rs` for
-// the `SimState` that owns entities keyed by these IDs, `world.rs` for the
-// voxel grid indexed by `VoxelCoord`.
+// See also: `elven_canopy_prng` for the PRNG that generates entity IDs,
+// `sim.rs` for the `SimState` that owns entities keyed by these IDs,
+// `world.rs` for the voxel grid indexed by `VoxelCoord`.
 //
 // **Critical constraint: determinism.** Entity IDs are generated from the sim's
-// `GameRng` (see `prng.rs`). Do not use external UUID libraries or OS entropy.
+// `GameRng` (from `elven_canopy_prng`). Do not use external UUID libraries or
+// OS entropy.
 
 use crate::prng::GameRng;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

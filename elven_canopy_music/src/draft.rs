@@ -18,7 +18,7 @@
 use crate::grid::{Grid, Voice, interval};
 use crate::markov::MarkovModels;
 use crate::mode::ModeInstance;
-use rand::Rng;
+use elven_canopy_prng::GameRng;
 
 /// Fill all rest cells in the grid with Markov-sampled pitches.
 ///
@@ -30,7 +30,7 @@ pub fn fill_draft(
     models: &MarkovModels,
     structural_cells: &[(usize, usize)],
     mode: &ModeInstance,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) {
     let structural_set: std::collections::HashSet<(usize, usize)> =
         structural_cells.iter().copied().collect();
@@ -76,7 +76,7 @@ fn fill_voice(
     structural: &std::collections::HashSet<(usize, usize)>,
     section_starts: &[usize],
     mode: &ModeInstance,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) {
     let (range_low, range_high) = voice.range();
     let mut recent_intervals: Vec<i8> = Vec::new();
@@ -139,7 +139,7 @@ fn fill_voice(
 
         // Sample a pitch
         let pitch = if let Some(prev) = last_pitch {
-            let rng_val: f64 = rng.random();
+            let rng_val: f64 = rng.next_f64();
             let proposed_interval = models.melodic.sample(&recent_intervals, rng_val);
             let raw_pitch = (prev as i16 + proposed_interval as i16)
                 .clamp(range_low as i16, range_high as i16) as u8;
@@ -150,7 +150,7 @@ fn fill_voice(
             let mut best_score = pitch_score(grid, voice, beat, proposed_pitch, models, mode);
 
             for _ in 0..4 {
-                let alt_rng: f64 = rng.random();
+                let alt_rng: f64 = rng.next_f64();
                 let alt_interval = models.melodic.sample(&recent_intervals, alt_rng);
                 let raw = (prev as i16 + alt_interval as i16)
                     .clamp(range_low as i16, range_high as i16) as u8;
@@ -174,7 +174,7 @@ fn fill_voice(
                 // Weight toward final and 5th
                 let weights: Vec<f64> = candidates.iter().map(|&p| mode.pitch_fitness(p)).collect();
                 let total: f64 = weights.iter().sum();
-                let r: f64 = rng.random::<f64>() * total;
+                let r: f64 = rng.next_f64() * total;
                 let mut cum = 0.0;
                 let mut chosen = candidates[0];
                 for (i, &w) in weights.iter().enumerate() {
@@ -192,9 +192,9 @@ fn fill_voice(
 
         // Variable note duration based on metric position and style
         let hold_beats = match beat_in_bar {
-            0 => rng.random_range(2..=5),     // downbeat: half to dotted half
-            4 => rng.random_range(1..=3),     // beat 3: quarter to dotted quarter
-            2 | 6 => rng.random_range(1..=2), // weak beats: eighth to quarter
+            0 => rng.range_usize_inclusive(2, 5), // downbeat: half to dotted half
+            4 => rng.range_usize_inclusive(1, 3), // beat 3: quarter to dotted quarter
+            2 | 6 => rng.range_usize_inclusive(1, 2), // weak beats: eighth to quarter
             _ => {
                 if rng.random_bool(0.6) {
                     1
@@ -529,7 +529,7 @@ mod tests {
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let mode = ModeInstance::d_dorian();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
 
         let plan = generate_structure(&library, 2, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
@@ -562,7 +562,7 @@ mod tests {
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let mode = ModeInstance::d_dorian();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
 
         let plan = generate_structure(&library, 2, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
@@ -589,7 +589,7 @@ mod tests {
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let mode = ModeInstance::d_dorian();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
 
         let plan = generate_structure(&library, 2, &mut rng);
         let mut grid = Grid::new(plan.total_beats);

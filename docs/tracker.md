@@ -106,7 +106,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-seasons              Seasonal visual and gameplay effects
-[ ] F-shared-prng          Shared PRNG crate across all Rust crates
 [ ] F-sim-speed            Simulation speed controls UI
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-sound-effects        Basic ambient and action sound effects
@@ -157,6 +156,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-save-load            Save/load to JSON with versioning
 [x] F-selection            Click-to-select creatures
 [x] F-serde                Serialization for all sim types
+[x] F-shared-prng          Shared PRNG crate across all Rust crates
 [x] F-sim-commands         SimCommand pipeline
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
 [x] F-structure-reg        Completed structure registry + UI panel
@@ -738,7 +738,6 @@ vowel class, and name tags; core language types (`Tone`, `VowelClass`,
 and a deterministic name generator. See draft doc for full design including
 lexicon schema, crate structure, and what moves vs stays in the music crate.
 
-**Blocked by:** F-shared-prng
 **Blocks:** F-elf-names, F-music-use-lang, F-vaelith-expand
 
 #### F-music-gen — Palestrina-style music generator (standalone)
@@ -768,9 +767,9 @@ The music crate keeps its phrase-generation templates, brightness-biased
 selection, and SA text-swap logic, but delegates to the lang crate for
 vocabulary lookup, core types (`Tone`, `VowelClass`, `Syllable`), and
 phonotactic rules. Also switches from `rand` to `elven_canopy_prng` as part
-of this migration (depends on F-shared-prng completing first).
+of this migration (the `rand` → `elven_canopy_prng` migration is already done via F-shared-prng).
 
-**Blocked by:** F-lang-crate, F-shared-prng
+**Blocked by:** F-lang-crate
 
 #### F-proc-poetry — Procedural poetry via simulated annealing
 **Status:** Todo · **Phase:** 6 · **Refs:** §20
@@ -1197,7 +1196,7 @@ All sim types derive Serialize/Deserialize for save/load and future
 network sync.
 
 #### F-shared-prng — Shared PRNG crate across all Rust crates
-**Status:** Todo · **Phase:** 6
+**Status:** Done · **Phase:** 6
 
 Extract the xoshiro256++ PRNG from `elven_canopy_sim/src/prng.rs` into a new
 `elven_canopy_prng` crate. Migrate `elven_canopy_music` from the `rand` crate

@@ -33,7 +33,7 @@ use crate::scoring::{
 use crate::structure::StructurePlan;
 use crate::text_mapping::{TextMapping, swap_section_phrase};
 use crate::vaelith::VaelithPhrase;
-use rand::Rng;
+use elven_canopy_prng::GameRng;
 
 /// SA configuration parameters.
 #[derive(Debug, Clone)]
@@ -147,7 +147,7 @@ pub fn anneal(
     weights: &ScoringWeights,
     mode: &ModeInstance,
     config: &SAConfig,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) -> SAResult {
     let structural_set: std::collections::HashSet<(usize, usize)> =
         structural_cells.iter().copied().collect();
@@ -185,11 +185,11 @@ pub fn anneal(
     while temp > config.final_temp {
         for _ in 0..config.mutations_per_step {
             // 20% duration mutations, 80% pitch mutations
-            let do_duration_mutation = rng.random::<f64>() < 0.2;
+            let do_duration_mutation = rng.next_f64() < 0.2;
 
             if do_duration_mutation {
                 // Duration mutation: extend or shorten a note
-                let idx = rng.random_range(0..mutable_cells.len());
+                let idx = rng.range_usize(0, mutable_cells.len());
                 let (voice, beat) = mutable_cells[idx];
                 let delta = try_duration_mutation(
                     grid,
@@ -207,7 +207,7 @@ pub fn anneal(
                 }
             } else {
                 // Pitch mutation
-                let idx = rng.random_range(0..mutable_cells.len());
+                let idx = rng.range_usize(0, mutable_cells.len());
                 let (voice, beat) = mutable_cells[idx];
                 let delta = try_pitch_mutation(grid, models, weights, mode, voice, beat, temp, rng);
                 if let Some(d) = delta {
@@ -252,7 +252,7 @@ pub fn anneal_with_text(
     plan: &StructurePlan,
     mapping: &mut TextMapping,
     phrase_candidates: &[Vec<VaelithPhrase>],
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) -> SAResult {
     let structural_set: std::collections::HashSet<(usize, usize)> =
         structural_cells.iter().copied().collect();
@@ -295,7 +295,7 @@ pub fn anneal_with_text(
 
     while temp > config.final_temp {
         for _ in 0..config.mutations_per_step {
-            let roll: f64 = rng.random();
+            let roll: f64 = rng.next_f64();
             let mut step_accepted = false;
 
             if roll < 0.05 && num_sections > 0 && !phrase_candidates.is_empty() {
@@ -317,7 +317,7 @@ pub fn anneal_with_text(
                 }
             } else if roll < 0.25 {
                 // Duration mutation (~20%)
-                let idx = rng.random_range(0..mutable_cells.len());
+                let idx = rng.range_usize(0, mutable_cells.len());
                 let (voice, beat) = mutable_cells[idx];
                 let delta = try_duration_mutation(
                     grid,
@@ -336,7 +336,7 @@ pub fn anneal_with_text(
                 }
             } else {
                 // Pitch mutation with tonal contour awareness (~75%)
-                let idx = rng.random_range(0..mutable_cells.len());
+                let idx = rng.range_usize(0, mutable_cells.len());
                 let (voice, beat) = mutable_cells[idx];
                 let delta = try_pitch_mutation_with_text(
                     grid, models, weights, mode, mapping, voice, beat, temp, rng,
@@ -388,7 +388,7 @@ fn try_pitch_mutation_with_text(
     voice: Voice,
     beat: usize,
     temp: f64,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) -> Option<f64> {
     let old_pitch = grid.cell(voice, beat).pitch;
     let (range_low, range_high) = voice.range();
@@ -425,7 +425,7 @@ fn try_pitch_mutation_with_text(
         p.unwrap_or(old_pitch)
     };
 
-    let rng_val: f64 = rng.random();
+    let rng_val: f64 = rng.next_f64();
     let proposed_interval = models.melodic.sample(&context, rng_val);
     let raw_pitch = (pitch_before as i16 + proposed_interval as i16)
         .clamp(range_low as i16, range_high as i16) as u8;
@@ -476,14 +476,14 @@ fn try_text_swap_mutation(
     mapping: &mut TextMapping,
     phrase_candidates: &[Vec<VaelithPhrase>],
     temp: f64,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) -> Option<f64> {
     let num_sections = plan.imitation_points.len().min(phrase_candidates.len());
     if num_sections == 0 {
         return None;
     }
 
-    let section_idx = rng.random_range(0..num_sections);
+    let section_idx = rng.range_usize(0, num_sections);
     let candidates = &phrase_candidates[section_idx];
     if candidates.len() <= 1 {
         return None;
@@ -505,7 +505,7 @@ fn try_text_swap_mutation(
         return None;
     }
 
-    let new_phrase = alternatives[rng.random_range(0..alternatives.len())].clone();
+    let new_phrase = alternatives[rng.range_usize(0, alternatives.len())].clone();
 
     // Score before
     let old_score = score_tonal_contour(grid, mapping, weights);
@@ -542,7 +542,7 @@ fn try_pitch_mutation(
     voice: Voice,
     beat: usize,
     temp: f64,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) -> Option<f64> {
     let old_pitch = grid.cell(voice, beat).pitch;
     let (range_low, range_high) = voice.range();
@@ -578,7 +578,7 @@ fn try_pitch_mutation(
         p.unwrap_or(old_pitch)
     };
 
-    let rng_val: f64 = rng.random();
+    let rng_val: f64 = rng.next_f64();
     let proposed_interval = models.melodic.sample(&context, rng_val);
     let raw_pitch = (pitch_before as i16 + proposed_interval as i16)
         .clamp(range_low as i16, range_high as i16) as u8;
@@ -628,7 +628,7 @@ fn try_duration_mutation(
     beat: usize,
     structural: &std::collections::HashSet<(usize, usize)>,
     temp: f64,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) -> Option<f64> {
     let cell = grid.cell(voice, beat);
     if cell.is_rest || !cell.attack {
@@ -720,12 +720,12 @@ fn try_duration_mutation(
 }
 
 /// Metropolis acceptance criterion.
-fn metropolis_accept(delta: f64, temp: f64, rng: &mut impl Rng) -> bool {
+fn metropolis_accept(delta: f64, temp: f64, rng: &mut GameRng) -> bool {
     if delta >= 0.0 {
         true
     } else {
         let probability = (delta / temp).exp();
-        rng.random::<f64>() < probability
+        rng.next_f64() < probability
     }
 }
 
@@ -742,7 +742,7 @@ mod tests {
         let library = MotifLibrary::default_library();
         let weights = ScoringWeights::default();
         let mode = ModeInstance::d_dorian();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
 
         let plan = generate_structure(&library, 2, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
@@ -786,7 +786,7 @@ mod tests {
         let library = MotifLibrary::default_library();
         let weights = ScoringWeights::default();
         let mode = ModeInstance::d_dorian();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
 
         let plan = generate_structure(&library, 2, &mut rng);
         let mut grid = Grid::new(plan.total_beats);

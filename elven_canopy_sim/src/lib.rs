@@ -18,7 +18,7 @@
 // - `task.rs`:        Task entities — units of work assigned to creatures.
 // - `blueprint.rs`:   Blueprint data model for the construction system.
 // - `structural.rs`:  Spring-mass structural integrity solver.
-// - `prng.rs`:        Xoshiro256++ PRNG with SplitMix64 seeding.
+// - `prng`:           Re-exported from `elven_canopy_prng` — xoshiro256++ PRNG with SplitMix64 seeding.
 // - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.
 //
 // The companion crate `elven_canopy_gdext` wraps this library for Godot
@@ -27,7 +27,7 @@
 //
 // **Critical constraint: determinism.** The simulation is a pure function:
 // `(state, commands) -> (new_state, events)`. All randomness comes from a
-// seeded xoshiro256++ PRNG (see `prng.rs`). No `HashMap`, no system time,
+// seeded xoshiro256++ PRNG (re-exported from `elven_canopy_prng`). No `HashMap`, no system time,
 // no OS entropy. Use `BTreeMap` for ordered collections.
 
 pub mod blueprint;
@@ -37,7 +37,7 @@ pub mod config;
 pub mod event;
 pub mod nav;
 pub mod pathfinding;
-pub mod prng;
+pub use elven_canopy_prng as prng;
 pub mod sim;
 pub mod species;
 pub mod structural;

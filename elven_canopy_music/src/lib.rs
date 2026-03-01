@@ -22,6 +22,8 @@
 // - text_mapping.rs: Syllable-to-grid mapping and tonal contour tracking
 //
 // The generator is deterministic given a seed, supporting reproducible output.
+// All randomness comes from `elven_canopy_prng::GameRng` (xoshiro256++),
+// the same PRNG used by the simulation crate — no external RNG dependencies.
 
 pub mod draft;
 pub mod grid;

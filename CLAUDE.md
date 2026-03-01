@@ -9,7 +9,7 @@ Elven Canopy is a Dwarf Fortress-inspired simulation/management game set in a fo
 **Key architectural decisions:**
 
 - **Godot 4 + Rust via gdext.** Godot handles rendering, input, UI, and camera. All simulation logic lives in Rust.
-- **Three Rust crates.** `elven_canopy_sim` is a pure Rust library (zero Godot dependencies) containing all simulation logic. `elven_canopy_gdext` is a thin wrapper that exposes the sim to Godot via GDExtension. `elven_canopy_music` is a standalone Palestrina-style polyphonic music generator with Vaelith (elvish) lyrics. The sim/gdext separation is enforced at the compiler level; the music crate is independent of both.
+- **Shared PRNG crate + game crates.** `elven_canopy_prng` provides a hand-rolled xoshiro256++ PRNG used by all crates (no external RNG dependencies). `elven_canopy_sim` is a pure Rust library (zero Godot dependencies) containing all simulation logic. `elven_canopy_gdext` is a thin wrapper that exposes the sim to Godot via GDExtension. `elven_canopy_music` is a standalone Palestrina-style polyphonic music generator with Vaelith (elvish) lyrics. The sim/gdext separation is enforced at the compiler level; the music crate is independent of both.
 - **Deterministic simulation.** The sim is a pure function: `(state, commands) → (new_state, events)`. Hand-rolled xoshiro256++ PRNG (no external PRNG dependencies), no `HashMap` (use `BTreeMap`), no system dependencies. Designed for future lockstep multiplayer, perfect replays, and verifiable performance optimizations.
 - **Command-driven mutation.** All sim state changes go through `SimCommand`. In single-player, the GDScript glue translates UI actions into commands. In multiplayer, commands are broadcast and canonically ordered.
 - **Event-driven ticks.** The sim uses a discrete event simulation with a priority queue, not fixed-timestep iteration. Empty ticks are free, enabling efficient fast-forward.
@@ -35,8 +35,7 @@ elven-canopy/
 ├── Cargo.toml                  # Workspace root (resolver = "2")
 ├── elven_canopy_sim/           # Pure Rust simulation library (no Godot deps)
 │   └── src/
-│       ├── lib.rs              # Crate root, module declarations
-│       ├── prng.rs             # xoshiro256++ PRNG + SplitMix64 seeding
+│       ├── lib.rs              # Crate root, module declarations, re-exports prng crate
 │       ├── types.rs            # VoxelCoord, SimUuid, entity IDs, Species enum
 │       ├── command.rs          # SimCommand, SimAction
 │       ├── config.rs           # GameConfig (loaded from JSON)
@@ -47,6 +46,10 @@ elven-canopy/
 │       ├── pathfinding.rs      # A* search over NavGraph
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
 │       └── world.rs            # Dense 3D voxel grid
+├── elven_canopy_prng/          # Shared xoshiro256++ PRNG (used by sim, music, lang)
+│   ├── src/
+│   │   └── lib.rs              # GameRng: xoshiro256++ with SplitMix64 seeding
+│   └── Cargo.toml
 ├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
 │   └── src/
 │       ├── lib.rs              # ExtensionLibrary entry point
@@ -327,7 +330,7 @@ The squashed commit message should summarize the entire feature, not repeat indi
 
 ## Key Constraints
 
-- **Determinism (sim crate)**: `elven_canopy_sim` must produce identical results given the same seed. No hash-order dependence, no set iteration, no stdlib PRNG. The sim uses a hand-rolled xoshiro256++ (with SplitMix64 seeding) — no external PRNG crate dependencies. This enables consistency in multiplayer and verification of optimizations. **Scope:** This constraint applies strictly to `elven_canopy_sim`. The music crate (`elven_canopy_music`) uses the `rand` crate for seed-based generation, which is fine since it doesn't participate in lockstep multiplayer or replay verification.
+- **Determinism (sim crate)**: `elven_canopy_sim` must produce identical results given the same seed. No hash-order dependence, no set iteration, no stdlib PRNG. All crates share a hand-rolled xoshiro256++ PRNG from `elven_canopy_prng` (with SplitMix64 seeding) — no external PRNG crate dependencies. This enables consistency in multiplayer and verification of optimizations. **Scope:** The strict determinism constraint (identical results across platforms/compilers) applies to `elven_canopy_sim`. The music crate uses the same PRNG for seed-based reproducibility but doesn't participate in lockstep multiplayer or replay verification.
 
 ## Simulator: Test-Driven Workflow (CRITICAL)
 

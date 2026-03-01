@@ -32,8 +32,7 @@ use elven_canopy_music::scoring::{
 use elven_canopy_music::structure::{apply_responses, apply_structure, generate_structure};
 use elven_canopy_music::text_mapping::apply_text_mapping;
 use elven_canopy_music::vaelith::generate_phrases_with_brightness;
-use rand::SeedableRng;
-use rand::rngs::StdRng;
+use elven_canopy_prng::GameRng;
 use std::path::Path;
 
 fn main() {
@@ -96,9 +95,14 @@ fn main() {
 
     // Initialize RNG
     let mut rng = if let Some(s) = seed {
-        StdRng::seed_from_u64(s)
+        GameRng::new(s)
     } else {
-        StdRng::from_os_rng()
+        // Use system time as a fallback seed when no --seed is provided
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        GameRng::new(nanos)
     };
 
     // Load models
@@ -443,7 +447,7 @@ fn run_batch(args: &[String]) {
 
     for i in 0..count {
         let seed = base_seed + i as u64;
-        let mut rng = StdRng::seed_from_u64(seed);
+        let mut rng = GameRng::new(seed);
 
         let plan = generate_structure(&motif_library, num_sections, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
@@ -564,7 +568,7 @@ fn run_mode_scan(args: &[String]) {
 
     for (name, mode_enum, final_pc) in &modes {
         let mode = ModeInstance::new(*mode_enum, *final_pc);
-        let mut rng = StdRng::seed_from_u64(seed);
+        let mut rng = GameRng::new(seed);
 
         let plan = generate_structure(&motif_library, num_sections, &mut rng);
         let mut grid = Grid::new(plan.total_beats);

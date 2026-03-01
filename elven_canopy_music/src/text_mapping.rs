@@ -382,13 +382,14 @@ mod tests {
     use crate::mode::ModeInstance;
     use crate::structure::{apply_structure, generate_structure};
     use crate::vaelith::generate_phrases;
+    use elven_canopy_prng::GameRng;
 
     #[test]
     fn test_apply_text_mapping() {
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let mode = ModeInstance::d_dorian();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
 
         let plan = generate_structure(&library, 2, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
@@ -431,7 +432,7 @@ mod tests {
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let mode = ModeInstance::d_dorian();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
 
         let plan = generate_structure(&library, 2, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
@@ -466,7 +467,7 @@ mod tests {
         let models = MarkovModels::default_models();
         let library = MotifLibrary::default_library();
         let mode = ModeInstance::d_dorian();
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
 
         let plan = generate_structure(&library, 2, &mut rng);
         let mut grid = Grid::new(plan.total_beats);

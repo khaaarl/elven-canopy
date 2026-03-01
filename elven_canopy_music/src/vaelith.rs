@@ -15,7 +15,7 @@
 //
 // See docs/drafts/vaelith_v4.md for the full language specification.
 
-use rand::Rng;
+use elven_canopy_prng::GameRng;
 use serde::{Deserialize, Serialize};
 
 /// Pitch contour tone for a syllable.
@@ -545,7 +545,7 @@ enum PhraseTemplate {
 ///
 /// Returns multiple phrases for each section, allowing SA to swap between
 /// candidates during refinement.
-pub fn generate_phrases(num_sections: usize, rng: &mut impl Rng) -> Vec<Vec<VaelithPhrase>> {
+pub fn generate_phrases(num_sections: usize, rng: &mut GameRng) -> Vec<Vec<VaelithPhrase>> {
     generate_phrases_with_brightness(num_sections, 0.5, rng)
 }
 
@@ -553,7 +553,7 @@ pub fn generate_phrases(num_sections: usize, rng: &mut impl Rng) -> Vec<Vec<Vael
 pub fn generate_phrases_with_brightness(
     num_sections: usize,
     brightness: f64,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) -> Vec<Vec<VaelithPhrase>> {
     let mut sections = Vec::new();
 
@@ -589,7 +589,7 @@ pub fn generate_phrases_with_brightness(
 
 /// Pick a lexical entry with brightness bias.
 /// Higher brightness favors front-class vowels, lower favors back-class.
-fn pick_biased<'a>(entries: &'a [LexEntry], brightness: f64, rng: &mut impl Rng) -> &'a LexEntry {
+fn pick_biased<'a>(entries: &'a [LexEntry], brightness: f64, rng: &mut GameRng) -> &'a LexEntry {
     if entries.is_empty() {
         panic!("Empty lexicon");
     }
@@ -606,7 +606,7 @@ fn pick_biased<'a>(entries: &'a [LexEntry], brightness: f64, rng: &mut impl Rng)
         .collect();
 
     let total: f64 = weights.iter().sum();
-    let r: f64 = rng.random::<f64>() * total;
+    let r: f64 = rng.next_f64() * total;
     let mut cum = 0.0;
     for (i, &w) in weights.iter().enumerate() {
         cum += w;
@@ -621,13 +621,13 @@ fn pick_biased<'a>(entries: &'a [LexEntry], brightness: f64, rng: &mut impl Rng)
 fn generate_phrase(
     template: PhraseTemplate,
     brightness: f64,
-    rng: &mut impl Rng,
+    rng: &mut GameRng,
 ) -> Option<VaelithPhrase> {
     match template {
         PhraseTemplate::SubjectVerb => {
             let noun = pick_biased(NOUNS, brightness, rng);
             let verb = pick_biased(VERBS, brightness, rng);
-            let aspect_idx = rng.random_range(0..ASPECT_SUFFIXES.len());
+            let aspect_idx = rng.range_usize(0, ASPECT_SUFFIXES.len());
             let (front, back, tone, _aspect_name) = ASPECT_SUFFIXES[aspect_idx];
 
             let subject = noun.to_word();
@@ -641,7 +641,7 @@ fn generate_phrase(
             let subj = pick_biased(NOUNS, brightness, rng);
             let obj = pick_biased(NOUNS, brightness, rng);
             let verb = pick_biased(VERBS, brightness, rng);
-            let aspect_idx = rng.random_range(0..ASPECT_SUFFIXES.len());
+            let aspect_idx = rng.range_usize(0, ASPECT_SUFFIXES.len());
             let (af, ab, at, _) = ASPECT_SUFFIXES[aspect_idx];
 
             let subject = subj.to_word();
@@ -659,7 +659,7 @@ fn generate_phrase(
             let ha = PARTICLES.iter().find(|p| p.text == "há").unwrap();
             let noun = pick_biased(NOUNS, brightness, rng);
             let verb = pick_biased(VERBS, brightness, rng);
-            let aspect_idx = rng.random_range(0..ASPECT_SUFFIXES.len());
+            let aspect_idx = rng.range_usize(0, ASPECT_SUFFIXES.len());
             let (af, ab, at, _) = ASPECT_SUFFIXES[aspect_idx];
 
             let excl = ha.to_word();
@@ -677,7 +677,7 @@ fn generate_phrase(
             let adj = pick_biased(ADJECTIVES, brightness, rng);
             let noun = pick_biased(NOUNS, brightness, rng);
             let verb = pick_biased(VERBS, brightness, rng);
-            let aspect_idx = rng.random_range(0..ASPECT_SUFFIXES.len());
+            let aspect_idx = rng.range_usize(0, ASPECT_SUFFIXES.len());
             let (af, ab, at, _) = ASPECT_SUFFIXES[aspect_idx];
 
             let adj_word = adj.to_word();
@@ -696,8 +696,8 @@ fn generate_phrase(
             let obj = pick_biased(NOUNS, brightness, rng);
             let verb = pick_biased(VERBS, brightness, rng);
             let adj = pick_biased(ADJECTIVES, brightness, rng);
-            let aspect_idx = rng.random_range(0..ASPECT_SUFFIXES.len());
-            let case_idx = rng.random_range(0..CASE_SUFFIXES.len());
+            let aspect_idx = rng.range_usize(0, ASPECT_SUFFIXES.len());
+            let case_idx = rng.range_usize(0, CASE_SUFFIXES.len());
             let (af, ab, at, _) = ASPECT_SUFFIXES[aspect_idx];
             let (cf, cb, ct, _case) = CASE_SUFFIXES[case_idx];
 
@@ -742,7 +742,7 @@ fn generate_phrase(
 }
 
 /// Generate a single random phrase (convenience function).
-pub fn generate_single_phrase(rng: &mut impl Rng) -> VaelithPhrase {
+pub fn generate_single_phrase(rng: &mut GameRng) -> VaelithPhrase {
     let templates = [
         PhraseTemplate::SubjectVerb,
         PhraseTemplate::DescriptiveVerb,
@@ -751,7 +751,7 @@ pub fn generate_single_phrase(rng: &mut impl Rng) -> VaelithPhrase {
         PhraseTemplate::LiturgicalAffirmation,
         PhraseTemplate::PossessiveNoun,
     ];
-    let template = templates[rng.random_range(0..templates.len())];
+    let template = templates[rng.range_usize(0, templates.len())];
     generate_phrase(template, 0.5, rng).unwrap()
 }
 
@@ -761,7 +761,7 @@ mod tests {
 
     #[test]
     fn test_generate_phrase() {
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
         let phrase = generate_single_phrase(&mut rng);
 
         assert!(!phrase.text.is_empty(), "Phrase should have text");
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn test_tone_distribution() {
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
         let mut level_count = 0;
         let mut total_count = 0;
 
@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn test_generate_sections() {
-        let mut rng = rand::rng();
+        let mut rng = GameRng::new(42);
         let sections = generate_phrases(3, &mut rng);
 
         assert_eq!(sections.len(), 3);

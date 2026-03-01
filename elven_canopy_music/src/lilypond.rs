@@ -582,10 +582,9 @@ mod tests {
         use crate::structure::{apply_responses, apply_structure, generate_structure};
         use crate::text_mapping::apply_text_mapping;
         use crate::vaelith::generate_phrases_with_brightness;
-        use rand::SeedableRng;
-        use rand::rngs::StdRng;
+        use elven_canopy_prng::GameRng;
 
-        let mut rng = StdRng::seed_from_u64(42);
+        let mut rng = GameRng::new(42);
         let models = MarkovModels::default_models();
         let motif_library = MotifLibrary::default_library();
         let mode = ModeInstance::new(Mode::Dorian, 2);
