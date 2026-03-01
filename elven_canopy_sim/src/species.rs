@@ -28,6 +28,13 @@
 //   idle creature will seek fruit (default 50).
 // - `food_restore_pct` — percentage of `food_max` restored when eating
 //   fruit (default 40).
+// - `rest_max` — maximum (and starting) rest level. Same scale as `food_max`.
+// - `rest_decay_per_tick` — rest subtracted per sim tick, batch-applied at
+//   heartbeat. Set to 0 for species that don't need sleep.
+// - `rest_tired_threshold_pct` — percentage of `rest_max` below which an
+//   idle creature will seek sleep (default 50).
+// - `rest_per_sleep_tick` — rest restored per sim tick of sleeping, applied
+//   at each sleep task activation.
 //
 // See also: `config.rs` where the species table lives as part of `GameConfig`,
 // `sim.rs` for the unified `Creature` type and activation chain that consumes
@@ -99,6 +106,27 @@ pub struct SpeciesData {
     /// cannot use rope ladders.
     #[serde(default)]
     pub rope_ladder_tpv: Option<u64>,
+
+    /// Maximum rest level (also the starting value). Same scale as `food_max`.
+    /// 0 = species never gets tired (rest system is inert).
+    #[serde(default = "default_rest_max")]
+    pub rest_max: i64,
+
+    /// Rest consumed per sim tick. Batch-applied at heartbeat as
+    /// `rest_decay_per_tick * heartbeat_interval_ticks`. Set to 0 for species
+    /// that don't need sleep.
+    #[serde(default = "default_rest_decay_per_tick")]
+    pub rest_decay_per_tick: i64,
+
+    /// Percentage of `rest_max` below which an idle creature will seek sleep.
+    /// E.g. 50 means the creature gets tired at 50% rest.
+    #[serde(default = "default_rest_tired_threshold_pct")]
+    pub rest_tired_threshold_pct: i64,
+
+    /// Rest restored per sim tick while sleeping. Batch-applied at each sleep
+    /// activation. Higher values mean faster rest recovery per tick of sleep.
+    #[serde(default = "default_rest_per_sleep_tick")]
+    pub rest_per_sleep_tick: i64,
 }
 
 fn default_footprint() -> [u8; 3] {
@@ -119,4 +147,25 @@ fn default_food_max() -> i64 {
 
 fn default_food_decay_per_tick() -> i64 {
     3_333_333_333
+}
+
+fn default_rest_max() -> i64 {
+    1_000_000_000_000_000
+}
+
+fn default_rest_decay_per_tick() -> i64 {
+    3_333_333_333
+}
+
+fn default_rest_tired_threshold_pct() -> i64 {
+    50
+}
+
+fn default_rest_per_sleep_tick() -> i64 {
+    // At default heartbeat (3000 ticks), each sleep activation restores
+    // rest_per_sleep_tick * 1 tick of progress. With sleep_ticks_bed = 10_000
+    // activations, total restore = 10_000 * rest_per_sleep_tick.
+    // We want ~10 seconds (10_000 ticks) of bed sleep to restore ~60% of rest_max.
+    // 60% of 1e15 = 6e14. 6e14 / 10_000 = 6e10.
+    60_000_000_000
 }

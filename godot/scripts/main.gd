@@ -178,6 +178,12 @@ func _ready() -> void:
 		for i in elf_food_pcts.size():
 			if elf_food_pcts[i] < 100:
 				bridge.set_creature_food("Elf", i, food_max * elf_food_pcts[i] / 100)
+		# Vary initial elf rest so one is tired from the start.
+		var rest_max: int = 1_000_000_000_000_000
+		var elf_rest_pcts := [100, 95, 80, 60, 45]
+		for i in elf_rest_pcts.size():
+			if elf_rest_pcts[i] < 100:
+				bridge.set_creature_rest("Elf", i, rest_max * elf_rest_pcts[i] / 100)
 		print("Elven Canopy: spawned %d elves near (%d, 0, %d)" % [bridge.elf_count(), cx, cz])
 
 		for i in 5:
@@ -245,6 +251,12 @@ func _on_mp_game_started() -> void:
 		for i in elf_food_pcts.size():
 			if elf_food_pcts[i] < 100:
 				bridge.set_creature_food("Elf", i, food_max * elf_food_pcts[i] / 100)
+		# Vary initial elf rest so one is tired from the start.
+		var rest_max: int = 1_000_000_000_000_000
+		var elf_rest_pcts := [100, 95, 80, 60, 45]
+		for i in elf_rest_pcts.size():
+			if elf_rest_pcts[i] < 100:
+				bridge.set_creature_rest("Elf", i, rest_max * elf_rest_pcts[i] / 100)
 		for i in 5:
 			bridge.spawn_capybara(cx, 0, cz)
 		for i in 3:

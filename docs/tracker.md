@@ -46,7 +46,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
-[~] F-elf-needs            Hunger and rest self-direction
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 ```
 
@@ -63,7 +62,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
-[ ] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [ ] F-bldg-home            Home (single elf dwelling)
 [ ] F-bldg-kitchen         Kitchen (cooking from ingredients)
 [ ] F-bldg-storehouse      Storehouse (item storage)
@@ -151,6 +149,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
+[x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
 [x] F-capybara             Capybara species
@@ -161,6 +160,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-creature-info        Creature info panel with follow button
 [x] F-debug-menu           Move spawn/summon into debug menu
 [x] F-elf-names            Elf name generation from conlang rules
+[x] F-elf-needs            Hunger and rest self-direction
 [x] F-elf-sprite           Billboard elf sprite rendering
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-food-gauge           Creature food gauge with decay
@@ -238,13 +238,14 @@ eating bonus compared to eating alone.
 **Related:** F-bldg-concert, F-bldg-kitchen, F-food-chain
 
 #### F-bldg-dormitory — Dormitory (unassigned elf sleep)
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
-Communal sleeping building for elves without assigned homes. Any elf not
-assigned to a specific Home can sleep here.
+Communal sleeping building for elves without assigned homes. Dormitories are
+built as Building type, then furnished with beds. Tired elves autonomously
+find the nearest unoccupied bed via Dijkstra pathfinding and sleep to restore
+rest. If no beds are available, elves fall back to sleeping on the ground.
 
-**Blocks:** F-elf-needs
-**Related:** F-bldg-home
+**Related:** F-bldg-home, F-elf-needs, F-furnish
 
 #### F-bldg-home — Home (single elf dwelling)
 **Status:** Todo · **Phase:** 3
@@ -738,24 +739,25 @@ type.
 **Related:** F-bldg-home, F-bldg-kitchen, F-bldg-workshop, F-jobs, F-select-struct
 
 #### F-elf-needs — Hunger and rest self-direction
-**Status:** In Progress · **Phase:** 3 · **Refs:** §13, §15
+**Status:** Done · **Phase:** 3 · **Refs:** §13, §15
 
 Elves autonomously seek food (eat fruit from trees) and rest (find sleeping
-spots) when needs are low. Self-directed behavior that interrupts assigned
-tasks when needs are critical.
+spots) when needs are low. Self-directed behavior that interrupts idle
+wandering when needs are critical. Hunger takes priority over tiredness.
 
-**Hunger (done):** Idle creatures with food below `food_hunger_threshold_pct`
+**Hunger:** Idle creatures with food below `food_hunger_threshold_pct`
 (default 50%) get an `EatFruit` task created at heartbeat time, pathfind to
 the nearest fruit voxel, eat it (restoring `food_restore_pct`% of food_max),
 and remove the fruit from the world.
 
-**Rest/sleep (blocked by F-bldg-dormitory):** Not yet implemented. Elves get
-tired over time and seek a sleeping spot — their assigned home (F-bldg-home)
-if they have one, a dormitory (F-bldg-dormitory) otherwise, or the ground as
-a last resort. Sleep duration restores a rest gauge. Lack of sleep affects
-mood/productivity.
+**Rest/sleep:** Idle creatures with rest below `rest_tired_threshold_pct`
+(default 50%) get a `Sleep` task. The heartbeat finds the nearest unoccupied
+dormitory bed (via Dijkstra) or falls back to ground sleep. Sleep is a
+multi-activation task: each activation restores `rest_per_sleep_tick` rest,
+completing when progress reaches `total_cost` (bed: `sleep_ticks_bed`, ground:
+`sleep_ticks_ground`) or rest reaches `rest_max`. Rest gauge and food gauge
+are both shown in the creature info panel.
 
-**Blocked by:** F-bldg-dormitory
 **Related:** F-bldg-dormitory, F-bldg-home, F-food-gauge, F-task-priority
 
 #### F-elf-sprite — Billboard elf sprite rendering

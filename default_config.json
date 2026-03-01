@@ -22,6 +22,8 @@
   "build_work_ticks_per_voxel": 1000,
   "carve_work_ticks_per_voxel": 1000,
   "furnish_work_ticks_per_item": 2000,
+  "sleep_ticks_bed": 10000,
+  "sleep_ticks_ground": 20000,
   "terrain_max_height": 4,
   "terrain_noise_scale": 8.0,
   "tree_profile": {
@@ -82,7 +84,11 @@
         1,
         1,
         1
-      ]
+      ],
+      "rest_max": 1000000000000000,
+      "rest_decay_per_tick": 3333333333,
+      "rest_tired_threshold_pct": 50,
+      "rest_per_sleep_tick": 60000000000
     },
     "Capybara": {
       "walk_ticks_per_voxel": 800,
@@ -100,7 +106,11 @@
         1,
         1,
         1
-      ]
+      ],
+      "rest_max": 1000000000000000,
+      "rest_decay_per_tick": 0,
+      "rest_tired_threshold_pct": 50,
+      "rest_per_sleep_tick": 60000000000
     },
     "Boar": {
       "walk_ticks_per_voxel": 600,
@@ -118,7 +128,11 @@
         1,
         1,
         1
-      ]
+      ],
+      "rest_max": 1000000000000000,
+      "rest_decay_per_tick": 0,
+      "rest_tired_threshold_pct": 50,
+      "rest_per_sleep_tick": 60000000000
     },
     "Deer": {
       "walk_ticks_per_voxel": 400,
@@ -136,7 +150,11 @@
         1,
         1,
         1
-      ]
+      ],
+      "rest_max": 1000000000000000,
+      "rest_decay_per_tick": 0,
+      "rest_tired_threshold_pct": 50,
+      "rest_per_sleep_tick": 60000000000
     },
     "Elephant": {
       "walk_ticks_per_voxel": 700,
@@ -154,7 +172,11 @@
         2,
         2,
         2
-      ]
+      ],
+      "rest_max": 1000000000000000,
+      "rest_decay_per_tick": 0,
+      "rest_tired_threshold_pct": 50,
+      "rest_per_sleep_tick": 60000000000
     },
     "Monkey": {
       "walk_ticks_per_voxel": 550,
@@ -170,7 +192,11 @@
         1,
         1,
         1
-      ]
+      ],
+      "rest_max": 1000000000000000,
+      "rest_decay_per_tick": 0,
+      "rest_tired_threshold_pct": 50,
+      "rest_per_sleep_tick": 60000000000
     },
     "Squirrel": {
       "walk_ticks_per_voxel": 700,
@@ -186,7 +212,11 @@
         1,
         1,
         1
-      ]
+      ],
+      "rest_max": 1000000000000000,
+      "rest_decay_per_tick": 0,
+      "rest_tired_threshold_pct": 50,
+      "rest_per_sleep_tick": 60000000000
     }
   },
   "structural": {

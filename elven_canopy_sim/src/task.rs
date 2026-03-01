@@ -31,6 +31,12 @@
 //   creature's food drops below `food_hunger_threshold_pct`. On arrival,
 //   `do_eat_fruit()` restores `food_restore_pct`% of `food_max`, removes
 //   the fruit from the world and tree, and completes the task.
+// - `Sleep { bed_pos }` — sleep to restore rest. Created automatically by the
+//   heartbeat tiredness check when rest drops below `rest_tired_threshold_pct`.
+//   `bed_pos` is `Some(pos)` for dormitory bed sleep, `None` for ground sleep
+//   (fallback). Multi-activation: each activation restores rest proportional to
+//   `rest_per_sleep_tick`; completes when progress reaches `total_cost` or rest
+//   is full.
 //
 // ## Lifecycle
 //
@@ -74,6 +80,13 @@ pub enum TaskKind {
     /// progress, one item is placed from the structure's `planned_furniture`
     /// into `furniture_positions`.
     Furnish { structure_id: StructureId },
+    /// Sleep to restore rest. Created automatically by the heartbeat tiredness
+    /// check when a creature's rest drops below `rest_tired_threshold_pct`.
+    /// `bed_pos` is `Some(pos)` when sleeping in a dormitory bed, or `None`
+    /// for ground sleep (fallback when no beds are available). The task is
+    /// multi-activation: each activation restores rest, and the task completes
+    /// when `progress >= total_cost` or rest reaches `rest_max`.
+    Sleep { bed_pos: Option<VoxelCoord> },
 }
 
 /// Lifecycle state of a task.

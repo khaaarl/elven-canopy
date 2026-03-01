@@ -36,13 +36,19 @@
 // and does not affect determinism.
 //
 // `CreatureHeartbeat` still exists but is decoupled from movement; it handles
-// periodic non-movement checks (mood, mana, food decay, hunger-driven task
-// creation, etc.). After decaying food, the heartbeat checks whether the
-// creature is hungry (food < threshold) and idle — if so, it calls
-// `find_nearest_fruit()` which uses Dijkstra's algorithm over the nav graph
-// (respecting species edge restrictions and speeds) to find the closest
-// reachable fruit, then creates an `EatFruit` task directly assigned to the
-// creature (bypassing the Available→claim flow).
+// periodic non-movement checks (mood, mana, food decay, rest decay,
+// hunger-driven task creation, sleep-driven task creation, etc.). After
+// decaying food and rest, the heartbeat checks needs in priority order:
+// hunger first (food < threshold), then tiredness (rest < threshold). If
+// the creature is hungry and idle, it calls `find_nearest_fruit()` which
+// uses Dijkstra's algorithm over the nav graph (respecting species edge
+// restrictions and speeds) to find the closest reachable fruit, then creates
+// an `EatFruit` task directly assigned to the creature (bypassing the
+// Available→claim flow). If the creature is tired and idle (but not hungry),
+// it calls `find_nearest_bed()` to find an unoccupied dormitory bed; if no
+// beds are available, it falls back to sleeping on the ground at its current
+// position. Sleep tasks are multi-activation: each activation restores rest
+// and the task completes when progress reaches `total_cost` or rest is full.
 //
 // The activation loop (`process_creature_activation`) runs this logic:
 //
@@ -63,7 +69,7 @@
 // ### Task entity (`task.rs`)
 //
 // A `Task` has:
-// - `kind: TaskKind` — determines behavior (`GoTo`, `Build`, `EatFruit`).
+// - `kind: TaskKind` — determines behavior (`GoTo`, `Build`, `EatFruit`, `Sleep`).
 // - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
 // - `location: NavNodeId` — where creatures go to work on the task.
 // - `assignees: Vec<CreatureId>` — supports multiple workers.
@@ -115,6 +121,13 @@
 //     - If at location → `do_eat_fruit()`: restore food by `food_restore_pct`%
 //       of `food_max`, remove the fruit voxel from the world and the tree's
 //       `fruit_positions` list, and complete the task.
+//
+//   Sleep { bed_pos }:
+//     - If not at `task.location` → walk 1 edge toward it (same as GoTo).
+//     - If at location → `do_sleep()`: restore `rest_per_sleep_tick` rest per
+//       activation, increment progress. Completes when progress reaches
+//       `total_cost` (sleep_ticks_bed or sleep_ticks_ground) or rest is full.
+//       Beds (from dormitory structures) are reusable — not consumed.
 //
 // ### Task assignment details
 //
@@ -347,6 +360,10 @@ pub struct Creature {
     /// `food_decay_per_tick` each tick (batch-applied at heartbeat). 0 = starving.
     #[serde(default = "default_food")]
     pub food: i64,
+    /// Rest gauge. Starts at species `rest_max`, decreases by
+    /// `rest_decay_per_tick` each tick (batch-applied at heartbeat). 0 = exhausted.
+    #[serde(default = "default_rest")]
+    pub rest: i64,
 
     // --- Movement interpolation metadata (rendering only) ---
     // These fields record the visual start/end of each movement for smooth
@@ -367,6 +384,10 @@ pub struct Creature {
 }
 
 fn default_food() -> i64 {
+    1_000_000_000_000_000
+}
+
+fn default_rest() -> i64 {
     1_000_000_000_000_000
 }
 
@@ -1268,33 +1289,48 @@ impl SimState {
                 // Heartbeat is for periodic non-movement checks (mood, mana, etc.).
                 // Movement is driven by CreatureActivation, not heartbeats.
 
-                // Phase 1: apply food decay and read state needed for hunger check.
-                let should_seek_food = if let Some(creature) = self.creatures.get_mut(&creature_id)
-                {
-                    let species = creature.species;
-                    let species_data = &self.species_table[&species];
-                    let interval = species_data.heartbeat_interval_ticks;
-                    let decay = species_data.food_decay_per_tick * interval as i64;
-                    creature.food = (creature.food - decay).max(0);
+                // Phase 1: apply food and rest decay, read state for need checks.
+                let (should_seek_food, should_seek_sleep) =
+                    if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                        let species = creature.species;
+                        let species_data = &self.species_table[&species];
+                        let interval = species_data.heartbeat_interval_ticks;
 
-                    let threshold =
-                        species_data.food_max * species_data.food_hunger_threshold_pct / 100;
-                    let is_hungry = creature.food < threshold;
-                    let is_idle = creature.current_task.is_none();
+                        // Food decay.
+                        let food_decay = species_data.food_decay_per_tick * interval as i64;
+                        creature.food = (creature.food - food_decay).max(0);
 
-                    // Reschedule the next heartbeat.
-                    let next_tick = self.tick + interval;
-                    self.event_queue.schedule(
-                        next_tick,
-                        ScheduledEventKind::CreatureHeartbeat { creature_id },
-                    );
+                        // Rest decay.
+                        let rest_decay = species_data.rest_decay_per_tick * interval as i64;
+                        creature.rest = (creature.rest - rest_decay).max(0);
 
-                    is_hungry && is_idle
-                } else {
-                    false
-                };
+                        let food_threshold =
+                            species_data.food_max * species_data.food_hunger_threshold_pct / 100;
+                        let is_hungry = creature.food < food_threshold;
 
-                // Phase 2: if hungry and idle, find nearest fruit by graph
+                        let rest_threshold =
+                            species_data.rest_max * species_data.rest_tired_threshold_pct / 100;
+                        let is_tired = creature.rest < rest_threshold;
+
+                        let is_idle = creature.current_task.is_none();
+
+                        // Reschedule the next heartbeat.
+                        let next_tick = self.tick + interval;
+                        self.event_queue.schedule(
+                            next_tick,
+                            ScheduledEventKind::CreatureHeartbeat { creature_id },
+                        );
+
+                        // Hunger takes priority over tiredness.
+                        let seek_food = is_hungry && is_idle;
+                        let seek_sleep = is_tired && is_idle && !is_hungry;
+
+                        (seek_food, seek_sleep)
+                    } else {
+                        (false, false)
+                    };
+
+                // Phase 2a: if hungry and idle, find nearest fruit by graph
                 // travel cost (Dijkstra) and create an EatFruit task.
                 if should_seek_food
                     && let Some((fruit_pos, nav_node)) = self.find_nearest_fruit(creature_id)
@@ -1308,6 +1344,37 @@ impl SimState {
                         assignees: vec![creature_id],
                         progress: 0.0,
                         total_cost: 0.0,
+                        required_species: None,
+                    };
+                    self.tasks.insert(task_id, new_task);
+                    if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                        creature.current_task = Some(task_id);
+                    }
+                }
+
+                // Phase 2b: if tired and idle (and not hungry), find a bed
+                // or fall back to sleeping on the ground.
+                if should_seek_sleep {
+                    let (bed_pos, nav_node, sleep_ticks) =
+                        if let Some((bp, nn)) = self.find_nearest_bed(creature_id) {
+                            (Some(bp), nn, self.config.sleep_ticks_bed)
+                        } else if let Some(creature) = self.creatures.get(&creature_id)
+                            && let Some(node) = creature.current_node
+                        {
+                            (None, node, self.config.sleep_ticks_ground)
+                        } else {
+                            return; // No valid position — skip.
+                        };
+
+                    let task_id = TaskId::new(&mut self.rng);
+                    let new_task = task::Task {
+                        id: task_id,
+                        kind: task::TaskKind::Sleep { bed_pos },
+                        state: task::TaskState::InProgress,
+                        location: nav_node,
+                        assignees: vec![creature_id],
+                        progress: 0.0,
+                        total_cost: sleep_ticks as f32,
                         required_species: None,
                     };
                     self.tasks.insert(task_id, new_task);
@@ -1391,6 +1458,7 @@ impl SimState {
             path: None,
             current_task: None,
             food: species_data.food_max,
+            rest: species_data.rest_max,
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -1585,6 +1653,10 @@ impl SimState {
                 self.do_furnish_work(creature_id, task_id, structure_id);
                 return; // do_furnish_work handles its own next-activation scheduling.
             }
+            task::TaskKind::Sleep { bed_pos } => {
+                self.do_sleep(creature_id, task_id, bed_pos);
+                return; // do_sleep handles its own next-activation scheduling.
+            }
         }
 
         // Schedule next activation (creature is now idle, will wander or pick
@@ -1680,6 +1752,114 @@ impl SimState {
         }
 
         self.complete_task(task_id);
+    }
+
+    /// Find the nearest reachable dormitory bed for a creature, using Dijkstra
+    /// over the nav graph with species-specific speeds and edge restrictions.
+    ///
+    /// Excludes beds already occupied by an active Sleep task. Returns the bed
+    /// position and its nearest nav node, or `None` if no unoccupied beds exist
+    /// or none are reachable.
+    fn find_nearest_bed(&self, creature_id: CreatureId) -> Option<(VoxelCoord, NavNodeId)> {
+        let creature = self.creatures.get(&creature_id)?;
+        let start_node = creature.current_node?;
+        let species_data = &self.species_table[&creature.species];
+        let graph = self.graph_for_species(creature.species);
+
+        // Collect all occupied bed positions from active Sleep tasks.
+        let occupied_beds: Vec<VoxelCoord> = self
+            .tasks
+            .values()
+            .filter(|t| t.state != task::TaskState::Complete)
+            .filter_map(|t| match &t.kind {
+                task::TaskKind::Sleep {
+                    bed_pos: Some(pos), ..
+                } => Some(*pos),
+                _ => None,
+            })
+            .collect();
+
+        // Collect unoccupied bed positions from all dormitory structures.
+        let mut nav_to_bed: Vec<(NavNodeId, VoxelCoord)> = Vec::new();
+        let mut target_nodes: Vec<NavNodeId> = Vec::new();
+        for structure in self.structures.values() {
+            if structure.furnishing != Some(FurnishingType::Dormitory) {
+                continue;
+            }
+            for &bed_pos in &structure.furniture_positions {
+                if occupied_beds.contains(&bed_pos) {
+                    continue;
+                }
+                if let Some(nav_node) = graph.find_nearest_node(bed_pos) {
+                    target_nodes.push(nav_node);
+                    nav_to_bed.push((nav_node, bed_pos));
+                }
+            }
+        }
+
+        if target_nodes.is_empty() {
+            return None;
+        }
+
+        let nearest_node = pathfinding::dijkstra_nearest(
+            graph,
+            start_node,
+            &target_nodes,
+            species_data.walk_ticks_per_voxel,
+            species_data.climb_ticks_per_voxel,
+            species_data.wood_ladder_tpv,
+            species_data.rope_ladder_tpv,
+            species_data.allowed_edge_types.as_deref(),
+        )?;
+
+        let bed_pos = nav_to_bed
+            .iter()
+            .find(|(n, _)| *n == nearest_node)
+            .map(|(_, bp)| *bp)?;
+
+        Some((bed_pos, nearest_node))
+    }
+
+    /// Sleep: restore rest over multiple activations. Each activation adds 1.0
+    /// progress and restores `rest_per_sleep_tick` rest. The task completes when
+    /// `progress >= total_cost` or rest reaches `rest_max`.
+    fn do_sleep(&mut self, creature_id: CreatureId, task_id: TaskId, _bed_pos: Option<VoxelCoord>) {
+        // Restore rest.
+        if let Some(creature) = self.creatures.get(&creature_id) {
+            let species_data = &self.species_table[&creature.species];
+            let rest_max = species_data.rest_max;
+            let restore = species_data.rest_per_sleep_tick;
+            let creature = self.creatures.get_mut(&creature_id).unwrap();
+            creature.rest = (creature.rest + restore).min(rest_max);
+        }
+
+        // Increment progress and check completion.
+        let done = if let Some(task) = self.tasks.get_mut(&task_id) {
+            task.progress += 1.0;
+            task.progress >= task.total_cost
+        } else {
+            true
+        };
+
+        // Also complete if rest is full.
+        let rest_full = self
+            .creatures
+            .get(&creature_id)
+            .map(|c| {
+                let species_data = &self.species_table[&c.species];
+                c.rest >= species_data.rest_max
+            })
+            .unwrap_or(false);
+
+        if done || rest_full {
+            self.complete_task(task_id);
+        }
+
+        // Schedule next activation.
+        self.event_queue.schedule(
+            self.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
     }
 
     /// Walk one edge toward a task location using a stored or computed A* path.
@@ -4089,6 +4269,512 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Rest/sleep tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rest_decreases_over_heartbeats() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let decay_per_tick = sim.species_table[&Species::Elf].rest_decay_per_tick;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Verify rest starts at rest_max.
+        let elf = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap();
+        assert_eq!(elf.rest, rest_max);
+
+        // Advance past 3 heartbeats.
+        let target_tick = 1 + heartbeat_interval * 3 + 1;
+        sim.step(&[], target_tick);
+
+        let elf = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap();
+        let expected_decay = decay_per_tick * heartbeat_interval as i64 * 3;
+        assert_eq!(elf.rest, rest_max - expected_decay);
+    }
+
+    #[test]
+    fn rest_does_not_go_below_zero() {
+        let mut config = test_config();
+        let elf = config.species.get_mut(&Species::Elf).unwrap();
+        elf.rest_decay_per_tick = 1_000_000_000_000_000; // Depletes in 1 tick
+        elf.rest_per_sleep_tick = 0; // Prevent sleep from restoring rest.
+        let mut sim = SimState::with_config(42, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        let target_tick = 1 + heartbeat_interval * 5;
+        sim.step(&[], target_tick);
+
+        let elf = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap();
+        assert_eq!(elf.rest, 0);
+    }
+
+    #[test]
+    fn tired_idle_elf_creates_sleep_task() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set rest below threshold (50%) and food well above threshold.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 30 / 100;
+        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
+
+        // Advance past the next heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // The elf should now have a Sleep task.
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_some(),
+            "Tired idle elf should have been assigned a Sleep task"
+        );
+        let task = &sim.tasks[&elf.current_task.unwrap()];
+        assert!(
+            matches!(task.kind, TaskKind::Sleep { .. }),
+            "Task should be Sleep, got {:?}",
+            task.kind
+        );
+    }
+
+    #[test]
+    fn rested_elf_does_not_create_sleep_task() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Spawn an elf — starts at full rest.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Advance past the heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // No Sleep task should exist.
+        let has_sleep_task = sim
+            .tasks
+            .values()
+            .any(|t| matches!(t.kind, TaskKind::Sleep { .. }));
+        assert!(
+            !has_sleep_task,
+            "Well-rested elf should not create a Sleep task"
+        );
+    }
+
+    #[test]
+    fn busy_tired_elf_does_not_create_sleep_task() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set rest very low but keep food high.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 10 / 100;
+        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
+
+        // Give the elf a GoTo task so it's busy.
+        let task_id = TaskId::new(&mut sim.rng);
+        let goto_task = Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::InProgress,
+            location: NavNodeId(0),
+            assignees: vec![elf_id],
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+        };
+        sim.tasks.insert(task_id, goto_task);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+
+        // Advance past the heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // The elf should still have its GoTo task, not a Sleep one.
+        let elf = &sim.creatures[&elf_id];
+        assert_eq!(
+            elf.current_task,
+            Some(task_id),
+            "Busy elf should keep its existing task"
+        );
+        let sleep_task_count = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Sleep { .. }))
+            .count();
+        assert_eq!(
+            sleep_task_count, 0,
+            "No Sleep task should be created for a busy elf"
+        );
+    }
+
+    #[test]
+    fn hungry_takes_priority_over_tired() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Need fruit.
+        assert!(
+            sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+            "Tree must have fruit"
+        );
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Both food AND rest below threshold.
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 20 / 100;
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 20 / 100;
+
+        // Advance past the heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // Hunger takes priority — should get EatFruit, not Sleep.
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_some(),
+            "Hungry+tired elf should get a task"
+        );
+        let task = &sim.tasks[&elf.current_task.unwrap()];
+        assert!(
+            matches!(task.kind, TaskKind::EatFruit { .. }),
+            "Hunger should take priority over tiredness, got {:?}",
+            task.kind
+        );
+    }
+
+    #[test]
+    fn ground_sleep_fallback_when_no_beds() {
+        // No dormitories exist — tired elf should get a ground Sleep task.
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set rest below threshold, food high.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 30 / 100;
+        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
+
+        // Advance past the heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // Should have a Sleep task with bed_pos: None (ground sleep).
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_some(),
+            "Tired elf should get a Sleep task"
+        );
+        let task = &sim.tasks[&elf.current_task.unwrap()];
+        match &task.kind {
+            TaskKind::Sleep { bed_pos } => {
+                assert_eq!(*bed_pos, None, "No dormitories — should be ground sleep");
+            }
+            other => panic!("Expected Sleep task, got {:?}", other),
+        }
+        // Ground sleep should use sleep_ticks_ground for total_cost.
+        assert_eq!(
+            task.total_cost, sim.config.sleep_ticks_ground as f32,
+            "Ground sleep total_cost should be sleep_ticks_ground"
+        );
+    }
+
+    #[test]
+    fn find_nearest_bed_excludes_occupied() {
+        use crate::building::CompletedStructure;
+
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Find a valid nav node near tree for the bed position.
+        let graph = sim.graph_for_species(Species::Elf);
+        let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+        let bed_pos = graph.node(bed_node).position;
+
+        // Add a dormitory structure with exactly one bed.
+        let structure_id = StructureId(999);
+        let project_id = ProjectId::new(&mut sim.rng);
+        sim.structures.insert(
+            structure_id,
+            CompletedStructure {
+                id: structure_id,
+                project_id,
+                build_type: BuildType::Building,
+                anchor: bed_pos,
+                width: 3,
+                depth: 3,
+                height: 3,
+                completed_tick: 0,
+                name: None,
+                furnishing: Some(FurnishingType::Dormitory),
+                furniture_positions: vec![bed_pos],
+                planned_furniture: vec![],
+            },
+        );
+
+        // Spawn two elves.
+        let cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: 1,
+                action: SimAction::SpawnCreature {
+                    species: Species::Elf,
+                    position: tree_pos,
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: 1,
+                action: SimAction::SpawnCreature {
+                    species: Species::Elf,
+                    position: tree_pos,
+                },
+            },
+        ];
+        sim.step(&cmds, 1);
+
+        let elf_ids: Vec<CreatureId> = sim
+            .creatures
+            .values()
+            .filter(|c| c.species == Species::Elf)
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(elf_ids.len(), 2);
+
+        // Make both elves tired with high food.
+        for &elf_id in &elf_ids {
+            sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 20 / 100;
+            sim.creatures.get_mut(&elf_id).unwrap().food =
+                sim.species_table[&Species::Elf].food_max;
+        }
+
+        // Advance past the heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // Both should have Sleep tasks.
+        let mut bed_sleep_count = 0;
+        let mut ground_sleep_count = 0;
+        for &elf_id in &elf_ids {
+            let elf = &sim.creatures[&elf_id];
+            if let Some(task_id) = elf.current_task {
+                if let Some(task) = sim.tasks.get(&task_id) {
+                    match &task.kind {
+                        TaskKind::Sleep { bed_pos: Some(_) } => bed_sleep_count += 1,
+                        TaskKind::Sleep { bed_pos: None } => ground_sleep_count += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // One bed available → one elf gets bed sleep, one gets ground sleep.
+        assert_eq!(bed_sleep_count, 1, "One elf should sleep in the bed");
+        assert_eq!(
+            ground_sleep_count, 1,
+            "Second elf should sleep on the ground"
+        );
+    }
+
+    #[test]
+    fn tired_elf_sleeps_and_rest_increases() {
+        use crate::building::CompletedStructure;
+
+        // Integration test: set low rest, add a dormitory with beds, run many
+        // ticks, verify rest increased (proves sleeping happened).
+        let mut config = test_config();
+        let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+        // Don't let food or rest decay interfere — zero both so we can
+        // set rest manually and only see the effect of sleeping.
+        elf_species.food_decay_per_tick = 0;
+        elf_species.rest_decay_per_tick = 0;
+        let mut sim = SimState::with_config(42, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+
+        // Add a dormitory with beds near the tree.
+        let graph = sim.graph_for_species(Species::Elf);
+        let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+        let bed_pos = graph.node(bed_node).position;
+
+        let structure_id = StructureId(999);
+        let project_id = ProjectId::new(&mut sim.rng);
+        sim.structures.insert(
+            structure_id,
+            CompletedStructure {
+                id: structure_id,
+                project_id,
+                build_type: BuildType::Building,
+                anchor: bed_pos,
+                width: 3,
+                depth: 3,
+                height: 3,
+                completed_tick: 0,
+                name: None,
+                furnishing: Some(FurnishingType::Dormitory),
+                furniture_positions: vec![bed_pos],
+                planned_furniture: vec![],
+            },
+        );
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set rest to 20% — well below the 50% threshold.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 20 / 100;
+        let rest_before = sim.creatures[&elf_id].rest;
+
+        // Run for 50_000 ticks — enough for heartbeat + pathfind + sleep.
+        sim.step(&[], 50_001);
+
+        let elf = &sim.creatures[&elf_id];
+        // If the elf slept, rest should be meaningfully higher than 20%.
+        // With rest_per_sleep_tick=60B and sleep_ticks_bed=10_000 activations,
+        // full bed sleep restores 600T = 60% of rest_max. Even with continued
+        // decay, rest should be well above the starting 20%.
+        assert!(
+            elf.rest > rest_before,
+            "Tired elf should have slept and restored rest above starting level. rest={}, was={}",
+            elf.rest,
+            rest_before
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Movement interpolation tests
     // -----------------------------------------------------------------------
 
@@ -4104,6 +4790,7 @@ mod tests {
             path: None,
             current_task: None,
             food: 1000,
+            rest: 1000,
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4127,6 +4814,7 @@ mod tests {
             path: None,
             current_task: None,
             food: 1000,
+            rest: 1000,
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4148,6 +4836,7 @@ mod tests {
             path: None,
             current_task: None,
             food: 1000,
+            rest: 1000,
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4169,6 +4858,7 @@ mod tests {
             path: None,
             current_task: None,
             food: 1000,
+            rest: 1000,
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4193,6 +4883,7 @@ mod tests {
             path: None,
             current_task: None,
             food: 1000,
+            rest: 1000,
             move_from: None,
             move_to: None,
             move_start_tick: 0,

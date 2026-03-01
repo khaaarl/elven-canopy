@@ -634,6 +634,16 @@ pub struct GameConfig {
     )]
     pub furnish_work_ticks_per_item: u64,
 
+    /// Total ticks of sleep when resting in a dormitory bed (multi-activation
+    /// task). Lower = faster sleep. Default 10_000 = 10 sim-seconds.
+    #[serde(default = "default_sleep_ticks_bed")]
+    pub sleep_ticks_bed: u64,
+
+    /// Total ticks of sleep when resting on the ground (no bed available).
+    /// Slower than bed sleep. Default 20_000 = 20 sim-seconds.
+    #[serde(default = "default_sleep_ticks_ground")]
+    pub sleep_ticks_ground: u64,
+
     /// Tree generation parameters — energy-based recursive growth profile.
     pub tree_profile: TreeProfile,
 
@@ -667,6 +677,14 @@ fn default_furnish_ticks() -> u64 {
     2000
 }
 
+fn default_sleep_ticks_bed() -> u64 {
+    10_000
+}
+
+fn default_sleep_ticks_ground() -> u64 {
+    20_000
+}
+
 fn default_terrain_noise_scale() -> f32 {
     8.0
 }
@@ -689,6 +707,10 @@ impl Default for GameConfig {
                 footprint: [1, 1, 1],
                 wood_ladder_tpv: Some(750),
                 rope_ladder_tpv: Some(900),
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 3_333_333_333,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
             },
         );
         species.insert(
@@ -706,6 +728,10 @@ impl Default for GameConfig {
                 footprint: [1, 1, 1],
                 wood_ladder_tpv: None,
                 rope_ladder_tpv: None,
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
             },
         );
         species.insert(
@@ -723,6 +749,10 @@ impl Default for GameConfig {
                 footprint: [1, 1, 1],
                 wood_ladder_tpv: None,
                 rope_ladder_tpv: None,
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
             },
         );
         species.insert(
@@ -740,6 +770,10 @@ impl Default for GameConfig {
                 footprint: [1, 1, 1],
                 wood_ladder_tpv: None,
                 rope_ladder_tpv: None,
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
             },
         );
         species.insert(
@@ -757,6 +791,10 @@ impl Default for GameConfig {
                 footprint: [2, 2, 2],
                 wood_ladder_tpv: None,
                 rope_ladder_tpv: None,
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
             },
         );
         species.insert(
@@ -774,6 +812,10 @@ impl Default for GameConfig {
                 footprint: [1, 1, 1],
                 wood_ladder_tpv: Some(600),
                 rope_ladder_tpv: Some(700),
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
             },
         );
         species.insert(
@@ -791,6 +833,10 @@ impl Default for GameConfig {
                 footprint: [1, 1, 1],
                 wood_ladder_tpv: Some(500),
                 rope_ladder_tpv: Some(600),
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
             },
         );
 
@@ -811,6 +857,8 @@ impl Default for GameConfig {
             build_work_ticks_per_voxel: 1000,
             carve_work_ticks_per_voxel: 1000,
             furnish_work_ticks_per_item: 2000,
+            sleep_ticks_bed: 10_000,
+            sleep_ticks_ground: 20_000,
             tree_profile: TreeProfile::fantasy_mega(),
             species,
             terrain_max_height: 4,

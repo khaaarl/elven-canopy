@@ -6,8 +6,8 @@
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Shows species, name (Vaelith name for elves, fallback "Species #N" for
-## unnamed creatures), position, task status, and a food gauge (progress
-## bar + percentage). Updated every frame by main.gd.
+## unnamed creatures), position, task status, a food gauge, and a rest gauge
+## (both as progress bar + percentage). Updated every frame by main.gd.
 ##
 ## See also: selection_controller.gd which triggers show/hide,
 ## orbital_camera.gd which responds to follow/unfollow,
@@ -25,6 +25,8 @@ var _position_label: Label
 var _task_label: Label
 var _food_bar: ProgressBar
 var _food_label: Label
+var _rest_bar: ProgressBar
+var _rest_label: Label
 var _follow_button: Button
 var _is_following: bool = false
 var _selected_species: String = ""
@@ -105,6 +107,30 @@ func _ready() -> void:
 	_food_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	food_row.add_child(_food_label)
 
+	# Rest gauge.
+	var rest_row := HBoxContainer.new()
+	rest_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(rest_row)
+
+	var rest_title := Label.new()
+	rest_title.text = "Rest:"
+	rest_row.add_child(rest_title)
+
+	_rest_bar = ProgressBar.new()
+	_rest_bar.min_value = 0.0
+	_rest_bar.max_value = 100.0
+	_rest_bar.value = 100.0
+	_rest_bar.show_percentage = false
+	_rest_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_rest_bar.custom_minimum_size.y = 20
+	rest_row.add_child(_rest_bar)
+
+	_rest_label = Label.new()
+	_rest_label.text = "100%"
+	_rest_label.custom_minimum_size.x = 45
+	_rest_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	rest_row.add_child(_rest_label)
+
 	# Spacer to push the follow button toward the bottom-ish area.
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -135,6 +161,7 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 	_update_position(info)
 	_task_label.text = "Has task: %s" % str(info.get("has_task", false))
 	_update_food(info)
+	_update_rest(info)
 	_is_following = false
 	_follow_button.text = "Follow"
 	visible = true
@@ -144,6 +171,7 @@ func update_info(info: Dictionary) -> void:
 	_update_position(info)
 	_task_label.text = "Has task: %s" % str(info.get("has_task", false))
 	_update_food(info)
+	_update_rest(info)
 
 
 func hide_panel() -> void:
@@ -166,6 +194,15 @@ func _update_food(info: Dictionary) -> void:
 	var pct: float = 100.0 * float(info.get("food", 0)) / float(food_max)
 	_food_bar.value = pct
 	_food_label.text = "%d%%" % int(pct)
+
+
+func _update_rest(info: Dictionary) -> void:
+	var rest_max: int = info.get("rest_max", 1)
+	if rest_max <= 0:
+		rest_max = 1
+	var pct: float = 100.0 * float(info.get("rest", 0)) / float(rest_max)
+	_rest_bar.value = pct
+	_rest_label.text = "%d%%" % int(pct)
 
 
 func _update_position(info: Dictionary) -> void:

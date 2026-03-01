@@ -23,9 +23,10 @@
 //   smooth interpolation between nav nodes via `Creature::interpolated_position()`.
 // - **Creature info:** `get_creature_info(species_name, index, render_tick)` —
 //   returns a `VarDictionary` with species, interpolated position (x/y/z),
-//   task status, food level, food_max, name (Vaelith name for elves, empty
-//   for other species), and name_meaning (English gloss). Used by the creature
-//   info panel for display and follow-mode tracking.
+//   task status, food level, food_max, rest level, rest_max, name (Vaelith
+//   name for elves, empty for other species), and name_meaning (English
+//   gloss). Used by the creature info panel for display and follow-mode
+//   tracking.
 // - **Task list:** `get_active_tasks()` — returns a `VarArray` of
 //   `VarDictionary`, one per non-complete task. Each dict includes short/full
 //   ID, kind, state, progress/total_cost, location coordinates, and an
@@ -648,8 +649,8 @@ impl SimBridge {
     /// used for position interpolation (same as the position getters).
     ///
     /// Returns a VarDictionary with keys: "species", "x", "y", "z", "has_task",
-    /// "food", "food_max", "name", "name_meaning". Returns an empty VarDictionary
-    /// if species is unknown or index is out of bounds.
+    /// "food", "food_max", "rest", "rest_max", "name", "name_meaning". Returns an
+    /// empty VarDictionary if species is unknown or index is out of bounds.
     #[func]
     fn get_creature_info(
         &self,
@@ -680,6 +681,9 @@ impl SimBridge {
                 dict.set("food", c.food);
                 let food_max = sim.species_table[&species].food_max;
                 dict.set("food_max", food_max);
+                dict.set("rest", c.rest);
+                let rest_max = sim.species_table[&species].rest_max;
+                dict.set("rest_max", rest_max);
                 dict.set("name", GString::from(c.name.as_str()));
                 dict.set("name_meaning", GString::from(c.name_meaning.as_str()));
                 dict
@@ -724,6 +728,7 @@ impl SimBridge {
                 elven_canopy_sim::task::TaskKind::Build { .. } => "Build",
                 elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
                 elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
+                elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
             };
             dict.set("kind", GString::from(kind_str));
 
@@ -1084,6 +1089,30 @@ impl SimBridge {
             && let Some(creature) = sim.creatures.get_mut(&id)
         {
             creature.food = food;
+        }
+    }
+
+    /// Set the rest level of the nth creature of the given species.
+    ///
+    /// `index` is the species-filtered iteration index matching the order
+    /// used by `get_creature_positions()`. Used by `main.gd` to vary
+    /// initial rest levels after spawning.
+    #[func]
+    fn set_creature_rest(&mut self, species_name: GString, index: i32, rest: i64) {
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return;
+        };
+        let Some(sim) = &mut self.sim else { return };
+        let creature_id = sim
+            .creatures
+            .iter()
+            .filter(|(_, c)| c.species == species)
+            .nth(index as usize)
+            .map(|(_, c)| c.id);
+        if let Some(id) = creature_id
+            && let Some(creature) = sim.creatures.get_mut(&id)
+        {
+            creature.rest = rest;
         }
     }
 
