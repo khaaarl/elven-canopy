@@ -23,9 +23,9 @@
 //   smooth interpolation between nav nodes via `Creature::interpolated_position()`.
 // - **Creature info:** `get_creature_info(species_name, index, render_tick)` —
 //   returns a `VarDictionary` with species, interpolated position (x/y/z),
-//   task status, food level, and food_max for the creature at the given
-//   species-filtered index. Used by the creature info panel for display and
-//   follow-mode tracking.
+//   task status, food level, food_max, name (Vaelith name for elves, empty
+//   for other species), and name_meaning (English gloss). Used by the creature
+//   info panel for display and follow-mode tracking.
 // - **Task list:** `get_active_tasks()` — returns a `VarArray` of
 //   `VarDictionary`, one per non-complete task. Each dict includes short/full
 //   ID, kind, state, progress/total_cost, location coordinates, and an
@@ -640,9 +640,9 @@ impl SimBridge {
     /// BTreeMap order filtered by species. The `render_tick` parameter is
     /// used for position interpolation (same as the position getters).
     ///
-    /// Returns a VarDictionary with keys: "species", "x", "y", "z", "has_task".
-    /// Returns an empty VarDictionary if species is unknown or index is out of
-    /// bounds.
+    /// Returns a VarDictionary with keys: "species", "x", "y", "z", "has_task",
+    /// "food", "food_max", "name", "name_meaning". Returns an empty VarDictionary
+    /// if species is unknown or index is out of bounds.
     #[func]
     fn get_creature_info(
         &self,
@@ -673,6 +673,8 @@ impl SimBridge {
                 dict.set("food", c.food);
                 let food_max = sim.species_table[&species].food_max;
                 dict.set("food_max", food_max);
+                dict.set("name", GString::from(c.name.as_str()));
+                dict.set("name_meaning", GString::from(c.name_meaning.as_str()));
                 dict
             }
             None => VarDictionary::new(),

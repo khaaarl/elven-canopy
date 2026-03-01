@@ -5,8 +5,9 @@
 ## Sits on the CanvasLayer alongside the spawn toolbar.
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
-## Shows species, name (placeholder), position, task status, and a food
-## gauge (progress bar + percentage). Updated every frame by main.gd.
+## Shows species, name (Vaelith name for elves, fallback "Species #N" for
+## unnamed creatures), position, task status, and a food gauge (progress
+## bar + percentage). Updated every frame by main.gd.
 ##
 ## See also: selection_controller.gd which triggers show/hide,
 ## orbital_camera.gd which responds to follow/unfollow,
@@ -68,7 +69,7 @@ func _ready() -> void:
 	_species_label = Label.new()
 	vbox.add_child(_species_label)
 
-	# Name (placeholder).
+	# Name (Vaelith name for elves, fallback "Species #N" for unnamed creatures).
 	_name_label = Label.new()
 	vbox.add_child(_name_label)
 
@@ -122,7 +123,15 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 	_selected_species = species
 	_selected_index = index
 	_species_label.text = "Species: %s" % species
-	_name_label.text = "Name: %s #%d" % [species, index + 1]
+	var creature_name: String = info.get("name", "")
+	if creature_name.is_empty():
+		_name_label.text = "Name: %s #%d" % [species, index + 1]
+	else:
+		var meaning: String = info.get("name_meaning", "")
+		if meaning.is_empty():
+			_name_label.text = "Name: %s" % creature_name
+		else:
+			_name_label.text = "Name: %s (%s)" % [creature_name, meaning]
 	_update_position(info)
 	_task_label.text = "Has task: %s" % str(info.get("has_task", false))
 	_update_food(info)

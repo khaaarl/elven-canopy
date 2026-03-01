@@ -136,7 +136,7 @@
 // ## Save/load
 //
 // `SimState` derives `Serialize`/`Deserialize` via serde. Several transient
-// fields (`world`, `nav_graph`, `large_nav_graph`, `species_table`,
+// fields (`world`, `nav_graph`, `large_nav_graph`, `species_table`, `lexicon`,
 // `face_data`, `ladder_orientations`, `structure_voxels`) are `#[serde(skip)]`
 // and must be rebuilt after deserialization via `rebuild_transient_state()`.
 // Convenience methods `to_json()` and `from_json()` handle the full
@@ -169,6 +169,7 @@ use crate::task;
 use crate::tree_gen;
 use crate::types::*;
 use crate::world::VoxelWorld;
+use elven_canopy_lang::Lexicon;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -269,6 +270,11 @@ pub struct SimState {
     #[serde(skip)]
     pub species_table: BTreeMap<Species, SpeciesData>,
 
+    /// Vaelith lexicon for elf name generation. Transient — loaded from the
+    /// embedded JSON at startup and after deserialization. Not serialized.
+    #[serde(skip)]
+    pub lexicon: Option<Lexicon>,
+
     /// Transient message from the last build designation attempt. Set by
     /// `designate_build()` / `designate_building()` and read by `sim_bridge.rs`
     /// to surface validation feedback (warnings, block reasons) to the player.
@@ -325,6 +331,12 @@ pub struct Creature {
     pub id: CreatureId,
     pub species: Species,
     pub position: VoxelCoord,
+    /// Creature's display name (e.g., Vaelith name for elves). Empty for unnamed species.
+    #[serde(default)]
+    pub name: String,
+    /// English meaning gloss of the name (e.g., "star-tree song-glow"). Empty if unnamed.
+    #[serde(default)]
+    pub name_meaning: String,
     /// Current nav node the creature is at (or moving from).
     pub current_node: Option<NavNodeId>,
     /// Active path the creature is traversing (used when walking toward a task).
@@ -506,6 +518,7 @@ impl SimState {
             nav_graph,
             large_nav_graph,
             species_table,
+            lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
             structure_voxels: BTreeMap::new(),
         };
@@ -1347,10 +1360,27 @@ impl SimState {
         let node_pos = graph.node(nearest_node).position;
         let creature_id = CreatureId::new(&mut self.rng);
 
+        // Generate a Vaelith name for elves; other species are unnamed.
+        let (name, name_meaning) = if species == Species::Elf {
+            if let Some(lexicon) = &self.lexicon {
+                let vname = elven_canopy_lang::names::generate_name(lexicon, &mut self.rng);
+                (
+                    vname.full_name,
+                    format!("{} {}", vname.given_meaning, vname.surname_meaning),
+                )
+            } else {
+                (String::new(), String::new())
+            }
+        } else {
+            (String::new(), String::new())
+        };
+
         let creature = Creature {
             id: creature_id,
             species,
             position: node_pos,
+            name,
+            name_meaning,
             current_node: Some(nearest_node),
             path: None,
             current_task: None,
@@ -2481,7 +2511,8 @@ impl SimState {
     ///
     /// Restores: `world` (voxel grid from stored tree voxels + config),
     /// `nav_graph` (from rebuilt world geometry), `species_table` (from config),
-    /// `structure_voxels` (from completed blueprints + structures).
+    /// `lexicon` (from embedded JSON), `structure_voxels` (from completed
+    /// blueprints + structures).
     pub fn rebuild_transient_state(&mut self) {
         self.world = Self::rebuild_world(
             &self.config,
@@ -2494,6 +2525,7 @@ impl SimState {
         self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
         self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
+        self.lexicon = Some(elven_canopy_lang::default_lexicon());
 
         // Rebuild structure_voxels from completed blueprints.
         self.structure_voxels.clear();
@@ -2516,7 +2548,7 @@ impl SimState {
     }
 
     /// Deserialize a simulation state from a JSON string and rebuild
-    /// transient fields (world, nav_graph, species_table).
+    /// transient fields (world, nav_graph, species_table, lexicon).
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut state: SimState = serde_json::from_str(json)?;
         state.rebuild_transient_state();
@@ -2718,6 +2750,100 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn spawned_elf_has_vaelith_name() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+
+        sim.step(&[cmd], 2);
+        assert_eq!(sim.creature_count(Species::Elf), 1);
+
+        let elf = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .expect("elf should exist");
+
+        // Elf should have a non-empty Vaelith name with given + surname.
+        assert!(!elf.name.is_empty(), "Elf should have a name");
+        assert!(
+            elf.name.contains(' '),
+            "Name '{}' should contain a space (given + surname)",
+            elf.name
+        );
+        assert!(
+            !elf.name_meaning.is_empty(),
+            "Elf should have a name meaning"
+        );
+    }
+
+    #[test]
+    fn spawned_elf_name_is_deterministic() {
+        // Same seed should produce the same elf name.
+        let mut sim1 = test_sim(42);
+        let mut sim2 = test_sim(42);
+        let tree_pos = sim1.trees[&sim1.player_tree_id].position;
+
+        let cmd1 = SimCommand {
+            player_id: sim1.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        let cmd2 = SimCommand {
+            player_id: sim2.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+
+        sim1.step(&[cmd1], 2);
+        sim2.step(&[cmd2], 2);
+
+        let elf1 = sim1.creatures.values().next().unwrap();
+        let elf2 = sim2.creatures.values().next().unwrap();
+        assert_eq!(elf1.name, elf2.name);
+        assert_eq!(elf1.name_meaning, elf2.name_meaning);
+    }
+
+    #[test]
+    fn spawned_non_elf_has_no_name() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Capybara,
+                position: tree_pos,
+            },
+        };
+
+        sim.step(&[cmd], 2);
+        let capy = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Capybara)
+            .expect("capybara should exist");
+
+        // Non-elf creatures should not have Vaelith names.
+        assert!(capy.name.is_empty(), "Capybara should not have a name");
     }
 
     #[test]
@@ -3539,6 +3665,8 @@ mod tests {
             let restored_creature = &restored.creatures[id];
             assert_eq!(creature.position, restored_creature.position);
             assert_eq!(creature.species, restored_creature.species);
+            assert_eq!(creature.name, restored_creature.name);
+            assert_eq!(creature.name_meaning, restored_creature.name_meaning);
         }
         assert_eq!(sim.player_tree_id, restored.player_tree_id);
         assert_eq!(sim.player_id, restored.player_id);
@@ -3577,6 +3705,36 @@ mod tests {
         }
         // PRNG state must match.
         assert_eq!(sim.rng.next_u64(), restored.rng.next_u64());
+    }
+
+    #[test]
+    fn elf_spawned_after_roundtrip_gets_name() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Save and restore (no creatures yet).
+        let mut restored = SimState::from_json(&sim.to_json().unwrap()).unwrap();
+
+        // Spawn an elf after the roundtrip.
+        let cmd = SimCommand {
+            player_id: restored.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        restored.step(&[cmd], 2);
+
+        let elf = restored
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .expect("elf should exist after roundtrip spawn");
+        assert!(
+            !elf.name.is_empty(),
+            "Elf spawned after save/load should still get a Vaelith name"
+        );
     }
 
     #[test]
@@ -3812,6 +3970,8 @@ mod tests {
             id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
             species: Species::Elf,
             position: VoxelCoord::new(10, 0, 0),
+            name: String::new(),
+            name_meaning: String::new(),
             current_node: None,
             path: None,
             current_task: None,
@@ -3833,6 +3993,8 @@ mod tests {
             id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
             species: Species::Elf,
             position: VoxelCoord::new(10, 0, 0),
+            name: String::new(),
+            name_meaning: String::new(),
             current_node: None,
             path: None,
             current_task: None,
@@ -3852,6 +4014,8 @@ mod tests {
             id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
             species: Species::Elf,
             position: VoxelCoord::new(10, 0, 0),
+            name: String::new(),
+            name_meaning: String::new(),
             current_node: None,
             path: None,
             current_task: None,
@@ -3871,6 +4035,8 @@ mod tests {
             id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
             species: Species::Elf,
             position: VoxelCoord::new(10, 0, 0),
+            name: String::new(),
+            name_meaning: String::new(),
             current_node: None,
             path: None,
             current_task: None,
@@ -3893,6 +4059,8 @@ mod tests {
             id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
             species: Species::Elf,
             position: VoxelCoord::new(5, 3, 7),
+            name: String::new(),
+            name_meaning: String::new(),
             current_node: None,
             path: None,
             current_task: None,

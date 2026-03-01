@@ -74,7 +74,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
 [ ] F-elf-assign           Elf-to-building assignment UI
-[ ] F-elf-names            Elf name generation from conlang rules
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
@@ -152,6 +151,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-crate-structure      Two-crate sim/gdext structure
 [x] F-creature-info        Creature info panel with follow button
 [x] F-debug-menu           Move spawn/summon into debug menu
+[x] F-elf-names            Elf name generation from conlang rules
 [x] F-elf-sprite           Billboard elf sprite rendering
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-food-gauge           Creature food gauge with decay
@@ -1000,7 +1000,7 @@ gameplay loop.
 **Related:** F-choir-build, F-music-runtime
 
 #### F-elf-names — Elf name generation from conlang rules
-**Status:** Todo · **Phase:** 6 · **Refs:** §20
+**Status:** Done · **Phase:** 6 · **Refs:** §20
 
 Generate elf names using Vaelith phonotactic rules. Names are compounds of
 meaningful roots (e.g., *Thíraleth* = "star-tree"), genderless, with given
