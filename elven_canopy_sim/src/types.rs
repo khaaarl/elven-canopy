@@ -453,6 +453,7 @@ pub enum VoxelType {
     GrownStairs,
     Bridge,
     ForestFloor,
+    Dirt,
     Leaf,
     Fruit,
     Root,
@@ -495,6 +496,7 @@ impl VoxelType {
                 OverlapClassification::AlreadyWood
             }
             VoxelType::ForestFloor
+            | VoxelType::Dirt
             | VoxelType::GrownPlatform
             | VoxelType::GrownWall
             | VoxelType::GrownStairs
@@ -708,6 +710,19 @@ mod tests {
         );
         assert_eq!(
             VoxelType::BuildingInterior.classify_for_overlap(),
+            OverlapClassification::Blocked
+        );
+    }
+
+    #[test]
+    fn dirt_is_solid() {
+        assert!(VoxelType::Dirt.is_solid());
+    }
+
+    #[test]
+    fn dirt_blocks_overlap() {
+        assert_eq!(
+            VoxelType::Dirt.classify_for_overlap(),
             OverlapClassification::Blocked
         );
     }

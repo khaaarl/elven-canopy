@@ -277,6 +277,9 @@ pub struct Tree {
     pub leaf_voxels: Vec<VoxelCoord>,
     /// Root voxel positions (at or below ground level).
     pub root_voxels: Vec<VoxelCoord>,
+    /// Dirt voxel positions forming hilly terrain above ForestFloor.
+    #[serde(default)]
+    pub dirt_voxels: Vec<VoxelCoord>,
     /// Positions of fruit hanging below leaf voxels.
     pub fruit_positions: Vec<VoxelCoord>,
 }
@@ -439,6 +442,7 @@ impl SimState {
             branch_voxels: tree_result.branch_voxels,
             leaf_voxels: tree_result.leaf_voxels,
             root_voxels: tree_result.root_voxels,
+            dirt_voxels: tree_result.dirt_voxels,
             fruit_positions: Vec::new(),
         };
 
@@ -1880,6 +1884,14 @@ impl SimState {
             }
         }
 
+        // Place dirt voxels (terrain hills). Dirt has priority 0 so tree voxels
+        // overwrite it where they overlap — the tree embeds naturally in hillside.
+        for tree in trees.values() {
+            for &coord in &tree.dirt_voxels {
+                world.set(coord, VoxelType::Dirt);
+            }
+        }
+
         // Place tree voxels. Priority order: Trunk > Branch > Root > Leaf > Fruit.
         for tree in trees.values() {
             for &coord in &tree.trunk_voxels {
@@ -1973,12 +1985,15 @@ mod tests {
     /// Matches the approach used by nav::tests and tree_gen::tests.
     /// This is ~64x fewer voxels than the default 256×128×256 world,
     /// making SimState construction dramatically faster in debug builds.
+    /// Terrain is disabled (terrain_max_height = 0) to preserve existing
+    /// test behavior (flat forest floor).
     fn test_config() -> GameConfig {
         let mut config = GameConfig {
             world_size: (64, 64, 64),
             ..GameConfig::default()
         };
         config.tree_profile.growth.initial_energy = 50.0;
+        config.terrain_max_height = 0;
         config
     }
 
@@ -2830,6 +2845,41 @@ mod tests {
             rebuilt.get(air_coord),
             VoxelType::GrownPlatform,
             "Rebuilt world should contain the placed platform voxel"
+        );
+    }
+
+    #[test]
+    fn rebuild_world_includes_dirt_voxels() {
+        let mut config = test_config();
+        config.terrain_max_height = 3;
+        config.terrain_noise_scale = 8.0;
+        let sim = SimState::with_config(42, config);
+
+        let tree = &sim.trees[&sim.player_tree_id];
+        assert!(
+            !tree.dirt_voxels.is_empty(),
+            "With terrain enabled, tree should have dirt voxels"
+        );
+
+        // Rebuild and verify dirt is present.
+        let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &sim.placed_voxels);
+        for &coord in &tree.dirt_voxels {
+            let voxel = rebuilt.get(coord);
+            // Dirt might be overwritten by tree voxels (trunk/branch/root),
+            // but any remaining should be Dirt.
+            if voxel == VoxelType::Dirt {
+                assert_eq!(voxel, VoxelType::Dirt);
+            }
+        }
+        // At least some dirt voxels should survive (not all overwritten by tree).
+        let dirt_count = tree
+            .dirt_voxels
+            .iter()
+            .filter(|c| rebuilt.get(**c) == VoxelType::Dirt)
+            .count();
+        assert!(
+            dirt_count > 0,
+            "Some dirt voxels should survive in the rebuilt world"
         );
     }
 

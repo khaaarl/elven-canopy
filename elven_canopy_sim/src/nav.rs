@@ -770,6 +770,11 @@ fn derive_surface_type(
     let below = VoxelCoord::new(pos.x, pos.y - 1, pos.z);
     let below_type = world.get(below);
     if below_type.is_solid() {
+        // Dirt behaves like ForestFloor for navigation — ground-only creatures
+        // can walk on hilly dirt terrain.
+        if below_type == VoxelType::Dirt {
+            return VoxelType::ForestFloor;
+        }
         return below_type;
     }
     // Check if below is BuildingInterior with a Ceiling face pointing up.
@@ -787,6 +792,9 @@ fn derive_surface_type(
         let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
         let ntype = world.get(neighbor);
         if ntype.is_solid() {
+            if ntype == VoxelType::Dirt {
+                return VoxelType::ForestFloor;
+            }
             return ntype;
         }
         // Check if neighbor is BuildingInterior with blocking face toward pos.
@@ -870,7 +878,7 @@ fn derive_edge_type(
     // Same surface type on both sides.
     if from_surface == to_surface {
         return match from_surface {
-            ForestFloor => EdgeType::ForestFloor,
+            ForestFloor | Dirt => EdgeType::ForestFloor,
             Trunk => {
                 if from_pos.y != to_pos.y {
                     EdgeType::TrunkClimb
@@ -889,7 +897,10 @@ fn derive_edge_type(
     // Mixed surface types.
     match (from_surface, to_surface) {
         (ForestFloor, Trunk) | (Trunk, ForestFloor) => EdgeType::GroundToTrunk,
+        (Dirt, Trunk) | (Trunk, Dirt) => EdgeType::GroundToTrunk,
+        (ForestFloor, Dirt) | (Dirt, ForestFloor) => EdgeType::ForestFloor,
         (ForestFloor, Root) | (Root, ForestFloor) => EdgeType::ForestFloor,
+        (Dirt, Root) | (Root, Dirt) => EdgeType::ForestFloor,
         (Trunk, Root) | (Root, Trunk) => EdgeType::TrunkClimb,
         (Trunk, Branch) | (Branch, Trunk) | (Trunk, Leaf) | (Leaf, Trunk) => EdgeType::TrunkClimb,
         _ => {
@@ -1040,12 +1051,34 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
 // Large creature nav graph (2x2x2 footprint)
 // ---------------------------------------------------------------------------
 
-/// Check whether a 2x2x2 anchor at `(ax, 1, az)` is a valid large nav node.
-///
-/// Requirements:
-/// - All 4 cells at y=0 in `[ax..ax+2, az..az+2]` must be solid (ground support)
-/// - All 8 cells in `[ax..ax+2, 1..3, az..az+2]` must be non-solid (clearance)
-/// - Anchor must be in bounds: `ax+1 < size_x`, `az+1 < size_z`, `2 < size_y`
+/// Find the highest solid y in a 2x2 footprint at (ax, az). Returns `None`
+/// if the four columns have different surface heights (large creatures need
+/// flat ground) or if any column has no solid ground at all. Returns the y
+/// of the air layer above the surface.
+fn large_node_surface_y(world: &VoxelWorld, ax: i32, az: i32) -> Option<i32> {
+    let sy = world.size_y as i32;
+    let mut surface_y: Option<i32> = None;
+    for dz in 0..2 {
+        for dx in 0..2 {
+            // Scan down from a reasonable height to find the top solid voxel.
+            let mut found_y = None;
+            for y in (0..sy).rev() {
+                if world.get(VoxelCoord::new(ax + dx, y, az + dz)).is_solid() {
+                    found_y = Some(y + 1); // air layer above surface
+                    break;
+                }
+            }
+            let fy = found_y?; // No solid ground at all → invalid.
+            match surface_y {
+                None => surface_y = Some(fy),
+                Some(sy) if sy != fy => return None, // uneven ground
+                _ => {}
+            }
+        }
+    }
+    surface_y
+}
+
 fn is_large_node_valid(world: &VoxelWorld, ax: i32, az: i32) -> bool {
     if ax < 0 || az < 0 {
         return false;
@@ -1057,17 +1090,18 @@ fn is_large_node_valid(world: &VoxelWorld, ax: i32, az: i32) -> bool {
         return false;
     }
 
-    // Check ground support at y=0.
-    for dz in 0..2 {
-        for dx in 0..2 {
-            if !world.get(VoxelCoord::new(ax + dx, 0, az + dz)).is_solid() {
-                return false;
-            }
-        }
+    let air_y = match large_node_surface_y(world, ax, az) {
+        Some(y) => y,
+        None => return false,
+    };
+
+    // Need 2 voxels of clearance above the surface.
+    if air_y + 2 > sy {
+        return false;
     }
 
-    // Check clearance at y=1 and y=2.
-    for y in 1..3 {
+    // Check clearance at air_y and air_y+1.
+    for y in air_y..air_y + 2 {
         for dz in 0..2 {
             for dx in 0..2 {
                 if world.get(VoxelCoord::new(ax + dx, y, az + dz)).is_solid() {
@@ -1082,9 +1116,24 @@ fn is_large_node_valid(world: &VoxelWorld, ax: i32, az: i32) -> bool {
 
 /// Check whether a large creature can move from anchor `from` to anchor `to`.
 ///
-/// The union of the two 2x2 footprints at ground level must all be solid at y=0
-/// and all air at y=1 and y=2. This ensures no solid voxel blocks the swept path.
+/// Both anchors must have the same surface height, and the union of the two
+/// 2x2 footprints must have solid ground at that level and 2 voxels of air
+/// clearance above it.
 fn is_large_edge_valid(world: &VoxelWorld, from: (i32, i32), to: (i32, i32)) -> bool {
+    // Both endpoints must have a valid, equal surface height.
+    let from_y = match large_node_surface_y(world, from.0, from.1) {
+        Some(y) => y,
+        None => return false,
+    };
+    let to_y = match large_node_surface_y(world, to.0, to.1) {
+        Some(y) => y,
+        None => return false,
+    };
+    if from_y != to_y {
+        return false;
+    }
+    let air_y = from_y;
+
     let min_x = from.0.min(to.0);
     let max_x = from.0.max(to.0) + 2;
     let min_z = from.1.min(to.1);
@@ -1093,21 +1142,22 @@ fn is_large_edge_valid(world: &VoxelWorld, from: (i32, i32), to: (i32, i32)) -> 
     let sx = world.size_x as i32;
     let sy = world.size_y as i32;
     let sz = world.size_z as i32;
-    if max_x > sx || max_z > sz || 3 > sy {
+    if max_x > sx || max_z > sz || air_y + 2 > sy {
         return false;
     }
 
-    // All ground cells in the union footprint must be solid.
+    // All ground cells in the union footprint must be solid at air_y - 1.
+    let ground_y = air_y - 1;
     for z in min_z..max_z {
         for x in min_x..max_x {
-            if !world.get(VoxelCoord::new(x, 0, z)).is_solid() {
+            if !world.get(VoxelCoord::new(x, ground_y, z)).is_solid() {
                 return false;
             }
         }
     }
 
-    // All air cells at y=1 and y=2 in the union footprint must be non-solid.
-    for y in 1..3 {
+    // All cells at air_y and air_y+1 in the union footprint must be non-solid.
+    for y in air_y..air_y + 2 {
         for z in min_z..max_z {
             for x in min_x..max_x {
                 if world.get(VoxelCoord::new(x, y, z)).is_solid() {
@@ -1146,15 +1196,16 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
     graph.spatial_index = vec![u32::MAX; total];
 
     // Pass 1: create nodes.
-    // Large nodes live at y=1 (walking level). Iterate in flat-index order.
+    // Large nodes live at the air layer above ground. Iterate in flat-index order.
     for z in 0..sz.saturating_sub(1) {
         for x in 0..sx.saturating_sub(1) {
             if !is_large_node_valid(world, x as i32, z as i32) {
                 continue;
             }
-            let coord = VoxelCoord::new(x as i32, 1, z as i32);
+            let air_y = large_node_surface_y(world, x as i32, z as i32).unwrap();
+            let coord = VoxelCoord::new(x as i32, air_y, z as i32);
             let node_id = graph.add_node(coord, VoxelType::ForestFloor);
-            let flat_idx = x + z * sx + sx * sz;
+            let flat_idx = x + z * sx + air_y as usize * sx * sz;
             graph.spatial_index[flat_idx] = node_id.0;
         }
     }
@@ -1169,7 +1220,15 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
 
     for z in 0..sz.saturating_sub(1) {
         for x in 0..sx.saturating_sub(1) {
-            let flat_idx = x + z * sx + sx * sz;
+            // Look up surface y for this anchor.
+            let air_y = match large_node_surface_y(world, x as i32, z as i32) {
+                Some(y) => y as usize,
+                None => continue,
+            };
+            let flat_idx = x + z * sx + air_y * sx * sz;
+            if flat_idx >= graph.spatial_index.len() {
+                continue;
+            }
             let from_slot = graph.spatial_index[flat_idx];
             if from_slot == u32::MAX {
                 continue;
@@ -1186,7 +1245,14 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
                     continue;
                 }
 
-                let n_flat = nxu + nzu * sx + sx * sz;
+                let n_air_y = match large_node_surface_y(world, nx, nz) {
+                    Some(y) => y as usize,
+                    None => continue,
+                };
+                let n_flat = nxu + nzu * sx + n_air_y * sx * sz;
+                if n_flat >= graph.spatial_index.len() {
+                    continue;
+                }
                 let to_slot = graph.spatial_index[n_flat];
                 if to_slot == u32::MAX {
                     continue;
@@ -1243,18 +1309,34 @@ pub fn update_large_after_voxel_solidified(
     // Step 1: Update nodes at affected anchors.
     for &(ax, az) in &affected_anchors {
         let should_exist = is_large_node_valid(world, ax, az);
-        let flat = ax as usize + az as usize * sx + sx * sz;
-        let current_slot = graph.spatial_index[flat];
+
+        // Find existing node — try current surface y and previous known y.
+        // We need to check the spatial index at any y that might have a node.
+        let mut existing_flat = None;
+        let total = sx * graph.world_size.1 * sz;
+        for y in 0..graph.world_size.1 {
+            let flat = ax as usize + az as usize * sx + y * sx * sz;
+            if flat < total && graph.spatial_index[flat] != u32::MAX {
+                existing_flat = Some(flat);
+                break;
+            }
+        }
+
+        let current_slot = existing_flat.map_or(u32::MAX, |f| graph.spatial_index[f]);
         let is_node = current_slot != u32::MAX;
 
         if !should_exist && is_node {
             let id = NavNodeId(current_slot);
             removed_ids.push(id);
             graph.nodes[current_slot as usize] = None;
-            graph.spatial_index[flat] = u32::MAX;
+            if let Some(flat) = existing_flat {
+                graph.spatial_index[flat] = u32::MAX;
+            }
             graph.free_slots.push(current_slot as usize);
         } else if should_exist && !is_node {
-            let anchor_coord = VoxelCoord::new(ax, 1, az);
+            let air_y = large_node_surface_y(world, ax, az).unwrap();
+            let anchor_coord = VoxelCoord::new(ax, air_y, az);
+            let flat = ax as usize + az as usize * sx + air_y as usize * sx * sz;
             let slot = if let Some(free) = graph.free_slots.pop() {
                 let id = NavNodeId(free as u32);
                 graph.nodes[free] = Some(NavNode {
@@ -1282,6 +1364,7 @@ pub fn update_large_after_voxel_solidified(
     // Step 2: Collect dirty set — affected anchors + their 8 horizontal neighbors.
     let mut dirty_set: Vec<usize> = Vec::new();
     let mut is_dirty = vec![false; graph.nodes.len()];
+    let total = sx * graph.world_size.1 * sz;
 
     for &(ax, az) in &affected_anchors {
         for dz in -1i32..=1 {
@@ -1291,13 +1374,19 @@ pub fn update_large_after_voxel_solidified(
                 if nx < 0 || nz < 0 || (nx as usize) + 1 >= sx || (nz as usize) + 1 >= sz {
                     continue;
                 }
-                let flat = nx as usize + nz as usize * sx + sx * sz;
-                let slot = graph.spatial_index[flat];
-                if slot != u32::MAX {
-                    let s = slot as usize;
-                    if s < is_dirty.len() && !is_dirty[s] {
-                        is_dirty[s] = true;
-                        dirty_set.push(s);
+                // Find the node at any y for this (nx, nz).
+                for y in 0..graph.world_size.1 {
+                    let flat = nx as usize + nz as usize * sx + y * sx * sz;
+                    if flat < total {
+                        let slot = graph.spatial_index[flat];
+                        if slot != u32::MAX {
+                            let s = slot as usize;
+                            if s < is_dirty.len() && !is_dirty[s] {
+                                is_dirty[s] = true;
+                                dirty_set.push(s);
+                            }
+                            break;
+                        }
                     }
                 }
             }
@@ -1349,8 +1438,18 @@ pub fn update_large_after_voxel_solidified(
             if nx < 0 || nz < 0 || (nx as usize) + 1 >= sx || (nz as usize) + 1 >= sz {
                 continue;
             }
-            let n_flat = nx as usize + nz as usize * sx + sx * sz;
-            let n_slot = graph.spatial_index[n_flat];
+            // Find neighbor node at any y.
+            let mut n_slot = u32::MAX;
+            for y in 0..graph.world_size.1 {
+                let n_flat = nx as usize + nz as usize * sx + y * sx * sz;
+                if n_flat < total {
+                    let s = graph.spatial_index[n_flat];
+                    if s != u32::MAX {
+                        n_slot = s;
+                        break;
+                    }
+                }
+            }
             if n_slot == u32::MAX {
                 continue;
             }
@@ -1503,6 +1602,17 @@ mod tests {
         assert_eq!(surface, VoxelType::ForestFloor);
     }
 
+    #[test]
+    fn air_above_dirt_has_forest_floor_surface() {
+        let mut world = VoxelWorld::new(8, 8, 8);
+        world.set(VoxelCoord::new(4, 0, 4), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(4, 1, 4), VoxelType::Dirt);
+        world.set(VoxelCoord::new(4, 2, 4), VoxelType::Dirt);
+        // Air at y=3 is above Dirt — should map to ForestFloor for nav.
+        let surface = derive_surface_type(&world, &no_faces(), VoxelCoord::new(4, 3, 4));
+        assert_eq!(surface, VoxelType::ForestFloor);
+    }
+
     // --- Edge type derivation tests ---
 
     #[test]
@@ -1585,8 +1695,9 @@ mod tests {
             world_size: (64, 64, 64),
             ..GameConfig::default()
         };
-        // Disable leaves for basic nav tests.
+        // Disable leaves and terrain for basic nav tests.
         config.tree_profile.leaves.canopy_density = 0.0;
+        config.terrain_max_height = 0;
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);

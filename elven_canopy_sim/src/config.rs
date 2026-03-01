@@ -157,6 +157,14 @@ impl Default for StructuralConfig {
             },
         );
         materials.insert(
+            VoxelType::Dirt,
+            MaterialProperties {
+                density: 999.0,
+                stiffness: 999.0,
+                strength: 999.0,
+            },
+        );
+        materials.insert(
             VoxelType::Leaf,
             MaterialProperties {
                 density: 0.05,
@@ -598,10 +606,26 @@ pub struct GameConfig {
     /// restrictions, spawn rules). Keyed by `Species` enum.
     pub species: BTreeMap<Species, SpeciesData>,
 
+    /// Maximum height of dirt terrain above ForestFloor (1–4 voxels in
+    /// practice). Set to 0 to disable terrain generation (backward compat
+    /// for old saves — `#[serde(default)]` produces 0).
+    #[serde(default)]
+    pub terrain_max_height: i32,
+
+    /// Noise cell size in voxels for terrain height generation. Larger values
+    /// produce smoother, more gradual hills. Only used when
+    /// `terrain_max_height > 0`.
+    #[serde(default = "default_terrain_noise_scale")]
+    pub terrain_noise_scale: f32,
+
     /// Structural integrity solver configuration. Backward-compatible: older
     /// configs without this field use `StructuralConfig::default()`.
     #[serde(default)]
     pub structural: StructuralConfig,
+}
+
+fn default_terrain_noise_scale() -> f32 {
+    8.0
 }
 
 impl Default for GameConfig {
@@ -730,6 +754,8 @@ impl Default for GameConfig {
             build_work_ticks_per_voxel: 1000,
             tree_profile: TreeProfile::fantasy_mega(),
             species,
+            terrain_max_height: 4,
+            terrain_noise_scale: 8.0,
             structural: StructuralConfig::default(),
         }
     }

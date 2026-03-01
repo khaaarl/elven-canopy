@@ -1,10 +1,11 @@
-// Energy-based recursive tree generation.
+// Energy-based recursive tree generation and terrain.
 //
 // Generates organic tree geometry — trunk, branches, roots, and leaf canopy —
-// using a unified energy-based segment growth model. The core insight: **the
-// trunk is just the first branch**. All segments (trunk, branches, sub-branches,
-// roots) are grown by the same algorithm, differing only in their initial energy,
-// direction, and gravitropism.
+// using a unified energy-based segment growth model, plus hilly dirt terrain
+// via value noise with bilinear interpolation. The core insight for trees:
+// **the trunk is just the first branch**. All segments (trunk, branches,
+// sub-branches, roots) are grown by the same algorithm, differing only in
+// their initial energy, direction, and gravitropism.
 //
 // ## Algorithm overview
 //
@@ -145,6 +146,8 @@ pub struct TreeGenResult {
     pub leaf_voxels: Vec<VoxelCoord>,
     /// Root voxel positions (at or below ground level).
     pub root_voxels: Vec<VoxelCoord>,
+    /// Dirt voxel positions forming hilly terrain above ForestFloor.
+    pub dirt_voxels: Vec<VoxelCoord>,
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +223,92 @@ fn try_place_voxel(
 }
 
 // ---------------------------------------------------------------------------
+// Terrain generation — value noise with bilinear interpolation
+// ---------------------------------------------------------------------------
+
+/// Generate hilly dirt terrain above ForestFloor using value noise.
+///
+/// Produces a `Vec<VoxelCoord>` of dirt positions from y=1 upward. Each (x, z)
+/// column within the floor extent gets at least 1 dirt voxel (minimum height 1)
+/// and at most `terrain_max_height` voxels. Heights are smoothly interpolated
+/// from a coarse noise grid seeded by `rng`.
+///
+/// Returns an empty vec if `terrain_max_height == 0` (backward compat).
+fn generate_terrain(
+    world: &mut VoxelWorld,
+    config: &GameConfig,
+    rng: &mut GameRng,
+) -> Vec<VoxelCoord> {
+    let max_height = config.terrain_max_height;
+    if max_height <= 0 {
+        return Vec::new();
+    }
+
+    let floor_extent = config.floor_extent;
+    let noise_scale = config.terrain_noise_scale.max(1.0);
+    let center_x = world.size_x as i32 / 2;
+    let center_z = world.size_z as i32 / 2;
+
+    // Floor covers (center - extent) to (center + extent) in x and z.
+    let min_x = center_x - floor_extent;
+    let max_x = center_x + floor_extent;
+    let min_z = center_z - floor_extent;
+    let max_z = center_z + floor_extent;
+    let floor_width = (max_x - min_x + 1) as f32;
+    let floor_depth = (max_z - min_z + 1) as f32;
+
+    // Coarse noise grid: one cell per noise_scale voxels, covering floor extent.
+    let grid_w = (floor_width / noise_scale).ceil() as usize + 2;
+    let grid_h = (floor_depth / noise_scale).ceil() as usize + 2;
+    let mut noise_grid = Vec::with_capacity(grid_w * grid_h);
+    for _ in 0..(grid_w * grid_h) {
+        noise_grid.push(rng.next_f32());
+    }
+
+    let mut dirt_voxels = Vec::new();
+
+    for x in min_x..=max_x {
+        for z in min_z..=max_z {
+            // Map (x, z) to noise grid coordinates.
+            let fx = (x - min_x) as f32 / noise_scale;
+            let fz = (z - min_z) as f32 / noise_scale;
+            let gx = fx.floor() as usize;
+            let gz = fz.floor() as usize;
+            let tx = fx - gx as f32;
+            let tz = fz - gz as f32;
+
+            // Clamp grid indices.
+            let gx1 = (gx + 1).min(grid_w - 1);
+            let gz1 = (gz + 1).min(grid_h - 1);
+            let gx = gx.min(grid_w - 1);
+            let gz = gz.min(grid_h - 1);
+
+            // Bilinear interpolation.
+            let v00 = noise_grid[gx + gz * grid_w];
+            let v10 = noise_grid[gx1 + gz * grid_w];
+            let v01 = noise_grid[gx + gz1 * grid_w];
+            let v11 = noise_grid[gx1 + gz1 * grid_w];
+            let raw = v00 * (1.0 - tx) * (1.0 - tz)
+                + v10 * tx * (1.0 - tz)
+                + v01 * (1.0 - tx) * tz
+                + v11 * tx * tz;
+
+            // Map to integer height, clamped to [1, max_height].
+            let height = (raw * max_height as f32).round() as i32;
+            let height = height.clamp(1, max_height);
+
+            for y in 1..=height {
+                let coord = VoxelCoord::new(x, y, z);
+                world.set(coord, VoxelType::Dirt);
+                dirt_voxels.push(coord);
+            }
+        }
+    }
+
+    dirt_voxels
+}
+
+// ---------------------------------------------------------------------------
 // Core generation
 // ---------------------------------------------------------------------------
 
@@ -250,6 +339,9 @@ pub fn generate_tree(
             world.set(coord, VoxelType::ForestFloor);
         }
     }
+
+    // --- Hilly dirt terrain above forest floor ---
+    let dirt_voxels = generate_terrain(world, config, rng);
 
     // --- Seed trunk segment ---
     let trunk_energy = profile.growth.initial_energy * (1.0 - profile.roots.root_energy_fraction);
@@ -316,6 +408,7 @@ pub fn generate_tree(
         branch_voxels,
         leaf_voxels,
         root_voxels,
+        dirt_voxels,
     }
 }
 
@@ -657,12 +750,14 @@ mod tests {
     /// Default test config with small world and scaled-down energy to fit.
     /// The 64^3 world can hold ~50 voxels of height, so we use 50 energy
     /// (at 1 energy/step) to stay well within bounds.
+    /// Terrain is disabled (terrain_max_height = 0) to preserve existing test behavior.
     fn test_config() -> GameConfig {
         let mut config = GameConfig {
             world_size: (64, 64, 64),
             ..GameConfig::default()
         };
         config.tree_profile.growth.initial_energy = 50.0;
+        config.terrain_max_height = 0;
         config
     }
 
@@ -1077,6 +1172,106 @@ mod tests {
         assert!(
             !result.leaf_voxels.is_empty(),
             "Fantasy mega should produce leaf voxels"
+        );
+    }
+
+    // --- Terrain generation tests ---
+
+    fn terrain_config() -> GameConfig {
+        let mut config = GameConfig {
+            world_size: (64, 64, 64),
+            ..GameConfig::default()
+        };
+        config.tree_profile.growth.initial_energy = 50.0;
+        config.terrain_max_height = 4;
+        config.terrain_noise_scale = 8.0;
+        config
+    }
+
+    #[test]
+    fn terrain_deterministic() {
+        let config = terrain_config();
+
+        let mut world_a = VoxelWorld::new(64, 64, 64);
+        let mut rng_a = GameRng::new(42);
+        let result_a = generate_tree(&mut world_a, &config, &mut rng_a);
+
+        let mut world_b = VoxelWorld::new(64, 64, 64);
+        let mut rng_b = GameRng::new(42);
+        let result_b = generate_tree(&mut world_b, &config, &mut rng_b);
+
+        assert_eq!(result_a.dirt_voxels, result_b.dirt_voxels);
+    }
+
+    #[test]
+    fn terrain_has_height_variation() {
+        let config = terrain_config();
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng);
+
+        let mut y_values: std::collections::BTreeSet<i32> =
+            result.dirt_voxels.iter().map(|v| v.y).collect();
+        assert!(
+            y_values.len() > 1,
+            "Terrain should have dirt at multiple y levels (got {:?})",
+            y_values
+        );
+    }
+
+    #[test]
+    fn terrain_respects_max_height() {
+        let config = terrain_config();
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng);
+
+        for coord in &result.dirt_voxels {
+            assert!(
+                coord.y >= 1 && coord.y <= config.terrain_max_height,
+                "Dirt at y={} exceeds max_height={}",
+                coord.y,
+                config.terrain_max_height
+            );
+        }
+    }
+
+    #[test]
+    fn terrain_minimum_one_thick() {
+        let config = terrain_config();
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng);
+
+        // Every (x, z) within floor extent should have at least one dirt voxel at y=1.
+        let center = 32;
+        let extent = config.floor_extent;
+        let dirt_set: std::collections::HashSet<VoxelCoord> =
+            result.dirt_voxels.iter().copied().collect();
+        for dx in -extent..=extent {
+            for dz in -extent..=extent {
+                let coord = VoxelCoord::new(center + dx, 1, center + dz);
+                assert!(
+                    dirt_set.contains(&coord),
+                    "Column ({},{}) missing dirt at y=1",
+                    center + dx,
+                    center + dz
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_disabled_with_zero_max_height() {
+        let mut config = terrain_config();
+        config.terrain_max_height = 0;
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng);
+
+        assert!(
+            result.dirt_voxels.is_empty(),
+            "With terrain_max_height=0, should have no dirt voxels"
         );
     }
 }

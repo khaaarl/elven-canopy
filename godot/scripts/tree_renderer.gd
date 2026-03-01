@@ -1,8 +1,8 @@
 ## Renders the tree's voxels using MultiMeshInstance3D for batched drawing.
 ##
 ## Built once at startup (static mesh — not updated per frame). Reads trunk,
-## branch, root, leaf, and fruit voxel positions from SimBridge as flat
-## PackedInt32Array (x,y,z triples) and creates five MultiMeshInstance3D
+## branch, root, leaf, fruit, and dirt voxel positions from SimBridge as flat
+## PackedInt32Array (x,y,z triples) and creates six MultiMeshInstance3D
 ## children:
 ## - Trunk voxels: dark brown (0.35, 0.22, 0.10) — unit BoxMesh
 ## - Branch voxels: lighter brown (0.45, 0.30, 0.15) — unit BoxMesh
@@ -11,6 +11,8 @@
 ##   16x16 texture of opaque green patches and transparent holes — unit BoxMesh
 ## - Fruit voxels: warm amber/gold SphereMesh with subtle emissive glow,
 ##   hanging below leaf voxels
+## - Dirt voxels: grassy green (0.25, 0.45, 0.20) — unit BoxMesh forming
+##   hilly terrain above ForestFloor
 ##
 ## Each voxel is rendered as a unit BoxMesh (or SphereMesh for fruit).
 ## Positions are offset by +0.5 on all axes so the mesh centers on the
@@ -22,7 +24,8 @@
 ## critical for performance with thousands of voxels.
 ##
 ## See also: sim_bridge.rs for get_trunk_voxels() / get_branch_voxels() /
-## get_root_voxels() / get_leaf_voxels() / get_fruit_voxels(), tree_gen.rs
+## get_root_voxels() / get_leaf_voxels() / get_fruit_voxels() /
+## get_dirt_voxels(), tree_gen.rs
 ## (Rust) for how the voxel geometry is generated via energy-based recursive
 ## segment growth, sim.rs for fruit spawning logic, main.gd which creates
 ## this node and calls setup().
@@ -34,6 +37,7 @@ var _branch_mesh_instance: MultiMeshInstance3D
 var _leaf_mesh_instance: MultiMeshInstance3D
 var _root_mesh_instance: MultiMeshInstance3D
 var _fruit_mesh_instance: MultiMeshInstance3D
+var _dirt_mesh_instance: MultiMeshInstance3D
 
 
 ## Call after SimBridge is initialized to build the tree meshes.
@@ -84,10 +88,20 @@ func setup(bridge: SimBridge) -> void:
 		_fruit_mesh_instance.name = "FruitMultiMesh"
 		add_child(_fruit_mesh_instance)
 
+	# --- Dirt ---
+	var dirt_voxels := bridge.get_dirt_voxels()
+	var dirt_count := dirt_voxels.size() / 3
+	if dirt_count > 0:
+		_dirt_mesh_instance = _create_voxel_multimesh(
+			dirt_voxels, dirt_count, Color(0.25, 0.45, 0.2)  # Grassy green
+		)
+		_dirt_mesh_instance.name = "DirtMultiMesh"
+		add_child(_dirt_mesh_instance)
+
 	print(
 		(
-			"TreeRenderer: %d trunk, %d branch, %d root, %d leaf, %d fruit voxels"
-			% [trunk_count, branch_count, root_count, leaf_count, fruit_count]
+			"TreeRenderer: %d trunk, %d branch, %d root, %d leaf, %d fruit, %d dirt voxels"
+			% [trunk_count, branch_count, root_count, leaf_count, fruit_count, dirt_count]
 		)
 	)
 

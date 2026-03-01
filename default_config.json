@@ -20,6 +20,8 @@
   "starting_mana": 100.0,
   "starting_mana_capacity": 500.0,
   "build_work_ticks_per_voxel": 1000,
+  "terrain_max_height": 4,
+  "terrain_noise_scale": 8.0,
   "tree_profile": {
     "growth": {
       "initial_energy": 400.0,
@@ -225,6 +227,11 @@
         "strength": 6.0
       },
       "ForestFloor": {
+        "density": 999.0,
+        "stiffness": 999.0,
+        "strength": 999.0
+      },
+      "Dirt": {
         "density": 999.0,
         "stiffness": 999.0,
         "strength": 999.0

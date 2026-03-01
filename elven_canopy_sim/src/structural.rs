@@ -162,7 +162,7 @@ pub fn build_network(
                     pinned = false;
                 } else if let Some(mat) = structural.materials.get(&vt) {
                     mass = mat.density;
-                    pinned = vt == VoxelType::ForestFloor;
+                    pinned = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
                 } else {
                     // Unknown voxel type — skip.
                     continue;

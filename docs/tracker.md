@@ -143,6 +143,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-godot-setup          Godot 4 project setup
+[x] F-hilly-terrain        Hilly forest floor with dirt voxels
 [x] F-main-menu            Main menu UI
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-mp-integ-test        Multiplayer integration test harness
@@ -855,6 +856,16 @@ Elves on different trees develop distinct traditions, art styles, and
 social norms over time.
 
 **Blocked by:** F-multi-tree, F-personality
+
+#### F-hilly-terrain — Hilly forest floor with dirt voxels
+**Status:** Done · **Phase:** 2
+
+Replace the flat 1-voxel ForestFloor with natural-looking hilly terrain made of
+`Dirt` voxels, 1–4 voxels thick, generated with value noise + bilinear
+interpolation. Dirt has voxel priority 0 (tree voxels overwrite it), maps to
+`ForestFloor` for navigation (ground-only creatures walk on hills), and is
+pinned in the structural solver. Large nav graph updated to handle variable
+terrain height.
 
 #### F-multi-tree — NPC trees with personalities
 **Status:** Todo · **Phase:** 7 · **Refs:** §2, §7

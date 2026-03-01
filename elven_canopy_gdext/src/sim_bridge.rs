@@ -308,6 +308,25 @@ impl SimBridge {
         arr
     }
 
+    /// Return dirt voxel positions as a flat PackedInt32Array (x,y,z triples).
+    #[func]
+    fn get_dirt_voxels(&self) -> PackedInt32Array {
+        let Some(sim) = &self.sim else {
+            return PackedInt32Array::new();
+        };
+        let tree = match sim.trees.get(&sim.player_tree_id) {
+            Some(t) => t,
+            None => return PackedInt32Array::new(),
+        };
+        let mut arr = PackedInt32Array::new();
+        for v in &tree.dirt_voxels {
+            arr.push(v.x);
+            arr.push(v.y);
+            arr.push(v.z);
+        }
+        arr
+    }
+
     /// Return fruit voxel positions as a flat PackedInt32Array (x,y,z triples).
     #[func]
     fn get_fruit_voxels(&self) -> PackedInt32Array {
