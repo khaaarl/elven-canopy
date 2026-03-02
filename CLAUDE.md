@@ -132,6 +132,7 @@ scripts/build.sh release    # Release build
 scripts/build.sh test       # Run all crate tests + gdext compile check
 scripts/build.sh quicktest  # Test only crates changed vs main + multiplayer
 scripts/build.sh run        # Debug build, then launch the game
+scripts/build.sh run-branch NAME  # Pull main, checkout branch, pull, build+run
 ```
 
 To run sim tests alone: `cargo test -p elven_canopy_sim`

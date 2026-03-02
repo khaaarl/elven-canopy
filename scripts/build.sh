@@ -11,6 +11,8 @@
 #   scripts/build.sh quicktest  # test only crates changed vs main
 #   scripts/build.sh run        # debug build then launch the game
 #   scripts/build.sh check      # run fmt, clippy, gdformat, gdlint checks
+#   scripts/build.sh run-branch NAME  # pull main, checkout branch, pull, build+run
+#                                       NAME can be exact or partial (tries feature/ and bug/ prefixes)
 #
 # Run from the repo root.
 
@@ -93,6 +95,54 @@ case "$MODE" in
         echo "Launching Elven Canopy..."
         RUST_BACKTRACE=1 godot --path "$REPO_ROOT/godot"
         ;;
+    run-branch)
+        BRANCH_NAME="${2:-}"
+        if [ -z "$BRANCH_NAME" ]; then
+            echo "Usage: scripts/build.sh run-branch <branch-name>" >&2
+            echo "  branch-name can be exact (feature/F-foo) or partial (F-foo)" >&2
+            exit 1
+        fi
+
+        echo "Updating main..."
+        git checkout main
+        git pull
+
+        # Resolve branch name: try exact, then feature/, then bug/ prefix
+        RESOLVED=""
+        git fetch --prune
+        ALL_BRANCHES="$(git branch -a --format='%(refname:short)')"
+        for CANDIDATE in "$BRANCH_NAME" "feature/$BRANCH_NAME" "bug/$BRANCH_NAME"; do
+            if printf '%s\n' "$ALL_BRANCHES" | grep -qxF "$CANDIDATE"; then
+                RESOLVED="$CANDIDATE"
+                break
+            fi
+            # Also check origin/ remotes (for branches not yet checked out locally)
+            if printf '%s\n' "$ALL_BRANCHES" | grep -qxF "origin/$CANDIDATE"; then
+                RESOLVED="$CANDIDATE"
+                break
+            fi
+        done
+
+        if [ -z "$RESOLVED" ]; then
+            echo "Error: no branch found matching '$BRANCH_NAME'" >&2
+            echo "Tried: $BRANCH_NAME, feature/$BRANCH_NAME, bug/$BRANCH_NAME" >&2
+            echo "" >&2
+            echo "Available branches:" >&2
+            git branch -a --format='%(refname:short)' | grep -E "^(feature|bug)/" | sort >&2 || true
+            exit 1
+        fi
+
+        echo "Switching to $RESOLVED..."
+        git checkout "$RESOLVED"
+        git pull 2>/dev/null || true
+
+        echo ""
+        echo "Building elven_canopy_gdext (debug)..."
+        cargo build -p elven_canopy_gdext
+        ensure_godot_imported
+        echo "Launching Elven Canopy..."
+        RUST_BACKTRACE=1 godot --path "$REPO_ROOT/godot"
+        ;;
     check)
         echo "Checking Rust formatting..."
         cargo fmt --all --check
@@ -117,7 +167,7 @@ case "$MODE" in
         echo "All checks passed."
         ;;
     *)
-        echo "Usage: scripts/build.sh [debug|release|test|quicktest|run|check]" >&2
+        echo "Usage: scripts/build.sh [debug|release|test|quicktest|run|run-branch|check]" >&2
         exit 1
         ;;
 esac
