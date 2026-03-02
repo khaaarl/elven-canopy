@@ -131,6 +131,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-task-priority        Priority queue and auto-assignment
+[ ] F-thoughts             Creature thoughts (DF-style event reactions)
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
 [ ] F-tree-species         Multiple tree species with properties
@@ -939,6 +940,7 @@ emergent social/economic system.
 Emotions as multiple simultaneous dimensions: joy, fulfillment, sorrow,
 stress, pain, fear, anxiety. Not a single "happiness" number.
 
+**Blocked by:** F-thoughts
 **Blocks:** F-hedonic-adapt, F-mana-mood, F-mood-system
 
 #### F-hedonic-adapt — Asymmetric hedonic adaptation
@@ -1003,6 +1005,19 @@ Elf-to-elf relationships: friendships, rivalries, romantic bonds, mentorship.
 Emotional contagion spreads mood through social connections.
 
 **Related:** F-emotions, F-personality
+
+#### F-thoughts — Creature thoughts (DF-style event reactions)
+**Status:** Todo · **Phase:** 4 · **Refs:** §18
+**Draft:** `docs/drafts/thoughts.md`
+
+Dwarf Fortress-inspired thought system. Creatures accumulate thoughts in response
+to events (sleeping in own home, enduring a low ceiling, eating a meal). Each
+thought has a `ThoughtKind` enum (data in variants), a tick timestamp, and
+per-kind dedup cooldown and expiry durations. `Vec<Thought>` per creature,
+hard-capped at 200, with periodic expiry cleanup. Displayed on the creature info
+panel. Later feeds into emotional dimensions when `F-emotions` lands.
+
+**Blocks:** F-emotions
 
 ### Culture, Language & Music
 
