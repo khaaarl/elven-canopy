@@ -112,8 +112,8 @@ use elven_canopy_sim::sim::SimState;
 use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::TaskState;
 use elven_canopy_sim::types::{
-    BuildType, FaceDirection, FurnishingType, FurnitureKind, LadderKind, OverlapClassification,
-    Priority, Species, StructureId, VoxelCoord, VoxelType,
+    BuildType, CreatureId, FaceDirection, FurnishingType, FurnitureKind, LadderKind,
+    OverlapClassification, Priority, SimUuid, Species, StructureId, VoxelCoord, VoxelType,
 };
 use godot::prelude::*;
 
@@ -686,6 +686,11 @@ impl SimBridge {
                 dict.set("rest_max", rest_max);
                 dict.set("name", GString::from(c.name.as_str()));
                 dict.set("name_meaning", GString::from(c.name_meaning.as_str()));
+                let assigned_home = match c.assigned_home {
+                    Some(sid) => sid.0 as i64,
+                    None => -1,
+                };
+                dict.set("assigned_home", assigned_home);
                 dict
             }
             None => VarDictionary::new(),
@@ -903,6 +908,20 @@ impl SimBridge {
         });
         dict.set("is_furnishing", is_furnishing);
 
+        // Home assignment data.
+        let (assigned_elf_id, assigned_elf_name) = if let Some(elf_id) = structure.assigned_elf {
+            let name = sim
+                .creatures
+                .get(&elf_id)
+                .map(|c| c.name.as_str())
+                .unwrap_or("");
+            (elf_id.0.to_string(), name.to_string())
+        } else {
+            (String::new(), String::new())
+        };
+        dict.set("assigned_elf_id", GString::from(&assigned_elf_id));
+        dict.set("assigned_elf_name", GString::from(&assigned_elf_name));
+
         dict
     }
 
@@ -918,6 +937,65 @@ impl SimBridge {
         self.apply_or_send(SimAction::RenameStructure {
             structure_id: StructureId(structure_id as u64),
             name: name_opt,
+        });
+    }
+
+    /// Return all elves as a `VarArray` of dictionaries for the elf picker UI.
+    ///
+    /// Each dictionary contains: `creature_id` (UUID string), `name`, `name_meaning`,
+    /// `rest`, `rest_max`, `index` (species-filtered iteration order), `assigned_home`
+    /// (structure ID as i64, or -1 if unassigned).
+    #[func]
+    fn get_all_elves(&self) -> VarArray {
+        let Some(sim) = &self.sim else {
+            return VarArray::new();
+        };
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let mut arr = VarArray::new();
+        for (index, creature) in sim
+            .creatures
+            .values()
+            .filter(|c| c.species == Species::Elf)
+            .enumerate()
+        {
+            let mut dict = VarDictionary::new();
+            dict.set("creature_id", GString::from(&creature.id.0.to_string()));
+            dict.set("name", GString::from(creature.name.as_str()));
+            dict.set(
+                "name_meaning",
+                GString::from(creature.name_meaning.as_str()),
+            );
+            dict.set("rest", creature.rest);
+            dict.set("rest_max", rest_max);
+            dict.set("index", index as i64);
+            let assigned_home = match creature.assigned_home {
+                Some(sid) => sid.0 as i64,
+                None => -1,
+            };
+            dict.set("assigned_home", assigned_home);
+            arr.push(&dict.to_variant());
+        }
+        arr
+    }
+
+    /// Assign an elf to a home structure, or unassign if `structure_id` is -1.
+    ///
+    /// `creature_id_str` is the elf's UUID string. The command validates that
+    /// the creature is an Elf and the target is a Home-furnished building.
+    #[func]
+    fn assign_home(&mut self, creature_id_str: GString, structure_id: i64) {
+        let uuid_str = creature_id_str.to_string();
+        let Some(uuid) = SimUuid::from_str(&uuid_str) else {
+            return;
+        };
+        let sid = if structure_id < 0 {
+            None
+        } else {
+            Some(StructureId(structure_id as u64))
+        };
+        self.apply_or_send(SimAction::AssignHome {
+            creature_id: CreatureId(uuid),
+            structure_id: sid,
         });
     }
 

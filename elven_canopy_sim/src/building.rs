@@ -47,8 +47,8 @@
 use crate::blueprint::Blueprint;
 use crate::prng::GameRng;
 use crate::types::{
-    BuildType, FaceData, FaceDirection, FaceType, FurnishingType, ProjectId, StructureId,
-    VoxelCoord,
+    BuildType, CreatureId, FaceData, FaceDirection, FaceType, FurnishingType, ProjectId,
+    StructureId, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -80,6 +80,10 @@ pub struct CompletedStructure {
     /// The furnishing type applied to this building, if any.
     #[serde(default)]
     pub furnishing: Option<FurnishingType>,
+    /// The elf assigned to live in this home, if any. Only meaningful when
+    /// `furnishing == Some(Home)`.
+    #[serde(default)]
+    pub assigned_elf: Option<CreatureId>,
     /// Voxel positions of placed furniture (grows incrementally during furnishing).
     #[serde(default, alias = "bed_positions")]
     pub furniture_positions: Vec<VoxelCoord>,
@@ -108,6 +112,7 @@ impl CompletedStructure {
             completed_tick,
             name: None,
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         }
@@ -498,6 +503,7 @@ mod tests {
             completed_tick: 10000,
             name: None,
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -525,6 +531,7 @@ mod tests {
             completed_tick: 100,
             name: None,
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -548,6 +555,7 @@ mod tests {
             completed_tick: 100,
             name: Some("Starlight Bridge".to_string()),
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -587,6 +595,7 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: None,
+                assigned_elf: None,
                 furniture_positions: Vec::new(),
                 planned_furniture: Vec::new(),
             };
@@ -613,6 +622,7 @@ mod tests {
             completed_tick: 100,
             name: Some("Custom".to_string()),
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };

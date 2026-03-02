@@ -117,6 +117,12 @@ pub enum SimAction {
         structure_id: StructureId,
         furnishing_type: FurnishingType,
     },
+    /// Assign a creature to a home structure, or unassign (`structure_id: None`).
+    /// Only valid for Elf creatures and Home-furnished buildings.
+    AssignHome {
+        creature_id: CreatureId,
+        structure_id: Option<StructureId>,
+    },
 }
 
 #[cfg(test)]

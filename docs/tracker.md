@@ -62,7 +62,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
-[ ] F-bldg-home            Home (single elf dwelling)
 [ ] F-bldg-kitchen         Kitchen (cooking from ingredients)
 [ ] F-bldg-storehouse      Storehouse (item storage)
 [ ] F-bldg-workshop        Craftself's workshop
@@ -151,6 +150,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
+[x] F-bldg-home            Home (single elf dwelling)
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
 [x] F-capybara             Capybara species
@@ -249,7 +249,7 @@ rest. If no beds are available, elves fall back to sleeping on the ground.
 **Related:** F-bldg-home, F-elf-needs, F-furnish
 
 #### F-bldg-home — Home (single elf dwelling)
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
 Personal dwelling for a single elf (families in the future). The player
 assigns which elf lives in each home. Provides rest and comfort need

@@ -365,6 +365,11 @@ pub struct Creature {
     #[serde(default = "default_rest")]
     pub rest: i64,
 
+    /// The home structure this creature is assigned to, if any.
+    /// Only meaningful for elves. Set via `SimAction::AssignHome`.
+    #[serde(default)]
+    pub assigned_home: Option<StructureId>,
+
     // --- Movement interpolation metadata (rendering only) ---
     // These fields record the visual start/end of each movement for smooth
     // rendering interpolation. They are never read by sim logic — only by
@@ -674,6 +679,12 @@ impl SimState {
                 furnishing_type,
             } => {
                 self.furnish_structure(*structure_id, *furnishing_type);
+            }
+            SimAction::AssignHome {
+                creature_id,
+                structure_id,
+            } => {
+                self.assign_home(*creature_id, *structure_id);
             }
         }
     }
@@ -1354,9 +1365,12 @@ impl SimState {
 
                 // Phase 2b: if tired and idle (and not hungry), find a bed
                 // or fall back to sleeping on the ground.
+                // Priority: assigned home bed → dormitory bed → ground.
                 if should_seek_sleep {
                     let (bed_pos, nav_node, sleep_ticks) =
-                        if let Some((bp, nn)) = self.find_nearest_bed(creature_id) {
+                        if let Some((bp, nn)) = self.find_assigned_home_bed(creature_id) {
+                            (Some(bp), nn, self.config.sleep_ticks_bed)
+                        } else if let Some((bp, nn)) = self.find_nearest_bed(creature_id) {
                             (Some(bp), nn, self.config.sleep_ticks_bed)
                         } else if let Some(creature) = self.creatures.get(&creature_id)
                             && let Some(node) = creature.current_node
@@ -1459,6 +1473,7 @@ impl SimState {
             current_task: None,
             food: species_data.food_max,
             rest: species_data.rest_max,
+            assigned_home: None,
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -1752,6 +1767,24 @@ impl SimState {
         }
 
         self.complete_task(task_id);
+    }
+
+    /// Find the bed in the creature's assigned home, if any.
+    ///
+    /// Returns `None` if the creature has no assigned home, the home isn't a
+    /// Home, or the home has no placed furniture (bed not yet built). Does NOT
+    /// check occupied-bed exclusion — it's the elf's personal bed.
+    fn find_assigned_home_bed(&self, creature_id: CreatureId) -> Option<(VoxelCoord, NavNodeId)> {
+        let creature = self.creatures.get(&creature_id)?;
+        let home_id = creature.assigned_home?;
+        let structure = self.structures.get(&home_id)?;
+        if structure.furnishing != Some(FurnishingType::Home) {
+            return None;
+        }
+        let bed_pos = structure.furniture_positions.first()?;
+        let graph = self.graph_for_species(creature.species);
+        let nav_node = graph.find_nearest_node(*bed_pos)?;
+        Some((*bed_pos, nav_node))
     }
 
     /// Find the nearest reachable dormitory bed for a creature, using Dijkstra
@@ -2560,6 +2593,63 @@ impl SimState {
             required_species: Some(Species::Elf),
         };
         self.tasks.insert(task_id, new_task);
+    }
+
+    // -----------------------------------------------------------------------
+    // Home assignment
+    // -----------------------------------------------------------------------
+
+    /// Assign a creature to a home structure, or unassign if `structure_id`
+    /// is `None`. Validates: creature is an Elf, target is a Home-furnished
+    /// building. Clears the old home's `assigned_elf` if the creature had one,
+    /// evicts a previous occupant if the target already has one.
+    fn assign_home(&mut self, creature_id: CreatureId, structure_id: Option<StructureId>) {
+        // Validate creature exists and is an Elf.
+        let creature = match self.creatures.get(&creature_id) {
+            Some(c) if c.species == Species::Elf => c,
+            _ => return,
+        };
+
+        // Clear old home's assigned_elf.
+        if let Some(old_home_id) = creature.assigned_home
+            && let Some(old_home) = self.structures.get_mut(&old_home_id)
+            && old_home.assigned_elf == Some(creature_id)
+        {
+            old_home.assigned_elf = None;
+        }
+
+        let target_id = match structure_id {
+            Some(id) => id,
+            None => {
+                // Unassign only.
+                if let Some(c) = self.creatures.get_mut(&creature_id) {
+                    c.assigned_home = None;
+                }
+                return;
+            }
+        };
+
+        // Validate target structure exists and is a Home.
+        let structure = match self.structures.get(&target_id) {
+            Some(s) if s.furnishing == Some(FurnishingType::Home) => s,
+            _ => return,
+        };
+
+        // Evict previous occupant if there is one.
+        if let Some(prev_elf_id) = structure.assigned_elf
+            && prev_elf_id != creature_id
+            && let Some(prev_elf) = self.creatures.get_mut(&prev_elf_id)
+        {
+            prev_elf.assigned_home = None;
+        }
+
+        // Set both sides.
+        if let Some(structure) = self.structures.get_mut(&target_id) {
+            structure.assigned_elf = Some(creature_id);
+        }
+        if let Some(c) = self.creatures.get_mut(&creature_id) {
+            c.assigned_home = Some(target_id);
+        }
     }
 
     /// Perform one activation's worth of furnishing work on a building.
@@ -4627,6 +4717,7 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: Some(FurnishingType::Dormitory),
+                assigned_elf: None,
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
             },
@@ -4731,6 +4822,7 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: Some(FurnishingType::Dormitory),
+                assigned_elf: None,
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
             },
@@ -4791,6 +4883,7 @@ mod tests {
             current_task: None,
             food: 1000,
             rest: 1000,
+            assigned_home: None,
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4815,6 +4908,7 @@ mod tests {
             current_task: None,
             food: 1000,
             rest: 1000,
+            assigned_home: None,
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4837,6 +4931,7 @@ mod tests {
             current_task: None,
             food: 1000,
             rest: 1000,
+            assigned_home: None,
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4859,6 +4954,7 @@ mod tests {
             current_task: None,
             food: 1000,
             rest: 1000,
+            assigned_home: None,
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4884,6 +4980,7 @@ mod tests {
             current_task: None,
             food: 1000,
             rest: 1000,
+            assigned_home: None,
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -8171,6 +8268,7 @@ mod tests {
             completed_tick: sim.tick,
             name: None,
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -8196,6 +8294,7 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -8228,6 +8327,7 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -8286,6 +8386,7 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: Some(FurnishingType::Dormitory),
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -8307,6 +8408,7 @@ mod tests {
             completed_tick: 0,
             name: Some("Starlight Hall".to_string()),
             furnishing: Some(FurnishingType::Dormitory),
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -8443,6 +8545,7 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -8666,6 +8769,7 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -8691,6 +8795,7 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
+            assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
         };
@@ -8734,6 +8839,7 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: Some(furnishing_type),
+                assigned_elf: None,
                 furniture_positions: Vec::new(),
                 planned_furniture: Vec::new(),
             };
@@ -8769,5 +8875,520 @@ mod tests {
             structure.display_name(),
             format!("Workshop #{}", structure_id.0)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Home assignment tests
+    // -----------------------------------------------------------------------
+
+    /// Create a completed building at `anchor`, furnish it as Home, and manually
+    /// place 1 bed in `furniture_positions` (skipping the furnishing task flow).
+    fn insert_completed_home(sim: &mut SimState, anchor: VoxelCoord) -> StructureId {
+        let structure_id = insert_completed_building(sim, anchor);
+
+        // Find a valid bed position inside the building interior.
+        let structure = sim.structures.get(&structure_id).unwrap();
+        let interior = structure.floor_interior_positions();
+        let bed_pos = interior[0]; // First interior tile.
+
+        let structure = sim.structures.get_mut(&structure_id).unwrap();
+        structure.furnishing = Some(FurnishingType::Home);
+        structure.furniture_positions = vec![bed_pos];
+
+        structure_id
+    }
+
+    #[test]
+    fn assign_home_sets_bidirectional_refs() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let home_id = insert_completed_home(&mut sim, anchor);
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Assign elf to home.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: Some(home_id),
+            },
+        };
+        sim.step(&[cmd], 2);
+
+        assert_eq!(sim.creatures[&elf_id].assigned_home, Some(home_id));
+        assert_eq!(sim.structures[&home_id].assigned_elf, Some(elf_id));
+    }
+
+    #[test]
+    fn assign_home_unassign() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let home_id = insert_completed_home(&mut sim, anchor);
+
+        // Spawn and assign.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 2,
+                action: SimAction::AssignHome {
+                    creature_id: elf_id,
+                    structure_id: Some(home_id),
+                },
+            }],
+            2,
+        );
+        assert_eq!(sim.creatures[&elf_id].assigned_home, Some(home_id));
+
+        // Unassign.
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 3,
+                action: SimAction::AssignHome {
+                    creature_id: elf_id,
+                    structure_id: None,
+                },
+            }],
+            3,
+        );
+        assert_eq!(sim.creatures[&elf_id].assigned_home, None);
+        assert_eq!(sim.structures[&home_id].assigned_elf, None);
+    }
+
+    #[test]
+    fn assign_home_replaces_old_assignment() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor_a = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let anchor_b = VoxelCoord::new(tree_pos.x + 10, 0, tree_pos.z + 5);
+        let home_a = insert_completed_home(&mut sim, anchor_a);
+        let home_b = insert_completed_home(&mut sim, anchor_b);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Assign to home A.
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 2,
+                action: SimAction::AssignHome {
+                    creature_id: elf_id,
+                    structure_id: Some(home_a),
+                },
+            }],
+            2,
+        );
+        assert_eq!(sim.creatures[&elf_id].assigned_home, Some(home_a));
+
+        // Reassign to home B.
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 3,
+                action: SimAction::AssignHome {
+                    creature_id: elf_id,
+                    structure_id: Some(home_b),
+                },
+            }],
+            3,
+        );
+        assert_eq!(sim.creatures[&elf_id].assigned_home, Some(home_b));
+        assert_eq!(sim.structures[&home_a].assigned_elf, None);
+        assert_eq!(sim.structures[&home_b].assigned_elf, Some(elf_id));
+    }
+
+    #[test]
+    fn assign_home_evicts_previous_occupant() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let home_id = insert_completed_home(&mut sim, anchor);
+
+        // Spawn two elves.
+        let cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: 1,
+                action: SimAction::SpawnCreature {
+                    species: Species::Elf,
+                    position: tree_pos,
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: 1,
+                action: SimAction::SpawnCreature {
+                    species: Species::Elf,
+                    position: tree_pos,
+                },
+            },
+        ];
+        sim.step(&cmds, 1);
+        let elf_ids: Vec<CreatureId> = sim
+            .creatures
+            .values()
+            .filter(|c| c.species == Species::Elf)
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(elf_ids.len(), 2);
+        let elf_a = elf_ids[0];
+        let elf_b = elf_ids[1];
+
+        // Assign elf A.
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 2,
+                action: SimAction::AssignHome {
+                    creature_id: elf_a,
+                    structure_id: Some(home_id),
+                },
+            }],
+            2,
+        );
+        assert_eq!(sim.structures[&home_id].assigned_elf, Some(elf_a));
+
+        // Assign elf B to same home — evicts elf A.
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 3,
+                action: SimAction::AssignHome {
+                    creature_id: elf_b,
+                    structure_id: Some(home_id),
+                },
+            }],
+            3,
+        );
+        assert_eq!(sim.structures[&home_id].assigned_elf, Some(elf_b));
+        assert_eq!(sim.creatures[&elf_a].assigned_home, None);
+        assert_eq!(sim.creatures[&elf_b].assigned_home, Some(home_id));
+    }
+
+    #[test]
+    fn assign_home_rejects_non_home() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        // Furnish as Dormitory (not Home).
+        sim.structures.get_mut(&structure_id).unwrap().furnishing = Some(FurnishingType::Dormitory);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 2,
+                action: SimAction::AssignHome {
+                    creature_id: elf_id,
+                    structure_id: Some(structure_id),
+                },
+            }],
+            2,
+        );
+
+        // Should be rejected — no assignment set.
+        assert_eq!(sim.creatures[&elf_id].assigned_home, None);
+        assert_eq!(sim.structures[&structure_id].assigned_elf, None);
+    }
+
+    #[test]
+    fn assign_home_rejects_non_elf() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let home_id = insert_completed_home(&mut sim, anchor);
+
+        // Spawn a capybara.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Capybara,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let capy_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Capybara)
+            .unwrap()
+            .id;
+
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 2,
+                action: SimAction::AssignHome {
+                    creature_id: capy_id,
+                    structure_id: Some(home_id),
+                },
+            }],
+            2,
+        );
+
+        // Should be rejected — capybaras can't have homes.
+        assert_eq!(sim.creatures[&capy_id].assigned_home, None);
+        assert_eq!(sim.structures[&home_id].assigned_elf, None);
+    }
+
+    #[test]
+    fn tired_elf_sleeps_in_assigned_home() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Create a home with a bed.
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let home_id = insert_completed_home(&mut sim, anchor);
+        let home_bed = sim.structures[&home_id].furniture_positions[0];
+
+        // Spawn and assign.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 2,
+                action: SimAction::AssignHome {
+                    creature_id: elf_id,
+                    structure_id: Some(home_id),
+                },
+            }],
+            2,
+        );
+
+        // Make elf tired.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 30 / 100;
+        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
+        // Clear any existing task so the elf is idle.
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = None;
+
+        // Advance past heartbeat.
+        let target_tick = 2 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_some(),
+            "Tired elf with home should get a Sleep task"
+        );
+        let task = &sim.tasks[&elf.current_task.unwrap()];
+        match &task.kind {
+            TaskKind::Sleep { bed_pos } => {
+                assert_eq!(
+                    *bed_pos,
+                    Some(home_bed),
+                    "Elf should sleep in their assigned home bed"
+                );
+            }
+            other => panic!("Expected Sleep task, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tired_elf_without_home_uses_dormitory() {
+        // This is largely the same as existing tests, but verifies the new
+        // code path doesn't break dormitory fallback.
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Create a dormitory (not a home).
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+        let structure = sim.structures.get(&structure_id).unwrap();
+        let bed_pos = structure.floor_interior_positions()[0];
+        let structure = sim.structures.get_mut(&structure_id).unwrap();
+        structure.furnishing = Some(FurnishingType::Dormitory);
+        structure.furniture_positions = vec![bed_pos];
+
+        // Spawn elf (no home assignment).
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Make tired and idle.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 30 / 100;
+        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = None;
+
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_some(),
+            "Tired elf should get a Sleep task from dormitory"
+        );
+        let task = &sim.tasks[&elf.current_task.unwrap()];
+        match &task.kind {
+            TaskKind::Sleep {
+                bed_pos: Some(pos), ..
+            } => {
+                assert_eq!(*pos, bed_pos, "Should sleep in dormitory bed");
+            }
+            other => panic!("Expected Sleep with bed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assigned_home_unfurnished_falls_back() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Create a home with empty furniture_positions.
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+        let structure = sim.structures.get_mut(&structure_id).unwrap();
+        structure.furnishing = Some(FurnishingType::Home);
+        // No furniture_positions — bed not yet placed.
+
+        // Spawn and assign.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 2,
+                action: SimAction::AssignHome {
+                    creature_id: elf_id,
+                    structure_id: Some(structure_id),
+                },
+            }],
+            2,
+        );
+
+        // Make tired and idle.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 30 / 100;
+        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = None;
+
+        let target_tick = 2 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // Should fall back to ground sleep (no dormitories and home has no bed).
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_some(),
+            "Tired elf should get a ground Sleep task"
+        );
+        let task = &sim.tasks[&elf.current_task.unwrap()];
+        match &task.kind {
+            TaskKind::Sleep { bed_pos } => {
+                assert_eq!(*bed_pos, None, "Should fall back to ground sleep");
+            }
+            other => panic!("Expected Sleep task, got {:?}", other),
+        }
     }
 }

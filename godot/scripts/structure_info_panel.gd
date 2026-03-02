@@ -17,13 +17,19 @@
 ## Dormitory (3/8 beds)". For fully furnished buildings, shows "Dormitory
 ## (8 beds)". The furniture noun is returned by the bridge per furnishing type.
 ##
+## For fully-furnished Home buildings, an elf assignment section is shown:
+## "Assigned: ElfName" or "Unassigned", plus an "Assign Elf..." / "Unassign"
+## button. The elf picker is a scrollable list of all elves with rest % and
+## existing home indicators. Emits assign_elf_requested / unassign_elf_requested
+## which main.gd wires to bridge.assign_home().
+##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Updated every frame by main.gd while visible.
 ##
 ## See also: selection_controller.gd which triggers show/hide,
 ## creature_info_panel.gd for the creature equivalent,
 ## main.gd which wires everything together,
-## sim_bridge.rs for rename_structure() and furnish_structure().
+## sim_bridge.rs for rename_structure(), furnish_structure(), assign_home().
 
 extends PanelContainer
 
@@ -31,6 +37,8 @@ signal zoom_requested(x: float, y: float, z: float)
 signal panel_closed
 signal rename_requested(structure_id: int, new_name: String)
 signal furnish_requested(structure_id: int, furnishing_type: String)
+signal assign_elf_requested(structure_id: int, creature_id_str: String)
+signal unassign_elf_requested(structure_id: int, creature_id_str: String)
 
 var _name_edit: LineEdit
 var _type_label: Label
@@ -40,11 +48,17 @@ var _position_label: Label
 var _furnish_label: Label
 var _furnish_button: Button
 var _furnish_picker: VBoxContainer
+var _assign_section: VBoxContainer
+var _assign_label: Label
+var _assign_button: Button
+var _elf_picker_scroll: ScrollContainer
+var _elf_picker_vbox: VBoxContainer
 var _zoom_button: Button
 var _anchor_x: float = 0.0
 var _anchor_y: float = 0.0
 var _anchor_z: float = 0.0
 var _current_structure_id: int = -1
+var _current_assigned_elf_id: String = ""
 ## Tracks whether the user is actively editing the name field. While true,
 ## _update_info() skips overwriting the LineEdit text so the user's in-progress
 ## edits aren't clobbered by per-frame refreshes.
@@ -141,6 +155,28 @@ func _ready() -> void:
 		btn.pressed.connect(_on_furnishing_type_pressed.bind(type_id))
 		_furnish_picker.add_child(btn)
 
+	# Home assignment section (visible for fully-furnished homes).
+	_assign_section = VBoxContainer.new()
+	_assign_section.add_theme_constant_override("separation", 4)
+	_assign_section.visible = false
+	vbox.add_child(_assign_section)
+
+	_assign_label = Label.new()
+	_assign_section.add_child(_assign_label)
+
+	_assign_button = Button.new()
+	_assign_button.pressed.connect(_on_assign_button_pressed)
+	_assign_section.add_child(_assign_button)
+
+	_elf_picker_scroll = ScrollContainer.new()
+	_elf_picker_scroll.custom_minimum_size.y = 150
+	_elf_picker_scroll.visible = false
+	_assign_section.add_child(_elf_picker_scroll)
+
+	_elf_picker_vbox = VBoxContainer.new()
+	_elf_picker_vbox.add_theme_constant_override("separation", 2)
+	_elf_picker_scroll.add_child(_elf_picker_vbox)
+
 	# Spacer to push the zoom button toward the bottom-ish area.
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -158,6 +194,7 @@ func _ready() -> void:
 func show_structure(info: Dictionary) -> void:
 	_editing_name = false
 	_furnish_picker.visible = false
+	_elf_picker_scroll.visible = false
 	_update_info(info)
 	visible = true
 
@@ -171,6 +208,39 @@ func hide_panel() -> void:
 	if _name_edit.has_focus():
 		_name_edit.release_focus()
 	visible = false
+
+
+## Returns true if the elf picker is currently visible, so main.gd knows
+## whether to fetch and provide the elf list.
+func is_elf_picker_visible() -> bool:
+	return _elf_picker_scroll.visible
+
+
+## Populate the elf picker with the provided array of elf dictionaries.
+## Each dict has: creature_id, name, rest, rest_max, assigned_home.
+func set_elf_list(elves: Array) -> void:
+	# Clear existing buttons.
+	for child in _elf_picker_vbox.get_children():
+		child.queue_free()
+
+	for elf_dict in elves:
+		var elf_name: String = elf_dict.get("name", "?")
+		var rest: int = elf_dict.get("rest", 0)
+		var rest_max: int = elf_dict.get("rest_max", 1)
+		var rest_pct: int = 0
+		if rest_max > 0:
+			rest_pct = rest * 100 / rest_max
+		var cid: String = elf_dict.get("creature_id", "")
+		var has_home: int = elf_dict.get("assigned_home", -1)
+
+		var label_text := "%s — Rest: %d%%" % [elf_name, rest_pct]
+		if has_home >= 0:
+			label_text += " [has home]"
+
+		var btn := Button.new()
+		btn.text = label_text
+		btn.pressed.connect(_on_elf_picked.bind(cid))
+		_elf_picker_vbox.add_child(btn)
 
 
 func _update_info(info: Dictionary) -> void:
@@ -224,6 +294,24 @@ func _update_info(info: Dictionary) -> void:
 		_furnish_button.visible = false
 		_furnish_picker.visible = false
 
+	# Home assignment section — visible for fully-furnished homes.
+	var assigned_elf_id: String = info.get("assigned_elf_id", "")
+	var assigned_elf_name: String = info.get("assigned_elf_name", "")
+	_current_assigned_elf_id = assigned_elf_id
+	var is_home := furnishing == "Home" and not is_furnishing and furniture_count > 0
+
+	if is_home:
+		_assign_section.visible = true
+		if assigned_elf_name != "":
+			_assign_label.text = "Assigned: %s" % assigned_elf_name
+			_assign_button.text = "Unassign"
+		else:
+			_assign_label.text = "Unassigned"
+			_assign_button.text = "Assign Elf..."
+	else:
+		_assign_section.visible = false
+		_elf_picker_scroll.visible = false
+
 
 func _on_name_submitted(new_text: String) -> void:
 	_editing_name = false
@@ -252,6 +340,21 @@ func _on_furnishing_type_pressed(type_id: String) -> void:
 	_furnish_picker.visible = false
 	if _current_structure_id >= 0:
 		furnish_requested.emit(_current_structure_id, type_id)
+
+
+func _on_assign_button_pressed() -> void:
+	if _current_assigned_elf_id != "":
+		# Currently assigned — unassign.
+		unassign_elf_requested.emit(_current_structure_id, _current_assigned_elf_id)
+	else:
+		# Not assigned — toggle elf picker.
+		_elf_picker_scroll.visible = not _elf_picker_scroll.visible
+
+
+func _on_elf_picked(creature_id_str: String) -> void:
+	_elf_picker_scroll.visible = false
+	if _current_structure_id >= 0:
+		assign_elf_requested.emit(_current_structure_id, creature_id_str)
 
 
 func _on_close_pressed() -> void:

@@ -455,6 +455,13 @@ func _setup_common(bridge: SimBridge) -> void:
 		func(structure_id: int, furnishing_type: String):
 			bridge.furnish_structure(structure_id, furnishing_type)
 	)
+	_structure_info_panel.assign_elf_requested.connect(
+		func(structure_id: int, creature_id_str: String):
+			bridge.assign_home(creature_id_str, structure_id)
+	)
+	_structure_info_panel.unassign_elf_requested.connect(
+		func(_structure_id: int, creature_id_str: String): bridge.assign_home(creature_id_str, -1)
+	)
 
 	# Menu button.
 	var menu_btn := Button.new()
@@ -700,6 +707,8 @@ func _process(delta: float) -> void:
 		var sinfo := bridge.get_structure_info(_selector.get_selected_structure_id())
 		if not sinfo.is_empty():
 			_structure_info_panel.update_info(sinfo)
+			if _structure_info_panel.is_elf_picker_visible():
+				_structure_info_panel.set_elf_list(bridge.get_all_elves())
 		else:
 			# Structure was demolished — deselect and hide panel.
 			_selector.deselect()
