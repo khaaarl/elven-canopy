@@ -12,9 +12,11 @@
 // - **Save/load:** `save_game_json()` returns the sim state as a JSON string,
 //   `load_game_json(json)` replaces the current sim from a JSON string.
 //   File I/O is handled in GDScript via Godot's `user://` paths.
-// - **World data:** `get_trunk_voxels()`, `get_branch_voxels()`,
-//   `get_root_voxels()`, `get_leaf_voxels()`, `get_fruit_voxels()` — flat
-//   `PackedInt32Array` of (x,y,z) triples for voxel mesh rendering.
+// - **World data / chunk mesh:** `build_world_mesh()` builds the initial
+//   chunk mesh cache, `update_world_mesh()` incrementally regenerates dirty
+//   chunks, `build_chunk_array_mesh(cx,cy,cz)` returns a Godot `ArrayMesh`
+//   for one chunk. `get_fruit_voxels()` — flat `PackedInt32Array` of (x,y,z)
+//   triples for fruit SphereMesh rendering (fruit is not part of chunk mesh).
 // - **Creature positions:** `get_creature_positions(species_name, render_tick)`
 //   — generic `PackedVector3Array` for billboard sprite placement, replacing
 //   the per-species `get_elf_positions()` / `get_capybara_positions()` (which
@@ -56,9 +58,8 @@
 //   real-time 3-state ghost preview (Ok/Warning/Blocked).
 //   `get_blueprint_voxels()` returns flat (x,y,z) triples for unplaced
 //   voxels in `Designated` blueprints (excludes already-materialized
-//   voxels). `get_platform_voxels()` returns flat (x,y,z) triples for
-//   voxels materialized by elf construction work. Both consumed by
-//   `blueprint_renderer.gd`.
+//   voxels). Materialized construction voxels are now part of the chunk
+//   mesh system (rendered by tree_renderer.gd alongside tree geometry).
 // - **Carving:** `designate_carve(x,y,z)` and
 //   `designate_carve_rect(x,y,z,w,d,h)` designate voxels for removal.
 //   `validate_carve_preview(x,y,z,w,d,h)` performs structural integrity
@@ -119,6 +120,8 @@ use godot::prelude::*;
 
 use elven_canopy_relay::client::NetClient;
 
+use crate::mesh_cache::MeshCache;
+
 /// Compile-time version hash. Bump when making breaking protocol changes.
 const SIM_VERSION_HASH: u64 = 1;
 
@@ -163,6 +166,8 @@ fn species_name(species: Species) -> &'static str {
 pub struct SimBridge {
     base: Base<Node>,
     sim: Option<SimState>,
+    // Chunk mesh cache — not part of SimState, lives here for rendering.
+    mesh_cache: Option<MeshCache>,
     // Multiplayer state
     net_client: Option<NetClient>,
     relay_handle: Option<RelayHandle>,
@@ -179,6 +184,7 @@ impl INode for SimBridge {
         Self {
             base,
             sim: None,
+            mesh_cache: None,
             net_client: None,
             relay_handle: None,
             is_multiplayer_mode: false,
@@ -259,122 +265,9 @@ impl SimBridge {
             .map_or(1, |s| s.config.tick_duration_ms as i32)
     }
 
-    /// Return trunk voxel positions as a flat PackedInt32Array (x,y,z triples).
-    #[func]
-    fn get_trunk_voxels(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
-            return PackedInt32Array::new();
-        };
-        let tree = match sim.trees.get(&sim.player_tree_id) {
-            Some(t) => t,
-            None => return PackedInt32Array::new(),
-        };
-        let mut arr = PackedInt32Array::new();
-        for v in &tree.trunk_voxels {
-            // Skip voxels carved to Air so the renderer doesn't draw them.
-            if sim.world.get(*v) == VoxelType::Air {
-                continue;
-            }
-            arr.push(v.x);
-            arr.push(v.y);
-            arr.push(v.z);
-        }
-        arr
-    }
-
-    /// Return branch voxel positions as a flat PackedInt32Array (x,y,z triples).
-    #[func]
-    fn get_branch_voxels(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
-            return PackedInt32Array::new();
-        };
-        let tree = match sim.trees.get(&sim.player_tree_id) {
-            Some(t) => t,
-            None => return PackedInt32Array::new(),
-        };
-        let mut arr = PackedInt32Array::new();
-        for v in &tree.branch_voxels {
-            // Skip voxels carved to Air so the renderer doesn't draw them.
-            if sim.world.get(*v) == VoxelType::Air {
-                continue;
-            }
-            arr.push(v.x);
-            arr.push(v.y);
-            arr.push(v.z);
-        }
-        arr
-    }
-
-    /// Return leaf voxel positions as a flat PackedInt32Array (x,y,z triples).
-    #[func]
-    fn get_leaf_voxels(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
-            return PackedInt32Array::new();
-        };
-        let tree = match sim.trees.get(&sim.player_tree_id) {
-            Some(t) => t,
-            None => return PackedInt32Array::new(),
-        };
-        let mut arr = PackedInt32Array::new();
-        for v in &tree.leaf_voxels {
-            // Skip voxels carved to Air so the renderer doesn't draw them.
-            if sim.world.get(*v) == VoxelType::Air {
-                continue;
-            }
-            arr.push(v.x);
-            arr.push(v.y);
-            arr.push(v.z);
-        }
-        arr
-    }
-
-    /// Return root voxel positions as a flat PackedInt32Array (x,y,z triples).
-    #[func]
-    fn get_root_voxels(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
-            return PackedInt32Array::new();
-        };
-        let tree = match sim.trees.get(&sim.player_tree_id) {
-            Some(t) => t,
-            None => return PackedInt32Array::new(),
-        };
-        let mut arr = PackedInt32Array::new();
-        for v in &tree.root_voxels {
-            // Skip voxels carved to Air so the renderer doesn't draw them.
-            if sim.world.get(*v) == VoxelType::Air {
-                continue;
-            }
-            arr.push(v.x);
-            arr.push(v.y);
-            arr.push(v.z);
-        }
-        arr
-    }
-
-    /// Return dirt voxel positions as a flat PackedInt32Array (x,y,z triples).
-    #[func]
-    fn get_dirt_voxels(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
-            return PackedInt32Array::new();
-        };
-        let tree = match sim.trees.get(&sim.player_tree_id) {
-            Some(t) => t,
-            None => return PackedInt32Array::new(),
-        };
-        let mut arr = PackedInt32Array::new();
-        for v in &tree.dirt_voxels {
-            // Skip voxels carved to Air so the renderer doesn't draw them.
-            if sim.world.get(*v) == VoxelType::Air {
-                continue;
-            }
-            arr.push(v.x);
-            arr.push(v.y);
-            arr.push(v.z);
-        }
-        arr
-    }
-
     /// Return fruit voxel positions as a flat PackedInt32Array (x,y,z triples).
+    /// Kept as a separate method because fruit is rendered as SphereMesh
+    /// MultiMesh, not part of the chunk mesh system.
     #[func]
     fn get_fruit_voxels(&self) -> PackedInt32Array {
         let Some(sim) = &self.sim else {
@@ -1717,8 +1610,7 @@ impl SimBridge {
     /// have already been materialized by construction work are excluded.
     /// Skips Carve blueprints (those are rendered separately).
     /// Used by the blueprint renderer to show translucent ghost cubes for
-    /// planned (not-yet-built) construction. Same format as
-    /// `get_trunk_voxels()` etc.
+    /// planned (not-yet-built) construction. Flat (x,y,z) triples.
     #[func]
     fn get_blueprint_voxels(&self) -> PackedInt32Array {
         let Some(sim) = &self.sim else {
@@ -1767,35 +1659,179 @@ impl SimBridge {
         arr
     }
 
-    /// Return materialized construction voxels (platforms, walls, etc.) as a
-    /// flat PackedInt32Array of (x,y,z) triples.
-    ///
-    /// These are voxels that have been placed by elf construction work — they
-    /// exist as solid geometry in the world but are not part of the original
-    /// tree. Used by the blueprint renderer to show built voxels as wood.
-    ///
-    /// Excludes `BuildingInterior` voxels (rendered by building_renderer.gd as
-    /// oriented face quads) and ladder voxels (rendered by ladder_renderer.gd
-    /// as thin oriented panels).
+    // ========================================================================
+    // Chunk mesh methods
+    // ========================================================================
+
+    /// Build the world mesh cache from scratch. Call once after init_sim or
+    /// load_game_json. Replaces any existing cache.
     #[func]
-    fn get_platform_voxels(&self) -> PackedInt32Array {
+    fn build_world_mesh(&mut self) {
         let Some(sim) = &self.sim else {
+            return;
+        };
+        let mut cache = MeshCache::new();
+        cache.build_all(&sim.world);
+        godot_print!(
+            "SimBridge: built world mesh ({} non-empty chunks)",
+            cache.chunk_coords().len()
+        );
+        self.mesh_cache = Some(cache);
+    }
+
+    /// Drain dirty voxels from the world, mark affected chunks, and regenerate
+    /// them. Returns the number of chunks updated (0 if nothing changed).
+    #[func]
+    fn update_world_mesh(&mut self) -> i32 {
+        let Some(sim) = &mut self.sim else {
+            return 0;
+        };
+        let Some(cache) = &mut self.mesh_cache else {
+            return 0;
+        };
+        let dirty = sim.world.drain_dirty_voxels();
+        if dirty.is_empty() {
+            return 0;
+        }
+        cache.mark_dirty_voxels(&dirty);
+        cache.update_dirty(&sim.world) as i32
+    }
+
+    /// Return all non-empty chunk coordinates as a flat PackedInt32Array of
+    /// (cx, cy, cz) triples. Used by tree_renderer.gd to build initial
+    /// MeshInstance3D nodes.
+    #[func]
+    fn get_mesh_chunk_coords(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let coords = cache.chunk_coords();
+        let mut arr = PackedInt32Array::new();
+        for c in &coords {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
+    /// Return chunk coordinates that were updated in the last
+    /// `update_world_mesh()` call, as a flat PackedInt32Array of (cx,cy,cz)
+    /// triples.
+    #[func]
+    fn get_dirty_chunk_coords(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
-        for &(coord, voxel_type) in &sim.placed_voxels {
-            if voxel_type == VoxelType::BuildingInterior || voxel_type.is_ladder() {
-                continue;
-            }
-            // Skip voxels that have been carved to Air.
-            if sim.world.get(coord) == VoxelType::Air {
-                continue;
-            }
-            arr.push(coord.x);
-            arr.push(coord.y);
-            arr.push(coord.z);
+        for c in cache.last_updated_coords() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
         }
         arr
+    }
+
+    /// Build a Godot ArrayMesh for the given chunk. Returns an ArrayMesh with
+    /// up to 2 surfaces: surface 0 = opaque voxels, surface 1 = leaf voxels.
+    /// Returns a default empty ArrayMesh if the chunk is not in the cache.
+    #[func]
+    fn build_chunk_array_mesh(&self, cx: i32, cy: i32, cz: i32) -> Gd<godot::classes::ArrayMesh> {
+        use elven_canopy_sim::mesh_gen::ChunkCoord;
+
+        let mut array_mesh = godot::classes::ArrayMesh::new_gd();
+
+        let Some(cache) = &self.mesh_cache else {
+            return array_mesh;
+        };
+        let coord = ChunkCoord::new(cx, cy, cz);
+        let Some(chunk_mesh) = cache.get_chunk(&coord) else {
+            return array_mesh;
+        };
+
+        // Add opaque surface (surface 0).
+        Self::add_surface_to_array_mesh(&mut array_mesh, &chunk_mesh.opaque);
+        // Add leaf surface (surface 1).
+        Self::add_surface_to_array_mesh(&mut array_mesh, &chunk_mesh.leaf);
+
+        array_mesh
+    }
+
+    /// Helper: convert a `SurfaceMesh` into a Godot surface array and add it
+    /// to the `ArrayMesh`. Skips empty surfaces.
+    fn add_surface_to_array_mesh(
+        mesh: &mut Gd<godot::classes::ArrayMesh>,
+        surface: &elven_canopy_sim::mesh_gen::SurfaceMesh,
+    ) {
+        use godot::classes::mesh::PrimitiveType;
+
+        if surface.is_empty() {
+            return;
+        }
+
+        let vert_count = surface.vertex_count();
+
+        // Build PackedVector3Array for vertices.
+        let mut vertices = PackedVector3Array::new();
+        for i in 0..vert_count {
+            let base = i * 3;
+            vertices.push(Vector3::new(
+                surface.vertices[base],
+                surface.vertices[base + 1],
+                surface.vertices[base + 2],
+            ));
+        }
+
+        // Build PackedVector3Array for normals.
+        let mut normals = PackedVector3Array::new();
+        for i in 0..vert_count {
+            let base = i * 3;
+            normals.push(Vector3::new(
+                surface.normals[base],
+                surface.normals[base + 1],
+                surface.normals[base + 2],
+            ));
+        }
+
+        // Build PackedColorArray for vertex colors.
+        let mut colors = PackedColorArray::new();
+        for i in 0..vert_count {
+            let base = i * 4;
+            colors.push(Color::from_rgba(
+                surface.colors[base],
+                surface.colors[base + 1],
+                surface.colors[base + 2],
+                surface.colors[base + 3],
+            ));
+        }
+
+        // Build PackedVector2Array for UVs.
+        let mut uvs = PackedVector2Array::new();
+        for i in 0..vert_count {
+            let base = i * 2;
+            uvs.push(Vector2::new(surface.uvs[base], surface.uvs[base + 1]));
+        }
+
+        // Build PackedInt32Array for indices.
+        let mut indices = PackedInt32Array::new();
+        for &idx in &surface.indices {
+            indices.push(idx as i32);
+        }
+
+        // Assemble the surface array. Godot expects a VarArray with
+        // specific indices (ARRAY_VERTEX=0, ARRAY_NORMAL=1, ARRAY_TANGENT=2,
+        // ARRAY_COLOR=3, ARRAY_TEX_UV=4, ..., ARRAY_INDEX=12).
+        let mut arrays = VarArray::new();
+        arrays.resize(13, &Variant::nil());
+        arrays.set(0, &Variant::from(vertices)); // ARRAY_VERTEX
+        arrays.set(1, &Variant::from(normals)); // ARRAY_NORMAL
+        // 2: ARRAY_TANGENT — skip (nil)
+        arrays.set(3, &Variant::from(colors)); // ARRAY_COLOR
+        arrays.set(4, &Variant::from(uvs)); // ARRAY_TEX_UV
+        // 5-11: skip (nil)
+        arrays.set(12, &Variant::from(indices)); // ARRAY_INDEX
+
+        mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);
     }
 
     // ========================================================================

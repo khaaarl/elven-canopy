@@ -9,6 +9,7 @@
 // - `sim.rs`:         Top-level SimState, tick loop, command/event processing.
 // - `world.rs`:       Dense 3D voxel grid (the world's spatial truth).
 // - `tree_gen.rs`:    Energy-based recursive tree generation (trunk, branches, roots, leaves).
+// - `mesh_gen.rs`:    Chunk-based voxel mesh generation with per-face culling.
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
 // - `pathfinding.rs`: A* pathfinding over the nav graph.
 // - `command.rs`:     SimCommand / SimAction — all sim mutations.
@@ -37,6 +38,7 @@ pub mod checksum;
 pub mod command;
 pub mod config;
 pub mod event;
+pub mod mesh_gen;
 pub mod nav;
 pub mod pathfinding;
 pub use elven_canopy_prng as prng;

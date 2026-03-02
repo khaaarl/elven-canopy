@@ -31,6 +31,11 @@ pub struct VoxelWorld {
     pub size_x: u32,
     pub size_y: u32,
     pub size_z: u32,
+    /// Coordinates modified since the last drain. Used by the mesh cache to
+    /// know which chunks need regeneration. Not serialized (the world is
+    /// `#[serde(skip)]` on SimState and rebuilt from scratch on load, at which
+    /// point the mesh cache does a full rebuild anyway).
+    dirty_voxels: Vec<VoxelCoord>,
 }
 
 impl VoxelWorld {
@@ -42,6 +47,7 @@ impl VoxelWorld {
             size_x,
             size_y,
             size_z,
+            dirty_voxels: Vec::new(),
         }
     }
 
@@ -76,11 +82,27 @@ impl VoxelWorld {
             .unwrap_or(VoxelType::Air)
     }
 
-    /// Write a voxel. No-op for out-of-bounds coordinates.
+    /// Write a voxel. No-op for out-of-bounds coordinates. Appends the
+    /// coordinate to `dirty_voxels` so the mesh cache knows which chunks
+    /// need regeneration.
     pub fn set(&mut self, coord: VoxelCoord, voxel: VoxelType) {
         if let Some(i) = self.index(coord) {
             self.voxels[i] = voxel;
+            self.dirty_voxels.push(coord);
         }
+    }
+
+    /// Drain all dirty voxel coordinates accumulated since the last drain.
+    /// Returns the list and clears the internal buffer.
+    pub fn drain_dirty_voxels(&mut self) -> Vec<VoxelCoord> {
+        std::mem::take(&mut self.dirty_voxels)
+    }
+
+    /// Discard all accumulated dirty voxel coordinates without returning them.
+    /// Called after world rebuild (tree generation / save load) where the mesh
+    /// cache will do a full rebuild anyway, so the dirty entries are not needed.
+    pub fn clear_dirty_voxels(&mut self) {
+        self.dirty_voxels.clear();
     }
 
     /// Returns `true` if any of the 6 face-adjacent voxels (±x, ±y, ±z) is solid.
@@ -285,6 +307,40 @@ mod tests {
         assert_eq!(world.get(VoxelCoord::new(4, 3, 4)), VoxelType::Air);
         assert_eq!(world.get(VoxelCoord::new(5, 2, 4)), VoxelType::Air);
         assert_eq!(world.get(VoxelCoord::new(5, 3, 3)), VoxelType::Air);
+    }
+
+    #[test]
+    fn set_tracks_dirty_voxels() {
+        let mut world = VoxelWorld::new(8, 8, 8);
+        assert!(world.drain_dirty_voxels().is_empty());
+
+        world.set(VoxelCoord::new(1, 2, 3), VoxelType::Trunk);
+        world.set(VoxelCoord::new(4, 5, 6), VoxelType::Branch);
+        let dirty = world.drain_dirty_voxels();
+        assert_eq!(dirty.len(), 2);
+        assert_eq!(dirty[0], VoxelCoord::new(1, 2, 3));
+        assert_eq!(dirty[1], VoxelCoord::new(4, 5, 6));
+        // Second drain is empty.
+        assert!(world.drain_dirty_voxels().is_empty());
+    }
+
+    #[test]
+    fn clear_dirty_voxels_discards_entries() {
+        let mut world = VoxelWorld::new(8, 8, 8);
+        world.set(VoxelCoord::new(1, 2, 3), VoxelType::Trunk);
+        assert!(!world.drain_dirty_voxels().is_empty());
+
+        world.set(VoxelCoord::new(4, 5, 6), VoxelType::Branch);
+        world.clear_dirty_voxels();
+        assert!(world.drain_dirty_voxels().is_empty());
+    }
+
+    #[test]
+    fn out_of_bounds_set_does_not_dirty() {
+        let mut world = VoxelWorld::new(4, 4, 4);
+        world.set(VoxelCoord::new(-1, 0, 0), VoxelType::Trunk);
+        world.set(VoxelCoord::new(100, 0, 0), VoxelType::Trunk);
+        assert!(world.drain_dirty_voxels().is_empty());
     }
 
     #[test]

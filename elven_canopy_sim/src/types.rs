@@ -585,6 +585,26 @@ pub enum OverlapClassification {
 }
 
 impl VoxelType {
+    /// Returns `true` for opaque voxel types that block visibility of
+    /// adjacent faces for mesh generation. Opaque voxels cull the faces of
+    /// neighboring voxels that touch them. Distinct from `is_solid()`:
+    /// `ForestFloor` is both opaque and solid, but `Leaf` is solid and
+    /// non-opaque (transparent faces must still be rendered).
+    pub fn is_opaque(self) -> bool {
+        matches!(
+            self,
+            VoxelType::Trunk
+                | VoxelType::Branch
+                | VoxelType::Root
+                | VoxelType::ForestFloor
+                | VoxelType::Dirt
+                | VoxelType::GrownPlatform
+                | VoxelType::GrownWall
+                | VoxelType::GrownStairs
+                | VoxelType::Bridge
+        )
+    }
+
     /// Returns `true` for any voxel type that blocks occupancy. Non-solid
     /// types: `Air`, `BuildingInterior`, `WoodLadder`, `RopeLadder`.
     pub fn is_solid(self) -> bool {
@@ -848,6 +868,27 @@ mod tests {
             VoxelType::BuildingInterior.classify_for_overlap(),
             OverlapClassification::Blocked
         );
+    }
+
+    #[test]
+    fn is_opaque_covers_expected_types() {
+        // Opaque types — cull adjacent faces in mesh generation.
+        assert!(VoxelType::Trunk.is_opaque());
+        assert!(VoxelType::Branch.is_opaque());
+        assert!(VoxelType::Root.is_opaque());
+        assert!(VoxelType::ForestFloor.is_opaque());
+        assert!(VoxelType::Dirt.is_opaque());
+        assert!(VoxelType::GrownPlatform.is_opaque());
+        assert!(VoxelType::GrownWall.is_opaque());
+        assert!(VoxelType::GrownStairs.is_opaque());
+        assert!(VoxelType::Bridge.is_opaque());
+        // Non-opaque types — faces toward these are still visible.
+        assert!(!VoxelType::Air.is_opaque());
+        assert!(!VoxelType::Leaf.is_opaque());
+        assert!(!VoxelType::Fruit.is_opaque());
+        assert!(!VoxelType::BuildingInterior.is_opaque());
+        assert!(!VoxelType::WoodLadder.is_opaque());
+        assert!(!VoxelType::RopeLadder.is_opaque());
     }
 
     #[test]

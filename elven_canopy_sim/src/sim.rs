@@ -549,6 +549,11 @@ impl SimState {
             structure_voxels: BTreeMap::new(),
         };
 
+        // The world rebuild above produces thousands of set() calls that
+        // accumulate dirty_voxels entries. Clear them — the mesh cache will
+        // do a full build_all() at init, so those entries aren't needed.
+        state.world.clear_dirty_voxels();
+
         // Fast-forward fruit spawning: run the same attempt_fruit_spawn code
         // path N times, as if N heartbeats had already passed for fruit.
         let initial_attempts = state.config.fruit_initial_attempts;
@@ -2909,6 +2914,9 @@ impl SimState {
             &self.placed_voxels,
             &self.carved_voxels,
         );
+        // World rebuild produces dirty_voxels entries for every set() call.
+        // Clear them — the mesh cache will do a full build_all() after load.
+        self.world.clear_dirty_voxels();
         self.face_data = self.face_data_list.iter().cloned().collect();
         self.ladder_orientations = self.ladder_orientations_list.iter().cloned().collect();
         self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);

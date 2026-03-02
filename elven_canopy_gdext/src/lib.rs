@@ -16,6 +16,9 @@
 // - `sim_bridge.rs`:  The `SimBridge` Godot node — sole interface between
 //                     GDScript and Rust. Handles both single-player (direct
 //                     sim) and multiplayer (relay-routed) command paths.
+// - `mesh_cache.rs`:  Chunk mesh cache — caches `ChunkMesh` data per 16x16x16
+//                     chunk and tracks dirty chunks for incremental updates.
+//                     Used by `sim_bridge.rs` to serve chunk ArrayMesh data.
 //
 // The TCP relay client (`NetClient`) lives in `elven_canopy_relay::client`
 // so it can be shared with integration tests without a Godot dependency.
@@ -24,6 +27,7 @@
 // `elven_canopy_protocol` for wire message types,
 // `elven_canopy_relay` for the relay server and client.
 
+mod mesh_cache;
 mod sim_bridge;
 
 use godot::prelude::*;

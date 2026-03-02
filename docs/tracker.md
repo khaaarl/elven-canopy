@@ -122,6 +122,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-recipes              Recipe system for crafting/cooking
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
+[ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-sim-speed            Simulation speed controls UI
 [ ] F-social-graph         Relationships and social contagion
@@ -187,6 +188,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-orbital-cam          Orbital camera controller
 [x] F-pathfinding          A* pathfinding over nav graph
 [x] F-pause-menu           In-game pause overlay
+[x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
 [x] F-save-load            Save/load to JSON with versioning
 [x] F-select-struct        Selectable structures with interaction UI
 [x] F-selection            Click-to-select creatures
@@ -1345,6 +1347,24 @@ Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 **Status:** Done · **Refs:** §26
 
 ESC-triggered pause menu with Resume, Save, Load, and Quit options.
+
+#### F-rust-mesh-complex — Rust mesh gen for buildings/ladders
+**Status:** Todo · **Phase:** 3
+
+Move building interior and ladder geometry generation from GDScript renderers
+(`building_renderer.gd`, `ladder_renderer.gd`) into the Rust chunk mesh system.
+These use oriented face quads and thin panels rather than full cubes, so they
+need special handling in `mesh_gen.rs`.
+
+#### F-rust-mesh-gen — Rust-side voxel mesh gen with face culling
+**Status:** Done · **Phase:** 2
+
+Move voxel mesh generation from GDScript MultiMesh to Rust with per-face
+culling. Chunk-based (16x16x16) with caching and incremental dirty updates.
+Opaque faces between adjacent solid voxels are culled, reducing triangle count.
+Covers tree voxels (Trunk, Branch, Root, Leaf, Dirt) and construction voxels
+(GrownPlatform, GrownWall, GrownStairs, Bridge). Fruit stays as separate
+SphereMesh MultiMesh.
 
 #### F-select-struct — Selectable structures with interaction UI
 **Status:** Done · **Phase:** 3

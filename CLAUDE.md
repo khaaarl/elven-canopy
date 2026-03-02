@@ -24,7 +24,7 @@ Loose overview of where things stand. See `docs/tracker.md` for the full project
 
 - **Phase 0 (Foundations):** Complete.
 - **Phase 1 (A Tree and an Elf):** Complete.
-- **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, but no blueprint mode UI, no mana economy, no visual smoothing.
+- **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, Rust chunk-based mesh generation with face culling replaces GDScript MultiMesh rendering. No blueprint mode UI, no mana economy, no visual smoothing.
 - **Phase 6 (Culture and Language):** Music crate complete as standalone generator, not yet integrated into game runtime. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation.
 - **Phases 3–5, 7–8:** Not started.
 
@@ -42,6 +42,7 @@ elven-canopy/
 │       ├── species.rs          # SpeciesData — data-driven creature behavior
 │       ├── event.rs            # EventQueue (priority queue), SimEvent
 │       ├── sim.rs              # SimState, tick loop, command processing
+│       ├── mesh_gen.rs          # Chunk-based voxel mesh generation with face culling
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
 │       ├── pathfinding.rs      # A* search over NavGraph
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
@@ -59,6 +60,7 @@ elven-canopy/
 ├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
 │   └── src/
 │       ├── lib.rs              # ExtensionLibrary entry point
+│       ├── mesh_cache.rs       # Chunk mesh cache with dirty tracking
 │       └── sim_bridge.rs       # SimBridge node exposed to Godot
 ├── elven_canopy_music/         # Palestrina-style polyphonic music generator
 │   ├── src/

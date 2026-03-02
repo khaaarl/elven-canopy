@@ -1,4 +1,4 @@
-## Renders blueprint and construction voxels.
+## Renders blueprint ghost voxels for the construction system.
 ##
 ## Three visual layers:
 ## - **Ghost cubes** (translucent light-blue, no_depth_test): unplaced blueprint
@@ -8,28 +8,26 @@
 ##   rather than full cubes.
 ## - **Carve ghost cubes** (translucent red-orange, no_depth_test): voxels
 ##   designated for carving that haven't been removed yet.
-## - **Platform cubes** (solid brown): voxels that elves have already
-##   materialized through construction work. Excludes BuildingInterior and
-##   ladder voxels, which are rendered by building_renderer.gd and
-##   ladder_renderer.gd respectively.
 ##
-## Follows the same MultiMeshInstance3D pattern as tree_renderer.gd: reads
-## voxel positions from SimBridge as flat PackedInt32Array of (x,y,z) triples
-## and builds MultiMeshes with unit BoxMesh instances offset by +0.5 on all
-## axes to center on the voxel coordinate.
+## Materialized construction voxels (GrownPlatform, Bridge, etc.) are now
+## handled by the Rust chunk mesh system in tree_renderer.gd, which renders
+## them as face-culled geometry alongside tree voxels.
+##
+## Follows the same MultiMeshInstance3D pattern: reads voxel positions from
+## SimBridge as flat PackedInt32Array of (x,y,z) triples and builds MultiMeshes
+## with unit BoxMesh instances offset by +0.5 on all axes.
 ##
 ## The ghost material uses no_depth_test=true so blueprints are visible
-## through solid geometry. The platform material is opaque like tree voxels.
-## All MultiMeshes are rebuilt on each refresh() call. main.gd calls
-## refresh() every frame so materialized voxels appear as solid wood
-## immediately.
+## through solid geometry. All MultiMeshes are rebuilt on each refresh() call.
+## main.gd calls refresh() every frame so ghost cubes disappear as voxels are
+## placed.
 ##
-## See also: sim_bridge.rs for get_blueprint_voxels(),
-## get_platform_voxels(), and get_ladder_blueprint_data(),
-## blueprint.rs for the Blueprint data model,
-## construction_controller.gd which emits blueprint_placed, tree_renderer.gd
-## for the MultiMesh pattern, ladder_renderer.gd for completed ladder
-## rendering, main.gd which creates this node and calls refresh().
+## See also: sim_bridge.rs for get_blueprint_voxels() and
+## get_ladder_blueprint_data(), blueprint.rs for the Blueprint data model,
+## construction_controller.gd which emits blueprint_placed,
+## tree_renderer.gd for materialized construction rendering,
+## ladder_renderer.gd for completed ladder rendering, main.gd which creates
+## this node and calls refresh().
 
 extends Node3D
 
@@ -48,11 +46,9 @@ const DIRECTION_OFFSETS: Array[Vector3] = [
 var _bridge: SimBridge
 var _ghost_instance: MultiMeshInstance3D
 var _carve_ghost_instance: MultiMeshInstance3D
-var _platform_instance: MultiMeshInstance3D
 var _ladder_ghost_instance: MultiMeshInstance3D
 var _ghost_material: StandardMaterial3D
 var _carve_material: StandardMaterial3D
-var _platform_material: StandardMaterial3D
 var _face_rotations: Array[Basis] = []
 
 
@@ -78,10 +74,6 @@ func _build_materials() -> void:
 	_carve_material.no_depth_test = true
 	_carve_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 
-	# Platform material: solid brown for materialized construction voxels.
-	_platform_material = StandardMaterial3D.new()
-	_platform_material.albedo_color = Color(0.50, 0.35, 0.18)
-
 
 func _build_rotations() -> void:
 	_face_rotations.append(Basis(Vector3.UP, deg_to_rad(90)))  # PosX
@@ -95,7 +87,6 @@ func _build_rotations() -> void:
 func refresh() -> void:
 	_refresh_ghosts()
 	_refresh_carve_ghosts()
-	_refresh_platforms()
 	_refresh_ladder_ghosts()
 
 
@@ -125,20 +116,6 @@ func _refresh_carve_ghosts() -> void:
 
 	_carve_ghost_instance = _build_multimesh(voxels, count, _carve_material, "CarveMultiMesh")
 	add_child(_carve_ghost_instance)
-
-
-func _refresh_platforms() -> void:
-	if _platform_instance:
-		_platform_instance.queue_free()
-		_platform_instance = null
-
-	var voxels := _bridge.get_platform_voxels()
-	var count := voxels.size() / 3
-	if count == 0:
-		return
-
-	_platform_instance = _build_multimesh(voxels, count, _platform_material, "PlatformMultiMesh")
-	add_child(_platform_instance)
 
 
 func _build_multimesh(
