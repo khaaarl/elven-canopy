@@ -46,6 +46,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
+[~] F-bread                Bread items and elf food management
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 ```
 
@@ -67,7 +68,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-workshop        Craftself's workshop
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
-[ ] F-bread                Bread items and elf food management
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-cascade-fail         Cascading structural failure
@@ -95,7 +95,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-variety        Food storage, cooking, magical brewing
 [ ] F-hauling              Item hauling task type
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
-[ ] F-items                Items and inventory system
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-logistics            Spatial resource flow (Kanban-style)
@@ -171,6 +170,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
+[x] F-items                Items and inventory system
 [x] F-ladders              Rope/wood ladders as cheap connectors
 [x] F-lang-crate           Shared Vaelith language crate
 [x] F-large-nav-tolerance  1-voxel height tolerance for large nav
@@ -267,7 +267,6 @@ satisfaction.
 Building where elves convert raw ingredients into processed foods (e.g.,
 one large fruit into many shelf-stable breads).
 
-**Blocked by:** F-items
 **Related:** F-bread, F-fruit-variety
 
 #### F-bldg-storehouse — Storehouse (item storage)
@@ -276,7 +275,6 @@ one large fruit into many shelf-stable breads).
 Building for storing items and resources. Items placed inside persist
 and are accessible to elves for retrieval.
 
-**Blocked by:** F-items
 **Related:** F-food-chain, F-logistics
 
 #### F-bldg-workshop — Craftself's workshop
@@ -285,7 +283,6 @@ and are accessible to elves for retrieval.
 Workshop where craftself elves create tools and equipment (bows, spears,
 and other gear).
 
-**Blocked by:** F-items
 **Related:** F-crafting, F-elf-weapons
 
 #### F-blueprint-mode — Layer-based blueprint selection UI
@@ -716,7 +713,7 @@ computed from edge distance and per-species speed config.
 ### Creatures & Needs
 
 #### F-bread — Bread items and elf food management
-**Status:** Todo · **Phase:** 3
+**Status:** In Progress · **Phase:** 3
 
 Elves carry bread as a portable food source. Each elf starts with a varying
 amount of bread. Bread is an item in the items system — elves carry it, it
@@ -724,7 +721,6 @@ can be dropped, and kitchens produce it from fruit. Eating bread adds to
 the existing food gauge (the gauge remains as the creature's internal
 hunger/satiation state; bread is the concrete item that fills it).
 
-**Blocked by:** F-items
 **Related:** F-bldg-kitchen, F-elf-needs, F-food-gauge
 
 #### F-capybara — Capybara species
@@ -829,7 +825,6 @@ the general F-logistics system, scoped to food only. Needs a draft
 design doc before implementation to work out pickup/delivery task
 creation, building input/output slots, and elf decision-making.
 
-**Blocked by:** F-items
 **Related:** F-bldg-dining, F-bldg-kitchen, F-bldg-storehouse, F-bread, F-fruit-prod, F-logistics
 
 #### F-fruit-prod — Basic fruit production and harvesting
@@ -864,11 +859,10 @@ kitchen, deliver bread to dining hall, etc. The F-food-chain design
 defines *what* gets hauled *where*; this task implements the actual
 "pick up item, pathfind to destination, put down item" behavior.
 
-**Blocked by:** F-items
 **Related:** F-food-chain, F-logistics
 
 #### F-items — Items and inventory system
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
 Core item/inventory system. Elves can carry items on their person. Items
 can pile on the ground at a location (a generic heap of stuff). Later,
@@ -876,7 +870,6 @@ buildings (especially storehouses) can hold items. Each item has a type,
 quantity, and location (carried by creature, on ground at coord, or in
 building). Foundation for food management, crafting, and logistics.
 
-**Blocks:** F-bldg-kitchen, F-bldg-storehouse, F-bldg-workshop, F-bread, F-food-chain, F-hauling, F-recipes
 **Related:** F-crafting, F-logistics
 
 #### F-jobs — Elf job/role specialization
@@ -918,7 +911,6 @@ to bread; workshops use recipes to convert wood to bows. Data-driven
 via GameConfig so recipes can be added/tuned without code changes.
 Avoids hardcoding conversion logic per building type.
 
-**Blocked by:** F-items
 **Related:** F-bldg-kitchen, F-bldg-workshop, F-crafting, F-food-chain
 
 #### F-tree-capacity — Per-tree carrying capacity limits

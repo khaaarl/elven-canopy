@@ -7,9 +7,9 @@
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Shows species, name (Vaelith name for elves, fallback "Species #N" for
 ## unnamed creatures), position, task status, a food gauge, a rest gauge
-## (both as progress bar + percentage), and a "Recent Thoughts" section
-## listing the creature's accumulated thoughts (most recent first).
-## Updated every frame by main.gd.
+## (both as progress bar + percentage), a "Recent Thoughts" section
+## listing the creature's accumulated thoughts (most recent first), and
+## an inventory section listing carried items. Updated every frame by main.gd.
 ##
 ## See also: selection_controller.gd which triggers show/hide,
 ## orbital_camera.gd which responds to follow/unfollow,
@@ -33,6 +33,7 @@ var _rest_bar: ProgressBar
 var _rest_label: Label
 var _thoughts_container: VBoxContainer
 var _thoughts_header: Label
+var _inventory_label: Label
 var _follow_button: Button
 var _is_following: bool = false
 var _selected_species: String = ""
@@ -149,6 +150,18 @@ func _ready() -> void:
 	_thoughts_container.add_theme_constant_override("separation", 2)
 	vbox.add_child(_thoughts_container)
 
+	# Inventory section.
+	vbox.add_child(HSeparator.new())
+
+	var inv_title := Label.new()
+	inv_title.text = "Inventory"
+	inv_title.add_theme_font_size_override("font_size", 16)
+	vbox.add_child(inv_title)
+
+	_inventory_label = Label.new()
+	_inventory_label.text = "(empty)"
+	vbox.add_child(_inventory_label)
+
 	# Spacer to push the follow button toward the bottom-ish area.
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -181,6 +194,7 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 	_update_food(info)
 	_update_rest(info)
 	_update_thoughts(info)
+	_update_inventory(info)
 	_is_following = false
 	_follow_button.text = "Follow"
 	visible = true
@@ -192,6 +206,7 @@ func update_info(info: Dictionary) -> void:
 	_update_food(info)
 	_update_rest(info)
 	_update_thoughts(info)
+	_update_inventory(info)
 
 
 func hide_panel() -> void:
@@ -251,6 +266,19 @@ func _update_position(info: Dictionary) -> void:
 	_position_label.text = (
 		"Position: (%d, %d, %d)" % [info.get("x", 0), info.get("y", 0), info.get("z", 0)]
 	)
+
+
+func _update_inventory(info: Dictionary) -> void:
+	var inv: Array = info.get("inventory", [])
+	if inv.is_empty():
+		_inventory_label.text = "(empty)"
+		return
+	var lines: PackedStringArray = []
+	for entry in inv:
+		var kind: String = entry.get("kind", "?")
+		var qty: int = entry.get("quantity", 0)
+		lines.append("%s: %d" % [kind, qty])
+	_inventory_label.text = "\n".join(lines)
 
 
 func _on_follow_pressed() -> void:

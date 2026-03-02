@@ -26,9 +26,9 @@
 // - **Creature info:** `get_creature_info(species_name, index, render_tick)` —
 //   returns a `VarDictionary` with species, interpolated position (x/y/z),
 //   task status, food level, food_max, rest level, rest_max, name (Vaelith
-//   name for elves, empty for other species), and name_meaning (English
-//   gloss). Used by the creature info panel for display and follow-mode
-//   tracking.
+//   name for elves, empty for other species), name_meaning (English gloss),
+//   and inventory (array of {kind, quantity} dicts). Used by the creature
+//   info panel for display and follow-mode tracking.
 // - **Task list:** `get_active_tasks()` — returns a `VarArray` of
 //   `VarDictionary`, one per non-complete task. Each dict includes short/full
 //   ID, kind, state, origin (PlayerDirected/Autonomous/Automated),
@@ -86,6 +86,13 @@
 //   including `name` (display name) and `has_custom_name` (bool) for the
 //   info panel. `rename_structure(id, name)` — set or clear (empty string)
 //   a structure's custom name.
+// - **Ground piles:** `add_ground_pile_item(x,y,z,item_kind,quantity)` —
+//   creates or updates a ground pile at the given position (direct mutation,
+//   same pattern as `add_creature_item`). `get_ground_piles()` — returns a
+//   `VarArray` of `{x, y, z, inventory: [{kind, quantity}]}` dicts.
+//   `get_ground_pile_info(x,y,z)` — returns a single pile's dict (same
+//   format) or empty dict if no pile at that position. Used by the pile
+//   info panel for display and per-frame refresh.
 // - **Species queries:** `is_species_ground_only(species_name)` — used by
 //   the placement controller to decide which nav nodes to show.
 //   `get_all_species_names()` — returns all species names for UI iteration.
@@ -596,6 +603,16 @@ impl SimBridge {
                     thoughts_arr.push(&td.to_variant());
                 }
                 dict.set("thoughts", thoughts_arr);
+
+                // Inventory.
+                let mut inv_arr = VarArray::new();
+                for item in &c.inventory {
+                    let mut item_dict = VarDictionary::new();
+                    item_dict.set("kind", GString::from(item.kind.display_name()));
+                    item_dict.set("quantity", item.quantity as i64);
+                    inv_arr.push(&item_dict.to_variant());
+                }
+                dict.set("inventory", inv_arr);
                 dict
             }
             None => VarDictionary::new(),
@@ -837,6 +854,16 @@ impl SimBridge {
         };
         dict.set("assigned_elf_id", GString::from(&assigned_elf_id));
         dict.set("assigned_elf_name", GString::from(&assigned_elf_name));
+
+        // Inventory.
+        let mut inv_arr = VarArray::new();
+        for item in &structure.inventory {
+            let mut item_dict = VarDictionary::new();
+            item_dict.set("kind", GString::from(item.kind.display_name()));
+            item_dict.set("quantity", item.quantity as i64);
+            inv_arr.push(&item_dict.to_variant());
+        }
+        dict.set("inventory", inv_arr);
 
         dict
     }
@@ -1108,6 +1135,145 @@ impl SimBridge {
         {
             creature.rest = rest;
         }
+    }
+
+    /// Add items to the inventory of the nth creature of the given species.
+    ///
+    /// `index` is the species-filtered iteration index matching the order
+    /// used by `get_creature_positions()`. Direct mutation (like
+    /// `set_creature_food`) — used by `main.gd` to distribute initial bread.
+    #[func]
+    fn add_creature_item(
+        &mut self,
+        species_name: GString,
+        index: i32,
+        item_kind: GString,
+        quantity: i32,
+    ) {
+        if quantity <= 0 {
+            return;
+        }
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return;
+        };
+        let kind = match item_kind.to_string().as_str() {
+            "Bread" => elven_canopy_sim::inventory::ItemKind::Bread,
+            other => {
+                godot_error!("SimBridge: unknown item kind '{other}'");
+                return;
+            }
+        };
+        let Some(sim) = &mut self.sim else { return };
+        let creature_id = sim
+            .creatures
+            .iter()
+            .filter(|(_, c)| c.species == species)
+            .nth(index as usize)
+            .map(|(_, c)| c.id);
+        if let Some(id) = creature_id
+            && let Some(creature) = sim.creatures.get_mut(&id)
+        {
+            elven_canopy_sim::inventory::add_item(
+                &mut creature.inventory,
+                kind,
+                quantity as u32,
+                Some(id),
+                false,
+            );
+        }
+    }
+
+    /// Add items to a ground pile at the given voxel position.
+    ///
+    /// Gets or creates a `GroundPile` at `(x, y, z)`, then adds `quantity`
+    /// of `item_kind` via `inventory::add_item()` with owner=None,
+    /// task_related=false. Direct mutation, same pattern as
+    /// `add_creature_item`.
+    #[func]
+    fn add_ground_pile_item(&mut self, x: i32, y: i32, z: i32, item_kind: GString, quantity: i32) {
+        if quantity <= 0 {
+            return;
+        }
+        let kind = match item_kind.to_string().as_str() {
+            "Bread" => elven_canopy_sim::inventory::ItemKind::Bread,
+            other => {
+                godot_error!("SimBridge: unknown item kind '{other}'");
+                return;
+            }
+        };
+        let Some(sim) = &mut self.sim else { return };
+        let pos = VoxelCoord::new(x, y, z);
+        let pile = sim.ground_piles.entry(pos).or_insert_with(|| {
+            elven_canopy_sim::inventory::GroundPile {
+                position: pos,
+                items: Vec::new(),
+            }
+        });
+        elven_canopy_sim::inventory::add_item(&mut pile.items, kind, quantity as u32, None, false);
+    }
+
+    /// Return all ground piles as a `VarArray` of dictionaries.
+    ///
+    /// Each dictionary contains: `x`, `y`, `z` (pile position) and
+    /// `inventory` (a `VarArray` of `{kind, quantity}` dicts). Same
+    /// inventory format as creature info. Useful for future rendering
+    /// and debugging.
+    #[func]
+    fn get_ground_piles(&self) -> VarArray {
+        let Some(sim) = &self.sim else {
+            return VarArray::new();
+        };
+        let mut result = VarArray::new();
+        for pile in sim.ground_piles.values() {
+            let mut dict = VarDictionary::new();
+            dict.set("x", pile.position.x);
+            dict.set("y", pile.position.y);
+            dict.set("z", pile.position.z);
+
+            let mut inv_arr = VarArray::new();
+            for item in &pile.items {
+                let mut item_dict = VarDictionary::new();
+                item_dict.set("kind", GString::from(item.kind.display_name()));
+                item_dict.set("quantity", item.quantity as i64);
+                inv_arr.push(&item_dict.to_variant());
+            }
+            dict.set("inventory", inv_arr);
+
+            result.push(&dict.to_variant());
+        }
+        result
+    }
+
+    /// Return info for a single ground pile at position (x, y, z).
+    ///
+    /// Returns a dictionary with `x`, `y`, `z`, and `inventory` (same
+    /// format as `get_ground_piles()` entries), or an empty dictionary
+    /// if no pile exists at that position. Used by `main.gd` for the
+    /// pile info panel display and per-frame refresh.
+    #[func]
+    fn get_ground_pile_info(&self, x: i32, y: i32, z: i32) -> VarDictionary {
+        let Some(sim) = &self.sim else {
+            return VarDictionary::new();
+        };
+        let coord = VoxelCoord::new(x, y, z);
+        let Some(pile) = sim.ground_piles.get(&coord) else {
+            return VarDictionary::new();
+        };
+
+        let mut dict = VarDictionary::new();
+        dict.set("x", pile.position.x);
+        dict.set("y", pile.position.y);
+        dict.set("z", pile.position.z);
+
+        let mut inv_arr = VarArray::new();
+        for item in &pile.items {
+            let mut item_dict = VarDictionary::new();
+            item_dict.set("kind", GString::from(item.kind.display_name()));
+            item_dict.set("quantity", item.quantity as i64);
+            inv_arr.push(&item_dict.to_variant());
+        }
+        dict.set("inventory", inv_arr);
+        dict
     }
 
     /// Check whether a single voxel is a valid build position.

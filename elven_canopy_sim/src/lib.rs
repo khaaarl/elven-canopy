@@ -19,6 +19,7 @@
 // - `task.rs`:        Task entities — units of work assigned to creatures.
 // - `blueprint.rs`:   Blueprint data model for the construction system.
 // - `structural.rs`:  Spring-mass structural integrity solver.
+// - `inventory.rs`:   Item/inventory data model (ItemKind, Item, GroundPile) + helpers.
 // - `checksum.rs`:    FNV-1a hashing + interval constant for multiplayer desync detection.
 // - `prng`:           Re-exported from `elven_canopy_prng` — xoshiro256++ PRNG with SplitMix64 seeding.
 // - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.
@@ -38,6 +39,7 @@ pub mod checksum;
 pub mod command;
 pub mod config;
 pub mod event;
+pub mod inventory;
 pub mod mesh_gen;
 pub mod nav;
 pub mod pathfinding;

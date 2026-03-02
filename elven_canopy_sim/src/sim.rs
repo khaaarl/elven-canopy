@@ -1,8 +1,9 @@
 // Core simulation state and tick loop.
 //
 // `SimState` is the single source of truth for the entire game world. It owns
-// all entity data, the voxel world, the nav graph, the event queue, the PRNG,
-// and the game config. The sim is a pure function:
+// all entity data (including creature inventories and ground item piles), the
+// voxel world, the nav graph, the event queue, the PRNG, and the game config.
+// The sim is a pure function:
 // `(state, commands) -> (new_state, events)`.
 //
 // On construction (`new()`/`with_config()`), the sim generates tree geometry
@@ -304,6 +305,11 @@ pub struct SimState {
     /// which structure the player clicked on.
     #[serde(skip)]
     pub structure_voxels: BTreeMap<VoxelCoord, StructureId>,
+
+    /// Items dropped on the ground, keyed by voxel position. BTreeMap for
+    /// deterministic iteration order.
+    #[serde(default)]
+    pub ground_piles: BTreeMap<VoxelCoord, crate::inventory::GroundPile>,
 }
 
 /// A tree entity — the primary world structure.
@@ -378,6 +384,10 @@ pub struct Creature {
     /// and will later feed into the emotional system (F-emotions).
     #[serde(default)]
     pub thoughts: Vec<Thought>,
+
+    /// Items carried by this creature.
+    #[serde(default)]
+    pub inventory: Vec<crate::inventory::Item>,
 
     // --- Movement interpolation metadata (rendering only) ---
     // These fields record the visual start/end of each movement for smooth
@@ -586,6 +596,7 @@ impl SimState {
             lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
             structure_voxels: BTreeMap::new(),
+            ground_piles: BTreeMap::new(),
         };
 
         // The world rebuild above produces thousands of set() calls that
@@ -1547,6 +1558,7 @@ impl SimState {
             rest: species_data.rest_max,
             assigned_home: None,
             thoughts: Vec::new(),
+            inventory: Vec::new(),
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -4846,6 +4858,7 @@ mod tests {
                 assigned_elf: None,
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
+                inventory: Vec::new(),
             },
         );
 
@@ -4953,6 +4966,7 @@ mod tests {
                 assigned_elf: None,
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
+                inventory: Vec::new(),
             },
         );
 
@@ -5013,6 +5027,7 @@ mod tests {
             rest: 1000,
             assigned_home: None,
             thoughts: Vec::new(),
+            inventory: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -5039,6 +5054,7 @@ mod tests {
             rest: 1000,
             assigned_home: None,
             thoughts: Vec::new(),
+            inventory: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -5063,6 +5079,7 @@ mod tests {
             rest: 1000,
             assigned_home: None,
             thoughts: Vec::new(),
+            inventory: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -5087,6 +5104,7 @@ mod tests {
             rest: 1000,
             assigned_home: None,
             thoughts: Vec::new(),
+            inventory: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -5114,6 +5132,7 @@ mod tests {
             rest: 1000,
             assigned_home: None,
             thoughts: Vec::new(),
+            inventory: Vec::new(),
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -8407,6 +8426,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
         sim.structures.insert(id, structure);
 
@@ -8433,6 +8453,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -8466,6 +8487,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -8525,6 +8547,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
 
         assert_eq!(structure.display_name(), "Dormitory #7");
@@ -8547,6 +8570,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
 
         assert_eq!(structure.display_name(), "Starlight Hall");
@@ -8684,6 +8708,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
         sim.structures.insert(id, structure);
 
@@ -8908,6 +8933,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Home, &mut rng);
@@ -8934,6 +8960,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::DiningHall, &mut rng);
@@ -8978,6 +9005,7 @@ mod tests {
                 assigned_elf: None,
                 furniture_positions: Vec::new(),
                 planned_furniture: Vec::new(),
+                inventory: Vec::new(),
             };
             assert_eq!(
                 structure.display_name(),
@@ -9548,6 +9576,7 @@ mod tests {
             rest: 1_000_000_000_000_000,
             assigned_home: None,
             thoughts: Vec::new(),
+            inventory: Vec::new(),
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -9734,6 +9763,18 @@ mod tests {
         );
     }
 
+    // --- Inventory integration tests ---
+
+    #[test]
+    fn creature_spawns_with_empty_inventory() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        assert!(
+            sim.creatures[&elf_id].inventory.is_empty(),
+            "Creatures should spawn with an empty inventory"
+        );
+    }
+
     #[test]
     fn dormitory_sleep_generates_thought() {
         // Integration test: elf sleeps in dormitory → has SleptInDormitory thought.
@@ -9770,6 +9811,7 @@ mod tests {
                 assigned_elf: None,
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
+                inventory: Vec::new(),
             },
         );
 
@@ -9811,6 +9853,47 @@ mod tests {
     }
 
     #[test]
+    fn creature_add_and_query_bread() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+
+        crate::inventory::add_item(
+            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+            crate::inventory::ItemKind::Bread,
+            5,
+            Some(elf_id),
+            false,
+        );
+
+        let count = crate::inventory::item_count(
+            &sim.creatures[&elf_id].inventory,
+            crate::inventory::ItemKind::Bread,
+        );
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn creature_inventory_serialization_roundtrip() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+
+        crate::inventory::add_item(
+            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+            crate::inventory::ItemKind::Bread,
+            3,
+            Some(elf_id),
+            false,
+        );
+
+        let json = serde_json::to_string(&sim.creatures[&elf_id]).unwrap();
+        let restored: Creature = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            crate::inventory::item_count(&restored.inventory, crate::inventory::ItemKind::Bread),
+            3
+        );
+    }
+
+    #[test]
     fn home_sleep_generates_thought() {
         // Integration test: elf sleeps in assigned home → has SleptInOwnHome thought.
         use crate::building::CompletedStructure;
@@ -9846,6 +9929,7 @@ mod tests {
                 assigned_elf: None,
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
+                inventory: Vec::new(),
             },
         );
 
@@ -9934,6 +10018,7 @@ mod tests {
                 assigned_elf: None,
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
+                inventory: Vec::new(),
             },
         );
 
@@ -9978,6 +10063,30 @@ mod tests {
                 .any(|t| t.kind == ThoughtKind::SleptInDormitory(structure_id)),
             "Elf should also have SleptInDormitory thought. thoughts={:?}",
             elf.thoughts
+        );
+    }
+
+    #[test]
+    fn ground_piles_in_sim_state() {
+        let mut sim = test_sim(42);
+        let pos = VoxelCoord::new(10, 5, 20);
+        let pile = crate::inventory::GroundPile {
+            position: pos,
+            items: vec![crate::inventory::Item {
+                kind: crate::inventory::ItemKind::Bread,
+                quantity: 4,
+                owner: None,
+                task_related: false,
+            }],
+        };
+        sim.ground_piles.insert(pos, pile);
+        assert_eq!(sim.ground_piles.len(), 1);
+        assert_eq!(
+            crate::inventory::item_count(
+                &sim.ground_piles[&pos].items,
+                crate::inventory::ItemKind::Bread
+            ),
+            4
         );
     }
 }

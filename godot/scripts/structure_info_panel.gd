@@ -2,8 +2,9 @@
 ##
 ## Shows information about the currently selected structure. Built
 ## programmatically as a PanelContainer with an editable name LineEdit,
-## type/ID labels, dimensions, position, a Zoom button, and furnishing
-## controls. Sits on the CanvasLayer alongside the creature info panel.
+## type/ID labels, dimensions, position, a Zoom button, furnishing
+## controls, and an inventory section. Sits on the CanvasLayer alongside
+## the creature info panel.
 ##
 ## The editable name LineEdit shows the structure's display name (custom or
 ## auto-generated). On Enter or focus loss, emits rename_requested so main.gd
@@ -53,6 +54,7 @@ var _assign_label: Label
 var _assign_button: Button
 var _elf_picker_scroll: ScrollContainer
 var _elf_picker_vbox: VBoxContainer
+var _inventory_label: Label
 var _zoom_button: Button
 var _anchor_x: float = 0.0
 var _anchor_y: float = 0.0
@@ -176,6 +178,18 @@ func _ready() -> void:
 	_elf_picker_vbox = VBoxContainer.new()
 	_elf_picker_vbox.add_theme_constant_override("separation", 2)
 	_elf_picker_scroll.add_child(_elf_picker_vbox)
+
+	# Inventory section.
+	vbox.add_child(HSeparator.new())
+
+	var inv_title := Label.new()
+	inv_title.text = "Inventory"
+	inv_title.add_theme_font_size_override("font_size", 16)
+	vbox.add_child(inv_title)
+
+	_inventory_label = Label.new()
+	_inventory_label.text = "(empty)"
+	vbox.add_child(_inventory_label)
 
 	# Spacer to push the zoom button toward the bottom-ish area.
 	var spacer := Control.new()
@@ -311,6 +325,21 @@ func _update_info(info: Dictionary) -> void:
 	else:
 		_assign_section.visible = false
 		_elf_picker_scroll.visible = false
+
+	_update_inventory(info)
+
+
+func _update_inventory(info: Dictionary) -> void:
+	var inv: Array = info.get("inventory", [])
+	if inv.is_empty():
+		_inventory_label.text = "(empty)"
+		return
+	var lines: PackedStringArray = []
+	for entry in inv:
+		var kind: String = entry.get("kind", "?")
+		var qty: int = entry.get("quantity", 0)
+		lines.append("%s: %d" % [kind, qty])
+	_inventory_label.text = "\n".join(lines)
 
 
 func _on_name_submitted(new_text: String) -> void:

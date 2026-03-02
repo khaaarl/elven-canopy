@@ -36,12 +36,13 @@
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
 ## capybara_renderer.gd / blueprint_renderer.gd / ladder_renderer.gd /
-## furniture_renderer.gd for rendering,
+## furniture_renderer.gd / ground_pile_renderer.gd for rendering,
 ## action_toolbar.gd for the toolbar UI, placement_controller.gd for
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
 ## creature_info_panel.gd for the creature info panel,
 ## structure_info_panel.gd for the structure info panel,
+## ground_pile_info_panel.gd for the ground pile info panel,
 ## tree_info_panel.gd for the tree stats panel, task_panel.gd for
 ## the task list overlay, structure_list_panel.gd for the structure list
 ## overlay, game_session.gd for the autoload that carries the seed/load
@@ -69,6 +70,7 @@ const SPECIES_Y_OFFSETS = {
 var _selector: Node3D
 var _panel: PanelContainer
 var _structure_info_panel: PanelContainer
+var _pile_info_panel: PanelContainer
 var _tree_info_panel: PanelContainer
 var _task_panel: ColorRect
 var _structure_panel: ColorRect
@@ -83,6 +85,7 @@ var _bp_renderer: Node3D
 var _bldg_renderer: Node3D
 var _ladder_renderer: Node3D
 var _furniture_renderer: Node3D
+var _pile_renderer: Node3D
 var _lobby_overlay: ColorRect
 ## Fractional seconds of unprocessed sim time. Accumulates each frame,
 ## converted to ticks by dividing by tick_duration_ms / 1000.
@@ -184,6 +187,17 @@ func _ready() -> void:
 		for i in elf_rest_pcts.size():
 			if elf_rest_pcts[i] < 100:
 				bridge.set_creature_rest("Elf", i, rest_max * elf_rest_pcts[i] / 100)
+		# Distribute initial bread: elf 0 gets 0, elf 1 gets 1, ..., elf 4 gets 4.
+		var elf_bread := [0, 1, 2, 3, 4]
+		for i in elf_bread.size():
+			if elf_bread[i] > 0:
+				bridge.add_creature_item("Elf", i, "Bread", elf_bread[i])
+		# Place a bread pile on the ground near the spawn center for testing.
+		# Scan upward from y=1 to find the surface (first Air voxel above dirt).
+		var pile_y := 1
+		while not bridge.validate_build_air(128, pile_y, 138) and pile_y < 10:
+			pile_y += 1
+		bridge.add_ground_pile_item(128, pile_y, 138, "Bread", 5)
 		print("Elven Canopy: spawned %d elves near (%d, 0, %d)" % [bridge.elf_count(), cx, cz])
 
 		for i in 5:
@@ -343,6 +357,8 @@ func _setup_common(bridge: SimBridge) -> void:
 				_panel.hide_panel()
 			if _structure_info_panel and _structure_info_panel.visible:
 				_structure_info_panel.hide_panel()
+			if _pile_info_panel and _pile_info_panel.visible:
+				_pile_info_panel.hide_panel()
 			if _tree_info_panel and _tree_info_panel.visible:
 				_tree_info_panel.hide_panel()
 			if _camera_pivot:
@@ -383,6 +399,14 @@ func _setup_common(bridge: SimBridge) -> void:
 	add_child(_furniture_renderer)
 	_furniture_renderer.setup(bridge)
 
+	# Set up ground pile renderer.
+	var pile_renderer_script = load("res://scripts/ground_pile_renderer.gd")
+	_pile_renderer = Node3D.new()
+	_pile_renderer.set_script(pile_renderer_script)
+	_pile_renderer.name = "GroundPileRenderer"
+	add_child(_pile_renderer)
+	_pile_renderer.setup(bridge)
+
 	# Set up creature info panel.
 	var panel_script = load("res://scripts/creature_info_panel.gd")
 	_panel = PanelContainer.new()
@@ -394,6 +418,12 @@ func _setup_common(bridge: SimBridge) -> void:
 	_structure_info_panel = PanelContainer.new()
 	_structure_info_panel.set_script(struct_panel_script)
 	canvas_layer.add_child(_structure_info_panel)
+
+	# Set up ground pile info panel.
+	var pile_panel_script = load("res://scripts/ground_pile_info_panel.gd")
+	_pile_info_panel = PanelContainer.new()
+	_pile_info_panel.set_script(pile_panel_script)
+	canvas_layer.add_child(_pile_info_panel)
 
 	# Set up selection controller.
 	var selector_script = load("res://scripts/selection_controller.gd")
@@ -407,11 +437,13 @@ func _setup_common(bridge: SimBridge) -> void:
 	_camera_pivot = $CameraPivot
 	_selector.creature_selected.connect(
 		func(species: String, index: int):
-			# Mutual exclusion: hide tree info and structure info panels.
+			# Mutual exclusion: hide tree info, structure info, and pile panels.
 			if _tree_info_panel and _tree_info_panel.visible:
 				_tree_info_panel.hide_panel()
 			if _structure_info_panel and _structure_info_panel.visible:
 				_structure_info_panel.hide_panel()
+			if _pile_info_panel and _pile_info_panel.visible:
+				_pile_info_panel.hide_panel()
 			var tick := float(bridge.current_tick())
 			var info := bridge.get_creature_info(species, index, tick)
 			if not info.is_empty():
@@ -426,11 +458,13 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Wire structure selection -> structure info panel.
 	_selector.structure_selected.connect(
 		func(structure_id: int):
-			# Mutual exclusion: hide creature and tree info panels.
+			# Mutual exclusion: hide creature, tree info, and pile panels.
 			if _panel and _panel.visible:
 				_panel.hide_panel()
 			if _tree_info_panel and _tree_info_panel.visible:
 				_tree_info_panel.hide_panel()
+			if _pile_info_panel and _pile_info_panel.visible:
+				_pile_info_panel.hide_panel()
 			if _camera_pivot:
 				_camera_pivot.stop_follow()
 			var info := bridge.get_structure_info(structure_id)
@@ -438,6 +472,31 @@ func _setup_common(bridge: SimBridge) -> void:
 				_structure_info_panel.show_structure(info)
 	)
 	_selector.structure_deselected.connect(func(): _structure_info_panel.hide_panel())
+
+	# Wire pile selection -> pile info panel.
+	_selector.pile_selected.connect(
+		func(x: int, y: int, z: int):
+			# Mutual exclusion: hide creature, structure, and tree info panels.
+			if _panel and _panel.visible:
+				_panel.hide_panel()
+			if _structure_info_panel and _structure_info_panel.visible:
+				_structure_info_panel.hide_panel()
+			if _tree_info_panel and _tree_info_panel.visible:
+				_tree_info_panel.hide_panel()
+			if _camera_pivot:
+				_camera_pivot.stop_follow()
+			var info := bridge.get_ground_pile_info(x, y, z)
+			if not info.is_empty():
+				_pile_info_panel.show_pile(info)
+	)
+	_selector.pile_deselected.connect(func(): _pile_info_panel.hide_panel())
+
+	# Wire pile info panel close -> deselect.
+	_pile_info_panel.panel_closed.connect(
+		func():
+			if _selector.get_selected_pile_pos() != Vector3i(-1, -1, -1):
+				_selector.deselect()
+	)
 
 	# Wire structure info panel signals.
 	_structure_info_panel.zoom_requested.connect(
@@ -531,7 +590,7 @@ func _setup_common(bridge: SimBridge) -> void:
 			elif action == "Structures":
 				_structure_panel.toggle()
 			elif action == "TreeInfo":
-				# Mutual exclusion: opening tree info deselects creature/structure.
+				# Mutual exclusion: opening tree info deselects creature/structure/pile.
 				if not _tree_info_panel.visible:
 					if _selector:
 						_selector.deselect()
@@ -539,6 +598,8 @@ func _setup_common(bridge: SimBridge) -> void:
 						_panel.hide_panel()
 					if _structure_info_panel and _structure_info_panel.visible:
 						_structure_info_panel.hide_panel()
+					if _pile_info_panel and _pile_info_panel.visible:
+						_pile_info_panel.hide_panel()
 					if _camera_pivot:
 						_camera_pivot.stop_follow()
 				_tree_info_panel.toggle()
@@ -659,6 +720,8 @@ func _process(delta: float) -> void:
 		_ladder_renderer.refresh()
 	if _furniture_renderer:
 		_furniture_renderer.refresh()
+	if _pile_renderer:
+		_pile_renderer.refresh()
 
 	# Update follow target each frame so the camera tracks creature movement.
 	if _camera_pivot and _camera_pivot.is_following():
@@ -711,6 +774,20 @@ func _process(delta: float) -> void:
 				_structure_info_panel.set_elf_list(bridge.get_all_elves())
 		else:
 			# Structure was demolished — deselect and hide panel.
+			_selector.deselect()
+
+	# Refresh pile info panel while a pile is selected.
+	if (
+		_pile_info_panel
+		and _pile_info_panel.visible
+		and _selector.get_selected_pile_pos() != Vector3i(-1, -1, -1)
+	):
+		var pp: Vector3i = _selector.get_selected_pile_pos()
+		var pinfo := bridge.get_ground_pile_info(pp.x, pp.y, pp.z)
+		if not pinfo.is_empty():
+			_pile_info_panel.update_info(pinfo)
+		else:
+			# Pile was removed — deselect and hide panel.
 			_selector.deselect()
 
 

@@ -25,8 +25,8 @@
 // ## Completed structure registry
 //
 // `CompletedStructure` records a completed build's metadata — type, bounding
-// box, completion tick, optional user-editable name, and optional furnishing
-// state. Created by `SimState::complete_build()` via `from_blueprint()` and
+// box, completion tick, optional user-editable name, optional furnishing
+// state, and an inventory for stored items. Created by `SimState::complete_build()` via `from_blueprint()` and
 // stored in `SimState::structures`. Buildings can be furnished (e.g. as
 // dormitories) via `SimAction::FurnishStructure`, which triggers incremental
 // furniture placement tracked in `planned_furniture` / `furniture_positions`.
@@ -92,6 +92,9 @@ pub struct CompletedStructure {
     /// `planned_furniture` to `furniture_positions`.
     #[serde(default, alias = "planned_beds")]
     pub planned_furniture: Vec<VoxelCoord>,
+    /// Items stored in this structure's inventory.
+    #[serde(default)]
+    pub inventory: Vec<crate::inventory::Item>,
 }
 
 impl CompletedStructure {
@@ -115,6 +118,7 @@ impl CompletedStructure {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         }
     }
 
@@ -506,6 +510,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
 
         let json = serde_json::to_string(&structure).unwrap();
@@ -534,6 +539,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
         assert_eq!(structure.display_name(), "Platform #12");
     }
@@ -558,6 +564,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
         assert_eq!(structure.display_name(), "Starlight Bridge");
 
@@ -598,6 +605,7 @@ mod tests {
                 assigned_elf: None,
                 furniture_positions: Vec::new(),
                 planned_furniture: Vec::new(),
+                inventory: Vec::new(),
             };
             assert_eq!(structure.display_name(), expected);
         }
@@ -625,6 +633,7 @@ mod tests {
             assigned_elf: None,
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
+            inventory: Vec::new(),
         };
         let mut value: serde_json::Value = serde_json::to_value(&structure).unwrap();
         value.as_object_mut().unwrap().remove("name");
