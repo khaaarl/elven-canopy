@@ -6,8 +6,10 @@
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Shows species, name (Vaelith name for elves, fallback "Species #N" for
-## unnamed creatures), position, task status, a food gauge, and a rest gauge
-## (both as progress bar + percentage). Updated every frame by main.gd.
+## unnamed creatures), position, task status, a food gauge, a rest gauge
+## (both as progress bar + percentage), and a "Recent Thoughts" section
+## listing the creature's accumulated thoughts (most recent first).
+## Updated every frame by main.gd.
 ##
 ## See also: selection_controller.gd which triggers show/hide,
 ## orbital_camera.gd which responds to follow/unfollow,
@@ -19,6 +21,8 @@ signal follow_requested
 signal unfollow_requested
 signal panel_closed
 
+const MAX_DISPLAYED_THOUGHTS := 10
+
 var _species_label: Label
 var _name_label: Label
 var _position_label: Label
@@ -27,6 +31,8 @@ var _food_bar: ProgressBar
 var _food_label: Label
 var _rest_bar: ProgressBar
 var _rest_label: Label
+var _thoughts_container: VBoxContainer
+var _thoughts_header: Label
 var _follow_button: Button
 var _is_following: bool = false
 var _selected_species: String = ""
@@ -131,6 +137,18 @@ func _ready() -> void:
 	_rest_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	rest_row.add_child(_rest_label)
 
+	# Recent Thoughts section.
+	vbox.add_child(HSeparator.new())
+
+	_thoughts_header = Label.new()
+	_thoughts_header.text = "Recent Thoughts"
+	_thoughts_header.add_theme_font_size_override("font_size", 16)
+	vbox.add_child(_thoughts_header)
+
+	_thoughts_container = VBoxContainer.new()
+	_thoughts_container.add_theme_constant_override("separation", 2)
+	vbox.add_child(_thoughts_container)
+
 	# Spacer to push the follow button toward the bottom-ish area.
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -162,6 +180,7 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 	_task_label.text = "Has task: %s" % str(info.get("has_task", false))
 	_update_food(info)
 	_update_rest(info)
+	_update_thoughts(info)
 	_is_following = false
 	_follow_button.text = "Follow"
 	visible = true
@@ -172,6 +191,7 @@ func update_info(info: Dictionary) -> void:
 	_task_label.text = "Has task: %s" % str(info.get("has_task", false))
 	_update_food(info)
 	_update_rest(info)
+	_update_thoughts(info)
 
 
 func hide_panel() -> void:
@@ -203,6 +223,28 @@ func _update_rest(info: Dictionary) -> void:
 	var pct: float = 100.0 * float(info.get("rest", 0)) / float(rest_max)
 	_rest_bar.value = pct
 	_rest_label.text = "%d%%" % int(pct)
+
+
+func _update_thoughts(info: Dictionary) -> void:
+	var thoughts: Array = info.get("thoughts", [])
+	var display_count := mini(thoughts.size(), MAX_DISPLAYED_THOUGHTS)
+	# Reuse existing labels where possible, add new ones if needed.
+	while _thoughts_container.get_child_count() < display_count:
+		var lbl := Label.new()
+		lbl.add_theme_font_size_override("font_size", 13)
+		lbl.add_theme_color_override("font_color", Color(0.8, 0.8, 0.8))
+		_thoughts_container.add_child(lbl)
+	# Update visible labels.
+	for i in range(display_count):
+		var lbl: Label = _thoughts_container.get_child(i)
+		var thought: Dictionary = thoughts[i]
+		lbl.text = "- %s" % thought.get("text", "")
+		lbl.visible = true
+	# Hide excess labels.
+	for i in range(display_count, _thoughts_container.get_child_count()):
+		_thoughts_container.get_child(i).visible = false
+	# Show/hide the header based on whether there are any thoughts.
+	_thoughts_header.visible = display_count > 0
 
 
 func _update_position(info: Dictionary) -> void:

@@ -31,10 +31,12 @@
 //   creature's food drops below `food_hunger_threshold_pct`. On arrival,
 //   `do_eat_fruit()` restores `food_restore_pct`% of `food_max`, removes
 //   the fruit from the world and tree, and completes the task.
-// - `Sleep { bed_pos }` — sleep to restore rest. Created automatically by the
-//   heartbeat tiredness check when rest drops below `rest_tired_threshold_pct`.
-//   `bed_pos` is `Some(pos)` for dormitory bed sleep, `None` for ground sleep
-//   (fallback). Multi-activation: each activation restores rest proportional to
+// - `Sleep { bed_pos, location }` — sleep to restore rest. Created automatically
+//   by the heartbeat tiredness check when rest drops below
+//   `rest_tired_threshold_pct`. `bed_pos` is `Some(pos)` for bed sleep, `None`
+//   for ground sleep (fallback). `location` is a `SleepLocation` enum
+//   (Home/Dormitory/Ground) used to determine which thought to generate on
+//   completion. Multi-activation: each activation restores rest proportional to
 //   `rest_per_sleep_tick`; completes when progress reaches `total_cost` or rest
 //   is full.
 //
@@ -59,6 +61,17 @@
 
 use crate::types::{CreatureId, NavNodeId, ProjectId, Species, StructureId, TaskId, VoxelCoord};
 use serde::{Deserialize, Serialize};
+
+/// Where a creature slept. Recorded in `TaskKind::Sleep` to determine which
+/// thought to generate on sleep completion. `Ground` is the default for
+/// backward compatibility with old saves that lack this field.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub enum SleepLocation {
+    Home(StructureId),
+    Dormitory(StructureId),
+    #[default]
+    Ground,
+}
 
 /// The type of work a task represents. Each variant carries kind-specific data
 /// and defines a behavior script (see `sim.rs` activation loop).
@@ -86,7 +99,12 @@ pub enum TaskKind {
     /// for ground sleep (fallback when no beds are available). The task is
     /// multi-activation: each activation restores rest, and the task completes
     /// when `progress >= total_cost` or rest reaches `rest_max`.
-    Sleep { bed_pos: Option<VoxelCoord> },
+    /// `location` records where the creature is sleeping for thought generation.
+    Sleep {
+        bed_pos: Option<VoxelCoord>,
+        #[serde(default)]
+        location: SleepLocation,
+    },
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.
@@ -200,6 +218,61 @@ mod tests {
         assert_eq!(restored.state, TaskState::InProgress);
         assert_eq!(restored.required_species, Some(Species::Elf));
         assert_eq!(restored.origin, TaskOrigin::Autonomous);
+    }
+
+    #[test]
+    fn sleep_task_with_location_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let location = NavNodeId(10);
+
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::Sleep {
+                bed_pos: Some(VoxelCoord::new(5, 3, 8)),
+                location: SleepLocation::Home(StructureId(7)),
+            },
+            state: TaskState::InProgress,
+            location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: 10000.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        match &restored.kind {
+            TaskKind::Sleep { bed_pos, location } => {
+                assert_eq!(*bed_pos, Some(VoxelCoord::new(5, 3, 8)));
+                match location {
+                    SleepLocation::Home(sid) => assert_eq!(*sid, StructureId(7)),
+                    other => panic!("Expected Home, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Sleep task, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sleep_location_backward_compat() {
+        // Old save format: Sleep without `location` field defaults to Ground.
+        let json = r#"{
+            "Sleep": { "bed_pos": [5, 3, 8] }
+        }"#;
+        let kind: TaskKind = serde_json::from_str(json).unwrap();
+        match kind {
+            TaskKind::Sleep { bed_pos, location } => {
+                assert_eq!(bed_pos, Some(VoxelCoord::new(5, 3, 8)));
+                match location {
+                    SleepLocation::Ground => {} // expected
+                    other => panic!("Expected Ground default, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Sleep, got {:?}", other),
+        }
     }
 
     #[test]

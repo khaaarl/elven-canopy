@@ -18,6 +18,8 @@
 //   (not UUIDs) since nav nodes are rebuilt from world geometry and never
 //   persisted across sessions.
 // - **Simulation enums:** `Species`, `SimSpeed`, `Priority`, `BuildType`.
+// - **Thought system:** `ThoughtKind` — event-driven creature thoughts with
+//   per-kind dedup and expiry. `Thought` — a timestamped thought instance.
 // - **Voxel types:** `VoxelType` — the material at each grid cell (`Air`,
 //   `Trunk`, `Branch`, `Root`, `Leaf`, `ForestFloor`, etc.).
 //
@@ -343,6 +345,46 @@ impl FurnitureKind {
             FurnitureKind::Workbench => "workbenches",
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Thought system
+// ---------------------------------------------------------------------------
+
+/// The kind of thought a creature can have. Each variant carries IDs needed
+/// to distinguish meaningfully different instances (e.g., "low ceiling in
+/// building A" vs. "low ceiling in building B"). `PartialEq` is derived for
+/// dedup comparison in `Creature::add_thought()`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThoughtKind {
+    SleptInOwnHome(StructureId),
+    SleptInDormitory(StructureId),
+    SleptOnGround,
+    AteMeal,
+    LowCeiling(StructureId),
+}
+
+impl ThoughtKind {
+    /// Human-readable description for UI display.
+    pub fn description(&self) -> &'static str {
+        match self {
+            ThoughtKind::SleptInOwnHome(_) => "Slept in own home",
+            ThoughtKind::SleptInDormitory(_) => "Slept in a dormitory",
+            ThoughtKind::SleptOnGround => "Slept on the ground",
+            ThoughtKind::AteMeal => "Ate a meal",
+            ThoughtKind::LowCeiling(_) => "Bothered by a low ceiling",
+        }
+    }
+}
+
+/// A single thought that a creature has accumulated. Thoughts are generated at
+/// specific moments (sleep completion, eating, entering low-ceiling buildings)
+/// and expire after a per-kind duration. Used for UI display and will later
+/// feed into the emotional dimension system (F-emotions).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Thought {
+    pub kind: ThoughtKind,
+    pub tick: u64,
 }
 
 /// Types of structures that can be built.
@@ -910,5 +952,54 @@ mod tests {
         let a = VoxelCoord::new(0, 0, 0);
         let b = VoxelCoord::new(1, 0, 0);
         assert!(a < b);
+    }
+
+    #[test]
+    fn thought_kind_description() {
+        assert_eq!(
+            ThoughtKind::SleptInOwnHome(StructureId(0)).description(),
+            "Slept in own home"
+        );
+        assert_eq!(
+            ThoughtKind::SleptInDormitory(StructureId(1)).description(),
+            "Slept in a dormitory"
+        );
+        assert_eq!(
+            ThoughtKind::SleptOnGround.description(),
+            "Slept on the ground"
+        );
+        assert_eq!(ThoughtKind::AteMeal.description(), "Ate a meal");
+        assert_eq!(
+            ThoughtKind::LowCeiling(StructureId(2)).description(),
+            "Bothered by a low ceiling"
+        );
+    }
+
+    #[test]
+    fn thought_kind_equality_with_different_structure_ids() {
+        // Same variant, same ID → equal (for dedup).
+        assert_eq!(
+            ThoughtKind::SleptInOwnHome(StructureId(1)),
+            ThoughtKind::SleptInOwnHome(StructureId(1))
+        );
+        // Same variant, different ID → not equal (distinct buildings).
+        assert_ne!(
+            ThoughtKind::SleptInOwnHome(StructureId(1)),
+            ThoughtKind::SleptInOwnHome(StructureId(2))
+        );
+        // Different variants → not equal.
+        assert_ne!(ThoughtKind::SleptOnGround, ThoughtKind::AteMeal);
+    }
+
+    #[test]
+    fn thought_serialization_roundtrip() {
+        let thought = Thought {
+            kind: ThoughtKind::SleptInOwnHome(StructureId(42)),
+            tick: 12345,
+        };
+        let json = serde_json::to_string(&thought).unwrap();
+        let restored: Thought = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.kind, thought.kind);
+        assert_eq!(restored.tick, thought.tick);
     }
 }

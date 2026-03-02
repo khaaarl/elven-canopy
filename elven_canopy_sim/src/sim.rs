@@ -122,12 +122,15 @@
 //       of `food_max`, remove the fruit voxel from the world and the tree's
 //       `fruit_positions` list, and complete the task.
 //
-//   Sleep { bed_pos }:
+//   Sleep { bed_pos, location }:
 //     - If not at `task.location` → walk 1 edge toward it (same as GoTo).
 //     - If at location → `do_sleep()`: restore `rest_per_sleep_tick` rest per
-//       activation, increment progress. Completes when progress reaches
-//       `total_cost` (sleep_ticks_bed or sleep_ticks_ground) or rest is full.
-//       Beds (from dormitory structures) are reusable — not consumed.
+//       activation, increment progress. On the first sleep tick, checks for a
+//       low ceiling (height-1 building → `LowCeiling` thought). Completes when
+//       progress reaches `total_cost` (sleep_ticks_bed or sleep_ticks_ground)
+//       or rest is full. On completion, generates a sleep thought based on the
+//       `SleepLocation` (Home/Dormitory/Ground). Beds are reusable — not
+//       consumed.
 //
 // ### Task assignment details
 //
@@ -370,6 +373,12 @@ pub struct Creature {
     #[serde(default)]
     pub assigned_home: Option<StructureId>,
 
+    /// Accumulated thoughts. Generated at trigger points (sleep completion,
+    /// eating, low ceilings) and expired during heartbeat. Used for UI display
+    /// and will later feed into the emotional system (F-emotions).
+    #[serde(default)]
+    pub thoughts: Vec<Thought>,
+
     // --- Movement interpolation metadata (rendering only) ---
     // These fields record the visual start/end of each movement for smooth
     // rendering interpolation. They are never read by sim logic — only by
@@ -397,6 +406,36 @@ fn default_rest() -> i64 {
 }
 
 impl Creature {
+    /// Add a thought, subject to dedup. If an identical thought (same `kind`)
+    /// was added within the dedup cooldown window, the new thought is skipped.
+    /// When the thought list exceeds the cap, the oldest thought is dropped.
+    pub fn add_thought(
+        &mut self,
+        kind: ThoughtKind,
+        tick: u64,
+        thought_config: &crate::config::ThoughtConfig,
+    ) {
+        let cooldown = thought_config.dedup_ticks(&kind);
+        let dominated = self
+            .thoughts
+            .iter()
+            .rev()
+            .any(|t| t.kind == kind && tick.saturating_sub(t.tick) < cooldown);
+        if dominated {
+            return;
+        }
+        self.thoughts.push(Thought { kind, tick });
+        if self.thoughts.len() > thought_config.cap {
+            self.thoughts.remove(0);
+        }
+    }
+
+    /// Remove thoughts that have expired based on their per-kind expiry duration.
+    pub fn expire_thoughts(&mut self, tick: u64, thought_config: &crate::config::ThoughtConfig) {
+        self.thoughts
+            .retain(|t| tick.saturating_sub(t.tick) < thought_config.expiry_ticks(&t.kind));
+    }
+
     /// Compute an interpolated world position for rendering.
     ///
     /// If the creature is mid-movement (both `move_from` and `move_to` are
@@ -1325,6 +1364,9 @@ impl SimState {
                         let rest_decay = species_data.rest_decay_per_tick * interval as i64;
                         creature.rest = (creature.rest - rest_decay).max(0);
 
+                        // Expire old thoughts.
+                        creature.expire_thoughts(self.tick, &self.config.thoughts);
+
                         let food_threshold =
                             species_data.food_max * species_data.food_hunger_threshold_pct / 100;
                         let is_hungry = creature.food < food_threshold;
@@ -1378,15 +1420,30 @@ impl SimState {
                 // or fall back to sleeping on the ground.
                 // Priority: assigned home bed → dormitory bed → ground.
                 if should_seek_sleep {
-                    let (bed_pos, nav_node, sleep_ticks) =
-                        if let Some((bp, nn)) = self.find_assigned_home_bed(creature_id) {
-                            (Some(bp), nn, self.config.sleep_ticks_bed)
-                        } else if let Some((bp, nn)) = self.find_nearest_bed(creature_id) {
-                            (Some(bp), nn, self.config.sleep_ticks_bed)
+                    let (bed_pos, nav_node, sleep_ticks, sleep_location) =
+                        if let Some((bp, nn, sid)) = self.find_assigned_home_bed(creature_id) {
+                            (
+                                Some(bp),
+                                nn,
+                                self.config.sleep_ticks_bed,
+                                task::SleepLocation::Home(sid),
+                            )
+                        } else if let Some((bp, nn, sid)) = self.find_nearest_bed(creature_id) {
+                            (
+                                Some(bp),
+                                nn,
+                                self.config.sleep_ticks_bed,
+                                task::SleepLocation::Dormitory(sid),
+                            )
                         } else if let Some(creature) = self.creatures.get(&creature_id)
                             && let Some(node) = creature.current_node
                         {
-                            (None, node, self.config.sleep_ticks_ground)
+                            (
+                                None,
+                                node,
+                                self.config.sleep_ticks_ground,
+                                task::SleepLocation::Ground,
+                            )
                         } else {
                             return; // No valid position — skip.
                         };
@@ -1394,7 +1451,10 @@ impl SimState {
                     let task_id = TaskId::new(&mut self.rng);
                     let new_task = task::Task {
                         id: task_id,
-                        kind: task::TaskKind::Sleep { bed_pos },
+                        kind: task::TaskKind::Sleep {
+                            bed_pos,
+                            location: sleep_location,
+                        },
                         state: task::TaskState::InProgress,
                         location: nav_node,
                         assignees: vec![creature_id],
@@ -1486,6 +1546,7 @@ impl SimState {
             food: species_data.food_max,
             rest: species_data.rest_max,
             assigned_home: None,
+            thoughts: Vec::new(),
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -1680,8 +1741,8 @@ impl SimState {
                 self.do_furnish_work(creature_id, task_id, structure_id);
                 return; // do_furnish_work handles its own next-activation scheduling.
             }
-            task::TaskKind::Sleep { bed_pos } => {
-                self.do_sleep(creature_id, task_id, bed_pos);
+            task::TaskKind::Sleep { bed_pos, location } => {
+                self.do_sleep(creature_id, task_id, bed_pos, location);
                 return; // do_sleep handles its own next-activation scheduling.
             }
         }
@@ -1778,6 +1839,11 @@ impl SimState {
             tree.fruit_positions.retain(|&p| p != fruit_pos);
         }
 
+        // Generate AteMeal thought.
+        if let Some(creature) = self.creatures.get_mut(&creature_id) {
+            creature.add_thought(ThoughtKind::AteMeal, self.tick, &self.config.thoughts);
+        }
+
         self.complete_task(task_id);
     }
 
@@ -1786,7 +1852,11 @@ impl SimState {
     /// Returns `None` if the creature has no assigned home, the home isn't a
     /// Home, or the home has no placed furniture (bed not yet built). Does NOT
     /// check occupied-bed exclusion — it's the elf's personal bed.
-    fn find_assigned_home_bed(&self, creature_id: CreatureId) -> Option<(VoxelCoord, NavNodeId)> {
+    /// Returns `(bed_pos, nav_node, structure_id)`.
+    fn find_assigned_home_bed(
+        &self,
+        creature_id: CreatureId,
+    ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
         let creature = self.creatures.get(&creature_id)?;
         let home_id = creature.assigned_home?;
         let structure = self.structures.get(&home_id)?;
@@ -1796,16 +1866,19 @@ impl SimState {
         let bed_pos = structure.furniture_positions.first()?;
         let graph = self.graph_for_species(creature.species);
         let nav_node = graph.find_nearest_node(*bed_pos)?;
-        Some((*bed_pos, nav_node))
+        Some((*bed_pos, nav_node, home_id))
     }
 
     /// Find the nearest reachable dormitory bed for a creature, using Dijkstra
     /// over the nav graph with species-specific speeds and edge restrictions.
     ///
     /// Excludes beds already occupied by an active Sleep task. Returns the bed
-    /// position and its nearest nav node, or `None` if no unoccupied beds exist
-    /// or none are reachable.
-    fn find_nearest_bed(&self, creature_id: CreatureId) -> Option<(VoxelCoord, NavNodeId)> {
+    /// position, its nearest nav node, and the structure ID, or `None` if no
+    /// unoccupied beds exist or none are reachable.
+    fn find_nearest_bed(
+        &self,
+        creature_id: CreatureId,
+    ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
         let creature = self.creatures.get(&creature_id)?;
         let start_node = creature.current_node?;
         let species_data = &self.species_table[&creature.species];
@@ -1825,7 +1898,7 @@ impl SimState {
             .collect();
 
         // Collect unoccupied bed positions from all dormitory structures.
-        let mut nav_to_bed: Vec<(NavNodeId, VoxelCoord)> = Vec::new();
+        let mut nav_to_bed: Vec<(NavNodeId, VoxelCoord, StructureId)> = Vec::new();
         let mut target_nodes: Vec<NavNodeId> = Vec::new();
         for structure in self.structures.values() {
             if structure.furnishing != Some(FurnishingType::Dormitory) {
@@ -1837,7 +1910,7 @@ impl SimState {
                 }
                 if let Some(nav_node) = graph.find_nearest_node(bed_pos) {
                     target_nodes.push(nav_node);
-                    nav_to_bed.push((nav_node, bed_pos));
+                    nav_to_bed.push((nav_node, bed_pos, structure.id));
                 }
             }
         }
@@ -1857,18 +1930,22 @@ impl SimState {
             species_data.allowed_edge_types.as_deref(),
         )?;
 
-        let bed_pos = nav_to_bed
-            .iter()
-            .find(|(n, _)| *n == nearest_node)
-            .map(|(_, bp)| *bp)?;
+        let (_, bed_pos, structure_id) = nav_to_bed.iter().find(|(n, _, _)| *n == nearest_node)?;
 
-        Some((bed_pos, nearest_node))
+        Some((*bed_pos, nearest_node, *structure_id))
     }
 
     /// Sleep: restore rest over multiple activations. Each activation adds 1.0
     /// progress and restores `rest_per_sleep_tick` rest. The task completes when
-    /// `progress >= total_cost` or rest reaches `rest_max`.
-    fn do_sleep(&mut self, creature_id: CreatureId, task_id: TaskId, _bed_pos: Option<VoxelCoord>) {
+    /// `progress >= total_cost` or rest reaches `rest_max`. On completion,
+    /// generates a sleep thought based on the `SleepLocation`.
+    fn do_sleep(
+        &mut self,
+        creature_id: CreatureId,
+        task_id: TaskId,
+        _bed_pos: Option<VoxelCoord>,
+        location: task::SleepLocation,
+    ) {
         // Restore rest.
         if let Some(creature) = self.creatures.get(&creature_id) {
             let species_data = &self.species_table[&creature.species];
@@ -1881,6 +1958,28 @@ impl SimState {
         // Increment progress and check completion.
         let done = if let Some(task) = self.tasks.get_mut(&task_id) {
             task.progress += 1.0;
+            let first_tick = task.progress == 1.0;
+            // On first sleep tick, check for low ceiling.
+            if first_tick {
+                let structure_id = match &location {
+                    task::SleepLocation::Home(sid) | task::SleepLocation::Dormitory(sid) => {
+                        Some(*sid)
+                    }
+                    task::SleepLocation::Ground => None,
+                };
+                if let Some(sid) = structure_id
+                    && let Some(structure) = self.structures.get(&sid)
+                    && structure.build_type == BuildType::Building
+                    && structure.height == 1
+                    && let Some(creature) = self.creatures.get_mut(&creature_id)
+                {
+                    creature.add_thought(
+                        ThoughtKind::LowCeiling(sid),
+                        self.tick,
+                        &self.config.thoughts,
+                    );
+                }
+            }
             task.progress >= task.total_cost
         } else {
             true
@@ -1897,6 +1996,15 @@ impl SimState {
             .unwrap_or(false);
 
         if done || rest_full {
+            // Generate sleep thought based on location.
+            let thought_kind = match &location {
+                task::SleepLocation::Home(sid) => ThoughtKind::SleptInOwnHome(*sid),
+                task::SleepLocation::Dormitory(sid) => ThoughtKind::SleptInDormitory(*sid),
+                task::SleepLocation::Ground => ThoughtKind::SleptOnGround,
+            };
+            if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                creature.add_thought(thought_kind, self.tick, &self.config.thoughts);
+            }
             self.complete_task(task_id);
         }
 
@@ -4693,7 +4801,7 @@ mod tests {
         );
         let task = &sim.tasks[&elf.current_task.unwrap()];
         match &task.kind {
-            TaskKind::Sleep { bed_pos } => {
+            TaskKind::Sleep { bed_pos, .. } => {
                 assert_eq!(*bed_pos, None, "No dormitories — should be ground sleep");
             }
             other => panic!("Expected Sleep task, got {:?}", other),
@@ -4789,8 +4897,10 @@ mod tests {
             if let Some(task_id) = elf.current_task {
                 if let Some(task) = sim.tasks.get(&task_id) {
                     match &task.kind {
-                        TaskKind::Sleep { bed_pos: Some(_) } => bed_sleep_count += 1,
-                        TaskKind::Sleep { bed_pos: None } => ground_sleep_count += 1,
+                        TaskKind::Sleep {
+                            bed_pos: Some(_), ..
+                        } => bed_sleep_count += 1,
+                        TaskKind::Sleep { bed_pos: None, .. } => ground_sleep_count += 1,
                         _ => {}
                     }
                 }
@@ -4902,6 +5012,7 @@ mod tests {
             food: 1000,
             rest: 1000,
             assigned_home: None,
+            thoughts: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4927,6 +5038,7 @@ mod tests {
             food: 1000,
             rest: 1000,
             assigned_home: None,
+            thoughts: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4950,6 +5062,7 @@ mod tests {
             food: 1000,
             rest: 1000,
             assigned_home: None,
+            thoughts: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4973,6 +5086,7 @@ mod tests {
             food: 1000,
             rest: 1000,
             assigned_home: None,
+            thoughts: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -4999,6 +5113,7 @@ mod tests {
             food: 1000,
             rest: 1000,
             assigned_home: None,
+            thoughts: Vec::new(),
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -9277,7 +9392,7 @@ mod tests {
         );
         let task = &sim.tasks[&elf.current_task.unwrap()];
         match &task.kind {
-            TaskKind::Sleep { bed_pos } => {
+            TaskKind::Sleep { bed_pos, .. } => {
                 assert_eq!(
                     *bed_pos,
                     Some(home_bed),
@@ -9406,10 +9521,463 @@ mod tests {
         );
         let task = &sim.tasks[&elf.current_task.unwrap()];
         match &task.kind {
-            TaskKind::Sleep { bed_pos } => {
+            TaskKind::Sleep { bed_pos, .. } => {
                 assert_eq!(*bed_pos, None, "Should fall back to ground sleep");
             }
             other => panic!("Expected Sleep task, got {:?}", other),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Thought system tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: create a minimal creature for thought tests (no sim needed).
+    fn make_test_creature() -> Creature {
+        let mut rng = GameRng::new(42);
+        Creature {
+            id: CreatureId::new(&mut rng),
+            species: Species::Elf,
+            position: VoxelCoord::new(0, 1, 0),
+            name: String::new(),
+            name_meaning: String::new(),
+            current_node: None,
+            path: None,
+            current_task: None,
+            food: 1_000_000_000_000_000,
+            rest: 1_000_000_000_000_000,
+            assigned_home: None,
+            thoughts: Vec::new(),
+            move_from: None,
+            move_to: None,
+            move_start_tick: 0,
+            move_end_tick: 0,
+        }
+    }
+
+    #[test]
+    fn thought_dedup_within_cooldown() {
+        let cfg = crate::config::ThoughtConfig::default();
+        let mut creature = make_test_creature();
+        let kind = ThoughtKind::AteMeal;
+        creature.add_thought(kind.clone(), 1000, &cfg);
+        creature.add_thought(kind.clone(), 1001, &cfg);
+        assert_eq!(
+            creature.thoughts.len(),
+            1,
+            "Dedup should prevent second add"
+        );
+    }
+
+    #[test]
+    fn thought_dedup_allows_after_cooldown() {
+        let cfg = crate::config::ThoughtConfig::default();
+        let mut creature = make_test_creature();
+        let kind = ThoughtKind::AteMeal;
+        creature.add_thought(kind.clone(), 1000, &cfg);
+        // Advance past dedup cooldown (default 150_000).
+        creature.add_thought(kind.clone(), 1000 + cfg.dedup_ate_meal_ticks, &cfg);
+        assert_eq!(
+            creature.thoughts.len(),
+            2,
+            "Should allow add after cooldown expires"
+        );
+    }
+
+    #[test]
+    fn thought_dedup_distinguishes_structure_ids() {
+        let cfg = crate::config::ThoughtConfig::default();
+        let mut creature = make_test_creature();
+        creature.add_thought(ThoughtKind::SleptInOwnHome(StructureId(1)), 1000, &cfg);
+        creature.add_thought(ThoughtKind::SleptInOwnHome(StructureId(2)), 1001, &cfg);
+        assert_eq!(
+            creature.thoughts.len(),
+            2,
+            "Different structure IDs are distinct thoughts"
+        );
+    }
+
+    #[test]
+    fn thought_cap_enforced() {
+        let mut cfg = crate::config::ThoughtConfig::default();
+        cfg.cap = 5;
+        cfg.dedup_ate_meal_ticks = 0; // Disable dedup for this test.
+        let mut creature = make_test_creature();
+        for i in 0..7 {
+            creature.add_thought(ThoughtKind::AteMeal, i * 1000, &cfg);
+        }
+        assert_eq!(creature.thoughts.len(), 5, "Should not exceed cap");
+        // Oldest should have been dropped — first remaining is tick 2000.
+        assert_eq!(creature.thoughts[0].tick, 2000);
+    }
+
+    #[test]
+    fn thought_expiry() {
+        let cfg = crate::config::ThoughtConfig::default();
+        let mut creature = make_test_creature();
+        creature.add_thought(ThoughtKind::AteMeal, 1000, &cfg);
+        // Before expiry: should remain.
+        creature.expire_thoughts(1000 + cfg.expiry_ate_meal_ticks - 1, &cfg);
+        assert_eq!(creature.thoughts.len(), 1, "Should not expire yet");
+        // At expiry: should be removed.
+        creature.expire_thoughts(1000 + cfg.expiry_ate_meal_ticks, &cfg);
+        assert_eq!(creature.thoughts.len(), 0, "Should expire at expiry tick");
+    }
+
+    #[test]
+    fn thought_serialization_on_creature() {
+        let mut creature = make_test_creature();
+        let cfg = crate::config::ThoughtConfig::default();
+        creature.add_thought(ThoughtKind::SleptOnGround, 5000, &cfg);
+        creature.add_thought(ThoughtKind::AteMeal, 6000, &cfg);
+
+        let json = serde_json::to_string(&creature).unwrap();
+        let restored: Creature = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.thoughts.len(), 2);
+        assert_eq!(restored.thoughts[0].kind, ThoughtKind::SleptOnGround);
+        assert_eq!(restored.thoughts[1].kind, ThoughtKind::AteMeal);
+    }
+
+    #[test]
+    fn ground_sleep_generates_thought() {
+        // Integration test: elf sleeps on ground → has SleptOnGround thought.
+        let mut config = test_config();
+        let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+        elf_species.food_decay_per_tick = 0; // No hunger interference.
+        elf_species.rest_decay_per_tick = 0; // Manual control of rest.
+        let mut sim = SimState::with_config(42, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set rest very low to trigger sleep.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 10 / 100;
+
+        // Advance past heartbeat to trigger sleep + enough ticks for it to complete.
+        let target_tick = 1 + heartbeat_interval + sim.config.sleep_ticks_ground + 1000;
+        sim.step(&[], target_tick);
+
+        // Elf should have a SleptOnGround thought.
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.thoughts
+                .iter()
+                .any(|t| t.kind == ThoughtKind::SleptOnGround),
+            "Elf should have SleptOnGround thought after ground sleep. thoughts={:?}",
+            elf.thoughts
+        );
+    }
+
+    #[test]
+    fn eating_generates_thought() {
+        // Integration test: elf eats fruit → has AteMeal thought.
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        assert!(
+            sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+            "Tree must have fruit for this test"
+        );
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Make the elf hungry.
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 10 / 100;
+
+        // Advance enough ticks for the elf to find fruit, walk to it, and eat it.
+        // Walk could be up to ~50 voxels at 500 tpv = 25000 ticks.
+        let target_tick = 1 + heartbeat_interval + 50_000;
+        sim.step(&[], target_tick);
+
+        // Elf should have an AteMeal thought.
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.thoughts.iter().any(|t| t.kind == ThoughtKind::AteMeal),
+            "Elf should have AteMeal thought after eating. thoughts={:?}",
+            elf.thoughts
+        );
+    }
+
+    #[test]
+    fn dormitory_sleep_generates_thought() {
+        // Integration test: elf sleeps in dormitory → has SleptInDormitory thought.
+        use crate::building::CompletedStructure;
+
+        let mut config = test_config();
+        let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+        elf_species.food_decay_per_tick = 0;
+        elf_species.rest_decay_per_tick = 0;
+        let mut sim = SimState::with_config(42, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+
+        // Add a dormitory with beds near the tree.
+        let graph = sim.graph_for_species(Species::Elf);
+        let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+        let bed_pos = graph.node(bed_node).position;
+
+        let structure_id = StructureId(999);
+        let project_id = ProjectId::new(&mut sim.rng);
+        sim.structures.insert(
+            structure_id,
+            CompletedStructure {
+                id: structure_id,
+                project_id,
+                build_type: BuildType::Building,
+                anchor: bed_pos,
+                width: 3,
+                depth: 3,
+                height: 3,
+                completed_tick: 0,
+                name: None,
+                furnishing: Some(FurnishingType::Dormitory),
+                assigned_elf: None,
+                furniture_positions: vec![bed_pos],
+                planned_furniture: vec![],
+            },
+        );
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set rest very low to trigger sleep.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 10 / 100;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Advance enough ticks for sleep to trigger, walk to bed, and complete.
+        // Walk time + sleep time + buffer.
+        let target_tick = 1 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
+        sim.step(&[], target_tick);
+
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.thoughts
+                .iter()
+                .any(|t| t.kind == ThoughtKind::SleptInDormitory(structure_id)),
+            "Elf should have SleptInDormitory thought. thoughts={:?}",
+            elf.thoughts
+        );
+    }
+
+    #[test]
+    fn home_sleep_generates_thought() {
+        // Integration test: elf sleeps in assigned home → has SleptInOwnHome thought.
+        use crate::building::CompletedStructure;
+
+        let mut config = test_config();
+        let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+        elf_species.food_decay_per_tick = 0;
+        elf_species.rest_decay_per_tick = 0;
+        let mut sim = SimState::with_config(42, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+
+        // Add a home with a bed near the tree.
+        let graph = sim.graph_for_species(Species::Elf);
+        let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+        let bed_pos = graph.node(bed_node).position;
+
+        let structure_id = StructureId(888);
+        let project_id = ProjectId::new(&mut sim.rng);
+        sim.structures.insert(
+            structure_id,
+            CompletedStructure {
+                id: structure_id,
+                project_id,
+                build_type: BuildType::Building,
+                anchor: bed_pos,
+                width: 3,
+                depth: 3,
+                height: 3,
+                completed_tick: 0,
+                name: None,
+                furnishing: Some(FurnishingType::Home),
+                assigned_elf: None,
+                furniture_positions: vec![bed_pos],
+                planned_furniture: vec![],
+            },
+        );
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Assign the home to the elf.
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: 2,
+                action: SimAction::AssignHome {
+                    creature_id: elf_id,
+                    structure_id: Some(structure_id),
+                },
+            }],
+            2,
+        );
+
+        // Set rest very low to trigger sleep.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 10 / 100;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Advance enough ticks for sleep to trigger, walk to bed, and complete.
+        let target_tick = 2 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
+        sim.step(&[], target_tick);
+
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.thoughts
+                .iter()
+                .any(|t| t.kind == ThoughtKind::SleptInOwnHome(structure_id)),
+            "Elf should have SleptInOwnHome thought. thoughts={:?}",
+            elf.thoughts
+        );
+    }
+
+    #[test]
+    fn low_ceiling_generates_thought() {
+        // Integration test: elf sleeps in height-1 building → LowCeiling thought.
+        use crate::building::CompletedStructure;
+
+        let mut config = test_config();
+        let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+        elf_species.food_decay_per_tick = 0;
+        elf_species.rest_decay_per_tick = 0;
+        let mut sim = SimState::with_config(42, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let rest_max = sim.species_table[&Species::Elf].rest_max;
+
+        // Add a dormitory with height=1 (low ceiling).
+        let graph = sim.graph_for_species(Species::Elf);
+        let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+        let bed_pos = graph.node(bed_node).position;
+
+        let structure_id = StructureId(888);
+        let project_id = ProjectId::new(&mut sim.rng);
+        sim.structures.insert(
+            structure_id,
+            CompletedStructure {
+                id: structure_id,
+                project_id,
+                build_type: BuildType::Building,
+                anchor: bed_pos,
+                width: 3,
+                depth: 3,
+                height: 1, // Low ceiling!
+                completed_tick: 0,
+                name: None,
+                furnishing: Some(FurnishingType::Dormitory),
+                assigned_elf: None,
+                furniture_positions: vec![bed_pos],
+                planned_furniture: vec![],
+            },
+        );
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set rest very low to trigger sleep.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 10 / 100;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Advance enough ticks for sleep to trigger, walk to bed, and complete.
+        let target_tick = 1 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
+        sim.step(&[], target_tick);
+
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.thoughts
+                .iter()
+                .any(|t| t.kind == ThoughtKind::LowCeiling(structure_id)),
+            "Elf should have LowCeiling thought from height-1 building. thoughts={:?}",
+            elf.thoughts
+        );
+        // Should also have the dormitory sleep thought.
+        assert!(
+            elf.thoughts
+                .iter()
+                .any(|t| t.kind == ThoughtKind::SleptInDormitory(structure_id)),
+            "Elf should also have SleptInDormitory thought. thoughts={:?}",
+            elf.thoughts
+        );
     }
 }

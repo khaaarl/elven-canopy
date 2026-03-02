@@ -31,7 +31,7 @@
 
 use crate::nav::EdgeType;
 use crate::species::SpeciesData;
-use crate::types::{FaceType, Species, VoxelType};
+use crate::types::{FaceType, Species, ThoughtKind, VoxelType};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -261,6 +261,83 @@ impl Default for StructuralConfig {
             tree_gen_max_retries: 4,
             materials,
             face_properties: face_props,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Thought config
+// ---------------------------------------------------------------------------
+
+/// Per-kind timing parameters for the creature thought system.
+///
+/// All durations are in ticks (1000 ticks = 1 sim second). Dedup cooldowns
+/// prevent the same thought from being added twice within a window. Expiry
+/// durations control how long a thought stays in the creature's thought list
+/// before being cleaned up.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ThoughtConfig {
+    /// Maximum number of thoughts a creature can hold. Oldest are dropped
+    /// when this cap is exceeded.
+    pub cap: usize,
+
+    // --- Dedup cooldowns (ticks before an identical thought can be added again) ---
+    pub dedup_slept_home_ticks: u64,
+    pub dedup_slept_dormitory_ticks: u64,
+    pub dedup_slept_ground_ticks: u64,
+    pub dedup_ate_meal_ticks: u64,
+    pub dedup_low_ceiling_ticks: u64,
+
+    // --- Expiry durations (ticks after which a thought is removed) ---
+    pub expiry_slept_home_ticks: u64,
+    pub expiry_slept_dormitory_ticks: u64,
+    pub expiry_slept_ground_ticks: u64,
+    pub expiry_ate_meal_ticks: u64,
+    pub expiry_low_ceiling_ticks: u64,
+}
+
+impl ThoughtConfig {
+    /// Return the dedup cooldown ticks for a given thought kind.
+    pub fn dedup_ticks(&self, kind: &ThoughtKind) -> u64 {
+        match kind {
+            ThoughtKind::SleptInOwnHome(_) => self.dedup_slept_home_ticks,
+            ThoughtKind::SleptInDormitory(_) => self.dedup_slept_dormitory_ticks,
+            ThoughtKind::SleptOnGround => self.dedup_slept_ground_ticks,
+            ThoughtKind::AteMeal => self.dedup_ate_meal_ticks,
+            ThoughtKind::LowCeiling(_) => self.dedup_low_ceiling_ticks,
+        }
+    }
+
+    /// Return the expiry duration ticks for a given thought kind.
+    pub fn expiry_ticks(&self, kind: &ThoughtKind) -> u64 {
+        match kind {
+            ThoughtKind::SleptInOwnHome(_) => self.expiry_slept_home_ticks,
+            ThoughtKind::SleptInDormitory(_) => self.expiry_slept_dormitory_ticks,
+            ThoughtKind::SleptOnGround => self.expiry_slept_ground_ticks,
+            ThoughtKind::AteMeal => self.expiry_ate_meal_ticks,
+            ThoughtKind::LowCeiling(_) => self.expiry_low_ceiling_ticks,
+        }
+    }
+}
+
+impl Default for ThoughtConfig {
+    fn default() -> Self {
+        Self {
+            cap: 200,
+            // 1 day cycle ≈ 150,000 ticks (150 sim-seconds ≈ 2.5 min real time).
+            dedup_slept_home_ticks: 150_000,
+            dedup_slept_dormitory_ticks: 150_000,
+            dedup_slept_ground_ticks: 150_000,
+            dedup_ate_meal_ticks: 150_000,
+            // Low ceiling: reminder each visit (~30 sim-seconds).
+            dedup_low_ceiling_ticks: 30_000,
+            // Medium expiry (~10 min real time).
+            expiry_slept_home_ticks: 600_000,
+            expiry_slept_dormitory_ticks: 600_000,
+            expiry_slept_ground_ticks: 600_000,
+            // Shorter expiry (~2.5 min real time).
+            expiry_ate_meal_ticks: 150_000,
+            expiry_low_ceiling_ticks: 150_000,
         }
     }
 }
@@ -667,6 +744,11 @@ pub struct GameConfig {
     /// configs without this field use `StructuralConfig::default()`.
     #[serde(default)]
     pub structural: StructuralConfig,
+
+    /// Thought system timing configuration. Backward-compatible: older configs
+    /// without this field use `ThoughtConfig::default()`.
+    #[serde(default)]
+    pub thoughts: ThoughtConfig,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -864,6 +946,7 @@ impl Default for GameConfig {
             terrain_max_height: 4,
             terrain_noise_scale: 8.0,
             structural: StructuralConfig::default(),
+            thoughts: ThoughtConfig::default(),
         }
     }
 }

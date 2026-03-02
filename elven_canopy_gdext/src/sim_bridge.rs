@@ -543,8 +543,10 @@ impl SimBridge {
     /// used for position interpolation (same as the position getters).
     ///
     /// Returns a VarDictionary with keys: "species", "x", "y", "z", "has_task",
-    /// "food", "food_max", "rest", "rest_max", "name", "name_meaning". Returns an
-    /// empty VarDictionary if species is unknown or index is out of bounds.
+    /// "food", "food_max", "rest", "rest_max", "name", "name_meaning",
+    /// "assigned_home", "thoughts". "thoughts" is a VarArray of dicts with
+    /// "text" and "tick" keys, most recent first. Returns an empty VarDictionary
+    /// if species is unknown or index is out of bounds.
     #[func]
     fn get_creature_info(
         &self,
@@ -585,6 +587,15 @@ impl SimBridge {
                     None => -1,
                 };
                 dict.set("assigned_home", assigned_home);
+                // Thoughts: array of dicts with "text" and "tick", most recent first.
+                let mut thoughts_arr = VarArray::new();
+                for thought in c.thoughts.iter().rev() {
+                    let mut td = VarDictionary::new();
+                    td.set("text", GString::from(thought.kind.description()));
+                    td.set("tick", thought.tick as i64);
+                    thoughts_arr.push(&td.to_variant());
+                }
+                dict.set("thoughts", thoughts_arr);
                 dict
             }
             None => VarDictionary::new(),

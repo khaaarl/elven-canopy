@@ -219,6 +219,19 @@
       "rest_per_sleep_tick": 60000000000
     }
   },
+  "thoughts": {
+    "cap": 200,
+    "dedup_slept_home_ticks": 150000,
+    "dedup_slept_dormitory_ticks": 150000,
+    "dedup_slept_ground_ticks": 150000,
+    "dedup_ate_meal_ticks": 150000,
+    "dedup_low_ceiling_ticks": 30000,
+    "expiry_slept_home_ticks": 600000,
+    "expiry_slept_dormitory_ticks": 600000,
+    "expiry_slept_ground_ticks": 600000,
+    "expiry_ate_meal_ticks": 150000,
+    "expiry_low_ceiling_ticks": 150000
+  },
   "structural": {
     "gravity": 1.0,
     "max_iterations": 200,

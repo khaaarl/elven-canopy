@@ -132,7 +132,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-task-priority        Priority queue and auto-assignment
-[ ] F-thoughts             Creature thoughts (DF-style event reactions)
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
 [ ] F-tree-species         Multiple tree species with properties
@@ -200,6 +199,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-struct-names         User-editable structure names
 [x] F-structure-reg        Completed structure registry + UI panel
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
+[x] F-thoughts             Creature thoughts (DF-style event reactions)
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
 [x] F-tree-overlap         Construction overlap with tree geometry
@@ -943,7 +943,6 @@ emergent social/economic system.
 Emotions as multiple simultaneous dimensions: joy, fulfillment, sorrow,
 stress, pain, fear, anxiety. Not a single "happiness" number.
 
-**Blocked by:** F-thoughts
 **Blocks:** F-hedonic-adapt, F-mana-mood, F-mood-system
 
 #### F-hedonic-adapt — Asymmetric hedonic adaptation
@@ -1010,7 +1009,7 @@ Emotional contagion spreads mood through social connections.
 **Related:** F-emotions, F-personality
 
 #### F-thoughts — Creature thoughts (DF-style event reactions)
-**Status:** Todo · **Phase:** 4 · **Refs:** §18
+**Status:** Done · **Phase:** 4 · **Refs:** §18
 **Draft:** `docs/drafts/thoughts.md`
 
 Dwarf Fortress-inspired thought system. Creatures accumulate thoughts in response
@@ -1019,8 +1018,6 @@ thought has a `ThoughtKind` enum (data in variants), a tick timestamp, and
 per-kind dedup cooldown and expiry durations. `Vec<Thought>` per creature,
 hard-capped at 200, with periodic expiry cleanup. Displayed on the creature info
 panel. Later feeds into emotional dimensions when `F-emotions` lands.
-
-**Blocks:** F-emotions
 
 ### Culture, Language & Music
 
