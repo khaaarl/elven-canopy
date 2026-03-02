@@ -173,6 +173,24 @@ impl NetClient {
         send_msg(&mut self.writer, &msg).map_err(|e| format!("send Chat failed: {e}"))
     }
 
+    /// Request the relay to pause turn flushing.
+    pub fn send_pause(&mut self) -> Result<(), String> {
+        send_msg(&mut self.writer, &ClientMessage::RequestPause)
+            .map_err(|e| format!("send RequestPause failed: {e}"))
+    }
+
+    /// Request the relay to resume turn flushing.
+    pub fn send_resume(&mut self) -> Result<(), String> {
+        send_msg(&mut self.writer, &ClientMessage::RequestResume)
+            .map_err(|e| format!("send RequestResume failed: {e}"))
+    }
+
+    /// Request the relay to change the turn cadence.
+    pub fn send_set_speed(&mut self, ticks_per_turn: u32) -> Result<(), String> {
+        let msg = ClientMessage::SetSpeed { ticks_per_turn };
+        send_msg(&mut self.writer, &msg).map_err(|e| format!("send SetSpeed failed: {e}"))
+    }
+
     /// Send Goodbye and close the connection.
     pub fn disconnect(&mut self) {
         let _ = send_msg(&mut self.writer, &ClientMessage::Goodbye);

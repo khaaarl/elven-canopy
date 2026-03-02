@@ -18,7 +18,7 @@ use std::time::Duration;
 use elven_canopy_protocol::message::ServerMessage;
 use elven_canopy_relay::server::{RelayConfig, RelayHandle, start_relay};
 use elven_canopy_sim::command::SimAction;
-use elven_canopy_sim::types::{Species, VoxelCoord};
+use elven_canopy_sim::types::{SimSpeed, Species, VoxelCoord};
 use multiplayer_tests::TestGameClient;
 
 /// Small test world size — 64^3 is ~64x fewer voxels than the default
@@ -615,5 +615,110 @@ fn disconnect_mid_game() {
     assert_eq!(host.sim.as_ref().unwrap().creature_count(Species::Elf), 2);
 
     host.disconnect();
+    handle.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Speed control tests
+// ---------------------------------------------------------------------------
+
+/// SetSimSpeed commands sync sim speed across both clients deterministically.
+#[test]
+fn speed_change_sync() {
+    let (handle, mut host, mut joiner, _addr) = start_test_session();
+    start_game(&mut host, &mut joiner);
+
+    // Host sets speed to Fast via sim command.
+    host.send_action(&SimAction::SetSimSpeed {
+        speed: SimSpeed::Fast,
+    });
+    host.poll_until_turn();
+    joiner.poll_until_turn();
+
+    assert_eq!(host.sim.as_ref().unwrap().speed, SimSpeed::Fast);
+    assert_eq!(joiner.sim.as_ref().unwrap().speed, SimSpeed::Fast);
+
+    // Verify full state match after speed change.
+    let host_json = host.sim.as_ref().unwrap().to_json().unwrap();
+    let joiner_json = joiner.sim.as_ref().unwrap().to_json().unwrap();
+    assert_eq!(host_json, joiner_json, "state should match after Fast");
+
+    // Joiner sets speed to Paused.
+    joiner.send_action(&SimAction::SetSimSpeed {
+        speed: SimSpeed::Paused,
+    });
+    host.poll_until_turn();
+    joiner.poll_until_turn();
+
+    assert_eq!(host.sim.as_ref().unwrap().speed, SimSpeed::Paused);
+    assert_eq!(joiner.sim.as_ref().unwrap().speed, SimSpeed::Paused);
+
+    let host_json = host.sim.as_ref().unwrap().to_json().unwrap();
+    let joiner_json = joiner.sim.as_ref().unwrap().to_json().unwrap();
+    assert_eq!(host_json, joiner_json, "state should match after Paused");
+
+    // Resume to Normal.
+    host.send_action(&SimAction::SetSimSpeed {
+        speed: SimSpeed::Normal,
+    });
+    host.poll_until_turn();
+    joiner.poll_until_turn();
+
+    assert_eq!(host.sim.as_ref().unwrap().speed, SimSpeed::Normal);
+    assert_eq!(joiner.sim.as_ref().unwrap().speed, SimSpeed::Normal);
+
+    let host_json = host.sim.as_ref().unwrap().to_json().unwrap();
+    let joiner_json = joiner.sim.as_ref().unwrap().to_json().unwrap();
+    assert_eq!(host_json, joiner_json, "state should match after Normal");
+
+    host.disconnect();
+    joiner.disconnect();
+    handle.stop();
+}
+
+/// Relay-level pause/resume: turns stop flowing when paused, resume when unpaused.
+#[test]
+fn relay_pause_resume() {
+    let (handle, mut host, mut joiner, _addr) = start_test_session();
+    start_game(&mut host, &mut joiner);
+
+    // Host pauses the relay.
+    host.send_pause();
+    host.poll_until_paused();
+    joiner.poll_until_paused();
+
+    // While paused, drain briefly — no new turns should arrive.
+    let tick_before = host.sim.as_ref().unwrap().tick;
+    thread::sleep(Duration::from_millis(200));
+    let (turns_h, _) = host.drain_turns();
+    let (turns_j, _) = joiner.drain_turns();
+    assert_eq!(turns_h, 0, "no turns should arrive while paused (host)");
+    assert_eq!(turns_j, 0, "no turns should arrive while paused (joiner)");
+    assert_eq!(
+        host.sim.as_ref().unwrap().tick,
+        tick_before,
+        "tick should not advance while paused"
+    );
+
+    // Host resumes.
+    host.send_resume();
+    host.poll_until_resumed();
+    joiner.poll_until_resumed();
+
+    // Turns should start flowing again.
+    thread::sleep(Duration::from_millis(200));
+    let (turns_h, _) = host.drain_turns();
+    let (turns_j, _) = joiner.drain_turns();
+    assert!(
+        turns_h > 0,
+        "turns should resume after unpause (host got {turns_h})"
+    );
+    assert!(
+        turns_j > 0,
+        "turns should resume after unpause (joiner got {turns_j})"
+    );
+
+    host.disconnect();
+    joiner.disconnect();
     handle.stop();
 }

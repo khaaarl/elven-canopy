@@ -1,17 +1,19 @@
-## Top toolbar for gameplay actions and a toggleable debug panel.
+## Top toolbar for gameplay actions, speed controls, and a toggleable debug panel.
 ##
-## The main toolbar row contains gameplay buttons: Build, Tasks, Structures,
-## Units, Tree Info. A "Debug" toggle button (or F12) reveals a second row
-## with dev/test tools: creature spawn buttons and Summon Elf. When the debug
-## row is hidden, its keyboard shortcuts (1–7) are inactive.
+## The main toolbar row contains gameplay buttons: speed controls (pause/play/
+## fast/very fast), Build, Tasks, Structures, Units, Tree Info, and Debug toggle.
+## A "Debug" toggle button (or F12) reveals a second row with dev/test tools:
+## creature spawn buttons and Summon Elf. When the debug row is hidden, its
+## keyboard shortcuts (1–7) are inactive.
 ##
 ## Keyboard shortcuts:
+## [Space] Toggle pause/resume, [+/=] Speed up, [-] Slow down
 ## [B] Build, [T] Tasks, [U] Units, [I] Tree Info, [F12] Toggle debug panel
 ## Debug-only (visible when debug panel is open):
 ## [1] Spawn Elf, [2] Spawn Capybara, [3] Spawn Boar, [4] Spawn Deer,
 ## [5] Spawn Monkey, [6] Spawn Squirrel, [7] Spawn Elephant, [8] Summon Elf
 ##
-## Emits two signals:
+## Emits three signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
 ##   by placement_controller.gd to enter placement mode.
 ## - action_requested(action_name: String) — for task actions ("Summon") and
@@ -19,22 +21,36 @@
 ##   the clicked location via SimBridge. "Build" toggles construction mode,
 ##   handled by construction_controller.gd. "Structures" toggles the
 ##   structure list panel.
+## - speed_changed(speed_name: String) — emitted when the user changes sim
+##   speed via buttons or keyboard. Picked up by main.gd to call
+##   bridge.set_sim_speed(). Values: "Paused", "Normal", "Fast", "VeryFast".
 ##
 ## See also: placement_controller.gd which listens for spawn/action signals,
 ## construction_controller.gd which listens for the "Build" action,
 ## task_panel.gd which listens for the "Tasks" action,
 ## structure_list_panel.gd which listens for the "Structures" action,
-## main.gd which wires toolbar to controllers,
-## sim_bridge.rs for the spawn_creature/create_goto_task commands.
+## main.gd which wires toolbar to controllers and speed signal,
+## sim_bridge.rs for the spawn_creature/create_goto_task/set_sim_speed commands.
 
 extends MarginContainer
 
 signal spawn_requested(species_name: String)
 signal action_requested(action_name: String)
+signal speed_changed(speed_name: String)
+
+## Ordered list of speed names for +/- cycling (excludes Paused).
+const SPEED_ORDER: Array = ["Normal", "Fast", "VeryFast"]
 
 var _debug_row: HBoxContainer
 var _debug_button: Button
 var _debug_visible: bool = false
+
+## Speed button references for highlighting the active speed.
+var _speed_buttons: Dictionary = {}
+## The last non-paused speed, for spacebar toggle.
+var _last_nonpause_speed: String = "Normal"
+## The currently active speed name.
+var _current_speed: String = "Normal"
 
 
 func _ready() -> void:
@@ -50,6 +66,47 @@ func _ready() -> void:
 	var main_row := HBoxContainer.new()
 	main_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(main_row)
+
+	# Speed controls.
+	var speed_container := HBoxContainer.new()
+	speed_container.add_theme_constant_override("separation", 2)
+	main_row.add_child(speed_container)
+
+	var pause_btn := Button.new()
+	pause_btn.text = "||"
+	pause_btn.custom_minimum_size = Vector2(32, 0)
+	pause_btn.focus_mode = Control.FOCUS_NONE
+	pause_btn.pressed.connect(_set_speed.bind("Paused"))
+	speed_container.add_child(pause_btn)
+	_speed_buttons["Paused"] = pause_btn
+
+	var normal_btn := Button.new()
+	normal_btn.text = "1x"
+	normal_btn.custom_minimum_size = Vector2(32, 0)
+	normal_btn.focus_mode = Control.FOCUS_NONE
+	normal_btn.pressed.connect(_set_speed.bind("Normal"))
+	speed_container.add_child(normal_btn)
+	_speed_buttons["Normal"] = normal_btn
+
+	var fast_btn := Button.new()
+	fast_btn.text = "2x"
+	fast_btn.custom_minimum_size = Vector2(32, 0)
+	fast_btn.focus_mode = Control.FOCUS_NONE
+	fast_btn.pressed.connect(_set_speed.bind("Fast"))
+	speed_container.add_child(fast_btn)
+	_speed_buttons["Fast"] = fast_btn
+
+	var vfast_btn := Button.new()
+	vfast_btn.text = "5x"
+	vfast_btn.custom_minimum_size = Vector2(40, 0)
+	vfast_btn.focus_mode = Control.FOCUS_NONE
+	vfast_btn.pressed.connect(_set_speed.bind("VeryFast"))
+	speed_container.add_child(vfast_btn)
+	_speed_buttons["VeryFast"] = vfast_btn
+
+	# Separator between speed and gameplay buttons.
+	var sep := VSeparator.new()
+	main_row.add_child(sep)
 
 	var build_button := Button.new()
 	build_button.text = "Build [B]"
@@ -127,12 +184,24 @@ func _ready() -> void:
 	summon_button.pressed.connect(_on_summon_pressed)
 	_debug_row.add_child(summon_button)
 
+	_update_speed_highlight()
+
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		var key := event as InputEventKey
+		# Speed shortcuts (always active).
+		if key.keycode == KEY_SPACE:
+			_toggle_pause()
+			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_EQUAL or key.keycode == KEY_KP_ADD:
+			_speed_up()
+			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_MINUS or key.keycode == KEY_KP_SUBTRACT:
+			_slow_down()
+			get_viewport().set_input_as_handled()
 		# Gameplay shortcuts (always active).
-		if key.keycode == KEY_B:
+		elif key.keycode == KEY_B:
 			_on_build_pressed()
 			get_viewport().set_input_as_handled()
 		elif key.keycode == KEY_T:
@@ -173,6 +242,48 @@ func _unhandled_input(event: InputEvent) -> void:
 			elif key.keycode == KEY_8:
 				_on_summon_pressed()
 				get_viewport().set_input_as_handled()
+
+
+func _set_speed(speed_name: String) -> void:
+	if speed_name != "Paused" and speed_name != _current_speed:
+		_last_nonpause_speed = speed_name
+	_current_speed = speed_name
+	_update_speed_highlight()
+	speed_changed.emit(speed_name)
+
+
+func _toggle_pause() -> void:
+	if _current_speed == "Paused":
+		_set_speed(_last_nonpause_speed)
+	else:
+		_set_speed("Paused")
+
+
+func _speed_up() -> void:
+	var active := _current_speed if _current_speed != "Paused" else _last_nonpause_speed
+	var idx := SPEED_ORDER.find(active)
+	if idx < 0:
+		idx = 0
+	if idx < SPEED_ORDER.size() - 1:
+		_set_speed(SPEED_ORDER[idx + 1])
+
+
+func _slow_down() -> void:
+	var active := _current_speed if _current_speed != "Paused" else _last_nonpause_speed
+	var idx := SPEED_ORDER.find(active)
+	if idx < 0:
+		idx = 0
+	if idx > 0:
+		_set_speed(SPEED_ORDER[idx - 1])
+
+
+func _update_speed_highlight() -> void:
+	for speed_name in _speed_buttons:
+		var btn: Button = _speed_buttons[speed_name]
+		if speed_name == _current_speed:
+			btn.add_theme_color_override("font_color", Color(0.2, 1.0, 0.4))
+		else:
+			btn.remove_theme_color_override("font_color")
 
 
 func _toggle_debug() -> void:

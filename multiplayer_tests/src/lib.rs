@@ -243,6 +243,83 @@ impl TestGameClient {
             .expect("send_snapshot_response failed");
     }
 
+    /// Request the relay to pause turn flushing.
+    pub fn send_pause(&mut self) {
+        self.client.send_pause().expect("send_pause failed");
+    }
+
+    /// Request the relay to resume turn flushing.
+    pub fn send_resume(&mut self) {
+        self.client.send_resume().expect("send_resume failed");
+    }
+
+    /// Request the relay to change the turn cadence.
+    pub fn send_set_speed(&mut self, ticks_per_turn: u32) {
+        self.client
+            .send_set_speed(ticks_per_turn)
+            .expect("send_set_speed failed");
+    }
+
+    /// Blocking poll until a `Paused` broadcast arrives. Applies any turns
+    /// encountered while waiting.
+    pub fn poll_until_paused(&mut self) {
+        let start = Instant::now();
+        loop {
+            assert!(
+                start.elapsed() < POLL_TIMEOUT,
+                "timed out waiting for Paused"
+            );
+            for msg in self.client.poll() {
+                match msg {
+                    ServerMessage::Paused { .. } => return,
+                    ServerMessage::Turn {
+                        sim_tick_target,
+                        commands,
+                        ..
+                    } => {
+                        if let Some(sim) = self.sim.as_mut() {
+                            let payloads: Vec<&[u8]> =
+                                commands.iter().map(|tc| tc.payload.as_slice()).collect();
+                            sim.apply_turn_payloads(sim_tick_target, &payloads);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// Blocking poll until a `Resumed` broadcast arrives. Applies any turns
+    /// encountered while waiting.
+    pub fn poll_until_resumed(&mut self) {
+        let start = Instant::now();
+        loop {
+            assert!(
+                start.elapsed() < POLL_TIMEOUT,
+                "timed out waiting for Resumed"
+            );
+            for msg in self.client.poll() {
+                match msg {
+                    ServerMessage::Resumed { .. } => return,
+                    ServerMessage::Turn {
+                        sim_tick_target,
+                        commands,
+                        ..
+                    } => {
+                        if let Some(sim) = self.sim.as_mut() {
+                            let payloads: Vec<&[u8]> =
+                                commands.iter().map(|tc| tc.payload.as_slice()).collect();
+                            sim.apply_turn_payloads(sim_tick_target, &payloads);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
     /// Send Goodbye and close the connection.
     pub fn disconnect(&mut self) {
         self.client.disconnect();

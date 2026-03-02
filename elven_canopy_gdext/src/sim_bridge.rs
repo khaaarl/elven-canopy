@@ -9,6 +9,10 @@
 // - **Lifecycle:** `init_sim(seed)`, `init_sim_with_tree_profile_json(seed, json)`,
 //   `step_to_tick(tick)`, `current_tick()`, `is_initialized()`,
 //   `tick_duration_ms()`.
+// - **Speed control:** `get_sim_speed()` returns the current speed as a string,
+//   `sim_speed_multiplier()` returns the time multiplier for the accumulator,
+//   `set_sim_speed(speed_name)` sets speed via `apply_or_send` for deterministic
+//   state. In multiplayer, also sends relay-level pause/resume/speed messages.
 // - **Save/load:** `save_game_json()` returns the sim state as a JSON string,
 //   `load_game_json(json)` replaces the current sim from a JSON string.
 //   File I/O is handled in GDScript via Godot's `user://` paths.
@@ -126,7 +130,8 @@ use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
     BuildType, CreatureId, FaceDirection, FurnishingType, FurnitureKind, LadderKind,
-    OverlapClassification, Priority, SimUuid, Species, StructureId, VoxelCoord, VoxelType,
+    OverlapClassification, Priority, SimSpeed, SimUuid, Species, StructureId, VoxelCoord,
+    VoxelType,
 };
 use godot::prelude::*;
 
@@ -275,6 +280,70 @@ impl SimBridge {
         self.sim
             .as_ref()
             .map_or(1, |s| s.config.tick_duration_ms as i32)
+    }
+
+    /// Return the current simulation speed as a string ("Paused", "Normal",
+    /// "Fast", or "VeryFast").
+    #[func]
+    fn get_sim_speed(&self) -> GString {
+        let speed = self.sim.as_ref().map_or(SimSpeed::Normal, |s| s.speed);
+        match speed {
+            SimSpeed::Paused => "Paused",
+            SimSpeed::Normal => "Normal",
+            SimSpeed::Fast => "Fast",
+            SimSpeed::VeryFast => "VeryFast",
+        }
+        .into()
+    }
+
+    /// Return the time multiplier for the current simulation speed.
+    #[func]
+    fn sim_speed_multiplier(&self) -> f64 {
+        self.sim.as_ref().map_or(1.0, |s| s.speed.multiplier())
+    }
+
+    /// Set the simulation speed by name. Sends the speed change through
+    /// `apply_or_send` for deterministic sim state. In multiplayer, also
+    /// sends relay-level pause/resume/speed messages to control turn pacing.
+    #[func]
+    fn set_sim_speed(&mut self, speed_name: GString) {
+        let speed = match speed_name.to_string().as_str() {
+            "Paused" => SimSpeed::Paused,
+            "Normal" => SimSpeed::Normal,
+            "Fast" => SimSpeed::Fast,
+            "VeryFast" => SimSpeed::VeryFast,
+            _ => return,
+        };
+
+        let was_paused = self
+            .sim
+            .as_ref()
+            .is_some_and(|s| s.speed == SimSpeed::Paused);
+
+        // Sim-level: deterministic speed state via command relay.
+        self.apply_or_send(SimAction::SetSimSpeed { speed });
+
+        // Relay-level: control turn pacing in multiplayer.
+        if self.is_multiplayer_mode
+            && let Some(client) = &mut self.net_client
+        {
+            if speed == SimSpeed::Paused {
+                let _ = client.send_pause();
+            } else {
+                if was_paused {
+                    let _ = client.send_resume();
+                }
+                // Map sim speed to relay ticks_per_turn.
+                let base_tpt = 50u32;
+                let tpt = match speed {
+                    SimSpeed::Normal => base_tpt,
+                    SimSpeed::Fast => base_tpt * 2,
+                    SimSpeed::VeryFast => base_tpt * 5,
+                    SimSpeed::Paused => unreachable!(),
+                };
+                let _ = client.send_set_speed(tpt);
+            }
+        }
     }
 
     /// Return fruit voxel positions as a flat PackedInt32Array (x,y,z triples).
@@ -2674,8 +2743,10 @@ impl SimBridge {
                         );
                     }
                 }
-                // Welcome, Rejected, SpeedChanged are handled during connect
-                // or not yet surfaced to GDScript.
+                ServerMessage::SpeedChanged { ticks_per_turn } => {
+                    self.mp_ticks_per_turn = ticks_per_turn;
+                }
+                // Welcome, Rejected are handled during connect.
                 _ => {}
             }
         }

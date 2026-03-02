@@ -257,6 +257,19 @@ pub enum SimSpeed {
     VeryFast,
 }
 
+impl SimSpeed {
+    /// Time multiplier for the sim accumulator. `Paused` stops the sim,
+    /// `Normal` is real-time, `Fast` and `VeryFast` accelerate it.
+    pub fn multiplier(self) -> f64 {
+        match self {
+            SimSpeed::Paused => 0.0,
+            SimSpeed::Normal => 1.0,
+            SimSpeed::Fast => 2.0,
+            SimSpeed::VeryFast => 5.0,
+        }
+    }
+}
+
 /// Priority level for build projects and tasks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Priority {
@@ -944,6 +957,14 @@ mod tests {
             VoxelType::Dirt.classify_for_overlap(),
             OverlapClassification::Blocked
         );
+    }
+
+    #[test]
+    fn sim_speed_multiplier() {
+        assert_eq!(SimSpeed::Paused.multiplier(), 0.0);
+        assert_eq!(SimSpeed::Normal.multiplier(), 1.0);
+        assert_eq!(SimSpeed::Fast.multiplier(), 2.0);
+        assert_eq!(SimSpeed::VeryFast.multiplier(), 5.0);
     }
 
     #[test]

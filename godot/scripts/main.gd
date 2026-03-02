@@ -608,6 +608,9 @@ func _setup_common(bridge: SimBridge) -> void:
 		func(species: String, index: int): _selector.select_creature(species, index)
 	)
 
+	# Wire speed controls.
+	toolbar.speed_changed.connect(func(speed_name: String): bridge.set_sim_speed(speed_name))
+
 	# Wire toolbar actions -> panel toggles.
 	toolbar.action_requested.connect(
 		func(action: String):
@@ -717,8 +720,12 @@ func _process(delta: float) -> void:
 		for event_json in events:
 			print("MP event: %s" % event_json)
 	else:
-		# Single-player: time-based accumulator.
-		_sim_accumulator += delta
+		# Single-player: time-based accumulator scaled by sim speed.
+		var speed_mult := bridge.sim_speed_multiplier()
+		_sim_accumulator += delta * speed_mult
+		# Cap to prevent unbounded growth (e.g. during pause -> unpause).
+		if _sim_accumulator > 0.1:
+			_sim_accumulator = 0.1
 		var ticks_to_advance := int(_sim_accumulator / _seconds_per_tick)
 		if ticks_to_advance > 5000:
 			ticks_to_advance = 5000

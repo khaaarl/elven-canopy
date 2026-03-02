@@ -122,7 +122,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
 [ ] F-seasons              Seasonal visual and gameplay effects
-[ ] F-sim-speed            Simulation speed controls UI
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
@@ -194,6 +193,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-serde                Serialization for all sim types
 [x] F-shared-prng          Shared PRNG crate across all Rust crates
 [x] F-sim-commands         SimCommand pipeline
+[x] F-sim-speed            Simulation speed controls UI
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
 [x] F-struct-basic         Basic structural integrity (flood fill)
 [x] F-struct-names         User-editable structure names
@@ -1374,11 +1374,11 @@ Ray-based selection with billboard sprite hit detection. ESC to deselect.
 Input precedence chain with placement and pause systems.
 
 #### F-sim-speed — Simulation speed controls UI
-**Status:** Todo · **Phase:** 4
+**Status:** Done · **Phase:** 4
 
-Pause/1x/2x/3x speed controls for the simulation. The sim architecture
+Pause/1x/2x/5x speed controls for the simulation. The sim architecture
 already supports variable tick rates (time-based accumulator in `main.gd`).
-This adds UI buttons and keyboard shortcuts (e.g., Space for pause, 1/2/3
+This adds UI buttons and keyboard shortcuts (e.g., Space for pause, +/-
 for speed) to control the tick multiplier. Essential for both slow
 observation and fast-forwarding through idle periods. Important note: the
 speed must be tracked in _rust_, and the speed change must be sync'd
