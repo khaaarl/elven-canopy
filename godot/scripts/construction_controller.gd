@@ -464,14 +464,14 @@ func _enter_placing(mode: String) -> void:
 		_kind_row.visible = false
 		_set_width(3)
 		_set_depth(3)
-		_set_height(1)
+		_set_height(2)
 	elif _build_mode == "ladder":
 		_width_row.visible = false
 		_depth_row.visible = false
 		_height_row.visible = true
 		_orientation_row.visible = true
 		_kind_row.visible = true
-		_set_height(1)
+		_set_height(3)
 		_ladder_orientation = 0
 		_ladder_kind = 0
 		_orientation_label.text = ORIENTATION_NAMES.get(0, "East (+X)")
