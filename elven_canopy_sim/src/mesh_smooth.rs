@@ -14,7 +14,11 @@
 // Output is an indexed triangle mesh with per-vertex normals suitable for
 // direct upload to Godot's `ArrayMesh`. Vertices are welded across faces
 // and voxels using a `BTreeMap<VertexKey, u32>` so shared edges produce
-// smooth normals.
+// smooth normals. Vertices carry a category tag in the welding key (corners=0,
+// face centers=1, edge midpoints=2) to prevent topologically distinct vertices
+// from merging when chamfer displacement moves them to the same position —
+// without this, adjacent faces would share vertices and emit duplicate directed
+// edges, breaking the manifold property.
 //
 // This module has no Godot dependencies and lives in the sim crate so it
 // can be tested headless. The GDExtension bridge (`sim_bridge.rs`) calls
@@ -107,22 +111,33 @@ const FACE_BASES: [FaceBasis; 6] = [
     },
 ];
 
-/// Vertex welding key: position multiplied by 2 and rounded to integer.
+/// Vertex welding key: position multiplied by 2 and rounded to integer,
+/// plus a tag to prevent welding semantically distinct vertices.
 /// This maps the half-unit grid (0.0, 0.5, 1.0, 1.5, ...) to integers,
 /// ensuring exact matching of coincident vertices across faces and voxels.
+///
+/// The `tag` field distinguishes three vertex categories: corners (`tag=0`),
+/// face centers (`tag=1`), and edge midpoints (`tag=2`). When chamfering
+/// displaces vertices by -0.5, edge midpoints land at adjacent face-center
+/// positions, and corners land at positions coinciding with edge midpoints
+/// from neighboring faces. Without tags, the welding map would merge
+/// topologically distinct vertices, causing two faces to share a vertex and
+/// emit duplicate directed edges — breaking the manifold property.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct VertexKey {
     hx: i32,
     hy: i32,
     hz: i32,
+    tag: u8,
 }
 
 impl VertexKey {
-    fn from_pos(pos: [f32; 3]) -> Self {
+    fn from_pos(pos: [f32; 3], tag: u8) -> Self {
         Self {
             hx: (pos[0] * 2.0).round() as i32,
             hy: (pos[1] * 2.0).round() as i32,
             hz: (pos[2] * 2.0).round() as i32,
+            tag,
         }
     }
 }
@@ -180,11 +195,12 @@ impl MeshBuilder {
         }
     }
 
-    /// Get or insert a welded vertex. If a vertex at the same position already
-    /// exists (by key), accumulate the normal and return the existing index.
-    /// Otherwise, create a new vertex.
-    fn get_or_insert_vertex(&mut self, pos: [f32; 3], face_normal: [f32; 3]) -> u32 {
-        let key = VertexKey::from_pos(pos);
+    /// Get or insert a welded vertex. If a vertex at the same position and tag
+    /// already exists (by key), accumulate the normal and return the existing
+    /// index. Otherwise, create a new vertex. The `tag` field prevents welding
+    /// of semantically distinct vertices (e.g., face centers vs edge midpoints).
+    fn get_or_insert_vertex(&mut self, pos: [f32; 3], face_normal: [f32; 3], tag: u8) -> u32 {
+        let key = VertexKey::from_pos(pos, tag);
         if let Some(&idx) = self.weld_map.get(&key) {
             // Accumulate normal for smooth shading
             self.normals[idx as usize][0] += face_normal[0];
@@ -351,28 +367,38 @@ fn emit_face(
         ]
     };
 
-    // 9 vertices: corners, edge midpoints, center
-    let v_00 = make_pos(0.0, 0.0, corner_00_disp);
-    let v_10 = make_pos(1.0, 0.0, corner_10_disp);
-    let v_11 = make_pos(1.0, 1.0, corner_11_disp);
-    let v_01 = make_pos(0.0, 1.0, corner_01_disp);
+    // 9 vertices: corners, edge midpoints, center.
+    // Corners are NOT displaced (disp=0) so they stay at cube vertex positions
+    // shared between all faces that meet at each cube vertex. This guarantees
+    // manifold connectivity: every boundary edge has a reverse from an adjacent
+    // face. The diamond cross-section effect comes from midpoint displacement.
+    let v_00 = make_pos(0.0, 0.0, 0.0);
+    let v_10 = make_pos(1.0, 0.0, 0.0);
+    let v_11 = make_pos(1.0, 1.0, 0.0);
+    let v_01 = make_pos(0.0, 1.0, 0.0);
     let v_mid_bot = make_pos(0.5, 0.0, mid_bot_disp);
     let v_mid_right = make_pos(1.0, 0.5, mid_right_disp);
     let v_mid_top = make_pos(0.5, 1.0, mid_top_disp);
     let v_mid_left = make_pos(0.0, 0.5, mid_left_disp);
     let v_center = make_pos(0.5, 0.5, 0.0);
 
-    // Get or create welded vertex indices
+    // Get or create welded vertex indices.
+    // Three vertex tags prevent topologically distinct vertices from welding
+    // when chamfer displacement moves them to the same position:
+    //   tag=0: corners    — weld with same-tag corners across faces/voxels
+    //   tag=1: face centers — never weld with displaced midpoints
+    //   tag=2: edge midpoints — never weld with displaced corners
+    // See VertexKey doc for details.
     let face_normal = nf;
-    let i_00 = builder.get_or_insert_vertex(v_00, face_normal);
-    let i_10 = builder.get_or_insert_vertex(v_10, face_normal);
-    let i_11 = builder.get_or_insert_vertex(v_11, face_normal);
-    let i_01 = builder.get_or_insert_vertex(v_01, face_normal);
-    let i_mid_bot = builder.get_or_insert_vertex(v_mid_bot, face_normal);
-    let i_mid_right = builder.get_or_insert_vertex(v_mid_right, face_normal);
-    let i_mid_top = builder.get_or_insert_vertex(v_mid_top, face_normal);
-    let i_mid_left = builder.get_or_insert_vertex(v_mid_left, face_normal);
-    let i_center = builder.get_or_insert_vertex(v_center, face_normal);
+    let i_00 = builder.get_or_insert_vertex(v_00, face_normal, 0);
+    let i_10 = builder.get_or_insert_vertex(v_10, face_normal, 0);
+    let i_11 = builder.get_or_insert_vertex(v_11, face_normal, 0);
+    let i_01 = builder.get_or_insert_vertex(v_01, face_normal, 0);
+    let i_mid_bot = builder.get_or_insert_vertex(v_mid_bot, face_normal, 0);
+    let i_mid_right = builder.get_or_insert_vertex(v_mid_right, face_normal, 0);
+    let i_mid_top = builder.get_or_insert_vertex(v_mid_top, face_normal, 0);
+    let i_mid_left = builder.get_or_insert_vertex(v_mid_left, face_normal, 0);
+    let i_center = builder.get_or_insert_vertex(v_center, face_normal, 1);
 
     // 8 triangles in pinwheel pattern. Boundary traces CW in UV space
     // (00→mid_left→01→mid_top→11→mid_right→10→mid_bot) so that
@@ -420,11 +446,12 @@ mod tests {
         // 6 faces × 8 triangles × 3 indices = 144 indices
         assert_eq!(mesh.indices.len(), 144);
 
-        // Welded vertex count with chamfering: 6 face centers (merged with
-        // displaced edge midpoints that land on adjacent face centers) + 12
+        // Welded vertex count with chamfering: 6 face centers (tagged, not
+        // welded with displaced edge midpoints) + 12 displaced edge midpoints
+        // that land at adjacent face-center positions (welded in pairs) + 12
         // corner positions (pairs of opposite-face corners merge at cube edge
-        // midpoints) = 18.
-        assert_eq!(mesh.positions.len(), 18);
+        // midpoints, giving 6 unique) = 6 + 6 + 12 = 24.
+        assert_eq!(mesh.positions.len(), 24);
     }
 
     #[test]
@@ -786,6 +813,36 @@ mod tests {
                 mesh.positions[a as usize],
                 mesh.positions[b as usize]
             );
+        }
+    }
+
+    #[test]
+    fn debug_rod_x_edge() {
+        let coords = [
+            VoxelCoord::new(4, 5, 5),
+            VoxelCoord::new(5, 5, 5),
+            VoxelCoord::new(6, 5, 5),
+        ];
+        let mut world = VoxelWorld::new(16, 16, 16);
+        for &c in &coords {
+            world.set(c, VoxelType::Trunk);
+        }
+        let result = generate_smoothed_meshes(&world, &coords, &[]);
+        let mesh = result.get(&MaterialGroup::Wood).expect("mesh");
+        // Print all triangles involving vertices near [4.5,5.0,5.0] or [4.5,5.5,5.0]
+        let v0_pos = [4.5_f32, 5.0, 5.0];
+        let v7_pos = [4.5_f32, 5.5, 5.0];
+        let near = |a: [f32;3], b: [f32;3]| a.iter().zip(b.iter()).all(|(x,y)| (x-y).abs()<1e-4);
+        let v0_idx: Vec<u32> = (0..mesh.positions.len() as u32).filter(|&i| near(mesh.positions[i as usize], v0_pos)).collect();
+        let v7_idx: Vec<u32> = (0..mesh.positions.len() as u32).filter(|&i| near(mesh.positions[i as usize], v7_pos)).collect();
+        println!("vertices at {:?}: {:?}", v0_pos, v0_idx);
+        println!("vertices at {:?}: {:?}", v7_pos, v7_idx);
+        for tri in (0..mesh.indices.len()).step_by(3) {
+            let a = mesh.indices[tri]; let b = mesh.indices[tri+1]; let c = mesh.indices[tri+2];
+            if v0_idx.contains(&a) || v0_idx.contains(&b) || v0_idx.contains(&c) ||
+               v7_idx.contains(&a) || v7_idx.contains(&b) || v7_idx.contains(&c) {
+                println!("tri {}: ({:?},{:?},{:?})", tri/3, mesh.positions[a as usize], mesh.positions[b as usize], mesh.positions[c as usize]);
+            }
         }
     }
 
