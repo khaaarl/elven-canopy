@@ -58,11 +58,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run unit tests
-        run: cargo test --workspace --exclude multiplayer_tests
+      - name: Compile-check gdext
+        run: cargo build -p elven_canopy_gdext
 
-      - name: Run multiplayer integration tests
-        run: cargo test -p multiplayer_tests -- --test-threads=16
+      - name: Run all crate tests
+        run: cargo test -p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -- --test-threads=16
 
   gdscript:
     runs-on: ubuntu-latest

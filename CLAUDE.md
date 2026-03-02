@@ -127,10 +127,11 @@ elven-canopy/
 Use `scripts/build.sh` for all build operations. It ensures the `godot/target` symlink exists before compiling.
 
 ```bash
-scripts/build.sh          # Debug build
-scripts/build.sh release  # Release build
-scripts/build.sh test     # Run sim tests, then debug build
-scripts/build.sh run      # Debug build, then launch the game
+scripts/build.sh            # Debug build
+scripts/build.sh release    # Release build
+scripts/build.sh test       # Run all crate tests + gdext compile check
+scripts/build.sh quicktest  # Test only crates changed vs main + multiplayer
+scripts/build.sh run        # Debug build, then launch the game
 ```
 
 To run sim tests alone: `cargo test -p elven_canopy_sim`
@@ -164,8 +165,9 @@ When upgrading the `godot` crate, check for a matching `api-4-x` feature flag. T
 `cargo fmt`, `cargo clippy`, `cargo test`, `gdformat`, and `gdlint` are all enforced in CI via `.github/workflows/ci.yml`. Run all checks locally with:
 
 ```bash
-scripts/build.sh check    # fmt --check + clippy + gdformat --check + gdlint
-scripts/build.sh test     # run sim tests, then debug build
+scripts/build.sh check      # fmt --check + clippy + gdformat --check + gdlint
+scripts/build.sh test       # run all crate tests + gdext compile check
+scripts/build.sh quicktest  # test only crates changed vs main + multiplayer
 ```
 
 ### Rust

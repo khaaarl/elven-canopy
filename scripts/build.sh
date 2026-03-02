@@ -5,11 +5,12 @@
 # godot/target symlink exists so Godot can find the compiled .so/.dll/.dylib.
 #
 # Usage:
-#   scripts/build.sh          # debug build
-#   scripts/build.sh release  # release build
-#   scripts/build.sh test     # run sim tests then build
-#   scripts/build.sh run      # debug build then launch the game
-#   scripts/build.sh check    # run fmt, clippy, gdformat, gdlint checks
+#   scripts/build.sh            # debug build
+#   scripts/build.sh release    # release build
+#   scripts/build.sh test       # run all crate tests + gdext compile check
+#   scripts/build.sh quicktest  # test only crates changed vs main
+#   scripts/build.sh run        # debug build then launch the game
+#   scripts/build.sh check      # run fmt, clippy, gdformat, gdlint checks
 #
 # Run from the repo root.
 
@@ -46,44 +47,51 @@ ensure_godot_imported() {
     fi
 }
 
-# --- Limit parallelism on low-RAM systems ------------------------------------
-# Each rustc process can use 1-2 GB on the gdext crate. On systems with ≤4 GB
-# of RAM, restrict to a single job to avoid OOM / heavy swapping.
-
-CARGO_JOBS=""
-TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') || true
-if [ -n "$TOTAL_RAM_KB" ] && [ "$TOTAL_RAM_KB" -le 4194304 ]; then
-    CARGO_JOBS="-j 1"
-    echo "Low RAM detected ($(( TOTAL_RAM_KB / 1024 )) MB) — building with -j 1"
-fi
-
 # --- Build --------------------------------------------------------------------
 
 case "$MODE" in
     debug)
         echo "Building elven_canopy_gdext (debug)..."
-        cargo build -p elven_canopy_gdext $CARGO_JOBS
+        cargo build -p elven_canopy_gdext
         echo "Done. Run: cd godot && godot"
         ;;
     release)
         echo "Building elven_canopy_gdext (release)..."
-        cargo build -p elven_canopy_gdext --release $CARGO_JOBS
+        cargo build -p elven_canopy_gdext --release
         echo "Done. Run: cd godot && godot"
         ;;
     test)
-        echo "Running sim tests..."
-        cargo test -p elven_canopy_sim $CARGO_JOBS
+        ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests"
+        echo "Compile-checking elven_canopy_gdext..."
+        cargo build -p elven_canopy_gdext
         echo ""
-        echo "Running multiplayer integration tests..."
-        cargo test -p multiplayer_tests $CARGO_JOBS -- --test-threads=16
+        echo "Running all crate tests..."
+        cargo test $ALL_TEST_PACKAGES -- --test-threads=16
         echo ""
-        echo "Building elven_canopy_gdext (debug)..."
-        cargo build -p elven_canopy_gdext $CARGO_JOBS
-        echo "Done. Run: cd godot && godot"
+        echo "All tests passed."
+        ;;
+    quicktest)
+        # Test only crates with source changes relative to main.
+        CHANGED_FILES="$(git diff --name-only main...HEAD 2>/dev/null || true)"
+        TEST_PACKAGES=""
+        for CRATE_DIR in elven_canopy_prng elven_canopy_lang elven_canopy_sim elven_canopy_protocol elven_canopy_relay elven_canopy_music; do
+            if printf '%s' "$CHANGED_FILES" | grep -q "^${CRATE_DIR}/"; then
+                TEST_PACKAGES="$TEST_PACKAGES -p $CRATE_DIR"
+            fi
+        done
+        # Always include multiplayer_tests (cross-crate correctness).
+        TEST_PACKAGES="$TEST_PACKAGES -p multiplayer_tests"
+        echo "Compile-checking elven_canopy_gdext..."
+        cargo build -p elven_canopy_gdext
+        echo ""
+        echo "Running tests for:$TEST_PACKAGES"
+        cargo test $TEST_PACKAGES -- --test-threads=16
+        echo ""
+        echo "All tests passed."
         ;;
     run)
         echo "Building elven_canopy_gdext (debug)..."
-        cargo build -p elven_canopy_gdext $CARGO_JOBS
+        cargo build -p elven_canopy_gdext
         ensure_godot_imported
         echo "Launching Elven Canopy..."
         RUST_BACKTRACE=1 godot --path "$REPO_ROOT/godot"
@@ -112,7 +120,7 @@ case "$MODE" in
         echo "All checks passed."
         ;;
     *)
-        echo "Usage: scripts/build.sh [debug|release|test|run|check]" >&2
+        echo "Usage: scripts/build.sh [debug|release|test|quicktest|run|check]" >&2
         exit 1
         ;;
 esac

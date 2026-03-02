@@ -3125,6 +3125,13 @@ impl SimState {
 mod tests {
     use super::*;
     use crate::task::{Task, TaskKind, TaskOrigin, TaskState};
+    use std::sync::LazyLock;
+
+    /// Cached seed-42 SimState. Constructed once (tree gen + nav graph + lexicon),
+    /// then cloned by `test_sim(42)`. ~155 call sites go from full construction
+    /// to a cheap ~256KB memcpy.
+    static CACHED_SIM_42: LazyLock<SimState> =
+        LazyLock::new(|| SimState::with_config(42, test_config()));
 
     /// Test config with a small 64^3 world and reduced tree energy.
     /// Matches the approach used by nav::tests and tree_gen::tests.
@@ -3143,8 +3150,13 @@ mod tests {
     }
 
     /// Create a test SimState with a small world for fast tests.
+    /// Seed 42 clones from a cached instance; other seeds construct fresh.
     fn test_sim(seed: u64) -> SimState {
-        SimState::with_config(seed, test_config())
+        if seed == 42 {
+            CACHED_SIM_42.clone()
+        } else {
+            SimState::with_config(seed, test_config())
+        }
     }
 
     #[test]

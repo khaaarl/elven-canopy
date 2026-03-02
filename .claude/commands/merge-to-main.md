@@ -56,7 +56,7 @@ agent should:
 5. Stage resolved files and run `git rebase --continue`.
 
 After conflict resolution (whether by agent or directly):
-- Run `scripts/build.sh test` to verify correctness.
+- Run `scripts/build.sh quicktest` to verify correctness.
 - If conflicts required **non-trivial edits** (integrating two features that
   touch the same code), ask the user for permission before continuing. Trivial
   conflicts (adjacent added lines, no semantic interaction) can proceed without

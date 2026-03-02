@@ -1585,6 +1585,28 @@ pub fn update_large_after_voxel_solidified(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::LazyLock;
+
+    /// Cached test world. Constructed once (tree gen into a 64^3 world),
+    /// then cloned by `test_world()`. 5 call sites benefit.
+    static CACHED_TEST_WORLD: LazyLock<VoxelWorld> = LazyLock::new(|| {
+        use crate::config::GameConfig;
+        use crate::prng::GameRng;
+        use crate::tree_gen;
+
+        let mut config = GameConfig {
+            world_size: (64, 64, 64),
+            ..GameConfig::default()
+        };
+        config.tree_profile.leaves.canopy_density = 0.0;
+        config.terrain_max_height = 0;
+
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        tree_gen::generate_tree(&mut world, &config, &mut rng);
+
+        world
+    });
 
     /// Empty face data for tests that don't use buildings.
     fn no_faces() -> BTreeMap<VoxelCoord, FaceData> {
@@ -1794,24 +1816,9 @@ mod tests {
     /// Helper: create a VoxelWorld with a generated tree.
     /// Uses the default fantasy_mega profile with leaves disabled and
     /// a small 64^3 world.
+    /// Clone a pre-built test world from the cache.
     fn test_world() -> VoxelWorld {
-        use crate::config::GameConfig;
-        use crate::prng::GameRng;
-        use crate::tree_gen;
-
-        let mut config = GameConfig {
-            world_size: (64, 64, 64),
-            ..GameConfig::default()
-        };
-        // Disable leaves and terrain for basic nav tests.
-        config.tree_profile.leaves.canopy_density = 0.0;
-        config.terrain_max_height = 0;
-
-        let mut world = VoxelWorld::new(64, 64, 64);
-        let mut rng = GameRng::new(42);
-        tree_gen::generate_tree(&mut world, &config, &mut rng);
-
-        world
+        CACHED_TEST_WORLD.clone()
     }
 
     #[test]
