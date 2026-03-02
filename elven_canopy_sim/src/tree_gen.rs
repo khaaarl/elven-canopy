@@ -1210,7 +1210,7 @@ mod tests {
         let mut rng = GameRng::new(42);
         let result = generate_tree(&mut world, &config, &mut rng);
 
-        let mut y_values: std::collections::BTreeSet<i32> =
+        let y_values: std::collections::BTreeSet<i32> =
             result.dirt_voxels.iter().map(|v| v.y).collect();
         assert!(
             y_values.len() > 1,

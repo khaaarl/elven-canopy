@@ -4256,7 +4256,7 @@ mod tests {
 
     #[test]
     fn elf_spawned_after_roundtrip_gets_name() {
-        let mut sim = test_sim(42);
+        let sim = test_sim(42);
         let tree_pos = sim.trees[&sim.player_tree_id].position;
 
         // Save and restore (no creatures yet).
@@ -7226,7 +7226,6 @@ mod tests {
 
         // Set food to 20% — well below the 50% threshold.
         sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 20 / 100;
-        let food_before = sim.creatures[&elf_id].food;
 
         // Run for 50_000 ticks — enough for heartbeat + pathfind + eat.
         sim.step(&[], 50_001);
@@ -7326,7 +7325,6 @@ mod tests {
     #[test]
     fn overlap_mixed_air_trunk_only_builds_air() {
         let mut sim = test_sim(42);
-        let tree = &sim.trees[&sim.player_tree_id];
         // Find a trunk voxel with an air neighbor.
         let air_coord = find_air_adjacent_to_trunk(&sim);
         // Find which trunk voxel is adjacent.
