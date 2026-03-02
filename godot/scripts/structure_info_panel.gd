@@ -24,13 +24,20 @@
 ## existing home indicators. Emits assign_elf_requested / unassign_elf_requested
 ## which main.gd wires to bridge.assign_home().
 ##
+## For furnished buildings, a Logistics section is shown with:
+## - An enable checkbox + priority SpinBox (1-10)
+## - A list of item wants (kind + quantity) with remove buttons
+## - An "Add Item..." button to add new wants
+## Emits logistics_priority_changed and logistics_wants_changed.
+##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Updated every frame by main.gd while visible.
 ##
 ## See also: selection_controller.gd which triggers show/hide,
 ## creature_info_panel.gd for the creature equivalent,
 ## main.gd which wires everything together,
-## sim_bridge.rs for rename_structure(), furnish_structure(), assign_home().
+## sim_bridge.rs for rename_structure(), furnish_structure(), assign_home(),
+## set_logistics_priority(), set_logistics_wants().
 
 extends PanelContainer
 
@@ -40,6 +47,8 @@ signal rename_requested(structure_id: int, new_name: String)
 signal furnish_requested(structure_id: int, furnishing_type: String)
 signal assign_elf_requested(structure_id: int, creature_id_str: String)
 signal unassign_elf_requested(structure_id: int, creature_id_str: String)
+signal logistics_priority_changed(structure_id: int, priority: int)
+signal logistics_wants_changed(structure_id: int, wants_json: String)
 
 var _name_edit: LineEdit
 var _type_label: Label
@@ -55,6 +64,13 @@ var _assign_button: Button
 var _elf_picker_scroll: ScrollContainer
 var _elf_picker_vbox: VBoxContainer
 var _inventory_label: Label
+var _logistics_section: VBoxContainer
+var _logistics_priority_hbox: HBoxContainer
+var _logistics_priority_spin: SpinBox
+var _logistics_enabled_check: CheckButton
+var _logistics_wants_vbox: VBoxContainer
+var _logistics_add_button: Button
+var _logistics_item_picker: VBoxContainer
 var _zoom_button: Button
 var _anchor_x: float = 0.0
 var _anchor_y: float = 0.0
@@ -191,6 +207,62 @@ func _ready() -> void:
 	_inventory_label.text = "(empty)"
 	vbox.add_child(_inventory_label)
 
+	# Logistics section (visible for furnished buildings).
+	vbox.add_child(HSeparator.new())
+
+	var logistics_title := Label.new()
+	logistics_title.text = "Logistics"
+	logistics_title.add_theme_font_size_override("font_size", 16)
+	vbox.add_child(logistics_title)
+
+	_logistics_section = VBoxContainer.new()
+	_logistics_section.add_theme_constant_override("separation", 4)
+	_logistics_section.visible = false
+	vbox.add_child(_logistics_section)
+
+	# Enable/priority row.
+	_logistics_priority_hbox = HBoxContainer.new()
+	_logistics_section.add_child(_logistics_priority_hbox)
+
+	_logistics_enabled_check = CheckButton.new()
+	_logistics_enabled_check.text = "Enabled"
+	_logistics_enabled_check.toggled.connect(_on_logistics_enabled_toggled)
+	_logistics_priority_hbox.add_child(_logistics_enabled_check)
+
+	var priority_label := Label.new()
+	priority_label.text = "Priority:"
+	_logistics_priority_hbox.add_child(priority_label)
+
+	_logistics_priority_spin = SpinBox.new()
+	_logistics_priority_spin.min_value = 1
+	_logistics_priority_spin.max_value = 10
+	_logistics_priority_spin.value = 5
+	_logistics_priority_spin.step = 1
+	_logistics_priority_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_logistics_priority_spin.value_changed.connect(_on_logistics_priority_value_changed)
+	_logistics_priority_hbox.add_child(_logistics_priority_spin)
+
+	# Wants list.
+	_logistics_wants_vbox = VBoxContainer.new()
+	_logistics_wants_vbox.add_theme_constant_override("separation", 2)
+	_logistics_section.add_child(_logistics_wants_vbox)
+
+	# Add item button + picker.
+	_logistics_add_button = Button.new()
+	_logistics_add_button.text = "Add Item..."
+	_logistics_add_button.pressed.connect(_on_logistics_add_pressed)
+	_logistics_section.add_child(_logistics_add_button)
+
+	_logistics_item_picker = VBoxContainer.new()
+	_logistics_item_picker.visible = false
+	_logistics_section.add_child(_logistics_item_picker)
+
+	for item_name in ["Bread", "Fruit"]:
+		var btn := Button.new()
+		btn.text = item_name
+		btn.pressed.connect(_on_logistics_item_picked.bind(item_name))
+		_logistics_item_picker.add_child(btn)
+
 	# Spacer to push the zoom button toward the bottom-ish area.
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -209,6 +281,7 @@ func show_structure(info: Dictionary) -> void:
 	_editing_name = false
 	_furnish_picker.visible = false
 	_elf_picker_scroll.visible = false
+	_logistics_item_picker.visible = false
 	_update_info(info)
 	visible = true
 
@@ -327,6 +400,7 @@ func _update_info(info: Dictionary) -> void:
 		_elf_picker_scroll.visible = false
 
 	_update_inventory(info)
+	_update_logistics(info, furnishing)
 
 
 func _update_inventory(info: Dictionary) -> void:
@@ -340,6 +414,108 @@ func _update_inventory(info: Dictionary) -> void:
 		var qty: int = entry.get("quantity", 0)
 		lines.append("%s: %d" % [kind, qty])
 	_inventory_label.text = "\n".join(lines)
+
+
+func _update_logistics(info: Dictionary, furnishing: String) -> void:
+	# Only show logistics for furnished buildings.
+	if furnishing == "":
+		_logistics_section.visible = false
+		return
+	_logistics_section.visible = true
+
+	var priority: int = info.get("logistics_priority", -1)
+	var is_enabled := priority >= 0
+	_logistics_enabled_check.set_pressed_no_signal(is_enabled)
+	_logistics_priority_spin.editable = is_enabled
+	if is_enabled:
+		_logistics_priority_spin.set_value_no_signal(priority)
+
+	# Rebuild wants list.
+	for child in _logistics_wants_vbox.get_children():
+		child.queue_free()
+	var wants: Array = info.get("logistics_wants", [])
+	for want in wants:
+		var kind: String = want.get("kind", "?")
+		var qty: int = want.get("target_quantity", 0)
+		var row := HBoxContainer.new()
+		var label := Label.new()
+		label.text = "%s: %d" % [kind, qty]
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(label)
+		var remove_btn := Button.new()
+		remove_btn.text = "X"
+		remove_btn.pressed.connect(_on_logistics_want_removed.bind(kind))
+		row.add_child(remove_btn)
+		_logistics_wants_vbox.add_child(row)
+
+
+func _on_logistics_enabled_toggled(pressed: bool) -> void:
+	if _current_structure_id < 0:
+		return
+	if pressed:
+		var p := int(_logistics_priority_spin.value)
+		logistics_priority_changed.emit(_current_structure_id, p)
+	else:
+		logistics_priority_changed.emit(_current_structure_id, -1)
+
+
+func _on_logistics_priority_value_changed(value: float) -> void:
+	if _current_structure_id < 0:
+		return
+	if _logistics_enabled_check.button_pressed:
+		logistics_priority_changed.emit(_current_structure_id, int(value))
+
+
+func _on_logistics_add_pressed() -> void:
+	_logistics_item_picker.visible = not _logistics_item_picker.visible
+
+
+func _on_logistics_item_picked(item_name: String) -> void:
+	_logistics_item_picker.visible = false
+	if _current_structure_id < 0:
+		return
+	# Add a want with default quantity 10, or increment existing.
+	_emit_wants_with_added(item_name, 10)
+
+
+func _on_logistics_want_removed(kind: String) -> void:
+	if _current_structure_id < 0:
+		return
+	_emit_wants_without(kind)
+
+
+func _emit_wants_with_added(kind: String, default_qty: int) -> void:
+	# Build JSON from current wants, adding or updating the specified kind.
+	var wants: Array = []
+	var found := false
+	for child in _logistics_wants_vbox.get_children():
+		if child is HBoxContainer:
+			var label: Label = child.get_child(0)
+			var parts := label.text.split(": ")
+			if parts.size() == 2:
+				var k: String = parts[0]
+				var q: int = int(parts[1])
+				if k == kind:
+					q += default_qty
+					found = true
+				wants.append({"kind": k, "quantity": q})
+	if not found:
+		wants.append({"kind": kind, "quantity": default_qty})
+	logistics_wants_changed.emit(_current_structure_id, JSON.stringify(wants))
+
+
+func _emit_wants_without(kind: String) -> void:
+	var wants: Array = []
+	for child in _logistics_wants_vbox.get_children():
+		if child is HBoxContainer:
+			var label: Label = child.get_child(0)
+			var parts := label.text.split(": ")
+			if parts.size() == 2:
+				var k: String = parts[0]
+				var q: int = int(parts[1])
+				if k != kind:
+					wants.append({"kind": k, "quantity": q})
+	logistics_wants_changed.emit(_current_structure_id, JSON.stringify(wants))
 
 
 func _on_name_submitted(new_text: String) -> void:

@@ -45,6 +45,13 @@
 //   completion. Multi-activation: each activation restores rest proportional to
 //   `rest_per_sleep_tick`; completes when progress reaches `total_cost` or rest
 //   is full.
+// - `Haul { item_kind, quantity, source, destination, phase, destination_nav_node }`
+//   — two-phase item transport. In `GoingToSource` phase, creature walks to the
+//   source (ground pile or building), picks up reserved items, then switches to
+//   `GoingToDestination` and walks to the destination building to deposit them.
+//   Items are reserved at source creation to prevent double-claiming. On
+//   abandonment: GoingToSource clears reservations; GoingToDestination drops
+//   carried items as a ground pile.
 //
 // ## Lifecycle
 //
@@ -65,8 +72,23 @@
 // **Critical constraint: determinism.** Tasks are stored in `BTreeMap` and
 // iterated in deterministic order. Task IDs come from the sim PRNG.
 
+use crate::inventory::ItemKind;
 use crate::types::{CreatureId, NavNodeId, ProjectId, Species, StructureId, TaskId, VoxelCoord};
 use serde::{Deserialize, Serialize};
+
+/// Where a haul task picks up items from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HaulSource {
+    GroundPile(VoxelCoord),
+    Building(StructureId),
+}
+
+/// Which phase a haul task is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HaulPhase {
+    GoingToSource,
+    GoingToDestination,
+}
 
 /// Where a creature slept. Recorded in `TaskKind::Sleep` to determine which
 /// thought to generate on sleep completion. `Ground` is the default for
@@ -115,6 +137,17 @@ pub enum TaskKind {
         bed_pos: Option<VoxelCoord>,
         #[serde(default)]
         location: SleepLocation,
+    },
+    /// Haul items from a source (ground pile or building) to a destination
+    /// building. Multi-phase: creature walks to source, picks up items, walks
+    /// to destination, deposits items. Created by the logistics heartbeat.
+    Haul {
+        item_kind: ItemKind,
+        quantity: u32,
+        source: HaulSource,
+        destination: StructureId,
+        phase: HaulPhase,
+        destination_nav_node: NavNodeId,
     },
 }
 
@@ -310,6 +343,88 @@ mod tests {
                 }
             }
             other => panic!("Expected Sleep, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn haul_task_serialization_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let location = NavNodeId(5);
+        let dest_node = NavNodeId(20);
+
+        // Test GroundPile source, GoingToSource phase.
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::Haul {
+                item_kind: crate::inventory::ItemKind::Bread,
+                quantity: 3,
+                source: HaulSource::GroundPile(VoxelCoord::new(10, 1, 10)),
+                destination: StructureId(7),
+                phase: HaulPhase::GoingToSource,
+                destination_nav_node: dest_node,
+            },
+            state: TaskState::Available,
+            location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Automated,
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.id, task_id);
+        match &restored.kind {
+            TaskKind::Haul {
+                item_kind,
+                quantity,
+                source,
+                destination,
+                phase,
+                destination_nav_node,
+            } => {
+                assert_eq!(*item_kind, crate::inventory::ItemKind::Bread);
+                assert_eq!(*quantity, 3);
+                assert_eq!(*source, HaulSource::GroundPile(VoxelCoord::new(10, 1, 10)));
+                assert_eq!(*destination, StructureId(7));
+                assert_eq!(*phase, HaulPhase::GoingToSource);
+                assert_eq!(*destination_nav_node, dest_node);
+            }
+            _ => panic!("Expected Haul task kind"),
+        }
+        assert_eq!(restored.origin, TaskOrigin::Automated);
+
+        // Test Building source, GoingToDestination phase.
+        let task2 = Task {
+            id: task_id,
+            kind: TaskKind::Haul {
+                item_kind: crate::inventory::ItemKind::Fruit,
+                quantity: 5,
+                source: HaulSource::Building(StructureId(3)),
+                destination: StructureId(9),
+                phase: HaulPhase::GoingToDestination,
+                destination_nav_node: dest_node,
+            },
+            state: TaskState::InProgress,
+            location: dest_node,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+            origin: TaskOrigin::Automated,
+        };
+
+        let json2 = serde_json::to_string(&task2).unwrap();
+        let restored2: Task = serde_json::from_str(&json2).unwrap();
+        match &restored2.kind {
+            TaskKind::Haul { source, phase, .. } => {
+                assert_eq!(*source, HaulSource::Building(StructureId(3)));
+                assert_eq!(*phase, HaulPhase::GoingToDestination);
+            }
+            _ => panic!("Expected Haul task kind"),
         }
     }
 

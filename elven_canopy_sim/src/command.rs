@@ -26,6 +26,10 @@
 //   `TaskKind`). The handler in `sim.rs` snaps the position to the nearest
 //   nav node.
 // - `RenameStructure` — set or clear a completed structure's user-editable name.
+// - `SetLogisticsPriority` — enable/disable logistics on a building and set
+//   its pull priority (higher = served first).
+// - `SetLogisticsWants` — set which items and quantities a building wants
+//   hauled to it. The `LogisticsHeartbeat` creates `Haul` tasks to fill these.
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -35,6 +39,7 @@
 // to the sim. Internal state changes come from scheduled events (see
 // `event.rs`).
 
+use crate::building::LogisticsWant;
 use crate::task::TaskKind;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
@@ -122,6 +127,16 @@ pub enum SimAction {
     AssignHome {
         creature_id: CreatureId,
         structure_id: Option<StructureId>,
+    },
+    /// Set the logistics priority for a building. `None` disables logistics.
+    SetLogisticsPriority {
+        structure_id: StructureId,
+        priority: Option<u8>,
+    },
+    /// Set the logistics wants (item kind + target quantity) for a building.
+    SetLogisticsWants {
+        structure_id: StructureId,
+        wants: Vec<LogisticsWant>,
     },
 }
 

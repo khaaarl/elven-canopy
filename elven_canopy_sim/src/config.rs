@@ -749,6 +749,16 @@ pub struct GameConfig {
     /// without this field use `ThoughtConfig::default()`.
     #[serde(default)]
     pub thoughts: ThoughtConfig,
+
+    /// Ticks between logistics heartbeats that scan buildings for unmet wants
+    /// and create haul tasks. Default 5000 = 5 sim-seconds.
+    #[serde(default = "default_logistics_heartbeat_interval")]
+    pub logistics_heartbeat_interval_ticks: u64,
+
+    /// Maximum number of haul tasks created per logistics heartbeat. Prevents
+    /// flooding the task queue with haul jobs.
+    #[serde(default = "default_max_haul_tasks_per_heartbeat")]
+    pub max_haul_tasks_per_heartbeat: u32,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -769,6 +779,14 @@ fn default_sleep_ticks_ground() -> u64 {
 
 fn default_terrain_noise_scale() -> f32 {
     8.0
+}
+
+fn default_logistics_heartbeat_interval() -> u64 {
+    5000
+}
+
+fn default_max_haul_tasks_per_heartbeat() -> u32 {
+    5
 }
 
 impl Default for GameConfig {
@@ -954,6 +972,8 @@ impl Default for GameConfig {
             terrain_noise_scale: 8.0,
             structural: StructuralConfig::default(),
             thoughts: ThoughtConfig::default(),
+            logistics_heartbeat_interval_ticks: 5000,
+            max_haul_tasks_per_heartbeat: 5,
         }
     }
 }

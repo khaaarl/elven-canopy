@@ -665,6 +665,7 @@ impl SimBridge {
                             elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
                             elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
                             elven_canopy_sim::task::TaskKind::EatBread => "EatBread",
+                            elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
                         })
                     })
                     .unwrap_or("");
@@ -755,6 +756,7 @@ impl SimBridge {
                             elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
                             elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
                             elven_canopy_sim::task::TaskKind::EatBread => "EatBread",
+                            elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
                         })
                     })
                     .unwrap_or("");
@@ -837,6 +839,7 @@ impl SimBridge {
                 elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
                 elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
                 elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
+                elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
             };
             dict.set("kind", GString::from(kind_str));
 
@@ -1044,6 +1047,21 @@ impl SimBridge {
         }
         dict.set("inventory", inv_arr);
 
+        // Logistics.
+        let logistics_priority: i64 = match structure.logistics_priority {
+            Some(p) => p as i64,
+            None => -1,
+        };
+        dict.set("logistics_priority", logistics_priority);
+        let mut wants_arr = VarArray::new();
+        for want in &structure.logistics_wants {
+            let mut want_dict = VarDictionary::new();
+            want_dict.set("kind", GString::from(want.item_kind.display_name()));
+            want_dict.set("target_quantity", want.target_quantity as i64);
+            wants_arr.push(&want_dict.to_variant());
+        }
+        dict.set("logistics_wants", wants_arr);
+
         dict
     }
 
@@ -1118,6 +1136,57 @@ impl SimBridge {
         self.apply_or_send(SimAction::AssignHome {
             creature_id: CreatureId(uuid),
             structure_id: sid,
+        });
+    }
+
+    /// Set the logistics priority for a building. Pass priority < 0 to disable.
+    #[func]
+    fn set_logistics_priority(&mut self, structure_id: i64, priority: i32) {
+        let p = if priority < 0 {
+            None
+        } else {
+            Some(priority as u8)
+        };
+        self.apply_or_send(SimAction::SetLogisticsPriority {
+            structure_id: StructureId(structure_id as u64),
+            priority: p,
+        });
+    }
+
+    /// Set the logistics wants for a building. Expects a JSON string like:
+    /// `[{"kind": "Bread", "quantity": 10}, {"kind": "Fruit", "quantity": 5}]`
+    #[func]
+    fn set_logistics_wants(&mut self, structure_id: i64, wants_json: GString) {
+        let json_str = wants_json.to_string();
+        let parsed: Vec<serde_json::Value> = match serde_json::from_str(&json_str) {
+            Ok(v) => v,
+            Err(e) => {
+                godot_error!("SimBridge: failed to parse logistics wants JSON: {e}");
+                return;
+            }
+        };
+        let mut wants = Vec::new();
+        for entry in &parsed {
+            let kind_str = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let kind = match kind_str {
+                "Bread" => elven_canopy_sim::inventory::ItemKind::Bread,
+                "Fruit" => elven_canopy_sim::inventory::ItemKind::Fruit,
+                other => {
+                    godot_error!("SimBridge: unknown item kind in logistics wants: '{other}'");
+                    continue;
+                }
+            };
+            let quantity = entry.get("quantity").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            if quantity > 0 {
+                wants.push(elven_canopy_sim::building::LogisticsWant {
+                    item_kind: kind,
+                    target_quantity: quantity,
+                });
+            }
+        }
+        self.apply_or_send(SimAction::SetLogisticsWants {
+            structure_id: StructureId(structure_id as u64),
+            wants,
         });
     }
 
@@ -1337,6 +1406,7 @@ impl SimBridge {
         };
         let kind = match item_kind.to_string().as_str() {
             "Bread" => elven_canopy_sim::inventory::ItemKind::Bread,
+            "Fruit" => elven_canopy_sim::inventory::ItemKind::Fruit,
             other => {
                 godot_error!("SimBridge: unknown item kind '{other}'");
                 return;
@@ -1357,7 +1427,7 @@ impl SimBridge {
                 kind,
                 quantity as u32,
                 Some(id),
-                false,
+                None,
             );
         }
     }
@@ -1375,6 +1445,7 @@ impl SimBridge {
         }
         let kind = match item_kind.to_string().as_str() {
             "Bread" => elven_canopy_sim::inventory::ItemKind::Bread,
+            "Fruit" => elven_canopy_sim::inventory::ItemKind::Fruit,
             other => {
                 godot_error!("SimBridge: unknown item kind '{other}'");
                 return;
@@ -1388,7 +1459,7 @@ impl SimBridge {
                 items: Vec::new(),
             }
         });
-        elven_canopy_sim::inventory::add_item(&mut pile.items, kind, quantity as u32, None, false);
+        elven_canopy_sim::inventory::add_item(&mut pile.items, kind, quantity as u32, None, None);
     }
 
     /// Return all ground piles as a `VarArray` of dictionaries.

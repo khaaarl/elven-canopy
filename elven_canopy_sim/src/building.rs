@@ -26,15 +26,17 @@
 //
 // `CompletedStructure` records a completed build's metadata — type, bounding
 // box, completion tick, optional user-editable name, optional furnishing
-// state, and an inventory for stored items. Created by `SimState::complete_build()` via `from_blueprint()` and
-// stored in `SimState::structures`. Buildings can be furnished (e.g. as
-// dormitories) via `SimAction::FurnishStructure`, which triggers incremental
-// furniture placement tracked in `planned_furniture` / `furniture_positions`.
-// The structure
-// list panel in the UI queries these to show a browsable list of all
-// completed constructions with zoom-to-location. `display_name()` returns
-// the custom name if set, or a furnishing-derived name like "Dormitory #7",
-// or a build-type default like "Platform #12".
+// state, an inventory for stored items, and optional logistics config
+// (priority + wants list for automated hauling). Created by
+// `SimState::complete_build()` via `from_blueprint()` and stored in
+// `SimState::structures`. Buildings can be furnished (e.g. as dormitories)
+// via `SimAction::FurnishStructure`, which triggers incremental furniture
+// placement tracked in `planned_furniture` / `furniture_positions`.
+// Logistics is configured via `SetLogisticsPriority` / `SetLogisticsWants`
+// commands; the `LogisticsHeartbeat` in `sim.rs` scans buildings and creates
+// `Haul` tasks to fill unmet wants. `display_name()` returns the custom name
+// if set, or a furnishing-derived name like "Dormitory #7", or a build-type
+// default like "Platform #12".
 //
 // See also: `types.rs` for `FaceDirection`, `FaceType`, `FaceData`,
 // `VoxelCoord`, `StructureId`. `sim.rs` for the `DesignateBuilding` command
@@ -45,6 +47,7 @@
 // **Critical constraint: determinism.** Uses `BTreeMap` for output ordering.
 
 use crate::blueprint::Blueprint;
+use crate::inventory::ItemKind;
 use crate::prng::GameRng;
 use crate::types::{
     BuildType, CreatureId, FaceData, FaceDirection, FaceType, FurnishingType, ProjectId,
@@ -52,6 +55,13 @@ use crate::types::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// A desired item kind and target quantity for logistics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogisticsWant {
+    pub item_kind: ItemKind,
+    pub target_quantity: u32,
+}
 
 // ---------------------------------------------------------------------------
 // Completed structure
@@ -95,6 +105,13 @@ pub struct CompletedStructure {
     /// Items stored in this structure's inventory.
     #[serde(default)]
     pub inventory: Vec<crate::inventory::Item>,
+    /// Logistics priority for automated hauling. `None` means logistics is
+    /// disabled for this building. Higher values are served first.
+    #[serde(default)]
+    pub logistics_priority: Option<u8>,
+    /// List of item kinds and target quantities this building wants.
+    #[serde(default)]
+    pub logistics_wants: Vec<LogisticsWant>,
 }
 
 impl CompletedStructure {
@@ -119,6 +136,8 @@ impl CompletedStructure {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         }
     }
 
@@ -511,12 +530,79 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
 
         let json = serde_json::to_string(&structure).unwrap();
         let restored: CompletedStructure = serde_json::from_str(&json).unwrap();
 
         assert_eq!(structure, restored);
+    }
+
+    #[test]
+    fn logistics_fields_default_none() {
+        use crate::blueprint::{Blueprint, BlueprintState};
+        use crate::prng::GameRng;
+        use crate::types::{BuildType, Priority, ProjectId, StructureId};
+
+        let mut rng = GameRng::new(42);
+        let bp = Blueprint {
+            id: ProjectId::new(&mut rng),
+            build_type: BuildType::Building,
+            voxels: vec![VoxelCoord::new(5, 3, 10)],
+            priority: Priority::Normal,
+            state: BlueprintState::Complete,
+            task_id: None,
+            face_layout: None,
+            stress_warning: false,
+            original_voxels: Vec::new(),
+        };
+        let structure = CompletedStructure::from_blueprint(StructureId(0), &bp, 100);
+        assert_eq!(structure.logistics_priority, None);
+        assert!(structure.logistics_wants.is_empty());
+    }
+
+    #[test]
+    fn logistics_serialization_roundtrip() {
+        use crate::inventory::ItemKind;
+        use crate::prng::GameRng;
+        use crate::types::{BuildType, ProjectId, StructureId};
+
+        let mut rng = GameRng::new(42);
+        let structure = CompletedStructure {
+            id: StructureId(10),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Building,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 5,
+            depth: 5,
+            height: 2,
+            completed_tick: 5000,
+            name: None,
+            furnishing: None,
+            assigned_elf: None,
+            furniture_positions: Vec::new(),
+            planned_furniture: Vec::new(),
+            inventory: Vec::new(),
+            logistics_priority: Some(5),
+            logistics_wants: vec![
+                LogisticsWant {
+                    item_kind: ItemKind::Bread,
+                    target_quantity: 10,
+                },
+                LogisticsWant {
+                    item_kind: ItemKind::Fruit,
+                    target_quantity: 5,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&structure).unwrap();
+        let restored: CompletedStructure = serde_json::from_str(&json).unwrap();
+        assert_eq!(structure, restored);
+        assert_eq!(restored.logistics_priority, Some(5));
+        assert_eq!(restored.logistics_wants.len(), 2);
     }
 
     #[test]
@@ -540,6 +626,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
         assert_eq!(structure.display_name(), "Platform #12");
     }
@@ -565,6 +653,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
         assert_eq!(structure.display_name(), "Starlight Bridge");
 
@@ -606,6 +696,8 @@ mod tests {
                 furniture_positions: Vec::new(),
                 planned_furniture: Vec::new(),
                 inventory: Vec::new(),
+                logistics_priority: None,
+                logistics_wants: Vec::new(),
             };
             assert_eq!(structure.display_name(), expected);
         }
@@ -634,6 +726,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
         let mut value: serde_json::Value = serde_json::to_value(&structure).unwrap();
         value.as_object_mut().unwrap().remove("name");

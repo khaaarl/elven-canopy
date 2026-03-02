@@ -630,6 +630,12 @@ impl SimState {
             },
         );
 
+        // Schedule the first logistics heartbeat.
+        let logistics_interval = state.config.logistics_heartbeat_interval_ticks;
+        state
+            .event_queue
+            .schedule(logistics_interval, ScheduledEventKind::LogisticsHeartbeat);
+
         state
     }
 
@@ -750,6 +756,22 @@ impl SimState {
                 structure_id,
             } => {
                 self.assign_home(*creature_id, *structure_id);
+            }
+            SimAction::SetLogisticsPriority {
+                structure_id,
+                priority,
+            } => {
+                if let Some(s) = self.structures.get_mut(structure_id) {
+                    s.logistics_priority = *priority;
+                }
+            }
+            SimAction::SetLogisticsWants {
+                structure_id,
+                wants,
+            } => {
+                if let Some(s) = self.structures.get_mut(structure_id) {
+                    s.logistics_wants = wants.clone();
+                }
             }
         }
     }
@@ -1555,6 +1577,12 @@ impl SimState {
                         .schedule(next_tick, ScheduledEventKind::TreeHeartbeat { tree_id });
                 }
             }
+            ScheduledEventKind::LogisticsHeartbeat => {
+                self.process_logistics_heartbeat();
+                let next_tick = self.tick + self.config.logistics_heartbeat_interval_ticks;
+                self.event_queue
+                    .schedule(next_tick, ScheduledEventKind::LogisticsHeartbeat);
+            }
         }
     }
 
@@ -1755,6 +1783,8 @@ impl SimState {
             .unwrap_or(Species::Elf);
         let graph = self.graph_for_species(species);
         if !graph.is_node_alive(current_node) || !graph.is_node_alive(task_location) {
+            // Clean up haul task state before abandoning.
+            self.cleanup_haul_task(creature_id, task_id);
             if let Some(c) = self.creatures.get_mut(&creature_id) {
                 c.current_task = None;
                 c.path = None;
@@ -1812,6 +1842,10 @@ impl SimState {
             task::TaskKind::Sleep { bed_pos, location } => {
                 self.do_sleep(creature_id, task_id, bed_pos, location);
                 return; // do_sleep handles its own next-activation scheduling.
+            }
+            task::TaskKind::Haul { .. } => {
+                self.do_haul(creature_id, task_id);
+                return; // do_haul handles its own next-activation scheduling.
             }
         }
 
@@ -2106,6 +2140,372 @@ impl SimState {
             self.tick + 1,
             ScheduledEventKind::CreatureActivation { creature_id },
         );
+    }
+
+    /// Execute one activation of a Haul task.
+    ///
+    /// **GoingToSource phase (pickup):** Remove reserved items from source,
+    /// add to creature inventory, switch to GoingToDestination phase.
+    /// **GoingToDestination phase (deposit):** Remove items from creature
+    /// inventory, add to destination building, complete task.
+    fn do_haul(&mut self, creature_id: CreatureId, task_id: TaskId) {
+        let task = match self.tasks.get(&task_id) {
+            Some(t) => t.kind.clone(),
+            None => return,
+        };
+        let task::TaskKind::Haul {
+            item_kind,
+            quantity,
+            ref source,
+            destination,
+            phase,
+            destination_nav_node,
+        } = task
+        else {
+            return;
+        };
+
+        match phase {
+            task::HaulPhase::GoingToSource => {
+                // Pick up items from source.
+                let picked_up = match &source {
+                    task::HaulSource::GroundPile(pos) => {
+                        if let Some(pile) = self.ground_piles.get_mut(pos) {
+                            inventory::remove_reserved_items(
+                                &mut pile.items,
+                                item_kind,
+                                quantity,
+                                task_id,
+                            )
+                        } else {
+                            0
+                        }
+                    }
+                    task::HaulSource::Building(sid) => {
+                        if let Some(structure) = self.structures.get_mut(sid) {
+                            inventory::remove_reserved_items(
+                                &mut structure.inventory,
+                                item_kind,
+                                quantity,
+                                task_id,
+                            )
+                        } else {
+                            0
+                        }
+                    }
+                };
+
+                // Clean up empty ground piles.
+                if let task::HaulSource::GroundPile(pos) = &source
+                    && let Some(pile) = self.ground_piles.get(pos)
+                    && pile.items.is_empty()
+                {
+                    let pos = *pos;
+                    self.ground_piles.remove(&pos);
+                }
+
+                if picked_up == 0 {
+                    // Source empty — cancel task.
+                    self.complete_task(task_id);
+                    self.event_queue.schedule(
+                        self.tick + 1,
+                        ScheduledEventKind::CreatureActivation { creature_id },
+                    );
+                    return;
+                }
+
+                // Add items to creature inventory.
+                if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                    inventory::add_item(&mut creature.inventory, item_kind, picked_up, None, None);
+                }
+
+                // Switch to GoingToDestination phase.
+                if let Some(task) = self.tasks.get_mut(&task_id) {
+                    task.kind = task::TaskKind::Haul {
+                        item_kind,
+                        quantity: picked_up,
+                        source: source.clone(),
+                        destination,
+                        phase: task::HaulPhase::GoingToDestination,
+                        destination_nav_node,
+                    };
+                    task.location = destination_nav_node;
+                }
+                // Clear cached path so creature re-pathfinds to new destination.
+                if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                    creature.path = None;
+                }
+            }
+            task::HaulPhase::GoingToDestination => {
+                // Deposit items into destination building.
+                if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                    inventory::remove_item(&mut creature.inventory, item_kind, quantity);
+                }
+                if let Some(structure) = self.structures.get_mut(&destination) {
+                    inventory::add_item(&mut structure.inventory, item_kind, quantity, None, None);
+                }
+                self.complete_task(task_id);
+            }
+        }
+
+        // Schedule next activation.
+        self.event_queue.schedule(
+            self.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
+    }
+
+    /// Clean up haul task state when a haul task is abandoned.
+    ///
+    /// - **GoingToSource:** Release reserved items at source.
+    /// - **GoingToDestination:** Creature is carrying items — drop as ground pile.
+    fn cleanup_haul_task(&mut self, creature_id: CreatureId, task_id: TaskId) {
+        let task_kind = match self.tasks.get(&task_id) {
+            Some(t) => t.kind.clone(),
+            None => return,
+        };
+        let task::TaskKind::Haul {
+            item_kind,
+            quantity,
+            ref source,
+            phase,
+            ..
+        } = task_kind
+        else {
+            return;
+        };
+
+        match phase {
+            task::HaulPhase::GoingToSource => {
+                // Clear reservations at the source.
+                match source {
+                    task::HaulSource::GroundPile(pos) => {
+                        if let Some(pile) = self.ground_piles.get_mut(pos) {
+                            inventory::clear_reservations(&mut pile.items, task_id);
+                        }
+                    }
+                    task::HaulSource::Building(sid) => {
+                        if let Some(structure) = self.structures.get_mut(sid) {
+                            inventory::clear_reservations(&mut structure.inventory, task_id);
+                        }
+                    }
+                }
+            }
+            task::HaulPhase::GoingToDestination => {
+                // Creature is carrying items — drop as ground pile at current position.
+                if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                    let removed =
+                        inventory::remove_item(&mut creature.inventory, item_kind, quantity);
+                    if removed > 0 {
+                        let pos = creature.position;
+                        let pile =
+                            self.ground_piles
+                                .entry(pos)
+                                .or_insert_with(|| inventory::GroundPile {
+                                    position: pos,
+                                    items: Vec::new(),
+                                });
+                        inventory::add_item(&mut pile.items, item_kind, removed, None, None);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Process the logistics heartbeat: scan buildings with logistics config
+    /// for unmet wants and create haul tasks to fulfill them.
+    fn process_logistics_heartbeat(&mut self) {
+        // Collect buildings with logistics enabled, sorted by priority desc then StructureId asc.
+        let mut logistics_buildings: Vec<(StructureId, u8)> = self
+            .structures
+            .iter()
+            .filter_map(|(&sid, s)| s.logistics_priority.map(|p| (sid, p)))
+            .collect();
+        logistics_buildings.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let max_tasks = self.config.max_haul_tasks_per_heartbeat;
+        let mut tasks_created = 0u32;
+
+        for (building_id, building_priority) in &logistics_buildings {
+            if tasks_created >= max_tasks {
+                break;
+            }
+
+            let wants = match self.structures.get(building_id) {
+                Some(s) => s.logistics_wants.clone(),
+                None => continue,
+            };
+
+            for want in &wants {
+                if tasks_created >= max_tasks {
+                    break;
+                }
+
+                // Count current inventory in this building for this item kind.
+                let current = self
+                    .structures
+                    .get(building_id)
+                    .map(|s| inventory::item_count(&s.inventory, want.item_kind))
+                    .unwrap_or(0);
+
+                // Count in-transit items (from active Haul tasks targeting this building).
+                let in_transit = self.count_in_transit_items(*building_id, want.item_kind);
+
+                let effective = current + in_transit;
+                if effective >= want.target_quantity {
+                    continue;
+                }
+
+                let needed = want.target_quantity - effective;
+
+                // Find a source for these items.
+                if let Some((source, available, source_nav_node)) =
+                    self.find_haul_source(want.item_kind, needed, *building_id, *building_priority)
+                {
+                    let quantity = available.min(needed);
+
+                    // Find destination nav node.
+                    let dest_nav_node = match self
+                        .nav_graph
+                        .find_nearest_node(self.structures[building_id].anchor)
+                    {
+                        Some(n) => n,
+                        None => continue,
+                    };
+
+                    // Reserve items at source.
+                    let task_id = TaskId::new(&mut self.rng);
+                    self.reserve_haul_items(&source, want.item_kind, quantity, task_id);
+
+                    // Create haul task.
+                    let new_task = task::Task {
+                        id: task_id,
+                        kind: task::TaskKind::Haul {
+                            item_kind: want.item_kind,
+                            quantity,
+                            source,
+                            destination: *building_id,
+                            phase: task::HaulPhase::GoingToSource,
+                            destination_nav_node: dest_nav_node,
+                        },
+                        state: task::TaskState::Available,
+                        location: source_nav_node,
+                        assignees: Vec::new(),
+                        progress: 0.0,
+                        total_cost: 0.0,
+                        required_species: Some(Species::Elf),
+                        origin: task::TaskOrigin::Automated,
+                    };
+                    self.tasks.insert(task_id, new_task);
+                    tasks_created += 1;
+                }
+            }
+        }
+    }
+
+    /// Count items of the given kind that are in-transit to the given building
+    /// via active Haul tasks.
+    fn count_in_transit_items(
+        &self,
+        structure_id: StructureId,
+        item_kind: inventory::ItemKind,
+    ) -> u32 {
+        self.tasks
+            .values()
+            .filter_map(|t| {
+                if t.state == task::TaskState::Complete {
+                    return None;
+                }
+                match &t.kind {
+                    task::TaskKind::Haul {
+                        item_kind: ik,
+                        quantity,
+                        destination,
+                        ..
+                    } if *destination == structure_id && *ik == item_kind => Some(*quantity),
+                    _ => None,
+                }
+            })
+            .sum()
+    }
+
+    /// Find a source for hauling `needed` items of the given kind.
+    ///
+    /// Searches ground piles first (deterministic BTreeMap order), then buildings
+    /// with strictly lower logistics priority. Returns the source, available
+    /// (unreserved) quantity, and the source's nav node.
+    fn find_haul_source(
+        &self,
+        item_kind: inventory::ItemKind,
+        needed: u32,
+        exclude_building: StructureId,
+        requester_priority: u8,
+    ) -> Option<(task::HaulSource, u32, NavNodeId)> {
+        // Check ground piles first.
+        for (pos, pile) in &self.ground_piles {
+            let available = inventory::unreserved_item_count(&pile.items, item_kind);
+            if available > 0
+                && let Some(nav_node) = self.nav_graph.find_nearest_node(*pos)
+            {
+                return Some((
+                    task::HaulSource::GroundPile(*pos),
+                    available.min(needed),
+                    nav_node,
+                ));
+            }
+        }
+
+        // Check other buildings with strictly lower priority.
+        for (&sid, structure) in &self.structures {
+            if sid == exclude_building {
+                continue;
+            }
+            let Some(src_priority) = structure.logistics_priority else {
+                continue;
+            };
+            if src_priority >= requester_priority {
+                continue;
+            }
+            let available = inventory::unreserved_item_count(&structure.inventory, item_kind);
+            if available > 0
+                && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
+            {
+                return Some((
+                    task::HaulSource::Building(sid),
+                    available.min(needed),
+                    nav_node,
+                ));
+            }
+        }
+
+        None
+    }
+
+    /// Reserve items at a haul source for a given task.
+    fn reserve_haul_items(
+        &mut self,
+        source: &task::HaulSource,
+        item_kind: inventory::ItemKind,
+        quantity: u32,
+        task_id: TaskId,
+    ) {
+        match source {
+            task::HaulSource::GroundPile(pos) => {
+                if let Some(pile) = self.ground_piles.get_mut(pos) {
+                    inventory::reserve_items(&mut pile.items, item_kind, quantity, task_id);
+                }
+            }
+            task::HaulSource::Building(sid) => {
+                if let Some(structure) = self.structures.get_mut(sid) {
+                    inventory::reserve_items(
+                        &mut structure.inventory,
+                        item_kind,
+                        quantity,
+                        task_id,
+                    );
+                }
+            }
+        }
     }
 
     /// Walk one edge toward a task location using a stored or computed A* path.
@@ -3293,9 +3693,21 @@ mod tests {
         // Step past the first heartbeat.
         sim.step(&[], heartbeat_interval + 1);
 
-        // The tree heartbeat should have rescheduled. There should be a
-        // pending event for tick = 2 * heartbeat_interval.
-        assert_eq!(sim.event_queue.peek_tick(), Some(heartbeat_interval * 2));
+        // The tree heartbeat should have rescheduled at tick = 2 * heartbeat_interval.
+        // Other periodic events (e.g. LogisticsHeartbeat) may sit earlier in the queue,
+        // so pop events until we find the TreeHeartbeat and verify its tick.
+        let mut found_tree_heartbeat = false;
+        while let Some(evt) = sim.event_queue.pop_if_ready(u64::MAX) {
+            if matches!(evt.kind, ScheduledEventKind::TreeHeartbeat { .. }) {
+                assert_eq!(evt.tick, heartbeat_interval * 2);
+                found_tree_heartbeat = true;
+                break;
+            }
+        }
+        assert!(
+            found_tree_heartbeat,
+            "TreeHeartbeat not found in event queue"
+        );
     }
 
     #[test]
@@ -4952,6 +5364,8 @@ mod tests {
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
                 inventory: Vec::new(),
+                logistics_priority: None,
+                logistics_wants: Vec::new(),
             },
         );
 
@@ -5060,6 +5474,8 @@ mod tests {
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
                 inventory: Vec::new(),
+                logistics_priority: None,
+                logistics_wants: Vec::new(),
             },
         );
 
@@ -7361,7 +7777,7 @@ mod tests {
             inventory::ItemKind::Bread,
             3,
             Some(elf_id),
-            false,
+            None,
         );
 
         // Set food below hunger threshold.
@@ -7417,7 +7833,7 @@ mod tests {
             inventory::ItemKind::Bread,
             3,
             Some(elf_id),
-            false,
+            None,
         );
 
         // Set food low.
@@ -7546,7 +7962,7 @@ mod tests {
             inventory::ItemKind::Bread,
             5,
             None,
-            false,
+            None,
         );
 
         // Set food below threshold.
@@ -7598,7 +8014,7 @@ mod tests {
             inventory::ItemKind::Bread,
             1,
             Some(elf_id),
-            false,
+            None,
         );
         sim.creatures.get_mut(&elf_id).unwrap().food = food_max / 10;
 
@@ -8820,6 +9236,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
         sim.structures.insert(id, structure);
 
@@ -8847,6 +9265,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -8881,6 +9301,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -8941,6 +9363,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
 
         assert_eq!(structure.display_name(), "Dormitory #7");
@@ -8964,6 +9388,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
 
         assert_eq!(structure.display_name(), "Starlight Hall");
@@ -9102,6 +9528,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
         sim.structures.insert(id, structure);
 
@@ -9327,6 +9755,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Home, &mut rng);
@@ -9354,6 +9784,8 @@ mod tests {
             furniture_positions: Vec::new(),
             planned_furniture: Vec::new(),
             inventory: Vec::new(),
+            logistics_priority: None,
+            logistics_wants: Vec::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::DiningHall, &mut rng);
@@ -9399,6 +9831,8 @@ mod tests {
                 furniture_positions: Vec::new(),
                 planned_furniture: Vec::new(),
                 inventory: Vec::new(),
+                logistics_priority: None,
+                logistics_wants: Vec::new(),
             };
             assert_eq!(
                 structure.display_name(),
@@ -10205,6 +10639,8 @@ mod tests {
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
                 inventory: Vec::new(),
+                logistics_priority: None,
+                logistics_wants: Vec::new(),
             },
         );
 
@@ -10255,7 +10691,7 @@ mod tests {
             crate::inventory::ItemKind::Bread,
             5,
             Some(elf_id),
-            false,
+            None,
         );
 
         let count = crate::inventory::item_count(
@@ -10275,7 +10711,7 @@ mod tests {
             crate::inventory::ItemKind::Bread,
             3,
             Some(elf_id),
-            false,
+            None,
         );
 
         let json = serde_json::to_string(&sim.creatures[&elf_id]).unwrap();
@@ -10323,6 +10759,8 @@ mod tests {
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
                 inventory: Vec::new(),
+                logistics_priority: None,
+                logistics_wants: Vec::new(),
             },
         );
 
@@ -10412,6 +10850,8 @@ mod tests {
                 furniture_positions: vec![bed_pos],
                 planned_furniture: vec![],
                 inventory: Vec::new(),
+                logistics_priority: None,
+                logistics_wants: Vec::new(),
             },
         );
 
@@ -10469,7 +10909,7 @@ mod tests {
                 kind: crate::inventory::ItemKind::Bread,
                 quantity: 4,
                 owner: None,
-                task_related: false,
+                reserved_by: None,
             }],
         };
         sim.ground_piles.insert(pos, pile);
@@ -10481,5 +10921,416 @@ mod tests {
             ),
             4
         );
+    }
+
+    // --- Hauling and logistics tests ---
+
+    /// Helper: create a completed building structure at the given anchor.
+    fn insert_building(
+        sim: &mut SimState,
+        anchor: VoxelCoord,
+        logistics_priority: Option<u8>,
+        wants: Vec<crate::building::LogisticsWant>,
+    ) -> StructureId {
+        let sid = StructureId(sim.next_structure_id);
+        sim.next_structure_id += 1;
+        let project_id = ProjectId::new(&mut sim.rng);
+        sim.structures.insert(
+            sid,
+            CompletedStructure {
+                id: sid,
+                project_id,
+                build_type: BuildType::Building,
+                anchor,
+                width: 3,
+                depth: 3,
+                height: 2,
+                completed_tick: 0,
+                name: None,
+                furnishing: Some(FurnishingType::Storehouse),
+                assigned_elf: None,
+                furniture_positions: Vec::new(),
+                planned_furniture: Vec::new(),
+                inventory: Vec::new(),
+                logistics_priority,
+                logistics_wants: wants,
+            },
+        );
+        sid
+    }
+
+    #[test]
+    fn logistics_heartbeat_creates_haul_tasks() {
+        let mut sim = test_sim(42);
+
+        // Place a ground pile with bread.
+        let pile_pos = sim.trees[&sim.player_tree_id].position;
+        let pile = crate::inventory::GroundPile {
+            position: pile_pos,
+            items: vec![crate::inventory::Item {
+                kind: crate::inventory::ItemKind::Bread,
+                quantity: 10,
+                owner: None,
+                reserved_by: None,
+            }],
+        };
+        sim.ground_piles.insert(pile_pos, pile);
+
+        // Create a building that wants bread.
+        let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+        let _sid = insert_building(
+            &mut sim,
+            building_anchor,
+            Some(5),
+            vec![crate::building::LogisticsWant {
+                item_kind: crate::inventory::ItemKind::Bread,
+                target_quantity: 5,
+            }],
+        );
+
+        // Run logistics heartbeat manually.
+        sim.process_logistics_heartbeat();
+
+        // Should have created a haul task.
+        let haul_tasks: Vec<_> = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .collect();
+        assert_eq!(haul_tasks.len(), 1, "Expected 1 haul task");
+
+        match &haul_tasks[0].kind {
+            TaskKind::Haul {
+                item_kind,
+                quantity,
+                source,
+                phase,
+                ..
+            } => {
+                assert_eq!(*item_kind, crate::inventory::ItemKind::Bread);
+                assert_eq!(*quantity, 5);
+                assert!(matches!(source, task::HaulSource::GroundPile(_)));
+                assert_eq!(*phase, task::HaulPhase::GoingToSource);
+            }
+            _ => panic!("Expected Haul task"),
+        }
+
+        // Ground pile items should be reserved.
+        let pile = &sim.ground_piles[&pile_pos];
+        let unreserved =
+            crate::inventory::unreserved_item_count(&pile.items, crate::inventory::ItemKind::Bread);
+        assert_eq!(unreserved, 5, "5 items should remain unreserved");
+    }
+
+    #[test]
+    fn logistics_respects_priority() {
+        let mut sim = test_sim(42);
+
+        // Place bread on the ground.
+        let pile_pos = sim.trees[&sim.player_tree_id].position;
+        let pile = crate::inventory::GroundPile {
+            position: pile_pos,
+            items: vec![crate::inventory::Item {
+                kind: crate::inventory::ItemKind::Bread,
+                quantity: 3,
+                owner: None,
+                reserved_by: None,
+            }],
+        };
+        sim.ground_piles.insert(pile_pos, pile);
+
+        // High-priority building wants 2 bread.
+        let high_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+        insert_building(
+            &mut sim,
+            high_anchor,
+            Some(10),
+            vec![crate::building::LogisticsWant {
+                item_kind: crate::inventory::ItemKind::Bread,
+                target_quantity: 2,
+            }],
+        );
+
+        // Low-priority building wants 2 bread.
+        let low_anchor = VoxelCoord::new(pile_pos.x + 6, pile_pos.y, pile_pos.z);
+        insert_building(
+            &mut sim,
+            low_anchor,
+            Some(1),
+            vec![crate::building::LogisticsWant {
+                item_kind: crate::inventory::ItemKind::Bread,
+                target_quantity: 2,
+            }],
+        );
+
+        sim.process_logistics_heartbeat();
+
+        // Should create 2 haul tasks: one for high-priority (2 bread), one for
+        // low-priority (1 remaining bread).
+        let haul_tasks: Vec<_> = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .collect();
+        assert_eq!(haul_tasks.len(), 2, "Expected 2 haul tasks");
+
+        // All bread should be reserved.
+        let pile = &sim.ground_piles[&pile_pos];
+        let unreserved =
+            crate::inventory::unreserved_item_count(&pile.items, crate::inventory::ItemKind::Bread);
+        assert_eq!(unreserved, 0, "All bread should be reserved");
+    }
+
+    #[test]
+    fn logistics_skips_reserved_items() {
+        let mut sim = test_sim(42);
+
+        // Place bread on the ground, some already reserved.
+        let pile_pos = sim.trees[&sim.player_tree_id].position;
+        let task_id = TaskId::new(&mut sim.rng);
+        let mut items = Vec::new();
+        crate::inventory::add_item(&mut items, crate::inventory::ItemKind::Bread, 5, None, None);
+        crate::inventory::reserve_items(&mut items, crate::inventory::ItemKind::Bread, 3, task_id);
+        let pile = crate::inventory::GroundPile {
+            position: pile_pos,
+            items,
+        };
+        sim.ground_piles.insert(pile_pos, pile);
+
+        // Building wants 5 bread.
+        let anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+        insert_building(
+            &mut sim,
+            anchor,
+            Some(5),
+            vec![crate::building::LogisticsWant {
+                item_kind: crate::inventory::ItemKind::Bread,
+                target_quantity: 5,
+            }],
+        );
+
+        sim.process_logistics_heartbeat();
+
+        // Should only create a task for 2 unreserved bread, not all 5.
+        let haul_tasks: Vec<_> = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .collect();
+        assert_eq!(haul_tasks.len(), 1);
+        match &haul_tasks[0].kind {
+            TaskKind::Haul { quantity, .. } => {
+                assert_eq!(*quantity, 2, "Only 2 unreserved bread available");
+            }
+            _ => panic!("Expected Haul task"),
+        }
+    }
+
+    #[test]
+    fn logistics_counts_in_transit() {
+        let mut sim = test_sim(42);
+
+        // Place 10 bread on ground.
+        let pile_pos = sim.trees[&sim.player_tree_id].position;
+        let pile = crate::inventory::GroundPile {
+            position: pile_pos,
+            items: vec![crate::inventory::Item {
+                kind: crate::inventory::ItemKind::Bread,
+                quantity: 10,
+                owner: None,
+                reserved_by: None,
+            }],
+        };
+        sim.ground_piles.insert(pile_pos, pile);
+
+        let anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+        let sid = insert_building(
+            &mut sim,
+            anchor,
+            Some(5),
+            vec![crate::building::LogisticsWant {
+                item_kind: crate::inventory::ItemKind::Bread,
+                target_quantity: 8,
+            }],
+        );
+
+        // Manually create an in-transit haul task for 5 bread.
+        let fake_task_id = TaskId::new(&mut sim.rng);
+        let existing_haul = Task {
+            id: fake_task_id,
+            kind: TaskKind::Haul {
+                item_kind: crate::inventory::ItemKind::Bread,
+                quantity: 5,
+                source: task::HaulSource::GroundPile(pile_pos),
+                destination: sid,
+                phase: task::HaulPhase::GoingToSource,
+                destination_nav_node: NavNodeId(0),
+            },
+            state: TaskState::InProgress,
+            location: NavNodeId(0),
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Automated,
+        };
+        sim.tasks.insert(fake_task_id, existing_haul);
+
+        sim.process_logistics_heartbeat();
+
+        // In-transit counts as 5, target is 8, so need 3 more.
+        let new_haul_tasks: Vec<_> = sim
+            .tasks
+            .values()
+            .filter(|t| t.id != fake_task_id && matches!(t.kind, TaskKind::Haul { .. }))
+            .collect();
+        assert_eq!(new_haul_tasks.len(), 1, "Expected 1 new haul task");
+        match &new_haul_tasks[0].kind {
+            TaskKind::Haul { quantity, .. } => {
+                assert_eq!(*quantity, 3);
+            }
+            _ => panic!("Expected Haul"),
+        }
+    }
+
+    #[test]
+    fn logistics_pulls_from_lower_priority_building() {
+        let mut sim = test_sim(42);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Building A (priority 3) has bread.
+        let anchor_a = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+        let sid_a = insert_building(&mut sim, anchor_a, Some(3), Vec::new());
+        crate::inventory::add_item(
+            &mut sim.structures.get_mut(&sid_a).unwrap().inventory,
+            crate::inventory::ItemKind::Bread,
+            5,
+            None,
+            None,
+        );
+
+        // Building B (priority 5) wants bread.
+        let anchor_b = VoxelCoord::new(tree_pos.x + 6, tree_pos.y, tree_pos.z);
+        insert_building(
+            &mut sim,
+            anchor_b,
+            Some(5),
+            vec![crate::building::LogisticsWant {
+                item_kind: crate::inventory::ItemKind::Bread,
+                target_quantity: 3,
+            }],
+        );
+
+        sim.process_logistics_heartbeat();
+
+        let haul_tasks: Vec<_> = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .collect();
+        assert_eq!(haul_tasks.len(), 1);
+        match &haul_tasks[0].kind {
+            TaskKind::Haul {
+                source, quantity, ..
+            } => {
+                assert!(
+                    matches!(source, task::HaulSource::Building(s) if *s == sid_a),
+                    "Should pull from building A"
+                );
+                assert_eq!(*quantity, 3);
+            }
+            _ => panic!("Expected Haul"),
+        }
+    }
+
+    #[test]
+    fn logistics_caps_tasks_per_heartbeat() {
+        let mut sim = test_sim(42);
+        // Override max tasks to 2.
+        sim.config.max_haul_tasks_per_heartbeat = 2;
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile = crate::inventory::GroundPile {
+            position: tree_pos,
+            items: vec![crate::inventory::Item {
+                kind: crate::inventory::ItemKind::Bread,
+                quantity: 100,
+                owner: None,
+                reserved_by: None,
+            }],
+        };
+        sim.ground_piles.insert(tree_pos, pile);
+
+        // Create 5 buildings that each want 10 bread.
+        for i in 0..5 {
+            let anchor = VoxelCoord::new(tree_pos.x + 3 * (i + 1), tree_pos.y, tree_pos.z);
+            insert_building(
+                &mut sim,
+                anchor,
+                Some(5),
+                vec![crate::building::LogisticsWant {
+                    item_kind: crate::inventory::ItemKind::Bread,
+                    target_quantity: 10,
+                }],
+            );
+        }
+
+        sim.process_logistics_heartbeat();
+
+        let haul_count = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .count();
+        assert_eq!(haul_count, 2, "Should be capped at 2 tasks per heartbeat");
+    }
+
+    #[test]
+    fn haul_source_empty_cancels() {
+        let mut sim = test_sim(42);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+        let sid = insert_building(&mut sim, anchor, Some(5), Vec::new());
+
+        // Create a haul task with source pointing to a non-existent ground pile.
+        let source_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+        let task_id = TaskId::new(&mut sim.rng);
+        let source_nav = sim.nav_graph.find_nearest_node(source_pos).unwrap();
+        let dest_nav = sim.nav_graph.find_nearest_node(anchor).unwrap();
+
+        let haul_task = Task {
+            id: task_id,
+            kind: TaskKind::Haul {
+                item_kind: crate::inventory::ItemKind::Bread,
+                quantity: 5,
+                source: task::HaulSource::GroundPile(source_pos),
+                destination: sid,
+                phase: task::HaulPhase::GoingToSource,
+                destination_nav_node: dest_nav,
+            },
+            state: TaskState::InProgress,
+            location: source_nav,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Automated,
+        };
+        sim.tasks.insert(task_id, haul_task);
+
+        // Spawn an elf and manually assign it to the haul task at the source.
+        let elf_id = spawn_elf(&mut sim);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.creatures.get_mut(&elf_id).unwrap().current_node = Some(source_nav);
+        sim.tasks.get_mut(&task_id).unwrap().assignees.push(elf_id);
+
+        // Execute the task — no ground pile exists, so pickup should find 0 items.
+        sim.do_haul(elf_id, task_id);
+
+        // Task should be completed (cancelled due to empty source).
+        let task = &sim.tasks[&task_id];
+        assert_eq!(task.state, TaskState::Complete, "Task should be completed");
     }
 }

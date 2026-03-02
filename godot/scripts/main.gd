@@ -531,6 +531,12 @@ func _setup_common(bridge: SimBridge) -> void:
 	_structure_info_panel.unassign_elf_requested.connect(
 		func(_structure_id: int, creature_id_str: String): bridge.assign_home(creature_id_str, -1)
 	)
+	_structure_info_panel.logistics_priority_changed.connect(
+		func(sid: int, p: int): bridge.set_logistics_priority(sid, p)
+	)
+	_structure_info_panel.logistics_wants_changed.connect(
+		func(sid: int, json: String): bridge.set_logistics_wants(sid, json)
+	)
 
 	# Menu button.
 	var menu_btn := Button.new()

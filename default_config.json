@@ -239,6 +239,8 @@
     "expiry_ate_meal_ticks": 150000,
     "expiry_low_ceiling_ticks": 150000
   },
+  "logistics_heartbeat_interval_ticks": 5000,
+  "max_haul_tasks_per_heartbeat": 5,
   "structural": {
     "gravity": 1.0,
     "max_iterations": 200,

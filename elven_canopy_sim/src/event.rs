@@ -20,6 +20,8 @@
 // - `CreatureMovementComplete` — arrival at a nav node during pathfinding.
 //   Used by the task system when walking along an A* path.
 // - `TreeHeartbeat` — periodic tree updates (fruit, mana capacity).
+// - `LogisticsHeartbeat` — periodic scan of buildings with logistics config;
+//   creates `Haul` tasks to fill unmet item wants.
 //
 // The `EventQueue` wraps a `BinaryHeap` with reversed `Ord` to get min-heap
 // behavior (earliest tick pops first). A monotonic `next_sequence` counter
@@ -75,6 +77,8 @@ pub enum ScheduledEventKind {
     },
     /// Tree heartbeat (fruit production, mana capacity updates).
     TreeHeartbeat { tree_id: TreeId },
+    /// Logistics heartbeat: scan buildings for unmet wants and create haul tasks.
+    LogisticsHeartbeat,
 }
 
 // We want a min-heap: lowest (tick, sequence) fires first.

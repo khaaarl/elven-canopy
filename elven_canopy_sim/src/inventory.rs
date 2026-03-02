@@ -7,7 +7,7 @@
 //
 // Items stack: adding bread to an inventory that already has bread increases
 // the existing stack's quantity rather than creating a duplicate entry.
-// Stacking matches on `(kind, owner, task_related)`.
+// Stacking matches on `(kind, owner, reserved_by)`.
 //
 // See also: `sim.rs` for creature inventories, `building.rs` for structure
 // inventories, `sim_bridge.rs` for the GDExtension interface that exposes
@@ -16,13 +16,14 @@
 // **Critical constraint: determinism.** All operations are pure functions over
 // `Vec<Item>` — no hash-based collections, no OS calls.
 
-use crate::types::{CreatureId, VoxelCoord};
+use crate::types::{CreatureId, TaskId, VoxelCoord};
 use serde::{Deserialize, Serialize};
 
 /// The kind of item. Each variant is a distinct item type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ItemKind {
     Bread,
+    Fruit,
 }
 
 impl ItemKind {
@@ -30,6 +31,7 @@ impl ItemKind {
     pub fn display_name(self) -> &'static str {
         match self {
             ItemKind::Bread => "Bread",
+            ItemKind::Fruit => "Fruit",
         }
     }
 }
@@ -41,8 +43,11 @@ pub struct Item {
     pub quantity: u32,
     /// Which creature owns this item (for tracking provenance).
     pub owner: Option<CreatureId>,
-    /// Whether this item is reserved for a task. Always false for now.
-    pub task_related: bool,
+    /// Which task has reserved this stack, if any. `None` means unreserved.
+    /// Old saves with the former `task_related` field will ignore it (serde
+    /// ignores unknown fields by default), and this defaults to `None`.
+    #[serde(default)]
+    pub reserved_by: Option<TaskId>,
 }
 
 /// A pile of items on the ground at a specific voxel position.
@@ -53,17 +58,17 @@ pub struct GroundPile {
 }
 
 /// Add items to an inventory, stacking with existing items that match
-/// `(kind, owner, task_related)`. Returns the resulting quantity of
+/// `(kind, owner, reserved_by)`. Returns the resulting quantity of
 /// that item kind in the stack.
 pub fn add_item(
     inventory: &mut Vec<Item>,
     kind: ItemKind,
     quantity: u32,
     owner: Option<CreatureId>,
-    task_related: bool,
+    reserved_by: Option<TaskId>,
 ) -> u32 {
     for item in inventory.iter_mut() {
-        if item.kind == kind && item.owner == owner && item.task_related == task_related {
+        if item.kind == kind && item.owner == owner && item.reserved_by == reserved_by {
             item.quantity += quantity;
             return item.quantity;
         }
@@ -72,7 +77,7 @@ pub fn add_item(
         kind,
         quantity,
         owner,
-        task_related,
+        reserved_by,
     });
     quantity
 }
@@ -116,6 +121,15 @@ pub fn count_owned(inventory: &[Item], kind: ItemKind, owner: CreatureId) -> u32
         .sum()
 }
 
+/// Count unreserved items of the given kind (stacks with `reserved_by == None`).
+pub fn unreserved_item_count(inventory: &[Item], kind: ItemKind) -> u32 {
+    inventory
+        .iter()
+        .filter(|item| item.kind == kind && item.reserved_by.is_none())
+        .map(|item| item.quantity)
+        .sum()
+}
+
 /// Remove up to `quantity` items of the given kind owned by a specific creature.
 /// Returns the amount actually removed. Drops stacks that reach zero.
 pub fn remove_owned_item(
@@ -142,16 +156,114 @@ pub fn remove_owned_item(
     removed
 }
 
+/// Reserve up to `quantity` unreserved items of the given kind for `task_id`.
+///
+/// Splits stacks as needed: if a stack has more than needed, it is split into
+/// a reserved portion and an unreserved remainder. Returns the amount actually
+/// reserved (may be less than requested if fewer are available).
+pub fn reserve_items(
+    inventory: &mut Vec<Item>,
+    kind: ItemKind,
+    quantity: u32,
+    task_id: TaskId,
+) -> u32 {
+    let mut remaining = quantity;
+    let mut reserved = 0u32;
+
+    // First pass: reserve from existing unreserved stacks, splitting if needed.
+    let mut new_items = Vec::new();
+    for item in inventory.iter_mut() {
+        if item.kind == kind && item.reserved_by.is_none() && remaining > 0 {
+            let take = remaining.min(item.quantity);
+            if take == item.quantity {
+                // Reserve the entire stack.
+                item.reserved_by = Some(task_id);
+            } else {
+                // Split: reduce this stack and create a new reserved stack.
+                item.quantity -= take;
+                new_items.push(Item {
+                    kind,
+                    quantity: take,
+                    owner: item.owner,
+                    reserved_by: Some(task_id),
+                });
+            }
+            remaining -= take;
+            reserved += take;
+        }
+    }
+
+    inventory.extend(new_items);
+    reserved
+}
+
+/// Clear all reservations for the given `task_id`, setting `reserved_by` to `None`.
+///
+/// After clearing, re-merges stacks that now match on `(kind, owner, None)`.
+pub fn clear_reservations(inventory: &mut Vec<Item>, task_id: TaskId) {
+    for item in inventory.iter_mut() {
+        if item.reserved_by == Some(task_id) {
+            item.reserved_by = None;
+        }
+    }
+    merge_stacks(inventory);
+}
+
+/// Remove up to `quantity` items of the given kind that are reserved by `task_id`.
+/// Returns the amount actually removed. Drops stacks that reach zero.
+pub fn remove_reserved_items(
+    inventory: &mut Vec<Item>,
+    kind: ItemKind,
+    quantity: u32,
+    task_id: TaskId,
+) -> u32 {
+    let mut remaining = quantity;
+    let mut removed = 0u32;
+
+    for item in inventory.iter_mut() {
+        if item.kind == kind && item.reserved_by == Some(task_id) && remaining > 0 {
+            let take = remaining.min(item.quantity);
+            item.quantity -= take;
+            remaining -= take;
+            removed += take;
+        }
+    }
+
+    inventory.retain(|item| item.quantity > 0);
+    removed
+}
+
+/// Merge stacks that match on `(kind, owner, reserved_by)`.
+fn merge_stacks(inventory: &mut Vec<Item>) {
+    let mut i = 0;
+    while i < inventory.len() {
+        let mut j = i + 1;
+        while j < inventory.len() {
+            if inventory[i].kind == inventory[j].kind
+                && inventory[i].owner == inventory[j].owner
+                && inventory[i].reserved_by == inventory[j].reserved_by
+            {
+                inventory[i].quantity += inventory[j].quantity;
+                inventory.remove(j);
+            } else {
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::prng::GameRng;
-    use crate::types::CreatureId;
+    use crate::types::{CreatureId, TaskId};
 
     #[test]
     fn add_creates_new_stack() {
         let mut inv = Vec::new();
-        let result = add_item(&mut inv, ItemKind::Bread, 3, None, false);
+        let result = add_item(&mut inv, ItemKind::Bread, 3, None, None);
         assert_eq!(result, 3);
         assert_eq!(inv.len(), 1);
         assert_eq!(inv[0].kind, ItemKind::Bread);
@@ -161,8 +273,8 @@ mod tests {
     #[test]
     fn add_stacks_matching_items() {
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 2, None, false);
-        let result = add_item(&mut inv, ItemKind::Bread, 5, None, false);
+        add_item(&mut inv, ItemKind::Bread, 2, None, None);
+        let result = add_item(&mut inv, ItemKind::Bread, 5, None, None);
         assert_eq!(result, 7);
         assert_eq!(inv.len(), 1);
         assert_eq!(inv[0].quantity, 7);
@@ -175,25 +287,27 @@ mod tests {
         let owner_b = CreatureId::new(&mut rng);
 
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 2, Some(owner_a), false);
-        add_item(&mut inv, ItemKind::Bread, 3, Some(owner_b), false);
+        add_item(&mut inv, ItemKind::Bread, 2, Some(owner_a), None);
+        add_item(&mut inv, ItemKind::Bread, 3, Some(owner_b), None);
         assert_eq!(inv.len(), 2);
         assert_eq!(inv[0].quantity, 2);
         assert_eq!(inv[1].quantity, 3);
     }
 
     #[test]
-    fn add_different_task_related_creates_separate_stack() {
+    fn add_different_reserved_by_creates_separate_stack() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 2, None, false);
-        add_item(&mut inv, ItemKind::Bread, 3, None, true);
+        add_item(&mut inv, ItemKind::Bread, 2, None, None);
+        add_item(&mut inv, ItemKind::Bread, 3, None, Some(task_id));
         assert_eq!(inv.len(), 2);
     }
 
     #[test]
     fn remove_decreases_quantity() {
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 5, None, false);
+        add_item(&mut inv, ItemKind::Bread, 5, None, None);
         let removed = remove_item(&mut inv, ItemKind::Bread, 3);
         assert_eq!(removed, 3);
         assert_eq!(inv.len(), 1);
@@ -203,7 +317,7 @@ mod tests {
     #[test]
     fn remove_drops_empty_stack() {
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 3, None, false);
+        add_item(&mut inv, ItemKind::Bread, 3, None, None);
         let removed = remove_item(&mut inv, ItemKind::Bread, 3);
         assert_eq!(removed, 3);
         assert!(inv.is_empty());
@@ -212,7 +326,7 @@ mod tests {
     #[test]
     fn remove_caps_at_available() {
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 2, None, false);
+        add_item(&mut inv, ItemKind::Bread, 2, None, None);
         let removed = remove_item(&mut inv, ItemKind::Bread, 10);
         assert_eq!(removed, 2);
         assert!(inv.is_empty());
@@ -231,8 +345,8 @@ mod tests {
         let owner = CreatureId::new(&mut rng);
 
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 3, None, false);
-        add_item(&mut inv, ItemKind::Bread, 2, Some(owner), false);
+        add_item(&mut inv, ItemKind::Bread, 3, None, None);
+        add_item(&mut inv, ItemKind::Bread, 2, Some(owner), None);
         assert_eq!(item_count(&inv, ItemKind::Bread), 5);
     }
 
@@ -245,12 +359,13 @@ mod tests {
     #[test]
     fn display_name() {
         assert_eq!(ItemKind::Bread.display_name(), "Bread");
+        assert_eq!(ItemKind::Fruit.display_name(), "Fruit");
     }
 
     #[test]
     fn serialization_roundtrip() {
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 7, None, false);
+        add_item(&mut inv, ItemKind::Bread, 7, None, None);
 
         let json = serde_json::to_string(&inv).unwrap();
         let restored: Vec<Item> = serde_json::from_str(&json).unwrap();
@@ -265,7 +380,7 @@ mod tests {
                 kind: ItemKind::Bread,
                 quantity: 4,
                 owner: None,
-                task_related: false,
+                reserved_by: None,
             }],
         };
 
@@ -281,9 +396,9 @@ mod tests {
         let owner_b = CreatureId::new(&mut rng);
 
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 3, Some(owner_a), false);
-        add_item(&mut inv, ItemKind::Bread, 5, Some(owner_b), false);
-        add_item(&mut inv, ItemKind::Bread, 2, None, false);
+        add_item(&mut inv, ItemKind::Bread, 3, Some(owner_a), None);
+        add_item(&mut inv, ItemKind::Bread, 5, Some(owner_b), None);
+        add_item(&mut inv, ItemKind::Bread, 2, None, None);
 
         assert_eq!(count_owned(&inv, ItemKind::Bread, owner_a), 3);
         assert_eq!(count_owned(&inv, ItemKind::Bread, owner_b), 5);
@@ -305,8 +420,8 @@ mod tests {
         let owner_b = CreatureId::new(&mut rng);
 
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 3, Some(owner_a), false);
-        add_item(&mut inv, ItemKind::Bread, 5, Some(owner_b), false);
+        add_item(&mut inv, ItemKind::Bread, 3, Some(owner_a), None);
+        add_item(&mut inv, ItemKind::Bread, 5, Some(owner_b), None);
 
         let removed = remove_owned_item(&mut inv, ItemKind::Bread, owner_a, 2);
         assert_eq!(removed, 2);
@@ -320,7 +435,7 @@ mod tests {
         let owner = CreatureId::new(&mut rng);
 
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 2, Some(owner), false);
+        add_item(&mut inv, ItemKind::Bread, 2, Some(owner), None);
 
         let removed = remove_owned_item(&mut inv, ItemKind::Bread, owner, 10);
         assert_eq!(removed, 2);
@@ -333,10 +448,100 @@ mod tests {
         let owner = CreatureId::new(&mut rng);
 
         let mut inv = Vec::new();
-        add_item(&mut inv, ItemKind::Bread, 5, None, false);
+        add_item(&mut inv, ItemKind::Bread, 5, None, None);
 
         let removed = remove_owned_item(&mut inv, ItemKind::Bread, owner, 3);
         assert_eq!(removed, 0);
         assert_eq!(item_count(&inv, ItemKind::Bread), 5);
+    }
+
+    #[test]
+    fn test_fruit_item_kind() {
+        assert_eq!(ItemKind::Fruit.display_name(), "Fruit");
+        // Fruit and Bread are distinct kinds and don't stack together.
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 3, None, None);
+        add_item(&mut inv, ItemKind::Fruit, 2, None, None);
+        assert_eq!(inv.len(), 2);
+        assert_eq!(item_count(&inv, ItemKind::Bread), 3);
+        assert_eq!(item_count(&inv, ItemKind::Fruit), 2);
+    }
+
+    #[test]
+    fn test_reserve_items_splits_stack() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 5, None, None);
+        let reserved = reserve_items(&mut inv, ItemKind::Bread, 3, task_id);
+        assert_eq!(reserved, 3);
+        // Should have two stacks: 2 unreserved + 3 reserved.
+        assert_eq!(inv.len(), 2);
+        assert_eq!(unreserved_item_count(&inv, ItemKind::Bread), 2);
+        let reserved_count: u32 = inv
+            .iter()
+            .filter(|i| i.kind == ItemKind::Bread && i.reserved_by == Some(task_id))
+            .map(|i| i.quantity)
+            .sum();
+        assert_eq!(reserved_count, 3);
+    }
+
+    #[test]
+    fn test_reserve_items_caps_at_available() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 3, None, None);
+        let reserved = reserve_items(&mut inv, ItemKind::Bread, 10, task_id);
+        assert_eq!(reserved, 3);
+        assert_eq!(unreserved_item_count(&inv, ItemKind::Bread), 0);
+    }
+
+    #[test]
+    fn test_unreserved_item_count() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 5, None, None);
+        reserve_items(&mut inv, ItemKind::Bread, 2, task_id);
+        assert_eq!(unreserved_item_count(&inv, ItemKind::Bread), 3);
+        assert_eq!(item_count(&inv, ItemKind::Bread), 5);
+    }
+
+    #[test]
+    fn test_clear_reservations() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 5, None, None);
+        reserve_items(&mut inv, ItemKind::Bread, 3, task_id);
+        assert_eq!(inv.len(), 2); // split into 2 + 3
+        clear_reservations(&mut inv, task_id);
+        // Should be merged back into one stack of 5.
+        assert_eq!(inv.len(), 1);
+        assert_eq!(inv[0].quantity, 5);
+        assert_eq!(inv[0].reserved_by, None);
+    }
+
+    #[test]
+    fn test_remove_reserved_items() {
+        let mut rng = GameRng::new(42);
+        let task_a = TaskId::new(&mut rng);
+        let task_b = TaskId::new(&mut rng);
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 5, None, None);
+        reserve_items(&mut inv, ItemKind::Bread, 3, task_a);
+        reserve_items(&mut inv, ItemKind::Bread, 2, task_b);
+        // Only remove items reserved by task_a.
+        let removed = remove_reserved_items(&mut inv, ItemKind::Bread, 3, task_a);
+        assert_eq!(removed, 3);
+        // task_b's items should still be there.
+        assert_eq!(item_count(&inv, ItemKind::Bread), 2);
+        let b_count: u32 = inv
+            .iter()
+            .filter(|i| i.reserved_by == Some(task_b))
+            .map(|i| i.quantity)
+            .sum();
+        assert_eq!(b_count, 2);
     }
 }

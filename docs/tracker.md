@@ -92,11 +92,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-variety        Food storage, cooking, magical brewing
-[ ] F-hauling              Item hauling task type
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
-[ ] F-logistics            Spatial resource flow (Kanban-style)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
@@ -168,12 +166,14 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-game-session         Game session autoload singleton
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-godot-setup          Godot 4 project setup
+[x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
 [x] F-items                Items and inventory system
 [x] F-ladders              Rope/wood ladders as cheap connectors
 [x] F-lang-crate           Shared Vaelith language crate
 [x] F-large-nav-tolerance  1-voxel height tolerance for large nav
 [x] F-large-pathfind       2x2 footprint nav grid
+[x] F-logistics            Spatial resource flow (Kanban-style)
 [x] F-main-menu            Main menu UI
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-mp-checksums         Multiplayer state checksums for desync detection
@@ -850,14 +850,12 @@ adding variety, quality, and magical dimensions.
 **Related:** F-bldg-kitchen, F-food-chain
 
 #### F-hauling — Item hauling task type
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
-Elves pick up items from one location and carry them to another as a
-task. The reusable primitive for all item movement: harvest fruit and
-bring to storehouse, fetch ingredients from storehouse and bring to
-kitchen, deliver bread to dining hall, etc. The F-food-chain design
-defines *what* gets hauled *where*; this task implements the actual
-"pick up item, pathfind to destination, put down item" behavior.
+Multi-phase Haul task: creature walks to source (ground pile or building),
+picks up reserved items, walks to destination building, deposits them.
+Includes item reservation system to prevent double-claiming, cleanup on
+task abandonment (clear reservations or drop carried items as ground pile).
 
 **Related:** F-food-chain, F-logistics
 
@@ -885,10 +883,14 @@ for this filtering pattern.
 **Related:** F-bldg-kitchen, F-bldg-workshop, F-elf-assign, F-task-priority
 
 #### F-logistics — Spatial resource flow (Kanban-style)
-**Status:** Todo · **Phase:** 7 · **Refs:** §14
+**Status:** Done · **Phase:** 7 · **Refs:** §14
 
-Resources flow through spatial paths — stockpiles, workshops, delivery
-routes. Kanban-inspired pull system rather than global resource pools.
+Buildings have logistics config: a priority (1-10) and a list of item
+wants (kind + target quantity). A periodic LogisticsHeartbeat scans
+buildings, counts current + in-transit items, and creates Haul tasks to
+fill shortfalls. Sources are ground piles first, then lower-priority
+buildings. UI in the structure info panel allows enabling logistics,
+setting priority, and configuring wants.
 
 **Related:** F-food-chain
 
