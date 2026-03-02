@@ -26,6 +26,12 @@
 //   work. Each activation adds 1.0 to progress; every
 //   `build_work_ticks_per_voxel` units, one blueprint voxel materializes.
 //   Linked to a `Blueprint` via `project_id`. See `sim.rs` `do_build_work()`.
+// - `EatBread` — eat bread from inventory, restoring food. Created
+//   automatically by the heartbeat hunger check when a creature has owned
+//   bread. Completes instantly at the creature's current node (no travel).
+//   `do_eat_bread()` removes 1 bread from inventory, restores
+//   `bread_restore_pct`% of `food_max`, and completes the task. Takes
+//   priority over `EatFruit` since no travel is needed.
 // - `EatFruit { fruit_pos }` — walk to a fruit voxel and eat it, restoring
 //   food. Created automatically by the heartbeat hunger check when a
 //   creature's food drops below `food_hunger_threshold_pct`. On arrival,
@@ -83,6 +89,11 @@ pub enum TaskKind {
     /// then does work over multiple activations, materializing one voxel
     /// per `build_work_ticks_per_voxel` units of progress.
     Build { project_id: ProjectId },
+    /// Eat bread from inventory. Created automatically by the heartbeat hunger
+    /// check when a creature has owned bread and is hungry. Completes instantly
+    /// at the creature's current location (no travel needed). Removes 1 bread
+    /// from inventory and restores `bread_restore_pct`% of `food_max`.
+    EatBread,
     /// Walk to a fruit voxel and eat it, restoring food. Created automatically
     /// by the heartbeat hunger check when a creature's food drops below
     /// `food_hunger_threshold_pct`. The `fruit_pos` is the voxel coordinate
@@ -217,6 +228,33 @@ mod tests {
         }
         assert_eq!(restored.state, TaskState::InProgress);
         assert_eq!(restored.required_species, Some(Species::Elf));
+        assert_eq!(restored.origin, TaskOrigin::Autonomous);
+    }
+
+    #[test]
+    fn eat_bread_task_serialization_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let location = NavNodeId(5);
+
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::EatBread,
+            state: TaskState::InProgress,
+            location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+            origin: TaskOrigin::Autonomous,
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.id, task_id);
+        assert!(matches!(restored.kind, TaskKind::EatBread));
+        assert_eq!(restored.state, TaskState::InProgress);
         assert_eq!(restored.origin, TaskOrigin::Autonomous);
     }
 

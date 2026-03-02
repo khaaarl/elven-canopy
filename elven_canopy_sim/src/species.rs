@@ -28,6 +28,9 @@
 //   idle creature will seek fruit (default 50).
 // - `food_restore_pct` — percentage of `food_max` restored when eating
 //   fruit (default 40).
+// - `bread_restore_pct` — percentage of `food_max` restored when eating
+//   bread from inventory (default 30). Lower than fruit since bread is
+//   convenient (no travel) but less nutritious.
 // - `rest_max` — maximum (and starting) rest level. Same scale as `food_max`.
 // - `rest_decay_per_tick` — rest subtracted per sim tick, batch-applied at
 //   heartbeat. Set to 0 for species that don't need sleep.
@@ -89,6 +92,12 @@ pub struct SpeciesData {
     #[serde(default = "default_food_restore_pct")]
     pub food_restore_pct: i64,
 
+    /// Percentage of food_max restored when a creature eats bread from
+    /// inventory. Lower than fruit (default 30) since bread is convenient
+    /// (no travel required) but less nutritious than fresh fruit.
+    #[serde(default = "default_bread_restore_pct")]
+    pub bread_restore_pct: i64,
+
     /// Spatial footprint of the creature in voxels `[width_x, height_y, depth_z]`.
     /// Default is `[1,1,1]` (single voxel). Large creatures (e.g. elephants) use
     /// `[2,2,2]` — the anchor position is the min-corner (smallest x, z) at
@@ -139,6 +148,10 @@ fn default_food_hunger_threshold_pct() -> i64 {
 
 fn default_food_restore_pct() -> i64 {
     40
+}
+
+fn default_bread_restore_pct() -> i64 {
+    30
 }
 
 fn default_food_max() -> i64 {

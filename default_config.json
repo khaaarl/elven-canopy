@@ -80,6 +80,7 @@
       "food_decay_per_tick": 3333333333,
       "food_hunger_threshold_pct": 50,
       "food_restore_pct": 40,
+      "bread_restore_pct": 30,
       "footprint": [
         1,
         1,
@@ -102,6 +103,7 @@
       "food_decay_per_tick": 3333333333,
       "food_hunger_threshold_pct": 50,
       "food_restore_pct": 40,
+      "bread_restore_pct": 30,
       "footprint": [
         1,
         1,
@@ -124,6 +126,7 @@
       "food_decay_per_tick": 3333333333,
       "food_hunger_threshold_pct": 50,
       "food_restore_pct": 40,
+      "bread_restore_pct": 30,
       "footprint": [
         1,
         1,
@@ -146,6 +149,7 @@
       "food_decay_per_tick": 3333333333,
       "food_hunger_threshold_pct": 50,
       "food_restore_pct": 40,
+      "bread_restore_pct": 30,
       "footprint": [
         1,
         1,
@@ -168,6 +172,7 @@
       "food_decay_per_tick": 3333333333,
       "food_hunger_threshold_pct": 50,
       "food_restore_pct": 40,
+      "bread_restore_pct": 30,
       "footprint": [
         2,
         2,
@@ -188,6 +193,7 @@
       "food_decay_per_tick": 3333333333,
       "food_hunger_threshold_pct": 50,
       "food_restore_pct": 40,
+      "bread_restore_pct": 30,
       "footprint": [
         1,
         1,
@@ -208,6 +214,7 @@
       "food_decay_per_tick": 3333333333,
       "food_hunger_threshold_pct": 50,
       "food_restore_pct": 40,
+      "bread_restore_pct": 30,
       "footprint": [
         1,
         1,

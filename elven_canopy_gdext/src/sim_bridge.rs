@@ -762,6 +762,7 @@ impl SimBridge {
             let kind_str = match &task.kind {
                 elven_canopy_sim::task::TaskKind::GoTo => "GoTo",
                 elven_canopy_sim::task::TaskKind::Build { .. } => "Build",
+                elven_canopy_sim::task::TaskKind::EatBread => "EatBread",
                 elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
                 elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
                 elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",

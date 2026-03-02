@@ -41,11 +41,13 @@
 // hunger-driven task creation, sleep-driven task creation, etc.). After
 // decaying food and rest, the heartbeat checks needs in priority order:
 // hunger first (food < threshold), then tiredness (rest < threshold). If
-// the creature is hungry and idle, it calls `find_nearest_fruit()` which
-// uses Dijkstra's algorithm over the nav graph (respecting species edge
-// restrictions and speeds) to find the closest reachable fruit, then creates
-// an `EatFruit` task directly assigned to the creature (bypassing the
-// Available→claim flow). If the creature is tired and idle (but not hungry),
+// the creature is hungry and idle, it first checks for owned bread in the
+// creature's inventory — if found, it creates an instant `EatBread` task at
+// the creature's current node (no travel needed). Otherwise, it calls
+// `find_nearest_fruit()` which uses Dijkstra's algorithm over the nav graph
+// (respecting species edge restrictions and speeds) to find the closest
+// reachable fruit, then creates an `EatFruit` task directly assigned to the
+// creature (bypassing the Available→claim flow). If the creature is tired and idle (but not hungry),
 // it calls `find_nearest_bed()` to find an unoccupied dormitory bed; if no
 // beds are available, it falls back to sleeping on the ground at its current
 // position. Sleep tasks are multi-activation: each activation restores rest
@@ -70,7 +72,7 @@
 // ### Task entity (`task.rs`)
 //
 // A `Task` has:
-// - `kind: TaskKind` — determines behavior (`GoTo`, `Build`, `EatFruit`, `Sleep`).
+// - `kind: TaskKind` — determines behavior (`GoTo`, `Build`, `EatBread`, `EatFruit`, `Sleep`).
 // - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
 // - `location: NavNodeId` — where creatures go to work on the task.
 // - `assignees: Vec<CreatureId>` — supports multiple workers.
@@ -116,6 +118,13 @@
 //       updates the nav graph (only ~7 affected positions) and resnaps
 //       displaced creatures. When `progress >= total_cost`, the blueprint
 //       is marked Complete and the elf is freed.
+//
+//   EatBread:
+//     - Completes instantly at the creature's current node (no travel).
+//     - `do_eat_bread()`: remove 1 owned bread from inventory, restore food by
+//       `bread_restore_pct`% of `food_max`, generate AteMeal thought.
+//     - Created by the heartbeat hunger check when the creature has owned bread
+//       in inventory. Takes priority over EatFruit since no travel is needed.
 //
 //   EatFruit { fruit_pos }:
 //     - If not at `task.location` → walk 1 edge toward it (same as GoTo).
@@ -177,6 +186,7 @@ use crate::building::CompletedStructure;
 use crate::command::{SimAction, SimCommand};
 use crate::config::GameConfig;
 use crate::event::{EventQueue, ScheduledEventKind, SimEvent, SimEventKind};
+use crate::inventory;
 use crate::nav::{self, NavGraph};
 use crate::pathfinding;
 use crate::prng::GameRng;
@@ -1404,9 +1414,52 @@ impl SimState {
                         (false, false)
                     };
 
-                // Phase 2a: if hungry and idle, find nearest fruit by graph
-                // travel cost (Dijkstra) and create an EatFruit task.
+                // Phase 2a: if hungry and idle, eat bread from inventory
+                // (instant, no travel) or fall back to seeking fruit.
+                let mut ate_bread = false;
+                if should_seek_food {
+                    // Check for owned bread in inventory.
+                    let has_bread = self
+                        .creatures
+                        .get(&creature_id)
+                        .map(|c| {
+                            inventory::count_owned(
+                                &c.inventory,
+                                inventory::ItemKind::Bread,
+                                creature_id,
+                            ) > 0
+                        })
+                        .unwrap_or(false);
+
+                    if has_bread
+                        && let Some(nav_node) = self
+                            .creatures
+                            .get(&creature_id)
+                            .and_then(|c| c.current_node)
+                    {
+                        let task_id = TaskId::new(&mut self.rng);
+                        let new_task = task::Task {
+                            id: task_id,
+                            kind: task::TaskKind::EatBread,
+                            state: task::TaskState::InProgress,
+                            location: nav_node,
+                            assignees: vec![creature_id],
+                            progress: 0.0,
+                            total_cost: 0.0,
+                            required_species: None,
+                            origin: task::TaskOrigin::Autonomous,
+                        };
+                        self.tasks.insert(task_id, new_task);
+                        if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                            creature.current_task = Some(task_id);
+                        }
+                        ate_bread = true;
+                    }
+                }
+
+                // Fall back to seeking fruit if no bread was available.
                 if should_seek_food
+                    && !ate_bread
                     && let Some((fruit_pos, nav_node)) = self.find_nearest_fruit(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
@@ -1742,6 +1795,9 @@ impl SimState {
                 // GoTo completes instantly on arrival.
                 self.complete_task(task_id);
             }
+            task::TaskKind::EatBread => {
+                self.do_eat_bread(creature_id, task_id);
+            }
             task::TaskKind::EatFruit { fruit_pos } => {
                 self.do_eat_fruit(creature_id, task_id, fruit_pos);
             }
@@ -1849,6 +1905,31 @@ impl SimState {
         }
         for tree in self.trees.values_mut() {
             tree.fruit_positions.retain(|&p| p != fruit_pos);
+        }
+
+        // Generate AteMeal thought.
+        if let Some(creature) = self.creatures.get_mut(&creature_id) {
+            creature.add_thought(ThoughtKind::AteMeal, self.tick, &self.config.thoughts);
+        }
+
+        self.complete_task(task_id);
+    }
+
+    /// Eat bread from inventory: remove 1 owned bread, restore food by
+    /// `bread_restore_pct`%, generate AteMeal thought, and complete the task.
+    fn do_eat_bread(&mut self, creature_id: CreatureId, task_id: TaskId) {
+        if let Some(creature) = self.creatures.get(&creature_id) {
+            let species_data = &self.species_table[&creature.species];
+            let restore = species_data.food_max * species_data.bread_restore_pct / 100;
+            let food_max = species_data.food_max;
+            let creature = self.creatures.get_mut(&creature_id).unwrap();
+            inventory::remove_owned_item(
+                &mut creature.inventory,
+                inventory::ItemKind::Bread,
+                creature_id,
+                1,
+            );
+            creature.food = (creature.food + restore).min(food_max);
         }
 
         // Generate AteMeal thought.
@@ -7242,6 +7323,308 @@ mod tests {
             elf.food > 0,
             "Hungry elf should have eaten fruit and restored food above 0. food={}",
             elf.food
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Hunger / EatBread tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hungry_elf_with_bread_creates_eat_bread_task() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Give the elf owned bread.
+        inventory::add_item(
+            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+            inventory::ItemKind::Bread,
+            3,
+            Some(elf_id),
+            false,
+        );
+
+        // Set food below hunger threshold.
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 30 / 100;
+
+        // Advance past the next heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // The elf should have an EatBread task, not EatFruit.
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.current_task.is_some(),
+            "Hungry elf with bread should have a task"
+        );
+        let task = &sim.tasks[&elf.current_task.unwrap()];
+        assert!(
+            matches!(task.kind, TaskKind::EatBread),
+            "Task should be EatBread, got {:?}",
+            task.kind
+        );
+    }
+
+    #[test]
+    fn eat_bread_restores_food_and_removes_bread() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+        let bread_restore_pct = sim.species_table[&Species::Elf].bread_restore_pct;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+
+        // Give the elf owned bread.
+        inventory::add_item(
+            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+            inventory::ItemKind::Bread,
+            3,
+            Some(elf_id),
+            false,
+        );
+
+        // Set food low.
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max / 10;
+        let food_before = sim.creatures[&elf_id].food;
+
+        // Manually create an EatBread task at the elf's current node.
+        let task_id = TaskId::new(&mut sim.rng);
+        let eat_task = Task {
+            id: task_id,
+            kind: TaskKind::EatBread,
+            state: TaskState::InProgress,
+            location: elf_node,
+            assignees: vec![elf_id],
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+            origin: TaskOrigin::Autonomous,
+        };
+        sim.tasks.insert(task_id, eat_task);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+
+        // Advance 1 tick — the elf's activation should complete the task.
+        sim.step(&[], sim.tick + 2);
+
+        let elf = &sim.creatures[&elf_id];
+        let expected_restore = food_max * bread_restore_pct / 100;
+        assert!(
+            elf.food >= food_before + expected_restore - 1,
+            "Food should increase by ~bread_restore_pct%: before={}, after={}, expected_restore={}",
+            food_before,
+            elf.food,
+            expected_restore,
+        );
+        assert!(elf.current_task.is_none(), "Task should be complete");
+
+        // Should have consumed 1 bread (2 remaining).
+        let bread_count =
+            inventory::count_owned(&elf.inventory, inventory::ItemKind::Bread, elf_id);
+        assert_eq!(bread_count, 2, "Should have consumed 1 bread, leaving 2");
+    }
+
+    #[test]
+    fn hungry_elf_without_bread_still_seeks_fruit() {
+        // Elf is hungry but has no bread — should create EatFruit, not EatBread.
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        assert!(
+            sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+            "Tree must have fruit"
+        );
+
+        // Spawn an elf (no bread in inventory).
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Set food below threshold.
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 30 / 100;
+
+        // Advance past heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // Should have EatFruit, not EatBread.
+        let elf = &sim.creatures[&elf_id];
+        assert!(elf.current_task.is_some(), "Hungry elf should have a task");
+        let task = &sim.tasks[&elf.current_task.unwrap()];
+        assert!(
+            matches!(task.kind, TaskKind::EatFruit { .. }),
+            "Elf without bread should seek fruit, got {:?}",
+            task.kind
+        );
+    }
+
+    #[test]
+    fn hungry_elf_with_unowned_bread_seeks_fruit() {
+        // Elf has bread but doesn't own it — should seek fruit instead.
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+        let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+        assert!(
+            sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+            "Tree must have fruit"
+        );
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Give the elf bread with no owner (unowned).
+        inventory::add_item(
+            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+            inventory::ItemKind::Bread,
+            5,
+            None,
+            false,
+        );
+
+        // Set food below threshold.
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 30 / 100;
+
+        // Advance past heartbeat.
+        let target_tick = 1 + heartbeat_interval + 1;
+        sim.step(&[], target_tick);
+
+        // Should have EatFruit since the bread is not owned by this elf.
+        let elf = &sim.creatures[&elf_id];
+        assert!(elf.current_task.is_some(), "Hungry elf should have a task");
+        let task = &sim.tasks[&elf.current_task.unwrap()];
+        assert!(
+            matches!(task.kind, TaskKind::EatFruit { .. }),
+            "Elf with unowned bread should seek fruit, got {:?}",
+            task.kind
+        );
+    }
+
+    #[test]
+    fn eat_bread_generates_thought() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let food_max = sim.species_table[&Species::Elf].food_max;
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+
+        // Give bread and set food low.
+        inventory::add_item(
+            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+            inventory::ItemKind::Bread,
+            1,
+            Some(elf_id),
+            false,
+        );
+        sim.creatures.get_mut(&elf_id).unwrap().food = food_max / 10;
+
+        // Create EatBread task at current node.
+        let task_id = TaskId::new(&mut sim.rng);
+        let eat_task = Task {
+            id: task_id,
+            kind: TaskKind::EatBread,
+            state: TaskState::InProgress,
+            location: elf_node,
+            assignees: vec![elf_id],
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+            origin: TaskOrigin::Autonomous,
+        };
+        sim.tasks.insert(task_id, eat_task);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+
+        // Advance to trigger activation.
+        sim.step(&[], sim.tick + 2);
+
+        let elf = &sim.creatures[&elf_id];
+        assert!(
+            elf.thoughts.iter().any(|t| t.kind == ThoughtKind::AteMeal),
+            "Eating bread should generate AteMeal thought"
         );
     }
 

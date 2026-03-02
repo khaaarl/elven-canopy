@@ -107,6 +107,41 @@ pub fn item_count(inventory: &[Item], kind: ItemKind) -> u32 {
         .sum()
 }
 
+/// Count items of a given kind owned by a specific creature.
+pub fn count_owned(inventory: &[Item], kind: ItemKind, owner: CreatureId) -> u32 {
+    inventory
+        .iter()
+        .filter(|item| item.kind == kind && item.owner == Some(owner))
+        .map(|item| item.quantity)
+        .sum()
+}
+
+/// Remove up to `quantity` items of the given kind owned by a specific creature.
+/// Returns the amount actually removed. Drops stacks that reach zero.
+pub fn remove_owned_item(
+    inventory: &mut Vec<Item>,
+    kind: ItemKind,
+    owner: CreatureId,
+    quantity: u32,
+) -> u32 {
+    let mut remaining = quantity;
+    let mut removed = 0u32;
+
+    for item in inventory.iter_mut() {
+        if item.kind == kind && item.owner == Some(owner) && remaining > 0 {
+            let take = remaining.min(item.quantity);
+            item.quantity -= take;
+            remaining -= take;
+            removed += take;
+        }
+    }
+
+    // Drop empty stacks.
+    inventory.retain(|item| item.quantity > 0);
+
+    removed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +272,71 @@ mod tests {
         let json = serde_json::to_string(&pile).unwrap();
         let restored: GroundPile = serde_json::from_str(&json).unwrap();
         assert_eq!(pile, restored);
+    }
+
+    #[test]
+    fn count_owned_filters_by_owner() {
+        let mut rng = GameRng::new(42);
+        let owner_a = CreatureId::new(&mut rng);
+        let owner_b = CreatureId::new(&mut rng);
+
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 3, Some(owner_a), false);
+        add_item(&mut inv, ItemKind::Bread, 5, Some(owner_b), false);
+        add_item(&mut inv, ItemKind::Bread, 2, None, false);
+
+        assert_eq!(count_owned(&inv, ItemKind::Bread, owner_a), 3);
+        assert_eq!(count_owned(&inv, ItemKind::Bread, owner_b), 5);
+    }
+
+    #[test]
+    fn count_owned_returns_zero_when_none() {
+        let mut rng = GameRng::new(42);
+        let owner = CreatureId::new(&mut rng);
+
+        let inv: Vec<Item> = Vec::new();
+        assert_eq!(count_owned(&inv, ItemKind::Bread, owner), 0);
+    }
+
+    #[test]
+    fn remove_owned_item_removes_only_owned() {
+        let mut rng = GameRng::new(42);
+        let owner_a = CreatureId::new(&mut rng);
+        let owner_b = CreatureId::new(&mut rng);
+
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 3, Some(owner_a), false);
+        add_item(&mut inv, ItemKind::Bread, 5, Some(owner_b), false);
+
+        let removed = remove_owned_item(&mut inv, ItemKind::Bread, owner_a, 2);
+        assert_eq!(removed, 2);
+        assert_eq!(count_owned(&inv, ItemKind::Bread, owner_a), 1);
+        assert_eq!(count_owned(&inv, ItemKind::Bread, owner_b), 5);
+    }
+
+    #[test]
+    fn remove_owned_item_caps_at_available() {
+        let mut rng = GameRng::new(42);
+        let owner = CreatureId::new(&mut rng);
+
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 2, Some(owner), false);
+
+        let removed = remove_owned_item(&mut inv, ItemKind::Bread, owner, 10);
+        assert_eq!(removed, 2);
+        assert!(inv.is_empty());
+    }
+
+    #[test]
+    fn remove_owned_item_ignores_unowned() {
+        let mut rng = GameRng::new(42);
+        let owner = CreatureId::new(&mut rng);
+
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 5, None, false);
+
+        let removed = remove_owned_item(&mut inv, ItemKind::Bread, owner, 3);
+        assert_eq!(removed, 0);
+        assert_eq!(item_count(&inv, ItemKind::Bread), 5);
     }
 }

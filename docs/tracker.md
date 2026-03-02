@@ -46,7 +46,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
-[~] F-bread                Bread items and elf food management
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 ```
 
@@ -151,6 +150,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
+[x] F-bread                Bread items and elf food management
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
 [x] F-capybara             Capybara species
@@ -713,7 +713,7 @@ computed from edge distance and per-species speed config.
 ### Creatures & Needs
 
 #### F-bread — Bread items and elf food management
-**Status:** In Progress · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
 Elves carry bread as a portable food source. Each elf starts with a varying
 amount of bread. Bread is an item in the items system — elves carry it, it
