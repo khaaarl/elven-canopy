@@ -25,10 +25,14 @@
 //   smooth interpolation between nav nodes via `Creature::interpolated_position()`.
 // - **Creature info:** `get_creature_info(species_name, index, render_tick)` —
 //   returns a `VarDictionary` with species, interpolated position (x/y/z),
-//   task status, food level, food_max, rest level, rest_max, name (Vaelith
-//   name for elves, empty for other species), name_meaning (English gloss),
-//   and inventory (array of {kind, quantity} dicts). Used by the creature
-//   info panel for display and follow-mode tracking.
+//   task status, task_kind, food level, food_max, rest level, rest_max,
+//   name (Vaelith name for elves, empty for other species), name_meaning
+//   (English gloss), and inventory (array of {kind, quantity} dicts). Used
+//   by the creature info panel for display and follow-mode tracking.
+// - **Creature summary:** `get_all_creatures_summary()` — returns a `VarArray`
+//   of `VarDictionary`, one per creature, sorted (elves first by name, then
+//   other species by species+index). Each dict: species, index, name,
+//   name_meaning, has_task, task_kind. Used by `units_panel.gd`.
 // - **Task list:** `get_active_tasks()` — returns a `VarArray` of
 //   `VarDictionary`, one per non-complete task. Each dict includes short/full
 //   ID, kind, state, origin (PlayerDirected/Autonomous/Automated),
@@ -581,6 +585,20 @@ impl SimBridge {
                 dict.set("y", y);
                 dict.set("z", z);
                 dict.set("has_task", c.current_task.is_some());
+                let task_kind_str = c
+                    .current_task
+                    .as_ref()
+                    .and_then(|tid| {
+                        sim.tasks.get(tid).map(|t| match &t.kind {
+                            elven_canopy_sim::task::TaskKind::GoTo => "GoTo",
+                            elven_canopy_sim::task::TaskKind::Build { .. } => "Build",
+                            elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
+                            elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
+                            elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
+                        })
+                    })
+                    .unwrap_or("");
+                dict.set("task_kind", GString::from(task_kind_str));
                 dict.set("food", c.food);
                 let food_max = sim.species_table[&species].food_max;
                 dict.set("food_max", food_max);
@@ -617,6 +635,95 @@ impl SimBridge {
             }
             None => VarDictionary::new(),
         }
+    }
+
+    /// Return a summary of all creatures as a `VarArray` of dictionaries.
+    ///
+    /// Each dictionary contains: `species` (String), `index` (i32),
+    /// `name` (String — Vaelith name for elves, empty for other species),
+    /// `name_meaning` (String), `has_task` (bool), `task_kind` (String).
+    ///
+    /// Results are sorted: elves first (alphabetically by name), then other
+    /// species grouped alphabetically by species name, then by index within
+    /// each species.
+    ///
+    /// Used by `units_panel.gd` for the full creature roster. Returns data
+    /// for all creatures in a single call to avoid N individual
+    /// `get_creature_info()` round-trips per frame.
+    #[func]
+    fn get_all_creatures_summary(&self) -> VarArray {
+        let Some(sim) = &self.sim else {
+            return VarArray::new();
+        };
+
+        // Collect (species, index, name, name_meaning, has_task, task_kind)
+        // tuples per species.
+        let mut entries: Vec<(&'static str, i32, &str, &str, bool, &str)> = Vec::new();
+
+        // Count per species to compute species-filtered indices.
+        let species_list = [
+            Species::Elf,
+            Species::Boar,
+            Species::Capybara,
+            Species::Deer,
+            Species::Elephant,
+            Species::Monkey,
+            Species::Squirrel,
+        ];
+
+        for &sp in &species_list {
+            for (idx, creature) in (0_i32..).zip(sim.creatures.values().filter(|c| c.species == sp))
+            {
+                let task_kind = creature
+                    .current_task
+                    .as_ref()
+                    .and_then(|tid| {
+                        sim.tasks.get(tid).map(|t| match &t.kind {
+                            elven_canopy_sim::task::TaskKind::GoTo => "GoTo",
+                            elven_canopy_sim::task::TaskKind::Build { .. } => "Build",
+                            elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
+                            elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
+                            elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
+                        })
+                    })
+                    .unwrap_or("");
+
+                entries.push((
+                    species_name(sp),
+                    idx,
+                    creature.name.as_str(),
+                    creature.name_meaning.as_str(),
+                    creature.current_task.is_some(),
+                    task_kind,
+                ));
+            }
+        }
+
+        // Sort: elves first (alphabetically by name), then other species
+        // (alphabetically by species name, then by index).
+        entries.sort_by(|a, b| {
+            let a_is_elf = a.0 == "Elf";
+            let b_is_elf = b.0 == "Elf";
+            match (a_is_elf, b_is_elf) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                (true, true) => a.2.cmp(b.2), // both elves: sort by name
+                (false, false) => a.0.cmp(b.0).then(a.1.cmp(&b.1)),
+            }
+        });
+
+        let mut result = VarArray::new();
+        for (sp, idx, name, meaning, has_task, task_kind) in &entries {
+            let mut dict = VarDictionary::new();
+            dict.set("species", GString::from(*sp));
+            dict.set("index", *idx);
+            dict.set("name", GString::from(*name));
+            dict.set("name_meaning", GString::from(*meaning));
+            dict.set("has_task", *has_task);
+            dict.set("task_kind", GString::from(*task_kind));
+            result.push(&dict.to_variant());
+        }
+        result
     }
 
     /// Return all non-complete tasks as a `VarArray` of dictionaries.

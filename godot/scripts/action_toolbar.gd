@@ -1,12 +1,12 @@
 ## Top toolbar for gameplay actions and a toggleable debug panel.
 ##
 ## The main toolbar row contains gameplay buttons: Build, Tasks, Structures,
-## Tree Info. A "Debug" toggle button (or F12) reveals a second row with
-## dev/test tools: creature spawn buttons and Summon Elf. When the debug row
-## is hidden, its keyboard shortcuts (1–7) are inactive.
+## Units, Tree Info. A "Debug" toggle button (or F12) reveals a second row
+## with dev/test tools: creature spawn buttons and Summon Elf. When the debug
+## row is hidden, its keyboard shortcuts (1–7) are inactive.
 ##
 ## Keyboard shortcuts:
-## [B] Build, [T] Tasks, [I] Tree Info, [F12] Toggle debug panel
+## [B] Build, [T] Tasks, [U] Units, [I] Tree Info, [F12] Toggle debug panel
 ## Debug-only (visible when debug panel is open):
 ## [1] Spawn Elf, [2] Spawn Capybara, [3] Spawn Boar, [4] Spawn Deer,
 ## [5] Spawn Monkey, [6] Spawn Squirrel, [7] Spawn Elephant, [8] Summon Elf
@@ -65,6 +65,11 @@ func _ready() -> void:
 	structures_button.text = "Structures"
 	structures_button.pressed.connect(_on_structures_pressed)
 	main_row.add_child(structures_button)
+
+	var units_button := Button.new()
+	units_button.text = "Units [U]"
+	units_button.pressed.connect(_on_units_pressed)
+	main_row.add_child(units_button)
 
 	var tree_info_button := Button.new()
 	tree_info_button.text = "Tree [I]"
@@ -133,6 +138,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif key.keycode == KEY_T:
 			_on_tasks_pressed()
 			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_U:
+			_on_units_pressed()
+			get_viewport().set_input_as_handled()
 		elif key.keycode == KEY_I:
 			_on_tree_info_pressed()
 			get_viewport().set_input_as_handled()
@@ -190,6 +198,10 @@ func _on_tasks_pressed() -> void:
 
 func _on_structures_pressed() -> void:
 	action_requested.emit("Structures")
+
+
+func _on_units_pressed() -> void:
+	action_requested.emit("Units")
 
 
 func _on_tree_info_pressed() -> void:

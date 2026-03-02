@@ -29,9 +29,10 @@
 ##    if active: exit construction mode
 ## 3. selection_controller — deselect creature
 ## 4. tree_info_panel — close tree info (if visible, on CanvasLayer layer 1)
-## 5. structure_list_panel — close structure list (if visible, on CanvasLayer layer 2)
-## 6. task_panel — close task list (if visible, on CanvasLayer layer 2)
-## 7. pause_menu — open/close (on CanvasLayer layer 2, added first)
+## 5. units_panel — close units roster (if visible, on CanvasLayer layer 2)
+## 6. structure_list_panel — close structure list (if visible, on CanvasLayer layer 2)
+## 7. task_panel — close task list (if visible, on CanvasLayer layer 2)
+## 8. pause_menu — open/close (on CanvasLayer layer 2, added first)
 ##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs (Rust)
 ## for the simulation interface, tree_renderer.gd / elf_renderer.gd /
@@ -45,7 +46,8 @@
 ## ground_pile_info_panel.gd for the ground pile info panel,
 ## tree_info_panel.gd for the tree stats panel, task_panel.gd for
 ## the task list overlay, structure_list_panel.gd for the structure list
-## overlay, game_session.gd for the autoload that carries the seed/load
+## overlay, units_panel.gd for the creature roster overlay,
+## game_session.gd for the autoload that carries the seed/load
 ## path from the menu, pause_menu.gd for the ESC pause overlay.
 
 extends Node3D
@@ -74,6 +76,7 @@ var _pile_info_panel: PanelContainer
 var _tree_info_panel: PanelContainer
 var _task_panel: ColorRect
 var _structure_panel: ColorRect
+var _units_panel: ColorRect
 var _camera_pivot: Node3D
 var _construction_controller: Node
 var _placement_controller: Node3D
@@ -407,23 +410,30 @@ func _setup_common(bridge: SimBridge) -> void:
 	add_child(_pile_renderer)
 	_pile_renderer.setup(bridge)
 
+	# Info panel layer (layer 3) — creature and structure info panels render
+	# on top of the units panel (layer 2) so clicking a unit row shows the
+	# detail panel above the roster overlay.
+	var info_panel_layer := CanvasLayer.new()
+	info_panel_layer.layer = 3
+	add_child(info_panel_layer)
+
 	# Set up creature info panel.
 	var panel_script = load("res://scripts/creature_info_panel.gd")
 	_panel = PanelContainer.new()
 	_panel.set_script(panel_script)
-	canvas_layer.add_child(_panel)
+	info_panel_layer.add_child(_panel)
 
 	# Set up structure info panel.
 	var struct_panel_script = load("res://scripts/structure_info_panel.gd")
 	_structure_info_panel = PanelContainer.new()
 	_structure_info_panel.set_script(struct_panel_script)
-	canvas_layer.add_child(_structure_info_panel)
+	info_panel_layer.add_child(_structure_info_panel)
 
 	# Set up ground pile info panel.
 	var pile_panel_script = load("res://scripts/ground_pile_info_panel.gd")
 	_pile_info_panel = PanelContainer.new()
 	_pile_info_panel.set_script(pile_panel_script)
-	canvas_layer.add_child(_pile_info_panel)
+	info_panel_layer.add_child(_pile_info_panel)
 
 	# Set up selection controller.
 	var selector_script = load("res://scripts/selection_controller.gd")
@@ -563,7 +573,18 @@ func _setup_common(bridge: SimBridge) -> void:
 	_structure_panel.set_script(structure_panel_script)
 	structure_panel_layer.add_child(_structure_panel)
 
-	# Tree info panel (on its own CanvasLayer, added after structure panel
+	# Units panel overlay (on CanvasLayer 2, added after structure panel
+	# so its ESC handler fires first in reverse tree order).
+	var units_panel_layer := CanvasLayer.new()
+	units_panel_layer.layer = 2
+	add_child(units_panel_layer)
+
+	var units_panel_script = load("res://scripts/units_panel.gd")
+	_units_panel = ColorRect.new()
+	_units_panel.set_script(units_panel_script)
+	units_panel_layer.add_child(_units_panel)
+
+	# Tree info panel (on its own CanvasLayer, added after units panel
 	# so its ESC handler fires first in reverse tree order).
 	var tree_panel_layer := CanvasLayer.new()
 	tree_panel_layer.layer = 1
@@ -582,13 +603,20 @@ func _setup_common(bridge: SimBridge) -> void:
 			_selector.select_structure(structure_id)
 	)
 
-	# Wire toolbar "Tasks", "Structures", and "TreeInfo" actions -> panel toggles.
+	# Wire units panel creature click -> select creature (panel stays open).
+	_units_panel.creature_clicked.connect(
+		func(species: String, index: int): _selector.select_creature(species, index)
+	)
+
+	# Wire toolbar actions -> panel toggles.
 	toolbar.action_requested.connect(
 		func(action: String):
 			if action == "Tasks":
 				_task_panel.toggle()
 			elif action == "Structures":
 				_structure_panel.toggle()
+			elif action == "Units":
+				_units_panel.toggle()
 			elif action == "TreeInfo":
 				# Mutual exclusion: opening tree info deselects creature/structure/pile.
 				if not _tree_info_panel.visible:
@@ -640,8 +668,8 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Fix ESC precedence. _unhandled_input fires in reverse tree order (last
 	# child first). Move the three input controllers to the end so they get
 	# ESC before panels and the pause menu. Order after move:
-	#   ... → pause_menu → task_panel → structure_panel → selector → construction → placement
-	# Reverse (input order): placement → construction → selector → panels → pause_menu
+	#   ... → pause → tasks → structures → units → selector → construct → place
+	# Reverse (input order): place → construct → selector → units → panels → pause
 	move_child(_selector, -1)
 	move_child(_construction_controller, -1)
 	move_child(_placement_controller, -1)
@@ -747,6 +775,11 @@ func _process(delta: float) -> void:
 	if _structure_panel and _structure_panel.visible:
 		var structures := bridge.get_structures()
 		_structure_panel.update_structures(structures)
+
+	# Refresh units panel while visible.
+	if _units_panel and _units_panel.visible:
+		var creatures := bridge.get_all_creatures_summary()
+		_units_panel.update_creatures(creatures)
 
 	# Refresh tree info panel while visible.
 	if _tree_info_panel and _tree_info_panel.visible:
