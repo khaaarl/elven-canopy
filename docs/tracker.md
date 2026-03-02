@@ -47,6 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [~] F-multiplayer          Relay-coordinator multiplayer networking
+[~] F-sim-speed            Simulation speed controls UI
 ```
 
 ### Todo
@@ -192,7 +193,6 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-serde                Serialization for all sim types
 [x] F-shared-prng          Shared PRNG crate across all Rust crates
 [x] F-sim-commands         SimCommand pipeline
-[x] F-sim-speed            Simulation speed controls UI
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
 [x] F-struct-basic         Basic structural integrity (flood fill)
 [x] F-struct-names         User-editable structure names
@@ -1364,16 +1364,16 @@ Ray-based selection with billboard sprite hit detection. ESC to deselect.
 Input precedence chain with placement and pause systems.
 
 #### F-sim-speed — Simulation speed controls UI
-**Status:** Done · **Phase:** 2
+**Status:** In Progress · **Phase:** 2
 
-Pause/1x/2x/3x speed controls for the simulation. Speed multiplier is
-applied to the time-based delta accumulator in `main.gd`. Toolbar buttons
-in `action_toolbar.gd` show all four speeds with the current speed
-highlighted (disabled button). Keyboard shortcuts: Space toggles pause,
-+/- adjust speed. Accumulator resets on unpause to prevent tick bursts.
-Single-player only — multiplayer uses turn-based stepping.
+Pause/1x/2x/3x speed controls for the simulation. Speed must be
+synchronized in multiplayer — implemented as a `SimCommand::SetSimSpeed`
+that sets a multiplier on `SimState`, affecting how many ticks are
+advanced per frame (single-player) or per turn (multiplayer). GDScript
+toolbar buttons and keyboard shortcuts (Space=pause, +/-=speed) send the
+command through SimBridge rather than directly modifying a local variable.
 
-**Related:** F-event-loop
+**Related:** F-event-loop, F-multiplayer
 
 #### F-spawn-toolbar — Spawn toolbar and placement UI
 **Status:** Done · **Refs:** §26
