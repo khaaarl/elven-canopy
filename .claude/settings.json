@@ -54,6 +54,7 @@
       "Bash(paste:*)",
       "Bash(perf:*)",
       "Bash(pip:*)",
+      "Bash(printf:*)",
       "Bash(py --version:*)",
       "Bash(python/.venv/bin/pip:*)",
       "Bash(python/.venv/bin/gdformat:*)",

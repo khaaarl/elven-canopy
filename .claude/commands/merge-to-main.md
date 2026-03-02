@@ -81,9 +81,9 @@ If the branch implements a tracked feature or bug:
 If the branch is not a tracked item (e.g., tooling, CLAUDE.md changes), skip
 this step.
 
-### Step 5: Fast-forward merge (requires permission)
+### Step 5: Fast-forward merge (requires permission if there were nontrivial rebase conflicts)
 
-**Ask the user for permission before this step.**
+**Ask the user for permission before this step if there were non-trivial edits due to rebase conflicts.**
 
 ```
 git checkout main
