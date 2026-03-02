@@ -1384,13 +1384,15 @@ Ray-based selection with billboard sprite hit detection. ESC to deselect.
 Input precedence chain with placement and pause systems.
 
 #### F-sim-speed — Simulation speed controls UI
-**Status:** Todo · **Phase:** 2
+**Status:** Todo · **Phase:** 4
 
 Pause/1x/2x/3x speed controls for the simulation. The sim architecture
 already supports variable tick rates (time-based accumulator in `main.gd`).
 This adds UI buttons and keyboard shortcuts (e.g., Space for pause, 1/2/3
 for speed) to control the tick multiplier. Essential for both slow
-observation and fast-forwarding through idle periods.
+observation and fast-forwarding through idle periods. Important note: the
+speed must be tracked in _rust_, and the speed change must be sync'd
+across multiplayer, in the same way that user actions are sync'd.
 
 **Related:** F-event-loop
 
