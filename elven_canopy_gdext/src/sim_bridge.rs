@@ -664,6 +664,7 @@ impl SimBridge {
                             elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
                             elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
                             elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
+                            elven_canopy_sim::task::TaskKind::EatBread => "EatBread",
                         })
                     })
                     .unwrap_or("");
@@ -753,6 +754,7 @@ impl SimBridge {
                             elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
                             elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
                             elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
+                            elven_canopy_sim::task::TaskKind::EatBread => "EatBread",
                         })
                     })
                     .unwrap_or("");
