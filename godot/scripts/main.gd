@@ -84,6 +84,7 @@ var _bldg_renderer: Node3D
 var _ladder_renderer: Node3D
 var _furniture_renderer: Node3D
 var _lobby_overlay: ColorRect
+var _toolbar: MarginContainer
 ## Fractional seconds of unprocessed sim time. Accumulates each frame,
 ## converted to ticks by dividing by tick_duration_ms / 1000.
 var _sim_accumulator: float = 0.0
@@ -92,6 +93,9 @@ var _seconds_per_tick: float = 0.001
 ## Multiplayer: seconds since last turn was received. Used for smooth
 ## render_tick interpolation between turns.
 var _mp_time_since_turn: float = 0.0
+## Simulation speed multiplier: 0 = paused, 1 = normal, 2 = fast, 3 = fastest.
+## Applied to the delta accumulator in single-player mode.
+var _sim_speed: int = 1
 
 
 func _ready() -> void:
@@ -314,6 +318,10 @@ func _setup_common(bridge: SimBridge) -> void:
 	var toolbar := MarginContainer.new()
 	toolbar.set_script(toolbar_script)
 	canvas_layer.add_child(toolbar)
+	_toolbar = toolbar
+
+	# Wire speed control signals from toolbar.
+	toolbar.speed_changed.connect(_on_speed_changed)
 
 	# Set up placement controller.
 	var controller_script = load("res://scripts/placement_controller.gd")
@@ -628,8 +636,8 @@ func _process(delta: float) -> void:
 		for event_json in events:
 			print("MP event: %s" % event_json)
 	else:
-		# Single-player: time-based accumulator.
-		_sim_accumulator += delta
+		# Single-player: time-based accumulator with speed multiplier.
+		_sim_accumulator += delta * _sim_speed
 		var ticks_to_advance := int(_sim_accumulator / _seconds_per_tick)
 		if ticks_to_advance > 5000:
 			ticks_to_advance = 5000
@@ -722,6 +730,15 @@ func _look_at_position(pos: Vector3) -> void:
 	if _panel and _panel.visible:
 		_panel.set_follow_state(false)
 	_camera_pivot.position = pos
+
+
+## Handle speed change from toolbar or keyboard.
+func _on_speed_changed(new_speed: int) -> void:
+	_sim_speed = new_speed
+	# When unpausing, reset accumulator to avoid a burst of ticks from
+	# the time spent paused.
+	if new_speed > 0:
+		_sim_accumulator = 0.0
 
 
 ## Get the world-space position of a creature sprite, matching the offsets

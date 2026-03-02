@@ -1,17 +1,20 @@
-## Top toolbar for gameplay actions and a toggleable debug panel.
+## Top toolbar for gameplay actions, speed controls, and a toggleable debug
+## panel.
 ##
-## The main toolbar row contains gameplay buttons: Build, Tasks, Structures,
-## Tree Info. A "Debug" toggle button (or F12) reveals a second row with
-## dev/test tools: creature spawn buttons and Summon Elf. When the debug row
-## is hidden, its keyboard shortcuts (1–7) are inactive.
+## The main toolbar row contains gameplay buttons (Build, Tasks, Structures,
+## Tree Info), sim speed controls (Pause / 1x / 2x / 3x), and a Debug toggle.
+## A "Debug" toggle button (or F12) reveals a second row with dev/test tools:
+## creature spawn buttons and Summon Elf. When the debug row is hidden, its
+## keyboard shortcuts (1–7) are inactive.
 ##
 ## Keyboard shortcuts:
+## [Space] Toggle pause, [+] Speed up, [-] Speed down
 ## [B] Build, [T] Tasks, [I] Tree Info, [F12] Toggle debug panel
 ## Debug-only (visible when debug panel is open):
 ## [1] Spawn Elf, [2] Spawn Capybara, [3] Spawn Boar, [4] Spawn Deer,
 ## [5] Spawn Monkey, [6] Spawn Squirrel, [7] Spawn Elephant, [8] Summon Elf
 ##
-## Emits two signals:
+## Emits three signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
 ##   by placement_controller.gd to enter placement mode.
 ## - action_requested(action_name: String) — for task actions ("Summon") and
@@ -19,22 +22,28 @@
 ##   the clicked location via SimBridge. "Build" toggles construction mode,
 ##   handled by construction_controller.gd. "Structures" toggles the
 ##   structure list panel.
+## - speed_changed(new_speed: int) — sim speed change (0=paused, 1/2/3=
+##   multiplier). main.gd applies the multiplier to the tick accumulator.
 ##
 ## See also: placement_controller.gd which listens for spawn/action signals,
 ## construction_controller.gd which listens for the "Build" action,
 ## task_panel.gd which listens for the "Tasks" action,
 ## structure_list_panel.gd which listens for the "Structures" action,
-## main.gd which wires toolbar to controllers,
+## main.gd which wires toolbar to controllers and applies speed changes,
 ## sim_bridge.rs for the spawn_creature/create_goto_task commands.
 
 extends MarginContainer
 
 signal spawn_requested(species_name: String)
 signal action_requested(action_name: String)
+signal speed_changed(new_speed: int)
 
 var _debug_row: HBoxContainer
 var _debug_button: Button
 var _debug_visible: bool = false
+## Current sim speed: 0 = paused, 1/2/3 = speed multiplier.
+var _speed: int = 1
+var _speed_buttons: Array = []
 
 
 func _ready() -> void:
@@ -75,6 +84,19 @@ func _ready() -> void:
 	_debug_button.text = "Debug [F12]"
 	_debug_button.pressed.connect(_toggle_debug)
 	main_row.add_child(_debug_button)
+
+	# --- Speed controls ---
+	var speed_separator := VSeparator.new()
+	main_row.add_child(speed_separator)
+
+	var speed_labels := ["|| [Space]", "> [Space]", ">> [+]", ">>> [+]"]
+	for i in 4:
+		var btn := Button.new()
+		btn.text = speed_labels[i]
+		btn.pressed.connect(_set_speed.bind(i))
+		main_row.add_child(btn)
+		_speed_buttons.append(btn)
+	_update_speed_buttons()
 
 	# --- Debug row (hidden by default) ---
 	_debug_row = HBoxContainer.new()
@@ -126,6 +148,19 @@ func _ready() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		var key := event as InputEventKey
+		# Speed shortcuts (always active).
+		if key.keycode == KEY_SPACE:
+			_toggle_pause()
+			get_viewport().set_input_as_handled()
+			return
+		if key.keycode == KEY_EQUAL or key.keycode == KEY_KP_ADD:
+			_change_speed(1)
+			get_viewport().set_input_as_handled()
+			return
+		if key.keycode == KEY_MINUS or key.keycode == KEY_KP_SUBTRACT:
+			_change_speed(-1)
+			get_viewport().set_input_as_handled()
+			return
 		# Gameplay shortcuts (always active).
 		if key.keycode == KEY_B:
 			_on_build_pressed()
@@ -194,3 +229,27 @@ func _on_structures_pressed() -> void:
 
 func _on_tree_info_pressed() -> void:
 	action_requested.emit("TreeInfo")
+
+
+func _set_speed(new_speed: int) -> void:
+	_speed = clampi(new_speed, 0, 3)
+	_update_speed_buttons()
+	speed_changed.emit(_speed)
+
+
+func _toggle_pause() -> void:
+	if _speed == 0:
+		_set_speed(1)
+	else:
+		_set_speed(0)
+
+
+## Increment or decrement speed, clamped to 1–3 (skips pause).
+func _change_speed(delta: int) -> void:
+	var new_speed := clampi(_speed + delta, 1, 3)
+	_set_speed(new_speed)
+
+
+func _update_speed_buttons() -> void:
+	for i in _speed_buttons.size():
+		_speed_buttons[i].disabled = (i == _speed)
