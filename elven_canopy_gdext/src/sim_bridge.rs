@@ -31,8 +31,9 @@
 //   tracking.
 // - **Task list:** `get_active_tasks()` — returns a `VarArray` of
 //   `VarDictionary`, one per non-complete task. Each dict includes short/full
-//   ID, kind, state, progress/total_cost, location coordinates, and an
-//   assignees array with creature species and index. Used by `task_panel.gd`.
+//   ID, kind, state, origin (PlayerDirected/Autonomous/Automated),
+//   progress/total_cost, location coordinates, and an assignees array with
+//   creature species, index, and name. Used by `task_panel.gd`.
 // - **Nav nodes:** `get_all_nav_nodes()`, `get_ground_nav_nodes()` — for
 //   debug visualization. `get_visible_nav_nodes(cam_pos)`,
 //   `get_visible_ground_nav_nodes(cam_pos)` — filtered by voxel-based
@@ -111,7 +112,7 @@ use elven_canopy_sim::command::{SimAction, SimCommand};
 use elven_canopy_sim::config::{GameConfig, TreeProfile};
 use elven_canopy_sim::sim::SimState;
 use elven_canopy_sim::structural::{self, ValidationTier};
-use elven_canopy_sim::task::TaskState;
+use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
     BuildType, CreatureId, FaceDirection, FurnishingType, FurnitureKind, LadderKind,
     OverlapClassification, Priority, SimUuid, Species, StructureId, VoxelCoord, VoxelType,
@@ -593,9 +594,11 @@ impl SimBridge {
     /// Return all non-complete tasks as a `VarArray` of dictionaries.
     ///
     /// Each dictionary contains: `id` (short hex), `id_full` (full UUID),
-    /// `kind` ("GoTo" or "Build"), `state` ("Available" or "In Progress"),
-    /// `progress`, `total_cost`, `location_x/y/z`, and `assignees` (array
-    /// of dictionaries with `id_short`, `species`, `index`).
+    /// `kind` ("GoTo", "Build", "EatFruit", "Furnish", or "Sleep"),
+    /// `origin` ("PlayerDirected", "Autonomous", or "Automated"),
+    /// `state` ("Available" or "In Progress"), `progress`, `total_cost`,
+    /// `location_x/y/z`, and `assignees` (array of dictionaries with
+    /// `id_short`, `name`, `species`, `index`).
     ///
     /// The creature `index` matches the species-filtered iteration order used
     /// by `get_creature_positions()`, so GDScript can use it directly for
@@ -630,6 +633,14 @@ impl SimBridge {
             };
             dict.set("kind", GString::from(kind_str));
 
+            // Origin.
+            let origin_str = match task.origin {
+                TaskOrigin::PlayerDirected => "PlayerDirected",
+                TaskOrigin::Autonomous => "Autonomous",
+                TaskOrigin::Automated => "Automated",
+            };
+            dict.set("origin", GString::from(origin_str));
+
             // State.
             let state_str = match task.state {
                 TaskState::Available => "Available",
@@ -656,6 +667,7 @@ impl SimBridge {
                     let cid_full = assignee_id.0.to_string();
                     let cid_short: String = cid_full.chars().take(8).collect();
                     a.set("id_short", GString::from(&cid_short));
+                    a.set("name", GString::from(creature.name.as_str()));
 
                     let sp = species_name(creature.species);
                     a.set("species", GString::from(sp));

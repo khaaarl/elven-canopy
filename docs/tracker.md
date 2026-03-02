@@ -199,6 +199,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-struct-basic         Basic structural integrity (flood fill)
 [x] F-struct-names         User-editable structure names
 [x] F-structure-reg        Completed structure registry + UI panel
+[x] F-task-panel-groups    Task panel grouped by origin + creature names
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
 [x] F-tree-overlap         Construction overlap with tree geometry
@@ -1413,6 +1414,17 @@ for zoom-to-location.
 **New files:** `structure_list_panel.gd`
 
 **Related:** F-building, F-construction
+
+#### F-task-panel-groups — Task panel grouped by origin + creature names
+**Status:** Done · **Phase:** 2
+
+Group task panel cards into three sections by origin: Player Directives
+(build, goto, furnish), Automated Management (future), and Autonomous
+Decisions (eat, sleep). Show creature Vaelith names on assignee zoom
+buttons instead of hex IDs. Adds `TaskOrigin` enum to `task.rs` with
+`PlayerDirected`, `Autonomous`, and `Automated` variants.
+
+**Modified files:** `task.rs`, `sim.rs`, `sim_bridge.rs`, `task_panel.gd`
 
 #### F-tree-info — Tree stats/info panel
 **Status:** Done · **Phase:** 2

@@ -89,6 +89,18 @@ pub enum TaskKind {
     Sleep { bed_pos: Option<VoxelCoord> },
 }
 
+/// Where a task originated — used by the UI to group tasks into sections.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskOrigin {
+    /// Explicitly requested by the player (build, goto, furnish, etc.).
+    #[default]
+    PlayerDirected,
+    /// Created automatically by the sim (heartbeat hunger/sleep checks).
+    Autonomous,
+    /// Created by automated management systems (not yet used).
+    Automated,
+}
+
 /// Lifecycle state of a task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
@@ -116,6 +128,9 @@ pub struct Task {
     pub total_cost: f32,
     /// If set, only creatures of this species can claim this task.
     pub required_species: Option<Species>,
+    /// Where this task originated (player command, autonomous decision, etc.).
+    #[serde(default)]
+    pub origin: TaskOrigin,
 }
 
 #[cfg(test)]
@@ -139,6 +154,7 @@ mod tests {
             progress: 0.0,
             total_cost: 5000.0,
             required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -151,6 +167,7 @@ mod tests {
         }
         assert_eq!(restored.total_cost, 5000.0);
         assert_eq!(restored.required_species, Some(Species::Elf));
+        assert_eq!(restored.origin, TaskOrigin::PlayerDirected);
     }
 
     #[test]
@@ -169,6 +186,7 @@ mod tests {
             progress: 0.0,
             total_cost: 0.0,
             required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -181,6 +199,7 @@ mod tests {
         }
         assert_eq!(restored.state, TaskState::InProgress);
         assert_eq!(restored.required_species, Some(Species::Elf));
+        assert_eq!(restored.origin, TaskOrigin::Autonomous);
     }
 
     #[test]
@@ -200,6 +219,7 @@ mod tests {
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
+            origin: TaskOrigin::PlayerDirected,
         };
 
         let mut registry: BTreeMap<TaskId, Task> = BTreeMap::new();

@@ -811,6 +811,7 @@ impl SimState {
             progress: 0.0,
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
+            origin: task::TaskOrigin::PlayerDirected,
         };
         self.tasks.insert(task_id, build_task);
 
@@ -924,6 +925,7 @@ impl SimState {
             progress: 0.0,
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
+            origin: task::TaskOrigin::PlayerDirected,
         };
         self.tasks.insert(task_id, build_task);
 
@@ -1057,6 +1059,7 @@ impl SimState {
             progress: 0.0,
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
+            origin: task::TaskOrigin::PlayerDirected,
         };
         self.tasks.insert(task_id, build_task);
 
@@ -1160,6 +1163,7 @@ impl SimState {
             progress: 0.0,
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
+            origin: task::TaskOrigin::PlayerDirected,
         };
         self.tasks.insert(task_id, build_task);
 
@@ -1294,6 +1298,7 @@ impl SimState {
             progress: 0.0,
             total_cost: 0.0,
             required_species,
+            origin: task::TaskOrigin::PlayerDirected,
         };
         self.tasks.insert(task_id, new_task);
     }
@@ -1361,6 +1366,7 @@ impl SimState {
                         progress: 0.0,
                         total_cost: 0.0,
                         required_species: None,
+                        origin: task::TaskOrigin::Autonomous,
                     };
                     self.tasks.insert(task_id, new_task);
                     if let Some(creature) = self.creatures.get_mut(&creature_id) {
@@ -1395,6 +1401,7 @@ impl SimState {
                         progress: 0.0,
                         total_cost: sleep_ticks as f32,
                         required_species: None,
+                        origin: task::TaskOrigin::Autonomous,
                     };
                     self.tasks.insert(task_id, new_task);
                     if let Some(creature) = self.creatures.get_mut(&creature_id) {
@@ -2596,6 +2603,7 @@ impl SimState {
             progress: 0.0,
             total_cost,
             required_species: Some(Species::Elf),
+            origin: task::TaskOrigin::PlayerDirected,
         };
         self.tasks.insert(task_id, new_task);
     }
@@ -2996,7 +3004,7 @@ impl SimState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{Task, TaskKind, TaskState};
+    use crate::task::{Task, TaskKind, TaskOrigin, TaskState};
 
     /// Test config with a small 64^3 world and reduced tree energy.
     /// Matches the approach used by nav::tests and tree_gen::tests.
@@ -3558,6 +3566,7 @@ mod tests {
             progress: 0.0,
             total_cost: 0.0,
             required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
         };
         sim.tasks.insert(task_id, task);
         task_id
@@ -4561,6 +4570,7 @@ mod tests {
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
+            origin: TaskOrigin::PlayerDirected,
         };
         sim.tasks.insert(task_id, goto_task);
         sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
@@ -6861,6 +6871,7 @@ mod tests {
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
+            origin: TaskOrigin::Autonomous,
         };
         sim.tasks.insert(task_id, eat_task);
         sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
@@ -7001,6 +7012,7 @@ mod tests {
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
+            origin: TaskOrigin::PlayerDirected,
         };
         sim.tasks.insert(task_id, goto_task);
         sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
@@ -7448,6 +7460,7 @@ mod tests {
                 progress: 0.0,
                 total_cost: 0.0,
                 required_species: None,
+                origin: TaskOrigin::PlayerDirected,
             },
         );
         sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);

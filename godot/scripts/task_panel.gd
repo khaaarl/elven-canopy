@@ -1,13 +1,23 @@
 ## Full-screen task list overlay showing all active simulation tasks.
 ##
-## Displays a scrollable list of task cards, each showing the task kind, state,
-## progress (for Build tasks), location "Zoom to Site" button, and per-assignee
-## zoom buttons. The panel does NOT pause the sim (unlike pause_menu.gd).
+## Tasks are grouped into three sections by origin:
+## - **Player Directives** — tasks the player explicitly created (build, goto,
+##   furnish). Origin string: "PlayerDirected".
+## - **Automated Management** — tasks created by management systems (not yet
+##   used). Origin string: "Automated".
+## - **Autonomous Decisions** — tasks creatures create on their own (eat, sleep).
+##   Origin string: "Autonomous".
+##
+## Each card shows the task kind, state, progress (for Build/Furnish tasks),
+## a "Zoom to Site" button, and per-assignee zoom buttons showing creature
+## names (Vaelith names for elves, species + short ID for unnamed creatures).
 ##
 ## Data flow: main.gd calls update_tasks(data) each frame while the panel is
 ## visible, passing the result of bridge.get_active_tasks(). The panel uses a
 ## reconciliation pattern — it maintains a dictionary mapping task id_full to
 ## card nodes, creating/updating/removing cards as tasks appear and disappear.
+## Cards are routed to the correct section VBoxContainer based on the task's
+## origin field from sim_bridge.rs.
 ##
 ## Signals:
 ## - zoom_to_creature(species, index) — zoom camera to an assigned creature
@@ -30,8 +40,17 @@ signal panel_closed
 
 ## Maps task id_full (String) -> PanelContainer card node.
 var _task_rows: Dictionary = {}
-var _task_list: VBoxContainer
+## The three section containers, keyed by origin string.
+var _section_player: VBoxContainer
+var _section_automated: VBoxContainer
+var _section_autonomous: VBoxContainer
+## Per-section "(none)" labels.
+var _label_player_empty: Label
+var _label_automated_empty: Label
+var _label_autonomous_empty: Label
+## Top-level empty label and sections container.
 var _empty_label: Label
+var _sections_vbox: VBoxContainer
 
 
 func _ready() -> void:
@@ -70,25 +89,67 @@ func _ready() -> void:
 	var sep := HSeparator.new()
 	outer_vbox.add_child(sep)
 
-	# Empty-state label (shown when no tasks exist).
+	# Empty-state label (shown when no tasks exist at all).
 	_empty_label = Label.new()
 	_empty_label.text = "No active tasks."
 	_empty_label.add_theme_font_size_override("font_size", 18)
 	_empty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	outer_vbox.add_child(_empty_label)
 
-	# Scrollable task list.
+	# Scrollable task list with grouped sections.
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	outer_vbox.add_child(scroll)
 
-	_task_list = VBoxContainer.new()
-	_task_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_task_list.add_theme_constant_override("separation", 8)
-	scroll.add_child(_task_list)
+	_sections_vbox = VBoxContainer.new()
+	_sections_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sections_vbox.add_theme_constant_override("separation", 8)
+	scroll.add_child(_sections_vbox)
+
+	# Player Directives section.
+	_section_player = _create_section("Player Directives")
+	_label_player_empty = _section_player.get_meta("empty_label")
+
+	# Separator.
+	_sections_vbox.add_child(HSeparator.new())
+
+	# Automated Management section.
+	_section_automated = _create_section("Automated Management")
+	_label_automated_empty = _section_automated.get_meta("empty_label")
+
+	# Separator.
+	_sections_vbox.add_child(HSeparator.new())
+
+	# Autonomous Decisions section.
+	_section_autonomous = _create_section("Autonomous Decisions")
+	_label_autonomous_empty = _section_autonomous.get_meta("empty_label")
 
 	# Start hidden.
 	visible = false
+
+
+## Create a section with a header label, card container, and empty label.
+## Returns the card VBoxContainer (stores the empty label in meta).
+func _create_section(header_text: String) -> VBoxContainer:
+	var header := Label.new()
+	header.text = header_text
+	header.add_theme_font_size_override("font_size", 20)
+	header.add_theme_color_override("font_color", Color(0.85, 0.80, 0.65))
+	_sections_vbox.add_child(header)
+
+	var container := VBoxContainer.new()
+	container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_theme_constant_override("separation", 8)
+	_sections_vbox.add_child(container)
+
+	var empty_label := Label.new()
+	empty_label.text = "(none)"
+	empty_label.add_theme_font_size_override("font_size", 14)
+	empty_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.5))
+	_sections_vbox.add_child(empty_label)
+
+	container.set_meta("empty_label", empty_label)
+	return container
 
 
 func show_panel() -> void:
@@ -117,6 +178,15 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 
 
+## Return the section VBoxContainer for a given origin string.
+func _section_for_origin(origin: String) -> VBoxContainer:
+	if origin == "Automated":
+		return _section_automated
+	if origin == "Autonomous":
+		return _section_autonomous
+	return _section_player
+
+
 ## Called each frame by main.gd with the result of bridge.get_active_tasks().
 ## Uses reconciliation: creates new cards, updates existing ones, removes stale.
 func update_tasks(data: Array) -> void:
@@ -125,13 +195,21 @@ func update_tasks(data: Array) -> void:
 	for i in data.size():
 		var task: Dictionary = data[i]
 		var id_full: String = task.get("id_full", "")
+		var origin: String = task.get("origin", "PlayerDirected")
 		seen_ids[id_full] = true
 
 		if _task_rows.has(id_full):
-			_update_card(_task_rows[id_full], task)
+			var card: PanelContainer = _task_rows[id_full]
+			# If the card moved sections (shouldn't normally happen), reparent.
+			var target_section := _section_for_origin(origin)
+			if card.get_parent() != target_section:
+				card.get_parent().remove_child(card)
+				target_section.add_child(card)
+			_update_card(card, task)
 		else:
 			var card := _create_card(task)
-			_task_list.add_child(card)
+			var section := _section_for_origin(origin)
+			section.add_child(card)
 			_task_rows[id_full] = card
 
 	# Remove cards for tasks no longer in data.
@@ -141,12 +219,18 @@ func update_tasks(data: Array) -> void:
 			to_remove.append(id_full)
 	for id_full in to_remove:
 		var card: PanelContainer = _task_rows[id_full]
-		_task_list.remove_child(card)
+		card.get_parent().remove_child(card)
 		card.queue_free()
 		_task_rows.erase(id_full)
 
-	# Show/hide empty label.
-	_empty_label.visible = _task_rows.is_empty()
+	# Show/hide per-section empty labels and top-level empty state.
+	_label_player_empty.visible = _section_player.get_child_count() == 0
+	_label_automated_empty.visible = _section_automated.get_child_count() == 0
+	_label_autonomous_empty.visible = _section_autonomous.get_child_count() == 0
+
+	var all_empty := _task_rows.is_empty()
+	_empty_label.visible = all_empty
+	_sections_vbox.visible = not all_empty
 
 
 func _create_card(task: Dictionary) -> PanelContainer:
@@ -242,18 +326,24 @@ func _update_card(card: PanelContainer, task: Dictionary) -> void:
 				var sp: String = a.get("species", "?")
 				var idx: int = a.get("index", 0)
 				var id_short: String = a.get("id_short", "?")
+				var creature_name: String = a.get("name", "")
 				var btn := Button.new()
-				btn.text = "%s %s" % [sp, id_short]
+				if creature_name != "":
+					btn.text = creature_name
+				else:
+					btn.text = "%s %s" % [sp, id_short]
 				btn.pressed.connect(func(): zoom_to_creature.emit(sp, idx))
 				assignee_row.add_child(btn)
 
 
 ## Build a short string fingerprint of the assignee list for change detection.
+## Includes name so buttons rebuild when a creature gets named.
 func _assignee_fingerprint(assignees: Array) -> String:
 	if assignees.is_empty():
 		return ""
 	var parts: PackedStringArray = PackedStringArray()
 	for i in assignees.size():
 		var a: Dictionary = assignees[i]
-		parts.append(a.get("id_short", ""))
+		var creature_name: String = a.get("name", "")
+		parts.append("%s:%s" % [a.get("id_short", ""), creature_name])
 	return ",".join(parts)
