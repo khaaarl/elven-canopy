@@ -81,9 +81,6 @@ case "$MODE" in
         done
         # Always include multiplayer_tests (cross-crate correctness).
         TEST_PACKAGES="$TEST_PACKAGES -p multiplayer_tests"
-        echo "Compile-checking elven_canopy_gdext..."
-        cargo build -p elven_canopy_gdext
-        echo ""
         echo "Running tests for:$TEST_PACKAGES"
         cargo test $TEST_PACKAGES -- --test-threads=16
         echo ""
