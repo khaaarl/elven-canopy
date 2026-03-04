@@ -157,6 +157,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-crate-structure      Two-crate sim/gdext structure
 [x] F-creature-info        Creature info panel with follow button
 [x] F-debug-menu           Move spawn/summon into debug menu
+[x] F-elf-acquire          Elf personal item acquisition
 [x] F-elf-names            Elf name generation from conlang rules
 [x] F-elf-needs            Hunger and rest self-direction
 [x] F-elf-sprite           Billboard elf sprite rendering
@@ -817,6 +818,18 @@ Jobs beyond construction: woodworking, weaving, cooking, enchanting.
 Crafting system for tools, furniture, and magical items.
 
 **Blocks:** F-elf-weapons
+
+#### F-elf-acquire — Elf personal item acquisition
+**Status:** Done · **Phase:** 4
+
+Idle elves check a personal `wants` list (same `LogisticsWant` type used by
+buildings) during heartbeat Phase 2c. When owned inventory is below the target,
+the elf creates an `AcquireItem` task to pick up unowned items from any ground
+pile or building — ignoring logistics priority. Items are reserved at creation
+to prevent double-claiming. On arrival, items transfer to the creature's
+inventory with ownership. Default want: `[Bread: 2]`.
+
+**Related:** F-bldg-kitchen, F-bread, F-hauling, F-logistics
 
 #### F-food-chain — Food production/distribution pipeline
 **Status:** Todo · **Phase:** 3

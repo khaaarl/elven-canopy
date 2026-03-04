@@ -720,6 +720,7 @@ impl SimBridge {
                             elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
                             elven_canopy_sim::task::TaskKind::Cook { .. } => "Cook",
                             elven_canopy_sim::task::TaskKind::Harvest { .. } => "Harvest",
+                            elven_canopy_sim::task::TaskKind::AcquireItem { .. } => "AcquireItem",
                         })
                     })
                     .unwrap_or("");
@@ -813,6 +814,7 @@ impl SimBridge {
                             elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
                             elven_canopy_sim::task::TaskKind::Cook { .. } => "Cook",
                             elven_canopy_sim::task::TaskKind::Harvest { .. } => "Harvest",
+                            elven_canopy_sim::task::TaskKind::AcquireItem { .. } => "AcquireItem",
                         })
                     })
                     .unwrap_or("");
@@ -899,6 +901,7 @@ impl SimBridge {
                 elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
                 elven_canopy_sim::task::TaskKind::Cook { .. } => "Cook",
                 elven_canopy_sim::task::TaskKind::Harvest { .. } => "Harvest",
+                elven_canopy_sim::task::TaskKind::AcquireItem { .. } => "AcquireItem",
             };
             dict.set("kind", GString::from(kind_str));
 

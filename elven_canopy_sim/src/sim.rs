@@ -41,20 +41,20 @@
 //
 // `CreatureHeartbeat` still exists but is decoupled from movement; it handles
 // periodic non-movement checks (mood, mana, food decay, rest decay,
-// hunger-driven task creation, sleep-driven task creation, etc.). After
-// decaying food and rest, the heartbeat checks needs in priority order:
-// hunger first (food < threshold), then tiredness (rest < threshold). If
-// the creature is hungry and idle, it first checks for owned bread in the
-// creature's inventory — if found, it creates an instant `EatBread` task at
-// the creature's current node (no travel needed). Otherwise, it calls
-// `find_nearest_fruit()` which uses Dijkstra's algorithm over the nav graph
-// (respecting species edge restrictions and speeds) to find the closest
-// reachable fruit, then creates an `EatFruit` task directly assigned to the
-// creature (bypassing the Available→claim flow). If the creature is tired and idle (but not hungry),
-// it calls `find_nearest_bed()` to find an unoccupied dormitory bed; if no
-// beds are available, it falls back to sleeping on the ground at its current
-// position. Sleep tasks are multi-activation: each activation restores rest
-// and the task completes when progress reaches `total_cost` or rest is full.
+// hunger-driven task creation, sleep-driven task creation, personal item
+// acquisition, etc.). After decaying food and rest, the heartbeat checks
+// needs in priority order:
+//
+// - **Phase 2a (hunger):** If hungry and idle, eat bread from inventory
+//   (instant EatBread task) or fall back to seeking fruit (EatFruit task via
+//   Dijkstra nearest-fruit search).
+// - **Phase 2b (tiredness):** If tired and idle (not hungry), find a bed
+//   (assigned home → dormitory → ground fallback) and create a Sleep task.
+// - **Phase 2c (acquisition):** If still idle after hunger/sleep checks,
+//   iterate the creature's `wants` list. For each want where owned items are
+//   below the target, call `find_item_source()` to locate unowned items in
+//   ground piles or building inventories, reserve them, and create an
+//   `AcquireItem` task. One task per heartbeat (first unsatisfied want wins).
 //
 // The activation loop (`process_creature_activation`) runs this logic:
 //
@@ -76,7 +76,7 @@
 //
 // A `Task` has:
 // - `kind: TaskKind` — determines behavior (`GoTo`, `Build`, `EatBread`,
-//   `EatFruit`, `Sleep`, `Furnish`, `Haul`, `Cook`, `Harvest`).
+//   `EatFruit`, `Sleep`, `Furnish`, `Haul`, `Cook`, `Harvest`, `AcquireItem`).
 // - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
 // - `location: NavNodeId` — where creatures go to work on the task.
 // - `assignees: Vec<CreatureId>` — supports multiple workers.
@@ -485,6 +485,12 @@ pub struct Creature {
     /// Items carried by this creature.
     #[serde(default)]
     pub inventory: Vec<crate::inventory::Item>,
+
+    /// Personal item desires. Same `LogisticsWant` type used by buildings.
+    /// Idle elves check these during heartbeat and create `AcquireItem` tasks
+    /// to pick up unowned items from any haulable source.
+    #[serde(default)]
+    pub wants: Vec<building::LogisticsWant>,
 
     // --- Movement interpolation metadata (rendering only) ---
     // These fields record the visual start/end of each movement for smooth
@@ -1691,6 +1697,16 @@ impl SimState {
                         creature.current_task = Some(task_id);
                     }
                 }
+
+                // Phase 2c: if idle (no task from hunger or sleep), check
+                // personal wants and acquire items from unowned sources.
+                let still_idle = self
+                    .creatures
+                    .get(&creature_id)
+                    .is_some_and(|c| c.current_task.is_none());
+                if still_idle {
+                    self.check_creature_wants(creature_id);
+                }
             }
             ScheduledEventKind::CreatureActivation { creature_id } => {
                 self.process_creature_activation(creature_id);
@@ -1760,6 +1776,12 @@ impl SimState {
             (String::new(), String::new())
         };
 
+        let wants = if species == Species::Elf {
+            self.config.elf_default_wants.clone()
+        } else {
+            Vec::new()
+        };
+
         let creature = Creature {
             id: creature_id,
             species,
@@ -1774,6 +1796,7 @@ impl SimState {
             assigned_home: None,
             thoughts: Vec::new(),
             inventory: Vec::new(),
+            wants,
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -2010,10 +2033,11 @@ impl SimState {
             .unwrap_or(Species::Elf);
         let graph = self.graph_for_species(species);
         if !graph.is_node_alive(current_node) || !graph.is_node_alive(task_location) {
-            // Clean up haul/cook/harvest task state before abandoning.
+            // Clean up haul/cook/harvest/acquire task state before abandoning.
             self.cleanup_haul_task(creature_id, task_id);
             self.cleanup_cook_task(task_id);
             self.cleanup_harvest_task(task_id);
+            self.cleanup_acquire_item_task(task_id);
             if let Some(c) = self.creatures.get_mut(&creature_id) {
                 c.current_task = None;
                 c.path = None;
@@ -2082,6 +2106,9 @@ impl SimState {
             }
             task::TaskKind::Harvest { fruit_pos } => {
                 self.do_harvest(creature_id, task_id, fruit_pos);
+            }
+            task::TaskKind::AcquireItem { .. } => {
+                self.do_acquire_item(creature_id, task_id);
             }
         }
 
@@ -2214,6 +2241,98 @@ impl SimState {
         }
 
         self.complete_task(task_id);
+    }
+
+    /// Pick up reserved unowned items from a source and add them to the
+    /// creature's personal inventory with ownership. Cleans up empty ground
+    /// piles. Instant task (total_cost = 0).
+    fn do_acquire_item(&mut self, creature_id: CreatureId, task_id: TaskId) {
+        let task = match self.tasks.get(&task_id) {
+            Some(t) => t.kind.clone(),
+            None => return,
+        };
+        let task::TaskKind::AcquireItem {
+            ref source,
+            item_kind,
+            quantity,
+        } = task
+        else {
+            return;
+        };
+
+        // Remove reserved items from source.
+        let picked_up = match source {
+            task::HaulSource::GroundPile(pos) => {
+                if let Some(pile) = self.ground_piles.get_mut(pos) {
+                    inventory::remove_reserved_items(&mut pile.items, item_kind, quantity, task_id)
+                } else {
+                    0
+                }
+            }
+            task::HaulSource::Building(sid) => {
+                if let Some(structure) = self.structures.get_mut(sid) {
+                    inventory::remove_reserved_items(
+                        &mut structure.inventory,
+                        item_kind,
+                        quantity,
+                        task_id,
+                    )
+                } else {
+                    0
+                }
+            }
+        };
+
+        // Clean up empty ground piles.
+        if let task::HaulSource::GroundPile(pos) = source
+            && let Some(pile) = self.ground_piles.get(pos)
+            && pile.items.is_empty()
+        {
+            let pos = *pos;
+            self.ground_piles.remove(&pos);
+        }
+
+        // Add to creature inventory with ownership.
+        if picked_up > 0
+            && let Some(creature) = self.creatures.get_mut(&creature_id)
+        {
+            inventory::add_item(
+                &mut creature.inventory,
+                item_kind,
+                picked_up,
+                Some(creature_id),
+                None,
+            );
+        }
+
+        self.complete_task(task_id);
+    }
+
+    /// Clean up an AcquireItem task on abandonment: clear reservations at
+    /// the source. No items are in transit (pickup only happens on arrival).
+    fn cleanup_acquire_item_task(&mut self, task_id: TaskId) {
+        let source = match self.tasks.get(&task_id) {
+            Some(t) => match &t.kind {
+                task::TaskKind::AcquireItem { source, .. } => source.clone(),
+                _ => return,
+            },
+            None => return,
+        };
+        match &source {
+            task::HaulSource::GroundPile(pos) => {
+                if let Some(pile) = self.ground_piles.get_mut(pos) {
+                    inventory::clear_reservations(&mut pile.items, task_id);
+                }
+            }
+            task::HaulSource::Building(sid) => {
+                if let Some(structure) = self.structures.get_mut(sid) {
+                    inventory::clear_reservations(&mut structure.inventory, task_id);
+                }
+            }
+        }
+        if let Some(t) = self.tasks.get_mut(&task_id) {
+            t.state = task::TaskState::Complete;
+        }
     }
 
     /// Eat bread from inventory: remove 1 owned bread, restore food by
@@ -3078,6 +3197,133 @@ impl SimState {
                     );
                 }
             }
+        }
+    }
+
+    /// Find a source of unowned, unreserved items for personal acquisition.
+    ///
+    /// Searches ground piles first (deterministic BTreeMap order), then any
+    /// building inventory (ignoring logistics priority — personal acquisition
+    /// pulls from anywhere). Returns the source, capped quantity, and nav node.
+    fn find_item_source(
+        &self,
+        kind: inventory::ItemKind,
+        needed: u32,
+    ) -> Option<(task::HaulSource, u32, NavNodeId)> {
+        // Check ground piles.
+        for (pos, pile) in &self.ground_piles {
+            let available = inventory::count_unowned_unreserved(&pile.items, kind);
+            if available > 0
+                && let Some(nav_node) = self.nav_graph.find_nearest_node(*pos)
+            {
+                return Some((
+                    task::HaulSource::GroundPile(*pos),
+                    available.min(needed),
+                    nav_node,
+                ));
+            }
+        }
+
+        // Check building inventories.
+        for (&sid, structure) in &self.structures {
+            let available = inventory::count_unowned_unreserved(&structure.inventory, kind);
+            if available > 0
+                && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
+            {
+                return Some((
+                    task::HaulSource::Building(sid),
+                    available.min(needed),
+                    nav_node,
+                ));
+            }
+        }
+
+        None
+    }
+
+    /// Check a creature's personal wants and create an AcquireItem task for
+    /// the first unsatisfied want. Called during heartbeat Phase 2c when the
+    /// creature is idle.
+    fn check_creature_wants(&mut self, creature_id: CreatureId) {
+        // Gather want info from creature (borrow creature briefly, then release).
+        let owned_counts = {
+            let creature = match self.creatures.get(&creature_id) {
+                Some(c) => c,
+                None => return,
+            };
+            if creature.wants.is_empty() {
+                return;
+            }
+            creature
+                .wants
+                .iter()
+                .map(|w| {
+                    let owned =
+                        inventory::count_owned(&creature.inventory, w.item_kind, creature_id);
+                    (w.item_kind, w.target_quantity, owned)
+                })
+                .collect::<Vec<(inventory::ItemKind, u32, u32)>>()
+        };
+
+        // Find first unsatisfied want.
+        for (item_kind, target, owned) in &owned_counts {
+            if *owned >= *target {
+                continue;
+            }
+            let needed = *target - *owned;
+
+            // Find a source.
+            let (source, quantity, nav_node) = match self.find_item_source(*item_kind, needed) {
+                Some(s) => s,
+                None => continue, // No source for this kind; try next want.
+            };
+
+            // Reserve items at source.
+            let task_id = TaskId::new(&mut self.rng);
+            match &source {
+                task::HaulSource::GroundPile(pos) => {
+                    if let Some(pile) = self.ground_piles.get_mut(pos) {
+                        inventory::reserve_unowned_items(
+                            &mut pile.items,
+                            *item_kind,
+                            quantity,
+                            task_id,
+                        );
+                    }
+                }
+                task::HaulSource::Building(sid) => {
+                    if let Some(structure) = self.structures.get_mut(sid) {
+                        inventory::reserve_unowned_items(
+                            &mut structure.inventory,
+                            *item_kind,
+                            quantity,
+                            task_id,
+                        );
+                    }
+                }
+            }
+
+            // Create AcquireItem task, directly assigned (same pattern as EatBread).
+            let new_task = task::Task {
+                id: task_id,
+                kind: task::TaskKind::AcquireItem {
+                    source,
+                    item_kind: *item_kind,
+                    quantity,
+                },
+                state: task::TaskState::InProgress,
+                location: nav_node,
+                assignees: vec![creature_id],
+                progress: 0.0,
+                total_cost: 0.0,
+                required_species: None,
+                origin: task::TaskOrigin::Autonomous,
+            };
+            self.tasks.insert(task_id, new_task);
+            if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                creature.current_task = Some(task_id);
+            }
+            return; // One task per heartbeat.
         }
     }
 
@@ -6142,6 +6388,7 @@ mod tests {
             assigned_home: None,
             thoughts: Vec::new(),
             inventory: Vec::new(),
+            wants: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -6169,6 +6416,7 @@ mod tests {
             assigned_home: None,
             thoughts: Vec::new(),
             inventory: Vec::new(),
+            wants: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -6194,6 +6442,7 @@ mod tests {
             assigned_home: None,
             thoughts: Vec::new(),
             inventory: Vec::new(),
+            wants: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -6219,6 +6468,7 @@ mod tests {
             assigned_home: None,
             thoughts: Vec::new(),
             inventory: Vec::new(),
+            wants: Vec::new(),
             move_from: Some(VoxelCoord::new(0, 0, 0)),
             move_to: Some(VoxelCoord::new(10, 0, 0)),
             move_start_tick: 100,
@@ -6247,6 +6497,7 @@ mod tests {
             assigned_home: None,
             thoughts: Vec::new(),
             inventory: Vec::new(),
+            wants: Vec::new(),
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -11031,6 +11282,7 @@ mod tests {
             assigned_home: None,
             thoughts: Vec::new(),
             inventory: Vec::new(),
+            wants: Vec::new(),
             move_from: None,
             move_to: None,
             move_start_tick: 0,
@@ -12313,6 +12565,7 @@ mod tests {
     fn kitchen_cooks_fruit_into_bread_end_to_end() {
         let mut sim = test_sim(42);
         sim.config.elf_starting_bread = 20; // Prevent hunger interference.
+        sim.config.elf_default_wants = Vec::new(); // Disable personal acquisition.
         // Disable hunger and tiredness so the elf doesn't get distracted.
         if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
             elf_data.food_decay_per_tick = 0;
@@ -12337,8 +12590,7 @@ mod tests {
         let site1 = VoxelCoord::new(tree_pos.x + 3, 0, tree_pos.z);
         let site2 = VoxelCoord::new(tree_pos.x + 7, 0, tree_pos.z);
 
-        // Insert storehouse — only wants bread (no fruit want, so the elf
-        // isn't distracted hauling fruit to storehouse instead of kitchen).
+        // Insert storehouse — only wants bread (small target to keep test focused).
         let sid_store = insert_completed_building(&mut sim, site1);
         {
             let s = sim.structures.get_mut(&sid_store).unwrap();
@@ -12346,11 +12598,11 @@ mod tests {
             s.logistics_priority = Some(sim.config.storehouse_default_priority);
             s.logistics_wants = vec![building::LogisticsWant {
                 item_kind: inventory::ItemKind::Bread,
-                target_quantity: sim.config.storehouse_default_bread_want,
+                target_quantity: 10,
             }];
         }
 
-        // Insert kitchen with default logistics + cooking.
+        // Insert kitchen with reduced wants to keep test fast and focused.
         let sid_kitchen = insert_completed_building(&mut sim, site2);
         {
             let s = sim.structures.get_mut(&sid_kitchen).unwrap();
@@ -12358,10 +12610,10 @@ mod tests {
             s.logistics_priority = Some(sim.config.kitchen_default_priority);
             s.logistics_wants = vec![building::LogisticsWant {
                 item_kind: inventory::ItemKind::Fruit,
-                target_quantity: sim.config.kitchen_default_fruit_want,
+                target_quantity: 1,
             }];
             s.cooking_enabled = true;
-            s.cooking_bread_target = 50;
+            s.cooking_bread_target = 1;
         }
 
         // Spawn 1 elf near the tree.
@@ -12380,6 +12632,74 @@ mod tests {
         assert!(
             store_bread >= 10,
             "Storehouse should have at least 10 bread from cooking, got {store_bread}"
+        );
+    }
+
+    #[test]
+    fn elf_acquires_bread_from_kitchen_pipeline() {
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 0;
+        sim.config.elf_default_wants = vec![building::LogisticsWant {
+            item_kind: inventory::ItemKind::Bread,
+            target_quantity: 2,
+        }];
+        // Disable hunger/tiredness.
+        if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+            elf_data.food_decay_per_tick = 0;
+            elf_data.rest_decay_per_tick = 0;
+        }
+        sim.species_table = sim
+            .config
+            .species
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+
+        let tree = &sim.trees[&sim.player_tree_id];
+        assert!(
+            !tree.fruit_positions.is_empty(),
+            "Tree should have fruit voxels"
+        );
+
+        // Insert kitchen (fruit_want=1, bread_target=1). No storehouse.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let site = VoxelCoord::new(tree_pos.x + 3, 0, tree_pos.z);
+        let sid_kitchen = insert_completed_building(&mut sim, site);
+        {
+            let s = sim.structures.get_mut(&sid_kitchen).unwrap();
+            s.furnishing = Some(FurnishingType::Kitchen);
+            s.logistics_priority = Some(sim.config.kitchen_default_priority);
+            s.logistics_wants = vec![building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                target_quantity: 1,
+            }];
+            s.cooking_enabled = true;
+            s.cooking_bread_target = 1;
+        }
+
+        // Spawn 1 elf.
+        let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+        let mut events = Vec::new();
+        sim.spawn_creature(Species::Elf, spawn_pos, &mut events);
+        let elf_id = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf)
+            .unwrap()
+            .id;
+
+        // Pipeline: harvest fruit → haul to kitchen → cook bread → elf acquires bread.
+        sim.step(&[], sim.tick + 500_000);
+
+        // Elf should have acquired bread.
+        let elf_bread = inventory::count_owned(
+            &sim.creatures[&elf_id].inventory,
+            inventory::ItemKind::Bread,
+            elf_id,
+        );
+        assert!(
+            elf_bread > 0,
+            "Elf should have acquired bread from kitchen pipeline, got {elf_bread}"
         );
     }
 
@@ -12670,5 +12990,312 @@ mod tests {
                 sim.world.get(below)
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // AcquireItem tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn acquire_item_picks_up_and_owns() {
+        let mut sim = test_sim(42);
+
+        // Create a ground pile with unowned bread.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+        let pile = inventory::GroundPile {
+            position: pile_pos,
+            items: Vec::new(),
+        };
+        sim.ground_piles.insert(pile_pos, pile);
+        inventory::add_item(
+            &mut sim.ground_piles.get_mut(&pile_pos).unwrap().items,
+            inventory::ItemKind::Bread,
+            3,
+            None,
+            None,
+        );
+
+        // Spawn elf, position at pile.
+        let elf_id = spawn_elf(&mut sim);
+        let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+        sim.creatures.get_mut(&elf_id).unwrap().current_node = Some(pile_nav);
+        sim.creatures.get_mut(&elf_id).unwrap().position = sim.nav_graph.node(pile_nav).position;
+
+        // Create AcquireItem task with reservations.
+        let task_id = TaskId::new(&mut sim.rng);
+        let source = task::HaulSource::GroundPile(pile_pos);
+        inventory::reserve_unowned_items(
+            &mut sim.ground_piles.get_mut(&pile_pos).unwrap().items,
+            inventory::ItemKind::Bread,
+            2,
+            task_id,
+        );
+        let acquire_task = Task {
+            id: task_id,
+            kind: TaskKind::AcquireItem {
+                source,
+                item_kind: inventory::ItemKind::Bread,
+                quantity: 2,
+            },
+            state: TaskState::InProgress,
+            location: pile_nav,
+            assignees: vec![elf_id],
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+        };
+        sim.tasks.insert(task_id, acquire_task);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+
+        // Execute.
+        sim.do_acquire_item(elf_id, task_id);
+
+        // Assert: bread removed from ground pile (1 unreserved remains).
+        let pile = &sim.ground_piles[&pile_pos];
+        assert_eq!(
+            inventory::item_count(&pile.items, inventory::ItemKind::Bread),
+            1,
+            "Ground pile should have 1 bread left"
+        );
+
+        // Assert: elf now has 2 bread owned by the elf (plus starting bread).
+        let elf = &sim.creatures[&elf_id];
+        let owned_bread =
+            inventory::count_owned(&elf.inventory, inventory::ItemKind::Bread, elf_id);
+        // Elf gets starting bread (default 2) + acquired 2 = 4.
+        assert_eq!(
+            owned_bread, 4,
+            "Elf should own 4 bread (2 starting + 2 acquired)"
+        );
+
+        // Assert: task completed.
+        assert_eq!(sim.tasks[&task_id].state, TaskState::Complete);
+    }
+
+    #[test]
+    fn idle_elf_below_want_target_acquires_item() {
+        let mut sim = test_sim(42);
+        // Disable hunger/tiredness so elf stays idle.
+        sim.config.elf_starting_bread = 0;
+        if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+            elf_data.food_decay_per_tick = 0;
+            elf_data.rest_decay_per_tick = 0;
+        }
+        sim.species_table = sim
+            .config
+            .species
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+
+        // Set elf wants = [Bread: 2].
+        sim.config.elf_default_wants = vec![building::LogisticsWant {
+            item_kind: inventory::ItemKind::Bread,
+            target_quantity: 2,
+        }];
+
+        // Spawn elf (will have 0 bread, wants 2).
+        let elf_id = spawn_elf(&mut sim);
+
+        // Verify elf has 0 bread and wants set.
+        assert_eq!(
+            inventory::count_owned(
+                &sim.creatures[&elf_id].inventory,
+                inventory::ItemKind::Bread,
+                elf_id,
+            ),
+            0
+        );
+        assert_eq!(sim.creatures[&elf_id].wants.len(), 1);
+
+        // Create unowned bread in a ground pile near the elf.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+        sim.ground_piles.insert(
+            pile_pos,
+            inventory::GroundPile {
+                position: pile_pos,
+                items: Vec::new(),
+            },
+        );
+        inventory::add_item(
+            &mut sim.ground_piles.get_mut(&pile_pos).unwrap().items,
+            inventory::ItemKind::Bread,
+            5,
+            None,
+            None,
+        );
+
+        // Advance past a heartbeat (heartbeat interval is 3000 for elves).
+        sim.step(&[], sim.tick + 5000);
+
+        // Assert: elf should have an AcquireItem task created.
+        let has_acquire_task = sim.tasks.values().any(|t| {
+            matches!(
+                t.kind,
+                TaskKind::AcquireItem {
+                    item_kind: inventory::ItemKind::Bread,
+                    ..
+                }
+            ) && t.assignees.contains(&elf_id)
+        });
+        // Either has an active task, or already completed one and picked up bread.
+        let elf_bread = inventory::count_owned(
+            &sim.creatures[&elf_id].inventory,
+            inventory::ItemKind::Bread,
+            elf_id,
+        );
+        assert!(
+            has_acquire_task || elf_bread > 0,
+            "Elf should have created an AcquireItem task or already acquired bread, \
+             has_task={has_acquire_task}, bread={elf_bread}"
+        );
+    }
+
+    #[test]
+    fn acquire_item_reserves_prevent_double_claim() {
+        let mut sim = test_sim(42);
+        // Disable hunger/tiredness.
+        sim.config.elf_starting_bread = 0;
+        if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+            elf_data.food_decay_per_tick = 0;
+            elf_data.rest_decay_per_tick = 0;
+        }
+        sim.species_table = sim
+            .config
+            .species
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+
+        sim.config.elf_default_wants = vec![building::LogisticsWant {
+            item_kind: inventory::ItemKind::Bread,
+            target_quantity: 2,
+        }];
+
+        // Create exactly 2 unowned bread.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+        sim.ground_piles.insert(
+            pile_pos,
+            inventory::GroundPile {
+                position: pile_pos,
+                items: Vec::new(),
+            },
+        );
+        inventory::add_item(
+            &mut sim.ground_piles.get_mut(&pile_pos).unwrap().items,
+            inventory::ItemKind::Bread,
+            2,
+            None,
+            None,
+        );
+
+        // Spawn 2 elves (each wants 2 bread, only 2 available total).
+        let elf1 = spawn_elf(&mut sim);
+        let spawn_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: spawn_pos,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+        let elf2 = sim
+            .creatures
+            .values()
+            .find(|c| c.species == Species::Elf && c.id != elf1)
+            .unwrap()
+            .id;
+
+        // Run enough ticks for both heartbeats to fire and tasks to complete.
+        sim.step(&[], sim.tick + 50_000);
+
+        // Count total bread across both elves. Should be exactly 2 (no duplication).
+        let elf1_bread = inventory::count_owned(
+            &sim.creatures[&elf1].inventory,
+            inventory::ItemKind::Bread,
+            elf1,
+        );
+        let elf2_bread = inventory::count_owned(
+            &sim.creatures[&elf2].inventory,
+            inventory::ItemKind::Bread,
+            elf2,
+        );
+        assert_eq!(
+            elf1_bread + elf2_bread,
+            2,
+            "Total bread across both elves should be exactly 2 (no duplication), \
+             elf1={elf1_bread}, elf2={elf2_bread}"
+        );
+    }
+
+    #[test]
+    fn elf_at_want_target_does_not_acquire() {
+        let mut sim = test_sim(42);
+        // Disable hunger/tiredness.
+        if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+            elf_data.food_decay_per_tick = 0;
+            elf_data.rest_decay_per_tick = 0;
+        }
+        sim.species_table = sim
+            .config
+            .species
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+
+        // Set wants = [Bread: 2], give elf 2 starting bread.
+        sim.config.elf_starting_bread = 2;
+        sim.config.elf_default_wants = vec![building::LogisticsWant {
+            item_kind: inventory::ItemKind::Bread,
+            target_quantity: 2,
+        }];
+
+        let elf_id = spawn_elf(&mut sim);
+
+        // Verify elf has exactly 2 bread.
+        assert_eq!(
+            inventory::count_owned(
+                &sim.creatures[&elf_id].inventory,
+                inventory::ItemKind::Bread,
+                elf_id,
+            ),
+            2
+        );
+
+        // Add unowned bread to world.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+        sim.ground_piles.insert(
+            pile_pos,
+            inventory::GroundPile {
+                position: pile_pos,
+                items: Vec::new(),
+            },
+        );
+        inventory::add_item(
+            &mut sim.ground_piles.get_mut(&pile_pos).unwrap().items,
+            inventory::ItemKind::Bread,
+            10,
+            None,
+            None,
+        );
+
+        // Advance past heartbeat.
+        sim.step(&[], sim.tick + 5000);
+
+        // Assert: no AcquireItem task created (elf already has enough).
+        let has_acquire_task = sim.tasks.values().any(|t| {
+            matches!(t.kind, TaskKind::AcquireItem { .. }) && t.assignees.contains(&elf_id)
+        });
+        assert!(
+            !has_acquire_task,
+            "Elf at want target should NOT create AcquireItem task"
+        );
     }
 }

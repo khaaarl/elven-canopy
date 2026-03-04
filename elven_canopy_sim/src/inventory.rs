@@ -1,9 +1,9 @@
 // Item and inventory data model.
 //
 // Provides `ItemKind`, `Item`, and `GroundPile` types plus helper functions
-// for manipulating inventories (add, remove, count). Inventories are `Vec<Item>`
-// stored on `Creature` (in `sim.rs`), `CompletedStructure` (in `building.rs`),
-// and as `GroundPile`s in `SimState.ground_piles`.
+// for manipulating inventories (add, remove, count, reserve). Inventories are
+// `Vec<Item>` stored on `Creature` (in `sim.rs`), `CompletedStructure` (in
+// `building.rs`), and as `GroundPile`s in `SimState.ground_piles`.
 //
 // Items stack: adding bread to an inventory that already has bread increases
 // the existing stack's quantity rather than creating a duplicate entry.
@@ -231,6 +231,53 @@ pub fn remove_reserved_items(
 
     inventory.retain(|item| item.quantity > 0);
     removed
+}
+
+/// Count items of a given kind that are unowned (`owner == None`) and
+/// unreserved (`reserved_by == None`).
+pub fn count_unowned_unreserved(inventory: &[Item], kind: ItemKind) -> u32 {
+    inventory
+        .iter()
+        .filter(|item| item.kind == kind && item.owner.is_none() && item.reserved_by.is_none())
+        .map(|item| item.quantity)
+        .sum()
+}
+
+/// Reserve up to `quantity` unowned (`owner == None`) unreserved items of the
+/// given kind for `task_id`. Splits stacks as needed, like `reserve_items`.
+/// Returns the amount actually reserved.
+pub fn reserve_unowned_items(
+    inventory: &mut Vec<Item>,
+    kind: ItemKind,
+    quantity: u32,
+    task_id: TaskId,
+) -> u32 {
+    let mut remaining = quantity;
+    let mut reserved = 0u32;
+
+    let mut new_items = Vec::new();
+    for item in inventory.iter_mut() {
+        if item.kind == kind && item.owner.is_none() && item.reserved_by.is_none() && remaining > 0
+        {
+            let take = remaining.min(item.quantity);
+            if take == item.quantity {
+                item.reserved_by = Some(task_id);
+            } else {
+                item.quantity -= take;
+                new_items.push(Item {
+                    kind,
+                    quantity: take,
+                    owner: None,
+                    reserved_by: Some(task_id),
+                });
+            }
+            remaining -= take;
+            reserved += take;
+        }
+    }
+
+    inventory.extend(new_items);
+    reserved
 }
 
 /// Merge stacks that match on `(kind, owner, reserved_by)`.
@@ -542,5 +589,76 @@ mod tests {
             .map(|i| i.quantity)
             .sum();
         assert_eq!(b_count, 2);
+    }
+
+    #[test]
+    fn count_unowned_unreserved_filters_correctly() {
+        let mut rng = GameRng::new(42);
+        let owner = CreatureId::new(&mut rng);
+        let task_id = TaskId::new(&mut rng);
+
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 5, None, None); // unowned, unreserved
+        add_item(&mut inv, ItemKind::Bread, 3, Some(owner), None); // owned
+        add_item(&mut inv, ItemKind::Bread, 2, None, Some(task_id)); // reserved
+
+        assert_eq!(count_unowned_unreserved(&inv, ItemKind::Bread), 5);
+    }
+
+    #[test]
+    fn count_unowned_unreserved_empty() {
+        let inv: Vec<Item> = Vec::new();
+        assert_eq!(count_unowned_unreserved(&inv, ItemKind::Bread), 0);
+    }
+
+    #[test]
+    fn reserve_unowned_items_skips_owned() {
+        let mut rng = GameRng::new(42);
+        let owner = CreatureId::new(&mut rng);
+        let task_id = TaskId::new(&mut rng);
+
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 3, Some(owner), None); // owned
+        add_item(&mut inv, ItemKind::Bread, 5, None, None); // unowned
+
+        let reserved = reserve_unowned_items(&mut inv, ItemKind::Bread, 4, task_id);
+        assert_eq!(reserved, 4);
+        // Owned stack unchanged.
+        assert_eq!(count_owned(&inv, ItemKind::Bread, owner), 3);
+        // 1 unowned unreserved remains.
+        assert_eq!(count_unowned_unreserved(&inv, ItemKind::Bread), 1);
+    }
+
+    #[test]
+    fn reserve_unowned_items_caps_at_available() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 2, None, None);
+
+        let reserved = reserve_unowned_items(&mut inv, ItemKind::Bread, 10, task_id);
+        assert_eq!(reserved, 2);
+        assert_eq!(count_unowned_unreserved(&inv, ItemKind::Bread), 0);
+    }
+
+    #[test]
+    fn reserve_unowned_items_splits_stack() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+
+        let mut inv = Vec::new();
+        add_item(&mut inv, ItemKind::Bread, 5, None, None);
+
+        let reserved = reserve_unowned_items(&mut inv, ItemKind::Bread, 3, task_id);
+        assert_eq!(reserved, 3);
+        assert_eq!(inv.len(), 2);
+        assert_eq!(count_unowned_unreserved(&inv, ItemKind::Bread), 2);
+        let reserved_count: u32 = inv
+            .iter()
+            .filter(|i| i.kind == ItemKind::Bread && i.reserved_by == Some(task_id))
+            .map(|i| i.quantity)
+            .sum();
+        assert_eq!(reserved_count, 3);
     }
 }

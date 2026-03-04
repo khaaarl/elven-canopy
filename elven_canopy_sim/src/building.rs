@@ -28,7 +28,9 @@
 // box, completion tick, optional user-editable name, optional furnishing
 // state, an inventory for stored items, optional logistics config
 // (priority + wants list for automated hauling), and optional cooking config
-// (`cooking_enabled` + `cooking_bread_target` for kitchens). Created by
+// (`cooking_enabled` + `cooking_bread_target` for kitchens). `LogisticsWant`
+// is also reused on `Creature.wants` for personal item acquisition (see
+// `sim.rs`). Created by
 // `SimState::complete_build()` via `from_blueprint()` and stored in
 // `SimState::structures`. Buildings can be furnished (e.g. as dormitories)
 // via `SimAction::FurnishStructure`, which triggers incremental furniture
@@ -57,7 +59,9 @@ use crate::types::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// A desired item kind and target quantity for logistics.
+/// A desired item kind and target quantity. Used by building logistics
+/// (automated hauling) and creature personal acquisition (`Creature.wants`
+/// in `sim.rs`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogisticsWant {
     pub item_kind: ItemKind,

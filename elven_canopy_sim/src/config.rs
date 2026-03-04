@@ -793,6 +793,12 @@ pub struct GameConfig {
     #[serde(default = "default_elf_starting_bread")]
     pub elf_starting_bread: u32,
 
+    /// Default personal item desires for newly spawned elves. Each entry is an
+    /// `(item_kind, target_quantity)` pair — idle elves create `AcquireItem`
+    /// tasks to maintain these quantities in their personal inventory.
+    #[serde(default = "default_elf_default_wants")]
+    pub elf_default_wants: Vec<crate::building::LogisticsWant>,
+
     /// Default logistics priority for newly furnished storehouses.
     #[serde(default = "default_storehouse_default_priority")]
     pub storehouse_default_priority: u8,
@@ -869,6 +875,13 @@ fn default_max_haul_tasks_per_heartbeat() -> u32 {
 
 fn default_elf_starting_bread() -> u32 {
     2
+}
+
+fn default_elf_default_wants() -> Vec<crate::building::LogisticsWant> {
+    vec![crate::building::LogisticsWant {
+        item_kind: crate::inventory::ItemKind::Bread,
+        target_quantity: 2,
+    }]
 }
 
 fn default_storehouse_default_priority() -> u8 {
@@ -1093,6 +1106,7 @@ impl Default for GameConfig {
             logistics_heartbeat_interval_ticks: 5000,
             max_haul_tasks_per_heartbeat: 5,
             elf_starting_bread: 2,
+            elf_default_wants: default_elf_default_wants(),
             storehouse_default_priority: 2,
             storehouse_default_fruit_want: 10,
             storehouse_default_bread_want: 20,

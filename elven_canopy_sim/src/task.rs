@@ -62,6 +62,12 @@
 //   but not enough fruit items exist as ground piles or building inventory.
 //   Bridges the gap between tree fruit voxels and the item-based logistics
 //   system.
+// - `AcquireItem { source, item_kind, quantity }` — pick up unowned items from
+//   a source and add them to the creature's personal inventory with ownership.
+//   Single-phase: creature walks to source, picks up reserved items on arrival.
+//   Instant (`total_cost = 0`). Created by the heartbeat Phase 2c acquisition
+//   check when a creature's inventory is below its personal `wants` target.
+//   On abandonment, reservations are cleared at the source.
 //
 // ## Lifecycle
 //
@@ -169,6 +175,16 @@ pub enum TaskKind {
     /// (`total_cost = 0`). Created by `process_harvest_tasks()` when
     /// logistics buildings want fruit but none is available as items.
     Harvest { fruit_pos: VoxelCoord },
+    /// Pick up unowned items from a source (ground pile or building) and add
+    /// them to the creature's personal inventory with ownership. Single-phase:
+    /// creature walks to source, picks up reserved items on arrival, done.
+    /// Created by the heartbeat acquisition check (Phase 2c) when an elf's
+    /// personal inventory is below its `wants` target for an item kind.
+    AcquireItem {
+        source: HaulSource,
+        item_kind: ItemKind,
+        quantity: u32,
+    },
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.
@@ -446,6 +462,47 @@ mod tests {
             }
             _ => panic!("Expected Haul task kind"),
         }
+    }
+
+    #[test]
+    fn acquire_item_task_serialization_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let location = NavNodeId(8);
+
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::AcquireItem {
+                source: HaulSource::GroundPile(VoxelCoord::new(5, 1, 10)),
+                item_kind: crate::inventory::ItemKind::Bread,
+                quantity: 3,
+            },
+            state: TaskState::InProgress,
+            location,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.id, task_id);
+        match &restored.kind {
+            TaskKind::AcquireItem {
+                source,
+                item_kind,
+                quantity,
+            } => {
+                assert_eq!(*source, HaulSource::GroundPile(VoxelCoord::new(5, 1, 10)));
+                assert_eq!(*item_kind, crate::inventory::ItemKind::Bread);
+                assert_eq!(*quantity, 3);
+            }
+            _ => panic!("Expected AcquireItem task kind"),
+        }
+        assert_eq!(restored.origin, TaskOrigin::Autonomous);
     }
 
     #[test]
