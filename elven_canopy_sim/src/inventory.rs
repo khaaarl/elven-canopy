@@ -253,7 +253,6 @@ fn merge_stacks(inventory: &mut Vec<Item>) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
