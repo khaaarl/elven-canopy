@@ -6,7 +6,8 @@
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Shows species, name (Vaelith name for elves, fallback "Species #N" for
-## unnamed creatures), position, task status, a food gauge, a rest gauge
+## unnamed creatures), position, task kind with a "Zoom" button to jump to
+## the task's target location (when available), a food gauge, a rest gauge
 ## (both as progress bar + percentage), a "Recent Thoughts" section
 ## listing the creature's accumulated thoughts (most recent first), and
 ## an inventory section listing carried items. Updated every frame by main.gd.
@@ -20,13 +21,16 @@ extends PanelContainer
 signal follow_requested
 signal unfollow_requested
 signal panel_closed
+signal zoom_to_task_location(x: float, y: float, z: float)
 
 const MAX_DISPLAYED_THOUGHTS := 10
 
 var _species_label: Label
 var _name_label: Label
 var _position_label: Label
+var _task_row: HBoxContainer
 var _task_label: Label
+var _task_zoom_btn: Button
 var _food_bar: ProgressBar
 var _food_label: Label
 var _rest_bar: ProgressBar
@@ -86,9 +90,20 @@ func _ready() -> void:
 	_position_label = Label.new()
 	vbox.add_child(_position_label)
 
-	# Task status.
+	# Task status row (label + zoom button).
+	_task_row = HBoxContainer.new()
+	_task_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(_task_row)
+
 	_task_label = Label.new()
-	vbox.add_child(_task_label)
+	_task_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_task_row.add_child(_task_label)
+
+	_task_zoom_btn = Button.new()
+	_task_zoom_btn.text = "Zoom"
+	_task_zoom_btn.visible = false
+	_task_zoom_btn.pressed.connect(_on_task_zoom_pressed)
+	_task_row.add_child(_task_zoom_btn)
 
 	# Food gauge.
 	var food_row := HBoxContainer.new()
@@ -190,7 +205,7 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 		else:
 			_name_label.text = "Name: %s (%s)" % [creature_name, meaning]
 	_update_position(info)
-	_task_label.text = "Has task: %s" % str(info.get("has_task", false))
+	_update_task(info)
 	_update_food(info)
 	_update_rest(info)
 	_update_thoughts(info)
@@ -202,7 +217,7 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 
 func update_info(info: Dictionary) -> void:
 	_update_position(info)
-	_task_label.text = "Has task: %s" % str(info.get("has_task", false))
+	_update_task(info)
 	_update_food(info)
 	_update_rest(info)
 	_update_thoughts(info)
@@ -266,6 +281,30 @@ func _update_position(info: Dictionary) -> void:
 	_position_label.text = (
 		"Position: (%d, %d, %d)" % [info.get("x", 0), info.get("y", 0), info.get("z", 0)]
 	)
+
+
+func _update_task(info: Dictionary) -> void:
+	var has_task: bool = info.get("has_task", false)
+	if has_task:
+		var kind: String = info.get("task_kind", "")
+		_task_label.text = "Task: %s" % kind if not kind.is_empty() else "Task: (unknown)"
+		# Show zoom button only when location data is present.
+		var has_loc: bool = info.has("task_location_x")
+		_task_zoom_btn.visible = has_loc
+		if has_loc:
+			_task_zoom_btn.set_meta("tx", float(info.get("task_location_x", 0)))
+			_task_zoom_btn.set_meta("ty", float(info.get("task_location_y", 0)))
+			_task_zoom_btn.set_meta("tz", float(info.get("task_location_z", 0)))
+	else:
+		_task_label.text = "Task: none"
+		_task_zoom_btn.visible = false
+
+
+func _on_task_zoom_pressed() -> void:
+	var tx: float = _task_zoom_btn.get_meta("tx", 0.0)
+	var ty: float = _task_zoom_btn.get_meta("ty", 0.0)
+	var tz: float = _task_zoom_btn.get_meta("tz", 0.0)
+	zoom_to_task_location.emit(tx, ty, tz)
 
 
 func _update_inventory(info: Dictionary) -> void:

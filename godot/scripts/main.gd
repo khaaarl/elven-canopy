@@ -666,6 +666,9 @@ func _setup_common(bridge: SimBridge) -> void:
 				_camera_pivot.start_follow(pos)
 	)
 	_panel.unfollow_requested.connect(func(): _camera_pivot.stop_follow())
+	_panel.zoom_to_task_location.connect(
+		func(x: float, y: float, z: float): _look_at_position(Vector3(x + 0.5, y, z + 0.5))
+	)
 	_panel.panel_closed.connect(
 		func():
 			_selector.deselect()

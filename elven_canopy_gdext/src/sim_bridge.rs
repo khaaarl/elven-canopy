@@ -725,6 +725,15 @@ impl SimBridge {
                     })
                     .unwrap_or("");
                 dict.set("task_kind", GString::from(task_kind_str));
+                // Task location — resolve NavNodeId to VoxelCoord when a task exists.
+                if let Some(tid) = &c.current_task
+                    && let Some(task) = sim.tasks.get(tid)
+                {
+                    let task_pos = sim.nav_graph.node(task.location).position;
+                    dict.set("task_location_x", task_pos.x);
+                    dict.set("task_location_y", task_pos.y);
+                    dict.set("task_location_z", task_pos.z);
+                }
                 dict.set("food", c.food);
                 let food_max = sim.species_table[&species].food_max;
                 dict.set("food_max", food_max);
