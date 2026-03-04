@@ -30,6 +30,12 @@
 ## - An "Add Item..." button to add new wants
 ## Emits logistics_priority_changed and logistics_wants_changed.
 ##
+## For Kitchen buildings, a Cooking section is shown with:
+## - A "Cooking Enabled" checkbox
+## - A "Bread Target" SpinBox (0-500, step 10)
+## - A status label showing current cooking activity
+## Emits cooking_config_changed.
+##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Updated every frame by main.gd while visible.
 ##
@@ -37,7 +43,7 @@
 ## creature_info_panel.gd for the creature equivalent,
 ## main.gd which wires everything together,
 ## sim_bridge.rs for rename_structure(), furnish_structure(), assign_home(),
-## set_logistics_priority(), set_logistics_wants().
+## set_logistics_priority(), set_logistics_wants(), set_cooking_config().
 
 extends PanelContainer
 
@@ -49,6 +55,7 @@ signal assign_elf_requested(structure_id: int, creature_id_str: String)
 signal unassign_elf_requested(structure_id: int, creature_id_str: String)
 signal logistics_priority_changed(structure_id: int, priority: int)
 signal logistics_wants_changed(structure_id: int, wants_json: String)
+signal cooking_config_changed(structure_id: int, cooking_enabled: bool, bread_target: int)
 
 var _name_edit: LineEdit
 var _type_label: Label
@@ -71,6 +78,11 @@ var _logistics_enabled_check: CheckButton
 var _logistics_wants_vbox: VBoxContainer
 var _logistics_add_button: Button
 var _logistics_item_picker: VBoxContainer
+var _cooking_wrapper: VBoxContainer
+var _cooking_section: VBoxContainer
+var _cooking_enabled_check: CheckButton
+var _cooking_bread_target_spin: SpinBox
+var _cooking_status_label: Label
 var _zoom_button: Button
 var _anchor_x: float = 0.0
 var _anchor_y: float = 0.0
@@ -263,6 +275,47 @@ func _ready() -> void:
 		btn.pressed.connect(_on_logistics_item_picked.bind(item_name))
 		_logistics_item_picker.add_child(btn)
 
+	# Cooking section (visible for kitchen buildings).
+	_cooking_wrapper = VBoxContainer.new()
+	_cooking_wrapper.visible = false
+	vbox.add_child(_cooking_wrapper)
+
+	_cooking_wrapper.add_child(HSeparator.new())
+
+	var cooking_title := Label.new()
+	cooking_title.text = "Cooking"
+	cooking_title.add_theme_font_size_override("font_size", 16)
+	_cooking_wrapper.add_child(cooking_title)
+
+	_cooking_section = VBoxContainer.new()
+	_cooking_section.add_theme_constant_override("separation", 4)
+	_cooking_wrapper.add_child(_cooking_section)
+
+	_cooking_enabled_check = CheckButton.new()
+	_cooking_enabled_check.text = "Cooking Enabled"
+	_cooking_enabled_check.toggled.connect(_on_cooking_enabled_toggled)
+	_cooking_section.add_child(_cooking_enabled_check)
+
+	var bread_target_hbox := HBoxContainer.new()
+	_cooking_section.add_child(bread_target_hbox)
+
+	var bread_target_label := Label.new()
+	bread_target_label.text = "Bread Target:"
+	bread_target_hbox.add_child(bread_target_label)
+
+	_cooking_bread_target_spin = SpinBox.new()
+	_cooking_bread_target_spin.min_value = 0
+	_cooking_bread_target_spin.max_value = 500
+	_cooking_bread_target_spin.value = 50
+	_cooking_bread_target_spin.step = 10
+	_cooking_bread_target_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_cooking_bread_target_spin.value_changed.connect(_on_cooking_bread_target_changed)
+	bread_target_hbox.add_child(_cooking_bread_target_spin)
+
+	_cooking_status_label = Label.new()
+	_cooking_status_label.text = ""
+	_cooking_section.add_child(_cooking_status_label)
+
 	# Spacer to push the zoom button toward the bottom-ish area.
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -401,6 +454,7 @@ func _update_info(info: Dictionary) -> void:
 
 	_update_inventory(info)
 	_update_logistics(info, furnishing)
+	_update_cooking(info, furnishing)
 
 
 func _update_inventory(info: Dictionary) -> void:
@@ -447,6 +501,54 @@ func _update_logistics(info: Dictionary, furnishing: String) -> void:
 		remove_btn.pressed.connect(_on_logistics_want_removed.bind(kind))
 		row.add_child(remove_btn)
 		_logistics_wants_vbox.add_child(row)
+
+
+func _update_cooking(info: Dictionary, furnishing: String) -> void:
+	if furnishing != "Kitchen":
+		_cooking_wrapper.visible = false
+		return
+	_cooking_wrapper.visible = true
+
+	var cooking_enabled: bool = info.get("cooking_enabled", false)
+	var bread_target: int = info.get("cooking_bread_target", 0)
+	var cook_status: String = info.get("cook_status", "")
+
+	_cooking_enabled_check.set_pressed_no_signal(cooking_enabled)
+	_cooking_bread_target_spin.editable = cooking_enabled
+	_cooking_bread_target_spin.set_value_no_signal(bread_target)
+
+	if cook_status != "":
+		_cooking_status_label.text = cook_status
+		_cooking_status_label.visible = true
+	else:
+		_cooking_status_label.visible = false
+
+
+func _on_cooking_enabled_toggled(_pressed: bool) -> void:
+	if _current_structure_id < 0:
+		return
+	(
+		cooking_config_changed
+		. emit(
+			_current_structure_id,
+			_cooking_enabled_check.button_pressed,
+			int(_cooking_bread_target_spin.value),
+		)
+	)
+
+
+func _on_cooking_bread_target_changed(_value: float) -> void:
+	if _current_structure_id < 0:
+		return
+	if _cooking_enabled_check.button_pressed:
+		(
+			cooking_config_changed
+			. emit(
+				_current_structure_id,
+				true,
+				int(_cooking_bread_target_spin.value),
+			)
+		)
 
 
 func _on_logistics_enabled_toggled(pressed: bool) -> void:

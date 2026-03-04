@@ -72,7 +72,8 @@
 // ### Task entity (`task.rs`)
 //
 // A `Task` has:
-// - `kind: TaskKind` — determines behavior (`GoTo`, `Build`, `EatBread`, `EatFruit`, `Sleep`).
+// - `kind: TaskKind` — determines behavior (`GoTo`, `Build`, `EatBread`,
+//   `EatFruit`, `Sleep`, `Furnish`, `Haul`, `Cook`, `Harvest`).
 // - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
 // - `location: NavNodeId` — where creatures go to work on the task.
 // - `assignees: Vec<CreatureId>` — supports multiple workers.
@@ -142,6 +143,28 @@
 //       `SleepLocation` (Home/Dormitory/Ground). Beds are reusable — not
 //       consumed.
 //
+//   Furnish { structure_id }:
+//     - Walk to task location, then `do_furnish_work()`: increment progress,
+//       place one furniture item per `furnish_work_ticks_per_item`. Completes
+//       when all planned furniture is placed.
+//
+//   Haul { item_kind, quantity, source, destination, phase, destination_nav_node }:
+//     - Two-phase item transport. `GoingToSource`: walk to source, pick up
+//       reserved items. `GoingToDestination`: walk to destination, deposit.
+//       On abandonment mid-haul, carried items drop as a ground pile.
+//
+//   Cook { structure_id }:
+//     - Walk to kitchen, then `do_cook()`: increment progress each tick.
+//       On completion, consume reserved fruit and produce bread in the
+//       kitchen inventory. Created by `process_kitchen_monitor()`.
+//
+//   Harvest { fruit_pos }:
+//     - Walk to the fruit voxel's nav node, then `do_harvest()`: remove the
+//       fruit from the world and tree, create a ground pile with 1 Fruit at
+//       the elf's position. Completes instantly on arrival (total_cost = 0).
+//       Created by `process_harvest_tasks()` at the start of each logistics
+//       heartbeat when buildings want fruit but none is available as items.
+//
 // ### Task assignment details
 //
 // `find_available_task` filters by: (1) `TaskState::Available`, (2) species
@@ -182,6 +205,7 @@
 
 use crate::blueprint::Blueprint;
 use crate::blueprint::BlueprintState;
+use crate::building;
 use crate::building::CompletedStructure;
 use crate::command::{SimAction, SimCommand};
 use crate::config::GameConfig;
@@ -199,6 +223,65 @@ use crate::world::VoxelWorld;
 use elven_canopy_lang::Lexicon;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// Serde helper: serialize `BTreeMap<VoxelCoord, V>` with string keys `"x,y,z"`
+/// so JSON output has valid string keys (JSON objects require string keys).
+mod serde_voxel_map {
+    use super::*;
+    use serde::de::{self, MapAccess, Visitor};
+    use serde::ser::SerializeMap;
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
+
+    pub fn serialize<V, S>(map: &BTreeMap<VoxelCoord, V>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        V: Serialize,
+        S: Serializer,
+    {
+        let mut ser_map = serializer.serialize_map(Some(map.len()))?;
+        for (coord, value) in map {
+            let key = format!("{},{},{}", coord.x, coord.y, coord.z);
+            ser_map.serialize_entry(&key, value)?;
+        }
+        ser_map.end()
+    }
+
+    pub fn deserialize<'de, V, D>(deserializer: D) -> Result<BTreeMap<VoxelCoord, V>, D::Error>
+    where
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        struct VoxelMapVisitor<V>(std::marker::PhantomData<V>);
+
+        impl<'de, V: Deserialize<'de>> Visitor<'de> for VoxelMapVisitor<V> {
+            type Value = BTreeMap<VoxelCoord, V>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a map with \"x,y,z\" string keys")
+            }
+
+            fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut map = BTreeMap::new();
+                while let Some((key, value)) = access.next_entry::<String, V>()? {
+                    let parts: Vec<&str> = key.split(',').collect();
+                    if parts.len() != 3 {
+                        return Err(de::Error::custom(format!("invalid VoxelCoord key: {key}")));
+                    }
+                    let x = parts[0].parse::<i32>().map_err(de::Error::custom)?;
+                    let y = parts[1].parse::<i32>().map_err(de::Error::custom)?;
+                    let z = parts[2].parse::<i32>().map_err(de::Error::custom)?;
+                    map.insert(VoxelCoord::new(x, y, z), value);
+                }
+                Ok(map)
+            }
+        }
+
+        deserializer.deserialize_map(VoxelMapVisitor(std::marker::PhantomData))
+    }
+}
 
 /// Top-level simulation state. This is the entire game world.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -317,8 +400,9 @@ pub struct SimState {
     pub structure_voxels: BTreeMap<VoxelCoord, StructureId>,
 
     /// Items dropped on the ground, keyed by voxel position. BTreeMap for
-    /// deterministic iteration order.
-    #[serde(default)]
+    /// deterministic iteration order. Uses string keys (`"x,y,z"`) in JSON
+    /// because JSON objects require string keys.
+    #[serde(default, with = "serde_voxel_map")]
     pub ground_piles: BTreeMap<VoxelCoord, crate::inventory::GroundPile>,
 }
 
@@ -771,6 +855,18 @@ impl SimState {
             } => {
                 if let Some(s) = self.structures.get_mut(structure_id) {
                     s.logistics_wants = wants.clone();
+                }
+            }
+            SimAction::SetCookingConfig {
+                structure_id,
+                cooking_enabled,
+                cooking_bread_target,
+            } => {
+                if let Some(s) = self.structures.get_mut(structure_id)
+                    && s.furnishing == Some(FurnishingType::Kitchen)
+                {
+                    s.cooking_enabled = *cooking_enabled;
+                    s.cooking_bread_target = *cooking_bread_target;
                 }
             }
         }
@@ -1648,6 +1744,20 @@ impl SimState {
 
         self.creatures.insert(creature_id, creature);
 
+        // Give elves starting bread so they don't immediately forage.
+        if species == Species::Elf
+            && self.config.elf_starting_bread > 0
+            && let Some(c) = self.creatures.get_mut(&creature_id)
+        {
+            inventory::add_item(
+                &mut c.inventory,
+                inventory::ItemKind::Bread,
+                self.config.elf_starting_bread,
+                Some(creature_id),
+                None,
+            );
+        }
+
         // Schedule first activation (drives movement — wander or task work).
         // Fires 1 tick after spawn so the creature starts moving immediately.
         self.event_queue.schedule(
@@ -1783,8 +1893,10 @@ impl SimState {
             .unwrap_or(Species::Elf);
         let graph = self.graph_for_species(species);
         if !graph.is_node_alive(current_node) || !graph.is_node_alive(task_location) {
-            // Clean up haul task state before abandoning.
+            // Clean up haul/cook/harvest task state before abandoning.
             self.cleanup_haul_task(creature_id, task_id);
+            self.cleanup_cook_task(task_id);
+            self.cleanup_harvest_task(task_id);
             if let Some(c) = self.creatures.get_mut(&creature_id) {
                 c.current_task = None;
                 c.path = None;
@@ -1846,6 +1958,13 @@ impl SimState {
             task::TaskKind::Haul { .. } => {
                 self.do_haul(creature_id, task_id);
                 return; // do_haul handles its own next-activation scheduling.
+            }
+            task::TaskKind::Cook { .. } => {
+                self.do_cook(creature_id, task_id);
+                return; // do_cook handles its own next-activation scheduling.
+            }
+            task::TaskKind::Harvest { fruit_pos } => {
+                self.do_harvest(creature_id, task_id, fruit_pos);
             }
         }
 
@@ -1944,6 +2063,37 @@ impl SimState {
         // Generate AteMeal thought.
         if let Some(creature) = self.creatures.get_mut(&creature_id) {
             creature.add_thought(ThoughtKind::AteMeal, self.tick, &self.config.thoughts);
+        }
+
+        self.complete_task(task_id);
+    }
+
+    /// Harvest a fruit voxel: remove it from the world and tree, then create
+    /// a ground pile with 1 Fruit at the creature's position. If the fruit
+    /// voxel is already gone (race with EatFruit), skip pile creation.
+    fn do_harvest(&mut self, creature_id: CreatureId, task_id: TaskId, fruit_pos: VoxelCoord) {
+        // Check fruit still exists.
+        let fruit_exists = self.world.get(fruit_pos) == VoxelType::Fruit;
+
+        if fruit_exists {
+            // Remove fruit from world and tree's fruit_positions list.
+            self.world.set(fruit_pos, VoxelType::Air);
+            for tree in self.trees.values_mut() {
+                tree.fruit_positions.retain(|&p| p != fruit_pos);
+            }
+
+            // Create ground pile at creature's position.
+            if let Some(creature) = self.creatures.get(&creature_id) {
+                let pile_pos = creature.position;
+                let pile =
+                    self.ground_piles
+                        .entry(pile_pos)
+                        .or_insert_with(|| inventory::GroundPile {
+                            position: pile_pos,
+                            items: Vec::new(),
+                        });
+                inventory::add_item(&mut pile.items, inventory::ItemKind::Fruit, 1, None, None);
+            }
         }
 
         self.complete_task(task_id);
@@ -2312,9 +2462,199 @@ impl SimState {
         }
     }
 
+    /// Execute one activation of a Cook task. Increments progress each tick;
+    /// when complete, consumes reserved fruit and produces bread in the
+    /// kitchen's inventory.
+    fn do_cook(&mut self, creature_id: CreatureId, task_id: TaskId) {
+        let total_cost = match self.tasks.get(&task_id) {
+            Some(t) => t.total_cost,
+            None => return,
+        };
+        let structure_id = match self.tasks.get(&task_id) {
+            Some(t) => match &t.kind {
+                task::TaskKind::Cook { structure_id } => *structure_id,
+                _ => return,
+            },
+            None => return,
+        };
+
+        // Increment progress.
+        if let Some(t) = self.tasks.get_mut(&task_id) {
+            t.progress += 1.0;
+        }
+
+        let progress = self.tasks.get(&task_id).map(|t| t.progress).unwrap_or(0.0);
+        if progress >= total_cost {
+            // Cooking complete — consume fruit, produce bread.
+            let fruit_input = self.config.cook_fruit_input;
+            let bread_output = self.config.cook_bread_output;
+            if let Some(structure) = self.structures.get_mut(&structure_id) {
+                let removed = inventory::remove_reserved_items(
+                    &mut structure.inventory,
+                    inventory::ItemKind::Fruit,
+                    fruit_input,
+                    task_id,
+                );
+                if removed < fruit_input {
+                    // Fruit somehow missing — release any remaining reservations.
+                    inventory::clear_reservations(&mut structure.inventory, task_id);
+                } else {
+                    // Add bread to kitchen inventory (unowned, unreserved).
+                    inventory::add_item(
+                        &mut structure.inventory,
+                        inventory::ItemKind::Bread,
+                        bread_output,
+                        None,
+                        None,
+                    );
+                }
+            }
+            self.complete_task(task_id);
+        }
+
+        // Schedule next activation.
+        self.event_queue.schedule(
+            self.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
+    }
+
+    /// Clean up a Cook task on node invalidation: release reserved fruit in
+    /// the kitchen's inventory and set the task to Complete so the kitchen
+    /// monitor can create a fresh task on the next heartbeat.
+    fn cleanup_cook_task(&mut self, task_id: TaskId) {
+        let structure_id = match self.tasks.get(&task_id) {
+            Some(t) => match &t.kind {
+                task::TaskKind::Cook { structure_id } => *structure_id,
+                _ => return,
+            },
+            None => return,
+        };
+        if let Some(structure) = self.structures.get_mut(&structure_id) {
+            inventory::clear_reservations(&mut structure.inventory, task_id);
+        }
+        if let Some(t) = self.tasks.get_mut(&task_id) {
+            t.state = task::TaskState::Complete;
+        }
+    }
+
+    /// Clean up a Harvest task on node invalidation. Harvest tasks have no
+    /// reservations, so just mark the task complete so `process_harvest_tasks`
+    /// can create a replacement on the next heartbeat.
+    fn cleanup_harvest_task(&mut self, task_id: TaskId) {
+        let is_harvest = self
+            .tasks
+            .get(&task_id)
+            .is_some_and(|t| matches!(t.kind, task::TaskKind::Harvest { .. }));
+        if is_harvest && let Some(t) = self.tasks.get_mut(&task_id) {
+            t.state = task::TaskState::Complete;
+        }
+    }
+
+    /// Create Harvest tasks when logistics buildings want fruit but not enough
+    /// fruit items exist. Scans all trees for unclaimed fruit voxels and creates
+    /// up to `max_haul_tasks_per_heartbeat` Harvest tasks.
+    fn process_harvest_tasks(&mut self) {
+        // 1. Sum total fruit demand across logistics-enabled buildings.
+        let mut total_demand: u32 = 0;
+        for structure in self.structures.values() {
+            if structure.logistics_priority.is_none() {
+                continue;
+            }
+            for want in &structure.logistics_wants {
+                if want.item_kind == inventory::ItemKind::Fruit {
+                    let current =
+                        inventory::item_count(&structure.inventory, inventory::ItemKind::Fruit);
+                    let in_transit =
+                        self.count_in_transit_items(structure.id, inventory::ItemKind::Fruit);
+                    let effective = current + in_transit;
+                    if want.target_quantity > effective {
+                        total_demand += want.target_quantity - effective;
+                    }
+                }
+            }
+        }
+
+        if total_demand == 0 {
+            return;
+        }
+
+        // 2. Count fruit already available as items (unreserved in ground piles + building inventories).
+        let mut available_items: u32 = 0;
+        for pile in self.ground_piles.values() {
+            available_items +=
+                inventory::unreserved_item_count(&pile.items, inventory::ItemKind::Fruit);
+        }
+        for structure in self.structures.values() {
+            available_items +=
+                inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Fruit);
+        }
+
+        // 3. Count pending Harvest tasks (non-Complete).
+        let being_harvested: u32 = self
+            .tasks
+            .values()
+            .filter(|t| {
+                t.state != task::TaskState::Complete
+                    && matches!(t.kind, task::TaskKind::Harvest { .. })
+            })
+            .count() as u32;
+
+        // 4. Compute shortfall.
+        let shortfall = total_demand.saturating_sub(available_items + being_harvested);
+        if shortfall == 0 {
+            return;
+        }
+
+        // 5. Collect unclaimed fruit positions (skip those with existing Harvest or EatFruit tasks).
+        let claimed_positions: Vec<VoxelCoord> = self
+            .tasks
+            .values()
+            .filter(|t| t.state != task::TaskState::Complete)
+            .filter_map(|t| match &t.kind {
+                task::TaskKind::Harvest { fruit_pos } => Some(*fruit_pos),
+                task::TaskKind::EatFruit { fruit_pos } => Some(*fruit_pos),
+                _ => None,
+            })
+            .collect();
+
+        let mut unclaimed_fruit: Vec<(VoxelCoord, NavNodeId)> = Vec::new();
+        for tree in self.trees.values() {
+            for &fruit_pos in &tree.fruit_positions {
+                if !claimed_positions.contains(&fruit_pos)
+                    && let Some(nav_node) = self.nav_graph.find_nearest_node(fruit_pos)
+                {
+                    unclaimed_fruit.push((fruit_pos, nav_node));
+                }
+            }
+        }
+
+        // 6. Create up to min(shortfall, available_fruit, max_haul_tasks_per_heartbeat) Harvest tasks.
+        let max_tasks = self.config.max_haul_tasks_per_heartbeat;
+        let to_create = shortfall.min(unclaimed_fruit.len() as u32).min(max_tasks);
+
+        for &(fruit_pos, nav_node) in unclaimed_fruit.iter().take(to_create as usize) {
+            let task_id = TaskId::new(&mut self.rng);
+            let new_task = task::Task {
+                id: task_id,
+                kind: task::TaskKind::Harvest { fruit_pos },
+                state: task::TaskState::Available,
+                location: nav_node,
+                assignees: Vec::new(),
+                progress: 0.0,
+                total_cost: 0.0,
+                required_species: Some(Species::Elf),
+                origin: task::TaskOrigin::Automated,
+            };
+            self.tasks.insert(task_id, new_task);
+        }
+    }
+
     /// Process the logistics heartbeat: scan buildings with logistics config
     /// for unmet wants and create haul tasks to fulfill them.
     fn process_logistics_heartbeat(&mut self) {
+        self.process_harvest_tasks();
+
         // Collect buildings with logistics enabled, sorted by priority desc then StructureId asc.
         let mut logistics_buildings: Vec<(StructureId, u8)> = self
             .structures
@@ -2401,6 +2741,87 @@ impl SimState {
                 }
             }
         }
+
+        self.process_kitchen_monitor();
+    }
+
+    /// Scan kitchens and create Cook tasks when conditions are met.
+    /// Called at the end of each logistics heartbeat.
+    fn process_kitchen_monitor(&mut self) {
+        // Collect kitchen IDs to avoid borrowing self during iteration.
+        let kitchen_ids: Vec<StructureId> = self
+            .structures
+            .iter()
+            .filter_map(|(&sid, s)| {
+                if s.furnishing == Some(FurnishingType::Kitchen) && s.cooking_enabled {
+                    Some(sid)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let cook_fruit_input = self.config.cook_fruit_input;
+        let cook_work_ticks = self.config.cook_work_ticks;
+
+        for sid in kitchen_ids {
+            let structure = match self.structures.get(&sid) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Skip if bread target reached.
+            let bread_count =
+                inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Bread);
+            if bread_count >= structure.cooking_bread_target {
+                continue;
+            }
+
+            // Skip if not enough unreserved fruit.
+            let fruit_count =
+                inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Fruit);
+            if fruit_count < cook_fruit_input {
+                continue;
+            }
+
+            // Skip if there's already an active (non-Complete) Cook task for this kitchen.
+            let has_active_cook = self.tasks.values().any(|t| {
+                t.state != task::TaskState::Complete
+                    && matches!(t.kind, task::TaskKind::Cook { structure_id } if structure_id == sid)
+            });
+            if has_active_cook {
+                continue;
+            }
+
+            // Find nav node inside the kitchen.
+            let interior_pos = self.structures[&sid].anchor;
+            let location = match self.nav_graph.find_nearest_node(interior_pos) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Create Cook task with reserved fruit.
+            let task_id = TaskId::new(&mut self.rng);
+            inventory::reserve_items(
+                &mut self.structures.get_mut(&sid).unwrap().inventory,
+                inventory::ItemKind::Fruit,
+                cook_fruit_input,
+                task_id,
+            );
+
+            let new_task = task::Task {
+                id: task_id,
+                kind: task::TaskKind::Cook { structure_id: sid },
+                state: task::TaskState::Available,
+                location,
+                assignees: Vec::new(),
+                progress: 0.0,
+                total_cost: cook_work_ticks as f32,
+                required_species: Some(Species::Elf),
+                origin: task::TaskOrigin::Automated,
+            };
+            self.tasks.insert(task_id, new_task);
+        }
     }
 
     /// Count items of the given kind that are in-transit to the given building
@@ -2473,6 +2894,35 @@ impl SimState {
                 return Some((
                     task::HaulSource::Building(sid),
                     available.min(needed),
+                    nav_node,
+                ));
+            }
+        }
+
+        // Check logistics-enabled buildings (any priority) for surplus items.
+        // A building has surplus when it holds more unreserved items of this kind
+        // than its own logistics_wants target for that kind.
+        for (&sid, structure) in &self.structures {
+            if sid == exclude_building {
+                continue;
+            }
+            if structure.logistics_priority.is_none() {
+                continue;
+            }
+            let held = inventory::unreserved_item_count(&structure.inventory, item_kind);
+            let wanted = structure
+                .logistics_wants
+                .iter()
+                .find(|w| w.item_kind == item_kind)
+                .map(|w| w.target_quantity)
+                .unwrap_or(0);
+            let surplus = held.saturating_sub(wanted);
+            if surplus > 0
+                && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
+            {
+                return Some((
+                    task::HaulSource::Building(sid),
+                    surplus.min(needed),
                     nav_node,
                 ));
             }
@@ -3182,6 +3632,33 @@ impl SimState {
         let structure = self.structures.get_mut(&structure_id).unwrap();
         structure.furnishing = Some(furnishing_type);
         structure.planned_furniture = planned_furniture;
+
+        // Set default logistics and cooking config based on furnishing type.
+        match furnishing_type {
+            FurnishingType::Storehouse => {
+                structure.logistics_priority = Some(self.config.storehouse_default_priority);
+                structure.logistics_wants = vec![
+                    building::LogisticsWant {
+                        item_kind: inventory::ItemKind::Fruit,
+                        target_quantity: self.config.storehouse_default_fruit_want,
+                    },
+                    building::LogisticsWant {
+                        item_kind: inventory::ItemKind::Bread,
+                        target_quantity: self.config.storehouse_default_bread_want,
+                    },
+                ];
+            }
+            FurnishingType::Kitchen => {
+                structure.logistics_priority = Some(self.config.kitchen_default_priority);
+                structure.logistics_wants = vec![building::LogisticsWant {
+                    item_kind: inventory::ItemKind::Fruit,
+                    target_quantity: self.config.kitchen_default_fruit_want,
+                }];
+                structure.cooking_enabled = true;
+                structure.cooking_bread_target = self.config.kitchen_default_bread_target;
+            }
+            _ => {}
+        }
 
         // Find a nav node inside the building to use as the task location.
         let interior_pos = structure.floor_interior_positions();
@@ -5225,6 +5702,7 @@ mod tests {
     #[test]
     fn hungry_takes_priority_over_tired() {
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 0;
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let food_max = sim.species_table[&Species::Elf].food_max;
         let rest_max = sim.species_table[&Species::Elf].rest_max;
@@ -5366,6 +5844,8 @@ mod tests {
                 inventory: Vec::new(),
                 logistics_priority: None,
                 logistics_wants: Vec::new(),
+                cooking_enabled: false,
+                cooking_bread_target: 0,
             },
         );
 
@@ -5476,6 +5956,8 @@ mod tests {
                 inventory: Vec::new(),
                 logistics_priority: None,
                 logistics_wants: Vec::new(),
+                cooking_enabled: false,
+                cooking_bread_target: 0,
             },
         );
 
@@ -7537,6 +8019,7 @@ mod tests {
     #[test]
     fn hungry_idle_elf_creates_eat_fruit_task() {
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 0;
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let food_max = sim.species_table[&Species::Elf].food_max;
         let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -7804,6 +8287,7 @@ mod tests {
     #[test]
     fn eat_bread_restores_food_and_removes_bread() {
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 0;
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let food_max = sim.species_table[&Species::Elf].food_max;
         let bread_restore_pct = sim.species_table[&Species::Elf].bread_restore_pct;
@@ -7880,6 +8364,7 @@ mod tests {
     fn hungry_elf_without_bread_still_seeks_fruit() {
         // Elf is hungry but has no bread — should create EatFruit, not EatBread.
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 0;
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let food_max = sim.species_table[&Species::Elf].food_max;
         let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -7929,6 +8414,7 @@ mod tests {
     fn hungry_elf_with_unowned_bread_seeks_fruit() {
         // Elf has bread but doesn't own it — should seek fruit instead.
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 0;
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let food_max = sim.species_table[&Species::Elf].food_max;
         let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -9238,6 +9724,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
         sim.structures.insert(id, structure);
 
@@ -9267,6 +9755,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -9303,6 +9793,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -9365,6 +9857,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
 
         assert_eq!(structure.display_name(), "Dormitory #7");
@@ -9390,6 +9884,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
 
         assert_eq!(structure.display_name(), "Starlight Hall");
@@ -9530,6 +10026,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
         sim.structures.insert(id, structure);
 
@@ -9757,6 +10255,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Home, &mut rng);
@@ -9786,6 +10286,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::DiningHall, &mut rng);
@@ -9833,6 +10335,8 @@ mod tests {
                 inventory: Vec::new(),
                 logistics_priority: None,
                 logistics_wants: Vec::new(),
+                cooking_enabled: false,
+                cooking_bread_target: 0,
             };
             assert_eq!(
                 structure.display_name(),
@@ -10593,12 +11097,23 @@ mod tests {
     // --- Inventory integration tests ---
 
     #[test]
-    fn creature_spawns_with_empty_inventory() {
+    fn elf_spawns_with_starting_bread() {
         let mut sim = test_sim(42);
         let elf_id = spawn_elf(&mut sim);
-        assert!(
-            sim.creatures[&elf_id].inventory.is_empty(),
-            "Creatures should spawn with an empty inventory"
+        // Elves now spawn with starting bread (config.elf_starting_bread = 2).
+        let bread_count = inventory::count_owned(
+            &sim.creatures[&elf_id].inventory,
+            inventory::ItemKind::Bread,
+            elf_id,
+        );
+        assert_eq!(
+            bread_count, 2,
+            "Elf should spawn with 2 owned bread from elf_starting_bread config"
+        );
+        assert_eq!(
+            sim.creatures[&elf_id].inventory.len(),
+            1,
+            "Inventory should have exactly one stack (bread)"
         );
     }
 
@@ -10641,6 +11156,8 @@ mod tests {
                 inventory: Vec::new(),
                 logistics_priority: None,
                 logistics_wants: Vec::new(),
+                cooking_enabled: false,
+                cooking_bread_target: 0,
             },
         );
 
@@ -10684,6 +11201,7 @@ mod tests {
     #[test]
     fn creature_add_and_query_bread() {
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 0;
         let elf_id = spawn_elf(&mut sim);
 
         crate::inventory::add_item(
@@ -10704,6 +11222,7 @@ mod tests {
     #[test]
     fn creature_inventory_serialization_roundtrip() {
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 0;
         let elf_id = spawn_elf(&mut sim);
 
         crate::inventory::add_item(
@@ -10761,6 +11280,8 @@ mod tests {
                 inventory: Vec::new(),
                 logistics_priority: None,
                 logistics_wants: Vec::new(),
+                cooking_enabled: false,
+                cooking_bread_target: 0,
             },
         );
 
@@ -10852,6 +11373,8 @@ mod tests {
                 inventory: Vec::new(),
                 logistics_priority: None,
                 logistics_wants: Vec::new(),
+                cooking_enabled: false,
+                cooking_bread_target: 0,
             },
         );
 
@@ -10954,6 +11477,8 @@ mod tests {
                 inventory: Vec::new(),
                 logistics_priority,
                 logistics_wants: wants,
+                cooking_enabled: false,
+                cooking_bread_target: 0,
             },
         );
         sid
@@ -11245,6 +11770,61 @@ mod tests {
     }
 
     #[test]
+    fn logistics_surplus_source_from_higher_priority_building() {
+        let mut sim = test_sim(42);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Kitchen (priority 8) has 10 bread, wants 0 bread → 10 surplus.
+        let anchor_k = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+        let sid_k = insert_building(&mut sim, anchor_k, Some(8), Vec::new());
+        crate::inventory::add_item(
+            &mut sim.structures.get_mut(&sid_k).unwrap().inventory,
+            crate::inventory::ItemKind::Bread,
+            10,
+            None,
+            None,
+        );
+
+        // Storehouse (priority 2) wants 5 bread.
+        let anchor_s = VoxelCoord::new(tree_pos.x + 7, tree_pos.y, tree_pos.z);
+        insert_building(
+            &mut sim,
+            anchor_s,
+            Some(2),
+            vec![crate::building::LogisticsWant {
+                item_kind: crate::inventory::ItemKind::Bread,
+                target_quantity: 5,
+            }],
+        );
+
+        sim.process_logistics_heartbeat();
+
+        let haul_tasks: Vec<_> = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .collect();
+        assert_eq!(
+            haul_tasks.len(),
+            1,
+            "Should create a haul task for surplus bread"
+        );
+        match &haul_tasks[0].kind {
+            TaskKind::Haul {
+                source, quantity, ..
+            } => {
+                assert!(
+                    matches!(source, task::HaulSource::Building(s) if *s == sid_k),
+                    "Should pull from the kitchen (surplus source)"
+                );
+                assert_eq!(*quantity, 5);
+            }
+            _ => panic!("Expected Haul"),
+        }
+    }
+
+    #[test]
     fn logistics_caps_tasks_per_heartbeat() {
         let mut sim = test_sim(42);
         // Override max tasks to 2.
@@ -11284,6 +11864,322 @@ mod tests {
             .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
             .count();
         assert_eq!(haul_count, 2, "Should be capped at 2 tasks per heartbeat");
+    }
+
+    #[test]
+    fn kitchen_monitor_creates_cook_task() {
+        let mut sim = test_sim(42);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Insert a kitchen with 1 fruit, cooking enabled, bread target 50.
+        let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+        let sid = insert_completed_building(&mut sim, anchor);
+        {
+            let s = sim.structures.get_mut(&sid).unwrap();
+            s.furnishing = Some(FurnishingType::Kitchen);
+            s.cooking_enabled = true;
+            s.cooking_bread_target = 50;
+            s.logistics_priority = Some(8);
+        }
+        inventory::add_item(
+            &mut sim.structures.get_mut(&sid).unwrap().inventory,
+            inventory::ItemKind::Fruit,
+            1,
+            None,
+            None,
+        );
+
+        sim.process_logistics_heartbeat();
+
+        // Verify a Cook task was created.
+        let cook_tasks: Vec<_> = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Cook { .. }))
+            .collect();
+        assert_eq!(cook_tasks.len(), 1, "Should create 1 Cook task");
+        assert_eq!(cook_tasks[0].state, task::TaskState::Available);
+        assert_eq!(cook_tasks[0].required_species, Some(Species::Elf));
+
+        // Verify fruit is reserved.
+        let structure = &sim.structures[&sid];
+        let unreserved =
+            inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Fruit);
+        assert_eq!(unreserved, 0, "Fruit should be reserved for cook task");
+    }
+
+    #[test]
+    fn cook_task_converts_fruit_to_bread() {
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 20; // Prevent hunger interference.
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Insert a kitchen building with 1 fruit (reserved for the cook task).
+        let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+        let sid = insert_completed_building(&mut sim, anchor);
+        sim.structures.get_mut(&sid).unwrap().furnishing = Some(FurnishingType::Kitchen);
+        sim.structures.get_mut(&sid).unwrap().cooking_enabled = true;
+        sim.structures.get_mut(&sid).unwrap().cooking_bread_target = 50;
+
+        // Find a nav node inside the kitchen.
+        let interior_pos = sim.structures[&sid].anchor;
+        let kitchen_nav = sim.nav_graph.find_nearest_node(interior_pos).unwrap();
+
+        // Create Cook task at the kitchen's nav node.
+        let task_id = TaskId::new(&mut sim.rng);
+        let cook_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::Cook { structure_id: sid },
+            state: task::TaskState::Available,
+            location: kitchen_nav,
+            assignees: Vec::new(),
+            progress: 0.0,
+            total_cost: sim.config.cook_work_ticks as f32,
+            required_species: Some(Species::Elf),
+            origin: task::TaskOrigin::Automated,
+        };
+        sim.tasks.insert(task_id, cook_task);
+
+        // Add 1 fruit reserved by this task.
+        inventory::add_item(
+            &mut sim.structures.get_mut(&sid).unwrap().inventory,
+            inventory::ItemKind::Fruit,
+            1,
+            None,
+            Some(task_id),
+        );
+
+        // Spawn an elf near the kitchen.
+        let mut events = Vec::new();
+        sim.spawn_creature(Species::Elf, interior_pos, &mut events);
+
+        // Run enough ticks for elf to reach kitchen and complete cooking.
+        // cook_work_ticks = 5000, plus walking time.
+        sim.step(&[], sim.tick + 15000);
+
+        // Verify: fruit consumed, bread produced.
+        let structure = &sim.structures[&sid];
+        let fruit_count =
+            inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Fruit);
+        let bread_count =
+            inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Bread);
+        assert_eq!(fruit_count, 0, "Fruit should be consumed");
+        assert_eq!(bread_count, 10, "Should produce 10 bread");
+
+        // Verify task is complete.
+        let task = &sim.tasks[&task_id];
+        assert_eq!(task.state, task::TaskState::Complete);
+    }
+
+    #[test]
+    fn harvest_task_creates_ground_pile() {
+        let mut sim = test_sim(42);
+
+        // Find a fruit voxel on the tree.
+        let tree = &sim.trees[&sim.player_tree_id];
+        assert!(
+            !tree.fruit_positions.is_empty(),
+            "Tree should have fruit for this test"
+        );
+        let fruit_pos = tree.fruit_positions[0];
+
+        // Spawn an elf near the fruit.
+        let elf_id = spawn_elf(&mut sim);
+
+        // Find the nav node nearest to the fruit.
+        let fruit_nav = sim.nav_graph.find_nearest_node(fruit_pos).unwrap();
+
+        // Place the elf at the fruit nav node.
+        let elf_pos = sim.nav_graph.node(fruit_nav).position;
+        let elf = sim.creatures.get_mut(&elf_id).unwrap();
+        elf.current_node = Some(fruit_nav);
+        elf.position = elf_pos;
+
+        // Create a Harvest task at the fruit nav node.
+        let task_id = TaskId::new(&mut sim.rng);
+        let harvest_task = Task {
+            id: task_id,
+            kind: TaskKind::Harvest { fruit_pos },
+            state: TaskState::InProgress,
+            location: fruit_nav,
+            assignees: vec![elf_id],
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Automated,
+        };
+        sim.tasks.insert(task_id, harvest_task);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+
+        // Execute the task directly.
+        sim.do_harvest(elf_id, task_id, fruit_pos);
+
+        // Assert: fruit voxel removed from world.
+        assert_eq!(
+            sim.world.get(fruit_pos),
+            VoxelType::Air,
+            "Fruit voxel should be removed"
+        );
+
+        // Assert: fruit removed from tree's fruit_positions.
+        let tree = &sim.trees[&sim.player_tree_id];
+        assert!(
+            !tree.fruit_positions.contains(&fruit_pos),
+            "Fruit should be removed from tree"
+        );
+
+        // Assert: ground pile created at elf's position with 1 Fruit.
+        let pile = sim
+            .ground_piles
+            .get(&elf_pos)
+            .expect("Ground pile should exist at elf position");
+        assert_eq!(
+            inventory::item_count(&pile.items, inventory::ItemKind::Fruit),
+            1,
+            "Ground pile should have 1 fruit"
+        );
+
+        // Assert: task completed.
+        assert_eq!(
+            sim.tasks[&task_id].state,
+            TaskState::Complete,
+            "Harvest task should be complete"
+        );
+    }
+
+    #[test]
+    fn logistics_heartbeat_creates_harvest_tasks() {
+        let mut sim = test_sim(42);
+
+        // Verify the tree has fruit voxels.
+        let tree = &sim.trees[&sim.player_tree_id];
+        let fruit_count = tree.fruit_positions.len();
+        assert!(fruit_count > 0, "Tree should have fruit for this test");
+
+        // Ensure no ground piles with fruit exist.
+        assert!(sim.ground_piles.is_empty());
+
+        // Create a building that wants fruit (kitchen with logistics).
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let site = VoxelCoord::new(tree_pos.x + 3, 0, tree_pos.z);
+        let kitchen_priority = sim.config.kitchen_default_priority;
+        let sid = insert_building(
+            &mut sim,
+            site,
+            Some(kitchen_priority),
+            vec![building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                target_quantity: 5,
+            }],
+        );
+        {
+            let s = sim.structures.get_mut(&sid).unwrap();
+            s.furnishing = Some(FurnishingType::Kitchen);
+        }
+
+        // Run logistics heartbeat.
+        sim.process_logistics_heartbeat();
+
+        // Assert: at least one Harvest task was created.
+        let harvest_tasks: Vec<_> = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Harvest { .. }))
+            .collect();
+        assert!(
+            !harvest_tasks.is_empty(),
+            "Logistics heartbeat should create Harvest tasks when buildings want fruit"
+        );
+
+        // Each harvest task should target a valid fruit position.
+        for task in &harvest_tasks {
+            if let TaskKind::Harvest { fruit_pos } = &task.kind {
+                assert_eq!(
+                    sim.world.get(*fruit_pos),
+                    VoxelType::Fruit,
+                    "Harvest task should target an actual fruit voxel"
+                );
+            }
+            assert_eq!(task.state, TaskState::Available);
+            assert_eq!(task.required_species, Some(Species::Elf));
+            assert_eq!(task.origin, TaskOrigin::Automated);
+        }
+    }
+
+    #[test]
+    fn kitchen_cooks_fruit_into_bread_end_to_end() {
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 20; // Prevent hunger interference.
+        // Disable hunger and tiredness so the elf doesn't get distracted.
+        if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+            elf_data.food_decay_per_tick = 0;
+            elf_data.rest_decay_per_tick = 0;
+        }
+        sim.species_table = sim
+            .config
+            .species
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+
+        // Verify the tree has fruit voxels (no manual ground pile needed).
+        let tree = &sim.trees[&sim.player_tree_id];
+        assert!(
+            !tree.fruit_positions.is_empty(),
+            "Tree should have fruit voxels for this test"
+        );
+
+        // Place both buildings near the tree on the forest floor, adjacent.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let site1 = VoxelCoord::new(tree_pos.x + 3, 0, tree_pos.z);
+        let site2 = VoxelCoord::new(tree_pos.x + 7, 0, tree_pos.z);
+
+        // Insert storehouse — only wants bread (no fruit want, so the elf
+        // isn't distracted hauling fruit to storehouse instead of kitchen).
+        let sid_store = insert_completed_building(&mut sim, site1);
+        {
+            let s = sim.structures.get_mut(&sid_store).unwrap();
+            s.furnishing = Some(FurnishingType::Storehouse);
+            s.logistics_priority = Some(sim.config.storehouse_default_priority);
+            s.logistics_wants = vec![building::LogisticsWant {
+                item_kind: inventory::ItemKind::Bread,
+                target_quantity: sim.config.storehouse_default_bread_want,
+            }];
+        }
+
+        // Insert kitchen with default logistics + cooking.
+        let sid_kitchen = insert_completed_building(&mut sim, site2);
+        {
+            let s = sim.structures.get_mut(&sid_kitchen).unwrap();
+            s.furnishing = Some(FurnishingType::Kitchen);
+            s.logistics_priority = Some(sim.config.kitchen_default_priority);
+            s.logistics_wants = vec![building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                target_quantity: sim.config.kitchen_default_fruit_want,
+            }];
+            s.cooking_enabled = true;
+            s.cooking_bread_target = 50;
+        }
+
+        // Spawn 1 elf near the tree.
+        let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+        let mut events = Vec::new();
+        sim.spawn_creature(Species::Elf, spawn_pos, &mut events);
+
+        // Run 500k ticks — enough for full pipeline:
+        // harvest task → elf picks fruit → ground pile → haul to kitchen → cook → haul bread out.
+        sim.step(&[], sim.tick + 500_000);
+
+        // Storehouse should have bread from cooking (full pipeline: harvest → haul → cook → haul).
+        let store = &sim.structures[&sid_store];
+        let store_bread =
+            inventory::unreserved_item_count(&store.inventory, inventory::ItemKind::Bread);
+        assert!(
+            store_bread >= 10,
+            "Storehouse should have at least 10 bread from cooking, got {store_bread}"
+        );
     }
 
     #[test]

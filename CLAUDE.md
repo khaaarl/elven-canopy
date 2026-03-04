@@ -26,7 +26,8 @@ Loose overview of where things stand. See `docs/tracker.md` for the full project
 - **Phase 1 (A Tree and an Elf):** Complete.
 - **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, Rust chunk-based mesh generation with face culling replaces GDScript MultiMesh rendering. No blueprint mode UI, no mana economy, no visual smoothing.
 - **Phase 6 (Culture and Language):** Music crate complete as standalone generator, not yet integrated into game runtime. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation.
-- **Phases 3–5, 7–8:** Not started.
+- **Phase 4 (Economy and Ecology):** Kitchen cooking implemented; rest not started.
+- **Phases 3, 5, 7–8:** Not started.
 
 ## Project Structure
 

@@ -93,7 +93,8 @@
 //   `get_structure_info(id)` — returns a `VarDictionary` with detailed info
 //   including `name` (display name) and `has_custom_name` (bool) for the
 //   info panel. `rename_structure(id, name)` — set or clear (empty string)
-//   a structure's custom name.
+//   a structure's custom name. `set_cooking_config(id, enabled, bread_target)`
+//   — configure cooking on a kitchen building.
 // - **Ground piles:** `add_ground_pile_item(x,y,z,item_kind,quantity)` —
 //   creates or updates a ground pile at the given position (direct mutation,
 //   same pattern as `add_creature_item`). `get_ground_piles()` — returns a
@@ -666,6 +667,8 @@ impl SimBridge {
                             elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
                             elven_canopy_sim::task::TaskKind::EatBread => "EatBread",
                             elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
+                            elven_canopy_sim::task::TaskKind::Cook { .. } => "Cook",
+                            elven_canopy_sim::task::TaskKind::Harvest { .. } => "Harvest",
                         })
                     })
                     .unwrap_or("");
@@ -757,6 +760,8 @@ impl SimBridge {
                             elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
                             elven_canopy_sim::task::TaskKind::EatBread => "EatBread",
                             elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
+                            elven_canopy_sim::task::TaskKind::Cook { .. } => "Cook",
+                            elven_canopy_sim::task::TaskKind::Harvest { .. } => "Harvest",
                         })
                     })
                     .unwrap_or("");
@@ -802,7 +807,7 @@ impl SimBridge {
     /// Return all non-complete tasks as a `VarArray` of dictionaries.
     ///
     /// Each dictionary contains: `id` (short hex), `id_full` (full UUID),
-    /// `kind` ("GoTo", "Build", "EatFruit", "Furnish", or "Sleep"),
+    /// `kind` ("GoTo", "Build", "EatBread", "EatFruit", "Sleep", "Furnish", "Haul", or "Cook"),
     /// `origin` ("PlayerDirected", "Autonomous", or "Automated"),
     /// `state` ("Available" or "In Progress"), `progress`, `total_cost`,
     /// `location_x/y/z`, and `assignees` (array of dictionaries with
@@ -840,6 +845,8 @@ impl SimBridge {
                 elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
                 elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
                 elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
+                elven_canopy_sim::task::TaskKind::Cook { .. } => "Cook",
+                elven_canopy_sim::task::TaskKind::Harvest { .. } => "Harvest",
             };
             dict.set("kind", GString::from(kind_str));
 
@@ -1062,6 +1069,41 @@ impl SimBridge {
         }
         dict.set("logistics_wants", wants_arr);
 
+        // Cooking data (for Kitchen buildings).
+        dict.set("cooking_enabled", structure.cooking_enabled);
+        dict.set(
+            "cooking_bread_target",
+            structure.cooking_bread_target as i64,
+        );
+        let cook_status = if structure.furnishing
+            == Some(elven_canopy_sim::types::FurnishingType::Kitchen)
+            && structure.cooking_enabled
+        {
+            // Check bread count vs target.
+            let bread_count: u32 = structure
+                .inventory
+                .iter()
+                .filter(|i| i.kind == elven_canopy_sim::inventory::ItemKind::Bread)
+                .map(|i| i.quantity)
+                .sum();
+            if bread_count >= structure.cooking_bread_target {
+                "Bread target reached"
+            } else {
+                // Check for active Cook task.
+                let has_cook_task = sim.tasks.values().any(|t| {
+                    matches!(
+                        &t.kind,
+                        elven_canopy_sim::task::TaskKind::Cook { structure_id }
+                            if *structure_id == sid
+                    ) && t.state != elven_canopy_sim::task::TaskState::Complete
+                });
+                if has_cook_task { "Cooking..." } else { "Idle" }
+            }
+        } else {
+            ""
+        };
+        dict.set("cook_status", GString::from(cook_status));
+
         dict
     }
 
@@ -1187,6 +1229,16 @@ impl SimBridge {
         self.apply_or_send(SimAction::SetLogisticsWants {
             structure_id: StructureId(structure_id as u64),
             wants,
+        });
+    }
+
+    /// Set the cooking configuration for a kitchen building.
+    #[func]
+    fn set_cooking_config(&mut self, structure_id: i64, cooking_enabled: bool, bread_target: i32) {
+        self.apply_or_send(SimAction::SetCookingConfig {
+            structure_id: StructureId(structure_id as u64),
+            cooking_enabled,
+            cooking_bread_target: bread_target.max(0) as u32,
         });
     }
 

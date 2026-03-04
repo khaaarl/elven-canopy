@@ -52,6 +52,16 @@
 //   Items are reserved at source creation to prevent double-claiming. On
 //   abandonment: GoingToSource clears reservations; GoingToDestination drops
 //   carried items as a ground pile.
+// - `Cook { structure_id }` — converts reserved fruit into bread at a kitchen.
+//   Created by `process_kitchen_monitor()` when a kitchen has unreserved fruit
+//   and `cooking_enabled == true`. Progress increments each tick; on completion,
+//   fruit is consumed and bread is added to the kitchen's inventory.
+// - `Harvest { fruit_pos }` — walk to a fruit voxel, remove it, and create a
+//   ground pile with 1 Fruit at the elf's position. Instant (`total_cost = 0`).
+//   Created by `process_harvest_tasks()` when logistics buildings want fruit
+//   but not enough fruit items exist as ground piles or building inventory.
+//   Bridges the gap between tree fruit voxels and the item-based logistics
+//   system.
 //
 // ## Lifecycle
 //
@@ -149,6 +159,16 @@ pub enum TaskKind {
         phase: HaulPhase,
         destination_nav_node: NavNodeId,
     },
+    /// Cook food in a kitchen. An elf walks to the kitchen, works for
+    /// `cook_work_ticks`, then converts `cook_fruit_input` fruit into
+    /// `cook_bread_output` bread in the kitchen's inventory.
+    Cook { structure_id: StructureId },
+    /// Harvest a fruit voxel from a tree. The elf walks to the fruit's nav
+    /// node, removes the fruit voxel from the world and tree, and creates a
+    /// ground pile with 1 Fruit item at the elf's position. Instant
+    /// (`total_cost = 0`). Created by `process_harvest_tasks()` when
+    /// logistics buildings want fruit but none is available as items.
+    Harvest { fruit_pos: VoxelCoord },
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.

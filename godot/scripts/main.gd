@@ -217,16 +217,13 @@ func _ready() -> void:
 		for i in 3:
 			bridge.spawn_creature("Deer", cx, 0, cz)
 		for i in 3:
-			bridge.spawn_creature("Monkey", cx, 0, cz)
-		for i in 3:
 			bridge.spawn_creature("Squirrel", cx, 0, cz)
 		print(
 			(
-				"Elven Canopy: spawned new creatures (boar=%d, deer=%d, monkey=%d, squirrel=%d)"
+				"Elven Canopy: spawned new creatures (boar=%d, deer=%d, squirrel=%d)"
 				% [
 					bridge.creature_count_by_name("Boar"),
 					bridge.creature_count_by_name("Deer"),
-					bridge.creature_count_by_name("Monkey"),
 					bridge.creature_count_by_name("Squirrel"),
 				]
 			)
@@ -280,8 +277,6 @@ func _on_mp_game_started() -> void:
 			bridge.spawn_creature("Boar", cx, 0, cz)
 		for i in 3:
 			bridge.spawn_creature("Deer", cx, 0, cz)
-		for i in 3:
-			bridge.spawn_creature("Monkey", cx, 0, cz)
 		for i in 3:
 			bridge.spawn_creature("Squirrel", cx, 0, cz)
 		print("Elven Canopy: multiplayer game started, spawned initial creatures")
@@ -536,6 +531,9 @@ func _setup_common(bridge: SimBridge) -> void:
 	)
 	_structure_info_panel.logistics_wants_changed.connect(
 		func(sid: int, json: String): bridge.set_logistics_wants(sid, json)
+	)
+	_structure_info_panel.cooking_config_changed.connect(
+		func(sid: int, enabled: bool, target: int): bridge.set_cooking_config(sid, enabled, target)
 	)
 
 	# Menu button.

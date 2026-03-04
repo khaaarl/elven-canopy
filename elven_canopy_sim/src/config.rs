@@ -759,6 +759,46 @@ pub struct GameConfig {
     /// flooding the task queue with haul jobs.
     #[serde(default = "default_max_haul_tasks_per_heartbeat")]
     pub max_haul_tasks_per_heartbeat: u32,
+
+    /// Number of bread items given to each elf on spawn.
+    #[serde(default = "default_elf_starting_bread")]
+    pub elf_starting_bread: u32,
+
+    /// Default logistics priority for newly furnished storehouses.
+    #[serde(default = "default_storehouse_default_priority")]
+    pub storehouse_default_priority: u8,
+
+    /// Default fruit want for newly furnished storehouses.
+    #[serde(default = "default_storehouse_default_fruit_want")]
+    pub storehouse_default_fruit_want: u32,
+
+    /// Default bread want for newly furnished storehouses.
+    #[serde(default = "default_storehouse_default_bread_want")]
+    pub storehouse_default_bread_want: u32,
+
+    /// Default logistics priority for newly furnished kitchens.
+    #[serde(default = "default_kitchen_default_priority")]
+    pub kitchen_default_priority: u8,
+
+    /// Default fruit want for newly furnished kitchens.
+    #[serde(default = "default_kitchen_default_fruit_want")]
+    pub kitchen_default_fruit_want: u32,
+
+    /// Default bread target for newly furnished kitchens.
+    #[serde(default = "default_kitchen_default_bread_target")]
+    pub kitchen_default_bread_target: u32,
+
+    /// Ticks of work to complete one cook cycle (5000 = 5 sim-seconds).
+    #[serde(default = "default_cook_work_ticks")]
+    pub cook_work_ticks: u64,
+
+    /// Fruit consumed per cook cycle.
+    #[serde(default = "default_cook_fruit_input")]
+    pub cook_fruit_input: u32,
+
+    /// Bread produced per cook cycle.
+    #[serde(default = "default_cook_bread_output")]
+    pub cook_bread_output: u32,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -787,6 +827,46 @@ fn default_logistics_heartbeat_interval() -> u64 {
 
 fn default_max_haul_tasks_per_heartbeat() -> u32 {
     5
+}
+
+fn default_elf_starting_bread() -> u32 {
+    2
+}
+
+fn default_storehouse_default_priority() -> u8 {
+    2
+}
+
+fn default_storehouse_default_fruit_want() -> u32 {
+    10
+}
+
+fn default_storehouse_default_bread_want() -> u32 {
+    20
+}
+
+fn default_kitchen_default_priority() -> u8 {
+    8
+}
+
+fn default_kitchen_default_fruit_want() -> u32 {
+    5
+}
+
+fn default_kitchen_default_bread_target() -> u32 {
+    50
+}
+
+fn default_cook_work_ticks() -> u64 {
+    5000
+}
+
+fn default_cook_fruit_input() -> u32 {
+    1
+}
+
+fn default_cook_bread_output() -> u32 {
+    10
 }
 
 impl Default for GameConfig {
@@ -974,6 +1054,16 @@ impl Default for GameConfig {
             thoughts: ThoughtConfig::default(),
             logistics_heartbeat_interval_ticks: 5000,
             max_haul_tasks_per_heartbeat: 5,
+            elf_starting_bread: 2,
+            storehouse_default_priority: 2,
+            storehouse_default_fruit_want: 10,
+            storehouse_default_bread_want: 20,
+            kitchen_default_priority: 8,
+            kitchen_default_fruit_want: 5,
+            kitchen_default_bread_target: 50,
+            cook_work_ticks: 5000,
+            cook_fruit_input: 1,
+            cook_bread_output: 10,
         }
     }
 }

@@ -30,6 +30,8 @@
 //   its pull priority (higher = served first).
 // - `SetLogisticsWants` — set which items and quantities a building wants
 //   hauled to it. The `LogisticsHeartbeat` creates `Haul` tasks to fill these.
+// - `SetCookingConfig` — enable/disable cooking on a kitchen and set the
+//   bread production target.
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -137,6 +139,12 @@ pub enum SimAction {
     SetLogisticsWants {
         structure_id: StructureId,
         wants: Vec<LogisticsWant>,
+    },
+    /// Set the cooking configuration for a kitchen building.
+    SetCookingConfig {
+        structure_id: StructureId,
+        cooking_enabled: bool,
+        cooking_bread_target: u32,
     },
 }
 

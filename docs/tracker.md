@@ -63,7 +63,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
-[ ] F-bldg-kitchen         Kitchen (cooking from ingredients)
 [ ] F-bldg-storehouse      Storehouse (item storage)
 [ ] F-bldg-workshop        Craftself's workshop
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
@@ -147,6 +146,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
+[x] F-bldg-kitchen         Kitchen (cooking from ingredients)
 [x] F-bread                Bread items and elf food management
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
@@ -263,10 +263,13 @@ satisfaction.
 **Related:** F-bldg-dormitory, F-elf-needs
 
 #### F-bldg-kitchen — Kitchen (cooking from ingredients)
-**Status:** Todo · **Phase:** 4
+**Status:** Done · **Phase:** 4
 
 Building where elves convert raw ingredients into processed foods (e.g.,
-one large fruit into many shelf-stable breads).
+one large fruit into many shelf-stable breads). Kitchens receive fruit
+via logistics and cook it into bread. Cooking is controlled via the
+structure info panel (enable/disable, bread target). **Draft:**
+`docs/drafts/kitchen_cooking.md`
 
 **Related:** F-bread, F-fruit-variety
 

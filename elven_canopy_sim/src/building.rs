@@ -26,8 +26,9 @@
 //
 // `CompletedStructure` records a completed build's metadata — type, bounding
 // box, completion tick, optional user-editable name, optional furnishing
-// state, an inventory for stored items, and optional logistics config
-// (priority + wants list for automated hauling). Created by
+// state, an inventory for stored items, optional logistics config
+// (priority + wants list for automated hauling), and optional cooking config
+// (`cooking_enabled` + `cooking_bread_target` for kitchens). Created by
 // `SimState::complete_build()` via `from_blueprint()` and stored in
 // `SimState::structures`. Buildings can be furnished (e.g. as dormitories)
 // via `SimAction::FurnishStructure`, which triggers incremental furniture
@@ -112,6 +113,12 @@ pub struct CompletedStructure {
     /// List of item kinds and target quantities this building wants.
     #[serde(default)]
     pub logistics_wants: Vec<LogisticsWant>,
+    /// Whether this kitchen automatically creates cook tasks.
+    #[serde(default)]
+    pub cooking_enabled: bool,
+    /// Stop cooking when this kitchen's own bread inventory >= this value.
+    #[serde(default)]
+    pub cooking_bread_target: u32,
 }
 
 impl CompletedStructure {
@@ -138,6 +145,8 @@ impl CompletedStructure {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         }
     }
 
@@ -532,6 +541,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
 
         let json = serde_json::to_string(&structure).unwrap();
@@ -596,6 +607,8 @@ mod tests {
                     target_quantity: 5,
                 },
             ],
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
 
         let json = serde_json::to_string(&structure).unwrap();
@@ -628,6 +641,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
         assert_eq!(structure.display_name(), "Platform #12");
     }
@@ -655,6 +670,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
         assert_eq!(structure.display_name(), "Starlight Bridge");
 
@@ -698,6 +715,8 @@ mod tests {
                 inventory: Vec::new(),
                 logistics_priority: None,
                 logistics_wants: Vec::new(),
+                cooking_enabled: false,
+                cooking_bread_target: 0,
             };
             assert_eq!(structure.display_name(), expected);
         }
@@ -728,6 +747,8 @@ mod tests {
             inventory: Vec::new(),
             logistics_priority: None,
             logistics_wants: Vec::new(),
+            cooking_enabled: false,
+            cooking_bread_target: 0,
         };
         let mut value: serde_json::Value = serde_json::to_value(&structure).unwrap();
         value.as_object_mut().unwrap().remove("name");
