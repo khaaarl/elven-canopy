@@ -21,6 +21,7 @@
 // - `structural.rs`:  Spring-mass structural integrity solver.
 // - `inventory.rs`:   Item/inventory data model (ItemKind, Item, GroundPile) + helpers.
 // - `session.rs`:     GameSession — message-driven session management (players, commands, pause/resume).
+// - `local_relay.rs`: LocalRelay — accumulator-based tick pacer for single-player mode.
 // - `checksum.rs`:    FNV-1a hashing + interval constant for multiplayer desync detection.
 // - `prng`:           Re-exported from `elven_canopy_prng` — xoshiro256++ PRNG with SplitMix64 seeding.
 // - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.
@@ -41,6 +42,7 @@ pub mod command;
 pub mod config;
 pub mod event;
 pub mod inventory;
+pub mod local_relay;
 pub mod mesh_gen;
 pub mod nav;
 pub mod pathfinding;

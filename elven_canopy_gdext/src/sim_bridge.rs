@@ -4,6 +4,11 @@
 // query the simulation. This is the sole interface between GDScript and the
 // Rust sim — all sim interaction goes through methods on this class.
 //
+// All sim access goes through a `GameSession` (`session.rs`). The session
+// owns the `Option<SimState>` and processes all mutations via typed
+// `SessionMessage`s. A `LocalRelay` (`local_relay.rs`) converts wall-clock
+// deltas into `AdvanceTo` messages for single-player tick pacing.
+//
 // ## What it exposes
 //
 // - **Lifecycle:** `init_sim(seed)`, `init_sim_with_tree_profile_json(seed, json)`,
@@ -124,15 +129,18 @@ use elven_canopy_protocol::message::ServerMessage;
 use elven_canopy_relay::server::{RelayConfig, RelayHandle, start_relay};
 use elven_canopy_sim::blueprint::BlueprintState;
 use elven_canopy_sim::checksum::CHECKSUM_INTERVAL_TICKS;
-use elven_canopy_sim::command::{SimAction, SimCommand};
+use elven_canopy_sim::command::SimAction;
 use elven_canopy_sim::config::{GameConfig, TreeProfile};
-use elven_canopy_sim::sim::SimState;
+use elven_canopy_sim::local_relay::LocalRelay;
+use elven_canopy_sim::session::{
+    GameSession, SessionMessage, SessionPlayerId, SessionSpeed, speed_to_ticks_per_turn,
+    ticks_per_turn_to_speed,
+};
 use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
     BuildType, CreatureId, FaceDirection, FurnishingType, FurnitureKind, LadderKind,
-    OverlapClassification, Priority, SimSpeed, SimUuid, Species, StructureId, VoxelCoord,
-    VoxelType,
+    OverlapClassification, Priority, SimUuid, Species, StructureId, VoxelCoord, VoxelType,
 };
 use godot::prelude::*;
 
@@ -183,15 +191,15 @@ fn species_name(species: Species) -> &'static str {
 #[class(base=Node)]
 pub struct SimBridge {
     base: Base<Node>,
-    sim: Option<SimState>,
+    session: GameSession,
+    local_relay: Option<LocalRelay>,
+    local_player_id: SessionPlayerId,
     // Chunk mesh cache — not part of SimState, lives here for rendering.
     mesh_cache: Option<MeshCache>,
     // Multiplayer state
     net_client: Option<NetClient>,
     relay_handle: Option<RelayHandle>,
     is_multiplayer_mode: bool,
-    is_host: bool,
-    game_started: bool,
     mp_events: Vec<String>,
     mp_ticks_per_turn: u32,
 }
@@ -201,13 +209,13 @@ impl INode for SimBridge {
     fn init(base: Base<Node>) -> Self {
         Self {
             base,
-            sim: None,
+            session: GameSession::new_singleplayer(),
+            local_relay: None,
+            local_player_id: SessionPlayerId::LOCAL,
             mesh_cache: None,
             net_client: None,
             relay_handle: None,
             is_multiplayer_mode: false,
-            is_host: false,
-            game_started: false,
             mp_events: Vec::new(),
             mp_ticks_per_turn: 50,
         }
@@ -219,7 +227,18 @@ impl SimBridge {
     /// Initialize the simulation with the given seed and default config.
     #[func]
     fn init_sim(&mut self, seed: i64) {
-        self.sim = Some(SimState::new(seed as u64));
+        let mut config = GameConfig::default();
+        // Clear initial creatures/piles — GDScript still spawns them in _ready().
+        // Phase 4 will flip this so StartGame uses the full config.
+        config.initial_creatures.clear();
+        config.initial_ground_piles.clear();
+        let seconds_per_tick = config.tick_duration_ms as f64 / 1000.0;
+        self.session.process(SessionMessage::StartGame {
+            seed: seed as u64,
+            config: Box::new(config),
+        });
+        self.local_relay = Some(LocalRelay::new(seconds_per_tick));
+        self.rebuild_mesh_cache();
         godot_print!("SimBridge: simulation initialized with seed {seed}");
     }
 
@@ -235,32 +254,41 @@ impl SimBridge {
                 godot_warn!("Failed to parse tree profile JSON: {e}, using default");
                 TreeProfile::fantasy_mega()
             });
-        let config = GameConfig {
+        let mut config = GameConfig {
             tree_profile: profile,
             ..Default::default()
         };
-        self.sim = Some(SimState::with_config(seed as u64, config));
+        // Clear initial creatures/piles — GDScript still spawns them in _ready().
+        config.initial_creatures.clear();
+        config.initial_ground_piles.clear();
+        let seconds_per_tick = config.tick_duration_ms as f64 / 1000.0;
+        self.session.process(SessionMessage::StartGame {
+            seed: seed as u64,
+            config: Box::new(config),
+        });
+        self.local_relay = Some(LocalRelay::new(seconds_per_tick));
+        self.rebuild_mesh_cache();
         godot_print!("SimBridge: simulation initialized with seed {seed} and custom tree profile");
     }
 
     /// Advance the simulation to the target tick, processing all events.
     #[func]
     fn step_to_tick(&mut self, target_tick: i64) {
-        if let Some(sim) = &mut self.sim {
-            sim.step(&[], target_tick as u64);
-        }
+        self.session.process(SessionMessage::AdvanceTo {
+            tick: target_tick as u64,
+        });
     }
 
     /// Return the current simulation tick.
     #[func]
     fn current_tick(&self) -> i64 {
-        self.sim.as_ref().map_or(0, |s| s.tick as i64)
+        self.session.current_tick() as i64
     }
 
     /// Return the mana stored in the player's home tree.
     #[func]
     fn home_tree_mana(&self) -> f32 {
-        self.sim.as_ref().map_or(0.0, |s| {
+        self.session.sim.as_ref().map_or(0.0, |s| {
             s.trees
                 .get(&s.player_tree_id)
                 .map_or(0.0, |t| t.mana_stored)
@@ -270,7 +298,7 @@ impl SimBridge {
     /// Return true if the simulation has been initialized.
     #[func]
     fn is_initialized(&self) -> bool {
-        self.sim.is_some()
+        self.session.has_sim()
     }
 
     /// Return the simulation tick duration in milliseconds. The GDScript
@@ -278,7 +306,8 @@ impl SimBridge {
     /// (tick_duration_ms=1 → 1000 ticks/sec).
     #[func]
     fn tick_duration_ms(&self) -> i32 {
-        self.sim
+        self.session
+            .sim
             .as_ref()
             .map_or(1, |s| s.config.tick_duration_ms as i32)
     }
@@ -287,12 +316,13 @@ impl SimBridge {
     /// "Fast", or "VeryFast").
     #[func]
     fn get_sim_speed(&self) -> GString {
-        let speed = self.sim.as_ref().map_or(SimSpeed::Normal, |s| s.speed);
-        match speed {
-            SimSpeed::Paused => "Paused",
-            SimSpeed::Normal => "Normal",
-            SimSpeed::Fast => "Fast",
-            SimSpeed::VeryFast => "VeryFast",
+        if self.session.paused {
+            return "Paused".into();
+        }
+        match self.session.speed {
+            SessionSpeed::Normal => "Normal",
+            SessionSpeed::Fast => "Fast",
+            SessionSpeed::VeryFast => "VeryFast",
         }
         .into()
     }
@@ -300,49 +330,53 @@ impl SimBridge {
     /// Return the time multiplier for the current simulation speed.
     #[func]
     fn sim_speed_multiplier(&self) -> f64 {
-        self.sim.as_ref().map_or(1.0, |s| s.speed.multiplier())
+        self.session.speed_multiplier()
     }
 
-    /// Set the simulation speed by name. Sends the speed change through
-    /// `apply_or_send` for deterministic sim state. In multiplayer, also
-    /// sends relay-level pause/resume/speed messages to control turn pacing.
+    /// Set the simulation speed by name. Routes through the session for
+    /// pause/resume/speed state. In multiplayer, also sends relay-level
+    /// pause/resume/speed messages to control turn pacing.
     #[func]
     fn set_sim_speed(&mut self, speed_name: GString) {
-        let speed = match speed_name.to_string().as_str() {
-            "Paused" => SimSpeed::Paused,
-            "Normal" => SimSpeed::Normal,
-            "Fast" => SimSpeed::Fast,
-            "VeryFast" => SimSpeed::VeryFast,
+        let speed_str = speed_name.to_string();
+        let is_pause = speed_str == "Paused";
+
+        let session_speed = match speed_str.as_str() {
+            "Paused" => None,
+            "Normal" => Some(SessionSpeed::Normal),
+            "Fast" => Some(SessionSpeed::Fast),
+            "VeryFast" => Some(SessionSpeed::VeryFast),
             _ => return,
         };
 
-        let was_paused = self
-            .sim
-            .as_ref()
-            .is_some_and(|s| s.speed == SimSpeed::Paused);
+        let was_paused = self.session.paused;
+        let pid = self.local_player_id;
 
-        // Sim-level: deterministic speed state via command relay.
-        self.apply_or_send(SimAction::SetSimSpeed { speed });
+        if is_pause {
+            self.session.process(SessionMessage::Pause { by: pid });
+        } else {
+            if was_paused {
+                self.session.process(SessionMessage::Resume { by: pid });
+            }
+            if let Some(speed) = session_speed {
+                self.session.process(SessionMessage::SetSpeed { speed });
+            }
+        }
 
         // Relay-level: control turn pacing in multiplayer.
         if self.is_multiplayer_mode
             && let Some(client) = &mut self.net_client
         {
-            if speed == SimSpeed::Paused {
+            if is_pause {
                 let _ = client.send_pause();
             } else {
                 if was_paused {
                     let _ = client.send_resume();
                 }
-                // Map sim speed to relay ticks_per_turn.
-                let base_tpt = 50u32;
-                let tpt = match speed {
-                    SimSpeed::Normal => base_tpt,
-                    SimSpeed::Fast => base_tpt * 2,
-                    SimSpeed::VeryFast => base_tpt * 5,
-                    SimSpeed::Paused => unreachable!(),
-                };
-                let _ = client.send_set_speed(tpt);
+                if let Some(speed) = session_speed {
+                    let tpt = speed_to_ticks_per_turn(speed);
+                    let _ = client.send_set_speed(tpt);
+                }
             }
         }
     }
@@ -352,7 +386,7 @@ impl SimBridge {
     /// MultiMesh, not part of the chunk mesh system.
     #[func]
     fn get_fruit_voxels(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedInt32Array::new();
         };
         let tree = match sim.trees.get(&sim.player_tree_id) {
@@ -380,7 +414,7 @@ impl SimBridge {
     /// height, spread_x, spread_z, position_x, position_y, position_z.
     #[func]
     fn get_home_tree_info(&self) -> VarDictionary {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return VarDictionary::new();
         };
         let Some(tree) = sim.trees.get(&sim.player_tree_id) else {
@@ -453,7 +487,7 @@ impl SimBridge {
     /// Return the number of fruit on the player's home tree.
     #[func]
     fn fruit_count(&self) -> i32 {
-        self.sim.as_ref().map_or(0, |s| {
+        self.session.sim.as_ref().map_or(0, |s| {
             s.trees
                 .get(&s.player_tree_id)
                 .map_or(0, |t| t.fruit_positions.len() as i32)
@@ -472,9 +506,27 @@ impl SimBridge {
         self.creature_count_by_name(GString::from("Elf"))
     }
 
+    /// Route a build/carve action through the session and return the
+    /// build validation message (empty = success). In multiplayer, sends
+    /// to relay and returns empty (message not available until turn).
+    fn apply_build_action(&mut self, action: SimAction) -> GString {
+        if self.is_multiplayer_mode {
+            self.apply_or_send(action);
+            return GString::new();
+        }
+        self.apply_or_send(action);
+        self.session
+            .sim
+            .as_ref()
+            .and_then(|s| s.last_build_message.as_deref())
+            .map_or_else(GString::new, GString::from)
+    }
+
     /// Apply a SimAction locally (single-player) or send it to the relay
-    /// (multiplayer). In multiplayer, the action will come back in a Turn
-    /// message and be applied then.
+    /// (multiplayer). In single-player, routes through the session and
+    /// immediately advances by 1 tick (backward compat: GDScript queries
+    /// state after spawn/build). In multiplayer, the action will come back
+    /// in a Turn message and be applied then.
     fn apply_or_send(&mut self, action: SimAction) {
         if self.is_multiplayer_mode {
             if let Some(client) = &mut self.net_client
@@ -483,15 +535,14 @@ impl SimBridge {
             {
                 godot_error!("SimBridge: send_command failed: {e}");
             }
-        } else if let Some(sim) = &mut self.sim {
-            let player_id = sim.player_id;
-            let next_tick = sim.tick + 1;
-            let cmd = SimCommand {
-                player_id,
-                tick: next_tick,
+        } else {
+            self.session.process(SessionMessage::SimCommand {
+                from: self.local_player_id,
                 action,
-            };
-            sim.step(&[cmd], next_tick);
+            });
+            // Immediately advance by 1 tick so GDScript can query updated state.
+            let tick = self.session.current_tick() + 1;
+            self.session.process(SessionMessage::AdvanceTo { tick });
         }
     }
 
@@ -533,7 +584,7 @@ impl SimBridge {
     /// Return all nav node positions as a PackedVector3Array.
     #[func]
     fn get_all_nav_nodes(&self) -> PackedVector3Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedVector3Array::new();
         };
         let mut arr = PackedVector3Array::new();
@@ -551,7 +602,7 @@ impl SimBridge {
     /// PackedVector3Array.
     #[func]
     fn get_ground_nav_nodes(&self) -> PackedVector3Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedVector3Array::new();
         };
         let mut arr = PackedVector3Array::new();
@@ -570,7 +621,7 @@ impl SimBridge {
     /// (not occluded by solid voxels). Used for elf placement.
     #[func]
     fn get_visible_nav_nodes(&self, camera_pos: Vector3) -> PackedVector3Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedVector3Array::new();
         };
         let cam = [camera_pos.x, camera_pos.y, camera_pos.z];
@@ -590,7 +641,7 @@ impl SimBridge {
     /// Used for capybara placement.
     #[func]
     fn get_visible_ground_nav_nodes(&self, camera_pos: Vector3) -> PackedVector3Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedVector3Array::new();
         };
         let cam = [camera_pos.x, camera_pos.y, camera_pos.z];
@@ -635,7 +686,7 @@ impl SimBridge {
         index: i32,
         render_tick: f64,
     ) -> VarDictionary {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return VarDictionary::new();
         };
         let Some(species) = parse_species(&species_name.to_string()) else {
@@ -726,7 +777,7 @@ impl SimBridge {
     /// `get_creature_info()` round-trips per frame.
     #[func]
     fn get_all_creatures_summary(&self) -> VarArray {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return VarArray::new();
         };
 
@@ -819,7 +870,7 @@ impl SimBridge {
     /// camera follow and selection.
     #[func]
     fn get_active_tasks(&self) -> VarArray {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return VarArray::new();
         };
 
@@ -919,7 +970,7 @@ impl SimBridge {
     /// Used by `structure_list_panel.gd` for the browsable structure list.
     #[func]
     fn get_structures(&self) -> VarArray {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return VarArray::new();
         };
         let mut result = VarArray::new();
@@ -955,7 +1006,7 @@ impl SimBridge {
     /// to identify which structure the player clicked on.
     #[func]
     fn raycast_structure(&self, origin: Vector3, dir: Vector3) -> i64 {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return -1;
         };
         let from = [origin.x, origin.y, origin.z];
@@ -971,7 +1022,7 @@ impl SimBridge {
     /// `structure_info_panel.gd` for display.
     #[func]
     fn get_structure_info(&self, structure_id: i64) -> VarDictionary {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return VarDictionary::new();
         };
         let sid = StructureId(structure_id as u64);
@@ -1130,7 +1181,7 @@ impl SimBridge {
     /// (structure ID as i64, or -1 if unassigned).
     #[func]
     fn get_all_elves(&self) -> VarArray {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return VarArray::new();
         };
         let rest_max = sim.species_table[&Species::Elf].rest_max;
@@ -1255,7 +1306,7 @@ impl SimBridge {
         let Some(species) = parse_species(&species_name.to_string()) else {
             return PackedVector3Array::new();
         };
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedVector3Array::new();
         };
         let mut arr = PackedVector3Array::new();
@@ -1273,7 +1324,8 @@ impl SimBridge {
         let Some(species) = parse_species(&species_name.to_string()) else {
             return 0;
         };
-        self.sim
+        self.session
+            .sim
             .as_ref()
             .map_or(0, |s| s.creature_count(species) as i32)
     }
@@ -1285,7 +1337,9 @@ impl SimBridge {
         let Some(species) = parse_species(&species_name.to_string()) else {
             return false;
         };
-        let Some(sim) = &self.sim else { return false };
+        let Some(sim) = &self.session.sim else {
+            return false;
+        };
         sim.species_table
             .get(&species)
             .is_some_and(|s| s.ground_only)
@@ -1313,7 +1367,7 @@ impl SimBridge {
         let Some(species) = parse_species(&species_name.to_string()) else {
             return Vector3i::new(1, 1, 1);
         };
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return Vector3i::new(1, 1, 1);
         };
         match sim.species_table.get(&species) {
@@ -1331,7 +1385,7 @@ impl SimBridge {
     #[func]
     fn get_large_ground_nav_nodes(&self) -> PackedVector3Array {
         let mut arr = PackedVector3Array::new();
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return arr;
         };
         for node in sim.large_nav_graph.live_nodes() {
@@ -1348,7 +1402,7 @@ impl SimBridge {
     /// file I/O — the sim crate has no filesystem access.
     #[func]
     fn save_game_json(&self) -> GString {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return GString::new();
         };
         match sim.to_json() {
@@ -1366,20 +1420,32 @@ impl SimBridge {
     /// preserved (or cleared if there was none).
     #[func]
     fn load_game_json(&mut self, json: GString) -> bool {
-        match SimState::from_json(&json.to_string()) {
-            Ok(state) => {
+        let json_str = json.to_string();
+        let events = self
+            .session
+            .process(SessionMessage::LoadSim { json: json_str });
+        let loaded = events
+            .iter()
+            .any(|e| matches!(e, elven_canopy_sim::session::SessionEvent::SimLoaded));
+        if loaded {
+            if let Some(sim) = &self.session.sim {
                 godot_print!(
                     "SimBridge: loaded save (tick={}, creatures={})",
-                    state.tick,
-                    state.creatures.len()
+                    sim.tick,
+                    sim.creatures.len()
                 );
-                self.sim = Some(state);
-                true
+                let seconds_per_tick = sim.config.tick_duration_ms as f64 / 1000.0;
+                self.local_relay = Some(LocalRelay::new(seconds_per_tick));
             }
-            Err(e) => {
-                godot_error!("SimBridge: failed to load save: {e}");
-                false
+            self.rebuild_mesh_cache();
+            true
+        } else {
+            for e in &events {
+                if let elven_canopy_sim::session::SessionEvent::Error { message } = e {
+                    godot_error!("SimBridge: failed to load save: {message}");
+                }
             }
+            false
         }
     }
 
@@ -1400,7 +1466,9 @@ impl SimBridge {
         let Some(species) = parse_species(&species_name.to_string()) else {
             return;
         };
-        let Some(sim) = &mut self.sim else { return };
+        let Some(sim) = &mut self.session.sim else {
+            return;
+        };
         let creature_id = sim
             .creatures
             .iter()
@@ -1424,7 +1492,9 @@ impl SimBridge {
         let Some(species) = parse_species(&species_name.to_string()) else {
             return;
         };
-        let Some(sim) = &mut self.sim else { return };
+        let Some(sim) = &mut self.session.sim else {
+            return;
+        };
         let creature_id = sim
             .creatures
             .iter()
@@ -1465,7 +1535,9 @@ impl SimBridge {
                 return;
             }
         };
-        let Some(sim) = &mut self.sim else { return };
+        let Some(sim) = &mut self.session.sim else {
+            return;
+        };
         let creature_id = sim
             .creatures
             .iter()
@@ -1504,7 +1576,9 @@ impl SimBridge {
                 return;
             }
         };
-        let Some(sim) = &mut self.sim else { return };
+        let Some(sim) = &mut self.session.sim else {
+            return;
+        };
         let pos = VoxelCoord::new(x, y, z);
         let pile = sim.ground_piles.entry(pos).or_insert_with(|| {
             elven_canopy_sim::inventory::GroundPile {
@@ -1523,7 +1597,7 @@ impl SimBridge {
     /// and debugging.
     #[func]
     fn get_ground_piles(&self) -> VarArray {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return VarArray::new();
         };
         let mut result = VarArray::new();
@@ -1555,7 +1629,7 @@ impl SimBridge {
     /// pile info panel display and per-frame refresh.
     #[func]
     fn get_ground_pile_info(&self, x: i32, y: i32, z: i32) -> VarDictionary {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return VarDictionary::new();
         };
         let coord = VoxelCoord::new(x, y, z);
@@ -1587,7 +1661,9 @@ impl SimBridge {
     /// placement.
     #[func]
     fn validate_build_position(&self, x: i32, y: i32, z: i32) -> bool {
-        let Some(sim) = &self.sim else { return false };
+        let Some(sim) = &self.session.sim else {
+            return false;
+        };
         let coord = VoxelCoord::new(x, y, z);
         sim.world.in_bounds(coord)
             && sim.world.get(coord) == VoxelType::Air
@@ -1602,7 +1678,9 @@ impl SimBridge {
     /// least one voxel must touch solid), not to every individual voxel.
     #[func]
     fn validate_build_air(&self, x: i32, y: i32, z: i32) -> bool {
-        let Some(sim) = &self.sim else { return false };
+        let Some(sim) = &self.session.sim else {
+            return false;
+        };
         let coord = VoxelCoord::new(x, y, z);
         sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
     }
@@ -1612,7 +1690,9 @@ impl SimBridge {
     /// validation.
     #[func]
     fn has_solid_neighbor(&self, x: i32, y: i32, z: i32) -> bool {
-        let Some(sim) = &self.sim else { return false };
+        let Some(sim) = &self.session.sim else {
+            return false;
+        };
         sim.world.has_solid_face_neighbor(VoxelCoord::new(x, y, z))
     }
 
@@ -1624,29 +1704,11 @@ impl SimBridge {
     /// (warning or block reason), empty string on silent success.
     #[func]
     fn designate_build(&mut self, x: i32, y: i32, z: i32) -> GString {
-        let action = SimAction::DesignateBuild {
+        self.apply_build_action(SimAction::DesignateBuild {
             build_type: BuildType::Platform,
             voxels: vec![VoxelCoord::new(x, y, z)],
             priority: Priority::Normal,
-        };
-        if self.is_multiplayer_mode {
-            self.apply_or_send(action);
-            return GString::new();
-        }
-        let Some(sim) = &mut self.sim else {
-            return GString::new();
-        };
-        let player_id = sim.player_id;
-        let next_tick = sim.tick + 1;
-        let cmd = SimCommand {
-            player_id,
-            tick: next_tick,
-            action,
-        };
-        sim.step(&[cmd], next_tick);
-        sim.last_build_message
-            .as_deref()
-            .map_or_else(GString::new, GString::from)
+        })
     }
 
     /// Designate a rectangular platform blueprint.
@@ -1665,29 +1727,11 @@ impl SimBridge {
                 voxels.push(VoxelCoord::new(x + dx, y, z + dz));
             }
         }
-        let action = SimAction::DesignateBuild {
+        self.apply_build_action(SimAction::DesignateBuild {
             build_type: BuildType::Platform,
             voxels,
             priority: Priority::Normal,
-        };
-        if self.is_multiplayer_mode {
-            self.apply_or_send(action);
-            return GString::new();
-        }
-        let Some(sim) = &mut self.sim else {
-            return GString::new();
-        };
-        let player_id = sim.player_id;
-        let next_tick = sim.tick + 1;
-        let cmd = SimCommand {
-            player_id,
-            tick: next_tick,
-            action,
-        };
-        sim.step(&[cmd], next_tick);
-        sim.last_build_message
-            .as_deref()
-            .map_or_else(GString::new, GString::from)
+        })
     }
 
     /// Designate a building at the given anchor position.
@@ -1705,31 +1749,13 @@ impl SimBridge {
         depth: i32,
         height: i32,
     ) -> GString {
-        let action = SimAction::DesignateBuilding {
+        self.apply_build_action(SimAction::DesignateBuilding {
             anchor: VoxelCoord::new(x, y, z),
             width,
             depth,
             height,
             priority: Priority::Normal,
-        };
-        if self.is_multiplayer_mode {
-            self.apply_or_send(action);
-            return GString::new();
-        }
-        let Some(sim) = &mut self.sim else {
-            return GString::new();
-        };
-        let player_id = sim.player_id;
-        let next_tick = sim.tick + 1;
-        let cmd = SimCommand {
-            player_id,
-            tick: next_tick,
-            action,
-        };
-        sim.step(&[cmd], next_tick);
-        sim.last_build_message
-            .as_deref()
-            .map_or_else(GString::new, GString::from)
+        })
     }
 
     /// Designate a rectangular prism of voxels for carving (removal to Air).
@@ -1757,28 +1783,10 @@ impl SimBridge {
                 }
             }
         }
-        let action = SimAction::DesignateCarve {
+        self.apply_build_action(SimAction::DesignateCarve {
             voxels,
             priority: Priority::Normal,
-        };
-        if self.is_multiplayer_mode {
-            self.apply_or_send(action);
-            return GString::new();
-        }
-        let Some(sim) = &mut self.sim else {
-            return GString::new();
-        };
-        let player_id = sim.player_id;
-        let next_tick = sim.tick + 1;
-        let cmd = SimCommand {
-            player_id,
-            tick: next_tick,
-            action,
-        };
-        sim.step(&[cmd], next_tick);
-        sim.last_build_message
-            .as_deref()
-            .map_or_else(GString::new, GString::from)
+        })
     }
 
     /// Preview-validate a rectangular carve placement.
@@ -1795,7 +1803,7 @@ impl SimBridge {
         depth: i32,
         height: i32,
     ) -> VarDictionary {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
         let w = width.max(1);
@@ -1865,7 +1873,9 @@ impl SimBridge {
         depth: i32,
         height: i32,
     ) -> bool {
-        let Some(sim) = &self.sim else { return false };
+        let Some(sim) = &self.session.sim else {
+            return false;
+        };
         if width < 3 || depth < 3 || height < 1 {
             return false;
         }
@@ -1910,7 +1920,7 @@ impl SimBridge {
         width: i32,
         depth: i32,
     ) -> VarDictionary {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
         let w = width.max(1);
@@ -1992,7 +2002,7 @@ impl SimBridge {
         depth: i32,
         height: i32,
     ) -> VarDictionary {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
 
@@ -2064,7 +2074,7 @@ impl SimBridge {
     /// face_type: 0=Open, 1=Wall, 2=Window, 3=Door, 4=Ceiling, 5=Floor
     #[func]
     fn get_building_face_data(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
@@ -2105,7 +2115,7 @@ impl SimBridge {
     /// planned (not-yet-built) construction. Flat (x,y,z) triples.
     #[func]
     fn get_blueprint_voxels(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
@@ -2133,7 +2143,7 @@ impl SimBridge {
     /// cubes for planned carve operations.
     #[func]
     fn get_carve_blueprint_voxels(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
@@ -2152,14 +2162,49 @@ impl SimBridge {
     }
 
     // ========================================================================
+    // Frame update
+    // ========================================================================
+
+    /// Unified per-frame entry point. Polls the network if in multiplayer,
+    /// then advances the sim via the local relay in single-player. Returns
+    /// the fractional render tick for smooth interpolation.
+    ///
+    /// GDScript won't call this until Phase 4; added now for forward compat.
+    #[func]
+    fn frame_update(&mut self, delta: f64) -> f64 {
+        if self.net_client.is_some() {
+            self.poll_network();
+        }
+        if let Some(relay) = &mut self.local_relay {
+            let mult = self.session.speed_multiplier();
+            let tick = self.session.current_tick();
+            if let Some(msg) = relay.update(delta, mult, tick) {
+                self.session.process(msg);
+            }
+            return relay.render_tick(self.session.current_tick());
+        }
+        self.session.current_tick() as f64
+    }
+
+    // ========================================================================
     // Chunk mesh methods
     // ========================================================================
+
+    /// Internal: rebuild the mesh cache from the current sim state.
+    fn rebuild_mesh_cache(&mut self) {
+        let Some(sim) = &self.session.sim else {
+            return;
+        };
+        let mut cache = MeshCache::new();
+        cache.build_all(&sim.world);
+        self.mesh_cache = Some(cache);
+    }
 
     /// Build the world mesh cache from scratch. Call once after init_sim or
     /// load_game_json. Replaces any existing cache.
     #[func]
     fn build_world_mesh(&mut self) {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return;
         };
         let mut cache = MeshCache::new();
@@ -2175,7 +2220,7 @@ impl SimBridge {
     /// them. Returns the number of chunks updated (0 if nothing changed).
     #[func]
     fn update_world_mesh(&mut self) -> i32 {
-        let Some(sim) = &mut self.sim else {
+        let Some(sim) = &mut self.session.sim else {
             return 0;
         };
         let Some(cache) = &mut self.mesh_cache else {
@@ -2337,7 +2382,7 @@ impl SimBridge {
     /// - kind: 0=Wood, 1=Rope
     #[func]
     fn get_ladder_data(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
@@ -2367,7 +2412,7 @@ impl SimBridge {
     /// (x, y, z, face_dir, kind) quintuples. Same format as `get_ladder_data()`.
     #[func]
     fn get_ladder_blueprint_data(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
@@ -2433,7 +2478,7 @@ impl SimBridge {
         orientation: i32,
         kind: i32,
     ) -> VarDictionary {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
         if height < 1 {
@@ -2543,31 +2588,13 @@ impl SimBridge {
         } else {
             LadderKind::Rope
         };
-        let action = SimAction::DesignateLadder {
+        self.apply_build_action(SimAction::DesignateLadder {
             anchor: VoxelCoord::new(x, y, z),
             height,
             orientation: face_dir,
             kind: ladder_kind,
             priority: Priority::Normal,
-        };
-        if self.is_multiplayer_mode {
-            self.apply_or_send(action);
-            return GString::new();
-        }
-        let Some(sim) = &mut self.sim else {
-            return GString::new();
-        };
-        let player_id = sim.player_id;
-        let next_tick = sim.tick + 1;
-        let cmd = SimCommand {
-            player_id,
-            tick: next_tick,
-            action,
-        };
-        sim.step(&[cmd], next_tick);
-        sim.last_build_message
-            .as_deref()
-            .map_or_else(GString::new, GString::from)
+        })
     }
 
     // ========================================================================
@@ -2613,12 +2640,14 @@ impl SimBridge {
         let config_hash = fnv1a_hash("{}");
         match NetClient::connect(&addr_str, "Host", SIM_VERSION_HASH, config_hash, pw) {
             Ok((client, info)) => {
+                let pid = SessionPlayerId(info.player_id.0);
+                self.local_player_id = pid;
+                self.session = GameSession::new_multiplayer(pid, pid);
                 self.mp_ticks_per_turn = info.ticks_per_turn;
                 self.net_client = Some(client);
                 self.relay_handle = Some(handle);
                 self.is_multiplayer_mode = true;
-                self.is_host = true;
-                self.game_started = false;
+                self.local_relay = None;
                 godot_print!(
                     "SimBridge: hosting on {addr_str} as player {}",
                     info.player_id.0
@@ -2650,11 +2679,15 @@ impl SimBridge {
             pw,
         ) {
             Ok((client, info)) => {
+                let pid = SessionPlayerId(info.player_id.0);
+                self.local_player_id = pid;
+                // In join, host_id is unknown until we receive a GameStart;
+                // set to 0 (relay assigns host).
+                self.session = GameSession::new_multiplayer(pid, SessionPlayerId(0));
                 self.mp_ticks_per_turn = info.ticks_per_turn;
                 self.net_client = Some(client);
                 self.is_multiplayer_mode = true;
-                self.is_host = false;
-                self.game_started = false;
+                self.local_relay = None;
                 godot_print!(
                     "SimBridge: joined '{}' as player {}",
                     info.session_name,
@@ -2680,8 +2713,9 @@ impl SimBridge {
             handle.stop();
         }
         self.is_multiplayer_mode = false;
-        self.is_host = false;
-        self.game_started = false;
+        self.local_player_id = SessionPlayerId::LOCAL;
+        self.session = GameSession::new_singleplayer();
+        self.local_relay = None;
         self.mp_events.clear();
         godot_print!("SimBridge: disconnected from multiplayer");
     }
@@ -2695,13 +2729,13 @@ impl SimBridge {
     /// Return true if this client is the host.
     #[func]
     fn is_host(&self) -> bool {
-        self.is_host
+        self.session.host_id == self.local_player_id
     }
 
     /// Return true if the multiplayer game has started (past lobby).
     #[func]
     fn is_game_started(&self) -> bool {
-        self.game_started
+        self.session.has_sim()
     }
 
     /// Return the ticks_per_turn for the multiplayer session.
@@ -2714,7 +2748,7 @@ impl SimBridge {
     /// The sim will be initialized when the GameStart message comes back.
     #[func]
     fn start_multiplayer_game(&mut self, seed: i64, config_json: GString) {
-        if !self.is_host {
+        if self.session.host_id != self.local_player_id {
             godot_warn!("SimBridge: only the host can start the game");
             return;
         }
@@ -2747,21 +2781,28 @@ impl SimBridge {
         let Some(client) = &self.net_client else {
             return 0;
         };
-        let messages = client.poll();
+        // Collect messages before processing (can't hold shared borrow of
+        // net_client while mutating session).
+        let messages: Vec<_> = client.poll();
         let mut turns_applied = 0;
+        let pid = self.local_player_id;
 
         for msg in messages {
             match msg {
                 ServerMessage::GameStart { seed, config_json } => {
-                    self.game_started = true;
-                    // Initialize the sim with the received seed/config.
                     let profile: TreeProfile = serde_json::from_str(&config_json)
                         .unwrap_or_else(|_| TreeProfile::fantasy_mega());
-                    let config = GameConfig {
+                    let mut config = GameConfig {
                         tree_profile: profile,
                         ..Default::default()
                     };
-                    self.sim = Some(SimState::with_config(seed as u64, config));
+                    // Clear initial creatures/piles — GDScript spawns them.
+                    config.initial_creatures.clear();
+                    config.initial_ground_piles.clear();
+                    self.session.process(SessionMessage::StartGame {
+                        seed: seed as u64,
+                        config: Box::new(config),
+                    });
                     godot_print!("SimBridge: game started with seed {seed}");
                     self.mp_events.push(
                         serde_json::to_string(&serde_json::json!({
@@ -2776,14 +2817,23 @@ impl SimBridge {
                     commands,
                     ..
                 } => {
-                    if let Some(sim) = &mut self.sim {
-                        let payloads: Vec<&[u8]> =
-                            commands.iter().map(|tc| tc.payload.as_slice()).collect();
-                        sim.apply_turn_payloads(sim_tick_target, &payloads);
-                        turns_applied += 1;
+                    // Route each command through session, then advance.
+                    for tc in &commands {
+                        if let Ok(action) = serde_json::from_slice::<SimAction>(&tc.payload) {
+                            self.session
+                                .process(SessionMessage::SimCommand { from: pid, action });
+                        }
                     }
+                    self.session.process(SessionMessage::AdvanceTo {
+                        tick: sim_tick_target,
+                    });
+                    turns_applied += 1;
                 }
                 ServerMessage::PlayerJoined { player } => {
+                    self.session.process(SessionMessage::PlayerJoined {
+                        id: SessionPlayerId(player.id.0),
+                        name: player.name.clone(),
+                    });
                     self.mp_events.push(
                         serde_json::to_string(&serde_json::json!({
                             "type": "player_joined",
@@ -2794,6 +2844,9 @@ impl SimBridge {
                     );
                 }
                 ServerMessage::PlayerLeft { player_id, name } => {
+                    self.session.process(SessionMessage::PlayerLeft {
+                        id: SessionPlayerId(player_id.0),
+                    });
                     self.mp_events.push(
                         serde_json::to_string(&serde_json::json!({
                             "type": "player_left",
@@ -2815,6 +2868,8 @@ impl SimBridge {
                     );
                 }
                 ServerMessage::DesyncDetected { tick } => {
+                    self.session
+                        .process(SessionMessage::DesyncDetected { tick });
                     self.mp_events.push(
                         serde_json::to_string(&serde_json::json!({
                             "type": "desync",
@@ -2824,6 +2879,9 @@ impl SimBridge {
                     );
                 }
                 ServerMessage::Paused { by } => {
+                    self.session.process(SessionMessage::Pause {
+                        by: SessionPlayerId(by.0),
+                    });
                     self.mp_events.push(
                         serde_json::to_string(&serde_json::json!({
                             "type": "paused",
@@ -2833,6 +2891,9 @@ impl SimBridge {
                     );
                 }
                 ServerMessage::Resumed { by } => {
+                    self.session.process(SessionMessage::Resume {
+                        by: SessionPlayerId(by.0),
+                    });
                     self.mp_events.push(
                         serde_json::to_string(&serde_json::json!({
                             "type": "resumed",
@@ -2842,9 +2903,7 @@ impl SimBridge {
                     );
                 }
                 ServerMessage::SnapshotRequest => {
-                    // Mid-game join: the relay asks us (as host) for a sim
-                    // snapshot. Serialize and send it back.
-                    if let Some(sim) = &self.sim
+                    if let Some(sim) = &self.session.sim
                         && let Ok(json) = sim.to_json()
                     {
                         let data = json.into_bytes();
@@ -2854,13 +2913,9 @@ impl SimBridge {
                     }
                 }
                 ServerMessage::SnapshotLoad { tick: _, data } => {
-                    // Mid-game join: we are the late joiner receiving a sim
-                    // snapshot from the relay. Deserialize and replace our sim.
-                    if let Ok(json) = String::from_utf8(data)
-                        && let Ok(sim) = SimState::from_json(&json)
-                    {
-                        self.sim = Some(sim);
-                        self.game_started = true;
+                    if let Ok(json) = String::from_utf8(data) {
+                        self.session
+                            .process(SessionMessage::LoadSim { json: json.clone() });
                         self.mp_events.push(
                             serde_json::to_string(&serde_json::json!({
                                 "type": "snapshot_loaded",
@@ -2871,16 +2926,17 @@ impl SimBridge {
                 }
                 ServerMessage::SpeedChanged { ticks_per_turn } => {
                     self.mp_ticks_per_turn = ticks_per_turn;
+                    self.session.process(SessionMessage::SetSpeed {
+                        speed: ticks_per_turn_to_speed(ticks_per_turn),
+                    });
                 }
-                // Welcome, Rejected are handled during connect.
                 _ => {}
             }
         }
 
         // After applying turns, check if the sim tick is on a checksum boundary.
-        // Compute hash first (immutable borrow), then send (mutable borrow).
         if turns_applied > 0
-            && let Some(sim) = &self.sim
+            && let Some(sim) = &self.session.sim
         {
             let tick = sim.tick;
             if tick > 0 && tick % CHECKSUM_INTERVAL_TICKS == 0 {
@@ -2943,7 +2999,7 @@ impl SimBridge {
     /// dispatch. Used by furniture_renderer.gd.
     #[func]
     fn get_furniture_positions(&self) -> PackedInt32Array {
-        let Some(sim) = &self.sim else {
+        let Some(sim) = &self.session.sim else {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();

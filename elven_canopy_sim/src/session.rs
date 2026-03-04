@@ -155,6 +155,39 @@ pub enum SessionEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Speed ↔ ticks-per-turn helpers (design doc §9.1)
+// ---------------------------------------------------------------------------
+
+/// Base ticks per relay turn at Normal speed.
+const BASE_TICKS_PER_TURN: u32 = 50;
+
+/// Convert a `SessionSpeed` to the relay's `ticks_per_turn` value.
+///
+/// Normal → 50, Fast → 100, VeryFast → 250. Matches the multipliers
+/// in `speed_multiplier()` (1x, 2x, 5x).
+pub fn speed_to_ticks_per_turn(speed: SessionSpeed) -> u32 {
+    match speed {
+        SessionSpeed::Normal => BASE_TICKS_PER_TURN,
+        SessionSpeed::Fast => BASE_TICKS_PER_TURN * 2,
+        SessionSpeed::VeryFast => BASE_TICKS_PER_TURN * 5,
+    }
+}
+
+/// Convert a relay `ticks_per_turn` value to a `SessionSpeed`.
+///
+/// Uses thresholds: ≤75 → Normal, ≤175 → Fast, else VeryFast.
+/// This handles non-exact values from the relay gracefully.
+pub fn ticks_per_turn_to_speed(tpt: u32) -> SessionSpeed {
+    if tpt <= 75 {
+        SessionSpeed::Normal
+    } else if tpt <= 175 {
+        SessionSpeed::Fast
+    } else {
+        SessionSpeed::VeryFast
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GameSession
 // ---------------------------------------------------------------------------
 
@@ -1108,5 +1141,38 @@ mod tests {
         let mut session = GameSession::new_singleplayer();
         let events = session.process(SessionMessage::DesyncDetected { tick: 5000 });
         assert_eq!(events, vec![SessionEvent::DesyncDetected { tick: 5000 }]);
+    }
+
+    // -----------------------------------------------------------------------
+    // 15.9 Speed ↔ ticks-per-turn helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn speed_tpt_roundtrip() {
+        // Each speed maps to a specific tpt, and back.
+        for speed in [
+            SessionSpeed::Normal,
+            SessionSpeed::Fast,
+            SessionSpeed::VeryFast,
+        ] {
+            let tpt = speed_to_ticks_per_turn(speed);
+            assert_eq!(ticks_per_turn_to_speed(tpt), speed);
+        }
+        // Verify specific values.
+        assert_eq!(speed_to_ticks_per_turn(SessionSpeed::Normal), 50);
+        assert_eq!(speed_to_ticks_per_turn(SessionSpeed::Fast), 100);
+        assert_eq!(speed_to_ticks_per_turn(SessionSpeed::VeryFast), 250);
+    }
+
+    #[test]
+    fn tpt_threshold_boundaries() {
+        // At the boundary: 75 → Normal, 76 → Fast, 175 → Fast, 176 → VeryFast.
+        assert_eq!(ticks_per_turn_to_speed(75), SessionSpeed::Normal);
+        assert_eq!(ticks_per_turn_to_speed(76), SessionSpeed::Fast);
+        assert_eq!(ticks_per_turn_to_speed(175), SessionSpeed::Fast);
+        assert_eq!(ticks_per_turn_to_speed(176), SessionSpeed::VeryFast);
+        // Extreme values.
+        assert_eq!(ticks_per_turn_to_speed(1), SessionSpeed::Normal);
+        assert_eq!(ticks_per_turn_to_speed(1000), SessionSpeed::VeryFast);
     }
 }
