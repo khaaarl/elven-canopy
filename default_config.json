@@ -348,5 +348,42 @@
         "strength": 12.0
       }
     }
-  }
+  },
+  "initial_creatures": [
+    {
+      "species": "Elf",
+      "count": 5,
+      "spawn_position": { "x": 128, "y": 1, "z": 128 },
+      "food_pcts": [100, 90, 70, 60, 48],
+      "rest_pcts": [100, 95, 80, 60, 45],
+      "bread_counts": [2, 2, 2, 2, 2]
+    },
+    {
+      "species": "Capybara",
+      "count": 5,
+      "spawn_position": { "x": 128, "y": 1, "z": 128 }
+    },
+    {
+      "species": "Boar",
+      "count": 3,
+      "spawn_position": { "x": 128, "y": 1, "z": 128 }
+    },
+    {
+      "species": "Deer",
+      "count": 3,
+      "spawn_position": { "x": 128, "y": 1, "z": 128 }
+    },
+    {
+      "species": "Squirrel",
+      "count": 3,
+      "spawn_position": { "x": 128, "y": 1, "z": 128 }
+    }
+  ],
+  "initial_ground_piles": [
+    {
+      "position": { "x": 128, "y": 1, "z": 138 },
+      "item_kind": "Bread",
+      "quantity": 5
+    }
+  ]
 }

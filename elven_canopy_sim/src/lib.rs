@@ -20,6 +20,7 @@
 // - `blueprint.rs`:   Blueprint data model for the construction system.
 // - `structural.rs`:  Spring-mass structural integrity solver.
 // - `inventory.rs`:   Item/inventory data model (ItemKind, Item, GroundPile) + helpers.
+// - `session.rs`:     GameSession — message-driven session management (players, commands, pause/resume).
 // - `checksum.rs`:    FNV-1a hashing + interval constant for multiplayer desync detection.
 // - `prng`:           Re-exported from `elven_canopy_prng` — xoshiro256++ PRNG with SplitMix64 seeding.
 // - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.

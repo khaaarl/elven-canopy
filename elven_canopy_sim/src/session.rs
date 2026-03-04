@@ -258,11 +258,16 @@ impl GameSession {
                     self.sim = None;
                     events.push(SessionEvent::SimUnloaded);
                 }
-                let sim = SimState::with_config(seed, *config);
+                let mut sim = SimState::with_config(seed, *config);
+                let mut spawn_events = Vec::new();
+                sim.spawn_initial_creatures(&mut spawn_events);
                 self.sim = Some(sim);
                 self.paused = false;
                 self.pending_commands.clear();
                 events.push(SessionEvent::GameStarted);
+                for se in spawn_events {
+                    events.push(SessionEvent::Sim(se));
+                }
             }
 
             SessionMessage::LoadSim { json } => match SimState::from_json(&json) {
@@ -387,6 +392,8 @@ mod tests {
         };
         config.tree_profile.growth.initial_energy = 50.0;
         config.terrain_max_height = 0;
+        config.initial_creatures = vec![];
+        config.initial_ground_piles = vec![];
         config
     }
 
@@ -919,6 +926,63 @@ mod tests {
             session_a.sim.as_ref().unwrap().state_checksum(),
             session_b.sim.as_ref().unwrap().state_checksum(),
         );
+    }
+
+    #[test]
+    fn spawn_initial_creatures_determinism() {
+        use crate::config::{InitialCreatureSpec, InitialGroundPileSpec};
+
+        let mut config = session_test_config();
+        config.initial_creatures = vec![
+            InitialCreatureSpec {
+                species: Species::Elf,
+                count: 2,
+                spawn_position: VoxelCoord::new(32, 1, 32),
+                food_pcts: vec![100, 60],
+                rest_pcts: vec![90, 50],
+                bread_counts: vec![0, 2],
+            },
+            InitialCreatureSpec {
+                species: Species::Capybara,
+                count: 1,
+                spawn_position: VoxelCoord::new(32, 1, 32),
+                food_pcts: vec![],
+                rest_pcts: vec![],
+                bread_counts: vec![],
+            },
+        ];
+        config.initial_ground_piles = vec![InitialGroundPileSpec {
+            position: VoxelCoord::new(32, 1, 34),
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+        }];
+
+        let mut session_a = GameSession::new_singleplayer();
+        let mut session_b = GameSession::new_singleplayer();
+
+        session_a.process(SessionMessage::StartGame {
+            seed: 42,
+            config: Box::new(config.clone()),
+        });
+        session_b.process(SessionMessage::StartGame {
+            seed: 42,
+            config: Box::new(config),
+        });
+
+        let sim_a = session_a.sim.as_ref().unwrap();
+        let sim_b = session_b.sim.as_ref().unwrap();
+
+        // Same number of creatures.
+        assert_eq!(sim_a.creatures.len(), sim_b.creatures.len());
+        assert_eq!(sim_a.creatures.len(), 3);
+
+        // Same creature IDs (deterministic PRNG).
+        let ids_a: Vec<_> = sim_a.creatures.keys().collect();
+        let ids_b: Vec<_> = sim_b.creatures.keys().collect();
+        assert_eq!(ids_a, ids_b);
+
+        // Same state checksums.
+        assert_eq!(sim_a.state_checksum(), sim_b.state_checksum());
     }
 
     #[test]

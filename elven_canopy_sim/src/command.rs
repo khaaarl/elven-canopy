@@ -26,12 +26,19 @@
 //   `TaskKind`). The handler in `sim.rs` snaps the position to the nearest
 //   nav node.
 // - `RenameStructure` — set or clear a completed structure's user-editable name.
+// - `DesignateLadder` — place a wood or rope ladder at an anchor position.
+// - `FurnishStructure` — begin furnishing a completed building (e.g. Dormitory).
+// - `AssignHome` — assign a creature to a home structure, or unassign.
 // - `SetLogisticsPriority` — enable/disable logistics on a building and set
 //   its pull priority (higher = served first).
 // - `SetLogisticsWants` — set which items and quantities a building wants
 //   hauled to it. The `LogisticsHeartbeat` creates `Haul` tasks to fill these.
 // - `SetCookingConfig` — enable/disable cooking on a kitchen and set the
 //   bread production target.
+// - `SetCreatureFood` — directly set a creature's food value (initial spawning).
+// - `SetCreatureRest` — directly set a creature's rest value (initial spawning).
+// - `AddCreatureItem` — add items to a creature's inventory.
+// - `AddGroundPileItem` — add items to a ground pile (creating it if needed).
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -42,6 +49,7 @@
 // `event.rs`).
 
 use crate::building::LogisticsWant;
+use crate::inventory::ItemKind;
 use crate::task::TaskKind;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
@@ -145,6 +153,22 @@ pub enum SimAction {
         structure_id: StructureId,
         cooking_enabled: bool,
         cooking_bread_target: u32,
+    },
+    /// Directly set a creature's food value (for initial spawning overrides).
+    SetCreatureFood { creature_id: CreatureId, food: i64 },
+    /// Directly set a creature's rest value (for initial spawning overrides).
+    SetCreatureRest { creature_id: CreatureId, rest: i64 },
+    /// Add items to a creature's inventory.
+    AddCreatureItem {
+        creature_id: CreatureId,
+        item_kind: ItemKind,
+        quantity: u32,
+    },
+    /// Add items to a ground pile (creating it if it doesn't exist).
+    AddGroundPileItem {
+        position: VoxelCoord,
+        item_kind: ItemKind,
+        quantity: u32,
     },
 }
 

@@ -29,9 +29,10 @@
 // simulation logic. All clients must use identical configs for identical
 // results.
 
+use crate::inventory::ItemKind;
 use crate::nav::EdgeType;
 use crate::species::SpeciesData;
-use crate::types::{FaceType, Species, ThoughtKind, VoxelType};
+use crate::types::{FaceType, Species, ThoughtKind, VoxelCoord, VoxelType};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -637,6 +638,34 @@ impl TreeProfile {
 }
 
 // ---------------------------------------------------------------------------
+// Initial spawning specs
+// ---------------------------------------------------------------------------
+
+/// Describes a group of creatures to spawn when the game starts. Per-creature
+/// overrides (food, rest, bread) are indexed by creature index within the
+/// group — any index beyond the vec length gets the species default.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InitialCreatureSpec {
+    pub species: Species,
+    pub count: usize,
+    pub spawn_position: VoxelCoord,
+    #[serde(default)]
+    pub food_pcts: Vec<u32>,
+    #[serde(default)]
+    pub rest_pcts: Vec<u32>,
+    #[serde(default)]
+    pub bread_counts: Vec<u32>,
+}
+
+/// Describes items to place on the ground when the game starts.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InitialGroundPileSpec {
+    pub position: VoxelCoord,
+    pub item_kind: ItemKind,
+    pub quantity: u32,
+}
+
+// ---------------------------------------------------------------------------
 // Top-level game config
 // ---------------------------------------------------------------------------
 
@@ -799,6 +828,15 @@ pub struct GameConfig {
     /// Bread produced per cook cycle.
     #[serde(default = "default_cook_bread_output")]
     pub cook_bread_output: u32,
+
+    /// Creatures to spawn when a new game starts. Each spec describes a group
+    /// of one species with optional per-creature food/rest/bread overrides.
+    #[serde(default)]
+    pub initial_creatures: Vec<InitialCreatureSpec>,
+
+    /// Ground item piles to place when a new game starts.
+    #[serde(default)]
+    pub initial_ground_piles: Vec<InitialGroundPileSpec>,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -1064,6 +1102,53 @@ impl Default for GameConfig {
             cook_work_ticks: 5000,
             cook_fruit_input: 1,
             cook_bread_output: 10,
+            initial_creatures: vec![
+                InitialCreatureSpec {
+                    species: Species::Elf,
+                    count: 5,
+                    spawn_position: VoxelCoord::new(128, 1, 128),
+                    food_pcts: vec![100, 90, 70, 60, 48],
+                    rest_pcts: vec![100, 95, 80, 60, 45],
+                    bread_counts: vec![2, 2, 2, 2, 2],
+                },
+                InitialCreatureSpec {
+                    species: Species::Capybara,
+                    count: 5,
+                    spawn_position: VoxelCoord::new(128, 1, 128),
+                    food_pcts: vec![],
+                    rest_pcts: vec![],
+                    bread_counts: vec![],
+                },
+                InitialCreatureSpec {
+                    species: Species::Boar,
+                    count: 3,
+                    spawn_position: VoxelCoord::new(128, 1, 128),
+                    food_pcts: vec![],
+                    rest_pcts: vec![],
+                    bread_counts: vec![],
+                },
+                InitialCreatureSpec {
+                    species: Species::Deer,
+                    count: 3,
+                    spawn_position: VoxelCoord::new(128, 1, 128),
+                    food_pcts: vec![],
+                    rest_pcts: vec![],
+                    bread_counts: vec![],
+                },
+                InitialCreatureSpec {
+                    species: Species::Squirrel,
+                    count: 3,
+                    spawn_position: VoxelCoord::new(128, 1, 128),
+                    food_pcts: vec![],
+                    rest_pcts: vec![],
+                    bread_counts: vec![],
+                },
+            ],
+            initial_ground_piles: vec![InitialGroundPileSpec {
+                position: VoxelCoord::new(128, 1, 138),
+                item_kind: ItemKind::Bread,
+                quantity: 5,
+            }],
         }
     }
 }

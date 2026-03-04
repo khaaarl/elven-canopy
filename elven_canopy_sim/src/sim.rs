@@ -12,7 +12,10 @@
 // graph for 1x1x1 creatures and a large graph for 2x2x2 creatures (elephants).
 // `graph_for_species()` dispatches to the correct graph based on the species'
 // `footprint` field from `species.rs`. Creature spawning and movement are
-// handled through the command/event system.
+// handled through the command/event system. Initial creature populations are
+// spawned by `spawn_initial_creatures()`, called from `session.rs` during
+// `StartGame` processing — it reads `config.initial_creatures` and
+// `config.initial_ground_piles` to populate the world.
 //
 // ## Activation chain
 //
@@ -869,6 +872,44 @@ impl SimState {
                     s.cooking_bread_target = *cooking_bread_target;
                 }
             }
+            SimAction::SetCreatureFood { creature_id, food } => {
+                if let Some(creature) = self.creatures.get_mut(creature_id) {
+                    creature.food = *food;
+                }
+            }
+            SimAction::SetCreatureRest { creature_id, rest } => {
+                if let Some(creature) = self.creatures.get_mut(creature_id) {
+                    creature.rest = *rest;
+                }
+            }
+            SimAction::AddCreatureItem {
+                creature_id,
+                item_kind,
+                quantity,
+            } => {
+                if let Some(creature) = self.creatures.get_mut(creature_id) {
+                    crate::inventory::add_item(
+                        &mut creature.inventory,
+                        *item_kind,
+                        *quantity,
+                        Some(*creature_id),
+                        None,
+                    );
+                }
+            }
+            SimAction::AddGroundPileItem {
+                position,
+                item_kind,
+                quantity,
+            } => {
+                let pile = self.ground_piles.entry(*position).or_insert_with(|| {
+                    crate::inventory::GroundPile {
+                        position: *position,
+                        items: Vec::new(),
+                    }
+                });
+                crate::inventory::add_item(&mut pile.items, *item_kind, *quantity, None, None);
+            }
         }
     }
 
@@ -1689,7 +1730,7 @@ impl SimState {
         species: Species,
         position: VoxelCoord,
         events: &mut Vec<SimEvent>,
-    ) {
+    ) -> Option<CreatureId> {
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
 
@@ -1699,10 +1740,7 @@ impl SimState {
             graph.find_nearest_node(position)
         };
 
-        let nearest_node = match nearest_node {
-            Some(n) => n,
-            None => return, // No suitable nav nodes — can't spawn.
-        };
+        let nearest_node = nearest_node?;
 
         let node_pos = graph.node(nearest_node).position;
         let creature_id = CreatureId::new(&mut self.rng);
@@ -1779,6 +1817,85 @@ impl SimState {
                 species,
             },
         });
+        Some(creature_id)
+    }
+
+    /// Find the lowest non-solid Y position at the given (x, z) column.
+    /// Returns the first air voxel above solid ground, defaulting to y=1.
+    fn find_surface_position(&self, x: i32, z: i32) -> VoxelCoord {
+        for y in 1..self.world.size_y as i32 {
+            let pos = VoxelCoord::new(x, y, z);
+            if !self.world.get(pos).is_solid() {
+                return pos;
+            }
+        }
+        VoxelCoord::new(x, 1, z)
+    }
+
+    /// Spawn initial creatures and ground piles from `config.initial_creatures`
+    /// and `config.initial_ground_piles`. Called once when a new game starts.
+    pub fn spawn_initial_creatures(&mut self, events: &mut Vec<SimEvent>) {
+        let specs = self.config.initial_creatures.clone();
+        for spec in &specs {
+            let species_data = match self.species_table.get(&spec.species) {
+                Some(sd) => sd.clone(),
+                None => continue,
+            };
+            for i in 0..spec.count {
+                let creature_id =
+                    match self.spawn_creature(spec.species, spec.spawn_position, events) {
+                        Some(id) => id,
+                        None => continue,
+                    };
+
+                // Apply per-creature food override.
+                if let Some(&pct) = spec.food_pcts.get(i)
+                    && let Some(creature) = self.creatures.get_mut(&creature_id)
+                {
+                    creature.food = species_data.food_max * pct as i64 / 100;
+                }
+
+                // Apply per-creature rest override.
+                if let Some(&pct) = spec.rest_pcts.get(i)
+                    && let Some(creature) = self.creatures.get_mut(&creature_id)
+                {
+                    creature.rest = species_data.rest_max * pct as i64 / 100;
+                }
+
+                // Apply per-creature bread count.
+                if let Some(&count) = spec.bread_counts.get(i)
+                    && count > 0
+                    && let Some(creature) = self.creatures.get_mut(&creature_id)
+                {
+                    crate::inventory::add_item(
+                        &mut creature.inventory,
+                        crate::inventory::ItemKind::Bread,
+                        count,
+                        Some(creature_id),
+                        None,
+                    );
+                }
+            }
+        }
+
+        let pile_specs = self.config.initial_ground_piles.clone();
+        for pile_spec in &pile_specs {
+            let pos = self.find_surface_position(pile_spec.position.x, pile_spec.position.z);
+            let pile =
+                self.ground_piles
+                    .entry(pos)
+                    .or_insert_with(|| crate::inventory::GroundPile {
+                        position: pos,
+                        items: Vec::new(),
+                    });
+            crate::inventory::add_item(
+                &mut pile.items,
+                pile_spec.item_kind,
+                pile_spec.quantity,
+                None,
+                None,
+            );
+        }
     }
 
     /// Creature activation: the creature does one action and schedules its next
@@ -11500,6 +11617,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ground_piles_serde_roundtrip() {
+        let mut sim = test_sim(42);
+        let pos = VoxelCoord::new(10, 5, 20);
+        let pile = crate::inventory::GroundPile {
+            position: pos,
+            items: vec![crate::inventory::Item {
+                kind: crate::inventory::ItemKind::Bread,
+                quantity: 7,
+                owner: None,
+                reserved_by: None,
+            }],
+        };
+        sim.ground_piles.insert(pos, pile);
+
+        // Serialize → deserialize round-trip.
+        let json = sim.to_json().expect("serialization should succeed");
+        let restored = SimState::from_json(&json).expect("deserialization should succeed");
+
+        assert_eq!(restored.ground_piles.len(), 1);
+        let restored_pile = &restored.ground_piles[&pos];
+        assert_eq!(
+            crate::inventory::item_count(&restored_pile.items, crate::inventory::ItemKind::Bread),
+            7
+        );
+
+        // Checksums should match.
+        assert_eq!(sim.state_checksum(), restored.state_checksum());
+    }
+
     // --- Hauling and logistics tests ---
 
     /// Helper: create a completed building structure at the given anchor.
@@ -12282,5 +12429,246 @@ mod tests {
         // Task should be completed (cancelled due to empty source).
         let task = &sim.tasks[&task_id];
         assert_eq!(task.state, TaskState::Complete, "Task should be completed");
+    }
+
+    // -----------------------------------------------------------------------
+    // 15.10 New SimAction variants (SetCreatureFood, SetCreatureRest,
+    //       AddCreatureItem, AddGroundPileItem)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_creature_food() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCreatureFood {
+                creature_id: elf_id,
+                food: 42_000,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        assert_eq!(sim.creatures[&elf_id].food, 42_000);
+    }
+
+    #[test]
+    fn set_creature_rest() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCreatureRest {
+                creature_id: elf_id,
+                rest: 99_000,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        assert_eq!(sim.creatures[&elf_id].rest, 99_000);
+    }
+
+    #[test]
+    fn add_creature_item() {
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bread = 0;
+        let elf_id = spawn_elf(&mut sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddCreatureItem {
+                creature_id: elf_id,
+                item_kind: crate::inventory::ItemKind::Bread,
+                quantity: 5,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        let bread_count: u32 = sim.creatures[&elf_id]
+            .inventory
+            .iter()
+            .filter(|item| item.kind == crate::inventory::ItemKind::Bread)
+            .map(|item| item.quantity)
+            .sum();
+        assert_eq!(bread_count, 5);
+    }
+
+    #[test]
+    fn add_ground_pile_item() {
+        let mut sim = test_sim(42);
+        let pos = VoxelCoord::new(32, 1, 32);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddGroundPileItem {
+                position: pos,
+                item_kind: crate::inventory::ItemKind::Bread,
+                quantity: 3,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        let pile = sim.ground_piles.get(&pos).expect("pile should exist");
+        let bread_count: u32 = pile
+            .items
+            .iter()
+            .filter(|item| item.kind == crate::inventory::ItemKind::Bread)
+            .map(|item| item.quantity)
+            .sum();
+        assert_eq!(bread_count, 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // spawn_initial_creatures
+    // -----------------------------------------------------------------------
+
+    /// Build a test config with known initial creatures for a 64x64x64 world.
+    fn initial_spawn_test_config() -> GameConfig {
+        use crate::config::{InitialCreatureSpec, InitialGroundPileSpec};
+        let mut config = test_config();
+        config.elf_starting_bread = 0; // Isolate from starting bread feature.
+        config.initial_creatures = vec![
+            InitialCreatureSpec {
+                species: Species::Elf,
+                count: 2,
+                spawn_position: VoxelCoord::new(32, 1, 32),
+                food_pcts: vec![100, 50],
+                rest_pcts: vec![80, 40],
+                bread_counts: vec![0, 3],
+            },
+            InitialCreatureSpec {
+                species: Species::Capybara,
+                count: 1,
+                spawn_position: VoxelCoord::new(32, 1, 32),
+                food_pcts: vec![],
+                rest_pcts: vec![],
+                bread_counts: vec![],
+            },
+        ];
+        config.initial_ground_piles = vec![InitialGroundPileSpec {
+            position: VoxelCoord::new(32, 1, 34),
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+        }];
+        config
+    }
+
+    #[test]
+    fn spawn_initial_creatures_populates() {
+        let config = initial_spawn_test_config();
+        let mut sim = SimState::with_config(42, config);
+        let mut events = Vec::new();
+        sim.spawn_initial_creatures(&mut events);
+
+        let elf_count = sim
+            .creatures
+            .values()
+            .filter(|c| c.species == Species::Elf)
+            .count();
+        let capy_count = sim
+            .creatures
+            .values()
+            .filter(|c| c.species == Species::Capybara)
+            .count();
+        assert_eq!(elf_count, 2);
+        assert_eq!(capy_count, 1);
+        assert_eq!(sim.creatures.len(), 3);
+
+        // Should have emitted CreatureArrived events for all 3.
+        let arrived: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e.kind, SimEventKind::CreatureArrived { .. }))
+            .collect();
+        assert_eq!(arrived.len(), 3);
+    }
+
+    #[test]
+    fn spawn_initial_creatures_sets_food_rest() {
+        let config = initial_spawn_test_config();
+        let mut sim = SimState::with_config(42, config);
+        let mut events = Vec::new();
+        sim.spawn_initial_creatures(&mut events);
+
+        let elf_food_max = sim.species_table[&Species::Elf].food_max;
+        let elf_rest_max = sim.species_table[&Species::Elf].rest_max;
+
+        let mut elves: Vec<_> = sim
+            .creatures
+            .values()
+            .filter(|c| c.species == Species::Elf)
+            .collect();
+        // Sort by food descending to identify first (100%) vs second (50%).
+        elves.sort_by(|a, b| b.food.cmp(&a.food));
+
+        assert_eq!(elves[0].food, elf_food_max * 100 / 100);
+        assert_eq!(elves[0].rest, elf_rest_max * 80 / 100);
+        assert_eq!(elves[1].food, elf_food_max * 50 / 100);
+        assert_eq!(elves[1].rest, elf_rest_max * 40 / 100);
+
+        // Second elf should have 3 bread.
+        let bread_count: u32 = elves[1]
+            .inventory
+            .iter()
+            .filter(|item| item.kind == crate::inventory::ItemKind::Bread)
+            .map(|item| item.quantity)
+            .sum();
+        assert_eq!(bread_count, 3);
+    }
+
+    #[test]
+    fn spawn_initial_creatures_ground_piles() {
+        let config = initial_spawn_test_config();
+        let mut sim = SimState::with_config(42, config);
+        let mut events = Vec::new();
+        sim.spawn_initial_creatures(&mut events);
+
+        // Ground pile should exist. Position may be snapped to surface via
+        // find_surface_position, so look up by the expected surface position.
+        let surface_pos = sim.find_surface_position(32, 34);
+        let pile = sim
+            .ground_piles
+            .get(&surface_pos)
+            .expect("ground pile should exist");
+        let bread_count: u32 = pile
+            .items
+            .iter()
+            .filter(|item| item.kind == crate::inventory::ItemKind::Bread)
+            .map(|item| item.quantity)
+            .sum();
+        assert_eq!(bread_count, 5);
+    }
+
+    // -----------------------------------------------------------------------
+    // find_surface_position
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn find_surface_position_finds_air() {
+        let sim = test_sim(42);
+        let center = sim.world.size_x as i32 / 2;
+        let pos = sim.find_surface_position(center, center);
+
+        // The returned position should be Air (non-solid).
+        assert!(
+            !sim.world.get(pos).is_solid(),
+            "Surface position should be Air, got {:?}",
+            sim.world.get(pos)
+        );
+
+        // One below should be solid (the ground).
+        if pos.y > 0 {
+            let below = VoxelCoord::new(pos.x, pos.y - 1, pos.z);
+            assert!(
+                sim.world.get(below).is_solid(),
+                "Below surface should be solid, got {:?}",
+                sim.world.get(below)
+            );
+        }
     }
 }
