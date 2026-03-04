@@ -807,7 +807,8 @@ impl SimBridge {
     /// Return all non-complete tasks as a `VarArray` of dictionaries.
     ///
     /// Each dictionary contains: `id` (short hex), `id_full` (full UUID),
-    /// `kind` ("GoTo", "Build", "EatBread", "EatFruit", "Sleep", "Furnish", "Haul", or "Cook"),
+    /// `kind` ("GoTo", "Build", "EatBread", "EatFruit", "Sleep", "Furnish", "Haul", "Cook",
+    /// or "Harvest"),
     /// `origin` ("PlayerDirected", "Autonomous", or "Automated"),
     /// `state` ("Available" or "In Progress"), `progress`, `total_cost`,
     /// `location_x/y/z`, and `assignees` (array of dictionaries with

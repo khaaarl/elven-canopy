@@ -2579,15 +2579,21 @@ impl SimState {
             return;
         }
 
-        // 2. Count fruit already available as items (unreserved in ground piles + building inventories).
+        // 2. Count fruit already available as items (unreserved in ground piles +
+        // logistics-enabled building inventories). Non-logistics buildings are excluded
+        // because their fruit can't be hauled out.
         let mut available_items: u32 = 0;
         for pile in self.ground_piles.values() {
             available_items +=
                 inventory::unreserved_item_count(&pile.items, inventory::ItemKind::Fruit);
         }
         for structure in self.structures.values() {
-            available_items +=
-                inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Fruit);
+            if structure.logistics_priority.is_some() {
+                available_items += inventory::unreserved_item_count(
+                    &structure.inventory,
+                    inventory::ItemKind::Fruit,
+                );
+            }
         }
 
         // 3. Count pending Harvest tasks (non-Complete).
@@ -11443,6 +11449,54 @@ mod tests {
                 crate::inventory::ItemKind::Bread
             ),
             4
+        );
+    }
+
+    #[test]
+    fn ground_piles_serialization_roundtrip() {
+        let mut sim = test_sim(42);
+        let pos1 = VoxelCoord::new(10, 5, 20);
+        let pos2 = VoxelCoord::new(-3, 1, 7);
+        sim.ground_piles.insert(
+            pos1,
+            crate::inventory::GroundPile {
+                position: pos1,
+                items: vec![crate::inventory::Item {
+                    kind: crate::inventory::ItemKind::Fruit,
+                    quantity: 2,
+                    owner: None,
+                    reserved_by: None,
+                }],
+            },
+        );
+        sim.ground_piles.insert(
+            pos2,
+            crate::inventory::GroundPile {
+                position: pos2,
+                items: vec![crate::inventory::Item {
+                    kind: crate::inventory::ItemKind::Bread,
+                    quantity: 5,
+                    owner: None,
+                    reserved_by: None,
+                }],
+            },
+        );
+
+        let json = serde_json::to_string(&sim).unwrap();
+        let restored: SimState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.ground_piles.len(), 2);
+        let pile1 = &restored.ground_piles[&pos1];
+        assert_eq!(pile1.position, pos1);
+        assert_eq!(
+            crate::inventory::item_count(&pile1.items, crate::inventory::ItemKind::Fruit),
+            2
+        );
+        let pile2 = &restored.ground_piles[&pos2];
+        assert_eq!(pile2.position, pos2);
+        assert_eq!(
+            crate::inventory::item_count(&pile2.items, crate::inventory::ItemKind::Bread),
+            5
         );
     }
 
