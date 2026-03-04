@@ -8,6 +8,8 @@ members = [
     "elven_canopy_protocol",
     "elven_canopy_relay",
     "multiplayer_tests",
+    "tabulosity",
+    "tabulosity_derive",
 ]
 resolver = "2"
 

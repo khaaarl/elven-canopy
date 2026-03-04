@@ -63,12 +63,15 @@ case "$MODE" in
         echo "Done. Run: cd godot && godot"
         ;;
     test)
-        ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests"
+        ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -p tabulosity -p tabulosity_derive"
         echo "Compile-checking elven_canopy_gdext..."
         cargo build -p elven_canopy_gdext
         echo ""
         echo "Running all crate tests..."
         cargo test $ALL_TEST_PACKAGES -- --test-threads=16
+        echo ""
+        echo "Running tabulosity serde tests..."
+        cargo test -p tabulosity --features serde --test serde -- --test-threads=16
         echo ""
         echo "All tests passed."
         ;;
@@ -76,7 +79,7 @@ case "$MODE" in
         # Test only crates with source changes relative to main.
         CHANGED_FILES="$(git diff --name-only main...HEAD 2>/dev/null || true)"
         TEST_PACKAGES=""
-        for CRATE_DIR in elven_canopy_prng elven_canopy_lang elven_canopy_sim elven_canopy_protocol elven_canopy_relay elven_canopy_music; do
+        for CRATE_DIR in elven_canopy_prng elven_canopy_lang elven_canopy_sim elven_canopy_protocol elven_canopy_relay elven_canopy_music tabulosity tabulosity_derive; do
             if printf '%s' "$CHANGED_FILES" | grep -q "^${CRATE_DIR}/"; then
                 TEST_PACKAGES="$TEST_PACKAGES -p $CRATE_DIR"
             fi
@@ -85,6 +88,11 @@ case "$MODE" in
         TEST_PACKAGES="$TEST_PACKAGES -p multiplayer_tests"
         echo "Running tests for:$TEST_PACKAGES"
         cargo test $TEST_PACKAGES -- --test-threads=16
+        if printf '%s' "$TEST_PACKAGES" | grep -q -- '-p tabulosity'; then
+            echo ""
+            echo "Running tabulosity serde tests..."
+            cargo test -p tabulosity --features serde --test serde -- --test-threads=16
+        fi
         echo ""
         echo "All tests passed."
         ;;

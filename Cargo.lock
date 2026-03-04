@@ -376,6 +376,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tabulosity"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tabulosity_derive",
+]
+
+[[package]]
+name = "tabulosity_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"

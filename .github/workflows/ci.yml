@@ -17,6 +17,8 @@ on:
       - "Cargo.lock"
       - "rustfmt.toml"
       - "elven_canopy_*/Cargo.toml"
+      - "tabulosity/**"
+      - "tabulosity_derive/**"
       - "multiplayer_tests/**"
       - "godot/scripts/**.gd"
       - ".gdlintrc"
@@ -29,6 +31,8 @@ on:
       - "Cargo.lock"
       - "rustfmt.toml"
       - "elven_canopy_*/Cargo.toml"
+      - "tabulosity/**"
+      - "tabulosity_derive/**"
       - "multiplayer_tests/**"
       - "godot/scripts/**.gd"
       - ".gdlintrc"
@@ -62,7 +66,10 @@ jobs:
         run: cargo build -p elven_canopy_gdext
 
       - name: Run all crate tests
-        run: cargo test -p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -- --test-threads=16
+        run: cargo test -p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -p tabulosity -p tabulosity_derive -- --test-threads=16
+
+      - name: Run tabulosity serde tests
+        run: cargo test -p tabulosity --features serde --test serde -- --test-threads=16
 
   gdscript:
     runs-on: ubuntu-latest

@@ -27,6 +27,7 @@ Loose overview of where things stand. See `docs/tracker.md` for the full project
 - **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, Rust chunk-based mesh generation with face culling replaces GDScript MultiMesh rendering. No blueprint mode UI, no mana economy, no visual smoothing.
 - **Phase 6 (Culture and Language):** Music crate complete as standalone generator, not yet integrated into game runtime. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation.
 - **Phase 4 (Economy and Ecology):** Kitchen cooking implemented; rest not started.
+- **Tabulosity (sim DB):** Typed in-memory relational store complete — derive macros for `Bounded`, `Table`, `Database` with FK validation and serde support (feature-gated). Not yet integrated into `elven_canopy_sim`.
 - **Phases 3, 5, 7–8:** Not started.
 
 ## Project Structure
@@ -58,6 +59,25 @@ elven-canopy/
 │   ├── src/
 │   │   └── lib.rs              # GameRng: xoshiro256++ with SplitMix64 seeding
 │   └── Cargo.toml
+├── tabulosity/                 # Typed in-memory relational store (derive macros)
+│   ├── src/
+│   │   ├── lib.rs              # Re-exports, module declarations
+│   │   ├── error.rs            # Error enum (4 variants), DeserializeError
+│   │   └── table.rs            # Bounded trait, FkCheck trait, TableMeta, range helpers
+│   ├── tests/
+│   │   ├── basic_table.rs      # CRUD operations on derived tables
+│   │   ├── bounded.rs          # derive(Bounded) on newtypes
+│   │   ├── database.rs         # FK validation, restrict-on-delete
+│   │   ├── indexed_table.rs    # Secondary indexes, range queries
+│   │   └── serde.rs            # Serde roundtrip (feature-gated)
+│   └── Cargo.toml
+├── tabulosity_derive/          # Proc macros: derive(Bounded), derive(Table), derive(Database)
+│   └── src/
+│       ├── lib.rs              # Proc macro entry points
+│       ├── bounded.rs          # derive(Bounded) for newtypes
+│       ├── database.rs         # derive(Database) with FK validation
+│       ├── parse.rs            # Shared attribute parsing (#[primary_key], #[indexed])
+│       └── table.rs            # derive(Table) — companion struct, indexes, serde
 ├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
 │   └── src/
 │       ├── lib.rs              # ExtensionLibrary entry point
@@ -141,6 +161,10 @@ To run sim tests alone: `cargo test -p elven_canopy_sim`
 To run lang crate tests: `cargo test -p elven_canopy_lang`
 
 To run music crate tests: `cargo test -p elven_canopy_music`
+
+To run tabulosity tests: `cargo test -p tabulosity -p tabulosity_derive`
+
+To run tabulosity serde tests (separate invocation): `cargo test -p tabulosity --features serde --test serde`
 
 To generate music from the CLI: `cargo run -p elven_canopy_music -- --help` (see `docs/music_generator.md` for full usage).
 
