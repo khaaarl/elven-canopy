@@ -51,6 +51,24 @@ pub const ASPECT_SUFFIXES: &[HarmonySuffix] = &[
     },
 ];
 
+/// Look up an aspect suffix by label (e.g., "eternal", "ongoing").
+/// Panics if the label is not found.
+pub fn aspect_suffix(label: &str) -> &'static HarmonySuffix {
+    ASPECT_SUFFIXES
+        .iter()
+        .find(|s| s.label == label)
+        .unwrap_or_else(|| panic!("Unknown aspect suffix: {label}"))
+}
+
+/// Look up a case suffix by label (e.g., "accusative", "genitive").
+/// Panics if the label is not found.
+pub fn case_suffix(label: &str) -> &'static HarmonySuffix {
+    CASE_SUFFIXES
+        .iter()
+        .find(|s| s.label == label)
+        .unwrap_or_else(|| panic!("Unknown case suffix: {label}"))
+}
+
 /// Case suffixes for nouns (4 variants).
 pub const CASE_SUFFIXES: &[HarmonySuffix] = &[
     HarmonySuffix {
@@ -105,6 +123,32 @@ mod tests {
         assert_eq!(CASE_SUFFIXES[0].front, "-ne");
         assert_eq!(CASE_SUFFIXES[0].back, "-no");
         assert_eq!(CASE_SUFFIXES[0].label, "accusative");
+    }
+
+    #[test]
+    fn test_aspect_suffix_lookup() {
+        let s = aspect_suffix("eternal");
+        assert_eq!(s.front, "-thir");
+        assert_eq!(s.back, "-thur");
+    }
+
+    #[test]
+    fn test_case_suffix_lookup() {
+        let s = case_suffix("genitive");
+        assert_eq!(s.front, "-li");
+        assert_eq!(s.back, "-lu");
+    }
+
+    #[test]
+    #[should_panic(expected = "Unknown aspect suffix")]
+    fn test_aspect_suffix_unknown_panics() {
+        aspect_suffix("nonexistent");
+    }
+
+    #[test]
+    #[should_panic(expected = "Unknown case suffix")]
+    fn test_case_suffix_unknown_panics() {
+        case_suffix("nonexistent");
     }
 
     #[test]

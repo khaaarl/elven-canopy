@@ -108,7 +108,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-music-runtime        Integrate music generator into game
-[ ] F-music-use-lang       Migrate music crate to shared lang crate
 [ ] F-narrative-log        Events and narrative log
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
@@ -181,6 +180,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-mp-integ-test        Multiplayer integration test harness
 [x] F-mp-mid-join          Mid-game join with state snapshot
 [x] F-music-gen            Palestrina-style music generator (standalone)
+[x] F-music-use-lang       Migrate music crate to shared lang crate
 [x] F-nav-graph            Navigation graph construction
 [x] F-nav-incremental      Incremental nav graph updates
 [x] F-new-game-ui          New game screen with tree presets
@@ -1089,7 +1089,7 @@ audio output path (see F-audio-synth).
 **Blocked by:** F-audio-synth
 
 #### F-music-use-lang — Migrate music crate to shared lang crate
-**Status:** Todo · **Phase:** 6
+**Status:** Done · **Phase:** 6
 
 Migrate `elven_canopy_music` to depend on `elven_canopy_lang` for Vaelith
 types and lexicon data instead of maintaining its own hardcoded vocabulary.

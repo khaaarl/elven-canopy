@@ -19,7 +19,7 @@
 //
 // See docs/drafts/vaelith_v4.md for the full language specification.
 
-use elven_canopy_lang::phonotactics::{ASPECT_SUFFIXES, CASE_SUFFIXES};
+use elven_canopy_lang::phonotactics::{ASPECT_SUFFIXES, CASE_SUFFIXES, aspect_suffix, case_suffix};
 use elven_canopy_lang::{LexEntry, Lexicon, PartOfSpeech};
 use elven_canopy_prng::GameRng;
 use serde::{Deserialize, Serialize};
@@ -208,7 +208,7 @@ fn generate_phrase(
             let suffix = &ASPECT_SUFFIXES[aspect_idx];
 
             let subject = noun.to_word();
-            let verb_word = verb.with_suffix(suffix.front, suffix.back, suffix.tone);
+            let verb_word = verb.with_harmony_suffix(suffix);
 
             let meaning = format!("{} {}", noun.gloss, verb.gloss);
             Some(VaelithPhrase::from_words(&[subject, verb_word], &meaning))
@@ -222,8 +222,8 @@ fn generate_phrase(
             let suffix = &ASPECT_SUFFIXES[aspect_idx];
 
             let subject = subj.to_word();
-            let object = obj.with_suffix("-ne", "-no", Tone::Level); // accusative
-            let verb_word = verb.with_suffix(suffix.front, suffix.back, suffix.tone);
+            let object = obj.with_harmony_suffix(case_suffix("accusative"));
+            let verb_word = verb.with_harmony_suffix(suffix);
 
             let meaning = format!("{} {} {}", subj.gloss, verb.gloss, obj.gloss);
             Some(VaelithPhrase::from_words(
@@ -241,7 +241,7 @@ fn generate_phrase(
 
             let excl = ha.to_word();
             let subject = noun.to_word();
-            let verb_word = verb.with_suffix(suffix.front, suffix.back, suffix.tone);
+            let verb_word = verb.with_harmony_suffix(suffix);
 
             let meaning = format!("behold, {} {}", noun.gloss, verb.gloss);
             Some(VaelithPhrase::from_words(
@@ -259,7 +259,7 @@ fn generate_phrase(
 
             let adj_word = adj.to_word();
             let noun_word = noun.to_word();
-            let verb_word = verb.with_suffix(suffix.front, suffix.back, suffix.tone);
+            let verb_word = verb.with_harmony_suffix(suffix);
 
             let meaning = format!("{} {} {}", adj.gloss, noun.gloss, verb.gloss);
             Some(VaelithPhrase::from_words(
@@ -280,8 +280,8 @@ fn generate_phrase(
 
             let adj_word = adj.to_word();
             let subj_word = subj.to_word();
-            let obj_word = obj.with_suffix(c_suffix.front, c_suffix.back, c_suffix.tone);
-            let verb_word = verb.with_suffix(a_suffix.front, a_suffix.back, a_suffix.tone);
+            let obj_word = obj.with_harmony_suffix(c_suffix);
+            let verb_word = verb.with_harmony_suffix(a_suffix);
 
             let meaning = format!("{} {} {} {}", adj.gloss, subj.gloss, verb.gloss, obj.gloss);
             Some(VaelithPhrase::from_words(
@@ -295,7 +295,7 @@ fn generate_phrase(
             let n2 = pick_biased(nouns, brightness, rng);
 
             let noun1 = n1.to_word();
-            let noun2_gen = n2.with_suffix("-li", "-lu", Tone::Level); // genitive
+            let noun2_gen = n2.with_harmony_suffix(case_suffix("genitive"));
 
             let meaning = format!("{} of {}", n1.gloss, n2.gloss);
             Some(VaelithPhrase::from_words(&[noun1, noun2_gen], &meaning))
@@ -306,7 +306,7 @@ fn generate_phrase(
             let dai = particles.iter().find(|p| p.root == "dai")?;
 
             // Use eternal aspect for liturgical
-            let verb_word = verb.with_suffix("-thir", "-thur", Tone::Level);
+            let verb_word = verb.with_harmony_suffix(aspect_suffix("eternal"));
             let dai_word = dai.to_word();
 
             let meaning = format!("{} eternally, truly", verb.gloss);

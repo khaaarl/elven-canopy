@@ -155,6 +155,11 @@ impl LexEntry {
         });
         word
     }
+
+    /// Add a `HarmonySuffix`, selecting the correct vowel variant automatically.
+    pub fn with_harmony_suffix(&self, suffix: &crate::phonotactics::HarmonySuffix) -> Word {
+        self.with_suffix(suffix.front, suffix.back, suffix.tone)
+    }
 }
 
 /// A complete word (root + optional suffixes) with its syllable breakdown.
@@ -260,6 +265,50 @@ mod tests {
         assert_eq!(word.syllables.len(), 2);
         assert_eq!(word.syllables[1].text, "-ne");
         assert!(!word.syllables[1].stressed);
+    }
+
+    #[test]
+    fn test_lex_entry_with_harmony_suffix() {
+        use crate::phonotactics::case_suffix;
+
+        let front_entry = LexEntry {
+            root: "thír".to_string(),
+            gloss: "star".to_string(),
+            pos: PartOfSpeech::Noun,
+            syllables: vec![SyllableDef {
+                text: "thír".to_string(),
+                tone: Tone::Rising,
+            }],
+            vowel_class: VowelClass::Front,
+            stressed_first: true,
+            name_tags: vec![],
+        };
+
+        let back_entry = LexEntry {
+            root: "mòru".to_string(),
+            gloss: "forest".to_string(),
+            pos: PartOfSpeech::Noun,
+            syllables: vec![
+                SyllableDef {
+                    text: "mò".to_string(),
+                    tone: Tone::Falling,
+                },
+                SyllableDef {
+                    text: "ru".to_string(),
+                    tone: Tone::Level,
+                },
+            ],
+            vowel_class: VowelClass::Back,
+            stressed_first: true,
+            name_tags: vec![],
+        };
+
+        let acc = case_suffix("accusative");
+        let front_word = front_entry.with_harmony_suffix(acc);
+        assert_eq!(front_word.text, "thír-ne"); // front variant
+
+        let back_word = back_entry.with_harmony_suffix(acc);
+        assert_eq!(back_word.text, "mòru-no"); // back variant
     }
 
     #[test]
