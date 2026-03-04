@@ -44,6 +44,7 @@ pub mod mesh_gen;
 pub mod nav;
 pub mod pathfinding;
 pub use elven_canopy_prng as prng;
+pub mod session;
 pub mod sim;
 pub mod species;
 pub mod structural;

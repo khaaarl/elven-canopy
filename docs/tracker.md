@@ -47,6 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [~] F-multiplayer          Relay-coordinator multiplayer networking
+[~] F-session-sm           Formal session & sim state machines
 ```
 
 ### Todo
@@ -120,7 +121,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
 [ ] F-seasons              Seasonal visual and gameplay effects
-[ ] F-session-sm           Formal session & sim state machines
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
@@ -1590,8 +1590,8 @@ All sim types derive Serialize/Deserialize for save/load and future
 network sync.
 
 #### F-session-sm — Formal session & sim state machines
-**Status:** Todo · **Phase:** 2 · **Refs:** §4
-**Draft:** `docs/drafts/session_state_machine.md`
+**Status:** In Progress · **Phase:** 2 · **Refs:** §4
+**Draft:** `docs/drafts/session_state_machine_v4.md`
 
 Formalize the multiplayer session and simulator into explicit state machines
 where all state changes happen in response to typed messages. A GameSession

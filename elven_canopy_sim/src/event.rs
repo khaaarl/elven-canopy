@@ -161,14 +161,14 @@ impl EventQueue {
 // ---------------------------------------------------------------------------
 
 /// A narrative event emitted by the simulation for the UI / event log.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SimEvent {
     pub tick: u64,
     pub kind: SimEventKind,
 }
 
 /// Types of narrative events visible to the player.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum SimEventKind {
     /// A new creature has arrived (spawn).
     CreatureArrived {
