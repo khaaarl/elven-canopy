@@ -11,6 +11,11 @@
 // These tests exercise the same code paths as the live game (NetClient from
 // the relay crate, apply_turn_payloads from the sim crate) — the only
 // test-specific code is the synchronous polling wrappers in TestGameClient.
+//
+// Most tests use a pause-then-drain pattern for deterministic synchronization:
+// pause the relay, poll_until_paused on all clients (which applies in-flight
+// turns), then drain_turns(). This avoids races where a turn arrives between
+// sequential drain calls on different clients.
 
 use std::thread;
 use std::time::Duration;
@@ -241,6 +246,9 @@ fn multi_turn_determinism() {
 
 /// No commands sent — wait for empty turns to arrive. Verify both sims'
 /// ticks advanced identically.
+///
+/// Uses pause to create a deterministic drain point: after pausing, no new
+/// turns arrive, so both clients drain to the exact same tick.
 #[test]
 fn empty_turns_advance_tick() {
     let (handle, mut host, mut joiner, _addr) = start_test_session();
@@ -248,14 +256,18 @@ fn empty_turns_advance_tick() {
 
     let initial_tick = host.sim.as_ref().unwrap().tick;
 
-    // Wait for several turn cadences to pass, then drain all turns.
-    // The relay flushes empty turns every ticks_per_turn ms (50ms).
-    // Drain repeatedly to handle timing differences between clients.
+    // Let several empty turns flow (relay flushes every ticks_per_turn ms).
     thread::sleep(Duration::from_millis(250));
-    let _ = host.drain_turns();
-    let _ = joiner.drain_turns();
-    // Short extra sleep + drain to catch any stragglers.
-    thread::sleep(Duration::from_millis(100));
+
+    // Pause the relay so no new turns arrive during draining. This
+    // eliminates the race where one client receives an extra turn between
+    // sequential drain_turns() calls.
+    host.send_pause();
+    host.poll_until_paused();
+    joiner.poll_until_paused();
+
+    // Now drain any remaining buffered turns — safe because no new ones
+    // will arrive while paused.
     let _ = host.drain_turns();
     let _ = joiner.drain_turns();
 
@@ -314,6 +326,11 @@ fn checksum_agreement() {
     // Give the relay time to process and (not) broadcast DesyncDetected.
     thread::sleep(Duration::from_millis(200));
 
+    // Pause the relay so no new turns arrive during draining.
+    host.send_pause();
+    host.poll_until_paused();
+    joiner.poll_until_paused();
+
     // Drain turns and other messages — should NOT contain DesyncDetected.
     let (_, host_other) = host.drain_turns();
     let (_, joiner_other) = joiner.drain_turns();
@@ -348,9 +365,21 @@ fn checksum_desync_detected() {
     // Give the relay time to detect the mismatch and broadcast.
     thread::sleep(Duration::from_millis(200));
 
-    // Drain turns and other messages — should contain DesyncDetected.
-    let (_, host_other) = host.drain_turns();
-    let (_, joiner_other) = joiner.drain_turns();
+    // Pause the relay so no new turns arrive during draining.
+    // Drain first to capture DesyncDetected (poll_until_paused discards
+    // non-Turn messages other than Paused).
+    let (_, mut host_other) = host.drain_turns();
+    let (_, mut joiner_other) = joiner.drain_turns();
+
+    host.send_pause();
+    host.poll_until_paused();
+    joiner.poll_until_paused();
+
+    // Drain any remaining buffered turns.
+    let (_, host_extra) = host.drain_turns();
+    let (_, joiner_extra) = joiner.drain_turns();
+    host_other.extend(host_extra);
+    joiner_other.extend(joiner_extra);
 
     let host_desync = host_other
         .iter()
@@ -412,6 +441,13 @@ fn mid_game_join_snapshot() {
     // Drain any turns that arrived during the snapshot pause so everyone
     // is at the same tick.
     thread::sleep(Duration::from_millis(200));
+
+    // Pause the relay so no new turns arrive during draining.
+    host.send_pause();
+    host.poll_until_paused();
+    joiner.poll_until_paused();
+    late_joiner.poll_until_paused();
+
     let _ = host.drain_turns();
     let _ = joiner.drain_turns();
     let _ = late_joiner.drain_turns();
@@ -465,9 +501,22 @@ fn mid_game_join_then_commands() {
 
     // Drain turns so everyone is in sync.
     thread::sleep(Duration::from_millis(200));
+
+    // Pause the relay so no new turns arrive during draining.
+    host.send_pause();
+    host.poll_until_paused();
+    joiner.poll_until_paused();
+    late_joiner.poll_until_paused();
+
     let _ = host.drain_turns();
     let _ = joiner.drain_turns();
     let _ = late_joiner.drain_turns();
+
+    // Resume the relay so turns flow again for the next phase.
+    host.send_resume();
+    host.poll_until_resumed();
+    joiner.poll_until_resumed();
+    late_joiner.poll_until_resumed();
 
     // All three send spawn commands.
     let spawn_pos_2 = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
@@ -545,6 +594,13 @@ fn mid_game_join_checksum() {
 
     // Drain turns so everyone is at the same tick.
     thread::sleep(Duration::from_millis(200));
+
+    // Pause the relay so no new turns arrive during draining.
+    host.send_pause();
+    host.poll_until_paused();
+    joiner.poll_until_paused();
+    late_joiner.poll_until_paused();
+
     let _ = host.drain_turns();
     let _ = joiner.drain_turns();
     let _ = late_joiner.drain_turns();
