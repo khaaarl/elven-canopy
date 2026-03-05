@@ -353,6 +353,13 @@ Key points (always apply, even without the command):
 
 3. Repeat steps 1–2 as needed until the fix or feature is complete.
 
+4. **Audit test coverage before considering the feature complete.** For every behavior described in the feature spec or design, there must be a corresponding test. Systematically check:
+    - Every distinct code path the feature introduces (not just the happy path — the "elf walks home" path is different from the "elf is already home" path)
+    - Interactions with existing systems: if the feature can be interrupted by X, or can't interrupt Y, test both.
+    - Guard clauses and rejection cases (already in this state, blocked by higher-priority task, etc.)
+    - Serde roundtrip for any new enum variant, config field, or persisted type — if sibling variants have a test, the new one needs one too
+    - Do not count on shared infrastructure being "tested elsewhere" as a reason to skip testing a specific feature's use of that infrastructure. The test proves *this feature's* integration works, not that the infrastructure works in general.
+
 When tests fail unexpectedly, diagnose the root cause. Do not bypass, skip, or work around failing checks (validators, lints, assertions). Never increase retry counts, disable validation, or add #[ignore] to make a test pass. Do not ever take the "easy" route; do the right thing. If the user has not requested that you operate on your own, you may ask the user for guidance after thoroughly examining the problem.
 
 ## Project Tracker (`docs/tracker.md`)
