@@ -378,6 +378,35 @@ pub struct Thought {
     pub tick: u64,
 }
 
+/// Coarse mood category derived from the numeric mood score. Seven tiers from
+/// worst to best, used for UI display and as thresholds for gameplay effects
+/// (e.g., mana generation multiplier). See `MoodConfig::tier()` for the mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MoodTier {
+    Devastated,
+    Miserable,
+    Unhappy,
+    Neutral,
+    Content,
+    Happy,
+    Elated,
+}
+
+impl MoodTier {
+    /// Human-readable label for UI display.
+    pub fn label(&self) -> &'static str {
+        match self {
+            MoodTier::Devastated => "Devastated",
+            MoodTier::Miserable => "Miserable",
+            MoodTier::Unhappy => "Unhappy",
+            MoodTier::Neutral => "Neutral",
+            MoodTier::Content => "Content",
+            MoodTier::Happy => "Happy",
+            MoodTier::Elated => "Elated",
+        }
+    }
+}
+
 /// Types of structures that can be built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildType {

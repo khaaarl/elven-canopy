@@ -239,6 +239,19 @@
     "expiry_ate_meal_ticks": 150000,
     "expiry_low_ceiling_ticks": 150000
   },
+  "mood": {
+    "weight_slept_home": 80,
+    "weight_slept_dormitory": 30,
+    "weight_slept_ground": -100,
+    "weight_ate_meal": 60,
+    "weight_low_ceiling": -50,
+    "tier_devastated_below": -300,
+    "tier_miserable_below": -150,
+    "tier_unhappy_below": -30,
+    "tier_content_above": 30,
+    "tier_happy_above": 150,
+    "tier_elated_above": 300
+  },
   "logistics_heartbeat_interval_ticks": 5000,
   "max_haul_tasks_per_heartbeat": 5,
   "elf_starting_bread": 2,

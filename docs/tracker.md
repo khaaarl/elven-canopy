@@ -169,6 +169,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-elf-names            Elf name generation from conlang rules
 [x] F-elf-needs            Hunger and rest self-direction
 [x] F-elf-sprite           Billboard elf sprite rendering
+[x] F-emotions-basic       Mood score from thought weights
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-food-gauge           Creature food gauge with decay
 [x] F-furnish              Building furnishing framework (dormitories)
@@ -965,6 +966,13 @@ Emotions as multiple simultaneous dimensions: joy, fulfillment, sorrow,
 stress, pain, fear, anxiety. Not a single "happiness" number.
 
 **Blocks:** F-hedonic-adapt, F-mana-mood, F-mood-system
+
+#### F-emotions-basic — Mood score from thought weights
+**Status:** Done · **Phase:** 4 · **Refs:** §18
+
+Derived mood score: sum of configurable per-ThoughtKind weights across a
+creature's active thoughts. Seven-tier label (Devastated → Elated). Computed
+on demand, never stored. Lays groundwork for full F-emotions.
 
 #### F-hedonic-adapt — Asymmetric hedonic adaptation
 **Status:** Todo · **Phase:** 4 · **Refs:** §18

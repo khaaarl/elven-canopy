@@ -752,6 +752,11 @@ impl SimBridge {
                 }
                 dict.set("thoughts", thoughts_arr);
 
+                // Mood.
+                let (mood_score, mood_tier) = c.mood(&sim.config.mood);
+                dict.set("mood_score", mood_score);
+                dict.set("mood_tier", GString::from(mood_tier.label()));
+
                 // Inventory.
                 let mut inv_arr = VarArray::new();
                 for item in &c.inventory {

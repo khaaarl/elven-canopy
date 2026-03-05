@@ -26,7 +26,7 @@ Loose overview of where things stand. See `docs/tracker.md` for the full project
 - **Phase 1 (A Tree and an Elf):** Complete.
 - **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, Rust chunk-based mesh generation with face culling replaces GDScript MultiMesh rendering. No blueprint mode UI, no mana economy, no visual smoothing.
 - **Phase 6 (Culture and Language):** Music crate complete as standalone generator, not yet integrated into game runtime. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation.
-- **Phase 4 (Economy and Ecology):** Kitchen cooking and elf personal item acquisition implemented; rest not started.
+- **Phase 4 (Economy and Ecology):** Kitchen cooking, elf personal item acquisition, creature thoughts, and basic mood scoring implemented; rest not started.
 - **Tabulosity (sim DB):** Typed in-memory relational store complete — derive macros for `Bounded`, `Table`, `Database` with FK validation and serde support (feature-gated). Not yet integrated into `elven_canopy_sim`.
 - **Phases 3, 5, 7–8:** Not started.
 

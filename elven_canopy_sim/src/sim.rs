@@ -540,6 +540,20 @@ impl Creature {
         }
     }
 
+    /// Compute the creature's mood score and tier from its active thoughts.
+    ///
+    /// The score is the sum of per-ThoughtKind weights from `MoodConfig`.
+    /// The tier is derived from threshold boundaries in the config.
+    /// Computed on demand — never stored as persistent state.
+    pub fn mood(&self, mood_config: &crate::config::MoodConfig) -> (i32, crate::types::MoodTier) {
+        let score: i32 = self
+            .thoughts
+            .iter()
+            .map(|t| mood_config.mood_weight(&t.kind))
+            .sum();
+        (score, mood_config.tier(score))
+    }
+
     /// Remove thoughts that have expired based on their per-kind expiry duration.
     pub fn expire_thoughts(&mut self, tick: u64, thought_config: &crate::config::ThoughtConfig) {
         self.thoughts
@@ -8871,6 +8885,16 @@ mod tests {
             elf.thoughts.iter().any(|t| t.kind == ThoughtKind::AteMeal),
             "Eating bread should generate AteMeal thought"
         );
+        // Piggyback: mood should reflect the AteMeal thought.
+        let (score, tier) = elf.mood(&sim.config.mood);
+        assert!(
+            score > 0,
+            "AteMeal should produce positive mood score, got {score}"
+        );
+        assert!(
+            tier == MoodTier::Content || tier == MoodTier::Happy || tier == MoodTier::Elated,
+            "AteMeal should produce at least Content tier, got {tier:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -11342,6 +11366,133 @@ mod tests {
         assert_eq!(restored.thoughts[1].kind, ThoughtKind::AteMeal);
     }
 
+    // -----------------------------------------------------------------------
+    // Mood tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mood_empty_thoughts_is_zero() {
+        let creature = make_test_creature();
+        let cfg = crate::config::MoodConfig::default();
+        let (score, tier) = creature.mood(&cfg);
+        assert_eq!(score, 0);
+        assert_eq!(tier, MoodTier::Neutral);
+    }
+
+    #[test]
+    fn mood_single_positive_thought() {
+        let mut creature = make_test_creature();
+        let thought_cfg = crate::config::ThoughtConfig::default();
+        creature.add_thought(ThoughtKind::AteMeal, 1000, &thought_cfg);
+        let cfg = crate::config::MoodConfig::default();
+        let (score, tier) = creature.mood(&cfg);
+        assert_eq!(score, 60);
+        assert_eq!(tier, MoodTier::Content);
+    }
+
+    #[test]
+    fn mood_single_negative_thought() {
+        let mut creature = make_test_creature();
+        let thought_cfg = crate::config::ThoughtConfig::default();
+        creature.add_thought(ThoughtKind::SleptOnGround, 1000, &thought_cfg);
+        let cfg = crate::config::MoodConfig::default();
+        let (score, tier) = creature.mood(&cfg);
+        assert_eq!(score, -100);
+        assert_eq!(tier, MoodTier::Unhappy);
+    }
+
+    #[test]
+    fn mood_mixed_thoughts() {
+        let mut creature = make_test_creature();
+        let thought_cfg = crate::config::ThoughtConfig::default();
+        creature.add_thought(
+            ThoughtKind::SleptInOwnHome(StructureId(1)),
+            1000,
+            &thought_cfg,
+        );
+        creature.add_thought(ThoughtKind::LowCeiling(StructureId(2)), 2000, &thought_cfg);
+        let cfg = crate::config::MoodConfig::default();
+        let (score, tier) = creature.mood(&cfg);
+        // +80 + (-50) = +30
+        assert_eq!(score, 30);
+        assert_eq!(tier, MoodTier::Content);
+    }
+
+    #[test]
+    fn mood_stacking_same_kind() {
+        let mut creature = make_test_creature();
+        let mut thought_cfg = crate::config::ThoughtConfig::default();
+        thought_cfg.dedup_ate_meal_ticks = 0; // Disable dedup.
+        creature.add_thought(ThoughtKind::AteMeal, 1000, &thought_cfg);
+        creature.add_thought(ThoughtKind::AteMeal, 2000, &thought_cfg);
+        creature.add_thought(ThoughtKind::AteMeal, 3000, &thought_cfg);
+        let cfg = crate::config::MoodConfig::default();
+        let (score, tier) = creature.mood(&cfg);
+        // 3 * 60 = 180
+        assert_eq!(score, 180);
+        assert_eq!(tier, MoodTier::Happy);
+    }
+
+    #[test]
+    fn mood_tier_boundaries() {
+        let cfg = crate::config::MoodConfig::default();
+        // Exact boundary values.
+        assert_eq!(cfg.tier(-300), MoodTier::Devastated);
+        assert_eq!(cfg.tier(-301), MoodTier::Devastated);
+        assert_eq!(cfg.tier(-299), MoodTier::Miserable);
+        assert_eq!(cfg.tier(-150), MoodTier::Miserable);
+        assert_eq!(cfg.tier(-149), MoodTier::Unhappy);
+        assert_eq!(cfg.tier(-30), MoodTier::Unhappy);
+        assert_eq!(cfg.tier(-29), MoodTier::Neutral);
+        assert_eq!(cfg.tier(0), MoodTier::Neutral);
+        assert_eq!(cfg.tier(29), MoodTier::Neutral);
+        assert_eq!(cfg.tier(30), MoodTier::Content);
+        assert_eq!(cfg.tier(149), MoodTier::Content);
+        assert_eq!(cfg.tier(150), MoodTier::Happy);
+        assert_eq!(cfg.tier(299), MoodTier::Happy);
+        assert_eq!(cfg.tier(300), MoodTier::Elated);
+        assert_eq!(cfg.tier(301), MoodTier::Elated);
+    }
+
+    #[test]
+    fn mood_custom_config_weights() {
+        let mut creature = make_test_creature();
+        let thought_cfg = crate::config::ThoughtConfig::default();
+        creature.add_thought(ThoughtKind::AteMeal, 1000, &thought_cfg);
+        let mut cfg = crate::config::MoodConfig::default();
+        cfg.weight_ate_meal = 200;
+        let (score, _) = creature.mood(&cfg);
+        assert_eq!(score, 200);
+    }
+
+    #[test]
+    fn mood_config_serde_roundtrip() {
+        let cfg = crate::config::MoodConfig::default();
+        let json = serde_json::to_string(&cfg).unwrap();
+        let restored: crate::config::MoodConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.weight_ate_meal, cfg.weight_ate_meal);
+        assert_eq!(restored.tier_elated_above, cfg.tier_elated_above);
+    }
+
+    #[test]
+    fn mood_config_backward_compat() {
+        // A GameConfig JSON without a "mood" key should deserialize with defaults.
+        let sim = test_sim(42);
+        let json = serde_json::to_string(&sim).unwrap();
+        // Strip the "mood" key from the JSON to simulate an old save.
+        let mut val: serde_json::Value = serde_json::from_str(&json).unwrap();
+        val.get_mut("config")
+            .and_then(|c| c.as_object_mut())
+            .unwrap()
+            .remove("mood");
+        let stripped = serde_json::to_string(&val).unwrap();
+        let restored: SimState = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(
+            restored.config.mood.weight_ate_meal,
+            crate::config::MoodConfig::default().weight_ate_meal
+        );
+    }
+
     #[test]
     fn ground_sleep_generates_thought() {
         // Integration test: elf sleeps on ground → has SleptOnGround thought.
@@ -11387,6 +11538,17 @@ mod tests {
                 .any(|t| t.kind == ThoughtKind::SleptOnGround),
             "Elf should have SleptOnGround thought after ground sleep. thoughts={:?}",
             elf.thoughts
+        );
+        // Piggyback: mood should reflect the negative SleptOnGround thought.
+        let (score, _tier) = elf.mood(&sim.config.mood);
+        let expected: i32 = elf
+            .thoughts
+            .iter()
+            .map(|t| sim.config.mood.mood_weight(&t.kind))
+            .sum();
+        assert_eq!(
+            score, expected,
+            "Mood score should match sum of thought weights"
         );
     }
 
@@ -11540,6 +11702,17 @@ mod tests {
             "Elf should have SleptInDormitory thought. thoughts={:?}",
             elf.thoughts
         );
+        // Piggyback: mood should reflect dormitory sleep thought.
+        let (score, _tier) = elf.mood(&sim.config.mood);
+        let expected: i32 = elf
+            .thoughts
+            .iter()
+            .map(|t| sim.config.mood.mood_weight(&t.kind))
+            .sum();
+        assert_eq!(
+            score, expected,
+            "Mood score should match sum of thought weights"
+        );
     }
 
     #[test]
@@ -11676,6 +11849,17 @@ mod tests {
             "Elf should have SleptInOwnHome thought. thoughts={:?}",
             elf.thoughts
         );
+        // Piggyback: mood should reflect home sleep thought.
+        let (score, _tier) = elf.mood(&sim.config.mood);
+        let expected: i32 = elf
+            .thoughts
+            .iter()
+            .map(|t| sim.config.mood.mood_weight(&t.kind))
+            .sum();
+        assert_eq!(
+            score, expected,
+            "Mood score should match sum of thought weights"
+        );
     }
 
     #[test]
@@ -11763,6 +11947,17 @@ mod tests {
                 .any(|t| t.kind == ThoughtKind::SleptInDormitory(structure_id)),
             "Elf should also have SleptInDormitory thought. thoughts={:?}",
             elf.thoughts
+        );
+        // Piggyback: mood should reflect both dormitory sleep and low ceiling.
+        let (score, _tier) = elf.mood(&sim.config.mood);
+        let expected: i32 = elf
+            .thoughts
+            .iter()
+            .map(|t| sim.config.mood.mood_weight(&t.kind))
+            .sum();
+        assert_eq!(
+            score, expected,
+            "Mood score should match sum of thought weights"
         );
     }
 

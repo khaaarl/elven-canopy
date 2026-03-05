@@ -32,7 +32,7 @@
 use crate::inventory::ItemKind;
 use crate::nav::EdgeType;
 use crate::species::SpeciesData;
-use crate::types::{FaceType, Species, ThoughtKind, VoxelCoord, VoxelType};
+use crate::types::{FaceType, MoodTier, Species, ThoughtKind, VoxelCoord, VoxelType};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -339,6 +339,90 @@ impl Default for ThoughtConfig {
             // Shorter expiry (~2.5 min real time).
             expiry_ate_meal_ticks: 150_000,
             expiry_low_ceiling_ticks: 150_000,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mood — per-ThoughtKind weights and tier thresholds
+// ---------------------------------------------------------------------------
+
+/// Configuration for deriving a mood score from a creature's active thoughts.
+/// The score is the sum of per-ThoughtKind weights. Tier thresholds map the
+/// numeric score to a `MoodTier` label. See `Creature::mood()` in `sim.rs`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MoodConfig {
+    /// Weight for SleptInOwnHome thoughts.
+    pub weight_slept_home: i32,
+    /// Weight for SleptInDormitory thoughts.
+    pub weight_slept_dormitory: i32,
+    /// Weight for SleptOnGround thoughts.
+    pub weight_slept_ground: i32,
+    /// Weight for AteMeal thoughts.
+    pub weight_ate_meal: i32,
+    /// Weight for LowCeiling thoughts.
+    pub weight_low_ceiling: i32,
+
+    /// Scores at or below this are Devastated.
+    pub tier_devastated_below: i32,
+    /// Scores at or below this (but above devastated) are Miserable.
+    pub tier_miserable_below: i32,
+    /// Scores at or below this (but above miserable) are Unhappy.
+    pub tier_unhappy_below: i32,
+    /// Scores at or above this (but below happy) are Content.
+    pub tier_content_above: i32,
+    /// Scores at or above this (but below elated) are Happy.
+    pub tier_happy_above: i32,
+    /// Scores at or above this are Elated.
+    pub tier_elated_above: i32,
+}
+
+impl MoodConfig {
+    /// Return the mood weight for a given thought kind.
+    pub fn mood_weight(&self, kind: &ThoughtKind) -> i32 {
+        match kind {
+            ThoughtKind::SleptInOwnHome(_) => self.weight_slept_home,
+            ThoughtKind::SleptInDormitory(_) => self.weight_slept_dormitory,
+            ThoughtKind::SleptOnGround => self.weight_slept_ground,
+            ThoughtKind::AteMeal => self.weight_ate_meal,
+            ThoughtKind::LowCeiling(_) => self.weight_low_ceiling,
+        }
+    }
+
+    /// Map a numeric mood score to a `MoodTier`.
+    pub fn tier(&self, score: i32) -> MoodTier {
+        if score <= self.tier_devastated_below {
+            MoodTier::Devastated
+        } else if score <= self.tier_miserable_below {
+            MoodTier::Miserable
+        } else if score <= self.tier_unhappy_below {
+            MoodTier::Unhappy
+        } else if score >= self.tier_elated_above {
+            MoodTier::Elated
+        } else if score >= self.tier_happy_above {
+            MoodTier::Happy
+        } else if score >= self.tier_content_above {
+            MoodTier::Content
+        } else {
+            MoodTier::Neutral
+        }
+    }
+}
+
+impl Default for MoodConfig {
+    fn default() -> Self {
+        Self {
+            weight_slept_home: 80,
+            weight_slept_dormitory: 30,
+            weight_slept_ground: -100,
+            weight_ate_meal: 60,
+            weight_low_ceiling: -50,
+            tier_devastated_below: -300,
+            tier_miserable_below: -150,
+            tier_unhappy_below: -30,
+            tier_content_above: 30,
+            tier_happy_above: 150,
+            tier_elated_above: 300,
         }
     }
 }
@@ -779,6 +863,11 @@ pub struct GameConfig {
     #[serde(default)]
     pub thoughts: ThoughtConfig,
 
+    /// Mood system configuration: per-ThoughtKind weights and tier thresholds.
+    /// Backward-compatible: older configs without this field use defaults.
+    #[serde(default)]
+    pub mood: MoodConfig,
+
     /// Ticks between logistics heartbeats that scan buildings for unmet wants
     /// and create haul tasks. Default 5000 = 5 sim-seconds.
     #[serde(default = "default_logistics_heartbeat_interval")]
@@ -1103,6 +1192,7 @@ impl Default for GameConfig {
             terrain_noise_scale: 8.0,
             structural: StructuralConfig::default(),
             thoughts: ThoughtConfig::default(),
+            mood: MoodConfig::default(),
             logistics_heartbeat_interval_ticks: 5000,
             max_haul_tasks_per_heartbeat: 5,
             elf_starting_bread: 2,

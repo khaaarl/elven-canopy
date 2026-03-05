@@ -8,9 +8,10 @@
 ## Shows species, name (Vaelith name for elves, fallback "Species #N" for
 ## unnamed creatures), position, task kind with a "Zoom" button to jump to
 ## the task's target location (when available), a food gauge, a rest gauge
-## (both as progress bar + percentage), a "Recent Thoughts" section
-## listing the creature's accumulated thoughts (most recent first), and
-## an inventory section listing carried items. Updated every frame by main.gd.
+## (both as progress bar + percentage), a mood label showing the derived
+## mood tier and numeric score, a "Recent Thoughts" section listing the
+## creature's accumulated thoughts (most recent first), and an inventory
+## section listing carried items. Updated every frame by main.gd.
 ##
 ## See also: selection_controller.gd which triggers show/hide,
 ## orbital_camera.gd which responds to follow/unfollow,
@@ -35,6 +36,7 @@ var _food_bar: ProgressBar
 var _food_label: Label
 var _rest_bar: ProgressBar
 var _rest_label: Label
+var _mood_label: Label
 var _thoughts_container: VBoxContainer
 var _thoughts_header: Label
 var _inventory_label: Label
@@ -153,6 +155,11 @@ func _ready() -> void:
 	_rest_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	rest_row.add_child(_rest_label)
 
+	# Mood label.
+	_mood_label = Label.new()
+	_mood_label.text = "Mood: Neutral (0)"
+	vbox.add_child(_mood_label)
+
 	# Recent Thoughts section.
 	vbox.add_child(HSeparator.new())
 
@@ -208,6 +215,7 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 	_update_task(info)
 	_update_food(info)
 	_update_rest(info)
+	_update_mood(info)
 	_update_thoughts(info)
 	_update_inventory(info)
 	_is_following = false
@@ -220,6 +228,7 @@ func update_info(info: Dictionary) -> void:
 	_update_task(info)
 	_update_food(info)
 	_update_rest(info)
+	_update_mood(info)
 	_update_thoughts(info)
 	_update_inventory(info)
 
@@ -253,6 +262,13 @@ func _update_rest(info: Dictionary) -> void:
 	var pct: float = 100.0 * float(info.get("rest", 0)) / float(rest_max)
 	_rest_bar.value = pct
 	_rest_label.text = "%d%%" % int(pct)
+
+
+func _update_mood(info: Dictionary) -> void:
+	var tier: String = info.get("mood_tier", "Neutral")
+	var score: int = info.get("mood_score", 0)
+	var sign: String = "+" if score >= 0 else ""
+	_mood_label.text = "Mood: %s (%s%d)" % [tier, sign, score]
 
 
 func _update_thoughts(info: Dictionary) -> void:
