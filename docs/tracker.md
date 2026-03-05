@@ -47,7 +47,6 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [~] F-multiplayer          Relay-coordinator multiplayer networking
-[~] F-session-sm           Formal session & sim state machines
 ```
 
 ### Todo
@@ -202,6 +201,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-select-struct        Selectable structures with interaction UI
 [x] F-selection            Click-to-select creatures
 [x] F-serde                Serialization for all sim types
+[x] F-session-sm           Formal session & sim state machines
 [x] F-shared-prng          Shared PRNG crate across all Rust crates
 [x] F-sim-commands         SimCommand pipeline
 [x] F-sim-db-impl          Tabulosity typed in-memory relational store
@@ -1616,16 +1616,16 @@ All sim types derive Serialize/Deserialize for save/load and future
 network sync.
 
 #### F-session-sm — Formal session & sim state machines
-**Status:** In Progress · **Phase:** 2 · **Refs:** §4
+**Status:** Done · **Phase:** 2 · **Refs:** §4
 **Draft:** `docs/drafts/session_state_machine_v4.md`
 
-Formalize the multiplayer session and simulator into explicit state machines
-where all state changes happen in response to typed messages. A GameSession
-state machine owns the sim and all session metadata (lobby, pause, speed,
+Formalized the multiplayer session and simulator into explicit state machines.
+GameSession owns the sim and all session metadata (lobby, pause, speed,
 players). Single-player and multiplayer both use the same GameSession, differing
-only in whether messages are relayed. The sim itself gets a cleaner separation
-between command application and time advancement. Infrastructure for multiplayer
-robustness.
+only in whether messages are relayed. LocalRelay handles SP tick pacing.
+GDScript simplified to call `bridge.frame_update(delta)`. SimSpeed removed
+from sim crate (speed is session-layer only). Initial creatures spawn from
+GameConfig.
 
 **Related:** F-multiplayer
 

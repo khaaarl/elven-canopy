@@ -43,6 +43,8 @@ elven-canopy/
 │       ├── config.rs           # GameConfig (loaded from JSON)
 │       ├── species.rs          # SpeciesData — data-driven creature behavior
 │       ├── event.rs            # EventQueue (priority queue), SimEvent
+│       ├── session.rs          # GameSession — message-driven session management
+│       ├── local_relay.rs      # LocalRelay — accumulator-based tick pacer (SP)
 │       ├── sim.rs              # SimState, tick loop, command processing
 │       ├── mesh_gen.rs          # Chunk-based voxel mesh generation with face culling
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
