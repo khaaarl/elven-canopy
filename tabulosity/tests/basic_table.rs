@@ -270,3 +270,31 @@ fn table_default_is_empty() {
     assert!(table.is_empty());
     assert_eq!(table.len(), 0);
 }
+
+// --- rebuild_indexes on table with no indexed fields ---
+
+#[test]
+fn rebuild_indexes_no_indexed_fields() {
+    let mut table = ItemTable::new();
+    table
+        .insert_no_fk(Item {
+            id: ItemId(1),
+            name: "Sword".into(),
+            weight: 10,
+        })
+        .unwrap();
+    table
+        .insert_no_fk(Item {
+            id: ItemId(2),
+            name: "Shield".into(),
+            weight: 15,
+        })
+        .unwrap();
+
+    // rebuild_indexes on a table with no #[indexed] fields is a no-op.
+    table.rebuild_indexes();
+
+    assert_eq!(table.len(), 2);
+    assert_eq!(table.get(&ItemId(1)).unwrap().name, "Sword");
+    assert_eq!(table.get(&ItemId(2)).unwrap().name, "Shield");
+}

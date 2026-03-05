@@ -147,8 +147,70 @@ fn table_deserialize_duplicate_pk() {
     ]"#;
 
     let result: Result<CreatureTable, _> = serde_json::from_str(json);
-    // Should fail because of duplicate PK.
-    assert!(result.is_err());
+    // Should fail because of duplicate PK, and the error message should say so.
+    let err_msg = match result {
+        Ok(_) => panic!("should reject duplicate PK"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err_msg.contains("duplicate"),
+        "error should mention 'duplicate': {}",
+        err_msg,
+    );
+}
+
+#[test]
+fn empty_table_serializes_as_empty_array() {
+    let table = CreatureTable::new();
+    let json = serde_json::to_string(&table).unwrap();
+    assert_eq!(json, "[]");
+}
+
+// --- Serde roundtrip verifies PK order ---
+
+#[test]
+fn table_roundtrip_preserves_pk_order() {
+    let mut table = CreatureTable::new();
+    // Insert out of PK order: 3, 1, 2
+    table
+        .insert_no_fk(Creature {
+            id: CreatureId(3),
+            name: "C".into(),
+            species: Species::Elf,
+        })
+        .unwrap();
+    table
+        .insert_no_fk(Creature {
+            id: CreatureId(1),
+            name: "A".into(),
+            species: Species::Capybara,
+        })
+        .unwrap();
+    table
+        .insert_no_fk(Creature {
+            id: CreatureId(2),
+            name: "B".into(),
+            species: Species::Elf,
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: CreatureTable = serde_json::from_str(&json).unwrap();
+
+    // all() should return rows in PK order.
+    let all = table2.all();
+    assert_eq!(all.len(), 3);
+    assert_eq!(all[0].id, CreatureId(1));
+    assert_eq!(all[1].id, CreatureId(2));
+    assert_eq!(all[2].id, CreatureId(3));
+
+    // keys() should return keys in PK order.
+    let keys = table2.keys();
+    assert_eq!(keys, vec![CreatureId(1), CreatureId(2), CreatureId(3)]);
+
+    // Indexes should be correct after deserialization.
+    assert_eq!(table2.count_by_species(&Species::Elf), 2);
+    assert_eq!(table2.count_by_species(&Species::Capybara), 1);
 }
 
 // --- Database-level serde ---
