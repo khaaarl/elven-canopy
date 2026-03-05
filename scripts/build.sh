@@ -77,8 +77,11 @@ case "$MODE" in
         echo "All tests passed."
         ;;
     quicktest)
-        # Test only crates with source changes relative to main.
-        CHANGED_FILES="$(git diff --name-only main...HEAD 2>/dev/null || true)"
+        # Test only crates with changes: committed (vs main), staged, or unstaged.
+        BRANCH_CHANGES="$(git diff --name-only main...HEAD 2>/dev/null || true)"
+        STAGED_CHANGES="$(git diff --name-only --cached 2>/dev/null || true)"
+        UNSTAGED_CHANGES="$(git diff --name-only 2>/dev/null || true)"
+        CHANGED_FILES="$(printf '%s\n%s\n%s' "$BRANCH_CHANGES" "$STAGED_CHANGES" "$UNSTAGED_CHANGES" | sort -u)"
         TEST_PACKAGES=""
         for CRATE_DIR in elven_canopy_prng elven_canopy_lang elven_canopy_sim elven_canopy_protocol elven_canopy_relay elven_canopy_music tabulosity tabulosity_derive; do
             if printf '%s' "$CHANGED_FILES" | grep -q "^${CRATE_DIR}/"; then
