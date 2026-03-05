@@ -57,8 +57,11 @@
 // - **Commands:** `spawn_creature(species_name, x,y,z)` — generic creature
 //   spawner replacing `spawn_elf()` / `spawn_capybara()` (which remain as
 //   thin wrappers). Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
-//   `designate_build_rect(x,y,z,width,depth)` — each constructs a
-//   `SimCommand` and immediately steps the sim by one tick to apply it.
+//   `designate_build_rect(x,y,z,width,depth)`, etc. Void commands (spawn,
+//   goto, rename, assign, logistics, cooking, furnish) are buffered and
+//   execute on the next `frame_update()`. Build/carve commands go through
+//   `apply_build_action`, which flushes with a 1-tick advance so the
+//   validation message in `last_build_message` is readable immediately.
 //   `furnish_structure(structure_id, furnishing_type)` begins furnishing a
 //   completed building. `get_furniture_positions()` returns flat (x,y,z,kind)
 //   quads of placed furniture for rendering.
@@ -502,14 +505,20 @@ impl SimBridge {
     }
 
     /// Route a build/carve action through the session and return the
-    /// build validation message (empty = success). In multiplayer, sends
-    /// to relay and returns empty (message not available until turn).
+    /// build validation message (empty = success). In single-player,
+    /// flushes the command with a 1-tick advance so `last_build_message`
+    /// is readable immediately. In multiplayer, sends to relay and
+    /// returns empty (message not available until turn).
     fn apply_build_action(&mut self, action: SimAction) -> GString {
         if self.is_multiplayer_mode {
             self.apply_or_send(action);
             return GString::new();
         }
         self.apply_or_send(action);
+        // Synchronous flush: build callers read `last_build_message`
+        // immediately, so the command must execute before we return.
+        let tick = self.session.current_tick() + 1;
+        self.session.process(SessionMessage::AdvanceTo { tick });
         self.session
             .sim
             .as_ref()
@@ -518,10 +527,14 @@ impl SimBridge {
     }
 
     /// Apply a SimAction locally (single-player) or send it to the relay
-    /// (multiplayer). In single-player, routes through the session and
-    /// immediately advances by 1 tick (backward compat: GDScript queries
-    /// state after spawn/build). In multiplayer, the action will come back
-    /// in a Turn message and be applied then.
+    /// (multiplayer). In single-player, the command is buffered in the
+    /// session and executed on the next `frame_update()` call (tick
+    /// pacing is driven by `LocalRelay`). In multiplayer, the action is
+    /// sent over the network and applied when it comes back in a Turn.
+    ///
+    /// Callers that need synchronous feedback (e.g., build validation
+    /// messages) should use `apply_build_action` instead, which flushes
+    /// the command with an explicit 1-tick advance.
     fn apply_or_send(&mut self, action: SimAction) {
         if self.is_multiplayer_mode {
             if let Some(client) = &mut self.net_client
@@ -535,9 +548,6 @@ impl SimBridge {
                 from: self.local_player_id,
                 action,
             });
-            // Immediately advance by 1 tick so GDScript can query updated state.
-            let tick = self.session.current_tick() + 1;
-            self.session.process(SessionMessage::AdvanceTo { tick });
         }
     }
 
@@ -1577,10 +1587,10 @@ impl SimBridge {
 
     /// Designate a single-voxel platform blueprint at the given position.
     ///
-    /// Constructs a `DesignateBuild` command and steps the sim by one tick,
-    /// following the same pattern as `spawn_elf()` / `create_goto_task()`.
-    /// Returns a non-empty string if the sim produced a validation message
-    /// (warning or block reason), empty string on silent success.
+    /// Routes through `apply_build_action`, which flushes with a 1-tick
+    /// advance so the validation message is readable immediately. Returns
+    /// a non-empty string if the sim produced a validation message (warning
+    /// or block reason), empty string on silent success.
     #[func]
     fn designate_build(&mut self, x: i32, y: i32, z: i32) -> GString {
         self.apply_build_action(SimAction::DesignateBuild {
