@@ -322,11 +322,6 @@ When a feature branch's work is done, the user will likely ask for a "once-over"
 
 When the user asks to merge a feature branch to main, use the `/merge-to-main` slash command. It follows a squash-rebase-ff workflow that keeps main's history clean. Conflict resolution is delegated to a subagent when needed. See `.claude/commands/merge-to-main.md` for the full procedure.
 
-Key points (always apply, even without the command):
-- Always squash feature commits into one before rebasing onto main.
-- Always ask the user for permission before the final fast-forward merge.
-- Update `docs/tracker.md` (move to Done) and amend the squashed commit before merging.
-
 ## Conversation Flow (CRITICAL)
 
 **Default to talking, not doing.** You are far too proactive by default. When in doubt, respond with text and wait for an explicit instruction to act. This is one of the most important rules in this file.

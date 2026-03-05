@@ -8,7 +8,9 @@ detection.
 
 - You must be on a feature branch (not main).
 - All work should be committed and pushed.
-- The once-over should already be done (run `/once-over` first if not).
+- Consider running `/once-over` first if the changes are complex and the user
+  hasn't already asked for one, or if a complicated conflicted rebase just
+  happened.
 
 ## Procedure
 
@@ -24,8 +26,17 @@ git commit -m "Descriptive commit message summarizing the feature"
 ```
 
 The commit message should summarize the entire feature — do not repeat
-individual commit messages. Include the tracker ID if applicable, e.g.,
-"Add mid-game join with state snapshot (F-mp-mid-join)".
+individual commit messages. **Make it substantial** — similar in detail and
+scope to the existing commit messages on main. For example:
+
+```
+"Add mid-game join with state snapshot (F-mp-mid-join)
+
+Implement session handshake that sends compressed world state ...
+refactor LocalRelay to support mid-stream client insertion ..."
+```
+
+Include the tracker ID if applicable.
 
 **Do NOT push the -rebase branch to origin.** It is local only.
 
@@ -57,10 +68,17 @@ agent should:
 
 After conflict resolution (whether by agent or directly):
 - Run `scripts/build.sh quicktest` to verify correctness.
-- If conflicts required **non-trivial edits** (integrating two features that
-  touch the same code), ask the user for permission before continuing. Trivial
-  conflicts (adjacent added lines, no semantic interaction) can proceed without
-  asking.
+- If the conflicts were trivial (ordering, adjacent lines, no semantic
+  interaction) and quicktest passes, proceed without asking.
+- If the conflicts required non-trivial edits (integrating two features that
+  touch the same code), ask the user for permission before continuing, even if
+  quicktest passes — tests may not catch all semantic issues.
+- If quicktest fails, diagnose and fix, then re-run. If you cannot resolve the
+  failures, ask the user for help.
+- If anything about the resolution feels wrong or surprising or even just
+  suspicious — unexpected interactions, code that doesn't quite make sense,
+  unclear intent — investigate thoroughly before proceeding. Ask the user if
+  you're unsure.
 
 ### Step 4: Update tracker
 
@@ -81,19 +99,29 @@ If the branch implements a tracked feature or bug:
 If the branch is not a tracked item (e.g., tooling, CLAUDE.md changes), skip
 this step.
 
-### Step 5: Fast-forward merge (requires permission if there were nontrivial rebase conflicts)
-
-**Ask the user for permission before this step if there were non-trivial edits due to rebase conflicts.**
+### Step 5: Fast-forward merge and push (with retry loop)
 
 ```
 git checkout main
 git merge --ff-only feature/BRANCH-rebase
-```
-
-### Step 6: Push and clean up
-
-```
 git push
+```
+
+**If `git push` fails** (e.g., because another merge landed on main while we
+were working), undo the merge commit and go back to step 2:
+
+```
+git reset --hard HEAD~1
+```
+
+Then repeat from step 2 (pull main, rebase, resolve conflicts, update tracker,
+merge, push). Step 4 will be a no-op on retries since the tracker update is
+already in the squashed commit. If this fails 5 times, **stop and ask the user for help** —
+something unusual is happening.
+
+### Step 6: Clean up
+
+```
 git branch -d feature/BRANCH-rebase
 git branch -D feature/BRANCH
 git push origin --delete feature/BRANCH
