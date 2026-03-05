@@ -12,10 +12,12 @@
 // ## What it exposes
 //
 // - **Lifecycle:** `init_sim(seed)`, `init_sim_with_tree_profile_json(seed, json)`,
-//   `step_to_tick(tick)`, `current_tick()`, `is_initialized()`,
-//   `tick_duration_ms()`.
+//   `current_tick()`, `is_initialized()`, `tick_duration_ms()`.
+// - **Frame update:** `frame_update(delta)` — unified per-frame entry point.
+//   Handles tick pacing (`LocalRelay` in SP, network polling in MP) and
+//   returns a fractional render_tick for smooth creature interpolation.
 // - **Speed control:** `get_sim_speed()` returns the current speed as a string,
-//   `sim_speed_multiplier()` returns the time multiplier for the accumulator,
+//   `sim_speed_multiplier()` returns the time multiplier for tick pacing,
 //   `set_sim_speed(speed_name)` sets speed via `apply_or_send` for deterministic
 //   state. In multiplayer, also sends relay-level pause/resume/speed messages.
 // - **Save/load:** `save_game_json()` returns the sim state as a JSON string,
@@ -30,8 +32,8 @@
 //   — generic `PackedVector3Array` for billboard sprite placement, replacing
 //   the per-species `get_elf_positions()` / `get_capybara_positions()` (which
 //   remain as thin wrappers). The `render_tick` parameter (a fractional tick
-//   computed by `main.gd` as `current_tick + accumulator_fraction`) enables
-//   smooth interpolation between nav nodes via `Creature::interpolated_position()`.
+//   returned by `frame_update()`) enables smooth interpolation between nav
+//   nodes via `Creature::interpolated_position()`.
 // - **Creature info:** `get_creature_info(species_name, index, render_tick)` —
 //   returns a `VarDictionary` with species, interpolated position (x/y/z),
 //   task status, task_kind, food level, food_max, rest level, rest_max,
@@ -100,10 +102,8 @@
 //   info panel. `rename_structure(id, name)` — set or clear (empty string)
 //   a structure's custom name. `set_cooking_config(id, enabled, bread_target)`
 //   — configure cooking on a kitchen building.
-// - **Ground piles:** `add_ground_pile_item(x,y,z,item_kind,quantity)` —
-//   creates or updates a ground pile at the given position (direct mutation,
-//   same pattern as `add_creature_item`). `get_ground_piles()` — returns a
-//   `VarArray` of `{x, y, z, inventory: [{kind, quantity}]}` dicts.
+// - **Ground piles:** `get_ground_piles()` — returns a `VarArray` of
+//   `{x, y, z, inventory: [{kind, quantity}]}` dicts.
 //   `get_ground_pile_info(x,y,z)` — returns a single pile's dict (same
 //   format) or empty dict if no pile at that position. Used by the pile
 //   info panel for display and per-frame refresh.
@@ -181,10 +181,10 @@ fn species_name(species: Species) -> &'static str {
 /// Godot node that owns and drives the simulation.
 ///
 /// Add this as a child node in your main scene. Call `init_sim()` from
-/// GDScript to create the simulation, then `step_to_tick()` each frame
-/// to advance it. In multiplayer mode, call `host_game()` or `join_game()`
-/// instead, then `poll_network()` each frame to receive turns. After
-/// applying turns, `poll_network()` automatically sends a state checksum
+/// GDScript to create the simulation, then `frame_update(delta)` each
+/// frame — it handles tick pacing (via `LocalRelay` in SP, network polling
+/// in MP) and returns a fractional render_tick for smooth interpolation.
+/// In multiplayer, `poll_network()` automatically sends a state checksum
 /// to the relay every `CHECKSUM_INTERVAL_TICKS` (1000 ticks) for desync
 /// detection (see `checksum.rs` in the sim crate).
 #[derive(GodotClass)]
@@ -202,6 +202,7 @@ pub struct SimBridge {
     is_multiplayer_mode: bool,
     mp_events: Vec<String>,
     mp_ticks_per_turn: u32,
+    mp_time_since_turn: f64,
 }
 
 #[godot_api]
@@ -218,6 +219,7 @@ impl INode for SimBridge {
             is_multiplayer_mode: false,
             mp_events: Vec::new(),
             mp_ticks_per_turn: 50,
+            mp_time_since_turn: 0.0,
         }
     }
 }
@@ -227,11 +229,7 @@ impl SimBridge {
     /// Initialize the simulation with the given seed and default config.
     #[func]
     fn init_sim(&mut self, seed: i64) {
-        let mut config = GameConfig::default();
-        // Clear initial creatures/piles — GDScript still spawns them in _ready().
-        // Phase 4 will flip this so StartGame uses the full config.
-        config.initial_creatures.clear();
-        config.initial_ground_piles.clear();
+        let config = GameConfig::default();
         let seconds_per_tick = config.tick_duration_ms as f64 / 1000.0;
         self.session.process(SessionMessage::StartGame {
             seed: seed as u64,
@@ -254,13 +252,10 @@ impl SimBridge {
                 godot_warn!("Failed to parse tree profile JSON: {e}, using default");
                 TreeProfile::fantasy_mega()
             });
-        let mut config = GameConfig {
+        let config = GameConfig {
             tree_profile: profile,
             ..Default::default()
         };
-        // Clear initial creatures/piles — GDScript still spawns them in _ready().
-        config.initial_creatures.clear();
-        config.initial_ground_piles.clear();
         let seconds_per_tick = config.tick_duration_ms as f64 / 1000.0;
         self.session.process(SessionMessage::StartGame {
             seed: seed as u64,
@@ -1468,139 +1463,6 @@ impl SimBridge {
         self.spawn_creature(GString::from("Capybara"), x, y, z);
     }
 
-    /// Set the food level of the nth creature of the given species.
-    ///
-    /// `index` is the species-filtered iteration index matching the order
-    /// used by `get_creature_positions()`. Used by `main.gd` to vary
-    /// initial food levels after spawning.
-    #[func]
-    fn set_creature_food(&mut self, species_name: GString, index: i32, food: i64) {
-        let Some(species) = parse_species(&species_name.to_string()) else {
-            return;
-        };
-        let Some(sim) = &mut self.session.sim else {
-            return;
-        };
-        let creature_id = sim
-            .creatures
-            .iter()
-            .filter(|(_, c)| c.species == species)
-            .nth(index as usize)
-            .map(|(_, c)| c.id);
-        if let Some(id) = creature_id
-            && let Some(creature) = sim.creatures.get_mut(&id)
-        {
-            creature.food = food;
-        }
-    }
-
-    /// Set the rest level of the nth creature of the given species.
-    ///
-    /// `index` is the species-filtered iteration index matching the order
-    /// used by `get_creature_positions()`. Used by `main.gd` to vary
-    /// initial rest levels after spawning.
-    #[func]
-    fn set_creature_rest(&mut self, species_name: GString, index: i32, rest: i64) {
-        let Some(species) = parse_species(&species_name.to_string()) else {
-            return;
-        };
-        let Some(sim) = &mut self.session.sim else {
-            return;
-        };
-        let creature_id = sim
-            .creatures
-            .iter()
-            .filter(|(_, c)| c.species == species)
-            .nth(index as usize)
-            .map(|(_, c)| c.id);
-        if let Some(id) = creature_id
-            && let Some(creature) = sim.creatures.get_mut(&id)
-        {
-            creature.rest = rest;
-        }
-    }
-
-    /// Add items to the inventory of the nth creature of the given species.
-    ///
-    /// `index` is the species-filtered iteration index matching the order
-    /// used by `get_creature_positions()`. Direct mutation (like
-    /// `set_creature_food`) — used by `main.gd` to distribute initial bread.
-    #[func]
-    fn add_creature_item(
-        &mut self,
-        species_name: GString,
-        index: i32,
-        item_kind: GString,
-        quantity: i32,
-    ) {
-        if quantity <= 0 {
-            return;
-        }
-        let Some(species) = parse_species(&species_name.to_string()) else {
-            return;
-        };
-        let kind = match item_kind.to_string().as_str() {
-            "Bread" => elven_canopy_sim::inventory::ItemKind::Bread,
-            "Fruit" => elven_canopy_sim::inventory::ItemKind::Fruit,
-            other => {
-                godot_error!("SimBridge: unknown item kind '{other}'");
-                return;
-            }
-        };
-        let Some(sim) = &mut self.session.sim else {
-            return;
-        };
-        let creature_id = sim
-            .creatures
-            .iter()
-            .filter(|(_, c)| c.species == species)
-            .nth(index as usize)
-            .map(|(_, c)| c.id);
-        if let Some(id) = creature_id
-            && let Some(creature) = sim.creatures.get_mut(&id)
-        {
-            elven_canopy_sim::inventory::add_item(
-                &mut creature.inventory,
-                kind,
-                quantity as u32,
-                Some(id),
-                None,
-            );
-        }
-    }
-
-    /// Add items to a ground pile at the given voxel position.
-    ///
-    /// Gets or creates a `GroundPile` at `(x, y, z)`, then adds `quantity`
-    /// of `item_kind` via `inventory::add_item()` with owner=None,
-    /// task_related=false. Direct mutation, same pattern as
-    /// `add_creature_item`.
-    #[func]
-    fn add_ground_pile_item(&mut self, x: i32, y: i32, z: i32, item_kind: GString, quantity: i32) {
-        if quantity <= 0 {
-            return;
-        }
-        let kind = match item_kind.to_string().as_str() {
-            "Bread" => elven_canopy_sim::inventory::ItemKind::Bread,
-            "Fruit" => elven_canopy_sim::inventory::ItemKind::Fruit,
-            other => {
-                godot_error!("SimBridge: unknown item kind '{other}'");
-                return;
-            }
-        };
-        let Some(sim) = &mut self.session.sim else {
-            return;
-        };
-        let pos = VoxelCoord::new(x, y, z);
-        let pile = sim.ground_piles.entry(pos).or_insert_with(|| {
-            elven_canopy_sim::inventory::GroundPile {
-                position: pos,
-                items: Vec::new(),
-            }
-        });
-        elven_canopy_sim::inventory::add_item(&mut pile.items, kind, quantity as u32, None, None);
-    }
-
     /// Return all ground piles as a `VarArray` of dictionaries.
     ///
     /// Each dictionary contains: `x`, `y`, `z` (pile position) and
@@ -2181,11 +2043,29 @@ impl SimBridge {
     /// then advances the sim via the local relay in single-player. Returns
     /// the fractional render tick for smooth interpolation.
     ///
-    /// GDScript won't call this until Phase 4; added now for forward compat.
+    /// In multiplayer mode, polls the network for turns, then interpolates
+    /// `render_tick` up to `mp_ticks_per_turn` ahead of the last confirmed
+    /// tick for smooth movement between turns. In single-player mode,
+    /// delegates tick pacing to the `LocalRelay`.
     #[func]
     fn frame_update(&mut self, delta: f64) -> f64 {
         if self.net_client.is_some() {
-            self.poll_network();
+            let turns = self.poll_network();
+            if turns > 0 {
+                self.mp_time_since_turn = 0.0;
+            } else {
+                self.mp_time_since_turn += delta;
+            }
+            let spt = self
+                .session
+                .sim
+                .as_ref()
+                .map(|s| s.config.tick_duration_ms as f64 / 1000.0)
+                .unwrap_or(0.001);
+            let ticks_ahead = (self.mp_time_since_turn / spt) as u64;
+            let max_ticks = self.mp_ticks_per_turn as u64;
+            let capped = ticks_ahead.min(max_ticks);
+            return self.session.current_tick() as f64 + capped as f64;
         }
         if let Some(relay) = &mut self.local_relay {
             let mult = self.session.speed_multiplier();
@@ -2804,13 +2684,10 @@ impl SimBridge {
                 ServerMessage::GameStart { seed, config_json } => {
                     let profile: TreeProfile = serde_json::from_str(&config_json)
                         .unwrap_or_else(|_| TreeProfile::fantasy_mega());
-                    let mut config = GameConfig {
+                    let config = GameConfig {
                         tree_profile: profile,
                         ..Default::default()
                     };
-                    // Clear initial creatures/piles — GDScript spawns them.
-                    config.initial_creatures.clear();
-                    config.initial_ground_piles.clear();
                     self.session.process(SessionMessage::StartGame {
                         seed: seed as u64,
                         config: Box::new(config),

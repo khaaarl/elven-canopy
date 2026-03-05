@@ -7,21 +7,19 @@
 ## 1. Check GameSession.load_save_path — if set, load a saved game instead
 ##    of starting fresh.
 ## 2. For new games: read the simulation seed from GameSession autoload (set
-##    by the new-game menu), initialize SimBridge, and spawn initial creatures.
+##    by the new-game menu) and initialize SimBridge. Initial creatures are
+##    spawned from GameConfig by the session during StartGame processing.
 ## 3. For loaded games: read the save file, call bridge.load_game_json(),
 ##    and skip creature spawning (creatures are already in the loaded state).
 ## 4. Common path: set up renderers, toolbar, placement controller,
 ##    construction controller, selection controller, creature info panel,
 ##    menu button, and pause menu.
 ##
-## Per-frame (_process): uses a time-based accumulator to advance the sim by
-## the correct number of ticks, decoupled from the frame rate. The sim runs
-## at 1000 ticks per simulated second (tick_duration_ms = 1). Each frame,
-## delta time is accumulated and converted to ticks. A cap of 5000 ticks per
-## frame prevents spiral-of-death on slow frames. After stepping the sim,
-## computes a fractional render_tick = current_tick + accumulator_fraction
-## and distributes it to renderers and the selection controller for smooth
-## creature movement interpolation between nav nodes.
+## Per-frame (_process): calls bridge.frame_update(delta) which handles
+## tick pacing (via LocalRelay in SP, network polling in MP) and returns a
+## fractional render_tick for smooth creature interpolation between nav
+## nodes. GDScript distributes this render_tick to renderers and the
+## selection controller.
 ##
 ## ESC precedence chain (reverse tree order — later children fire first):
 ## 1. placement_controller — cancel active placement
@@ -90,14 +88,6 @@ var _ladder_renderer: Node3D
 var _furniture_renderer: Node3D
 var _pile_renderer: Node3D
 var _lobby_overlay: ColorRect
-## Fractional seconds of unprocessed sim time. Accumulates each frame,
-## converted to ticks by dividing by tick_duration_ms / 1000.
-var _sim_accumulator: float = 0.0
-## Seconds per sim tick, cached from bridge.tick_duration_ms().
-var _seconds_per_tick: float = 0.001
-## Multiplayer: seconds since last turn was received. Used for smooth
-## render_tick interpolation between turns.
-var _mp_time_since_turn: float = 0.0
 
 
 func _ready() -> void:
@@ -164,70 +154,7 @@ func _ready() -> void:
 			bridge.init_sim_with_tree_profile_json(sim_seed, json_str)
 		else:
 			bridge.init_sim(sim_seed)
-		print(
-			(
-				"Elven Canopy: sim initialized (seed=%d, mana=%.1f)"
-				% [sim_seed, bridge.home_tree_mana()]
-			)
-		)
-
-		# Spawn initial creatures.
-		var cx := 128
-		var cz := 128
-		for i in 5:
-			var ox := i * 3 - 6
-			bridge.spawn_elf(cx + ox, 0, cz)
-		# Vary initial elf food so some are hungry from the start.
-		# food_max is 1_000_000_000_000_000; percentages below threshold (50%) seek fruit.
-		var food_max: int = 1_000_000_000_000_000
-		var elf_food_pcts := [100, 90, 70, 60, 48]
-		for i in elf_food_pcts.size():
-			if elf_food_pcts[i] < 100:
-				bridge.set_creature_food("Elf", i, food_max * elf_food_pcts[i] / 100)
-		# Vary initial elf rest so one is tired from the start.
-		var rest_max: int = 1_000_000_000_000_000
-		var elf_rest_pcts := [100, 95, 80, 60, 45]
-		for i in elf_rest_pcts.size():
-			if elf_rest_pcts[i] < 100:
-				bridge.set_creature_rest("Elf", i, rest_max * elf_rest_pcts[i] / 100)
-		# Distribute initial bread: elf 0 gets 0, elf 1 gets 1, ..., elf 4 gets 4.
-		var elf_bread := [0, 1, 2, 3, 4]
-		for i in elf_bread.size():
-			if elf_bread[i] > 0:
-				bridge.add_creature_item("Elf", i, "Bread", elf_bread[i])
-		# Place a bread pile on the ground near the spawn center for testing.
-		# Scan upward from y=1 to find the surface (first Air voxel above dirt).
-		var pile_y := 1
-		while not bridge.validate_build_air(128, pile_y, 138) and pile_y < 10:
-			pile_y += 1
-		bridge.add_ground_pile_item(128, pile_y, 138, "Bread", 5)
-		print("Elven Canopy: spawned %d elves near (%d, 0, %d)" % [bridge.elf_count(), cx, cz])
-
-		for i in 5:
-			bridge.spawn_capybara(cx, 0, cz)
-		print(
-			(
-				"Elven Canopy: spawned %d capybaras near (%d, 0, %d)"
-				% [bridge.capybara_count(), cx, cz]
-			)
-		)
-
-		for i in 3:
-			bridge.spawn_creature("Boar", cx, 0, cz)
-		for i in 3:
-			bridge.spawn_creature("Deer", cx, 0, cz)
-		for i in 3:
-			bridge.spawn_creature("Squirrel", cx, 0, cz)
-		print(
-			(
-				"Elven Canopy: spawned new creatures (boar=%d, deer=%d, squirrel=%d)"
-				% [
-					bridge.creature_count_by_name("Boar"),
-					bridge.creature_count_by_name("Deer"),
-					bridge.creature_count_by_name("Squirrel"),
-				]
-			)
-		)
+		print("Elven Canopy: sim initialized (seed=%d)" % sim_seed)
 
 	_setup_common(bridge)
 
@@ -248,39 +175,10 @@ func _show_lobby(bridge: SimBridge) -> void:
 
 
 ## Called when the multiplayer game starts (lobby's game_started signal).
-## Now the sim is initialized — set up renderers and UI.
+## Now the sim is initialized (initial creatures spawned via config) — set
+## up renderers and UI.
 func _on_mp_game_started() -> void:
 	var bridge: SimBridge = $SimBridge
-
-	# Spawn initial creatures (host only).
-	if bridge.is_host():
-		var cx := 128
-		var cz := 128
-		for i in 5:
-			var ox := i * 3 - 6
-			bridge.spawn_elf(cx + ox, 0, cz)
-		# Vary initial elf food so some are hungry from the start.
-		var food_max: int = 1_000_000_000_000_000
-		var elf_food_pcts := [100, 90, 70, 60, 48]
-		for i in elf_food_pcts.size():
-			if elf_food_pcts[i] < 100:
-				bridge.set_creature_food("Elf", i, food_max * elf_food_pcts[i] / 100)
-		# Vary initial elf rest so one is tired from the start.
-		var rest_max: int = 1_000_000_000_000_000
-		var elf_rest_pcts := [100, 95, 80, 60, 45]
-		for i in elf_rest_pcts.size():
-			if elf_rest_pcts[i] < 100:
-				bridge.set_creature_rest("Elf", i, rest_max * elf_rest_pcts[i] / 100)
-		for i in 5:
-			bridge.spawn_capybara(cx, 0, cz)
-		for i in 3:
-			bridge.spawn_creature("Boar", cx, 0, cz)
-		for i in 3:
-			bridge.spawn_creature("Deer", cx, 0, cz)
-		for i in 3:
-			bridge.spawn_creature("Squirrel", cx, 0, cz)
-		print("Elven Canopy: multiplayer game started, spawned initial creatures")
-
 	_setup_common(bridge)
 	print("Elven Canopy: multiplayer game ready")
 
@@ -288,9 +186,6 @@ func _on_mp_game_started() -> void:
 ## Set up renderers, toolbar, controllers, and menus. Called for both
 ## single-player (immediately in _ready) and multiplayer (after game_started).
 func _setup_common(bridge: SimBridge) -> void:
-	# Cache tick duration for the frame accumulator.
-	_seconds_per_tick = bridge.tick_duration_ms() / 1000.0
-
 	# Set up tree renderer (refreshed every frame for carve updates).
 	_tree_renderer = $TreeRenderer
 	_tree_renderer.setup(bridge)
@@ -707,39 +602,12 @@ func _process(delta: float) -> void:
 	if not bridge.is_initialized():
 		return
 
-	var render_tick: float = float(bridge.current_tick())
+	var render_tick := bridge.frame_update(delta)
 
 	if bridge.is_multiplayer():
-		# Multiplayer: poll_network handles sim stepping via turns.
-		var turns_applied := bridge.poll_network()
-		if turns_applied > 0:
-			_mp_time_since_turn = 0.0
-		else:
-			_mp_time_since_turn += delta
-		# Smooth interpolation: advance render_tick up to ticks_per_turn ahead.
-		var ticks_ahead := int(_mp_time_since_turn / _seconds_per_tick)
-		var max_ticks := bridge.mp_ticks_per_turn()
-		if ticks_ahead > max_ticks:
-			ticks_ahead = max_ticks
-		render_tick = float(bridge.current_tick()) + float(ticks_ahead)
-		# Process multiplayer events (player join/leave, chat).
 		var events := bridge.poll_mp_events()
 		for event_json in events:
 			print("MP event: %s" % event_json)
-	else:
-		# Single-player: time-based accumulator scaled by sim speed.
-		var speed_mult := bridge.sim_speed_multiplier()
-		_sim_accumulator += delta * speed_mult
-		# Cap to prevent unbounded growth (e.g. during pause -> unpause).
-		if _sim_accumulator > 0.1:
-			_sim_accumulator = 0.1
-		var ticks_to_advance := int(_sim_accumulator / _seconds_per_tick)
-		if ticks_to_advance > 5000:
-			ticks_to_advance = 5000
-		if ticks_to_advance > 0:
-			_sim_accumulator -= ticks_to_advance * _seconds_per_tick
-			bridge.step_to_tick(bridge.current_tick() + ticks_to_advance)
-		render_tick = float(bridge.current_tick()) + (_sim_accumulator / _seconds_per_tick)
 
 	# Distribute render_tick to all consumers that read creature positions.
 	$ElfRenderer.set_render_tick(render_tick)

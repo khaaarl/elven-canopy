@@ -253,7 +253,7 @@ Things that are non-obvious or surprising about this codebase:
 
 **Tick rate and sim decoupling:**
 - The sim runs at **1000 ticks per simulated second** (`tick_duration_ms = 1`). All tick-denominated config values (heartbeat intervals, food decay rates, species speed params) are calibrated for this rate.
-- The sim is decoupled from the frame rate. `main.gd` uses a time-based accumulator to compute how many ticks to advance per frame, capped at 5000 to prevent spiral-of-death.
+- The sim is decoupled from the frame rate. `main.gd` calls `bridge.frame_update(delta)` each frame. In single-player, a `LocalRelay` on the Rust side handles tick pacing with a time-based accumulator, capped at 5000 ticks per frame to prevent spiral-of-death.
 - Movement speed is per-species: `walk_ticks_per_voxel` (ticks per 1.0 units of euclidean distance on flat ground) and `climb_ticks_per_voxel` (ticks per 1.0 units on TrunkClimb/GroundToTrunk edges). Nav graph edges store euclidean distance, not time-cost — speed config is not needed for graph construction.
 
 **Voxel coordinate system:**
@@ -277,12 +277,12 @@ Things that are non-obvious or surprising about this codebase:
 - `game_session.gd` is a Godot autoload singleton that persists seed and tree config across scene transitions (main menu → new game → game).
 
 **SimBridge side effects:**
-- `spawn_elf()`, `spawn_capybara()`, and `create_goto_task()` in `sim_bridge.rs` automatically step the sim by 1 tick after applying the command. This is convenient for UI but means these are not pure command-enqueue operations.
+- All `apply_or_send` callers in `sim_bridge.rs` (`spawn_creature`, `create_goto_task`, `designate_build`, `furnish_structure`, etc.) automatically step the sim by 1 tick after applying the command in single-player mode. This is convenient for UI but means these are not pure command-enqueue operations.
 
 **Sprite rendering and movement interpolation:**
 - Elf sprites are offset +0.48 in Y, capybara sprites +0.32, to visually center them above their nav node position. Selection ray-to-sprite distance uses these same offsets.
 - Sprites use a pool pattern: created on demand, never destroyed, only hidden when count decreases.
-- Creature positions are smoothly interpolated between nav nodes. Each `Creature` stores `move_from`/`move_to`/`move_start_tick`/`move_end_tick` (rendering metadata, never read by sim logic). `main.gd` computes a fractional `render_tick = current_tick + accumulator_fraction` each frame and distributes it to renderers and the selection controller. `SimBridge.get_elf_positions(render_tick)` and `get_capybara_positions(render_tick)` call `Creature::interpolated_position()` to lerp between nav nodes.
+- Creature positions are smoothly interpolated between nav nodes. Each `Creature` stores `move_from`/`move_to`/`move_start_tick`/`move_end_tick` (rendering metadata, never read by sim logic). `bridge.frame_update(delta)` returns a fractional `render_tick` each frame; `main.gd` distributes it to renderers and the selection controller. `SimBridge.get_creature_positions(species, render_tick)` calls `Creature::interpolated_position()` to lerp between nav nodes.
 
 **Input precedence:**
 - ESC handling flows: placement_controller (cancel placement) → selection_controller (deselect) → pause_menu (open/close menu). Each handler calls `set_input_as_handled()` to prevent downstream handlers from firing.

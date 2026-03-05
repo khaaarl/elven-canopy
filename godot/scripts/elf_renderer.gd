@@ -2,8 +2,8 @@
 ##
 ## Each frame, reads elf positions from SimBridge.get_elf_positions(render_tick)
 ## and places a Sprite3D at each one. Positions are smoothly interpolated
-## between nav nodes using the fractional render_tick computed by main.gd
-## (sim tick + accumulator fraction). Call set_render_tick() each frame before
+## between nav nodes using the fractional render_tick returned by
+## bridge.frame_update(delta). Call set_render_tick() each frame before
 ## _process runs.
 ##
 ## Uses a pool pattern: sprites are created on demand (never destroyed), and
