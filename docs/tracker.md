@@ -1694,21 +1694,27 @@ the full table each frame. Medium complexity.
 
 #### F-tab-compound-idx — Compound indexes with prefix queries
 **Status:** Todo
+**Draft:** `docs/drafts/tabulosity_advanced_indexes_v5.md`
 
 `BTreeSet<(F1, F2, ..., PK)>` compound indexes supporting prefix queries
-(e.g., query by first field, or first two fields). High complexity due to
-derive macro codegen for arbitrary field tuples.
+(e.g., query by first field, or first two fields). Unified `#[index(...)]`
+attribute with `IntoQuery` trait for ergonomic queries. Uses tracked bounds
+(runtime min/max) instead of `Bounded` trait, enabling `String` PKs and
+index fields. High complexity due to derive macro codegen for arbitrary
+field tuples.
 
-**Related:** F-sim-db-impl
+**Related:** F-sim-db-impl, F-tab-filter-idx
 
 #### F-tab-filter-idx — Filtered/partial indexes
 **Status:** Todo
+**Draft:** `docs/drafts/tabulosity_advanced_indexes_v5.md`
 
-Index only rows matching a predicate (e.g., only tasks where `assignee`
-is `Some`). Reduces index size and query noise for sparse fields. High
-complexity.
+Index only rows matching a predicate (e.g., only active tasks). Composes
+with compound indexes via unified `#[index(name, fields, filter)]`
+attribute. Four-case update maintenance handles filter result transitions.
+High complexity.
 
-**Related:** F-sim-db-impl
+**Related:** F-sim-db-impl, F-tab-compound-idx
 
 #### F-tab-joins — Join iterators across tables
 **Status:** Todo
