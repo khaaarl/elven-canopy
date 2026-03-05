@@ -80,6 +80,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
 [ ] F-elf-assign           Elf-to-building assignment UI
+[ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
@@ -101,12 +102,12 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
 [ ] F-modding              Scripting layer for modding support
-[ ] F-mood-system          Mood with escalating consequences
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-music-runtime        Integrate music generator into game
 [ ] F-narrative-log        Events and narrative log
+[ ] F-notifications        Player-visible event notifications
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-placement-ui         Revamp construction placement UX
@@ -185,6 +186,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-logistics            Spatial resource flow (Kanban-style)
 [x] F-main-menu            Main menu UI
+[x] F-mood-system          Mood with escalating consequences
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-mp-checksums         Multiplayer state checksums for desync detection
 [x] F-mp-integ-test        Multiplayer integration test harness
@@ -768,6 +770,19 @@ type.
 
 **Related:** F-bldg-home, F-bldg-kitchen, F-bldg-workshop, F-jobs, F-select-struct
 
+#### F-elf-leave — Devastated elves permanently leave
+**Status:** Todo · **Phase:** 4 · **Refs:** §18
+
+When an elf has been deeply unhappy for a sustained period, they permanently
+leave the tree. Requires both short-term mood (from F-mood-system) and a
+longer-term "resentment" accumulator (from multi-dimensional emotions) to be
+critically low — brief bad days don't trigger departure. The elf gets a
+`TaskKind::Leave`, pathfinds to the map edge, and despawns. Inventory drops
+to the ground, assigned home becomes unassigned. Requires a visible player
+notification so the event isn't missed.
+
+**Blocked by:** F-emotions, F-notifications
+
 #### F-elf-needs — Hunger and rest self-direction
 **Status:** Done · **Phase:** 3 · **Refs:** §13, §15
 
@@ -965,7 +980,7 @@ emergent social/economic system.
 Emotions as multiple simultaneous dimensions: joy, fulfillment, sorrow,
 stress, pain, fear, anxiety. Not a single "happiness" number.
 
-**Blocks:** F-hedonic-adapt, F-mana-mood, F-mood-system
+**Blocks:** F-elf-leave, F-hedonic-adapt, F-mana-mood
 
 #### F-emotions-basic — Mood score from thought weights
 **Status:** Done · **Phase:** 4 · **Refs:** §18
@@ -992,19 +1007,35 @@ generate more mana, completing the core feedback loop.
 **Blocked by:** F-emotions, F-mana-system
 
 #### F-mood-system — Mood with escalating consequences
-**Status:** Todo · **Phase:** 4 · **Refs:** §18
+**Status:** Done · **Phase:** 4 · **Refs:** §18
 
-Sustained emotional states become moods. Escalating consequences: mild
-unhappiness reduces work speed, severe unhappiness causes task refusal,
-critical states trigger dramatic actions.
-
-**Blocked by:** F-emotions
+Unhappy elves mope instead of working. At each creature heartbeat, compute a
+Poisson-like mope probability using integer math: `roll % mean < elapsed`
+where `mean` is a per-MoodTier config value (0 for Content+, scaling down
+through Unhappy / Miserable / Devastated). When triggered, elf gets a
+`TaskKind::Mope` — walks home (if assigned) or stays at current node, idles
+for a configurable duration, then resumes normal behavior. Moping replaces
+normal task pickup and can also interrupt in-progress player-directed tasks
+at Miserable/Devastated tiers (autonomous tasks like sleep/eat are never
+interrupted). All rates and durations in `MoodConsequencesConfig`. No work
+speed reduction, no social contagion, no personality modifiers — those build
+on top later.
 
 #### F-narrative-log — Events and narrative log
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
 
 Sim emits narrative events (arguments, friendships formed, dramatic moments).
 Log viewable by player, drives emergent storytelling.
+
+#### F-notifications — Player-visible event notifications
+**Status:** Todo · **Phase:** 4
+
+Toast-style or log-style notification system for important sim events that the
+player shouldn't miss (elf left the tree, structure collapsed, etc.). Needed
+before any feature that has dramatic irreversible consequences the player must
+know about.
+
+**Blocks:** F-elf-leave
 
 #### F-personality — Personality axes affecting behavior
 **Status:** Todo · **Phase:** 4 · **Refs:** §18

@@ -252,6 +252,13 @@
     "tier_happy_above": 150,
     "tier_elated_above": 300
   },
+  "mood_consequences": {
+    "mope_mean_ticks_unhappy": 500000,
+    "mope_mean_ticks_miserable": 125000,
+    "mope_mean_ticks_devastated": 50000,
+    "mope_can_interrupt_task": true,
+    "mope_duration_ticks": 10000
+  },
   "logistics_heartbeat_interval_ticks": 5000,
   "max_haul_tasks_per_heartbeat": 5,
   "elf_starting_bread": 2,

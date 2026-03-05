@@ -50,6 +50,10 @@
 //   Dijkstra nearest-fruit search).
 // - **Phase 2b (tiredness):** If tired and idle (not hungry), find a bed
 //   (assigned home → dormitory → ground fallback) and create a Sleep task.
+// - **Phase 2b½ (moping):** If mood is Unhappy or worse, roll a Poisson-like
+//   probability check. If triggered, abandon any current task (at Miserable+)
+//   or start moping if idle. Mope location is assigned home if available,
+//   else current node. Duration from `MoodConsequencesConfig`.
 // - **Phase 2c (acquisition):** If still idle after hunger/sleep checks,
 //   iterate the creature's `wants` list. For each want where owned items are
 //   below the target, call `find_item_source()` to locate unowned items in
@@ -1701,6 +1705,10 @@ impl SimState {
                     }
                 }
 
+                // Phase 2b½: mood-based moping check. Only applies to elves
+                // (only species with meaningful thoughts currently).
+                self.check_mope(creature_id);
+
                 // Phase 2c: if idle (no task from hunger or sleep), check
                 // personal wants and acquire items from unowned sources.
                 let still_idle = self
@@ -2112,6 +2120,10 @@ impl SimState {
             }
             task::TaskKind::AcquireItem { .. } => {
                 self.do_acquire_item(creature_id, task_id);
+            }
+            task::TaskKind::Mope => {
+                self.do_mope(creature_id, task_id);
+                return; // do_mope handles its own next-activation scheduling.
             }
         }
 
@@ -2525,6 +2537,27 @@ impl SimState {
         }
 
         // Schedule next activation.
+        self.event_queue.schedule(
+            self.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
+    }
+
+    /// Mope: idle at a location due to low mood. Each activation increments
+    /// progress by 1.0. Completes when `progress >= total_cost`. No side
+    /// effects beyond consuming the creature's time.
+    fn do_mope(&mut self, creature_id: CreatureId, task_id: TaskId) {
+        let done = if let Some(task) = self.tasks.get_mut(&task_id) {
+            task.progress += 1.0;
+            task.progress >= task.total_cost
+        } else {
+            true
+        };
+
+        if done {
+            self.complete_task(task_id);
+        }
+
         self.event_queue.schedule(
             self.tick + 1,
             ScheduledEventKind::CreatureActivation { creature_id },
@@ -3242,6 +3275,97 @@ impl SimState {
         }
 
         None
+    }
+
+    /// Check if a creature should start moping due to low mood. Called during
+    /// heartbeat Phase 2b½, after hunger/sleep but before item acquisition.
+    /// Only fires for elves (only species with meaningful thoughts). Uses a
+    /// Poisson-like integer probability: `roll % mean < elapsed`.
+    fn check_mope(&mut self, creature_id: CreatureId) {
+        let creature = match self.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return,
+        };
+
+        // Only elves mope (only species with thoughts).
+        if creature.species != Species::Elf {
+            return;
+        }
+
+        let (_, tier) = creature.mood(&self.config.mood);
+        let mean = self.config.mood_consequences.mope_mean_ticks(tier);
+        if mean == 0 {
+            return; // This tier never mopes.
+        }
+
+        let is_idle = creature.current_task.is_none();
+        let can_interrupt = self.config.mood_consequences.mope_can_interrupt_task
+            && matches!(tier, MoodTier::Miserable | MoodTier::Devastated);
+
+        // Never interrupt autonomous tasks (sleep, eat, other mopes, item
+        // acquisition). These are self-care behaviors that shouldn't be
+        // disrupted — interrupting sleep could create a death spiral.
+        if !is_idle {
+            if !can_interrupt {
+                return;
+            }
+            let has_autonomous_task = creature
+                .current_task
+                .and_then(|tid| self.tasks.get(&tid))
+                .is_some_and(|t| t.origin == task::TaskOrigin::Autonomous);
+            if has_autonomous_task {
+                return;
+            }
+        }
+
+        // Probability roll: mope if `roll % mean < elapsed`.
+        let species_data = &self.species_table[&Species::Elf];
+        let elapsed = species_data.heartbeat_interval_ticks;
+        let roll = self.rng.next_u64();
+        if roll % mean >= elapsed {
+            return; // Roll failed.
+        }
+
+        // If creature has an in-progress task, abandon it.
+        if let Some(old_task_id) = creature.current_task {
+            self.cleanup_haul_task(creature_id, old_task_id);
+            self.cleanup_cook_task(old_task_id);
+            self.cleanup_harvest_task(old_task_id);
+            self.cleanup_acquire_item_task(old_task_id);
+            self.unassign_creature_from_task(creature_id);
+        }
+
+        // Determine mope location: assigned home nav node, else current node.
+        let mope_node = self
+            .find_assigned_home_bed(creature_id)
+            .map(|(_, nav_node, _)| nav_node)
+            .or_else(|| {
+                self.creatures
+                    .get(&creature_id)
+                    .and_then(|c| c.current_node)
+            });
+        let mope_node = match mope_node {
+            Some(n) => n,
+            None => return,
+        };
+
+        let task_id = TaskId::new(&mut self.rng);
+        let duration = self.config.mood_consequences.mope_duration_ticks;
+        let new_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::Mope,
+            state: task::TaskState::InProgress,
+            location: mope_node,
+            assignees: vec![creature_id],
+            progress: 0.0,
+            total_cost: duration as f32,
+            required_species: None,
+            origin: task::TaskOrigin::Autonomous,
+        };
+        self.tasks.insert(task_id, new_task);
+        if let Some(creature) = self.creatures.get_mut(&creature_id) {
+            creature.current_task = Some(task_id);
+        }
     }
 
     /// Check a creature's personal wants and create an AcquireItem task for
@@ -13395,6 +13519,529 @@ mod tests {
             2,
             "Total bread across both elves should be exactly 2 (no duplication), \
              elf1={elf1_bread}, elf2={elf2_bread}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Mood consequences: moping tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: create a sim with custom mood_consequences config, spawn an elf,
+    /// and optionally inject thoughts to reach a target mood tier.
+    fn mope_test_setup(
+        mope_config: crate::config::MoodConsequencesConfig,
+        thoughts: &[ThoughtKind],
+    ) -> (SimState, CreatureId) {
+        let mut config = test_config();
+        config.mood_consequences = mope_config;
+        // Disable hunger and tiredness so they don't interfere.
+        let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+        elf_species.food_decay_per_tick = 0;
+        elf_species.rest_decay_per_tick = 0;
+        let mut sim = SimState::with_config(99, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = *sim
+            .creatures
+            .keys()
+            .find(|id| sim.creatures[id].species == Species::Elf)
+            .expect("elf should exist");
+
+        // Inject thoughts.
+        for thought in thoughts {
+            if let Some(creature) = sim.creatures.get_mut(&elf_id) {
+                creature.add_thought(thought.clone(), sim.tick, &sim.config.thoughts);
+            }
+        }
+
+        (sim, elf_id)
+    }
+
+    #[test]
+    fn mope_probability_zero_mean_never_fires() {
+        // When mean = 0, mope_mean_ticks returns 0, check_mope should never trigger.
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: 0,
+            mope_mean_ticks_miserable: 0,
+            mope_mean_ticks_devastated: 0,
+            ..Default::default()
+        };
+        assert_eq!(cfg.mope_mean_ticks(MoodTier::Unhappy), 0);
+        assert_eq!(cfg.mope_mean_ticks(MoodTier::Miserable), 0);
+        assert_eq!(cfg.mope_mean_ticks(MoodTier::Devastated), 0);
+
+        // Run many heartbeats with zero-mean config + unhappy elf.
+        let (mut sim, elf_id) = mope_test_setup(
+            cfg,
+            &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+        );
+
+        // Advance many heartbeat cycles.
+        let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        sim.step(&[], sim.tick + interval * 100);
+
+        // No Mope task should exist.
+        let has_mope = sim.tasks.values().any(|t| matches!(t.kind, TaskKind::Mope));
+        assert!(!has_mope, "Zero mean should never produce a Mope task");
+    }
+
+    #[test]
+    fn mope_probability_nonzero_fires_proportionally() {
+        // With a very small mean (= heartbeat interval), mope fires ~100% per heartbeat.
+        let interval = 3000_u64; // Default elf heartbeat.
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: interval, // P ≈ 1.0 per heartbeat
+            mope_duration_ticks: 1,            // Short mope so it completes quickly.
+            ..Default::default()
+        };
+        let (mut sim, _elf_id) = mope_test_setup(
+            cfg,
+            &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+        );
+
+        // Run several heartbeats.
+        sim.step(&[], sim.tick + interval * 10);
+
+        // With P ≈ 1.0 and 10 heartbeats, at least one Mope should fire.
+        let mope_count = sim
+            .tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Mope))
+            .count();
+        assert!(
+            mope_count >= 1,
+            "With mean=elapsed, at least one Mope should fire in 10 heartbeats, got {mope_count}"
+        );
+    }
+
+    #[test]
+    fn mope_config_serde_roundtrip() {
+        let cfg = crate::config::MoodConsequencesConfig::default();
+        let json = serde_json::to_string(&cfg).unwrap();
+        let restored: crate::config::MoodConsequencesConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.mope_mean_ticks_unhappy,
+            cfg.mope_mean_ticks_unhappy
+        );
+        assert_eq!(restored.mope_duration_ticks, cfg.mope_duration_ticks);
+        assert_eq!(
+            restored.mope_can_interrupt_task,
+            cfg.mope_can_interrupt_task
+        );
+    }
+
+    #[test]
+    fn mope_config_backward_compat() {
+        // A GameConfig JSON without "mood_consequences" key → defaults.
+        let sim = test_sim(42);
+        let json = serde_json::to_string(&sim).unwrap();
+        let mut val: serde_json::Value = serde_json::from_str(&json).unwrap();
+        val.get_mut("config")
+            .and_then(|c| c.as_object_mut())
+            .unwrap()
+            .remove("mood_consequences");
+        let stripped = serde_json::to_string(&val).unwrap();
+        let restored: SimState = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(
+            restored.config.mood_consequences.mope_mean_ticks_unhappy,
+            crate::config::MoodConsequencesConfig::default().mope_mean_ticks_unhappy
+        );
+    }
+
+    #[test]
+    fn unhappy_elf_eventually_mopes() {
+        // Give elf SleptOnGround thoughts (weight -100 each → Unhappy/-200 → actually Miserable).
+        // Use a high mope rate so it fires quickly.
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: 3000, // P ≈ 1.0 per heartbeat
+            mope_mean_ticks_miserable: 3000,
+            mope_mean_ticks_devastated: 3000,
+            mope_duration_ticks: 100,
+            ..Default::default()
+        };
+        let (mut sim, elf_id) = mope_test_setup(
+            cfg,
+            &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+        );
+
+        let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        sim.step(&[], sim.tick + interval * 20);
+
+        let has_mope = sim
+            .tasks
+            .values()
+            .any(|t| matches!(t.kind, TaskKind::Mope) && t.assignees.contains(&elf_id));
+        assert!(has_mope, "Unhappy elf should eventually get a Mope task");
+    }
+
+    #[test]
+    fn content_elf_never_mopes() {
+        // Give elf positive thoughts → Content/Happy tier. Mean=0 → never mopes.
+        let cfg = crate::config::MoodConsequencesConfig::default();
+        let (mut sim, elf_id) = mope_test_setup(cfg, &[ThoughtKind::AteMeal, ThoughtKind::AteMeal]);
+
+        let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        sim.step(&[], sim.tick + interval * 50);
+
+        let has_mope = sim
+            .tasks
+            .values()
+            .any(|t| matches!(t.kind, TaskKind::Mope) && t.assignees.contains(&elf_id));
+        assert!(!has_mope, "Content elf should never mope");
+    }
+
+    #[test]
+    fn devastated_elf_interrupts_task_to_mope() {
+        // Give elf Devastated-tier thoughts + a GoTo task + high mope rate.
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: 3000,
+            mope_mean_ticks_miserable: 3000,
+            mope_mean_ticks_devastated: 3000,
+            mope_can_interrupt_task: true,
+            mope_duration_ticks: 100,
+        };
+        let (mut sim, elf_id) = mope_test_setup(
+            cfg,
+            // SleptOnGround has weight -100, three of them → -300 → Devastated
+            &[
+                ThoughtKind::SleptOnGround,
+                ThoughtKind::SleptOnGround,
+                ThoughtKind::SleptOnGround,
+            ],
+        );
+
+        // Assign a GoTo task to the elf so it's not idle.
+        // Find a distant node for the GoTo task.
+        let nav_count = sim.nav_graph.node_count();
+        let far_node = NavNodeId((nav_count / 2) as u32);
+        let task_id = TaskId::new(&mut sim.rng);
+        let goto_task = Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::InProgress,
+            location: far_node,
+            assignees: vec![elf_id],
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+        };
+        sim.tasks.insert(task_id, goto_task);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+
+        let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        sim.step(&[], sim.tick + interval * 20);
+
+        // Elf should have abandoned GoTo and started moping.
+        let has_mope = sim
+            .tasks
+            .values()
+            .any(|t| matches!(t.kind, TaskKind::Mope) && t.assignees.contains(&elf_id));
+        assert!(
+            has_mope,
+            "Miserable elf with mope_can_interrupt_task should interrupt GoTo and start moping"
+        );
+    }
+
+    #[test]
+    fn mope_task_completes_and_elf_resumes() {
+        // Short mope duration; elf should be idle afterward.
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: 3000, // P ≈ 1.0
+            mope_mean_ticks_miserable: 3000,
+            mope_mean_ticks_devastated: 3000,
+            mope_duration_ticks: 10, // Very short mope.
+            ..Default::default()
+        };
+        let (mut sim, _elf_id) = mope_test_setup(
+            cfg,
+            &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+        );
+
+        let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        // Advance enough for mope to trigger and complete.
+        sim.step(&[], sim.tick + interval * 5);
+
+        // At least one completed Mope should exist (state == Complete).
+        let completed_mope = sim
+            .tasks
+            .values()
+            .any(|t| matches!(t.kind, TaskKind::Mope) && t.state == TaskState::Complete);
+        assert!(
+            completed_mope,
+            "Mope task should complete after mope_duration_ticks"
+        );
+    }
+
+    #[test]
+    fn mope_does_not_interrupt_autonomous_sleep() {
+        // A Devastated elf that is sleeping should NOT have sleep interrupted by mope.
+        // We use a very long sleep and drain rest to 0 so the sleep won't complete
+        // during the test window, proving mope didn't interrupt it.
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: 3000,
+            mope_mean_ticks_miserable: 3000,
+            mope_mean_ticks_devastated: 3000, // P ≈ 1.0 per heartbeat
+            mope_can_interrupt_task: true,
+            mope_duration_ticks: 100,
+        };
+        let mut config = test_config();
+        config.mood_consequences = cfg;
+        config.sleep_ticks_ground = 1_000_000; // Very long sleep.
+        let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+        elf_species.food_decay_per_tick = 0;
+        elf_species.rest_decay_per_tick = 0;
+        elf_species.rest_per_sleep_tick = 1; // Tiny restore so rest_full won't trigger.
+        let mut sim = SimState::with_config(99, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = *sim
+            .creatures
+            .keys()
+            .find(|id| sim.creatures[id].species == Species::Elf)
+            .unwrap();
+
+        // Drain rest to 0 so the elf won't complete sleep via rest_full.
+        sim.creatures.get_mut(&elf_id).unwrap().rest = 0;
+
+        // Inject Devastated-level thoughts.
+        for _ in 0..4 {
+            sim.creatures.get_mut(&elf_id).unwrap().add_thought(
+                ThoughtKind::SleptOnGround,
+                sim.tick,
+                &sim.config.thoughts,
+            );
+        }
+
+        // Manually assign a Sleep task to the elf.
+        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let sleep_task_id = TaskId::new(&mut sim.rng);
+        let sleep_task = Task {
+            id: sleep_task_id,
+            kind: TaskKind::Sleep {
+                bed_pos: None,
+                location: crate::task::SleepLocation::Ground,
+            },
+            state: TaskState::InProgress,
+            location: elf_node,
+            assignees: vec![elf_id],
+            progress: 0.0,
+            total_cost: 1_000_000.0,
+            required_species: None,
+            origin: TaskOrigin::Autonomous,
+        };
+        sim.tasks.insert(sleep_task_id, sleep_task);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(sleep_task_id);
+
+        // Run several heartbeats — mope rate is P≈1.0 but should not interrupt sleep.
+        let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        sim.step(&[], sim.tick + interval * 10);
+
+        // The elf should still be sleeping — same task, never interrupted.
+        let current_task = sim.creatures.get(&elf_id).and_then(|c| c.current_task);
+        assert_eq!(
+            current_task,
+            Some(sleep_task_id),
+            "Mope should not interrupt autonomous Sleep task"
+        );
+    }
+
+    #[test]
+    fn mope_does_not_interrupt_existing_mope() {
+        // A moping elf should not have its mope interrupted by another mope.
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: 3000,
+            mope_mean_ticks_miserable: 3000,
+            mope_mean_ticks_devastated: 3000, // P ≈ 1.0 per heartbeat
+            mope_can_interrupt_task: true,
+            mope_duration_ticks: 100_000, // Long mope — won't complete during test.
+        };
+        let (mut sim, elf_id) = mope_test_setup(
+            cfg,
+            &[
+                ThoughtKind::SleptOnGround,
+                ThoughtKind::SleptOnGround,
+                ThoughtKind::SleptOnGround,
+            ],
+        );
+
+        let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        // Run enough heartbeats to trigger the first mope.
+        sim.step(&[], sim.tick + interval * 5);
+
+        // Elf should have a mope task.
+        let mope_task_id = sim
+            .creatures
+            .get(&elf_id)
+            .and_then(|c| c.current_task)
+            .filter(|tid| {
+                sim.tasks
+                    .get(tid)
+                    .is_some_and(|t| matches!(t.kind, TaskKind::Mope))
+            });
+        assert!(mope_task_id.is_some(), "Elf should be moping");
+        let first_mope_id = mope_task_id.unwrap();
+
+        // Run more heartbeats — mope rate is P≈1.0 but should not replace existing mope.
+        sim.step(&[], sim.tick + interval * 10);
+
+        let current_task = sim.creatures.get(&elf_id).and_then(|c| c.current_task);
+        assert_eq!(
+            current_task,
+            Some(first_mope_id),
+            "Moping elf should keep the same Mope task, not get a replacement"
+        );
+    }
+
+    #[test]
+    fn mope_can_interrupt_false_prevents_interruption() {
+        // With mope_can_interrupt_task = false, a Devastated elf with a player-directed
+        // task should not have it interrupted by mope. We use a long-running Build task
+        // so the elf stays busy for the entire test window.
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: 3000,
+            mope_mean_ticks_miserable: 3000,
+            mope_mean_ticks_devastated: 3000, // P ≈ 1.0
+            mope_can_interrupt_task: false,
+            mope_duration_ticks: 100,
+        };
+        let (mut sim, elf_id) = mope_test_setup(
+            cfg,
+            &[
+                ThoughtKind::SleptOnGround,
+                ThoughtKind::SleptOnGround,
+                ThoughtKind::SleptOnGround,
+            ],
+        );
+
+        // Assign a long-running Build task at the elf's current node so it
+        // stays in-progress for the entire test window.
+        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let task_id = TaskId::new(&mut sim.rng);
+        let project_id = crate::types::ProjectId::new(&mut sim.rng);
+        let build_task = Task {
+            id: task_id,
+            kind: TaskKind::Build { project_id },
+            state: TaskState::InProgress,
+            location: elf_node,
+            assignees: vec![elf_id],
+            progress: 0.0,
+            total_cost: 1_000_000.0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+        };
+        sim.tasks.insert(task_id, build_task);
+        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+
+        let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        sim.step(&[], sim.tick + interval * 10);
+
+        // The elf should still have the Build task — mope never interrupted it.
+        let current_task = sim.creatures.get(&elf_id).and_then(|c| c.current_task);
+        assert_eq!(
+            current_task,
+            Some(task_id),
+            "With mope_can_interrupt_task=false, busy elf should keep its Build task"
+        );
+    }
+
+    #[test]
+    fn mope_task_location_is_home_when_assigned() {
+        // An elf with an assigned home should mope at the home's nav node.
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: 3000,
+            mope_mean_ticks_miserable: 3000,
+            mope_mean_ticks_devastated: 3000, // P ≈ 1.0
+            mope_duration_ticks: 50_000,      // Long enough to observe.
+            ..Default::default()
+        };
+        let mut config = test_config();
+        config.mood_consequences = cfg;
+        let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+        elf_species.food_decay_per_tick = 0;
+        elf_species.rest_decay_per_tick = 0;
+        let mut sim = SimState::with_config(99, config);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Create a home.
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let home_id = insert_completed_home(&mut sim, anchor);
+
+        // Get the home's bed nav node (this is the location mope should target).
+        let bed_pos = sim.structures[&home_id].furniture_positions[0];
+        let home_nav_node = sim.nav_graph.find_nearest_node(bed_pos).unwrap();
+
+        // Spawn an elf.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf_id = *sim
+            .creatures
+            .keys()
+            .find(|id| sim.creatures[id].species == Species::Elf)
+            .unwrap();
+
+        // Assign elf to home.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: Some(home_id),
+            },
+        };
+        sim.step(&[cmd], 2);
+
+        // Inject negative thoughts.
+        for _ in 0..3 {
+            sim.creatures.get_mut(&elf_id).unwrap().add_thought(
+                ThoughtKind::SleptOnGround,
+                sim.tick,
+                &sim.config.thoughts,
+            );
+        }
+
+        // Run heartbeats until mope triggers.
+        let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+        sim.step(&[], sim.tick + interval * 10);
+
+        // Find the mope task and verify its location is the home nav node.
+        let mope_task = sim
+            .tasks
+            .values()
+            .find(|t| matches!(t.kind, TaskKind::Mope) && t.assignees.contains(&elf_id));
+        assert!(mope_task.is_some(), "Elf should have a Mope task");
+        assert_eq!(
+            mope_task.unwrap().location,
+            home_nav_node,
+            "Mope task location should be the home's nav node"
         );
     }
 

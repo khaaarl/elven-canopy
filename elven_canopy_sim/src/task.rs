@@ -68,6 +68,11 @@
 //   Instant (`total_cost = 0`). Created by the heartbeat Phase 2c acquisition
 //   check when a creature's inventory is below its personal `wants` target.
 //   On abandonment, reservations are cleared at the source.
+// - `Mope` — idle at a location due to low mood. Multi-activation: each tick
+//   increments progress by 1.0 until reaching `total_cost`. Created by the
+//   heartbeat mood check (Phase 2b½) when mood is Unhappy or worse. Location
+//   is the creature's assigned home if available, else current node. No side
+//   effects beyond consuming the creature's time.
 //
 // ## Lifecycle
 //
@@ -185,6 +190,11 @@ pub enum TaskKind {
         item_kind: ItemKind,
         quantity: u32,
     },
+    /// Mope at a location due to low mood. Multi-activation: creature idles
+    /// at the location for the configured duration. Created by the heartbeat
+    /// mood check when mood is Unhappy or worse. Duration comes from
+    /// `total_cost` on the Task struct (same pattern as Sleep).
+    Mope,
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.
@@ -502,6 +512,36 @@ mod tests {
             }
             _ => panic!("Expected AcquireItem task kind"),
         }
+        assert_eq!(restored.origin, TaskOrigin::Autonomous);
+    }
+
+    #[test]
+    fn mope_task_serialization_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let location = NavNodeId(12);
+
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::Mope,
+            state: TaskState::InProgress,
+            location,
+            assignees: Vec::new(),
+            progress: 50.0,
+            total_cost: 10000.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.id, task_id);
+        assert!(matches!(restored.kind, TaskKind::Mope));
+        assert_eq!(restored.state, TaskState::InProgress);
+        assert_eq!(restored.progress, 50.0);
+        assert_eq!(restored.total_cost, 10000.0);
+        assert_eq!(restored.required_species, Some(Species::Elf));
         assert_eq!(restored.origin, TaskOrigin::Autonomous);
     }
 

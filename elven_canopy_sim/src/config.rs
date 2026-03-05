@@ -428,6 +428,54 @@ impl Default for MoodConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Mood consequences — behavioral effects of mood tiers
+// ---------------------------------------------------------------------------
+
+/// Configuration for behavioral consequences of low mood. Currently: moping.
+/// Unhappy+ creatures periodically abandon productive work to mope (idle at
+/// home or current location). Probability is a Poisson-like process with
+/// integer-only math: `roll % mean < elapsed` where `elapsed` is the heartbeat
+/// interval and `mean` is the mean ticks between mope events for the tier.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MoodConsequencesConfig {
+    /// Mean ticks between mope events at Unhappy tier. 0 = never.
+    pub mope_mean_ticks_unhappy: u64,
+    /// Mean ticks between mope events at Miserable tier. 0 = never.
+    pub mope_mean_ticks_miserable: u64,
+    /// Mean ticks between mope events at Devastated tier. 0 = never.
+    pub mope_mean_ticks_devastated: u64,
+    /// Whether Miserable+ elves can abandon in-progress tasks to mope.
+    pub mope_can_interrupt_task: bool,
+    /// Duration of mope idle in ticks.
+    pub mope_duration_ticks: u64,
+}
+
+impl MoodConsequencesConfig {
+    /// Return the mean ticks between mope events for the given mood tier.
+    /// Returns 0 (never mope) for Neutral and positive tiers.
+    pub fn mope_mean_ticks(&self, tier: MoodTier) -> u64 {
+        match tier {
+            MoodTier::Devastated => self.mope_mean_ticks_devastated,
+            MoodTier::Miserable => self.mope_mean_ticks_miserable,
+            MoodTier::Unhappy => self.mope_mean_ticks_unhappy,
+            MoodTier::Neutral | MoodTier::Content | MoodTier::Happy | MoodTier::Elated => 0,
+        }
+    }
+}
+
+impl Default for MoodConsequencesConfig {
+    fn default() -> Self {
+        Self {
+            mope_mean_ticks_unhappy: 500_000,
+            mope_mean_ticks_miserable: 125_000,
+            mope_mean_ticks_devastated: 50_000,
+            mope_can_interrupt_task: true,
+            mope_duration_ticks: 10_000,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tree profile — nested parameter groups
 // ---------------------------------------------------------------------------
 
@@ -868,6 +916,11 @@ pub struct GameConfig {
     #[serde(default)]
     pub mood: MoodConfig,
 
+    /// Mood consequences configuration: behavioral effects of low mood (moping).
+    /// Backward-compatible: older configs without this field use defaults.
+    #[serde(default)]
+    pub mood_consequences: MoodConsequencesConfig,
+
     /// Ticks between logistics heartbeats that scan buildings for unmet wants
     /// and create haul tasks. Default 5000 = 5 sim-seconds.
     #[serde(default = "default_logistics_heartbeat_interval")]
@@ -1193,6 +1246,7 @@ impl Default for GameConfig {
             structural: StructuralConfig::default(),
             thoughts: ThoughtConfig::default(),
             mood: MoodConfig::default(),
+            mood_consequences: MoodConsequencesConfig::default(),
             logistics_heartbeat_interval_ticks: 5000,
             max_haul_tasks_per_heartbeat: 5,
             elf_starting_bread: 2,
