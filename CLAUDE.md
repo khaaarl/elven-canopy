@@ -289,8 +289,8 @@ Things that are non-obvious or surprising about this codebase:
 **Input precedence:**
 - ESC handling flows: placement_controller (cancel placement) → selection_controller (deselect) → pause_menu (open/close menu). Each handler calls `set_input_as_handled()` to prevent downstream handlers from firing.
 
-**Codegen tuning:**
-- `Cargo.toml` sets `codegen-units = 256` for both dev and release. This is intentional: `godot-core` generates massive binding code, and lower codegen-units prevent RAM from exceeding 4 GB during compilation.
+**Dev profile tuning:**
+- `Cargo.toml` sets `opt-level = 1` for the dev profile. This speeds up test execution significantly (sim tests ~4x faster) at a small compile-time cost. The test profile inherits from dev, so both `cargo build` and `cargo test` benefit.
 
 ## Branching (CRITICAL — DO THIS FIRST)
 
