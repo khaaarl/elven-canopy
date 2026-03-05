@@ -161,7 +161,6 @@ enum SimAction {
     },
     CancelBuild { project_id: ProjectId },
     SetTaskPriority { project_id: ProjectId, priority: Priority },
-    SetSimSpeed { speed: SimSpeed },
     // future: assign elf, set zone, extend roots, etc.
 }
 ```
@@ -272,7 +271,7 @@ Fast-forward processes events faster rather than running more ticks per frame. I
 
 ### Sim Speed
 
-Sim speed (pause, 1x, 2x, 5x, etc.) is controlled via `SimAction::SetSimSpeed`. In multiplayer, all clients must agree on sim speed. The GDScript glue layer controls how many events are processed per rendered frame based on the current speed setting.
+Sim speed (pause, 1x, 2x, 5x) is a session-layer concern, not part of deterministic sim state. Speed is controlled by `SessionSpeed` and `GameSession::speed_multiplier()`, which scales the tick-pacing accumulator. In multiplayer, relay-level pause/resume/speed messages control turn pacing. The sim itself is speed-agnostic — it simply processes ticks as requested.
 
 ---
 

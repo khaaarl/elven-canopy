@@ -20,7 +20,6 @@
 //   voxels to Air (the inverse of construction).
 // - `CancelBuild` — remove a blueprint by ProjectId.
 // - `SetTaskPriority` — build system (placeholder, not yet wired).
-// - `SetSimSpeed` — pause / play / fast-forward.
 // - `SpawnCreature` — place a creature of any species at a voxel position.
 // - `CreateTask` — create a task at a voxel position (see `task.rs` for
 //   `TaskKind`). The handler in `sim.rs` snaps the position to the nearest
@@ -81,8 +80,6 @@ pub enum SimAction {
         project_id: ProjectId,
         priority: Priority,
     },
-    /// Change the simulation speed.
-    SetSimSpeed { speed: SimSpeed },
     /// Spawn a creature of the given species at the given position (snapped to
     /// nearest nav node, or nearest ground node for ground-only species).
     SpawnCreature {

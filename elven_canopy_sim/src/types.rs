@@ -17,7 +17,7 @@
 // - **Nav graph IDs:** `NavNodeId` and `NavEdgeId` — compact `u32` wrappers
 //   (not UUIDs) since nav nodes are rebuilt from world geometry and never
 //   persisted across sessions.
-// - **Simulation enums:** `Species`, `SimSpeed`, `Priority`, `BuildType`.
+// - **Simulation enums:** `Species`, `Priority`, `BuildType`.
 // - **Thought system:** `ThoughtKind` — event-driven creature thoughts with
 //   per-kind dedup and expiry. `Thought` — a timestamped thought instance.
 // - **Voxel types:** `VoxelType` — the material at each grid cell (`Air`,
@@ -246,28 +246,6 @@ pub enum Species {
     Elephant,
     Monkey,
     Squirrel,
-}
-
-/// Simulation speed settings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SimSpeed {
-    Paused,
-    Normal,
-    Fast,
-    VeryFast,
-}
-
-impl SimSpeed {
-    /// Time multiplier for the sim accumulator. `Paused` stops the sim,
-    /// `Normal` is real-time, `Fast` and `VeryFast` accelerate it.
-    pub fn multiplier(self) -> f64 {
-        match self {
-            SimSpeed::Paused => 0.0,
-            SimSpeed::Normal => 1.0,
-            SimSpeed::Fast => 2.0,
-            SimSpeed::VeryFast => 5.0,
-        }
-    }
 }
 
 /// Priority level for build projects and tasks.
@@ -957,14 +935,6 @@ mod tests {
             VoxelType::Dirt.classify_for_overlap(),
             OverlapClassification::Blocked
         );
-    }
-
-    #[test]
-    fn sim_speed_multiplier() {
-        assert_eq!(SimSpeed::Paused.multiplier(), 0.0);
-        assert_eq!(SimSpeed::Normal.multiplier(), 1.0);
-        assert_eq!(SimSpeed::Fast.multiplier(), 2.0);
-        assert_eq!(SimSpeed::VeryFast.multiplier(), 5.0);
     }
 
     #[test]

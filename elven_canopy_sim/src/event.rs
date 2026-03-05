@@ -183,8 +183,6 @@ pub enum SimEventKind {
     BuildCompleted { project_id: ProjectId },
     /// A build project has been cancelled.
     BuildCancelled { project_id: ProjectId },
-    /// Simulation speed changed.
-    SpeedChanged { speed: SimSpeed },
 }
 
 #[cfg(test)]

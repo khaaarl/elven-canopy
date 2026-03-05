@@ -298,9 +298,6 @@ pub struct SimState {
     /// Game configuration (immutable after initialization).
     pub config: GameConfig,
 
-    /// Current simulation speed.
-    pub speed: SimSpeed,
-
     /// The event priority queue driving the discrete event simulation.
     pub event_queue: EventQueue,
 
@@ -676,7 +673,6 @@ impl SimState {
             tick: 0,
             rng,
             config,
-            speed: SimSpeed::Normal,
             event_queue: EventQueue::new(),
             trees,
             creatures: BTreeMap::new(),
@@ -781,13 +777,6 @@ impl SimState {
     /// Apply a single command to the simulation.
     fn apply_command(&mut self, cmd: &SimCommand, events: &mut Vec<SimEvent>) {
         match &cmd.action {
-            SimAction::SetSimSpeed { speed } => {
-                self.speed = *speed;
-                events.push(SimEvent {
-                    tick: self.tick,
-                    kind: SimEventKind::SpeedChanged { speed: *speed },
-                });
-            }
             SimAction::SpawnCreature { species, position } => {
                 self.spawn_creature(*species, *position, events);
             }
@@ -4512,26 +4501,6 @@ mod tests {
     }
 
     #[test]
-    fn step_processes_speed_command() {
-        let mut sim = test_sim(42);
-        let cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: 10,
-            action: SimAction::SetSimSpeed {
-                speed: SimSpeed::Paused,
-            },
-        };
-        let result = sim.step(&[cmd], 20);
-        assert_eq!(sim.speed, SimSpeed::Paused);
-        assert!(result.events.iter().any(|e| matches!(
-            e.kind,
-            SimEventKind::SpeedChanged {
-                speed: SimSpeed::Paused
-            }
-        )));
-    }
-
-    #[test]
     fn tree_heartbeat_reschedules() {
         let mut sim = test_sim(42);
         let heartbeat_interval = sim.config.tree_heartbeat_interval_ticks;
@@ -4575,8 +4544,9 @@ mod tests {
         let cmds = vec![SimCommand {
             player_id: sim_a.player_id,
             tick: 50,
-            action: SimAction::SetSimSpeed {
-                speed: SimSpeed::Fast,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: VoxelCoord::new(128, 1, 128),
             },
         }];
 
@@ -4584,7 +4554,6 @@ mod tests {
         sim_b.step(&cmds, 200);
 
         assert_eq!(sim_a.tick, sim_b.tick);
-        assert_eq!(sim_a.speed, sim_b.speed);
         // Verify PRNG state is identical by drawing from both.
         assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
     }
