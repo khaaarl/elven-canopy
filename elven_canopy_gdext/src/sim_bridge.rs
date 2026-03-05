@@ -18,8 +18,9 @@
 //   returns a fractional render_tick for smooth creature interpolation.
 // - **Speed control:** `get_sim_speed()` returns the current speed as a string,
 //   `sim_speed_multiplier()` returns the time multiplier for tick pacing,
-//   `set_sim_speed(speed_name)` sets speed via `apply_or_send` for deterministic
-//   state. In multiplayer, also sends relay-level pause/resume/speed messages.
+//   `set_sim_speed(speed_name)` applies pause/resume/speed to the session.
+//   In multiplayer, sends to the relay first and applies locally only on
+//   success (optimistic update).
 // - **Save/load:** `save_game_json()` returns the sim state as a JSON string,
 //   `load_game_json(json)` replaces the current sim from a JSON string.
 //   File I/O is handled in GDScript via Godot's `user://` paths.
@@ -57,11 +58,11 @@
 // - **Commands:** `spawn_creature(species_name, x,y,z)` — generic creature
 //   spawner replacing `spawn_elf()` / `spawn_capybara()` (which remain as
 //   thin wrappers). Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
-//   `designate_build_rect(x,y,z,width,depth)`, etc. Void commands (spawn,
-//   goto, rename, assign, logistics, cooking, furnish) are buffered and
-//   execute on the next `frame_update()`. Build/carve commands go through
-//   `apply_build_action`, which flushes with a 1-tick advance so the
-//   validation message in `last_build_message` is readable immediately.
+//   `designate_build_rect(x,y,z,width,depth)`, etc. All commands are
+//   buffered and execute on the next `frame_update()`, with identical
+//   behavior in SP and MP. Build/carve validation is done upfront by the
+//   `validate_*_preview()` query methods — the designation commands
+//   themselves are fire-and-forget.
 //   `furnish_structure(structure_id, furnishing_type)` begins furnishing a
 //   completed building. `get_furniture_positions()` returns flat (x,y,z,kind)
 //   quads of placed furniture for rendering.
@@ -314,10 +315,10 @@ impl SimBridge {
     /// "Fast", or "VeryFast").
     #[func]
     fn get_sim_speed(&self) -> GString {
-        if self.session.paused {
+        if self.session.is_paused() {
             return "Paused".into();
         }
-        match self.session.speed {
+        match self.session.current_speed() {
             SessionSpeed::Normal => "Normal",
             SessionSpeed::Fast => "Fast",
             SessionSpeed::VeryFast => "VeryFast",
@@ -331,9 +332,12 @@ impl SimBridge {
         self.session.speed_multiplier()
     }
 
-    /// Set the simulation speed by name. Routes through the session for
-    /// pause/resume/speed state. In multiplayer, also sends relay-level
-    /// pause/resume/speed messages to control turn pacing.
+    /// Set the simulation speed by name. In single-player, applies directly
+    /// to the session. In multiplayer, sends to the relay first — the session
+    /// is updated as an optimistic local prediction only after the send
+    /// succeeds (the relay broadcast will arrive later, but session ops are
+    /// idempotent so the duplicate is harmless). If the relay send fails,
+    /// the session is left unchanged to prevent desync.
     #[func]
     fn set_sim_speed(&mut self, speed_name: GString) {
         let speed_str = speed_name.to_string();
@@ -347,9 +351,35 @@ impl SimBridge {
             _ => return,
         };
 
-        let was_paused = self.session.paused;
-        let pid = self.local_player_id;
+        let was_paused = self.session.is_paused();
 
+        // In MP, send to relay first. Only apply locally if send succeeds.
+        if self.is_multiplayer_mode
+            && let Some(client) = &mut self.net_client
+        {
+            if is_pause {
+                if let Err(e) = client.send_pause() {
+                    godot_error!("SimBridge: send_pause failed: {e}");
+                    return;
+                }
+            } else {
+                if was_paused && let Err(e) = client.send_resume() {
+                    godot_error!("SimBridge: send_resume failed: {e}");
+                    return;
+                }
+                if let Some(speed) = session_speed {
+                    let tpt = speed_to_ticks_per_turn(speed);
+                    if let Err(e) = client.send_set_speed(tpt) {
+                        godot_error!("SimBridge: send_set_speed failed: {e}");
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Apply to session (SP: sole authority; MP: optimistic update after
+        // successful relay send).
+        let pid = self.local_player_id;
         if is_pause {
             self.session.process(SessionMessage::Pause { by: pid });
         } else {
@@ -358,23 +388,6 @@ impl SimBridge {
             }
             if let Some(speed) = session_speed {
                 self.session.process(SessionMessage::SetSpeed { speed });
-            }
-        }
-
-        // Relay-level: control turn pacing in multiplayer.
-        if self.is_multiplayer_mode
-            && let Some(client) = &mut self.net_client
-        {
-            if is_pause {
-                let _ = client.send_pause();
-            } else {
-                if was_paused {
-                    let _ = client.send_resume();
-                }
-                if let Some(speed) = session_speed {
-                    let tpt = speed_to_ticks_per_turn(speed);
-                    let _ = client.send_set_speed(tpt);
-                }
             }
         }
     }
@@ -504,26 +517,14 @@ impl SimBridge {
         self.creature_count_by_name(GString::from("Elf"))
     }
 
-    /// Route a build/carve action through the session and return the
-    /// build validation message (empty = success). In single-player,
-    /// flushes the command with a 1-tick advance so `last_build_message`
-    /// is readable immediately. In multiplayer, sends to relay and
-    /// returns empty (message not available until turn).
+    /// Route a build/carve action through the session (SP) or relay (MP).
+    /// The command is buffered and executes on the next `frame_update()`,
+    /// identical in both modes. Returns empty — validation feedback comes
+    /// from the `validate_*_preview()` methods that GDScript calls before
+    /// confirming placement.
     fn apply_build_action(&mut self, action: SimAction) -> GString {
-        if self.is_multiplayer_mode {
-            self.apply_or_send(action);
-            return GString::new();
-        }
         self.apply_or_send(action);
-        // Synchronous flush: build callers read `last_build_message`
-        // immediately, so the command must execute before we return.
-        let tick = self.session.current_tick() + 1;
-        self.session.process(SessionMessage::AdvanceTo { tick });
-        self.session
-            .sim
-            .as_ref()
-            .and_then(|s| s.last_build_message.as_deref())
-            .map_or_else(GString::new, GString::from)
+        GString::new()
     }
 
     /// Apply a SimAction locally (single-player) or send it to the relay
@@ -531,10 +532,6 @@ impl SimBridge {
     /// session and executed on the next `frame_update()` call (tick
     /// pacing is driven by `LocalRelay`). In multiplayer, the action is
     /// sent over the network and applied when it comes back in a Turn.
-    ///
-    /// Callers that need synchronous feedback (e.g., build validation
-    /// messages) should use `apply_build_action` instead, which flushes
-    /// the command with an explicit 1-tick advance.
     fn apply_or_send(&mut self, action: SimAction) {
         if self.is_multiplayer_mode {
             if let Some(client) = &mut self.net_client
@@ -1587,10 +1584,9 @@ impl SimBridge {
 
     /// Designate a single-voxel platform blueprint at the given position.
     ///
-    /// Routes through `apply_build_action`, which flushes with a 1-tick
-    /// advance so the validation message is readable immediately. Returns
-    /// a non-empty string if the sim produced a validation message (warning
-    /// or block reason), empty string on silent success.
+    /// Buffers the command via `apply_build_action` (executes on the next
+    /// `frame_update`). Always returns empty — validation feedback is
+    /// provided by the `validate_*_preview()` methods before placement.
     #[func]
     fn designate_build(&mut self, x: i32, y: i32, z: i32) -> GString {
         self.apply_build_action(SimAction::DesignateBuild {
@@ -2125,6 +2121,12 @@ impl SimBridge {
 
     /// Drain dirty voxels from the world, mark affected chunks, and regenerate
     /// them. Returns the number of chunks updated (0 if nothing changed).
+    ///
+    /// NOTE: `drain_dirty_voxels()` mutates `sim.world` directly, bypassing
+    /// the session message flow. This is intentional — the dirty-voxel buffer
+    /// is render-only metadata (not serialized, not part of sim determinism).
+    /// It's a cache-invalidation signal consumed by the mesh cache, not
+    /// simulation state.
     #[func]
     fn update_world_mesh(&mut self) -> i32 {
         let Some(sim) = &mut self.session.sim else {
@@ -2636,7 +2638,7 @@ impl SimBridge {
     /// Return true if this client is the host.
     #[func]
     fn is_host(&self) -> bool {
-        self.session.host_id == self.local_player_id
+        self.session.is_host(self.local_player_id)
     }
 
     /// Return true if the multiplayer game has started (past lobby).
@@ -2655,7 +2657,7 @@ impl SimBridge {
     /// The sim will be initialized when the GameStart message comes back.
     #[func]
     fn start_multiplayer_game(&mut self, seed: i64, config_json: GString) {
-        if self.session.host_id != self.local_player_id {
+        if !self.session.is_host(self.local_player_id) {
             godot_warn!("SimBridge: only the host can start the game");
             return;
         }

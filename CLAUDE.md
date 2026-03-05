@@ -279,8 +279,8 @@ Things that are non-obvious or surprising about this codebase:
 - `game_session.gd` is a Godot autoload singleton that persists seed and tree config across scene transitions (main menu → new game → game).
 
 **SimBridge command flow:**
-- Void commands (`spawn_creature`, `create_goto_task`, `rename_structure`, `assign_home`, `set_logistics_priority`, `set_logistics_wants`, `set_cooking_config`, `furnish_structure`) are buffered in the session and execute on the next `frame_update()` (~16ms at 60fps). They do not auto-step the sim.
-- Build/carve commands (`designate_build`, `designate_build_rect`, `designate_building`, `designate_carve`, `designate_ladder`) go through `apply_build_action`, which flushes with a 1-tick advance so `last_build_message` is readable immediately for validation feedback.
+- All commands (spawn, goto, build, carve, etc.) are buffered and execute on the next `frame_update()` (~16ms at 60fps), with identical behavior in SP and MP. No command auto-steps the sim.
+- Build/carve validation is done upfront by the `validate_*_preview()` query methods that GDScript calls before confirming placement. The designation commands themselves are fire-and-forget.
 
 **Sprite rendering and movement interpolation:**
 - Elf sprites are offset +0.48 in Y, capybara sprites +0.32, to visually center them above their nav node position. Selection ray-to-sprite distance uses these same offsets.

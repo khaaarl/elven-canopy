@@ -783,9 +783,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _confirm_placement() -> void:
 	var min_corner := _get_min_corner()
-	var msg: String
 	if _build_mode == "ladder":
-		msg = _bridge.designate_ladder(
+		_bridge.designate_ladder(
 			_focus_voxel.x,
 			_focus_voxel.y,
 			_focus_voxel.z,
@@ -794,24 +793,14 @@ func _confirm_placement() -> void:
 			_ladder_kind
 		)
 	elif _build_mode == "building":
-		msg = _bridge.designate_building(
+		_bridge.designate_building(
 			min_corner.x, _focus_voxel.y, min_corner.z, _width, _depth, _height
 		)
 	elif _build_mode == "carve":
-		msg = _bridge.designate_carve(
-			min_corner.x, min_corner.y, min_corner.z, _width, _depth, _height
-		)
+		_bridge.designate_carve(min_corner.x, min_corner.y, min_corner.z, _width, _depth, _height)
 	else:
-		msg = _bridge.designate_build_rect(min_corner.x, min_corner.y, min_corner.z, _width, _depth)
-	if msg != "":
-		_show_build_message(msg)
+		_bridge.designate_build_rect(min_corner.x, min_corner.y, min_corner.z, _width, _depth)
 	# Invalidate preview cache so the next frame re-validates against
 	# the changed world state.
 	_last_preview_voxel = Vector3i(999999, 999999, 999999)
 	blueprint_placed.emit()
-
-
-func _show_build_message(msg: String) -> void:
-	_message_label.text = msg
-	_message_label.visible = true
-	_message_timer = 3.0

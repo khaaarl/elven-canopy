@@ -201,15 +201,15 @@ pub struct GameSession {
     /// single-player). BTreeMap for deterministic iteration.
     pub players: BTreeMap<SessionPlayerId, PlayerSlot>,
     /// The host (whoever can start/load/unload games).
-    pub host_id: SessionPlayerId,
+    host_id: SessionPlayerId,
     /// The simulation, if one is loaded.
     pub sim: Option<SimState>,
     /// Whether the session is paused.
-    pub paused: bool,
+    paused: bool,
     /// Who paused the session (for UI display).
-    pub paused_by: Option<SessionPlayerId>,
+    paused_by: Option<SessionPlayerId>,
     /// Current sim speed.
-    pub speed: SessionSpeed,
+    speed: SessionSpeed,
     /// Commands received but not yet applied to the sim. Flushed on the next
     /// `AdvanceTo`. Insertion order matters for determinism.
     pub pending_commands: Vec<PendingAction>,
@@ -406,6 +406,21 @@ impl GameSession {
             SessionSpeed::Fast => 2.0,
             SessionSpeed::VeryFast => 5.0,
         }
+    }
+
+    /// Whether the session is currently paused.
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Current sim speed setting.
+    pub fn current_speed(&self) -> SessionSpeed {
+        self.speed
+    }
+
+    /// Whether the given player is the session host.
+    pub fn is_host(&self, player_id: SessionPlayerId) -> bool {
+        self.host_id == player_id
     }
 }
 
@@ -700,7 +715,7 @@ mod tests {
         session.process(SessionMessage::Pause {
             by: SessionPlayerId::LOCAL,
         });
-        assert!(session.paused);
+        assert!(session.is_paused());
 
         session.process(SessionMessage::AdvanceTo { tick: 100 });
         assert_eq!(session.current_tick(), 0);
@@ -781,7 +796,7 @@ mod tests {
         let events2 = session.process(SessionMessage::Pause {
             by: SessionPlayerId::LOCAL,
         });
-        assert!(session.paused);
+        assert!(session.is_paused());
         assert_eq!(events1.len(), 1);
         assert!(events2.is_empty());
     }
@@ -793,7 +808,7 @@ mod tests {
             by: SessionPlayerId::LOCAL,
         });
         assert!(events.is_empty());
-        assert!(!session.paused);
+        assert!(!session.is_paused());
     }
 
     // -----------------------------------------------------------------------
