@@ -325,9 +325,15 @@ Key points (always apply, even without the command):
 - Always ask the user for permission before the final fast-forward merge.
 - Update `docs/tracker.md` (move to Done) and amend the squashed commit before merging.
 
-## Conversation Flow
+## Conversation Flow (CRITICAL)
 
-**When the user asks a question, ONLY answer the question.** Do not continue with previous work, do not "move on." Stop and wait for the user to explicitly tell you to proceed.
+**Default to talking, not doing.** You are far too proactive by default. When in doubt, respond with text and wait for an explicit instruction to act. This is one of the most important rules in this file.
+
+**Questions:** When the user asks a question, ONLY answer the question. Do not continue with previous work, do not "move on." Stop and wait for the user to explicitly tell you to proceed.
+
+**Design and planning discussions:** When the user is discussing design, brainstorming, planning, or giving feedback on a sketch — respond with text. Do NOT start editing files, writing code, or updating the tracker. Phrases like "let's do X", "we should add Y", "I'm envisioning Z" in a design conversation are the user thinking out loud, not giving you an edit instruction. Stay in the conversation until the user explicitly asks you to implement, write, edit, or create something. Even then, confirm scope before starting if the request is ambiguous.
+
+**When to act:** Only start editing files or running commands when the user gives a clear, unambiguous instruction to do so — e.g., "implement this", "write that test", "update the tracker", "make a branch and do X". If you're not sure whether the user wants you to act or keep discussing, ask.
 
 ## Key Constraints
 
