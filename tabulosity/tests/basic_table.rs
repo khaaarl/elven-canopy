@@ -261,3 +261,12 @@ fn all_and_iter_all() {
     let iter_ids: Vec<_> = table.iter_all().map(|item| item.id).collect();
     assert_eq!(iter_ids, vec![ItemId(1), ItemId(2), ItemId(3)]);
 }
+
+// --- Default trait ---
+
+#[test]
+fn table_default_is_empty() {
+    let table: ItemTable = Default::default();
+    assert!(table.is_empty());
+    assert_eq!(table.len(), 0);
+}

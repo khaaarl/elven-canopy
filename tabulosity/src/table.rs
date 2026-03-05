@@ -32,7 +32,9 @@ macro_rules! impl_bounded {
     };
 }
 
-impl_bounded!(u8, u16, u32, u64, i8, i16, i32, i64);
+impl_bounded!(
+    u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize
+);
 
 impl Bounded for bool {
     const MIN: Self = false;
@@ -136,6 +138,22 @@ mod tests {
     fn bounded_option() {
         assert_eq!(<Option<u32> as Bounded>::MIN, None);
         assert_eq!(<Option<u32> as Bounded>::MAX, Some(u32::MAX));
+    }
+
+    #[test]
+    fn bounded_u128() {
+        assert_eq!(u128::MIN, 0);
+        assert_eq!(u128::MAX, u128::MAX);
+        assert_eq!(i128::MIN, i128::MIN);
+        assert_eq!(i128::MAX, i128::MAX);
+    }
+
+    #[test]
+    fn bounded_usize_isize() {
+        assert_eq!(usize::MIN, 0);
+        assert_eq!(usize::MAX, usize::MAX);
+        assert_eq!(isize::MIN, isize::MIN);
+        assert_eq!(isize::MAX, isize::MAX);
     }
 
     #[test]

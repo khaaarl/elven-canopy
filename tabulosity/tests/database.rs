@@ -83,6 +83,14 @@ fn new_database_is_empty() {
 }
 
 #[test]
+fn database_default_is_empty() {
+    let db: TestDb = Default::default();
+    assert!(db.creatures.is_empty());
+    assert!(db.tasks.is_empty());
+    assert!(db.friendships.is_empty());
+}
+
+#[test]
 fn insert_and_read() {
     let mut db = TestDb::new();
     db.insert_creature(make_creature(1, "Aelindra")).unwrap();
