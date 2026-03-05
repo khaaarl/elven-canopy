@@ -1,8 +1,9 @@
-# CI workflow: Formatting, linting, and tests for Rust and GDScript.
+# CI workflow: Formatting, linting, tests, and coverage for Rust and GDScript.
 #
-# Three independent jobs:
+# Four independent jobs:
 # - rust-lint: cargo fmt --check + cargo clippy (no Godot needed, fast)
 # - rust-test: unit tests + multiplayer integration tests (high thread count)
+# - coverage: code coverage via cargo-llvm-cov, uploaded to Codecov
 # - gdscript: gdformat --check + gdlint
 #
 # Triggers on pushes and pull requests that touch relevant files.
@@ -70,6 +71,25 @@ jobs:
 
       - name: Run tabulosity serde tests
         run: cargo test -p tabulosity --features serde --test serde -- --test-threads=16
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage
+        run: cargo llvm-cov --workspace --exclude elven_canopy_gdext --lcov --output-path lcov.info -- --test-threads=16
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
 
   gdscript:
     runs-on: ubuntu-latest

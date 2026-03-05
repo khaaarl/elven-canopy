@@ -11,6 +11,7 @@
 #   scripts/build.sh quicktest  # test only crates changed vs main
 #   scripts/build.sh run        # debug build then launch the game
 #   scripts/build.sh check      # run fmt, clippy, gdformat, gdlint checks
+#   scripts/build.sh coverage  # generate HTML code coverage report (requires cargo-llvm-cov)
 #   scripts/build.sh run-branch NAME  # pull main, checkout branch, pull, build+run
 #                                       NAME can be exact or partial (tries feature/ and bug/ prefixes)
 #
@@ -151,6 +152,25 @@ case "$MODE" in
         echo "Launching Elven Canopy..."
         RUST_BACKTRACE=1 godot --path "$REPO_ROOT/godot"
         ;;
+    coverage)
+        if ! command -v cargo-llvm-cov &>/dev/null; then
+            echo "cargo-llvm-cov not found. Install with: cargo install cargo-llvm-cov" >&2
+            exit 1
+        fi
+        ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests"
+        EXCLUDE_GDEXT="--exclude elven_canopy_gdext"
+        echo "Running tests with coverage instrumentation..."
+        cargo llvm-cov --workspace $EXCLUDE_GDEXT --no-report -- --test-threads=16
+        echo ""
+        echo "Generating HTML report..."
+        cargo llvm-cov report --html --output-dir target/llvm-cov
+        echo ""
+        echo "Generating LCOV file..."
+        cargo llvm-cov report --lcov --output-path target/llvm-cov/lcov.info
+        echo ""
+        echo "Coverage report: target/llvm-cov/html/index.html"
+        echo "LCOV file:       target/llvm-cov/lcov.info"
+        ;;
     check)
         echo "Checking Rust formatting..."
         cargo fmt --all --check
@@ -175,7 +195,7 @@ case "$MODE" in
         echo "All checks passed."
         ;;
     *)
-        echo "Usage: scripts/build.sh [debug|release|test|quicktest|run|run-branch|check]" >&2
+        echo "Usage: scripts/build.sh [debug|release|test|quicktest|run|run-branch|check|coverage]" >&2
         exit 1
         ;;
 esac
