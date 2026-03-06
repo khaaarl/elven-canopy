@@ -2,22 +2,29 @@
 ##
 ## Built at startup via setup(), then incrementally updated every frame via
 ## refresh() so that carved voxels disappear and new construction appears in
-## real time. The Rust sim generates per-chunk ArrayMesh data with two surfaces:
-## - Surface 0 (opaque): Trunk, Branch, Root, Dirt, and construction voxels
-##   with per-face culling — only faces adjacent to non-opaque voxels are
-##   rendered. Uses vertex colors as albedo.
-## - Surface 1 (leaf): Leaf voxels with alpha-scissor transparency, cull
+## real time. The Rust sim generates per-chunk ArrayMesh data with up to three
+## surfaces:
+## - Surface 0 (bark): Trunk, Branch, Root, and construction voxels with
+##   per-face culling. Each face has a unique 16x16 Perlin noise texture tile
+##   packed into a per-chunk atlas.
+## - Surface 1 (ground): Dirt voxels with per-face atlas textures (same
+##   mechanism as bark but different noise coloring).
+## - Surface 2 (leaf): Leaf voxels with alpha-scissor transparency, cull
 ##   disabled so leaves are visible from both sides.
 ##
+## Empty surfaces are padded with degenerate placeholder triangles on the Rust
+## side so surface indices are always stable (bark=0, ground=1, leaf=2).
+##
 ## Each non-empty 16x16x16 chunk becomes one MeshInstance3D child with the
-## chunk's ArrayMesh. Dirty chunks (modified since last frame) are rebuilt
-## incrementally — only the affected chunks are re-meshed.
+## chunk's ArrayMesh. Bark and ground surfaces get per-chunk materials with
+## unique atlas textures; the leaf surface shares a single material.
 ##
 ## Fruit is kept as a separate MultiMeshInstance3D with SphereMesh (different
 ## geometry and emissive material, not part of the chunk mesh system).
 ##
 ## See also: mesh_gen.rs (sim crate) for the face-culled mesh generation
-## algorithm, mesh_cache.rs (gdext crate) for the chunk caching layer,
+## algorithm, texture_gen.rs for the 3D Perlin noise atlas generation,
+## mesh_cache.rs (gdext crate) for the chunk caching layer,
 ## sim_bridge.rs for build_world_mesh()/update_world_mesh()/build_chunk_array_mesh(),
 ## main.gd which creates this node and calls setup() + refresh().
 
@@ -27,10 +34,6 @@ var _bridge: SimBridge
 var _fruit_mesh_instance: MultiMeshInstance3D
 ## Cached leaf texture — generated once, reused across refreshes.
 var _leaf_texture: ImageTexture
-## Cached opaque atlas texture (bark on top, grass on bottom).
-var _opaque_texture: ImageTexture
-## Opaque material: vertex color tinted with bark/grass atlas texture.
-var _opaque_material: StandardMaterial3D
 ## Leaf material: vertex color tinted alpha-scissor with procedural texture.
 var _leaf_material: StandardMaterial3D
 ## Map from chunk key ("cx,cy,cz") to MeshInstance3D for fast lookup.
@@ -41,8 +44,7 @@ var _chunk_instances: Dictionary = {}
 func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
 	_leaf_texture = _generate_leaf_texture()
-	_opaque_texture = _generate_opaque_atlas()
-	_build_materials()
+	_leaf_material = _build_leaf_material()
 	_bridge.build_world_mesh()
 	_build_all_chunks()
 	_refresh_fruit()
@@ -63,21 +65,15 @@ func refresh() -> void:
 	_refresh_fruit()
 
 
-func _build_materials() -> void:
-	# Opaque material: vertex color × bark/grass atlas texture.
-	_opaque_material = StandardMaterial3D.new()
-	_opaque_material.vertex_color_use_as_albedo = true
-	_opaque_material.albedo_texture = _opaque_texture
-	_opaque_material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-
-	# Leaf material: vertex color + alpha scissor texture, cull disabled.
-	_leaf_material = StandardMaterial3D.new()
-	_leaf_material.vertex_color_use_as_albedo = true
-	_leaf_material.albedo_texture = _leaf_texture
-	_leaf_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-	_leaf_material.alpha_scissor_threshold = 0.5
-	_leaf_material.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_leaf_material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+func _build_leaf_material() -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.albedo_texture = _leaf_texture
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	mat.alpha_scissor_threshold = 0.5
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	return mat
 
 
 ## Build MeshInstance3D nodes for all non-empty chunks from the initial
@@ -94,6 +90,13 @@ func _build_all_chunks() -> void:
 
 
 ## Build or rebuild the MeshInstance3D for a single chunk.
+##
+## The Rust side always emits exactly 3 surfaces in fixed order:
+## 0 = bark, 1 = ground, 2 = leaf (empty surfaces get a degenerate
+## placeholder triangle so the indices stay stable).
+##
+## Bark and ground surfaces get per-chunk materials with atlas textures
+## from the Rust-generated Perlin noise. Leaf uses a shared material.
 func _rebuild_chunk(cx: int, cy: int, cz: int) -> void:
 	var key := "%d,%d,%d" % [cx, cy, cz]
 
@@ -107,18 +110,41 @@ func _rebuild_chunk(cx: int, cy: int, cz: int) -> void:
 	if array_mesh.get_surface_count() == 0:
 		return
 
-	# Assign materials to surfaces.
-	var surface_count := array_mesh.get_surface_count()
-	if surface_count >= 1:
-		array_mesh.surface_set_material(0, _opaque_material)
-	if surface_count >= 2:
-		array_mesh.surface_set_material(1, _leaf_material)
+	# Surface 0 = bark: create per-chunk material from atlas texture.
+	var bark_mat := _create_atlas_material(cx, cy, cz, 0)
+	array_mesh.surface_set_material(0, bark_mat)
+
+	# Surface 1 = ground: create per-chunk material from atlas texture.
+	var ground_mat := _create_atlas_material(cx, cy, cz, 1)
+	array_mesh.surface_set_material(1, ground_mat)
+
+	# Surface 2 = leaf: shared material.
+	array_mesh.surface_set_material(2, _leaf_material)
 
 	var instance := MeshInstance3D.new()
 	instance.mesh = array_mesh
 	instance.name = "Chunk_%s" % key
 	add_child(instance)
 	_chunk_instances[key] = instance
+
+
+## Create a StandardMaterial3D with the atlas texture for a chunk surface.
+## If no atlas data is available, returns a plain vertex-color material.
+func _create_atlas_material(cx: int, cy: int, cz: int, surface: int) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+
+	var atlas_data := _bridge.get_chunk_atlas_data(cx, cy, cz, surface)
+	var atlas_size := _bridge.get_chunk_atlas_size(cx, cy, cz, surface)
+	if atlas_data.size() > 0 and atlas_size.x > 0 and atlas_size.y > 0:
+		var img := Image.create_from_data(
+			atlas_size.x, atlas_size.y, false, Image.FORMAT_RGBA8, atlas_data
+		)
+		var tex := ImageTexture.create_from_image(img)
+		mat.albedo_texture = tex
+
+	return mat
 
 
 func _refresh_fruit() -> void:
@@ -166,53 +192,6 @@ func _create_fruit_multimesh(voxels: PackedInt32Array, count: int) -> MultiMeshI
 	instance.multimesh = multi_mesh
 	instance.name = "FruitMultiMesh"
 	return instance
-
-
-## Generate the opaque voxel texture atlas: 16x32 image with bark (top 16x16)
-## and grass/dirt (bottom 16x16). Vertex colors provide the base hue; these
-## textures add surface detail via multiplication. Centered around bright values
-## so they brighten highlights and darken crevices without washing out.
-func _generate_opaque_atlas() -> ImageTexture:
-	var W := 16
-	var H := 32  # Two 16x16 tiles stacked vertically
-	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
-
-	# --- Top half: bark texture (rows 0..15) ---
-	# Vertical grain lines with knot-like darker patches.
-	for y in range(W):
-		for x in range(W):
-			# Vertical grain: base brightness varies by column
-			var grain := 0.75 + 0.15 * sin(float(x) * 2.3 + float(y) * 0.3)
-			# Horizontal wobble for organic feel
-			var wobble := 0.05 * sin(float(y) * 1.7 + float(x) * 0.8)
-			# Occasional dark knots
-			var knot_h := (x * 7 + y * 13) % 23
-			var knot := 0.0
-			if knot_h < 3:
-				knot = -0.15
-			var val := clampf(grain + wobble + knot, 0.5, 1.0)
-			# Slight warm tint (bark is yellowish-brown in detail)
-			img.set_pixel(x, y, Color(val * 1.05, val * 0.95, val * 0.85, 1.0))
-
-	# --- Bottom half: grass/dirt texture (rows 16..31) ---
-	# Clumpy grass pattern with earthy patches.
-	for y in range(W):
-		for x in range(W):
-			var py := y + W  # actual pixel row in the atlas
-			# Base brightness with variation
-			var base := 0.8 + 0.1 * sin(float(x) * 3.1 + float(y) * 2.7)
-			# Clumpy patches using a simple hash
-			var clump_h := (x * 11 + y * 7 + x * y * 3) % 19
-			var clump := 0.0
-			if clump_h < 5:
-				clump = 0.1  # lighter grass tufts
-			elif clump_h > 15:
-				clump = -0.12  # darker dirt patches
-			var val := clampf(base + clump, 0.55, 1.0)
-			# Slight green tint for grass detail
-			img.set_pixel(x, py, Color(val * 0.9, val * 1.05, val * 0.85, 1.0))
-
-	return ImageTexture.create_from_image(img)
 
 
 ## Generate a Minecraft-style leaf texture: 16x16 with opaque green patches

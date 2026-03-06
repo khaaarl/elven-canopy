@@ -21,20 +21,27 @@
 //
 // Each visible face produces 4 vertices and 6 indices (2 triangles). Vertices
 // include position, normal, vertex color (for material tinting), and UV
-// coordinates. Opaque voxels use atlas-mapped UVs: the V axis selects a row
-// in a texture atlas (row 0 = bark for trunk/branch/root/construction,
-// row 1 = dirt/grass). Leaf UVs span the full [0,1] range for the
-// alpha-scissor texture.
+// coordinates. Opaque voxels are split into two surfaces: bark (trunk, branch,
+// root, construction) and ground (dirt). Both use per-face atlas textures
+// generated from 3D Perlin noise (see `texture_gen.rs`): each face gets a
+// small tile in a per-chunk texture atlas, with UVs pointing into the tile.
+// The 3D noise sampling ensures seamless edges between adjacent faces,
+// even at corners where different orientations meet. Leaf UVs span the full
+// [0,1] range for the alpha-scissor texture.
 //
 // See also: `world.rs` for the voxel grid, `types.rs` for `VoxelType::is_opaque()`,
 // `mesh_cache.rs` (in the gdext crate) for the caching layer that sits on top
 // of this module, `sim_bridge.rs` for the Godot-facing API that builds
-// `ArrayMesh` objects from `ChunkMesh` data.
+// `ArrayMesh` objects from `ChunkMesh` data, `tree_renderer.gd` for the
+// texture generation and material setup on the Godot side.
 //
 // **Determinism note:** This module is pure and deterministic (same world state
 // produces identical mesh data), but mesh generation is a rendering concern and
 // does not participate in the sim's lockstep determinism contract.
 
+use crate::texture_gen::{
+    self, FACE_LOCAL_UVS, FACE_TEX_SIZE, FaceAtlas, FaceTexInfo, MaterialKind,
+};
 use crate::types::{VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
 
@@ -75,9 +82,18 @@ pub struct SurfaceMesh {
     pub indices: Vec<u32>,
     /// Vertex colors (4 floats per vertex: r, g, b, a).
     pub colors: Vec<f32>,
-    /// UV coordinates (2 floats per vertex: u, v). Opaque voxels use atlas-mapped
-    /// UVs (V selects bark vs dirt/grass row); leaves use full [0,1] range.
+    /// UV coordinates (2 floats per vertex: u, v). For bark/ground surfaces,
+    /// these point into the per-chunk texture atlas. For leaf surfaces, each
+    /// face uses the full [0,1] range.
     pub uvs: Vec<f32>,
+    /// Per-face texture atlas pixels (RGBA, 4 bytes per pixel). Each face
+    /// gets a FACE_TEX_SIZE × FACE_TEX_SIZE tile arranged in a grid.
+    /// Empty for leaf surfaces (which use a shared texture).
+    pub atlas_pixels: Vec<u8>,
+    /// Atlas width in pixels (0 if no atlas).
+    pub atlas_width: u32,
+    /// Atlas height in pixels (0 if no atlas).
+    pub atlas_height: u32,
 }
 
 impl SurfaceMesh {
@@ -91,18 +107,20 @@ impl SurfaceMesh {
     }
 }
 
-/// Mesh data for one chunk, split into opaque and leaf surfaces.
+/// Mesh data for one chunk, split into bark, ground, and leaf surfaces.
 #[derive(Clone, Debug, Default)]
 pub struct ChunkMesh {
-    /// Surface 0: opaque voxels (Trunk, Branch, Root, Dirt, construction types).
-    pub opaque: SurfaceMesh,
-    /// Surface 1: leaf voxels (alpha-scissor transparency).
+    /// Surface 0: bark voxels (Trunk, Branch, Root, construction types).
+    pub bark: SurfaceMesh,
+    /// Surface 1: ground voxels (Dirt).
+    pub ground: SurfaceMesh,
+    /// Surface 2: leaf voxels (alpha-scissor transparency).
     pub leaf: SurfaceMesh,
 }
 
 impl ChunkMesh {
     pub fn is_empty(&self) -> bool {
-        self.opaque.is_empty() && self.leaf.is_empty()
+        self.bark.is_empty() && self.ground.is_empty() && self.leaf.is_empty()
     }
 }
 
@@ -199,22 +217,26 @@ const FACE_VERTICES: [[[f32; 3]; 4]; 6] = [
     ],
 ];
 
-/// UV coordinates for each face vertex (same for all faces).
-/// V-axis is remapped per voxel type to select the correct atlas region.
-const FACE_UVS: [[f32; 2]; 4] = [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
+/// UV coordinates for leaf faces (same for all faces — each face shows the
+/// full leaf texture). Bark/ground faces use per-face atlas UVs instead.
+const LEAF_FACE_UVS: [[f32; 2]; 4] = [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
 
-/// Number of atlas rows in the opaque texture atlas. Each voxel type maps to
-/// a row, and the V-axis is scaled to [row/ROWS, (row+1)/ROWS].
-const ATLAS_ROWS: f32 = 2.0;
+/// Returns true if this opaque voxel type belongs to the ground surface.
+fn is_ground_voxel(vt: VoxelType) -> bool {
+    vt == VoxelType::Dirt
+}
 
-/// Return the atlas row index for an opaque voxel type. Row 0 = bark (top),
-/// row 1 = dirt/grass (bottom). Leaf voxels use their own material and don't
-/// go through this path.
-fn atlas_row(vt: VoxelType) -> f32 {
-    match vt {
-        VoxelType::Dirt => 1.0,
-        _ => 0.0, // Trunk, Branch, Root, construction types → bark
-    }
+/// Record of a pending face that needs atlas UV fixup after atlas generation.
+struct PendingFace {
+    /// Voxel world coordinates.
+    wx: i32,
+    wy: i32,
+    wz: i32,
+    /// Face direction index (0..5).
+    face_idx: usize,
+    /// Starting index in the surface's `uvs` Vec for this face's 4 vertices
+    /// (8 floats: u0,v0, u1,v1, u2,v2, u3,v3).
+    uv_start: usize,
 }
 
 /// Generate the mesh data for a single chunk of the world.
@@ -222,8 +244,14 @@ fn atlas_row(vt: VoxelType) -> f32 {
 /// Iterates over all voxels in the chunk, checks each of the 6 faces against
 /// the neighbor voxel, and emits face geometry when the face should be visible.
 /// Neighbor lookups cross chunk boundaries correctly by reading from the world.
+///
+/// After emitting all face geometry, generates per-face Perlin noise texture
+/// atlases for bark and ground surfaces, and fixes up their UVs to point into
+/// the atlas tiles.
 pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
     let mut mesh = ChunkMesh::default();
+    let mut bark_pending: Vec<PendingFace> = Vec::new();
+    let mut ground_pending: Vec<PendingFace> = Vec::new();
 
     let base_x = chunk.cx * CHUNK_SIZE;
     let base_y = chunk.cy * CHUNK_SIZE;
@@ -244,17 +272,14 @@ pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
 
                 let color = voxel_color(vt);
                 let is_leaf = vt == VoxelType::Leaf;
+                let is_ground = is_ground_voxel(vt);
                 let surface = if is_leaf {
                     &mut mesh.leaf
+                } else if is_ground {
+                    &mut mesh.ground
                 } else {
-                    &mut mesh.opaque
+                    &mut mesh.bark
                 };
-
-                // Atlas UV mapping: remap the V coordinate to the voxel
-                // type's row within the texture atlas.
-                let row = if is_leaf { 0.0 } else { atlas_row(vt) };
-                let v_base = row / ATLAS_ROWS;
-                let v_scale = 1.0 / ATLAS_ROWS;
 
                 for (face_idx, &(dx, dy, dz)) in FACES.iter().enumerate() {
                     let neighbor = world.get(VoxelCoord::new(wx + dx, wy + dy, wz + dz));
@@ -266,6 +291,9 @@ pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
 
                     let base_vertex = surface.vertex_count() as u32;
                     let normal = [dx as f32, dy as f32, dz as f32];
+
+                    // Record UV start for atlas fixup (bark/ground only).
+                    let uv_start = surface.uvs.len();
 
                     // Emit 4 vertices for this face.
                     for (vi, vert) in FACE_VERTICES[face_idx].iter().enumerate() {
@@ -282,8 +310,14 @@ pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
                         surface.colors.push(color[2]);
                         surface.colors.push(color[3]);
 
-                        surface.uvs.push(FACE_UVS[vi][0]);
-                        surface.uvs.push(v_base + FACE_UVS[vi][1] * v_scale);
+                        if is_leaf {
+                            surface.uvs.push(LEAF_FACE_UVS[vi][0]);
+                            surface.uvs.push(LEAF_FACE_UVS[vi][1]);
+                        } else {
+                            // Placeholder UVs — will be overwritten by atlas fixup.
+                            surface.uvs.push(0.0);
+                            surface.uvs.push(0.0);
+                        }
                     }
 
                     // 2 triangles: 0-1-2, 0-2-3
@@ -293,12 +327,83 @@ pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
                     surface.indices.push(base_vertex);
                     surface.indices.push(base_vertex + 2);
                     surface.indices.push(base_vertex + 3);
+
+                    // Record pending face for atlas generation.
+                    if !is_leaf {
+                        let pending = PendingFace {
+                            wx,
+                            wy,
+                            wz,
+                            face_idx,
+                            uv_start,
+                        };
+                        if is_ground {
+                            ground_pending.push(pending);
+                        } else {
+                            bark_pending.push(pending);
+                        }
+                    }
                 }
             }
         }
     }
 
+    // Generate texture atlases and fix up UVs for bark and ground surfaces.
+    if !bark_pending.is_empty() {
+        let atlas = build_atlas_and_fixup(&mut mesh.bark, &bark_pending, MaterialKind::Bark);
+        mesh.bark.atlas_pixels = atlas.pixels;
+        mesh.bark.atlas_width = atlas.width;
+        mesh.bark.atlas_height = atlas.height;
+    }
+    if !ground_pending.is_empty() {
+        let atlas = build_atlas_and_fixup(&mut mesh.ground, &ground_pending, MaterialKind::Ground);
+        mesh.ground.atlas_pixels = atlas.pixels;
+        mesh.ground.atlas_width = atlas.width;
+        mesh.ground.atlas_height = atlas.height;
+    }
+
     mesh
+}
+
+/// Generate a texture atlas for a set of pending faces and fix up the UV
+/// coordinates in the surface mesh to point into the atlas tiles.
+fn build_atlas_and_fixup(
+    surface: &mut SurfaceMesh,
+    pending: &[PendingFace],
+    material: MaterialKind,
+) -> FaceAtlas {
+    let face_infos: Vec<FaceTexInfo> = pending
+        .iter()
+        .map(|p| FaceTexInfo {
+            wx: p.wx,
+            wy: p.wy,
+            wz: p.wz,
+            face_idx: p.face_idx,
+        })
+        .collect();
+    let atlas = texture_gen::generate_atlas(&face_infos, material);
+
+    // Fix up UVs: map each face's 4 vertices to their tile in the atlas.
+    let tex_size = FACE_TEX_SIZE as f32;
+    let atlas_w = atlas.width as f32;
+    let atlas_h = atlas.height as f32;
+
+    for (tile_idx, face) in pending.iter().enumerate() {
+        let tile_col = (tile_idx as u32 % atlas.tiles_per_row) as f32;
+        let tile_row = (tile_idx as u32 / atlas.tiles_per_row) as f32;
+        let local_uvs = &FACE_LOCAL_UVS[face.face_idx];
+
+        for (vi, &[lu, lv]) in local_uvs.iter().enumerate() {
+            // Map face-local UV [0,1] to atlas texel centers.
+            let atlas_u = (tile_col * tex_size + 0.5 + lu * (tex_size - 1.0)) / atlas_w;
+            let atlas_v = (tile_row * tex_size + 0.5 + lv * (tex_size - 1.0)) / atlas_h;
+            let uv_idx = face.uv_start + vi * 2;
+            surface.uvs[uv_idx] = atlas_u;
+            surface.uvs[uv_idx + 1] = atlas_v;
+        }
+    }
+
+    atlas
 }
 
 #[cfg(test)]
@@ -324,9 +429,9 @@ mod tests {
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
 
         // 6 faces * 4 vertices = 24 vertices
-        assert_eq!(mesh.opaque.vertex_count(), 24);
+        assert_eq!(mesh.bark.vertex_count(), 24);
         // 6 faces * 6 indices = 36 indices
-        assert_eq!(mesh.opaque.indices.len(), 36);
+        assert_eq!(mesh.bark.indices.len(), 36);
         // No leaf geometry.
         assert!(mesh.leaf.is_empty());
     }
@@ -340,8 +445,8 @@ mod tests {
 
         // Each voxel alone = 6 faces. Together they share 1 face, so each loses
         // 1 face: 2 * 5 = 10 faces. 10 * 4 = 40 vertices.
-        assert_eq!(mesh.opaque.vertex_count(), 40);
-        assert_eq!(mesh.opaque.indices.len(), 60); // 10 * 6
+        assert_eq!(mesh.bark.vertex_count(), 40);
+        assert_eq!(mesh.bark.indices.len(), 60); // 10 * 6
     }
 
     #[test]
@@ -354,8 +459,8 @@ mod tests {
 
         // ForestFloor produces no geometry, but the trunk's -Y face should be
         // culled because ForestFloor is opaque. Trunk = 5 visible faces.
-        assert_eq!(mesh.opaque.vertex_count(), 20); // 5 * 4
-        assert_eq!(mesh.opaque.indices.len(), 30); // 5 * 6
+        assert_eq!(mesh.bark.vertex_count(), 20); // 5 * 4
+        assert_eq!(mesh.bark.indices.len(), 30); // 5 * 6
     }
 
     #[test]
@@ -369,7 +474,7 @@ mod tests {
         // Each leaf has 6 faces, both get all 6 = 12 faces total.
         assert_eq!(mesh.leaf.vertex_count(), 48); // 12 * 4
         assert_eq!(mesh.leaf.indices.len(), 72); // 12 * 6
-        assert!(mesh.opaque.is_empty());
+        assert!(mesh.bark.is_empty());
     }
 
     #[test]
@@ -382,7 +487,7 @@ mod tests {
         // Leaf: 5 faces (the +X face toward trunk is culled — trunk is opaque).
         assert_eq!(mesh.leaf.vertex_count(), 20); // 5 * 4
         // Trunk: 6 faces (the -X face toward leaf is NOT culled — leaf isn't opaque).
-        assert_eq!(mesh.opaque.vertex_count(), 24); // 6 * 4
+        assert_eq!(mesh.bark.vertex_count(), 24); // 6 * 4
     }
 
     #[test]
@@ -396,8 +501,8 @@ mod tests {
         let mesh1 = generate_chunk_mesh(&world, ChunkCoord::new(1, 0, 0));
 
         // Each should have 5 faces (shared face culled across chunk boundary).
-        assert_eq!(mesh0.opaque.vertex_count(), 20);
-        assert_eq!(mesh1.opaque.vertex_count(), 20);
+        assert_eq!(mesh0.bark.vertex_count(), 20);
+        assert_eq!(mesh1.bark.vertex_count(), 20);
     }
 
     #[test]
@@ -442,7 +547,7 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::GrownPlatform);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
-        assert_eq!(mesh.opaque.vertex_count(), 24); // 6 faces * 4 verts
+        assert_eq!(mesh.bark.vertex_count(), 24); // 6 faces * 4 verts
     }
 
     #[test]
@@ -453,10 +558,72 @@ mod tests {
 
         // Check first vertex color is trunk color.
         let expected = voxel_color(VoxelType::Trunk);
-        assert_eq!(mesh.opaque.colors[0], expected[0]);
-        assert_eq!(mesh.opaque.colors[1], expected[1]);
-        assert_eq!(mesh.opaque.colors[2], expected[2]);
-        assert_eq!(mesh.opaque.colors[3], expected[3]);
+        assert_eq!(mesh.bark.colors[0], expected[0]);
+        assert_eq!(mesh.bark.colors[1], expected[1]);
+        assert_eq!(mesh.bark.colors[2], expected[2]);
+        assert_eq!(mesh.bark.colors[3], expected[3]);
+    }
+
+    #[test]
+    fn dirt_goes_to_ground_surface() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Dirt);
+        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+
+        // Dirt should be on the ground surface, not bark.
+        assert!(mesh.bark.is_empty());
+        assert_eq!(mesh.ground.vertex_count(), 24); // 6 faces * 4 verts
+        assert!(mesh.leaf.is_empty());
+    }
+
+    #[test]
+    fn atlas_uvs_differ_between_faces() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 2), VoxelType::Trunk);
+        world.set(VoxelCoord::new(8, 8, 6), VoxelType::Trunk);
+        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+
+        // Each trunk has 6 faces * 4 verts = 24 verts, total 48.
+        assert_eq!(mesh.bark.vertex_count(), 48);
+
+        // The two voxels' first faces should point to different atlas tiles,
+        // so at least some UV values should differ.
+        let uv0_u = mesh.bark.uvs[0];
+        let uv0_v = mesh.bark.uvs[1];
+        // Second voxel starts at vertex 24.
+        let uv1_u = mesh.bark.uvs[48];
+        let uv1_v = mesh.bark.uvs[49];
+
+        assert!(
+            uv0_u != uv1_u || uv0_v != uv1_v,
+            "Atlas UVs should differ between faces: ({uv0_u},{uv0_v}) vs ({uv1_u},{uv1_v})"
+        );
+    }
+
+    #[test]
+    fn bark_surface_has_atlas_data() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+
+        // Single voxel = 6 faces → atlas should be 3×2 tiles = 48×32 pixels.
+        assert!(mesh.bark.atlas_width > 0);
+        assert!(mesh.bark.atlas_height > 0);
+        assert!(!mesh.bark.atlas_pixels.is_empty());
+        assert_eq!(
+            mesh.bark.atlas_pixels.len(),
+            (mesh.bark.atlas_width * mesh.bark.atlas_height * 4) as usize
+        );
+    }
+
+    #[test]
+    fn leaf_surface_has_no_atlas() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
+        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+
+        assert!(mesh.leaf.atlas_pixels.is_empty());
+        assert_eq!(mesh.leaf.atlas_width, 0);
     }
 
     #[test]

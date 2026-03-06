@@ -10,6 +10,7 @@
 // - `world.rs`:       Dense 3D voxel grid (the world's spatial truth).
 // - `tree_gen.rs`:    Energy-based recursive tree generation (trunk, branches, roots, leaves).
 // - `mesh_gen.rs`:    Chunk-based voxel mesh generation with per-face culling.
+// - `texture_gen.rs`: Procedural face texture generation (3D Perlin noise atlases).
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
 // - `pathfinding.rs`: A* pathfinding over the nav graph.
 // - `command.rs`:     SimCommand / SimAction — all sim mutations.
@@ -52,6 +53,7 @@ pub mod sim;
 pub mod species;
 pub mod structural;
 pub mod task;
+pub mod texture_gen;
 pub mod tree_gen;
 pub mod types;
 pub mod world;

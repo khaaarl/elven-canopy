@@ -2182,7 +2182,9 @@ impl SimBridge {
     }
 
     /// Build a Godot ArrayMesh for the given chunk. Returns an ArrayMesh with
-    /// up to 2 surfaces: surface 0 = opaque voxels, surface 1 = leaf voxels.
+    /// exactly 3 surfaces: surface 0 = bark, surface 1 = ground, surface 2 =
+    /// leaf. Empty surfaces get a minimal single-triangle degenerate surface
+    /// so the surface index is always stable (bark=0, ground=1, leaf=2).
     /// Returns a default empty ArrayMesh if the chunk is not in the cache.
     #[func]
     fn build_chunk_array_mesh(&self, cx: i32, cy: i32, cz: i32) -> Gd<godot::classes::ArrayMesh> {
@@ -2198,12 +2200,56 @@ impl SimBridge {
             return array_mesh;
         };
 
-        // Add opaque surface (surface 0).
-        Self::add_surface_to_array_mesh(&mut array_mesh, &chunk_mesh.opaque);
-        // Add leaf surface (surface 1).
-        Self::add_surface_to_array_mesh(&mut array_mesh, &chunk_mesh.leaf);
+        // Always add all 3 surfaces in fixed order so material assignment
+        // by surface index is reliable.
+        Self::add_surface_or_placeholder(&mut array_mesh, &chunk_mesh.bark);
+        Self::add_surface_or_placeholder(&mut array_mesh, &chunk_mesh.ground);
+        Self::add_surface_or_placeholder(&mut array_mesh, &chunk_mesh.leaf);
 
         array_mesh
+    }
+
+    /// Add a surface to the ArrayMesh. If the surface is empty, adds a
+    /// degenerate zero-area triangle as a placeholder so the surface index
+    /// stays stable.
+    fn add_surface_or_placeholder(
+        mesh: &mut Gd<godot::classes::ArrayMesh>,
+        surface: &elven_canopy_sim::mesh_gen::SurfaceMesh,
+    ) {
+        if surface.is_empty() {
+            Self::add_placeholder_surface(mesh);
+        } else {
+            Self::add_surface_to_array_mesh(mesh, surface);
+        }
+    }
+
+    /// Add a degenerate zero-area triangle surface as a placeholder.
+    fn add_placeholder_surface(mesh: &mut Gd<godot::classes::ArrayMesh>) {
+        use godot::classes::mesh::PrimitiveType;
+
+        let origin = Vector3::ZERO;
+        let mut vertices = PackedVector3Array::new();
+        vertices.push(origin);
+        vertices.push(origin);
+        vertices.push(origin);
+
+        let mut normals = PackedVector3Array::new();
+        normals.push(Vector3::UP);
+        normals.push(Vector3::UP);
+        normals.push(Vector3::UP);
+
+        let mut indices = PackedInt32Array::new();
+        indices.push(0);
+        indices.push(1);
+        indices.push(2);
+
+        let mut arrays = VarArray::new();
+        arrays.resize(13, &Variant::nil());
+        arrays.set(0, &Variant::from(vertices));
+        arrays.set(1, &Variant::from(normals));
+        arrays.set(12, &Variant::from(indices));
+
+        mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);
     }
 
     /// Helper: convert a `SurfaceMesh` into a Godot surface array and add it
@@ -2281,6 +2327,64 @@ impl SimBridge {
         arrays.set(12, &Variant::from(indices)); // ARRAY_INDEX
 
         mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);
+    }
+
+    /// Get the texture atlas pixel data for a chunk surface. Returns a
+    /// PackedByteArray of RGBA pixels (empty if no atlas for this surface).
+    /// Surface indices: 0=bark, 1=ground.
+    #[func]
+    fn get_chunk_atlas_data(&self, cx: i32, cy: i32, cz: i32, surface: i32) -> PackedByteArray {
+        use elven_canopy_sim::mesh_gen::ChunkCoord;
+
+        let Some(cache) = &self.mesh_cache else {
+            return PackedByteArray::new();
+        };
+        let coord = ChunkCoord::new(cx, cy, cz);
+        let Some(chunk_mesh) = cache.get_chunk(&coord) else {
+            return PackedByteArray::new();
+        };
+
+        let pixels = match surface {
+            0 => &chunk_mesh.bark.atlas_pixels,
+            1 => &chunk_mesh.ground.atlas_pixels,
+            _ => return PackedByteArray::new(),
+        };
+
+        if pixels.is_empty() {
+            return PackedByteArray::new();
+        }
+
+        let mut arr = PackedByteArray::new();
+        arr.resize(pixels.len());
+        let slice = arr.as_mut_slice();
+        slice.copy_from_slice(pixels);
+        arr
+    }
+
+    /// Get the atlas dimensions for a chunk surface. Returns Vector2i(width, height).
+    /// Returns (0,0) if no atlas exists for this surface.
+    #[func]
+    fn get_chunk_atlas_size(&self, cx: i32, cy: i32, cz: i32, surface: i32) -> Vector2i {
+        use elven_canopy_sim::mesh_gen::ChunkCoord;
+
+        let Some(cache) = &self.mesh_cache else {
+            return Vector2i::ZERO;
+        };
+        let coord = ChunkCoord::new(cx, cy, cz);
+        let Some(chunk_mesh) = cache.get_chunk(&coord) else {
+            return Vector2i::ZERO;
+        };
+
+        let (w, h) = match surface {
+            0 => (chunk_mesh.bark.atlas_width, chunk_mesh.bark.atlas_height),
+            1 => (
+                chunk_mesh.ground.atlas_width,
+                chunk_mesh.ground.atlas_height,
+            ),
+            _ => (0, 0),
+        };
+
+        Vector2i::new(w as i32, h as i32)
     }
 
     // ========================================================================

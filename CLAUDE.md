@@ -47,6 +47,7 @@ elven-canopy/
 │       ├── local_relay.rs      # LocalRelay — accumulator-based tick pacer (SP)
 │       ├── sim.rs              # SimState, tick loop, command processing
 │       ├── mesh_gen.rs          # Chunk-based voxel mesh generation with face culling
+│       ├── texture_gen.rs      # Procedural face textures (3D Perlin noise atlases)
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
 │       ├── pathfinding.rs      # A* search over NavGraph
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)

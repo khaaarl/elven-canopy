@@ -222,6 +222,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tree-info            Tree stats/info panel
 [x] F-tree-overlap         Construction overlap with tree geometry
 [x] F-voxel-fem            Voxel FEM structural analysis
+[x] F-voxel-textures       Per-face Perlin noise voxel textures
 ```
 
 ---
@@ -691,6 +692,20 @@ bridge method for GDScript stress heatmap data. Construction intermediate
 states are exempt from checks (draft §12).
 
 **Related:** B-preview-blueprints, F-struct-basic
+
+#### F-voxel-textures — Per-face Perlin noise voxel textures
+**Status:** Done · **Phase:** 2
+
+Per-face procedural textures for bark and ground voxels using 3D Perlin noise
+sampled at world coordinates. Each visible face gets a 16×16 texture tile
+packed into a per-chunk atlas. The 3D noise ensures seamless edges between
+adjacent faces regardless of orientation. Bark noise uses anisotropic scaling
+(vertical grain) and domain warping (organic wobble). Ground uses isotropic
+fractal noise. Leaf voxels retain their shared alpha-scissor texture.
+
+Key files: `texture_gen.rs` (Perlin noise + atlas generation), `mesh_gen.rs`
+(atlas UV computation, bark/ground surface split), `sim_bridge.rs` (atlas
+data passing to Godot), `tree_renderer.gd` (per-chunk material creation).
 
 ### Navigation & Pathfinding
 
