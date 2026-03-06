@@ -129,6 +129,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-auto-pk          Auto-generated primary keys
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-joins            Join iterators across tables
+[ ] F-tab-modify-unchk     modify_unchecked for payload mutation
+[ ] F-tab-query-opts       Query options struct for index queries
 [ ] F-tab-schema-evol      Schema evolution and migrations
 [ ] F-tab-unique-idx       Unique index enforcement
 [ ] F-tab-update-with      Closure-based row update
@@ -1716,6 +1718,8 @@ All mutations go through SimCommand for determinism and future multiplayer.
 
 #### F-sim-db-impl — Tabulosity typed in-memory relational store
 **Status:** Done
+**Design:** `docs/tabulosity.md` (old drafts: `docs/drafts/sim_db_v9.md`, `docs/drafts/tabulosity_advanced_indexes_v5.md`)
+**Schema:** `docs/drafts/sim_db_schema_v4.md`
 
 Typed in-memory relational database library (`tabulosity` + `tabulosity_derive`)
 for the sim crate. Derive macros: `Bounded` (newtype min/max), `Table` (companion
@@ -1756,7 +1760,7 @@ the full table each frame. Medium complexity.
 
 #### F-tab-compound-idx — Compound indexes with prefix queries
 **Status:** Done
-**Draft:** `docs/drafts/tabulosity_advanced_indexes_v5.md`
+**Design:** `docs/tabulosity.md` (old draft: `docs/drafts/tabulosity_advanced_indexes_v5.md`)
 
 `BTreeSet<(F1, F2, ..., PK)>` compound indexes supporting prefix queries
 (e.g., query by first field, or first two fields). Unified `#[index(...)]`
@@ -1769,7 +1773,7 @@ field tuples.
 
 #### F-tab-filter-idx — Filtered/partial indexes
 **Status:** Done
-**Draft:** `docs/drafts/tabulosity_advanced_indexes_v5.md`
+**Design:** `docs/tabulosity.md` (old draft: `docs/drafts/tabulosity_advanced_indexes_v5.md`)
 
 Index only rows matching a predicate (e.g., only active tasks). Composes
 with compound indexes via unified `#[index(name, fields, filter)]`
@@ -1786,6 +1790,32 @@ following FK relationships. High complexity due to lifetime management
 and derive macro codegen.
 
 **Related:** F-sim-db-impl
+
+#### F-tab-modify-unchk — modify_unchecked for payload mutation
+**Status:** Todo
+**Draft:** `docs/drafts/modify_unchecked_v1.md`
+
+Closure-based in-place mutation that bypasses index maintenance. In release
+builds: zero overhead beyond `BTreeMap::get_mut` + closure. In debug builds:
+snapshots PK + indexed fields and asserts they are unchanged after the
+closure. Low complexity. Complementary to F-tab-update-with (which maintains
+indexes automatically).
+
+**Related:** F-sim-db-impl, F-tab-update-with
+
+#### F-tab-query-opts — Query options struct for index queries
+**Status:** Todo
+
+`QueryOpts` struct passed as a required parameter to all index query methods
+(`by_*`, `iter_by_*`, `count_by_*`). Controls ordering (ascending/descending
+via `BTreeSet::range().rev()`), offset (skip first N results), and mutable
+iteration (`modify_each_by_*` with debug-build index-integrity checks). The
+struct is trivially small (enum + usize) with a `Default` impl; the compiler
+inlines and eliminates default-path branches at even `opt-level = 1`. Avoids a
+full query builder pattern for performance — limits are handled via iterator
+combinators (`.take(n)`).
+
+**Related:** F-sim-db-impl, F-tab-modify-unchk
 
 #### F-tab-schema-evol — Schema evolution and migrations
 **Status:** Todo

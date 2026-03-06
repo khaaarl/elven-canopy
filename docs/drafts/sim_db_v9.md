@@ -1,6 +1,7 @@
 # sim_db_v9: Implementation Notes and Errata
 
-Addendum to `sim_db_v8.md`. Documents design clarifications and ambiguities
+Addendum to the sim_db design series (v1–v8, now superseded by
+`docs/tabulosity.md`). Documents design clarifications and ambiguities
 found during the v1 implementation review. These are not design changes — they
 describe the current behavior of the shipped code and note areas for future
 improvement.

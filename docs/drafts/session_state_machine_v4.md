@@ -5,7 +5,7 @@ whose fields only change in response to typed messages processed through
 a single entry point.
 
 **Supersedes:** `session_state_machine_v3.md`, `session_state_machine_v2.md`,
-and `session_state_machine.md` (v1). All kept for comparison.
+and `session_state_machine.md` (v1). Prior versions have been deleted.
 
 **Key changes from v3:**
 

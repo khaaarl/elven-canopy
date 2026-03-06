@@ -5,6 +5,17 @@
 //! All internal data structures use `BTreeMap`/`BTreeSet` for deterministic
 //! iteration order.
 //!
+//! # Determinism constraint
+//!
+//! Tabulosity is intentionally fully deterministic: all internal data structures
+//! use `BTreeMap`/`BTreeSet`, and all generated (derived) code emits only
+//! ordered collections. This is a hard requirement for its primary consumer,
+//! `elven_canopy_sim`, which must produce identical results given the same seed
+//! for lockstep multiplayer and replay verification. **`HashMap` and `HashSet`
+//! must never be introduced** into library code, generated code, or test
+//! helpers — even where iteration order appears irrelevant — because hash
+//! ordering varies across platforms, Rust versions, and process invocations.
+//!
 //! # Crate layout
 //!
 //! - `error.rs` — `Error` enum and `DeserializeError` for write failures.
