@@ -94,13 +94,10 @@ After conflict resolution:
 
 If the branch implements a tracked feature or bug:
 
-1. In the summary section: change `[~]` to `[x]` and move the line from
-   In Progress to Done (maintain alphabetical order by ID).
-2. In the detailed entry: change `**Status:** In Progress` to
-   `**Status:** Done`.
-3. Run `python3 scripts/fix_tracker.py` to enforce ordering and clean up
-   blocking references.
-4. Amend the squashed commit to include the tracker update:
+1. Run `python3 scripts/tracker.py change-state <ID> done` (this updates
+   both the summary and detail sections, sorts, and cleans up blocking
+   references automatically).
+2. Amend the squashed commit to include the tracker update:
    ```
    git add docs/tracker.md
    git commit --amend --no-edit

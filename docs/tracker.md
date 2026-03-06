@@ -18,16 +18,17 @@ Draft docs by repo-relative path. Blocking relationships in the detailed entry
 use `Blocked by:` (things that must finish first) and `Blocks:` (things waiting
 on this).
 
-**Cleanup script:** After making any edits to this file, run:
+**CLI tool:** Query and mutate this file via the CLI:
 ```
-python3 scripts/fix_tracker.py
+python3 scripts/tracker.py <command> [args]
 ```
-This enforces alphabetical ordering in the summary and detailed sections,
-removes `Blocks`/`Blocked by` fields from done items, strips references to
-done items from other items' `Blocked by` fields, and ensures `Blocks`/
-`Blocked by` pairs are symmetric. If it prints `"tracker.md updated."`,
-review the diff (`git diff docs/tracker.md`) to confirm the changes are
-correct before committing.
+Commands: `list`, `show`, `search`, `change-state`, `add`, `edit-title`,
+`edit-description`, `block`, `unblock`, `relate`, `unrelate`, `fix`.
+All mutation commands auto-run `fix` at the end, which enforces alphabetical
+ordering, removes `Blocks`/`Blocked by` fields from done items, strips
+references to done items from other items' `Blocked by` fields, and ensures
+`Blocks`/`Blocked by` and `Related` pairs are symmetric. Use `--dry-run` on
+any mutation to preview changes.
 
 ## Summary
 
@@ -274,7 +275,7 @@ Personal dwelling for a single elf (families in the future). The player
 assigns which elf lives in each home. Provides rest and comfort need
 satisfaction.
 
-**Related:** F-bldg-dormitory, F-elf-needs
+**Related:** F-bldg-dormitory, F-elf-assign, F-elf-needs
 
 #### F-bldg-kitchen — Kitchen (cooking from ingredients)
 **Status:** Done · **Phase:** 4
@@ -285,7 +286,7 @@ via logistics and cook it into bread. Cooking is controlled via the
 structure info panel (enable/disable, bread target). **Draft:**
 `docs/drafts/kitchen_cooking.md`
 
-**Related:** F-bread, F-fruit-variety
+**Related:** F-bldg-dining, F-bread, F-elf-acquire, F-elf-assign, F-food-chain, F-fruit-variety, F-jobs, F-recipes
 
 #### F-bldg-storehouse — Storehouse (item storage)
 **Status:** Todo · **Phase:** 4
@@ -301,7 +302,7 @@ and are accessible to elves for retrieval.
 Workshop where craftself elves create tools and equipment (bows, spears,
 and other gear).
 
-**Related:** F-crafting, F-elf-weapons
+**Related:** F-crafting, F-elf-assign, F-elf-weapons, F-jobs, F-recipes
 
 #### F-blueprint-mode — Layer-based blueprint selection UI
 **Status:** Todo · **Phase:** 2 · **Refs:** §12
@@ -311,7 +312,7 @@ arbitrary shapes, and structural warnings. Currently only rectangular platform
 designation exists via `construction_controller.gd`. This item covers the
 general-purpose blueprint UI that supports all build types and freeform shapes.
 
-**Related:** F-batch-blueprint, F-construction, F-stress-heatmap
+**Related:** F-batch-blueprint, F-construction, F-placement-ui, F-stress-heatmap, F-tree-overlap, F-wireframe-ghost
 
 #### F-branch-growth — Grow branches for photosynthesis/fruit
 **Status:** Todo · **Phase:** 3 · **Refs:** §8, §13
@@ -320,7 +321,7 @@ Player-directed branch/bough growth to extend the tree for more
 photosynthesis capacity and fruit production. Uses the existing tree
 generation algorithm with player-chosen growth direction.
 
-**Related:** F-mana-system, F-mass-conserve
+**Related:** F-fruit-prod, F-mana-system, F-mass-conserve, F-tree-species
 
 #### F-bridges — Bridge construction between tree parts
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
@@ -349,7 +350,7 @@ cancel (reverts voxels and face data). Save/load preserves buildings.
 
 **New files:** `building.rs`, `building_renderer.gd`
 
-**Related:** F-construction, F-furnish
+**Related:** F-construction, F-furnish, F-placement-ui, F-structure-reg
 
 #### F-carve-holes — Remove material (doors, storage hollows)
 **Status:** Done · **Phase:** 3 · **Refs:** §11
@@ -359,6 +360,8 @@ doorways, windows, storage hollows. The inverse of construction.
 Implemented as a third build mode (Carve) in the construction panel
 with structural integrity validation (blocks disconnecting carves,
 warns on stress). Supports rectangular prism carving with width/depth/height.
+
+**Related:** F-demolish
 
 #### F-choir-build — Choir-based construction singing
 **Status:** Todo · **Phase:** 2 · **Refs:** §11, §21
@@ -378,7 +381,7 @@ adjacent to solid), creates a blueprint + Build task, elves claim the task
 and incrementally materialize voxels. Cancellation reverts placed voxels.
 Incremental nav graph updates keep pathfinding current during construction.
 
-**Related:** F-building
+**Related:** F-blueprint-mode, F-build-queue-ui, F-building, F-demolish, F-placement-ui, F-struct-upgrade, F-structure-reg, F-tree-overlap, F-undo-designate
 
 #### F-demolish — Structure demolition
 **Status:** Todo · **Phase:** 3
@@ -391,7 +394,7 @@ reverting incomplete structures; this covers intentional teardown of
 finished ones. Needs to consider structural consequences — demolishing a
 load-bearing structure could affect structures above it (warn or block).
 
-**Related:** F-carve-holes, F-cascade-fail, F-construction, F-select-struct
+**Related:** F-carve-holes, F-cascade-fail, F-construction, F-select-struct, F-struct-upgrade, F-unfurnish
 
 #### F-furnish — Building furnishing framework (dormitories)
 **Status:** Done · **Phase:** 3 · **Refs:** §11
@@ -410,7 +413,7 @@ floor area (density varies by type). Auto-renames the building to e.g.
 
 **New files:** `furniture_renderer.gd`
 
-**Related:** F-building, F-unfurnish
+**Related:** F-bldg-dormitory, F-building, F-unfurnish
 
 #### F-ladders — Rope/wood ladders as cheap connectors
 **Status:** Done · **Phase:** 3 · **Refs:** §11
@@ -475,7 +478,7 @@ whether its name was set by the player or is still the auto-generated
 default. Player can rename via the structure info panel. Renamed
 structures show their custom name in the structure list and info panel.
 
-**Related:** F-select-struct, F-structure-reg
+**Related:** F-select-struct, F-struct-upgrade, F-structure-reg
 
 #### F-struct-upgrade — Structure expansion/upgrade
 **Status:** Todo · **Phase:** 4
@@ -494,7 +497,7 @@ Task queue with Low/Normal/High/Urgent priorities, auto-assignment of idle
 elves to highest-priority available tasks. Priority is already in the data
 model but not yet used for scheduling.
 
-**Related:** F-elf-needs
+**Related:** F-build-queue-ui, F-elf-needs, F-jobs
 
 #### F-tree-overlap — Construction overlap with tree geometry
 **Status:** Done · **Phase:** 2 · **Refs:** §11, §12
@@ -508,7 +511,7 @@ wireframe edges. Invalid if 0% of voxels are exterior. Adds
 `BuildType::allows_tree_overlap()` flag to distinguish structural types from
 future furniture/decoration types. See draft doc for full plan.
 
-**Related:** F-blueprint-mode, F-construction
+**Related:** F-blueprint-mode, F-bridges, F-construction, F-stairs, F-wireframe-ghost
 
 #### F-undo-designate — Undo last construction designation
 **Status:** Todo · **Phase:** 2
@@ -592,6 +595,7 @@ fall physics, impact damage, and creature displacement on top of the
 spring-mass solver from F-voxel-fem. See draft §11 for scoping notes.
 
 **Blocks:** F-fire-structure
+**Related:** F-demolish
 
 #### F-fire-advanced — Heat accumulation and ignition thresholds
 **Status:** Todo · **Phase:** 5 · **Refs:** §16
@@ -617,6 +621,7 @@ Fire Stages 3-4: environmental factors (wind, rain), organized
 firefighting by elves, fire as an ecological renewal force.
 
 **Blocked by:** F-fire-advanced
+**Related:** F-weather
 
 #### F-fire-structure — Fire x structural integrity cascades
 **Status:** Todo · **Phase:** 5 · **Refs:** §9, §16
@@ -664,7 +669,7 @@ validation (draft §7.3). The `flood_fill_connected()` function is shared
 between this feature and the FEM system. Implemented as part of F-voxel-fem
 in `structural.rs`.
 
-**Related:** F-voxel-fem
+**Related:** F-batch-blueprint, F-bridges, F-stairs, F-voxel-fem
 
 #### F-voxel-fem — Voxel FEM structural analysis
 **Status:** Done · **Phase:** 5 · **Refs:** §9
@@ -683,7 +688,7 @@ blueprint validation (OK / Warning / Blocked based on stress thresholds),
 bridge method for GDScript stress heatmap data. Construction intermediate
 states are exempt from checks (draft §12).
 
-**Related:** F-struct-basic
+**Related:** B-preview-blueprints, F-struct-basic
 
 ### Navigation & Pathfinding
 
@@ -739,7 +744,7 @@ can be dropped, and kitchens produce it from fruit. Eating bread adds to
 the existing food gauge (the gauge remains as the creature's internal
 hunger/satiation state; bread is the concrete item that fills it).
 
-**Related:** F-bldg-kitchen, F-elf-needs, F-food-gauge
+**Related:** F-bldg-kitchen, F-elf-acquire, F-elf-needs, F-food-chain, F-food-gauge
 
 #### F-capybara — Capybara species
 **Status:** Done · **Refs:** §15
@@ -803,7 +808,7 @@ completing when progress reaches `total_cost` (bed: `sleep_ticks_bed`, ground:
 `sleep_ticks_ground`) or rest reaches `rest_max`. Rest gauge and food gauge
 are both shown in the creature info panel.
 
-**Related:** F-bldg-dormitory, F-bldg-home, F-food-gauge, F-task-priority
+**Related:** F-bldg-dormitory, F-bldg-home, F-bread, F-creature-death, F-food-gauge, F-fruit-prod, F-task-priority
 
 #### F-elf-sprite — Billboard elf sprite rendering
 **Status:** Done · **Phase:** 1 · **Refs:** §24
@@ -816,6 +821,8 @@ seed via `sprite_factory.gd`. Offset +0.48 Y for visual centering.
 
 Food level per creature, decaying over time. Displayed in creature info
 panel and as overhead bar.
+
+**Related:** F-bread, F-creature-death, F-elf-needs, F-fruit-prod
 
 #### F-move-interp — Smooth creature movement interpolation
 **Status:** Done · **Refs:** §10
@@ -843,6 +850,7 @@ Jobs beyond construction: woodworking, weaving, cooking, enchanting.
 Crafting system for tools, furniture, and magical items.
 
 **Blocks:** F-elf-weapons
+**Related:** F-bldg-workshop, F-items, F-magic-items, F-recipes
 
 #### F-elf-acquire — Elf personal item acquisition
 **Status:** Done · **Phase:** 4
@@ -868,7 +876,7 @@ the general F-logistics system, scoped to food only. Needs a draft
 design doc before implementation to work out pickup/delivery task
 creation, building input/output slots, and elf decision-making.
 
-**Related:** F-bldg-dining, F-bldg-kitchen, F-bldg-storehouse, F-bread, F-fruit-prod, F-logistics
+**Related:** F-bldg-dining, F-bldg-kitchen, F-bldg-storehouse, F-bread, F-fruit-prod, F-fruit-variety, F-hauling, F-logistics, F-recipes
 
 #### F-fruit-prod — Basic fruit production and harvesting
 **Status:** Todo · **Phase:** 2 · **Refs:** §13
@@ -880,7 +888,7 @@ random Leaf-adjacent positions, elves pathfind to harvest. Bridges the gap
 between the existing food decay mechanic (F-food-gauge) and the advanced
 food system (F-fruit-variety).
 
-**Related:** F-branch-growth, F-elf-needs, F-food-gauge, F-fruit-variety
+**Related:** F-branch-growth, F-elf-needs, F-food-chain, F-food-gauge, F-fruit-variety, F-population
 
 #### F-fruit-variety — Food storage, cooking, magical brewing
 **Status:** Todo · **Phase:** 7 · **Refs:** §13
@@ -890,7 +898,7 @@ cooking recipes, and magical brewing from rare ingredients. Builds on the
 basic food pipeline (F-food-chain handles single fruit type → bread) by
 adding variety, quality, and magical dimensions.
 
-**Related:** F-bldg-kitchen, F-food-chain
+**Related:** F-bldg-kitchen, F-food-chain, F-fruit-prod
 
 #### F-hauling — Item hauling task type
 **Status:** Done · **Phase:** 3
@@ -900,7 +908,7 @@ picks up reserved items, walks to destination building, deposits them.
 Includes item reservation system to prevent double-claiming, cleanup on
 task abandonment (clear reservations or drop carried items as ground pile).
 
-**Related:** F-food-chain, F-logistics
+**Related:** F-elf-acquire, F-food-chain, F-logistics
 
 #### F-items — Items and inventory system
 **Status:** Done · **Phase:** 3
@@ -935,7 +943,7 @@ fill shortfalls. Sources are ground piles first, then lower-priority
 buildings. UI in the structure info panel allows enabling logistics,
 setting priority, and configuring wants.
 
-**Related:** F-food-chain
+**Related:** F-bldg-storehouse, F-elf-acquire, F-food-chain, F-hauling, F-items
 
 #### F-mana-system — Mana generation, storage, and spending
 **Status:** Todo · **Phase:** 2 · **Refs:** §11, §13
@@ -945,7 +953,7 @@ construction and growth spend it. The central feedback loop — happy elves
 produce more mana, mana enables growth, growth makes elves happier.
 
 **Blocks:** F-mana-mood, F-root-network
-**Related:** F-choir-build, F-mass-conserve
+**Related:** F-branch-growth, F-choir-build, F-mass-conserve, F-population, F-tree-info
 
 #### F-recipes — Recipe system for crafting/cooking
 **Status:** Todo · **Phase:** 3
@@ -964,7 +972,7 @@ Avoids hardcoding conversion logic per building type.
 Each tree has a carrying capacity limiting how many elves/structures it can
 support. Encourages distributed village design across multiple trees.
 
-**Related:** F-multi-tree
+**Related:** F-multi-tree, F-population
 
 ### Social & Emotional
 
@@ -981,6 +989,7 @@ Emotions as multiple simultaneous dimensions: joy, fulfillment, sorrow,
 stress, pain, fear, anxiety. Not a single "happiness" number.
 
 **Blocks:** F-elf-leave, F-hedonic-adapt, F-mana-mood
+**Related:** F-social-graph
 
 #### F-emotions-basic — Mood score from thought weights
 **Status:** Done · **Phase:** 4 · **Refs:** §18
@@ -1044,6 +1053,7 @@ Multi-axis personality model affecting task preferences, social behavior,
 stress responses, and creative output.
 
 **Blocks:** F-cultural-drift
+**Related:** F-social-graph
 
 #### F-poetry-reading — Social gatherings and poetry readings
 **Status:** Todo · **Phase:** 4 · **Refs:** §18, §20
@@ -1059,6 +1069,8 @@ poetry/music affects mood and mana generation.
 Leaf color changes, snow, seasonal fruit production variation. Gameplay
 effects: cold weather increases clothing need, leaf drop reduces canopy
 shelter.
+
+**Related:** F-weather
 
 #### F-social-graph — Relationships and social contagion
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -1097,6 +1109,7 @@ Phase 1 audio: generate waveforms from MIDI-like note data for playback in
 Godot. Debugging and validation tool, placeholder for richer audio later.
 
 **Blocks:** F-audio-sampled, F-music-runtime
+**Related:** F-sound-effects
 
 #### F-audio-vocal — Continuous vocal synthesis
 **Status:** Todo · **Phase:** 8+ · **Refs:** §21
@@ -1123,7 +1136,7 @@ name + surname structure. Names should sound consistent with the conlang and
 be deterministic given the same PRNG state. Adds a `name` field to the
 `Creature` struct, assigned at spawn time.
 
-**Related:** F-vaelith-expand
+**Related:** F-creature-tooltip, F-vaelith-expand
 
 #### F-lang-crate — Shared Vaelith language crate
 **Status:** Done · **Phase:** 6 · **Refs:** §20
@@ -1152,6 +1165,7 @@ in response to game events (construction, celebrations, idle time). Requires
 audio output path (see F-audio-synth).
 
 **Blocked by:** F-audio-synth
+**Related:** F-bldg-concert, F-choir-build, F-choir-harmony
 
 #### F-music-use-lang — Migrate music crate to shared lang crate
 **Status:** Done · **Phase:** 6
@@ -1171,6 +1185,7 @@ music generator's approach). Poetry quality varies by elf skill, affects
 social events and mana.
 
 **Blocked by:** F-vaelith-expand
+**Related:** F-poetry-reading
 
 #### F-sound-effects — Basic ambient and action sound effects
 **Status:** Todo · **Phase:** 3
@@ -1194,7 +1209,7 @@ inventory may still change). Builds on the `elven_canopy_lang` crate
 infrastructure.
 
 **Blocks:** F-audio-sampled, F-proc-poetry
-**Related:** F-elf-names
+**Related:** F-elf-names, F-poetry-reading
 
 ### Combat & Defense
 
@@ -1221,6 +1236,7 @@ the construction system to support these build types.
 Weapon types with different ranges, damage, and crafting requirements.
 
 **Blocked by:** F-combat, F-crafting
+**Related:** F-bldg-workshop
 
 #### F-military-campaign — Send elves on world expeditions
 **Status:** Todo · **Phase:** 8+ · **Refs:** §26
@@ -1271,7 +1287,7 @@ per-player entity ownership, per-player command validation, and per-player
 fog of war rendering.
 
 **Blocks:** F-cultural-drift, F-root-network
-**Related:** F-multiplayer
+**Related:** F-multiplayer, F-tree-capacity, F-tree-species
 
 #### F-root-network — Root network expansion and diplomacy
 **Status:** Todo · **Phase:** 7 · **Refs:** §2
@@ -1281,6 +1297,7 @@ convince trees to join the network. Expands buildable space and perception
 radius.
 
 **Blocked by:** F-mana-system, F-multi-tree
+**Related:** F-fog-of-war
 
 #### F-tree-memory — Ancient tree knowledge/vision system
 **Status:** Todo · **Phase:** 7 · **Refs:** §2
@@ -1313,6 +1330,8 @@ and the souls/emotions imbued in them.
 Elf death, soul passage into trees, possible resurrection, and
 soul-powered constructs (golems, animated defenses).
 
+**Related:** F-creature-death, F-magic-items
+
 ### UI & Presentation
 
 #### F-ai-sprites — AI-generated sprite art pipeline
@@ -1342,6 +1361,8 @@ panel button.
 
 Right-side panel showing creature details (species, food level, task,
 position). Follow button to lock camera.
+
+**Related:** F-creature-tooltip, F-tree-info
 
 #### F-creature-tooltip — Creature hover tooltip
 **Status:** Todo · **Phase:** 2
@@ -1433,13 +1454,15 @@ structure-specific actions. Extends the existing creature selection system
 to handle structure entities. Foundation for per-structure interaction like
 rope ladder furling, building furnishing, and structure demolition.
 
-**Related:** F-rope-retract, F-selection, F-structure-reg
+**Related:** F-demolish, F-elf-assign, F-rope-retract, F-selection, F-struct-names, F-structure-reg
 
 #### F-selection — Click-to-select creatures
 **Status:** Done · **Refs:** §26
 
 Ray-based selection with billboard sprite hit detection. ESC to deselect.
 Input precedence chain with placement and pause systems.
+
+**Related:** F-creature-tooltip, F-select-struct
 
 #### F-sim-speed — Simulation speed controls UI
 **Status:** Done · **Phase:** 4
@@ -1460,6 +1483,8 @@ across multiplayer, in the same way that user actions are sync'd.
 Toolbar with creature spawn buttons and keyboard shortcuts. Placement
 controller handles click-to-place with nav node highlighting.
 
+**Related:** F-debug-menu
+
 #### F-structure-reg — Completed structure registry + UI panel
 **Status:** Done · **Phase:** 2
 
@@ -1470,7 +1495,7 @@ for zoom-to-location.
 
 **New files:** `structure_list_panel.gd`
 
-**Related:** F-building, F-construction
+**Related:** F-building, F-construction, F-select-struct, F-struct-names
 
 #### F-task-panel-groups — Task panel grouped by origin + creature names
 **Status:** Done · **Phase:** 2
@@ -1539,6 +1564,8 @@ Open design question (§27).
 
 Discrete event simulation with priority queue. Empty ticks are free.
 1000 ticks per simulated second.
+
+**Related:** F-sim-speed
 
 #### F-fog-of-war — Visibility via tree and root network
 **Status:** Todo · **Phase:** 8+ · **Refs:** §17
@@ -1609,7 +1636,7 @@ flushing during the transfer, and forwards it to the joining player.
 Pending joiner is excluded from checksum comparisons. Only one mid-game
 join can be in flight at a time.
 
-**Related:** F-multiplayer, F-save-load
+**Related:** F-mp-reconnect, F-multiplayer, F-save-load
 
 #### F-mp-reconnect — Multiplayer reconnection after disconnect
 **Status:** Todo · **Phase:** 8+ · **Refs:** §4
@@ -1640,13 +1667,15 @@ trees) deferred to F-multi-tree. Draft doc covers relay architecture,
 session management, and UI design (main menu flow, lobby, in-game controls,
 ESC menu behavior, save/load semantics, sim speed policy).
 
-**Related:** F-multi-tree, F-save-load
+**Related:** F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-save-load, F-session-sm
 
 #### F-save-load — Save/load to JSON with versioning
 **Status:** Done · **Phase:** 2 · **Refs:** §4, §5
 
 Full sim state serialized to JSON in `user://saves/`. Save versioning
 for schema migration.
+
+**Related:** F-mp-mid-join, F-multiplayer, F-tab-schema-evol
 
 #### F-serde — Serialization for all sim types
 **Status:** Done · **Phase:** 0 · **Refs:** §5
@@ -1695,6 +1724,8 @@ on insert/update/upsert, restrict-on-delete, serde support with cross-table
 validation collecting all errors). Feature-gated serde: `Serialize`/`Deserialize`
 generated by both Table and Database derives. Not yet integrated into
 `elven_canopy_sim` — will replace raw BTreeMaps for entity storage.
+
+**Related:** F-tab-auto-pk, F-tab-cascade-del, F-tab-change-track, F-tab-compound-idx, F-tab-filter-idx, F-tab-joins, F-tab-schema-evol, F-tab-unique-idx, F-tab-update-with
 
 #### F-tab-auto-pk — Auto-generated primary keys
 **Status:** Todo

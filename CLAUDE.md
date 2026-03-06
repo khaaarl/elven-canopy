@@ -141,7 +141,8 @@ elven-canopy/
 │   ├── organic_tree_vision.md  # Tree generation design notes
 │   └── drafts/                 # Working design documents
 ├── scripts/
-│   └── build.sh                # Build, test, and run script
+│   ├── build.sh                # Build, test, and run script
+│   └── tracker.py              # CLI tool for docs/tracker.md queries and mutations
 └── default_config.json         # Default GameConfig values
 ```
 
@@ -366,28 +367,30 @@ When tests fail unexpectedly, diagnose the root cause. Do not bypass, skip, or w
 
 ## Project Tracker (`docs/tracker.md`)
 
-The tracker is the single source of truth for feature/bug status. **Read it at the start of any work session** to understand what's in progress, what's next, and what's blocked.
+The tracker is the single source of truth for feature/bug status. **Use `scripts/tracker.py`** for all tracker operations — it handles both sections, ordering, and relationship symmetry automatically. Run `list` at the start of any work session to understand what's in progress, what's next, and what's blocked.
 
-The tracker has two sections that must stay in sync:
-1. **Summary** — one line per item inside a fenced code block, grouped by status (In Progress → Todo → Done). Format: `[status] F-id-name` padded to 23 chars, then a short title.
-2. **Detailed Items** — full descriptions grouped by topic area, with design doc refs, draft doc links, and blocking relationships.
+**Query commands** (read-only, stdout — use these instead of reading the full file):
+```bash
+python3 scripts/tracker.py list [--status todo|progress|done|all]  # default: progress + todo
+python3 scripts/tracker.py show <ID> [<ID> ...]                    # full detail entries
+python3 scripts/tracker.py search <pattern> [-i]                   # regex search
+```
 
-**When starting work on a tracked feature:**
-1. In the summary: change `[ ]` to `[~]` and **move the line** from the Todo section into the In Progress section, maintaining alphabetical order by ID.
-2. In the detailed entry: change `**Status:** Todo` to `**Status:** In Progress`.
+**Mutation commands** (edit in place, auto-run `fix` at end):
+```bash
+python3 scripts/tracker.py change-state <ID> todo|progress|done
+python3 scripts/tracker.py add <ID> <title> --group <GROUP> [--phase N] [--refs §N] [--status todo|progress|done]
+python3 scripts/tracker.py edit-title <ID> <title>
+python3 scripts/tracker.py edit-description <ID> [text | --file PATH]  # no args = print current
+python3 scripts/tracker.py block <ID> --by <ID>
+python3 scripts/tracker.py unblock <ID> --by <ID>
+python3 scripts/tracker.py relate <ID1> <ID2>
+python3 scripts/tracker.py unrelate <ID1> <ID2>
+python3 scripts/tracker.py fix                                     # sort, symmetrize, prune
+```
 
-**When completing a tracked feature:**
-1. In the summary: change `[~]` to `[x]` and **move the line** from In Progress to Done, maintaining alphabetical order by ID.
-2. In the detailed entry: change `**Status:** In Progress` to `**Status:** Done`.
+All mutation commands support `--dry-run` to preview changes as a unified diff.
 
-**When adding a new feature or bug:**
-1. Pick a unique `F-kebab-name` or `B-kebab-name` ID (max 20 chars). Check existing IDs to avoid collisions.
-2. Add a summary line in the correct status section, **in alphabetical order by ID**, padded to the 23-char column.
-3. Add a detailed entry in the appropriate topic group, **in alphabetical order by ID**, with status, phase, design doc refs, and any blocking relationships.
-
-**Alphabetical ordering is important** — it reduces merge conflicts when multiple work streams modify the tracker in parallel. Items within each summary section (In Progress, Todo, Done) and within each detailed topic group are sorted by ID.
-
-**Other updates:**
+**Other guidelines:**
 - When a draft design doc is created, link it from the tracker item (`**Draft:** path`).
-- Blocking: use `**Blocked by:**` and `**Blocks:**` in the detailed entry. Remove resolved blockers.
 - If work reveals a new bug or sub-task, add it as a new tracker item rather than leaving it as a TODO comment in code.
