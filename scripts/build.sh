@@ -7,7 +7,7 @@
 # Usage:
 #   scripts/build.sh            # debug build
 #   scripts/build.sh release    # release build
-#   scripts/build.sh test       # run all crate tests + gdext compile check
+#   scripts/build.sh test       # run all crate tests
 #   scripts/build.sh quicktest  # test only crates changed vs main
 #   scripts/build.sh run        # debug build then launch the game
 #   scripts/build.sh check      # run fmt, clippy, gdformat, gdlint checks
@@ -65,9 +65,6 @@ case "$MODE" in
         ;;
     test)
         ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -p tabulosity -p tabulosity_derive"
-        echo "Compile-checking elven_canopy_gdext..."
-        cargo build -p elven_canopy_gdext
-        echo ""
         echo "Running all crate tests..."
         cargo test $ALL_TEST_PACKAGES -- --test-threads=16
         echo ""

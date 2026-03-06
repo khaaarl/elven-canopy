@@ -1,7 +1,8 @@
 # CI workflow: Formatting, linting, tests, and coverage for Rust and GDScript.
 #
-# Four independent jobs:
+# Five independent jobs:
 # - rust-lint: cargo fmt --check + cargo clippy (no Godot needed, fast)
+# - gdext-build: compile-check elven_canopy_gdext (Godot binding crate)
 # - rust-test: unit tests + multiplayer integration tests (high thread count)
 # - coverage: code coverage via cargo-llvm-cov, uploaded to Codecov
 # - gdscript: gdformat --check + gdlint
@@ -61,7 +62,7 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace -- -D warnings
 
-  rust-test:
+  gdext-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +71,13 @@ jobs:
 
       - name: Compile-check gdext
         run: cargo build -p elven_canopy_gdext
+
+  rust-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
       - name: Run all crate tests
         run: cargo test -p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -p tabulosity -p tabulosity_derive -- --test-threads=16
