@@ -914,20 +914,9 @@ def cmd_edit_description(args):
             continue
         break
 
-    # Get new text
-    if args.file:
-        with open(args.file, "r", encoding="utf-8") as f:
-            new_text = f.read()
-    elif args.text:
-        new_text = args.text
-    else:
-        # Print current prose
-        if prose_start < prose_end:
-            for line in detail[prose_start:prose_end]:
-                print(line, end="")
-        else:
-            print("(no prose)")
-        return
+    # Get new text from file
+    with open(args.file, "r", encoding="utf-8") as f:
+        new_text = f.read()
 
     # Build replacement: blank separator line, then prose lines
     new_text = new_text.rstrip("\n")
@@ -1143,8 +1132,7 @@ def build_parser():
     # edit-description
     p_ed = sub.add_parser("edit-description", help="Set/replace prose description")
     p_ed.add_argument("id", metavar="ID", help="Item ID")
-    p_ed.add_argument("text", nargs="?", default=None, help="New description text")
-    p_ed.add_argument("--file", default=None, help="Read description from file")
+    p_ed.add_argument("file", metavar="FILE", help="File to read description from")
     p_ed.add_argument("--dry-run", action="store_true")
 
     # block

@@ -381,7 +381,7 @@ python3 scripts/tracker.py search <pattern> [-i]                   # regex searc
 python3 scripts/tracker.py change-state <ID> todo|progress|done
 python3 scripts/tracker.py add <ID> <title> --group <GROUP> [--phase N] [--refs §N] [--status todo|progress|done]
 python3 scripts/tracker.py edit-title <ID> <title>
-python3 scripts/tracker.py edit-description <ID> [text | --file PATH]  # no args = print current
+python3 scripts/tracker.py edit-description <ID> <FILE>               # read description from file
 python3 scripts/tracker.py block <ID> --by <ID>
 python3 scripts/tracker.py unblock <ID> --by <ID>
 python3 scripts/tracker.py relate <ID1> <ID2>
