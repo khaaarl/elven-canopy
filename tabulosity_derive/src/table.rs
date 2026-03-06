@@ -10,6 +10,10 @@
 //! - Public read methods (get, get_ref, contains, len, is_empty, keys, etc.)
 //! - `pk_ref()` on the row type (used by `Database` cascade codegen)
 //! - `#[doc(hidden)] pub` mutation methods (_no_fk suffix)
+//! - `modify_unchecked` — closure-based in-place mutation bypassing indexes,
+//!   with debug-build assertions that PK and indexed fields are unchanged
+//! - `modify_unchecked_range` / `modify_unchecked_all` — batch variants using
+//!   `BTreeMap::range_mut`, applying `FnMut` per row with the same debug checks
 //! - Per-index query methods using `IntoQuery` (by_*, iter_by_*, count_by_*)
 //! - `rebuild_indexes()` for deserialization
 //! - `Serialize` / `Deserialize` impls (behind `#[cfg(feature = "serde")]`)
@@ -117,6 +121,17 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     let query_methods = gen_all_query_methods(&resolved_indexes, pk_ty, row_name, &fields);
 
     let table_name_str_ref = &table_name_str;
+
+    // --- modify_unchecked (single + range + all) ---
+    let modify_unchecked_method = gen_modify_unchecked(
+        pk_ident,
+        pk_ty,
+        row_name,
+        table_name_str_ref,
+        &resolved_indexes,
+    );
+    let modify_unchecked_range_methods =
+        gen_modify_unchecked_range(pk_ident, pk_ty, row_name, &resolved_indexes);
 
     // --- Unique index checks ---
     let unique_check_insert =
@@ -340,6 +355,10 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                 #(#idx_remove)*
                 ::std::result::Result::Ok(row)
             }
+
+            #modify_unchecked_method
+
+            #modify_unchecked_range_methods
 
             /// Rebuilds all secondary indexes and tracked bounds from row data.
             #[doc(hidden)]
@@ -920,6 +939,219 @@ fn gen_idx_remove(idx: &ResolvedIndex, _pk_ident: &Ident) -> TokenStream {
 
     quote! {
         self.#idx_name.remove(&(#(#field_clones,)* pk.clone()));
+    }
+}
+
+/// Generates the `modify_unchecked` method for the table companion struct.
+///
+/// In debug builds, snapshots the PK and all indexed fields before the closure
+/// and asserts they are unchanged after. In release builds, the method is just
+/// `BTreeMap::get_mut` + closure.
+fn gen_modify_unchecked(
+    pk_ident: &Ident,
+    pk_ty: &Type,
+    row_name: &Ident,
+    table_name_str: &str,
+    indexes: &[ResolvedIndex],
+) -> TokenStream {
+    // Collect all indexed field idents (deduplicated by name).
+    let mut seen = std::collections::BTreeSet::new();
+    let mut indexed_fields: Vec<&Ident> = Vec::new();
+    for idx in indexes {
+        for (fi, _) in &idx.fields {
+            if seen.insert(fi.to_string()) {
+                indexed_fields.push(fi);
+            }
+        }
+    }
+
+    // Debug-build snapshot: clone PK + each indexed field.
+    let snap_pk = format_ident!("__snap_{}", pk_ident);
+    let snap_stmts: Vec<TokenStream> = std::iter::once(quote! {
+        #[cfg(debug_assertions)]
+        let #snap_pk = row.#pk_ident.clone();
+    })
+    .chain(indexed_fields.iter().map(|fi| {
+        let snap_name = format_ident!("__snap_{}", fi);
+        quote! {
+            #[cfg(debug_assertions)]
+            let #snap_name = row.#fi.clone();
+        }
+    }))
+    .collect();
+
+    // Debug-build assertions: verify PK + each indexed field unchanged.
+    let pk_str = pk_ident.to_string();
+    let assert_stmts: Vec<TokenStream> = std::iter::once(quote! {
+        assert!(
+            row.#pk_ident == #snap_pk,
+            "modify_unchecked: primary key field `{}` was changed (from {:?} to {:?}); use update() instead",
+            #pk_str,
+            #snap_pk,
+            row.#pk_ident,
+        );
+    })
+    .chain(indexed_fields.iter().map(|fi| {
+        let snap_name = format_ident!("__snap_{}", fi);
+        let field_str = fi.to_string();
+        quote! {
+            assert!(
+                row.#fi == #snap_name,
+                "modify_unchecked: indexed field `{}` was changed (from {:?} to {:?}); use update() instead",
+                #field_str,
+                #snap_name,
+                row.#fi,
+            );
+        }
+    }))
+    .collect();
+
+    quote! {
+        /// Mutates a row in place via closure, bypassing index maintenance
+        /// and FK validation. In debug builds, asserts that the primary key
+        /// and all indexed fields are unchanged after the closure returns.
+        ///
+        /// Use this for hot-path mutations of non-indexed payload fields
+        /// (e.g., decrementing `food` or `rest`). If you need to change
+        /// indexed fields, use `update_no_fk` instead.
+        #[doc(hidden)]
+        pub fn modify_unchecked(
+            &mut self,
+            pk: &#pk_ty,
+            f: impl ::std::ops::FnOnce(&mut #row_name),
+        ) -> ::std::result::Result<(), ::tabulosity::Error> {
+            let row = match self.rows.get_mut(pk) {
+                ::std::option::Option::Some(r) => r,
+                ::std::option::Option::None => {
+                    return ::std::result::Result::Err(::tabulosity::Error::NotFound {
+                        table: #table_name_str,
+                        key: ::std::format!("{:?}", pk),
+                    });
+                }
+            };
+
+            #(#snap_stmts)*
+
+            f(row);
+
+            #[cfg(debug_assertions)]
+            {
+                #(#assert_stmts)*
+            }
+
+            ::std::result::Result::Ok(())
+        }
+    }
+}
+
+/// Generates `modify_unchecked_range` and `modify_unchecked_all` methods.
+///
+/// `modify_unchecked_range` uses `BTreeMap::range_mut` to iterate a PK range,
+/// applying an `FnMut` closure to each row. `modify_unchecked_all` is sugar
+/// for the full range (`..`). Both return the count of rows modified.
+///
+/// Debug assertions are identical to `modify_unchecked`: per-row snapshots of
+/// PK + indexed fields, with post-closure assertions that they are unchanged.
+fn gen_modify_unchecked_range(
+    pk_ident: &Ident,
+    pk_ty: &Type,
+    row_name: &Ident,
+    indexes: &[ResolvedIndex],
+) -> TokenStream {
+    // Collect all indexed field idents (deduplicated by name).
+    let mut seen = std::collections::BTreeSet::new();
+    let mut indexed_fields: Vec<&Ident> = Vec::new();
+    for idx in indexes {
+        for (fi, _) in &idx.fields {
+            if seen.insert(fi.to_string()) {
+                indexed_fields.push(fi);
+            }
+        }
+    }
+
+    // Debug-build per-row snapshot + assertion stmts (inside the loop body).
+    let snap_stmts: Vec<TokenStream> = indexed_fields
+        .iter()
+        .map(|fi| {
+            let snap_name = format_ident!("__snap_{}", fi);
+            quote! {
+                let #snap_name = row.#fi.clone();
+            }
+        })
+        .collect();
+
+    let pk_str = pk_ident.to_string();
+    let assert_stmts: Vec<TokenStream> = indexed_fields
+        .iter()
+        .map(|fi| {
+            let snap_name = format_ident!("__snap_{}", fi);
+            let field_str = fi.to_string();
+            quote! {
+                assert!(
+                    row.#fi == #snap_name,
+                    "modify_unchecked_range: indexed field `{}` was changed (from {:?} to {:?}); use update() instead",
+                    #field_str,
+                    #snap_name,
+                    row.#fi,
+                );
+            }
+        })
+        .collect();
+
+    quote! {
+        /// Mutates all rows in a PK range via closure, bypassing index
+        /// maintenance and FK validation. Returns the number of rows modified.
+        ///
+        /// The closure is `FnMut(&PK, &mut Row)`, called once per row in PK
+        /// order. An empty range returns 0.
+        ///
+        /// In debug builds, asserts per-row that PK and indexed fields are
+        /// unchanged after each closure invocation.
+        #[doc(hidden)]
+        pub fn modify_unchecked_range<__R: ::std::ops::RangeBounds<#pk_ty>>(
+            &mut self,
+            range: __R,
+            mut f: impl ::std::ops::FnMut(&#pk_ty, &mut #row_name),
+        ) -> usize {
+            let mut __count = 0usize;
+            for (__pk, row) in self.rows.range_mut(range) {
+                #[cfg(debug_assertions)]
+                let __snap_pk = row.#pk_ident.clone();
+                #(
+                    #[cfg(debug_assertions)]
+                    #snap_stmts
+                )*
+
+                f(__pk, row);
+
+                #[cfg(debug_assertions)]
+                {
+                    assert!(
+                        row.#pk_ident == __snap_pk,
+                        "modify_unchecked_range: primary key field `{}` was changed (from {:?} to {:?}); use update() instead",
+                        #pk_str,
+                        __snap_pk,
+                        row.#pk_ident,
+                    );
+                    #(#assert_stmts)*
+                }
+
+                __count += 1;
+            }
+            __count
+        }
+
+        /// Mutates all rows in the table via closure, bypassing index
+        /// maintenance and FK validation. Returns the number of rows modified.
+        ///
+        /// Equivalent to `modify_unchecked_range(.., f)`.
+        #[doc(hidden)]
+        pub fn modify_unchecked_all(
+            &mut self,
+            mut f: impl ::std::ops::FnMut(&#pk_ty, &mut #row_name),
+        ) -> usize {
+            self.modify_unchecked_range(.., f)
+        }
     }
 }
 

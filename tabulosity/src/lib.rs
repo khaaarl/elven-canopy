@@ -2,7 +2,8 @@
 //!
 //! Provides typed tables with primary keys, automatic secondary indexes
 //! (simple, compound, filtered, and unique), auto-increment primary keys,
-//! and cross-table foreign key integrity.
+//! cross-table foreign key integrity, and `modify_unchecked` closure-based
+//! in-place mutation (bypasses index maintenance, with debug-build safety).
 //! All internal data structures use `BTreeMap`/`BTreeSet` for deterministic
 //! iteration order.
 //!

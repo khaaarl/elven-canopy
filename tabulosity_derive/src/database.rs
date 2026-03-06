@@ -6,6 +6,9 @@
 //! - `new()` — creates all tables empty.
 //! - `insert_{singular}`, `update_{singular}`, `upsert_{singular}`,
 //!   `remove_{singular}` — safe write methods with FK validation.
+//! - `modify_unchecked_{singular}`, `modify_unchecked_range_{singular}`,
+//!   `modify_unchecked_all_{singular}` — closure-based in-place mutation that
+//!   delegates to the table's `modify_unchecked*` methods (no FK re-check).
 //! - `Serialize` and `Deserialize` impls (behind `#[cfg(feature = "serde")]`).
 //!   The `Deserialize` impl validates FK constraints and collects ALL errors
 //!   (duplicate PKs + FK violations) into a `DeserializeError`, rather than
@@ -285,6 +288,11 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             let remove_fn = format_ident!("remove_{}", singular);
             let table_name_str = format!("{}s", singular);
 
+            let modify_unchecked_fn = format_ident!("modify_unchecked_{}", singular);
+            let modify_unchecked_range_fn =
+                format_ident!("modify_unchecked_range_{}", singular);
+            let modify_unchecked_all_fn = format_ident!("modify_unchecked_all_{}", singular);
+
             let table_ty = &raw_fields
                 .iter()
                 .find(|f| f.ident.as_ref() == Some(&tf.field_ident))
@@ -467,6 +475,29 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                 pub fn #upsert_fn(&mut self, row: #row_ty) -> ::std::result::Result<(), ::tabulosity::Error> {
                     #(#fk_checks_upsert)*
                     self.#table_ident.upsert_no_fk(row)
+                }
+
+                pub fn #modify_unchecked_fn(
+                    &mut self,
+                    pk: &<#table_ty as ::tabulosity::TableMeta>::Key,
+                    f: impl ::std::ops::FnOnce(&mut #row_ty),
+                ) -> ::std::result::Result<(), ::tabulosity::Error> {
+                    self.#table_ident.modify_unchecked(pk, f)
+                }
+
+                pub fn #modify_unchecked_range_fn<__R: ::std::ops::RangeBounds<<#table_ty as ::tabulosity::TableMeta>::Key>>(
+                    &mut self,
+                    range: __R,
+                    f: impl ::std::ops::FnMut(&<#table_ty as ::tabulosity::TableMeta>::Key, &mut #row_ty),
+                ) -> usize {
+                    self.#table_ident.modify_unchecked_range(range, f)
+                }
+
+                pub fn #modify_unchecked_all_fn(
+                    &mut self,
+                    f: impl ::std::ops::FnMut(&<#table_ty as ::tabulosity::TableMeta>::Key, &mut #row_ty),
+                ) -> usize {
+                    self.#table_ident.modify_unchecked_all(f)
                 }
 
                 pub fn #remove_fn(&mut self, id: &<#table_ty as ::tabulosity::TableMeta>::Key) -> ::std::result::Result<(), ::tabulosity::Error> {

@@ -128,7 +128,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-joins            Join iterators across tables
-[ ] F-tab-modify-unchk     Closure-based row mutation (modify_unchecked + update_with)
 [ ] F-tab-query-opts       Query options struct for index queries
 [ ] F-tab-schema-evol      Schema evolution and migrations
 [ ] F-task-priority        Priority queue and auto-assignment
@@ -214,6 +213,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-cascade-del      Cascade/nullify on delete
 [x] F-tab-compound-idx     Compound indexes with prefix queries
 [x] F-tab-filter-idx       Filtered/partial indexes
+[x] F-tab-modify-unchk  Closure-based row mutation (modify_unchecked)
 [x] F-tab-unique-idx    Unique index enforcement
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
 [x] F-thoughts             Creature thoughts (DF-style event reactions)
@@ -1803,15 +1803,17 @@ and derive macro codegen.
 
 **Related:** F-sim-db-impl
 
-#### F-tab-modify-unchk — Closure-based row mutation (modify_unchecked + update_with)
-**Status:** Todo
+#### F-tab-modify-unchk — Closure-based row mutation (modify_unchecked)
+**Status:** Done
 **Draft:** `docs/drafts/modify_unchecked_v1.md`
 
-Closure-based in-place mutation. Two variants: `modify_unchecked` bypasses
-index maintenance (in debug builds: snapshots PK + indexed fields and asserts
-unchanged after the closure; in release: zero overhead beyond
-`BTreeMap::get_mut` + closure). `update_with` runs the closure then
-rebuilds affected indexes. Low complexity.
+Closure-based in-place mutation for tabulosity tables. Three methods:
+`modify_unchecked` (single row by PK), `modify_unchecked_range` (PK range
+via `BTreeMap::range_mut`), and `modify_unchecked_all` (sugar for full
+range). All bypass index maintenance and FK validation. In debug builds,
+each snapshots PK + indexed fields before the closure and asserts they are
+unchanged after; in release builds, zero overhead beyond the map lookup +
+closure call. Database-level wrappers delegate to the table methods.
 
 **Related:** F-sim-db-impl, F-tab-query-opts
 
