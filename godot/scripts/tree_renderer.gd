@@ -27,7 +27,9 @@ var _bridge: SimBridge
 var _fruit_mesh_instance: MultiMeshInstance3D
 ## Cached leaf texture — generated once, reused across refreshes.
 var _leaf_texture: ImageTexture
-## Opaque material: vertex color used as albedo for Trunk/Branch/Root/Dirt/etc.
+## Cached opaque atlas texture (bark on top, grass on bottom).
+var _opaque_texture: ImageTexture
+## Opaque material: vertex color tinted with bark/grass atlas texture.
 var _opaque_material: StandardMaterial3D
 ## Leaf material: vertex color tinted alpha-scissor with procedural texture.
 var _leaf_material: StandardMaterial3D
@@ -39,6 +41,7 @@ var _chunk_instances: Dictionary = {}
 func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
 	_leaf_texture = _generate_leaf_texture()
+	_opaque_texture = _generate_opaque_atlas()
 	_build_materials()
 	_bridge.build_world_mesh()
 	_build_all_chunks()
@@ -61,9 +64,11 @@ func refresh() -> void:
 
 
 func _build_materials() -> void:
-	# Opaque material: vertex colors used as albedo.
+	# Opaque material: vertex color × bark/grass atlas texture.
 	_opaque_material = StandardMaterial3D.new()
 	_opaque_material.vertex_color_use_as_albedo = true
+	_opaque_material.albedo_texture = _opaque_texture
+	_opaque_material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 
 	# Leaf material: vertex color + alpha scissor texture, cull disabled.
 	_leaf_material = StandardMaterial3D.new()
@@ -161,6 +166,53 @@ func _create_fruit_multimesh(voxels: PackedInt32Array, count: int) -> MultiMeshI
 	instance.multimesh = multi_mesh
 	instance.name = "FruitMultiMesh"
 	return instance
+
+
+## Generate the opaque voxel texture atlas: 16x32 image with bark (top 16x16)
+## and grass/dirt (bottom 16x16). Vertex colors provide the base hue; these
+## textures add surface detail via multiplication. Centered around bright values
+## so they brighten highlights and darken crevices without washing out.
+func _generate_opaque_atlas() -> ImageTexture:
+	var W := 16
+	var H := 32  # Two 16x16 tiles stacked vertically
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+
+	# --- Top half: bark texture (rows 0..15) ---
+	# Vertical grain lines with knot-like darker patches.
+	for y in range(W):
+		for x in range(W):
+			# Vertical grain: base brightness varies by column
+			var grain := 0.75 + 0.15 * sin(float(x) * 2.3 + float(y) * 0.3)
+			# Horizontal wobble for organic feel
+			var wobble := 0.05 * sin(float(y) * 1.7 + float(x) * 0.8)
+			# Occasional dark knots
+			var knot_h := (x * 7 + y * 13) % 23
+			var knot := 0.0
+			if knot_h < 3:
+				knot = -0.15
+			var val := clampf(grain + wobble + knot, 0.5, 1.0)
+			# Slight warm tint (bark is yellowish-brown in detail)
+			img.set_pixel(x, y, Color(val * 1.05, val * 0.95, val * 0.85, 1.0))
+
+	# --- Bottom half: grass/dirt texture (rows 16..31) ---
+	# Clumpy grass pattern with earthy patches.
+	for y in range(W):
+		for x in range(W):
+			var py := y + W  # actual pixel row in the atlas
+			# Base brightness with variation
+			var base := 0.8 + 0.1 * sin(float(x) * 3.1 + float(y) * 2.7)
+			# Clumpy patches using a simple hash
+			var clump_h := (x * 11 + y * 7 + x * y * 3) % 19
+			var clump := 0.0
+			if clump_h < 5:
+				clump = 0.1  # lighter grass tufts
+			elif clump_h > 15:
+				clump = -0.12  # darker dirt patches
+			var val := clampf(base + clump, 0.55, 1.0)
+			# Slight green tint for grass detail
+			img.set_pixel(x, py, Color(val * 0.9, val * 1.05, val * 0.85, 1.0))
+
+	return ImageTexture.create_from_image(img)
 
 
 ## Generate a Minecraft-style leaf texture: 16x16 with opaque green patches

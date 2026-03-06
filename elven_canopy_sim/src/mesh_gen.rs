@@ -21,7 +21,10 @@
 //
 // Each visible face produces 4 vertices and 6 indices (2 triangles). Vertices
 // include position, normal, vertex color (for material tinting), and UV
-// coordinates (used by the leaf alpha-scissor texture).
+// coordinates. Opaque voxels use atlas-mapped UVs: the V axis selects a row
+// in a texture atlas (row 0 = bark for trunk/branch/root/construction,
+// row 1 = dirt/grass). Leaf UVs span the full [0,1] range for the
+// alpha-scissor texture.
 //
 // See also: `world.rs` for the voxel grid, `types.rs` for `VoxelType::is_opaque()`,
 // `mesh_cache.rs` (in the gdext crate) for the caching layer that sits on top
@@ -72,7 +75,8 @@ pub struct SurfaceMesh {
     pub indices: Vec<u32>,
     /// Vertex colors (4 floats per vertex: r, g, b, a).
     pub colors: Vec<f32>,
-    /// UV coordinates (2 floats per vertex: u, v). Only meaningful for leaves.
+    /// UV coordinates (2 floats per vertex: u, v). Opaque voxels use atlas-mapped
+    /// UVs (V selects bark vs dirt/grass row); leaves use full [0,1] range.
     pub uvs: Vec<f32>,
 }
 
@@ -196,7 +200,22 @@ const FACE_VERTICES: [[[f32; 3]; 4]; 6] = [
 ];
 
 /// UV coordinates for each face vertex (same for all faces).
+/// V-axis is remapped per voxel type to select the correct atlas region.
 const FACE_UVS: [[f32; 2]; 4] = [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
+
+/// Number of atlas rows in the opaque texture atlas. Each voxel type maps to
+/// a row, and the V-axis is scaled to [row/ROWS, (row+1)/ROWS].
+const ATLAS_ROWS: f32 = 2.0;
+
+/// Return the atlas row index for an opaque voxel type. Row 0 = bark (top),
+/// row 1 = dirt/grass (bottom). Leaf voxels use their own material and don't
+/// go through this path.
+fn atlas_row(vt: VoxelType) -> f32 {
+    match vt {
+        VoxelType::Dirt => 1.0,
+        _ => 0.0, // Trunk, Branch, Root, construction types → bark
+    }
+}
 
 /// Generate the mesh data for a single chunk of the world.
 ///
@@ -231,6 +250,12 @@ pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
                     &mut mesh.opaque
                 };
 
+                // Atlas UV mapping: remap the V coordinate to the voxel
+                // type's row within the texture atlas.
+                let row = if is_leaf { 0.0 } else { atlas_row(vt) };
+                let v_base = row / ATLAS_ROWS;
+                let v_scale = 1.0 / ATLAS_ROWS;
+
                 for (face_idx, &(dx, dy, dz)) in FACES.iter().enumerate() {
                     let neighbor = world.get(VoxelCoord::new(wx + dx, wy + dy, wz + dz));
 
@@ -258,7 +283,7 @@ pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
                         surface.colors.push(color[3]);
 
                         surface.uvs.push(FACE_UVS[vi][0]);
-                        surface.uvs.push(FACE_UVS[vi][1]);
+                        surface.uvs.push(v_base + FACE_UVS[vi][1] * v_scale);
                     }
 
                     // 2 triangles: 0-1-2, 0-2-3
