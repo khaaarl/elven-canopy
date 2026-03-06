@@ -3,7 +3,7 @@
 #![cfg(feature = "serde")]
 
 use serde::{Deserialize, Serialize};
-use tabulosity::{Bounded, Database, MatchAll, Table};
+use tabulosity::{Bounded, Database, Error, MatchAll, Table};
 
 // --- Row types ---
 
@@ -776,4 +776,109 @@ fn serde_roundtrip_bounds_recomputed_from_current_data() {
         2
     );
     assert_eq!(table2.count_by_assignee_priority(MatchAll, MatchAll), 2);
+}
+
+// --- Cascade/nullify schema serde ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct ProjectId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Project {
+    #[primary_key]
+    pub id: ProjectId,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct JobId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Job {
+    #[primary_key]
+    pub id: JobId,
+    #[indexed]
+    pub project: ProjectId,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct WatcherId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Watcher {
+    #[primary_key]
+    pub id: WatcherId,
+    #[indexed]
+    pub project: Option<ProjectId>,
+    pub name: String,
+}
+
+#[derive(Database)]
+struct CascadeDb {
+    #[table(singular = "project")]
+    pub projects: ProjectTable,
+
+    #[table(singular = "job", fks(project = "projects" on_delete cascade))]
+    pub jobs: JobTable,
+
+    #[table(singular = "watcher", fks(project? = "projects" on_delete nullify))]
+    pub watchers: WatcherTable,
+}
+
+#[test]
+fn cascade_nullify_db_serde_roundtrip() {
+    let mut db = CascadeDb::new();
+    db.insert_project(Project {
+        id: ProjectId(1),
+        name: "Alpha".into(),
+    })
+    .unwrap();
+    db.insert_job(Job {
+        id: JobId(1),
+        project: ProjectId(1),
+        label: "build".into(),
+    })
+    .unwrap();
+    db.insert_watcher(Watcher {
+        id: WatcherId(1),
+        project: Some(ProjectId(1)),
+        name: "Alice".into(),
+    })
+    .unwrap();
+
+    let json = serde_json::to_string(&db).unwrap();
+    let mut db2: CascadeDb = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(db2.projects.len(), 1);
+    assert_eq!(db2.jobs.len(), 1);
+    assert_eq!(db2.watchers.len(), 1);
+
+    // Indexes rebuilt — cascade/nullify still work after deserialization.
+    db2.remove_project(&ProjectId(1)).unwrap();
+    assert!(db2.projects.is_empty());
+    assert!(db2.jobs.is_empty());
+    assert_eq!(db2.watchers.len(), 1);
+    assert_eq!(db2.watchers.get(&WatcherId(1)).unwrap().project, None);
+}
+
+#[test]
+fn cascade_db_serde_fk_validation() {
+    // Job references a project that doesn't exist.
+    let json = r#"{
+        "projects": [],
+        "jobs": [{"id": 1, "project": 99, "label": "orphan"}],
+        "watchers": []
+    }"#;
+
+    let result: Result<CascadeDb, _> = serde_json::from_str(json);
+    let err_msg = match result {
+        Ok(_) => panic!("should reject broken FK"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err_msg.contains("FK target not found"),
+        "error should mention FK violation: {}",
+        err_msg,
+    );
 }

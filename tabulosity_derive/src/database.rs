@@ -12,8 +12,12 @@
 //!   failing fast on the first problem.
 //!
 //! FK validation on insert/update uses the `FkCheck` trait for uniform handling
-//! of both `T` and `Option<T>` FK fields. Restrict-on-delete checks all inbound
-//! FK references and collects ALL violations (no short-circuit).
+//! of both `T` and `Option<T>` FK fields.
+//!
+//! On delete, each inbound FK has an `on_delete` action:
+//! - **restrict** (default): block deletion if any references exist.
+//! - **cascade**: auto-delete dependent rows via the database-level `remove_*`.
+//! - **nullify**: set the FK field to `None` (compile error if not `Option<T>`).
 //!
 //! The `?` suffix on FK field names (e.g., `fks(assignee? = "creatures")`)
 //! signals that the field is `Option<T>`, so the restrict check wraps the
@@ -24,11 +28,23 @@ use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{Data, DeriveInput, Fields, Ident, LitStr, Token};
 
-/// A parsed FK declaration from `fks(field = "target_table")`.
+/// What happens to dependent rows when the referenced row is deleted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnDeleteAction {
+    /// Block deletion if references exist (default).
+    Restrict,
+    /// Auto-delete dependent rows.
+    Cascade,
+    /// Set FK field to `None` (only valid for `Option<T>` fields).
+    Nullify,
+}
+
+/// A parsed FK declaration from `fks(field = "target_table" on_delete ...)`.
 struct FkDecl {
     field_name: Ident,
     is_optional: bool,
     target_table: String,
+    on_delete: OnDeleteAction,
 }
 
 /// A parsed `#[table(singular = "...", fks(...))]` attribute.
@@ -59,10 +75,40 @@ impl Parse for FkList {
             }
             let _: Token![=] = input.parse()?;
             let target: LitStr = input.parse()?;
+
+            // Parse optional `on_delete cascade|nullify|restrict`.
+            let on_delete = if input.peek(Ident)
+                && !input.peek2(Token![?])
+                && !input.peek2(Token![=])
+            {
+                let kw: Ident = input.parse()?;
+                if kw != "on_delete" {
+                    return Err(syn::Error::new(
+                        kw.span(),
+                        format!("expected `on_delete` or `,`, got `{kw}`"),
+                    ));
+                }
+                let action: Ident = input.parse()?;
+                match action.to_string().as_str() {
+                    "restrict" => OnDeleteAction::Restrict,
+                    "cascade" => OnDeleteAction::Cascade,
+                    "nullify" => OnDeleteAction::Nullify,
+                    other => {
+                        return Err(syn::Error::new(
+                            action.span(),
+                            format!("expected `restrict`, `cascade`, or `nullify`, got `{other}`"),
+                        ));
+                    }
+                }
+            } else {
+                OnDeleteAction::Restrict
+            };
+
             fks.push(FkDecl {
                 field_name,
                 is_optional,
                 target_table: target.value(),
+                on_delete,
             });
             if input.peek(Token![,]) {
                 let _: Token![,] = input.parse()?;
@@ -146,16 +192,64 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
         });
     }
 
+    // Validate: nullify requires optional FK.
+    for tf in &table_fields {
+        for fk in &tf.attr.fks {
+            if fk.on_delete == OnDeleteAction::Nullify && !fk.is_optional {
+                return syn::Error::new_spanned(
+                    &fk.field_name,
+                    format!(
+                        "on_delete nullify requires an optional FK field (`{}?`), \
+                         but `{}` is a bare FK",
+                        fk.field_name, fk.field_name
+                    ),
+                )
+                .to_compile_error();
+            }
+        }
+    }
+
+    // Validate: no cascade cycles. Build directed graph of cascade edges
+    // (target_table → source_table) and DFS for back edges.
+    {
+        let mut cascade_graph: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for tf in &table_fields {
+            for fk in &tf.attr.fks {
+                if fk.on_delete == OnDeleteAction::Cascade {
+                    cascade_graph
+                        .entry(fk.target_table.clone())
+                        .or_default()
+                        .push(tf.field_ident.to_string());
+                }
+            }
+        }
+        if let Some(cycle) = detect_cycle(&cascade_graph) {
+            return syn::Error::new_spanned(
+                db_name,
+                format!("cascade cycle detected: {}", cycle.join(" → ")),
+            )
+            .to_compile_error();
+        }
+    }
+
     // Build inverse FK map: for each target table, collect all inbound FK refs.
-    let mut inbound_fks: std::collections::BTreeMap<String, Vec<(&Ident, &Ident, bool)>> =
-        std::collections::BTreeMap::new();
+    let mut inbound_fks: std::collections::BTreeMap<
+        String,
+        Vec<(&Ident, &Ident, bool, OnDeleteAction)>,
+    > = std::collections::BTreeMap::new();
 
     for tf in &table_fields {
         for fk in &tf.attr.fks {
             inbound_fks
                 .entry(fk.target_table.clone())
                 .or_default()
-                .push((&tf.field_ident, &fk.field_name, fk.is_optional));
+                .push((
+                    &tf.field_ident,
+                    &fk.field_name,
+                    fk.is_optional,
+                    fk.on_delete,
+                ));
         }
     }
 
@@ -223,13 +317,16 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             let fk_checks_update = gen_fk_checks();
             let fk_checks_upsert = gen_fk_checks();
 
-            // Restrict-on-delete: check all inbound FK references.
+            // Partition inbound FK refs by on_delete action.
             let target_table_name = tf.field_ident.to_string();
-            let restrict_checks: Vec<TokenStream> = inbound_fks
-                .get(&target_table_name)
+            let inbound = inbound_fks.get(&target_table_name);
+
+            // 1. Restrict checks.
+            let restrict_checks: Vec<TokenStream> = inbound
                 .map(|refs| {
                     refs.iter()
-                        .map(|(src_table_ident, fk_field, is_optional)| {
+                        .filter(|(_, _, _, action)| *action == OnDeleteAction::Restrict)
+                        .map(|(src_table_ident, fk_field, is_optional, _)| {
                             let count_fn = format_ident!("count_by_{}", fk_field);
                             let src_table_str = src_table_ident.to_string();
                             let fk_field_str = fk_field.to_string();
@@ -246,6 +343,77 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                                     let count = self.#src_table_ident.#count_fn(id);
                                     if count > 0 {
                                         violations.push((#src_table_str, #fk_field_str, count));
+                                    }
+                                }
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            // 2. Cascade deletes.
+            let cascade_stmts: Vec<TokenStream> = inbound
+                .map(|refs| {
+                    refs.iter()
+                        .filter(|(_, _, _, action)| *action == OnDeleteAction::Cascade)
+                        .map(|(src_table_ident, fk_field, is_optional, _)| {
+                            let iter_fn = format_ident!("iter_by_{}", fk_field);
+                            let src_tf = table_fields
+                                .iter()
+                                .find(|t| t.field_ident == **src_table_ident)
+                                .unwrap();
+                            let src_remove_fn = format_ident!("remove_{}", src_tf.attr.singular);
+                            let src_table_ty = &raw_fields
+                                .iter()
+                                .find(|f| f.ident.as_ref() == Some(src_table_ident))
+                                .unwrap()
+                                .ty;
+
+                            let query_val = if *is_optional {
+                                quote! { &::std::option::Option::Some(id.clone()) }
+                            } else {
+                                quote! { id }
+                            };
+
+                            quote! {
+                                {
+                                    let __cascade_pks: ::std::vec::Vec<<#src_table_ty as ::tabulosity::TableMeta>::Key> =
+                                        self.#src_table_ident.#iter_fn(#query_val)
+                                            .map(|__r| __r.pk_ref().clone())
+                                            .collect();
+                                    for __cpk in __cascade_pks {
+                                        self.#src_remove_fn(&__cpk)?;
+                                    }
+                                }
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            // 3. Nullify updates.
+            let nullify_stmts: Vec<TokenStream> = inbound
+                .map(|refs| {
+                    refs.iter()
+                        .filter(|(_, _, _, action)| *action == OnDeleteAction::Nullify)
+                        .map(|(src_table_ident, fk_field, _is_optional, _)| {
+                            let iter_fn = format_ident!("iter_by_{}", fk_field);
+                            let src_table_ty = &raw_fields
+                                .iter()
+                                .find(|f| f.ident.as_ref() == Some(src_table_ident))
+                                .unwrap()
+                                .ty;
+
+                            quote! {
+                                {
+                                    let __nullify_pks: ::std::vec::Vec<<#src_table_ty as ::tabulosity::TableMeta>::Key> =
+                                        self.#src_table_ident.#iter_fn(&::std::option::Option::Some(id.clone()))
+                                            .map(|__r| __r.pk_ref().clone())
+                                            .collect();
+                                    for __npk in __nullify_pks {
+                                        let mut __row = self.#src_table_ident.get(&__npk).unwrap();
+                                        __row.#fk_field = ::std::option::Option::None;
+                                        self.#src_table_ident.update_no_fk(__row).unwrap();
                                     }
                                 }
                             }
@@ -271,7 +439,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                     ::std::result::Result::Ok(())
                 }
 
-                pub fn #remove_fn(&mut self, id: &<#table_ty as ::tabulosity::TableMeta>::Key) -> ::std::result::Result<#row_ty, ::tabulosity::Error> {
+                pub fn #remove_fn(&mut self, id: &<#table_ty as ::tabulosity::TableMeta>::Key) -> ::std::result::Result<(), ::tabulosity::Error> {
                     if !self.#table_ident.contains(id) {
                         return ::std::result::Result::Err(::tabulosity::Error::NotFound {
                             table: #table_name_str,
@@ -279,6 +447,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                         });
                     }
 
+                    // Phase 1: Restrict checks.
                     let mut violations: ::std::vec::Vec<(&'static str, &'static str, usize)> = ::std::vec::Vec::new();
                     #(#restrict_checks)*
 
@@ -290,7 +459,15 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                         });
                     }
 
-                    self.#table_ident.remove_no_fk(id)
+                    // Phase 2: Cascade deletes.
+                    #(#cascade_stmts)*
+
+                    // Phase 3: Nullify updates.
+                    #(#nullify_stmts)*
+
+                    // Phase 4: Remove the row.
+                    self.#table_ident.remove_no_fk(id)?;
+                    ::std::result::Result::Ok(())
                 }
             }
         })
@@ -594,4 +771,53 @@ fn generate_serde_impls(
             }
         }
     }
+}
+
+/// DFS cycle detection on a directed graph. Returns `Some(cycle_path)` if a
+/// cycle is found, `None` otherwise.
+fn detect_cycle(graph: &std::collections::BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
+    let mut visited = std::collections::BTreeSet::new();
+    let mut on_stack = std::collections::BTreeSet::new();
+    let mut path = Vec::new();
+
+    for node in graph.keys() {
+        if !visited.contains(node.as_str())
+            && let Some(cycle) = dfs_cycle(node, graph, &mut visited, &mut on_stack, &mut path)
+        {
+            return Some(cycle);
+        }
+    }
+    None
+}
+
+fn dfs_cycle<'a>(
+    node: &'a str,
+    graph: &'a std::collections::BTreeMap<String, Vec<String>>,
+    visited: &mut std::collections::BTreeSet<&'a str>,
+    on_stack: &mut std::collections::BTreeSet<&'a str>,
+    path: &mut Vec<&'a str>,
+) -> Option<Vec<String>> {
+    visited.insert(node);
+    on_stack.insert(node);
+    path.push(node);
+
+    if let Some(neighbors) = graph.get(node) {
+        for next in neighbors {
+            if !visited.contains(next.as_str()) {
+                if let Some(cycle) = dfs_cycle(next, graph, visited, on_stack, path) {
+                    return Some(cycle);
+                }
+            } else if on_stack.contains(next.as_str()) {
+                // Found a cycle — extract the cycle portion from the path.
+                let start = path.iter().position(|&n| n == next.as_str()).unwrap();
+                let mut cycle: Vec<String> = path[start..].iter().map(|s| s.to_string()).collect();
+                cycle.push(next.clone());
+                return Some(cycle);
+            }
+        }
+    }
+
+    path.pop();
+    on_stack.remove(node);
+    None
 }

@@ -7,6 +7,7 @@
 //! - Filtered indexes via optional `filter` on `#[index(...)]`
 //! - Tracked bounds per unique type across all indexes: `_bounds_{type}`
 //! - Public read methods (get, get_ref, contains, len, is_empty, keys, etc.)
+//! - `pk_ref()` on the row type (used by `Database` cascade codegen)
 //! - `#[doc(hidden)] pub` mutation methods (_no_fk suffix)
 //! - Per-index query methods using `IntoQuery` (by_*, iter_by_*, count_by_*)
 //! - `rebuild_indexes()` for deserialization
@@ -256,6 +257,14 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                 for (_pk, row) in &self.rows {
                     #(#rebuild_bounds_widen)*
                 }
+            }
+        }
+
+        impl #row_name {
+            /// Returns a reference to the primary key field.
+            #[doc(hidden)]
+            pub fn pk_ref(&self) -> &#pk_ty {
+                &self.#pk_ident
             }
         }
 

@@ -127,7 +127,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-tab-auto-pk          Auto-generated primary keys
-[ ] F-tab-cascade-del      Cascade/nullify on delete
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-schema-evol      Schema evolution and migrations
@@ -212,6 +211,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-struct-basic         Basic structural integrity (flood fill)
 [x] F-struct-names         User-editable structure names
 [x] F-structure-reg        Completed structure registry + UI panel
+[x] F-tab-cascade-del      Cascade/nullify on delete
 [x] F-tab-compound-idx     Compound indexes with prefix queries
 [x] F-tab-filter-idx       Filtered/partial indexes
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
@@ -1737,7 +1737,7 @@ Medium complexity.
 **Related:** F-sim-db-impl
 
 #### F-tab-cascade-del — Cascade/nullify on delete
-**Status:** Todo
+**Status:** Done
 
 `on_delete cascade` or `on_delete nullify` in the `fks()` syntax, extending
 the current restrict-on-delete behavior. Cascade removes dependent rows;

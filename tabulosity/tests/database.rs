@@ -156,8 +156,7 @@ fn upsert_creature() {
 fn remove_creature_no_refs() {
     let mut db = TestDb::new();
     db.insert_creature(make_creature(1, "A")).unwrap();
-    let removed = db.remove_creature(&CreatureId(1)).unwrap();
-    assert_eq!(removed.name, "A");
+    db.remove_creature(&CreatureId(1)).unwrap();
     assert!(db.creatures.is_empty());
 }
 
@@ -368,8 +367,8 @@ fn remove_creature_not_blocked_by_none() {
     })
     .unwrap();
 
-    let removed = db.remove_creature(&CreatureId(1)).unwrap();
-    assert_eq!(removed.name, "A");
+    db.remove_creature(&CreatureId(1)).unwrap();
+    assert!(db.creatures.is_empty());
 }
 
 #[test]
@@ -674,16 +673,11 @@ fn remove_task_and_friendship_succeed() {
     .unwrap();
 
     // Remove task — no inbound FK references, should succeed.
-    let removed_task = db.remove_task(&TaskId(1)).unwrap();
-    assert_eq!(removed_task.id, TaskId(1));
-    assert_eq!(removed_task.priority, 5);
+    db.remove_task(&TaskId(1)).unwrap();
     assert!(db.tasks.is_empty());
 
     // Remove friendship — no inbound FK references, should succeed.
-    let removed_friendship = db.remove_friendship(&FriendshipId(1)).unwrap();
-    assert_eq!(removed_friendship.id, FriendshipId(1));
-    assert_eq!(removed_friendship.source, CreatureId(1));
-    assert_eq!(removed_friendship.target, CreatureId(2));
+    db.remove_friendship(&FriendshipId(1)).unwrap();
     assert!(db.friendships.is_empty());
 }
 
@@ -737,4 +731,378 @@ fn remove_not_found_when_table_non_empty() {
     // The existing creature should be untouched.
     assert_eq!(db.creatures.len(), 1);
     assert_eq!(db.creatures.get(&CreatureId(1)).unwrap().name, "A");
+}
+
+// =============================================================================
+// Cascade and nullify on_delete tests
+// =============================================================================
+
+// --- Schema with cascade/nullify FKs ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+struct ProjectId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+struct Project {
+    #[primary_key]
+    pub id: ProjectId,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+struct JobId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+struct Job {
+    #[primary_key]
+    pub id: JobId,
+    #[indexed]
+    pub project: ProjectId,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+struct SubtaskId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+struct Subtask {
+    #[primary_key]
+    pub id: SubtaskId,
+    #[indexed]
+    pub job: JobId,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+struct WatcherId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+struct Watcher {
+    #[primary_key]
+    pub id: WatcherId,
+    #[indexed]
+    pub project: Option<ProjectId>,
+    pub name: String,
+}
+
+#[derive(Database)]
+struct CascadeDb {
+    #[table(singular = "project")]
+    pub projects: ProjectTable,
+
+    #[table(singular = "job", fks(project = "projects" on_delete cascade))]
+    pub jobs: JobTable,
+
+    #[table(singular = "subtask", fks(job = "jobs" on_delete cascade))]
+    pub subtasks: SubtaskTable,
+
+    #[table(singular = "watcher", fks(project? = "projects" on_delete nullify))]
+    pub watchers: WatcherTable,
+}
+
+fn make_project(id: u32, name: &str) -> Project {
+    Project {
+        id: ProjectId(id),
+        name: name.into(),
+    }
+}
+
+fn make_job(id: u32, project: u32, label: &str) -> Job {
+    Job {
+        id: JobId(id),
+        project: ProjectId(project),
+        label: label.into(),
+    }
+}
+
+fn make_subtask(id: u32, job: u32, detail: &str) -> Subtask {
+    Subtask {
+        id: SubtaskId(id),
+        job: JobId(job),
+        detail: detail.into(),
+    }
+}
+
+fn make_watcher(id: u32, project: Option<u32>, name: &str) -> Watcher {
+    Watcher {
+        id: WatcherId(id),
+        project: project.map(ProjectId),
+        name: name.into(),
+    }
+}
+
+#[test]
+fn cascade_removes_dependent_rows() {
+    let mut db = CascadeDb::new();
+    db.insert_project(make_project(1, "Alpha")).unwrap();
+    db.insert_job(make_job(1, 1, "build")).unwrap();
+    db.insert_job(make_job(2, 1, "test")).unwrap();
+
+    db.remove_project(&ProjectId(1)).unwrap();
+    assert!(db.projects.is_empty());
+    assert!(db.jobs.is_empty());
+}
+
+#[test]
+fn cascade_chain() {
+    let mut db = CascadeDb::new();
+    db.insert_project(make_project(1, "Alpha")).unwrap();
+    db.insert_job(make_job(1, 1, "build")).unwrap();
+    db.insert_subtask(make_subtask(1, 1, "compile")).unwrap();
+    db.insert_subtask(make_subtask(2, 1, "link")).unwrap();
+
+    // Deleting project cascades to jobs, which cascades to subtasks.
+    db.remove_project(&ProjectId(1)).unwrap();
+    assert!(db.projects.is_empty());
+    assert!(db.jobs.is_empty());
+    assert!(db.subtasks.is_empty());
+}
+
+#[test]
+fn cascade_removes_nothing_when_no_refs() {
+    let mut db = CascadeDb::new();
+    db.insert_project(make_project(1, "Alpha")).unwrap();
+
+    // No jobs reference this project, cascade is a no-op.
+    db.remove_project(&ProjectId(1)).unwrap();
+    assert!(db.projects.is_empty());
+}
+
+#[test]
+fn cascade_only_removes_matching_refs() {
+    let mut db = CascadeDb::new();
+    db.insert_project(make_project(1, "Alpha")).unwrap();
+    db.insert_project(make_project(2, "Beta")).unwrap();
+    db.insert_job(make_job(1, 1, "build")).unwrap();
+    db.insert_job(make_job(2, 2, "deploy")).unwrap();
+
+    db.remove_project(&ProjectId(1)).unwrap();
+    assert_eq!(db.projects.len(), 1);
+    assert_eq!(db.jobs.len(), 1);
+    assert_eq!(db.jobs.get(&JobId(2)).unwrap().label, "deploy");
+}
+
+#[test]
+fn nullify_sets_fk_to_none() {
+    let mut db = CascadeDb::new();
+    db.insert_project(make_project(1, "Alpha")).unwrap();
+    db.insert_watcher(make_watcher(1, Some(1), "Alice"))
+        .unwrap();
+    db.insert_watcher(make_watcher(2, Some(1), "Bob")).unwrap();
+
+    db.remove_project(&ProjectId(1)).unwrap();
+    assert!(db.projects.is_empty());
+    // Watchers still exist but FK is nullified.
+    assert_eq!(db.watchers.len(), 2);
+    assert_eq!(db.watchers.get(&WatcherId(1)).unwrap().project, None);
+    assert_eq!(db.watchers.get(&WatcherId(2)).unwrap().project, None);
+}
+
+#[test]
+fn nullify_no_refs_is_noop() {
+    let mut db = CascadeDb::new();
+    db.insert_project(make_project(1, "Alpha")).unwrap();
+
+    // No watchers point here.
+    db.remove_project(&ProjectId(1)).unwrap();
+    assert!(db.projects.is_empty());
+}
+
+#[test]
+fn nullify_only_affects_matching_refs() {
+    let mut db = CascadeDb::new();
+    db.insert_project(make_project(1, "Alpha")).unwrap();
+    db.insert_project(make_project(2, "Beta")).unwrap();
+    db.insert_watcher(make_watcher(1, Some(1), "Alice"))
+        .unwrap();
+    db.insert_watcher(make_watcher(2, Some(2), "Bob")).unwrap();
+    db.insert_watcher(make_watcher(3, None, "Charlie")).unwrap();
+
+    db.remove_project(&ProjectId(1)).unwrap();
+    assert_eq!(db.watchers.get(&WatcherId(1)).unwrap().project, None);
+    assert_eq!(
+        db.watchers.get(&WatcherId(2)).unwrap().project,
+        Some(ProjectId(2))
+    );
+    assert_eq!(db.watchers.get(&WatcherId(3)).unwrap().project, None);
+}
+
+#[test]
+fn cascade_then_nullify_both_fire() {
+    let mut db = CascadeDb::new();
+    db.insert_project(make_project(1, "Alpha")).unwrap();
+    db.insert_job(make_job(1, 1, "build")).unwrap();
+    db.insert_watcher(make_watcher(1, Some(1), "Alice"))
+        .unwrap();
+
+    // Both cascade (jobs) and nullify (watchers) should fire.
+    db.remove_project(&ProjectId(1)).unwrap();
+    assert!(db.projects.is_empty());
+    assert!(db.jobs.is_empty());
+    assert_eq!(db.watchers.len(), 1);
+    assert_eq!(db.watchers.get(&WatcherId(1)).unwrap().project, None);
+}
+
+// --- Cascade chain with nullify at the leaf ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+struct NoteId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+struct Note {
+    #[primary_key]
+    pub id: NoteId,
+    #[indexed]
+    pub job: Option<JobId>,
+    pub text: String,
+}
+
+#[derive(Database)]
+struct CascadeNullifyChainDb {
+    #[table(singular = "project")]
+    pub projects: ProjectTable,
+
+    #[table(singular = "job", fks(project = "projects" on_delete cascade))]
+    pub jobs: JobTable,
+
+    #[table(singular = "note", fks(job? = "jobs" on_delete nullify))]
+    pub notes: NoteTable,
+}
+
+#[test]
+fn cascade_chain_then_nullify_at_leaf() {
+    // project -> job (cascade) -> note (nullify on job)
+    // Deleting project cascades to remove jobs, which nullifies notes.
+    let mut db = CascadeNullifyChainDb::new();
+    db.insert_project(make_project(1, "Alpha")).unwrap();
+    db.insert_job(make_job(1, 1, "build")).unwrap();
+    db.insert_note(Note {
+        id: NoteId(1),
+        job: Some(JobId(1)),
+        text: "important".into(),
+    })
+    .unwrap();
+
+    db.remove_project(&ProjectId(1)).unwrap();
+    assert!(db.projects.is_empty());
+    assert!(db.jobs.is_empty());
+    // Note survives but its FK is nullified.
+    assert_eq!(db.notes.len(), 1);
+    assert_eq!(db.notes.get(&NoteId(1)).unwrap().job, None);
+}
+
+#[test]
+fn default_is_still_restrict() {
+    // The original TestDb uses default (restrict) semantics.
+    let mut db = TestDb::new();
+    db.insert_creature(make_creature(1, "A")).unwrap();
+    db.insert_task(Task {
+        id: TaskId(1),
+        assignee: Some(CreatureId(1)),
+        priority: 5,
+    })
+    .unwrap();
+
+    let err = db.remove_creature(&CreatureId(1)).unwrap_err();
+    assert!(matches!(err, Error::FkViolation { .. }));
+}
+
+// --- Schema with mixed cascade and restrict on same target ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+struct TeamId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+struct Team {
+    #[primary_key]
+    pub id: TeamId,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+struct MemoId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+struct Memo {
+    #[primary_key]
+    pub id: MemoId,
+    #[indexed]
+    pub team: TeamId,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+struct RuleId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+struct Rule {
+    #[primary_key]
+    pub id: RuleId,
+    #[indexed]
+    pub team: TeamId,
+    pub description: String,
+}
+
+#[derive(Database)]
+struct MixedDb {
+    #[table(singular = "team")]
+    pub teams: TeamTable,
+
+    #[table(singular = "memo", fks(team = "teams" on_delete cascade))]
+    pub memos: MemoTable,
+
+    #[table(singular = "rule", fks(team = "teams"))]
+    pub rules: RuleTable,
+}
+
+#[test]
+fn cascade_mixed_with_restrict() {
+    let mut db = MixedDb::new();
+    db.insert_team(Team {
+        id: TeamId(1),
+        name: "Alpha".into(),
+    })
+    .unwrap();
+    db.insert_memo(Memo {
+        id: MemoId(1),
+        team: TeamId(1),
+        text: "hello".into(),
+    })
+    .unwrap();
+    db.insert_rule(Rule {
+        id: RuleId(1),
+        team: TeamId(1),
+        description: "no running".into(),
+    })
+    .unwrap();
+
+    // Restrict on rules should block removal even though memos would cascade.
+    let err = db.remove_team(&TeamId(1)).unwrap_err();
+    assert!(matches!(err, Error::FkViolation { .. }));
+
+    // Everything should still be intact.
+    assert_eq!(db.teams.len(), 1);
+    assert_eq!(db.memos.len(), 1);
+    assert_eq!(db.rules.len(), 1);
+}
+
+#[test]
+fn restrict_after_cascade_clears_refs() {
+    let mut db = MixedDb::new();
+    db.insert_team(Team {
+        id: TeamId(1),
+        name: "Alpha".into(),
+    })
+    .unwrap();
+    db.insert_memo(Memo {
+        id: MemoId(1),
+        team: TeamId(1),
+        text: "hello".into(),
+    })
+    .unwrap();
+
+    // No rules reference this team, so restrict passes. Cascade clears memos.
+    db.remove_team(&TeamId(1)).unwrap();
+    assert!(db.teams.is_empty());
+    assert!(db.memos.is_empty());
 }
