@@ -1083,3 +1083,507 @@ fn auto_database_empty_roundtrip() {
     assert_eq!(db2.projects.next_id(), AutoProjectId(0));
     assert_eq!(db2.tasks.next_id(), AutoTaskId(0));
 }
+
+// =============================================================================
+// Auto-increment serde edge cases
+// =============================================================================
+
+#[test]
+fn auto_table_deserialize_duplicate_pk() {
+    // Auto table JSON with duplicate PKs in the rows array.
+    let json = r#"{"next_id": 3, "rows": [
+        {"id": 0, "name": "A"},
+        {"id": 0, "name": "B"}
+    ]}"#;
+
+    let result: Result<AutoItemTable, _> = serde_json::from_str(json);
+    let err_msg = match result {
+        Ok(_) => panic!("should reject duplicate PK"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err_msg.contains("duplicate"),
+        "error should mention 'duplicate': {}",
+        err_msg,
+    );
+}
+
+#[test]
+fn auto_table_deserialize_missing_next_id() {
+    let json = r#"{"rows": [{"id": 0, "name": "A"}]}"#;
+
+    let result: Result<AutoItemTable, _> = serde_json::from_str(json);
+    let err_msg = match result {
+        Ok(_) => panic!("should reject missing next_id"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err_msg.contains("next_id"),
+        "error should mention 'next_id': {}",
+        err_msg,
+    );
+}
+
+#[test]
+fn auto_table_deserialize_missing_rows() {
+    let json = r#"{"next_id": 5}"#;
+
+    let result: Result<AutoItemTable, _> = serde_json::from_str(json);
+    let err_msg = match result {
+        Ok(_) => panic!("should reject missing rows"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err_msg.contains("rows"),
+        "error should mention 'rows': {}",
+        err_msg,
+    );
+}
+
+#[test]
+fn auto_table_deserialize_ignores_extra_fields() {
+    // Extra unknown fields should be silently skipped.
+    let json = r#"{"next_id": 2, "rows": [{"id": 0, "name": "A"}], "extra": "ignored"}"#;
+
+    let table: AutoItemTable = serde_json::from_str(json).unwrap();
+    assert_eq!(table.len(), 1);
+    assert_eq!(table.next_id(), AutoItemId(2));
+}
+
+#[test]
+fn auto_table_roundtrip_after_remove() {
+    // Remove a row then serialize — next_id should persist the high-water mark.
+    let mut table = AutoItemTable::new();
+    table
+        .insert_auto_no_fk(|pk| AutoItem {
+            id: pk,
+            name: "A".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|pk| AutoItem {
+            id: pk,
+            name: "B".into(),
+        })
+        .unwrap();
+    table.remove_no_fk(&AutoItemId(0)).unwrap();
+
+    // next_id should be 2, one row with id=1.
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: AutoItemTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.len(), 1);
+    assert_eq!(table2.next_id(), AutoItemId(2));
+
+    // Auto-insert continues from 2.
+    let mut table2 = table2;
+    let new_id = table2
+        .insert_auto_no_fk(|pk| AutoItem {
+            id: pk,
+            name: "C".into(),
+        })
+        .unwrap();
+    assert_eq!(new_id, AutoItemId(2));
+}
+
+// --- Auto-increment + compound index serde ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct AutoEntryId(u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+enum EntryStatus {
+    Active,
+    Archived,
+}
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[index(name = "assignee_status", fields("assignee", "status"))]
+struct AutoEntry {
+    #[primary_key(auto_increment)]
+    pub id: AutoEntryId,
+    #[indexed]
+    pub assignee: Option<CreatureId>,
+    pub status: EntryStatus,
+    pub label: String,
+}
+
+#[test]
+fn auto_compound_index_serde_roundtrip() {
+    let mut table = AutoEntryTable::new();
+    table
+        .insert_auto_no_fk(|pk| AutoEntry {
+            id: pk,
+            assignee: Some(CreatureId(1)),
+            status: EntryStatus::Active,
+            label: "A".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|pk| AutoEntry {
+            id: pk,
+            assignee: Some(CreatureId(1)),
+            status: EntryStatus::Archived,
+            label: "B".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|pk| AutoEntry {
+            id: pk,
+            assignee: Some(CreatureId(2)),
+            status: EntryStatus::Active,
+            label: "C".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: AutoEntryTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.len(), 3);
+    assert_eq!(table2.next_id(), AutoEntryId(3));
+
+    // Simple index rebuilt.
+    assert_eq!(table2.count_by_assignee(&Some(CreatureId(1))), 2);
+
+    // Compound index rebuilt.
+    assert_eq!(
+        table2.count_by_assignee_status(&Some(CreatureId(1)), &EntryStatus::Active),
+        1
+    );
+    assert_eq!(
+        table2.count_by_assignee_status(&Some(CreatureId(1)), MatchAll),
+        2
+    );
+}
+
+// --- Auto-increment + filtered index serde ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct AutoFiltId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[index(
+    name = "active_assignee",
+    fields("assignee"),
+    filter = "AutoFiltEntry::is_active"
+)]
+struct AutoFiltEntry {
+    #[primary_key(auto_increment)]
+    pub id: AutoFiltId,
+    #[indexed]
+    pub assignee: Option<CreatureId>,
+    pub status: EntryStatus,
+    pub label: String,
+}
+
+impl AutoFiltEntry {
+    fn is_active(&self) -> bool {
+        matches!(self.status, EntryStatus::Active)
+    }
+}
+
+#[test]
+fn auto_filtered_index_serde_roundtrip() {
+    let mut table = AutoFiltEntryTable::new();
+    table
+        .insert_auto_no_fk(|pk| AutoFiltEntry {
+            id: pk,
+            assignee: Some(CreatureId(1)),
+            status: EntryStatus::Active,
+            label: "A".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|pk| AutoFiltEntry {
+            id: pk,
+            assignee: Some(CreatureId(1)),
+            status: EntryStatus::Archived,
+            label: "B".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: AutoFiltEntryTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.len(), 2);
+    assert_eq!(table2.next_id(), AutoFiltId(2));
+
+    // Simple index includes all.
+    assert_eq!(table2.count_by_assignee(&Some(CreatureId(1))), 2);
+
+    // Filtered index only includes active.
+    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+}
+
+#[test]
+fn auto_filtered_index_serde_preserves_mutation_behavior() {
+    let mut table = AutoFiltEntryTable::new();
+    table
+        .insert_auto_no_fk(|pk| AutoFiltEntry {
+            id: pk,
+            assignee: Some(CreatureId(1)),
+            status: EntryStatus::Active,
+            label: "A".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let mut table2: AutoFiltEntryTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+
+    // Insert an archived entry — should not appear in filtered index.
+    table2
+        .insert_auto_no_fk(|pk| AutoFiltEntry {
+            id: pk,
+            assignee: Some(CreatureId(1)),
+            status: EntryStatus::Archived,
+            label: "B".into(),
+        })
+        .unwrap();
+    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(table2.count_by_assignee(&Some(CreatureId(1))), 2);
+    assert_eq!(table2.next_id(), AutoFiltId(2));
+}
+
+// --- Database-level auto-increment serde with broken FKs ---
+
+#[test]
+fn auto_database_deserialize_broken_fk() {
+    // Auto task references a non-existent project.
+    let json = r#"{
+        "projects": {"next_id": 1, "rows": [{"id": 0, "name": "Alpha"}]},
+        "tasks": {"next_id": 1, "rows": [{"id": 0, "project": 99, "label": "orphan"}]}
+    }"#;
+
+    let result: Result<AutoDb, _> = serde_json::from_str(json);
+    let err_msg = match result {
+        Ok(_) => panic!("should reject broken FK in auto DB"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err_msg.contains("FK target not found"),
+        "error should mention FK violation: {}",
+        err_msg,
+    );
+}
+
+#[test]
+fn auto_database_deserialize_duplicate_pk_in_auto_table() {
+    // Duplicate PK in an auto table embedded in a database.
+    let json = r#"{
+        "projects": {"next_id": 2, "rows": [
+            {"id": 0, "name": "A"},
+            {"id": 0, "name": "B"}
+        ]},
+        "tasks": {"next_id": 0, "rows": []}
+    }"#;
+
+    let result: Result<AutoDb, _> = serde_json::from_str(json);
+    let err_msg = match result {
+        Ok(_) => panic!("should reject duplicate PK in auto DB table"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err_msg.contains("duplicate"),
+        "error should mention 'duplicate': {}",
+        err_msg,
+    );
+}
+
+// --- Mixed auto and non-auto tables in a database serde ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct ManualId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct ManualRow {
+    #[primary_key]
+    pub id: ManualId,
+    pub value: String,
+}
+
+#[derive(Database)]
+struct MixedAutoDb {
+    #[table(singular = "manual_row")]
+    pub manual_rows: ManualRowTable,
+
+    #[table(singular = "project", auto)]
+    pub projects: AutoProjectTable,
+}
+
+#[test]
+fn mixed_auto_non_auto_db_serde_roundtrip() {
+    let mut db = MixedAutoDb::new();
+    db.insert_manual_row(ManualRow {
+        id: ManualId(42),
+        value: "hello".into(),
+    })
+    .unwrap();
+    let pid = db
+        .insert_project_auto(|pk| AutoProject {
+            id: pk,
+            name: "Alpha".into(),
+        })
+        .unwrap();
+    assert_eq!(pid, AutoProjectId(0));
+
+    let json = serde_json::to_string(&db).unwrap();
+    let db2: MixedAutoDb = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(db2.manual_rows.len(), 1);
+    assert_eq!(db2.manual_rows.get(&ManualId(42)).unwrap().value, "hello");
+    assert_eq!(db2.projects.len(), 1);
+    assert_eq!(db2.projects.next_id(), AutoProjectId(1));
+}
+
+#[test]
+fn mixed_auto_non_auto_db_serialization_format() {
+    let mut db = MixedAutoDb::new();
+    db.insert_manual_row(ManualRow {
+        id: ManualId(1),
+        value: "hi".into(),
+    })
+    .unwrap();
+    db.insert_project_auto(|pk| AutoProject {
+        id: pk,
+        name: "A".into(),
+    })
+    .unwrap();
+
+    let json = serde_json::to_string(&db).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    // Manual table serializes as array.
+    assert!(val["manual_rows"].is_array());
+    // Auto table serializes as object with next_id and rows.
+    assert!(val["projects"].is_object());
+    assert!(val["projects"]["next_id"].is_number());
+    assert!(val["projects"]["rows"].is_array());
+}
+
+// --- Auto-increment + cascade/nullify serde ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct AutoCatId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct AutoCat {
+    #[primary_key(auto_increment)]
+    pub id: AutoCatId,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct AutoArticleId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct AutoArticle {
+    #[primary_key(auto_increment)]
+    pub id: AutoArticleId,
+    #[indexed]
+    pub category: AutoCatId,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct AutoTagId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct AutoTag {
+    #[primary_key(auto_increment)]
+    pub id: AutoTagId,
+    #[indexed]
+    pub category: Option<AutoCatId>,
+    pub name: String,
+}
+
+#[derive(Database)]
+struct CascadeAutoDb {
+    #[table(singular = "category", auto)]
+    pub categories: AutoCatTable,
+
+    #[table(singular = "article", auto, fks(category = "categories" on_delete cascade))]
+    pub articles: AutoArticleTable,
+
+    #[table(singular = "tag", auto, fks(category? = "categories" on_delete nullify))]
+    pub tags: AutoTagTable,
+}
+
+#[test]
+fn cascade_auto_db_serde_roundtrip() {
+    let mut db = CascadeAutoDb::new();
+    let cat = db
+        .insert_category_auto(|pk| AutoCat {
+            id: pk,
+            name: "Tech".into(),
+        })
+        .unwrap();
+    db.insert_article_auto(|pk| AutoArticle {
+        id: pk,
+        category: cat,
+        title: "Rust".into(),
+    })
+    .unwrap();
+    db.insert_tag_auto(|pk| AutoTag {
+        id: pk,
+        category: Some(cat),
+        name: "rust".into(),
+    })
+    .unwrap();
+
+    let json = serde_json::to_string(&db).unwrap();
+    let mut db2: CascadeAutoDb = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(db2.categories.len(), 1);
+    assert_eq!(db2.articles.len(), 1);
+    assert_eq!(db2.tags.len(), 1);
+
+    // Indexes rebuilt — cascade/nullify still work after deserialization.
+    db2.remove_category(&cat).unwrap();
+    assert!(db2.categories.is_empty());
+    assert!(db2.articles.is_empty());
+    assert_eq!(db2.tags.len(), 1);
+    assert_eq!(db2.tags.get(&AutoTagId(0)).unwrap().category, None);
+
+    // next_id preserved after roundtrip + cascade.
+    assert_eq!(db2.categories.next_id(), AutoCatId(1));
+    assert_eq!(db2.articles.next_id(), AutoArticleId(1));
+    assert_eq!(db2.tags.next_id(), AutoTagId(1));
+}
+
+#[test]
+fn cascade_auto_db_serde_fk_validation() {
+    // Article references a category that doesn't exist.
+    let json = r#"{
+        "categories": {"next_id": 0, "rows": []},
+        "articles": {"next_id": 1, "rows": [{"id": 0, "category": 99, "title": "orphan"}]},
+        "tags": {"next_id": 0, "rows": []}
+    }"#;
+
+    let result: Result<CascadeAutoDb, _> = serde_json::from_str(json);
+    let err_msg = match result {
+        Ok(_) => panic!("should reject broken FK in cascade auto DB"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err_msg.contains("FK target not found"),
+        "error should mention FK violation: {}",
+        err_msg,
+    );
+}
+
+#[test]
+fn auto_database_deserialize_field_order_independent() {
+    // Tasks appear before projects in JSON — should still work.
+    let json = r#"{
+        "tasks": {"next_id": 1, "rows": [{"id": 0, "project": 0, "label": "build"}]},
+        "projects": {"next_id": 1, "rows": [{"id": 0, "name": "Alpha"}]}
+    }"#;
+
+    let db: AutoDb = serde_json::from_str(&json).unwrap();
+    assert_eq!(db.projects.len(), 1);
+    assert_eq!(db.tasks.len(), 1);
+    assert_eq!(db.projects.next_id(), AutoProjectId(1));
+    assert_eq!(db.tasks.next_id(), AutoTaskId(1));
+}
