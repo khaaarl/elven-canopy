@@ -3,6 +3,7 @@
 //! Generates a companion `{Name}Table` struct with:
 //! - `rows: BTreeMap<PK, Row>` primary storage
 //! - Simple indexes from `#[indexed]` fields: `BTreeSet<(FieldType, PK)>`
+//! - Unique indexes from `#[indexed(unique)]` or `#[index(..., unique)]`
 //! - Compound indexes from `#[index(...)]`: `BTreeSet<(F1, F2, ..., PK)>`
 //! - Filtered indexes via optional `filter` on `#[index(...)]`
 //! - Tracked bounds per unique type across all indexes: `_bounds_{type}`
@@ -33,6 +34,7 @@ struct ResolvedIndex {
     /// (field_ident, field_type) in order.
     fields: Vec<(Ident, Type)>,
     filter: Option<String>,
+    is_unique: bool,
 }
 
 pub fn derive(input: &DeriveInput) -> TokenStream {
@@ -115,6 +117,12 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     let query_methods = gen_all_query_methods(&resolved_indexes, pk_ty, row_name, &fields);
 
     let table_name_str_ref = &table_name_str;
+
+    // --- Unique index checks ---
+    let unique_check_insert =
+        gen_unique_checks_insert(&resolved_indexes, pk_ty, table_name_str_ref);
+    let unique_check_update =
+        gen_unique_checks_update(&resolved_indexes, pk_ty, table_name_str_ref);
 
     // Auto-increment: optional next_id field, init, bump logic, and methods.
     let next_id_field_decl = if is_auto_increment {
@@ -252,7 +260,8 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 
             // --- Mutation methods (doc-hidden, used by Database derive) ---
 
-            /// Inserts a row. Returns `Err(DuplicateKey)` if the PK already exists.
+            /// Inserts a row. Returns `Err(DuplicateKey)` if the PK already exists,
+            /// or `Err(DuplicateIndex)` if a unique index constraint is violated.
             #[doc(hidden)]
             pub fn insert_no_fk(&mut self, row: #row_name) -> ::std::result::Result<(), ::tabulosity::Error> {
                 let pk = row.#pk_ident.clone();
@@ -262,8 +271,9 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                         key: ::std::format!("{:?}", pk),
                     });
                 }
-                #next_id_bump_on_insert
                 #(#bounds_widen_row)*
+                #(#unique_check_insert)*
+                #next_id_bump_on_insert
                 #(#idx_insert)*
                 self.rows.insert(pk, row);
                 ::std::result::Result::Ok(())
@@ -271,7 +281,8 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 
             #auto_increment_methods
 
-            /// Updates a row. Returns `Err(NotFound)` if the PK is missing.
+            /// Updates a row. Returns `Err(NotFound)` if the PK is missing,
+            /// or `Err(DuplicateIndex)` if a unique index constraint is violated.
             #[doc(hidden)]
             pub fn update_no_fk(&mut self, row: #row_name) -> ::std::result::Result<(), ::tabulosity::Error> {
                 let pk = row.#pk_ident.clone();
@@ -284,25 +295,33 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                         });
                     }
                 };
+                #(#unique_check_update)*
                 #(#bounds_widen_row)*
                 #(#idx_update)*
                 self.rows.insert(pk, row);
                 ::std::result::Result::Ok(())
             }
 
-            /// Upserts a row — inserts if missing, updates if existing. Infallible.
+            /// Upserts a row — inserts if missing, updates if existing.
+            /// Returns `Err(DuplicateIndex)` if a unique index constraint
+            /// is violated.
             #[doc(hidden)]
-            pub fn upsert_no_fk(&mut self, row: #row_name) {
+            pub fn upsert_no_fk(&mut self, row: #row_name) -> ::std::result::Result<(), ::tabulosity::Error> {
                 let pk = row.#pk_ident.clone();
-                #next_id_bump_on_upsert
-                #(#bounds_widen_row)*
                 if let Some(old_row) = self.rows.get(&pk).cloned() {
+                    #(#unique_check_update)*
+                    #next_id_bump_on_upsert
+                    #(#bounds_widen_row)*
                     #(#idx_upsert_update)*
                     self.rows.insert(pk, row);
                 } else {
+                    #(#bounds_widen_row)*
+                    #(#unique_check_insert)*
+                    #next_id_bump_on_upsert
                     #(#idx_upsert_insert)*
                     self.rows.insert(pk, row);
                 }
+                ::std::result::Result::Ok(())
             }
 
             /// Removes a row. Returns the removed row or `Err(NotFound)`.
@@ -384,6 +403,7 @@ fn resolve_indexes(
                 name,
                 fields: vec![(f.ident.clone(), f.ty.clone())],
                 filter: None,
+                is_unique: f.is_unique,
             });
         }
     }
@@ -406,6 +426,7 @@ fn resolve_indexes(
             name: decl.name.clone(),
             fields: idx_fields,
             filter: decl.filter.clone(),
+            is_unique: decl.unique,
         });
     }
 
@@ -632,6 +653,157 @@ fn gen_bounds_reset(tracked: &[TrackedType]) -> Vec<TokenStream> {
             quote! { self.#name = ::std::option::Option::None; }
         })
         .collect()
+}
+
+// =============================================================================
+// Unique index check codegen
+// =============================================================================
+
+/// Generate uniqueness checks for insert. Runs after bounds widening, before
+/// index insertion. For each unique index, checks whether the BTreeSet already
+/// contains an entry with the same field values.
+fn gen_unique_checks_insert(
+    indexes: &[ResolvedIndex],
+    pk_ty: &Type,
+    table_name_str: &str,
+) -> Vec<TokenStream> {
+    indexes
+        .iter()
+        .filter(|idx| idx.is_unique)
+        .map(|idx| gen_unique_check_insert(idx, pk_ty, table_name_str))
+        .collect()
+}
+
+fn gen_unique_check_insert(idx: &ResolvedIndex, pk_ty: &Type, table_name_str: &str) -> TokenStream {
+    let idx_name = format_ident!("idx_{}", idx.name);
+    let idx_name_str = &idx.name;
+    let pk_suffix = type_suffix(pk_ty);
+    let pk_bounds_name = format_ident!("_bounds_{}", pk_suffix);
+
+    let field_clones: Vec<TokenStream> = idx
+        .fields
+        .iter()
+        .map(|(fi, _)| quote! { row.#fi.clone() })
+        .collect();
+
+    let key_fmt: Vec<TokenStream> = idx
+        .fields
+        .iter()
+        .map(|(fi, _)| quote! { row.#fi })
+        .collect();
+
+    let range_check = quote! {
+        if let ::std::option::Option::Some((__pk_min, __pk_max)) = &self.#pk_bounds_name {
+            let __start = (#(#field_clones,)* __pk_min.clone());
+            let __end = (#(#field_clones,)* __pk_max.clone());
+            if self.#idx_name.range(__start..=__end).next().is_some() {
+                return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
+                    table: #table_name_str,
+                    index: #idx_name_str,
+                    key: ::std::format!("{:?}", (#(&#key_fmt),*)),
+                });
+            }
+        }
+    };
+
+    match &idx.filter {
+        Some(filter_path) => {
+            let filter_fn: syn::ExprPath = syn::parse_str(filter_path).unwrap();
+            quote! {
+                if #filter_fn(&row) {
+                    #range_check
+                }
+            }
+        }
+        None => range_check,
+    }
+}
+
+/// Generate uniqueness checks for update. Runs before any mutation.
+/// Only checks when field values actually changed.
+fn gen_unique_checks_update(
+    indexes: &[ResolvedIndex],
+    pk_ty: &Type,
+    table_name_str: &str,
+) -> Vec<TokenStream> {
+    indexes
+        .iter()
+        .filter(|idx| idx.is_unique)
+        .map(|idx| gen_unique_check_update(idx, pk_ty, table_name_str))
+        .collect()
+}
+
+fn gen_unique_check_update(idx: &ResolvedIndex, pk_ty: &Type, table_name_str: &str) -> TokenStream {
+    let idx_name = format_ident!("idx_{}", idx.name);
+    let idx_name_str = &idx.name;
+    let pk_suffix = type_suffix(pk_ty);
+    let pk_bounds_name = format_ident!("_bounds_{}", pk_suffix);
+
+    let field_clones: Vec<TokenStream> = idx
+        .fields
+        .iter()
+        .map(|(fi, _)| quote! { row.#fi.clone() })
+        .collect();
+
+    let field_changed_check: Vec<TokenStream> = idx
+        .fields
+        .iter()
+        .map(|(fi, _)| quote! { old_row.#fi != row.#fi })
+        .collect();
+
+    let key_fmt: Vec<TokenStream> = idx
+        .fields
+        .iter()
+        .map(|(fi, _)| quote! { row.#fi })
+        .collect();
+
+    // For update: old entry with (old_field_val, pk) is still in the set.
+    // If field value changed, the old entry won't match the new value search.
+    // So any match found is a genuine conflict.
+    let range_check = quote! {
+        if #(#field_changed_check)||* {
+            if let ::std::option::Option::Some((__pk_min, __pk_max)) = &self.#pk_bounds_name {
+                let __start = (#(#field_clones,)* __pk_min.clone());
+                let __end = (#(#field_clones,)* __pk_max.clone());
+                if self.#idx_name.range(__start..=__end).next().is_some() {
+                    return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
+                        table: #table_name_str,
+                        index: #idx_name_str,
+                        key: ::std::format!("{:?}", (#(&#key_fmt),*)),
+                    });
+                }
+            }
+        }
+    };
+
+    match &idx.filter {
+        Some(filter_path) => {
+            let filter_fn: syn::ExprPath = syn::parse_str(filter_path).unwrap();
+            // Only check if the new row passes the filter.
+            // If it doesn't pass, the row won't be in the index, so no conflict.
+            // Must also check when transitioning from filtered-out to filtered-in,
+            // even if the indexed field values didn't change.
+            quote! {
+                if #filter_fn(&row) {
+                    let __needs_check = !#filter_fn(&old_row) || (#(#field_changed_check)||*);
+                    if __needs_check {
+                        if let ::std::option::Option::Some((__pk_min, __pk_max)) = &self.#pk_bounds_name {
+                            let __start = (#(#field_clones,)* __pk_min.clone());
+                            let __end = (#(#field_clones,)* __pk_max.clone());
+                            if self.#idx_name.range(__start..=__end).next().is_some() {
+                                return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
+                                    table: #table_name_str,
+                                    index: #idx_name_str,
+                                    key: ::std::format!("{:?}", (#(&#key_fmt),*)),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None => range_check,
+    }
 }
 
 // =============================================================================

@@ -466,8 +466,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 
                 pub fn #upsert_fn(&mut self, row: #row_ty) -> ::std::result::Result<(), ::tabulosity::Error> {
                     #(#fk_checks_upsert)*
-                    self.#table_ident.upsert_no_fk(row);
-                    ::std::result::Result::Ok(())
+                    self.#table_ident.upsert_no_fk(row)
                 }
 
                 pub fn #remove_fn(&mut self, id: &<#table_ty as ::tabulosity::TableMeta>::Key) -> ::std::result::Result<(), ::tabulosity::Error> {

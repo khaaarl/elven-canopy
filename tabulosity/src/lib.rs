@@ -1,7 +1,8 @@
 //! Tabulosity — a lightweight, typed, in-memory relational database library.
 //!
 //! Provides typed tables with primary keys, automatic secondary indexes
-//! (simple, compound, and filtered), and cross-table foreign key integrity.
+//! (simple, compound, filtered, and unique), auto-increment primary keys,
+//! and cross-table foreign key integrity.
 //! All internal data structures use `BTreeMap`/`BTreeSet` for deterministic
 //! iteration order.
 //!

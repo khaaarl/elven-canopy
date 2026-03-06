@@ -142,11 +142,13 @@ fn delete_does_not_affect_next_id() {
 #[test]
 fn upsert_bumps_next_id() {
     let mut table = ItemTable::new();
-    table.upsert_no_fk(Item {
-        id: ItemId(7),
-        name: "Upserted".into(),
-        weight: 1,
-    });
+    table
+        .upsert_no_fk(Item {
+            id: ItemId(7),
+            name: "Upserted".into(),
+            weight: 1,
+        })
+        .unwrap();
     assert_eq!(table.next_id(), ItemId(8));
 }
 
@@ -499,11 +501,13 @@ fn upsert_update_path_does_not_bump_next_id_when_pk_below() {
     assert_eq!(table.next_id(), WidgetId(2));
 
     // Upsert on existing key 0 — should not change next_id.
-    table.upsert_no_fk(Widget {
-        id: WidgetId(0),
-        color: Color::Green,
-        label: "A-upserted".into(),
-    });
+    table
+        .upsert_no_fk(Widget {
+            id: WidgetId(0),
+            color: Color::Green,
+            label: "A-upserted".into(),
+        })
+        .unwrap();
     assert_eq!(table.next_id(), WidgetId(2));
     assert_eq!(table.count_by_color(&Color::Green), 1);
     assert_eq!(table.count_by_color(&Color::Red), 0);
@@ -522,11 +526,13 @@ fn upsert_insert_path_with_high_pk_bumps_next_id() {
     assert_eq!(table.next_id(), WidgetId(1));
 
     // Upsert with new key above next_id.
-    table.upsert_no_fk(Widget {
-        id: WidgetId(10),
-        color: Color::Blue,
-        label: "Z".into(),
-    });
+    table
+        .upsert_no_fk(Widget {
+            id: WidgetId(10),
+            color: Color::Blue,
+            label: "Z".into(),
+        })
+        .unwrap();
     assert_eq!(table.next_id(), WidgetId(11));
     assert_eq!(table.count_by_color(&Color::Blue), 1);
 }
@@ -1109,4 +1115,119 @@ fn db_auto_insert_secondary_index_queries() {
     assert_eq!(p0_tasks.len(), 2);
     assert_eq!(p0_tasks[0].label, "build");
     assert_eq!(p0_tasks[1].label, "test");
+}
+
+// =============================================================================
+// Auto-increment + unique index interaction
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+struct AutoUniqueId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+struct AutoUniqueRow {
+    #[primary_key(auto_increment)]
+    pub id: AutoUniqueId,
+    #[indexed(unique)]
+    pub code: String,
+    pub label: String,
+}
+
+#[test]
+fn auto_unique_insert_failure_does_not_advance_next_id() {
+    let mut table = AutoUniqueRowTable::new();
+    table
+        .insert_auto_no_fk(|pk| AutoUniqueRow {
+            id: pk,
+            code: "ABC".into(),
+            label: "First".into(),
+        })
+        .unwrap();
+    assert_eq!(table.next_id(), AutoUniqueId(1));
+
+    // Try to insert duplicate unique value — should fail.
+    let err = table
+        .insert_auto_no_fk(|pk| AutoUniqueRow {
+            id: pk,
+            code: "ABC".into(),
+            label: "Second".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateIndex { .. }));
+
+    // next_id should NOT have advanced because the insert was rejected.
+    assert_eq!(table.next_id(), AutoUniqueId(1));
+    assert_eq!(table.len(), 1);
+
+    // Subsequent successful insert should get ID 1 (not 2).
+    let id = table
+        .insert_auto_no_fk(|pk| AutoUniqueRow {
+            id: pk,
+            code: "DEF".into(),
+            label: "Third".into(),
+        })
+        .unwrap();
+    assert_eq!(id, AutoUniqueId(1));
+    assert_eq!(table.len(), 2);
+}
+
+#[test]
+fn auto_unique_upsert_insert_failure_does_not_advance_next_id() {
+    let mut table = AutoUniqueRowTable::new();
+    table
+        .insert_auto_no_fk(|pk| AutoUniqueRow {
+            id: pk,
+            code: "ABC".into(),
+            label: "First".into(),
+        })
+        .unwrap();
+    assert_eq!(table.next_id(), AutoUniqueId(1));
+
+    // Upsert with new PK (insert path) but duplicate unique value.
+    let err = table
+        .upsert_no_fk(AutoUniqueRow {
+            id: AutoUniqueId(99),
+            code: "ABC".into(),
+            label: "Second".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateIndex { .. }));
+
+    // next_id should NOT have advanced (99 > 1, but insert was rejected).
+    assert_eq!(table.next_id(), AutoUniqueId(1));
+    assert_eq!(table.len(), 1);
+}
+
+#[test]
+fn auto_unique_upsert_update_failure_preserves_state() {
+    let mut table = AutoUniqueRowTable::new();
+    table
+        .insert_auto_no_fk(|pk| AutoUniqueRow {
+            id: pk,
+            code: "ABC".into(),
+            label: "First".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|pk| AutoUniqueRow {
+            id: pk,
+            code: "DEF".into(),
+            label: "Second".into(),
+        })
+        .unwrap();
+    assert_eq!(table.next_id(), AutoUniqueId(2));
+
+    // Upsert update path — change code to conflict.
+    let err = table
+        .upsert_no_fk(AutoUniqueRow {
+            id: AutoUniqueId(1),
+            code: "ABC".into(),
+            label: "Updated".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateIndex { .. }));
+
+    // Row unchanged.
+    assert_eq!(table.get_ref(&AutoUniqueId(1)).unwrap().code, "DEF");
+    assert_eq!(table.next_id(), AutoUniqueId(2));
 }

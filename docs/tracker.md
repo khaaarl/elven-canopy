@@ -131,7 +131,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-modify-unchk     Closure-based row mutation (modify_unchecked + update_with)
 [ ] F-tab-query-opts       Query options struct for index queries
 [ ] F-tab-schema-evol      Schema evolution and migrations
-[ ] F-tab-unique-idx       Unique index enforcement
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
@@ -215,6 +214,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-cascade-del      Cascade/nullify on delete
 [x] F-tab-compound-idx     Compound indexes with prefix queries
 [x] F-tab-filter-idx       Filtered/partial indexes
+[x] F-tab-unique-idx    Unique index enforcement
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
 [x] F-thoughts             Creature thoughts (DF-style event reactions)
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
@@ -1838,7 +1838,7 @@ Needed for long-lived save games that span schema changes. High complexity.
 **Related:** F-save-load, F-sim-db-impl
 
 #### F-tab-unique-idx — Unique index enforcement
-**Status:** Todo
+**Status:** Done
 
 `#[indexed(unique)]` enforced on insert and update — returns an error if
 a duplicate value is found. Low complexity, builds on existing index

@@ -1,8 +1,10 @@
 //! Error types for tabulosity write operations.
 //!
 //! `Error` is the single enum returned by all fallible mutations (insert,
-//! update, upsert, remove). `DeserializeError` wraps a `Vec<Error>` for
-//! bulk-loading scenarios where multiple problems must be reported at once.
+//! update, upsert, remove). Variants cover duplicate keys, not-found rows,
+//! unique index violations, FK target misses, and FK restrict violations.
+//! `DeserializeError` wraps a `Vec<Error>` for bulk-loading scenarios where
+//! multiple problems must be reported at once.
 
 /// All errors returned by tabulosity write operations.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +21,14 @@ pub enum Error {
         table: &'static str,
         field: &'static str,
         referenced_table: &'static str,
+        key: String,
+    },
+
+    /// Attempted to insert or update a row with a value that already exists
+    /// in a unique index.
+    DuplicateIndex {
+        table: &'static str,
+        index: &'static str,
         key: String,
     },
 
@@ -41,6 +51,13 @@ impl std::fmt::Display for Error {
                 write!(f, "duplicate key in {}: {}", table, key)
             }
             Error::NotFound { table, key } => write!(f, "not found in {}: {}", table, key),
+            Error::DuplicateIndex { table, index, key } => {
+                write!(
+                    f,
+                    "duplicate value in unique index {}.{}: {}",
+                    table, index, key
+                )
+            }
             Error::FkTargetNotFound {
                 table,
                 field,
@@ -71,9 +88,9 @@ impl std::error::Error for Error {}
 /// Error returned when deserializing a database fails validation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeserializeError {
-    /// All errors found during validation. Variants will be `DuplicateKey`
-    /// and/or `FkTargetNotFound` — the only errors that can arise from
-    /// loading serialized data.
+    /// All errors found during validation. Variants will be `DuplicateKey`,
+    /// `DuplicateIndex`, and/or `FkTargetNotFound` — the errors that can
+    /// arise from loading serialized data.
     pub errors: Vec<Error>,
 }
 
@@ -113,6 +130,19 @@ mod tests {
             key: "TaskId(42)".into(),
         };
         assert_eq!(err.to_string(), "not found in tasks: TaskId(42)");
+    }
+
+    #[test]
+    fn display_duplicate_index() {
+        let err = Error::DuplicateIndex {
+            table: "creatures",
+            index: "email",
+            key: "elf@tree.org".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "duplicate value in unique index creatures.email: elf@tree.org"
+        );
     }
 
     #[test]

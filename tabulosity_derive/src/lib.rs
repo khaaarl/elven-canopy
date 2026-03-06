@@ -34,7 +34,8 @@ pub fn derive_bounded(input: TokenStream) -> TokenStream {
 /// optional secondary indexes.
 ///
 /// Recognizes field attributes: `#[primary_key]` or `#[primary_key(auto_increment)]`
-/// (exactly one required) and `#[indexed]` (zero or more).
+/// (exactly one required), `#[indexed]` or `#[indexed(unique)]` (zero or more).
+/// Struct-level `#[index(...)]` supports `unique` keyword for compound unique indexes.
 #[proc_macro_derive(Table, attributes(primary_key, indexed, index))]
 pub fn derive_table(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);

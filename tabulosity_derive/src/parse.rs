@@ -1,8 +1,8 @@
 //! Shared attribute parsing utilities for tabulosity derive macros.
 //!
-//! Extracts `#[primary_key]` and `#[indexed]` annotations from struct fields,
-//! and `#[index(name = "...", fields(...), filter = "...")]` from struct-level
-//! attributes. Used by `table.rs` during `#[derive(Table)]` expansion.
+//! Extracts `#[primary_key]`, `#[indexed]`, and `#[indexed(unique)]` annotations
+//! from struct fields, and `#[index(name = "...", fields(...), filter = "...", unique)]`
+//! from struct-level attributes. Used by `table.rs` during `#[derive(Table)]` expansion.
 
 use syn::parse::{Parse, ParseStream};
 use syn::{DeriveInput, Field, Ident, LitStr, Token, Type};
@@ -14,6 +14,7 @@ pub struct ParsedField {
     pub is_primary_key: bool,
     pub is_auto_increment: bool,
     pub is_indexed: bool,
+    pub is_unique: bool,
 }
 
 /// A parsed `#[index(...)]` struct-level attribute.
@@ -21,6 +22,7 @@ pub struct IndexDecl {
     pub name: String,
     pub fields: Vec<String>,
     pub filter: Option<String>,
+    pub unique: bool,
 }
 
 /// Parse all fields from a named struct, extracting tabulosity attributes.
@@ -61,13 +63,41 @@ fn parse_field(field: &Field) -> syn::Result<ParsedField> {
             }
         }
     }
-    let is_indexed = field.attrs.iter().any(|a| a.path().is_ident("indexed"));
+    let mut is_indexed = false;
+    let mut is_unique = false;
+    for attr in &field.attrs {
+        if attr.path().is_ident("indexed") {
+            is_indexed = true;
+            // Check for `#[indexed(unique)]`.
+            if let syn::Meta::List(meta_list) = &attr.meta {
+                let parsed: syn::Result<Ident> = syn::parse2(meta_list.tokens.clone());
+                match parsed {
+                    Ok(id) if id == "unique" => {
+                        is_unique = true;
+                    }
+                    Ok(id) => {
+                        return Err(syn::Error::new(
+                            id.span(),
+                            format!("unknown #[indexed(...)] argument: `{id}`; expected `unique`"),
+                        ));
+                    }
+                    Err(e) => {
+                        return Err(syn::Error::new(
+                            e.span(),
+                            "invalid #[indexed(...)] syntax; expected `unique`",
+                        ));
+                    }
+                }
+            }
+        }
+    }
     Ok(ParsedField {
         ident,
         ty,
         is_primary_key,
         is_auto_increment,
         is_indexed,
+        is_unique,
     })
 }
 
@@ -81,17 +111,19 @@ pub fn parse_index_attrs(input: &DeriveInput) -> syn::Result<Vec<IndexDecl>> {
                 name: decl.name,
                 fields: decl.fields,
                 filter: decl.filter,
+                unique: decl.unique,
             });
         }
     }
     Ok(decls)
 }
 
-/// Internal parsed form for `#[index(name = "...", fields("a", "b"), filter = "...")]`.
+/// Internal parsed form for `#[index(name = "...", fields("a", "b"), filter = "...", unique)]`.
 struct IndexDeclParsed {
     name: String,
     fields: Vec<String>,
     filter: Option<String>,
+    unique: bool,
 }
 
 impl Parse for IndexDeclParsed {
@@ -99,6 +131,7 @@ impl Parse for IndexDeclParsed {
         let mut name = None;
         let mut fields = None;
         let mut filter = None;
+        let mut unique = false;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -126,11 +159,14 @@ impl Parse for IndexDeclParsed {
                     let lit: LitStr = input.parse()?;
                     filter = Some(lit.value());
                 }
+                "unique" => {
+                    unique = true;
+                }
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unknown index attribute key: `{other}`; expected `name`, `fields`, or `filter`"
+                            "unknown index attribute key: `{other}`; expected `name`, `fields`, `filter`, or `unique`"
                         ),
                     ));
                 }
@@ -151,6 +187,7 @@ impl Parse for IndexDeclParsed {
             name,
             fields,
             filter,
+            unique,
         })
     }
 }

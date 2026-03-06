@@ -154,11 +154,13 @@ fn update_not_found_error() {
 #[test]
 fn upsert_inserts_when_missing() {
     let mut table = ItemTable::new();
-    table.upsert_no_fk(Item {
-        id: ItemId(1),
-        name: "Potion".into(),
-        weight: 1,
-    });
+    table
+        .upsert_no_fk(Item {
+            id: ItemId(1),
+            name: "Potion".into(),
+            weight: 1,
+        })
+        .unwrap();
 
     assert_eq!(table.len(), 1);
     assert_eq!(table.get(&ItemId(1)).unwrap().name, "Potion");
@@ -175,11 +177,13 @@ fn upsert_updates_when_existing() {
         })
         .unwrap();
 
-    table.upsert_no_fk(Item {
-        id: ItemId(1),
-        name: "Greater Potion".into(),
-        weight: 2,
-    });
+    table
+        .upsert_no_fk(Item {
+            id: ItemId(1),
+            name: "Greater Potion".into(),
+            weight: 2,
+        })
+        .unwrap();
 
     assert_eq!(table.len(), 1);
     assert_eq!(table.get(&ItemId(1)).unwrap().name, "Greater Potion");

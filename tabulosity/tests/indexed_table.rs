@@ -271,21 +271,25 @@ fn index_maintained_on_update() {
 #[test]
 fn index_maintained_on_upsert() {
     let mut table = CreatureTable::new();
-    table.upsert_no_fk(Creature {
-        id: CreatureId(1),
-        name: "A".into(),
-        species: Species::Elf,
-        hunger: 0,
-    });
+    table
+        .upsert_no_fk(Creature {
+            id: CreatureId(1),
+            name: "A".into(),
+            species: Species::Elf,
+            hunger: 0,
+        })
+        .unwrap();
 
     assert_eq!(table.count_by_species(&Species::Elf), 1);
 
-    table.upsert_no_fk(Creature {
-        id: CreatureId(1),
-        name: "A".into(),
-        species: Species::Capybara,
-        hunger: 0,
-    });
+    table
+        .upsert_no_fk(Creature {
+            id: CreatureId(1),
+            name: "A".into(),
+            species: Species::Capybara,
+            hunger: 0,
+        })
+        .unwrap();
 
     assert_eq!(table.count_by_species(&Species::Elf), 0);
     assert_eq!(table.count_by_species(&Species::Capybara), 1);
@@ -862,12 +866,14 @@ fn compound_index_maintained_on_remove() {
 #[test]
 fn compound_index_maintained_on_upsert() {
     let mut table = CompTaskTable::new();
-    table.upsert_no_fk(CompTask {
-        id: CompTaskId(1),
-        assignee: Some(CreatureId(1)),
-        priority: 5,
-        status: TaskStatus::Pending,
-    });
+    table
+        .upsert_no_fk(CompTask {
+            id: CompTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
 
     assert_eq!(
         table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
@@ -875,12 +881,14 @@ fn compound_index_maintained_on_upsert() {
     );
 
     // Upsert update path: change both fields.
-    table.upsert_no_fk(CompTask {
-        id: CompTaskId(1),
-        assignee: Some(CreatureId(2)),
-        priority: 3,
-        status: TaskStatus::InProgress,
-    });
+    table
+        .upsert_no_fk(CompTask {
+            id: CompTaskId(1),
+            assignee: Some(CreatureId(2)),
+            priority: 3,
+            status: TaskStatus::InProgress,
+        })
+        .unwrap();
 
     assert_eq!(
         table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
@@ -1200,30 +1208,36 @@ fn filtered_index_upsert_enters_and_exits() {
     let mut table = FiltTaskTable::new();
 
     // Upsert insert path: matches filter.
-    table.upsert_no_fk(FiltTask {
-        id: FiltTaskId(1),
-        assignee: Some(CreatureId(1)),
-        priority: 5,
-        status: TaskStatus::Pending,
-    });
+    table
+        .upsert_no_fk(FiltTask {
+            id: FiltTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
     assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 1);
 
     // Upsert update path: exits filter.
-    table.upsert_no_fk(FiltTask {
-        id: FiltTaskId(1),
-        assignee: Some(CreatureId(1)),
-        priority: 5,
-        status: TaskStatus::Done,
-    });
+    table
+        .upsert_no_fk(FiltTask {
+            id: FiltTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::Done,
+        })
+        .unwrap();
     assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 0);
 
     // Upsert update path: re-enters filter.
-    table.upsert_no_fk(FiltTask {
-        id: FiltTaskId(1),
-        assignee: Some(CreatureId(1)),
-        priority: 5,
-        status: TaskStatus::InProgress,
-    });
+    table
+        .upsert_no_fk(FiltTask {
+            id: FiltTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::InProgress,
+        })
+        .unwrap();
     assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 1);
 }
 
@@ -2084,12 +2098,14 @@ fn compound_index_upsert_insert_path() {
     let mut table = CompTaskTable::new();
 
     // Upsert on empty table — insert path.
-    table.upsert_no_fk(CompTask {
-        id: CompTaskId(1),
-        assignee: Some(CreatureId(1)),
-        priority: 5,
-        status: TaskStatus::Pending,
-    });
+    table
+        .upsert_no_fk(CompTask {
+            id: CompTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
 
     assert_eq!(
         table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
@@ -2616,12 +2632,14 @@ fn triple_compound_update_and_remove() {
 fn compound_index_upsert_changes_only_one_indexed_field() {
     // Verify partial field change via upsert update path.
     let mut table = CompTaskTable::new();
-    table.upsert_no_fk(CompTask {
-        id: CompTaskId(1),
-        assignee: Some(CreatureId(1)),
-        priority: 5,
-        status: TaskStatus::Pending,
-    });
+    table
+        .upsert_no_fk(CompTask {
+            id: CompTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
 
     assert_eq!(
         table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
@@ -2629,12 +2647,14 @@ fn compound_index_upsert_changes_only_one_indexed_field() {
     );
 
     // Upsert update: change only priority, keep assignee the same.
-    table.upsert_no_fk(CompTask {
-        id: CompTaskId(1),
-        assignee: Some(CreatureId(1)),
-        priority: 9,
-        status: TaskStatus::Pending,
-    });
+    table
+        .upsert_no_fk(CompTask {
+            id: CompTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 9,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
 
     // Old compound tuple gone.
     assert_eq!(
@@ -2653,12 +2673,14 @@ fn compound_index_upsert_changes_only_one_indexed_field() {
     );
 
     // Now change only assignee, keep priority the same.
-    table.upsert_no_fk(CompTask {
-        id: CompTaskId(1),
-        assignee: Some(CreatureId(2)),
-        priority: 9,
-        status: TaskStatus::Pending,
-    });
+    table
+        .upsert_no_fk(CompTask {
+            id: CompTaskId(1),
+            assignee: Some(CreatureId(2)),
+            priority: 9,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
 
     assert_eq!(
         table.count_by_assignee_priority(&Some(CreatureId(1)), &9u8),

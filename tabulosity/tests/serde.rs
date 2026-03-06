@@ -3,7 +3,7 @@
 #![cfg(feature = "serde")]
 
 use serde::{Deserialize, Serialize};
-use tabulosity::{Bounded, Database, MatchAll, Table};
+use tabulosity::{Bounded, Database, Error, MatchAll, Table};
 
 // --- Row types ---
 
@@ -1586,4 +1586,334 @@ fn auto_database_deserialize_field_order_independent() {
     assert_eq!(db.tasks.len(), 1);
     assert_eq!(db.projects.next_id(), AutoProjectId(1));
     assert_eq!(db.tasks.next_id(), AutoTaskId(1));
+}
+
+// =============================================================================
+// Unique index serde tests
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct UserId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct User {
+    #[primary_key]
+    pub id: UserId,
+    #[indexed(unique)]
+    pub email: String,
+    pub name: String,
+}
+
+#[test]
+fn unique_index_table_serde_roundtrip() {
+    let mut table = UserTable::new();
+    table
+        .insert_no_fk(User {
+            id: UserId(1),
+            email: "a@b.com".into(),
+            name: "Alice".into(),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(User {
+            id: UserId(2),
+            email: "c@d.com".into(),
+            name: "Bob".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: UserTable = serde_json::from_str(&json).unwrap();
+
+    // Rows preserved.
+    assert_eq!(table2.len(), 2);
+    assert_eq!(table2.get(&UserId(1)).unwrap().email, "a@b.com");
+    assert_eq!(table2.get(&UserId(2)).unwrap().email, "c@d.com");
+
+    // Unique index rebuilt — queries work.
+    assert_eq!(table2.by_email(&"a@b.com".to_string()).len(), 1);
+    assert_eq!(table2.count_by_email(&"a@b.com".to_string()), 1);
+}
+
+#[test]
+fn unique_index_enforced_after_deserialization() {
+    let mut table = UserTable::new();
+    table
+        .insert_no_fk(User {
+            id: UserId(1),
+            email: "a@b.com".into(),
+            name: "Alice".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let mut table2: UserTable = serde_json::from_str(&json).unwrap();
+
+    // Unique constraint should be enforced after deserialization.
+    let err = table2
+        .insert_no_fk(User {
+            id: UserId(2),
+            email: "a@b.com".into(),
+            name: "Bob".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateIndex { .. }));
+}
+
+#[test]
+fn unique_index_update_works_after_deserialization() {
+    let mut table = UserTable::new();
+    table
+        .insert_no_fk(User {
+            id: UserId(1),
+            email: "a@b.com".into(),
+            name: "Alice".into(),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(User {
+            id: UserId(2),
+            email: "c@d.com".into(),
+            name: "Bob".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let mut table2: UserTable = serde_json::from_str(&json).unwrap();
+
+    // Update to a new unique value — should work.
+    table2
+        .update_no_fk(User {
+            id: UserId(1),
+            email: "new@b.com".into(),
+            name: "Alice".into(),
+        })
+        .unwrap();
+    assert_eq!(table2.get_ref(&UserId(1)).unwrap().email, "new@b.com");
+
+    // Update to conflict — should fail.
+    let err = table2
+        .update_no_fk(User {
+            id: UserId(1),
+            email: "c@d.com".into(),
+            name: "Alice".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateIndex { .. }));
+}
+
+// --- Compound unique index serde ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct SlotId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[index(name = "building_slot", fields("building", "slot"), unique)]
+struct Assignment {
+    #[primary_key]
+    pub id: SlotId,
+    pub building: u32,
+    pub slot: u32,
+    pub elf_name: String,
+}
+
+#[test]
+fn compound_unique_index_serde_roundtrip() {
+    let mut table = AssignmentTable::new();
+    table
+        .insert_no_fk(Assignment {
+            id: SlotId(1),
+            building: 1,
+            slot: 1,
+            elf_name: "Alice".into(),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(Assignment {
+            id: SlotId(2),
+            building: 1,
+            slot: 2,
+            elf_name: "Bob".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let mut table2: AssignmentTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.len(), 2);
+
+    // Compound unique constraint enforced after deserialization.
+    let err = table2
+        .insert_no_fk(Assignment {
+            id: SlotId(3),
+            building: 1,
+            slot: 1,
+            elf_name: "Carol".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateIndex { .. }));
+
+    // Different compound key — succeeds.
+    table2
+        .insert_no_fk(Assignment {
+            id: SlotId(4),
+            building: 2,
+            slot: 1,
+            elf_name: "Dave".into(),
+        })
+        .unwrap();
+    assert_eq!(table2.len(), 3);
+}
+
+// --- Filtered unique index serde ---
+
+fn is_active_reg(r: &SerdeRegistration) -> bool {
+    r.active
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct SerdeRegId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[index(
+    name = "active_email",
+    fields("email"),
+    filter = "is_active_reg",
+    unique
+)]
+struct SerdeRegistration {
+    #[primary_key]
+    pub id: SerdeRegId,
+    pub email: String,
+    pub active: bool,
+}
+
+#[test]
+fn filtered_unique_index_serde_roundtrip() {
+    let mut table = SerdeRegistrationTable::new();
+    table
+        .insert_no_fk(SerdeRegistration {
+            id: SerdeRegId(1),
+            email: "a@b.com".into(),
+            active: true,
+        })
+        .unwrap();
+    // Same email, inactive — allowed.
+    table
+        .insert_no_fk(SerdeRegistration {
+            id: SerdeRegId(2),
+            email: "a@b.com".into(),
+            active: false,
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let mut table2: SerdeRegistrationTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.len(), 2);
+
+    // Filtered unique constraint enforced after deserialization.
+    let err = table2
+        .insert_no_fk(SerdeRegistration {
+            id: SerdeRegId(3),
+            email: "a@b.com".into(),
+            active: true,
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateIndex { .. }));
+
+    // Inactive with same email — still allowed.
+    table2
+        .insert_no_fk(SerdeRegistration {
+            id: SerdeRegId(4),
+            email: "a@b.com".into(),
+            active: false,
+        })
+        .unwrap();
+    assert_eq!(table2.len(), 3);
+}
+
+// --- Deserialization with unique violations in data ---
+
+#[test]
+fn deserialize_table_with_duplicate_unique_values() {
+    // Hand-craft JSON with duplicate unique values.
+    let json = r#"[
+        {"id": 1, "email": "a@b.com", "name": "Alice"},
+        {"id": 2, "email": "a@b.com", "name": "Bob"}
+    ]"#;
+
+    // Deserialization currently bypasses unique checks (inserts directly into
+    // BTreeMap then calls rebuild_indexes). The rebuild reconstructs the index
+    // from data, so both entries will be in the index. But subsequent inserts
+    // with the same value should still be rejected because the index has entries.
+    // This is not ideal — ideally deserialization would reject duplicates — but
+    // this test documents the current behavior.
+    let table: UserTable = serde_json::from_str(json).unwrap();
+    assert_eq!(table.len(), 2);
+
+    // The index has both entries (since rebuild_indexes just inserts all).
+    // A query for that email should return 2 (the index is not truly "unique"
+    // at this point since we bypassed the check).
+    assert_eq!(table.by_email(&"a@b.com".to_string()).len(), 2);
+}
+
+// --- Auto-increment + unique index serde ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct AutoUserId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct AutoUser {
+    #[primary_key(auto_increment)]
+    pub id: AutoUserId,
+    #[indexed(unique)]
+    pub email: String,
+    pub name: String,
+}
+
+#[test]
+fn auto_unique_index_serde_roundtrip() {
+    let mut table = AutoUserTable::new();
+    table
+        .insert_auto_no_fk(|pk| AutoUser {
+            id: pk,
+            email: "a@b.com".into(),
+            name: "Alice".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|pk| AutoUser {
+            id: pk,
+            email: "c@d.com".into(),
+            name: "Bob".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let mut table2: AutoUserTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.len(), 2);
+    assert_eq!(table2.next_id(), AutoUserId(2));
+
+    // Unique constraint enforced after deserialization.
+    let err = table2
+        .insert_auto_no_fk(|pk| AutoUser {
+            id: pk,
+            email: "a@b.com".into(),
+            name: "Charlie".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateIndex { .. }));
+
+    // Different email — succeeds.
+    let id = table2
+        .insert_auto_no_fk(|pk| AutoUser {
+            id: pk,
+            email: "e@f.com".into(),
+            name: "Dave".into(),
+        })
+        .unwrap();
+    assert_eq!(id, AutoUserId(2));
+    assert_eq!(table2.len(), 3);
 }
