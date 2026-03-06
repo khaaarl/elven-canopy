@@ -7,7 +7,7 @@
 ## keyboard shortcuts (1–7) are inactive.
 ##
 ## Keyboard shortcuts:
-## [Space] Toggle pause/resume, [+/=] Speed up, [-] Slow down
+## [Space] Toggle pause/resume
 ## [B] Build, [T] Tasks, [U] Units, [I] Tree Info, [F12] Toggle debug panel
 ## Debug-only (visible when debug panel is open):
 ## [1] Spawn Elf, [2] Spawn Capybara, [3] Spawn Boar, [4] Spawn Deer,
@@ -193,12 +193,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Speed shortcuts (always active).
 		if key.keycode == KEY_SPACE:
 			_toggle_pause()
-			get_viewport().set_input_as_handled()
-		elif key.keycode == KEY_EQUAL or key.keycode == KEY_KP_ADD:
-			_speed_up()
-			get_viewport().set_input_as_handled()
-		elif key.keycode == KEY_MINUS or key.keycode == KEY_KP_SUBTRACT:
-			_slow_down()
 			get_viewport().set_input_as_handled()
 		# Gameplay shortcuts (always active).
 		elif key.keycode == KEY_B:

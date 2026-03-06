@@ -7,7 +7,7 @@
 ## - WASD: move the focal point horizontally, relative to camera facing.
 ## - Q/E or Left/Right arrows: rotate the camera around the focal point.
 ## - Up/Down arrows or middle-mouse drag: tilt the camera up/down.
-## - Scroll wheel or +/- keys: zoom (distance from focal point to camera).
+## - Scroll wheel or +/= and - keys: zoom (distance from focal point to camera).
 ## - Page Up/Down: move the focal point vertically (clamped to world bounds).
 ##
 ## Follow mode: main.gd calls start_follow() / update_follow_target() to lock
@@ -42,6 +42,8 @@ const SNAP_LERP_SPEED: float = 8.0
 @export var mouse_pitch_sensitivity: float = 0.005
 ## Zoom speed (units per scroll step).
 @export var zoom_speed: float = 2.0
+## Keyboard zoom speed (units per second).
+@export var key_zoom_speed: float = 30.0
 ## Minimum zoom distance.
 @export var zoom_min: float = 5.0
 ## Maximum zoom distance.
@@ -132,17 +134,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif mb.button_index == MOUSE_BUTTON_MIDDLE:
 			_rotating = mb.pressed
 
-	# Keyboard zoom (+/= to zoom in, -/_ to zoom out).
-	if event is InputEventKey and event.pressed:
-		if event.physical_keycode == KEY_EQUAL:
-			_zoom = max(_zoom - zoom_speed, zoom_min)
-			_update_camera_transform()
-			get_viewport().set_input_as_handled()
-		elif event.physical_keycode == KEY_MINUS:
-			_zoom = min(_zoom + zoom_speed, zoom_max)
-			_update_camera_transform()
-			get_viewport().set_input_as_handled()
-
 	# Middle-mouse drag rotation and tilt.
 	if event is InputEventMouseMotion and _rotating:
 		var mm := event as InputEventMouseMotion
@@ -198,6 +189,14 @@ func _process(delta: float) -> void:
 		moved = true
 	if Input.is_action_pressed("tilt_down"):
 		_pitch = max(_pitch - tilt_speed * delta, pitch_min)
+		moved = true
+
+	# Keyboard zoom (+/= to zoom in, -/_ to zoom out).
+	if Input.is_key_pressed(KEY_EQUAL) or Input.is_key_pressed(KEY_KP_ADD):
+		_zoom = max(_zoom - key_zoom_speed * delta, zoom_min)
+		moved = true
+	if Input.is_key_pressed(KEY_MINUS) or Input.is_key_pressed(KEY_KP_SUBTRACT):
+		_zoom = min(_zoom + key_zoom_speed * delta, zoom_max)
 		moved = true
 
 	# Vertical focal point movement (Page Up/Down), clamped to world bounds.
