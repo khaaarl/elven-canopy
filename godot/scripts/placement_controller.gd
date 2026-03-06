@@ -4,7 +4,7 @@
 ## 1. Toolbar emits spawn_requested or action_requested → enter PLACING mode
 ## 2. Each frame: find the nav node closest to the mouse ray in 3D, show
 ##    wireframe highlight cube at that position
-## 3. Left-click: confirm action via SimBridge, exit placement mode
+## 3. Left-click: confirm action via SimBridge, stay in placement mode
 ## 4. Right-click or Escape: cancel, exit placement mode
 ##
 ## Supports two placement types:
@@ -243,8 +243,6 @@ func _confirm_spawn() -> void:
 		_bridge.create_goto_task(x, y, z)
 	elif _species_name != "":
 		_bridge.spawn_creature(_species_name, x, y, z)
-
-	_exit_placement()
 
 
 func _exit_placement() -> void:

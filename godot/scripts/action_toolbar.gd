@@ -7,11 +7,8 @@
 ## keyboard shortcuts (1–7) are inactive.
 ##
 ## Keyboard shortcuts:
-## [Space] Toggle pause/resume
+## [Space] Toggle pause/resume, [1] Normal, [2] Fast, [3] Very Fast
 ## [B] Build, [T] Tasks, [U] Units, [I] Tree Info, [F12] Toggle debug panel
-## Debug-only (visible when debug panel is open):
-## [1] Spawn Elf, [2] Spawn Capybara, [3] Spawn Boar, [4] Spawn Deer,
-## [5] Spawn Monkey, [6] Spawn Squirrel, [7] Spawn Elephant, [8] Summon Elf
 ##
 ## Emits three signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
@@ -145,42 +142,42 @@ func _ready() -> void:
 	vbox.add_child(_debug_row)
 
 	var elf_button := Button.new()
-	elf_button.text = "Spawn Elf [1]"
+	elf_button.text = "Spawn Elf"
 	elf_button.pressed.connect(_on_spawn.bind("Elf"))
 	_debug_row.add_child(elf_button)
 
 	var capybara_button := Button.new()
-	capybara_button.text = "Spawn Capybara [2]"
+	capybara_button.text = "Spawn Capybara"
 	capybara_button.pressed.connect(_on_spawn.bind("Capybara"))
 	_debug_row.add_child(capybara_button)
 
 	var boar_button := Button.new()
-	boar_button.text = "Boar [3]"
+	boar_button.text = "Boar"
 	boar_button.pressed.connect(_on_spawn.bind("Boar"))
 	_debug_row.add_child(boar_button)
 
 	var deer_button := Button.new()
-	deer_button.text = "Deer [4]"
+	deer_button.text = "Deer"
 	deer_button.pressed.connect(_on_spawn.bind("Deer"))
 	_debug_row.add_child(deer_button)
 
 	var monkey_button := Button.new()
-	monkey_button.text = "Monkey [5]"
+	monkey_button.text = "Monkey"
 	monkey_button.pressed.connect(_on_spawn.bind("Monkey"))
 	_debug_row.add_child(monkey_button)
 
 	var squirrel_button := Button.new()
-	squirrel_button.text = "Squirrel [6]"
+	squirrel_button.text = "Squirrel"
 	squirrel_button.pressed.connect(_on_spawn.bind("Squirrel"))
 	_debug_row.add_child(squirrel_button)
 
 	var elephant_button := Button.new()
-	elephant_button.text = "Elephant [7]"
+	elephant_button.text = "Elephant"
 	elephant_button.pressed.connect(_on_spawn.bind("Elephant"))
 	_debug_row.add_child(elephant_button)
 
 	var summon_button := Button.new()
-	summon_button.text = "Summon Elf [8]"
+	summon_button.text = "Summon Elf"
 	summon_button.pressed.connect(_on_summon_pressed)
 	_debug_row.add_child(summon_button)
 
@@ -193,6 +190,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Speed shortcuts (always active).
 		if key.keycode == KEY_SPACE:
 			_toggle_pause()
+			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_1:
+			_set_speed("Normal")
+			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_2:
+			_set_speed("Fast")
+			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_3:
+			_set_speed("VeryFast")
 			get_viewport().set_input_as_handled()
 		# Gameplay shortcuts (always active).
 		elif key.keycode == KEY_B:
@@ -210,32 +216,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif key.keycode == KEY_F12:
 			_toggle_debug()
 			get_viewport().set_input_as_handled()
-		# Debug shortcuts (only when debug row is visible).
-		elif _debug_visible:
-			if key.keycode == KEY_1:
-				_on_spawn("Elf")
-				get_viewport().set_input_as_handled()
-			elif key.keycode == KEY_2:
-				_on_spawn("Capybara")
-				get_viewport().set_input_as_handled()
-			elif key.keycode == KEY_3:
-				_on_spawn("Boar")
-				get_viewport().set_input_as_handled()
-			elif key.keycode == KEY_4:
-				_on_spawn("Deer")
-				get_viewport().set_input_as_handled()
-			elif key.keycode == KEY_5:
-				_on_spawn("Monkey")
-				get_viewport().set_input_as_handled()
-			elif key.keycode == KEY_6:
-				_on_spawn("Squirrel")
-				get_viewport().set_input_as_handled()
-			elif key.keycode == KEY_7:
-				_on_spawn("Elephant")
-				get_viewport().set_input_as_handled()
-			elif key.keycode == KEY_8:
-				_on_summon_pressed()
-				get_viewport().set_input_as_handled()
 
 
 func _set_speed(speed_name: String) -> void:
