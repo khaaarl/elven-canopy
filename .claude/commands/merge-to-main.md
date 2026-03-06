@@ -14,6 +14,17 @@ detection.
 
 ## Procedure
 
+**Delegate the entire merge to a general-purpose agent.** The agent performs all
+steps below, returning a summary of what happened (commit hash, any conflicts
+resolved, tracker updates made). This keeps the main context window clean.
+
+The agent should follow these steps:
+
+### Step 0: Identify the branch
+
+Run `git branch --show-current` to determine the feature branch name. All
+subsequent steps refer to this as `feature/BRANCH`.
+
 ### Step 1: Squash into a single commit
 
 Create a temporary local rebase branch and squash all feature commits:
@@ -55,8 +66,7 @@ git rebase main
 
 **If the rebase succeeds cleanly**, continue to step 4.
 
-**If conflicts arise**, delegate resolution to a general-purpose agent. The
-agent should:
+**If conflicts arise:**
 
 1. Run `git status` to identify conflicting files.
 2. Read each conflicting file and find the `<<<<<<<` / `=======` / `>>>>>>>`
@@ -66,19 +76,19 @@ agent should:
 4. Resolve each conflict, preserving the intent of both sides where possible.
 5. Stage resolved files and run `git rebase --continue`.
 
-After conflict resolution (whether by agent or directly):
+After conflict resolution:
 - Run `scripts/build.sh quicktest` to verify correctness.
 - If the conflicts were trivial (ordering, adjacent lines, no semantic
   interaction) and quicktest passes, proceed without asking.
 - If the conflicts required non-trivial edits (integrating two features that
-  touch the same code), ask the user for permission before continuing, even if
-  quicktest passes — tests may not catch all semantic issues.
+  touch the same code), **stop and report back to the outer context** for user
+  approval before continuing — tests may not catch all semantic issues.
 - If quicktest fails, diagnose and fix, then re-run. If you cannot resolve the
-  failures, ask the user for help.
+  failures, **stop and report back** for help.
 - If anything about the resolution feels wrong or surprising or even just
   suspicious — unexpected interactions, code that doesn't quite make sense,
-  unclear intent — investigate thoroughly before proceeding. Ask the user if
-  you're unsure.
+  unclear intent — investigate thoroughly before proceeding. **Stop and report
+  back** if unsure.
 
 ### Step 4: Update tracker
 
@@ -116,8 +126,8 @@ git reset --hard HEAD~1
 
 Then repeat from step 2 (pull main, rebase, resolve conflicts, update tracker,
 merge, push). Step 4 will be a no-op on retries since the tracker update is
-already in the squashed commit. If this fails 5 times, **stop and ask the user for help** —
-something unusual is happening.
+already in the squashed commit. If this fails 5 times, **stop and report back**
+— something unusual is happening.
 
 ### Step 6: Clean up
 
@@ -126,6 +136,19 @@ git branch -d feature/BRANCH-rebase
 git branch -D feature/BRANCH
 git push origin --delete feature/BRANCH
 ```
+
+### Step 7: Report back
+
+Return a concise summary to the outer context:
+- Final commit hash and message on main.
+- Whether conflicts were encountered and how they were resolved.
+- Whether the tracker was updated.
+- Any issues or concerns.
+
+## After the agent returns
+
+Review the agent's summary. If the agent stopped for user approval (non-trivial
+conflicts, test failures), address the issue and re-run or continue manually.
 
 ## Why squash first, then rebase?
 

@@ -230,7 +230,7 @@ python/.venv/bin/gdformat --line-length 100 godot/scripts/*.gd   # auto-format
 
 The repo's `.claude/settings.json` sets `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1`, which resets the Bash tool's working directory to the project root before every command. This means you never need to worry about working directory drift — just write commands relative to the repo root.
 
-**Keep Bash commands simple.** Do not use `source`, command substitution (`$(...)` or backticks), heredocs (`<<EOF`), shell variables, or other shell tricks. These trigger unnecessary permission prompts. Also avoid putting flag names inside quotes (e.g., `git show --stat "--format="` can trigger a "quoted flag names" permission check) — keep flags as bare arguments. Use the dedicated Read/Write/Edit tools for file operations. For `git commit`, pass the message directly with `-m "..."` using a simple quoted string.
+**Keep Bash commands simple.** Do not use `source`, command substitution (`$(...)` or backticks), heredocs (`<<EOF`), shell variables, or other shell tricks. These trigger unnecessary permission prompts. Also avoid putting flag names inside quotes (e.g., `git show --stat "--format="` can trigger a "quoted flag names" permission check) — keep flags as bare arguments. Use the dedicated Read/Write/Edit tools for file operations. For `git commit`, always use the `.tmp/commit-msg.txt` + `git commit -F` approach described in the "Committing Code" section.
 
 ## Scratch Files
 
@@ -312,7 +312,14 @@ ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FE
 
 **Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.sh check` and fix any issues. Do NOT commit code that fails formatting or linting. For commits that change Rust code, also run `scripts/build.sh quicktest` and ensure all tests pass. Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
 
-For multi-line commit messages, use multiple -m flags (e.g., -m "subject line" -m "body paragraph"). Do NOT use command substitution, heredocs, or shell variables to build commit messages.
+**Commit message procedure:** Always write the commit message to `.tmp/commit-msg.txt` using the Write tool, then commit with `-F`:
+
+```bash
+git commit -F .tmp/commit-msg.txt
+rm .tmp/commit-msg.txt
+```
+
+This applies to all commits — single-line and multi-line alike. Do NOT use `-m` flags, command substitution, heredocs, or shell variables to build commit messages.
 
 ## The Once-Over
 
@@ -320,7 +327,7 @@ When a feature branch's work is done, the user will likely ask for a "once-over"
 
 ## Merging to Main
 
-When the user asks to merge a feature branch to main, use the `/merge-to-main` slash command. It follows a squash-rebase-ff workflow that keeps main's history clean. Conflict resolution is delegated to a subagent when needed. See `.claude/commands/merge-to-main.md` for the full procedure.
+When the user asks to merge a feature branch to main, use the `/merge-to-main` slash command. It follows a squash-rebase-ff workflow that keeps main's history clean. The entire procedure is delegated to a subagent to keep the main context clean. See `.claude/commands/merge-to-main.md` for the full procedure.
 
 ## Conversation Flow (CRITICAL)
 
