@@ -38,5 +38,17 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             const MIN: Self = #name(<#field_ty as ::tabulosity::Bounded>::MIN);
             const MAX: Self = #name(<#field_ty as ::tabulosity::Bounded>::MAX);
         }
+
+        impl #impl_generics ::tabulosity::AutoIncrementable for #name #ty_generics #where_clause
+        where
+            #field_ty: ::tabulosity::AutoIncrementable,
+        {
+            fn first() -> Self {
+                #name(<#field_ty as ::tabulosity::AutoIncrementable>::first())
+            }
+            fn successor(&self) -> Self {
+                #name(::tabulosity::AutoIncrementable::successor(&self.0))
+            }
+        }
     }
 }

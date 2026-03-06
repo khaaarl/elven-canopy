@@ -3,7 +3,7 @@
 #![cfg(feature = "serde")]
 
 use serde::{Deserialize, Serialize};
-use tabulosity::{Bounded, Database, Error, MatchAll, Table};
+use tabulosity::{Bounded, Database, MatchAll, Table};
 
 // --- Row types ---
 
@@ -881,4 +881,110 @@ fn cascade_db_serde_fk_validation() {
         "error should mention FK violation: {}",
         err_msg,
     );
+}
+
+// =============================================================================
+// Auto-increment serde tests
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct AutoItemId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct AutoItem {
+    #[primary_key(auto_increment)]
+    pub id: AutoItemId,
+    pub name: String,
+}
+
+#[test]
+fn auto_table_serializes_as_struct() {
+    let mut table = AutoItemTable::new();
+    table
+        .insert_auto_no_fk(|pk| AutoItem {
+            id: pk,
+            name: "A".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|pk| AutoItem {
+            id: pk,
+            name: "B".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(val.is_object(), "auto table should serialize as object");
+    assert_eq!(val["next_id"], 2);
+    assert!(val["rows"].is_array());
+    assert_eq!(val["rows"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn auto_table_roundtrip_preserves_next_id() {
+    let mut table = AutoItemTable::new();
+    table
+        .insert_auto_no_fk(|pk| AutoItem {
+            id: pk,
+            name: "A".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|pk| AutoItem {
+            id: pk,
+            name: "B".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: AutoItemTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.len(), 2);
+    assert_eq!(table2.next_id(), AutoItemId(2));
+    assert_eq!(table2.get(&AutoItemId(0)).unwrap().name, "A");
+    assert_eq!(table2.get(&AutoItemId(1)).unwrap().name, "B");
+}
+
+#[test]
+fn auto_table_deserialize_with_gaps_auto_insert_correct() {
+    // Rows at IDs 0 and 5 — next_id serialized as 6.
+    let json = r#"{"next_id": 6, "rows": [
+        {"id": 0, "name": "A"},
+        {"id": 5, "name": "B"}
+    ]}"#;
+
+    let mut table: AutoItemTable = serde_json::from_str(json).unwrap();
+    assert_eq!(table.len(), 2);
+    assert_eq!(table.next_id(), AutoItemId(6));
+
+    let new_id = table
+        .insert_auto_no_fk(|pk| AutoItem {
+            id: pk,
+            name: "C".into(),
+        })
+        .unwrap();
+    assert_eq!(new_id, AutoItemId(6));
+}
+
+#[test]
+fn auto_table_deserialize_defensive_next_id_correction() {
+    // Deserialized next_id (3) is less than max PK successor (6).
+    // Should be corrected to 6.
+    let json = r#"{"next_id": 3, "rows": [
+        {"id": 0, "name": "A"},
+        {"id": 5, "name": "B"}
+    ]}"#;
+
+    let table: AutoItemTable = serde_json::from_str(json).unwrap();
+    assert_eq!(table.next_id(), AutoItemId(6));
+}
+
+#[test]
+fn auto_table_empty_roundtrip() {
+    let table = AutoItemTable::new();
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: AutoItemTable = serde_json::from_str(&json).unwrap();
+    assert!(table2.is_empty());
+    assert_eq!(table2.next_id(), AutoItemId(0));
 }

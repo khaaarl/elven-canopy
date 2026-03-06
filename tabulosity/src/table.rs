@@ -36,6 +36,33 @@ impl_bounded!(
     u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize
 );
 
+/// Types that support auto-incrementing primary keys.
+///
+/// Provides `first()` (the starting value) and `successor()` (the next value
+/// after `self`). Used by generated table code when `#[primary_key(auto_increment)]`
+/// is present.
+pub trait AutoIncrementable: Clone + Ord {
+    fn first() -> Self;
+    fn successor(&self) -> Self;
+}
+
+macro_rules! impl_auto_incrementable {
+    ($($ty:ty),*) => {
+        $(
+            impl AutoIncrementable for $ty {
+                fn first() -> Self { 0 }
+                fn successor(&self) -> Self {
+                    self.checked_add(1).expect("AutoIncrementable overflow")
+                }
+            }
+        )*
+    };
+}
+
+impl_auto_incrementable!(
+    u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize
+);
+
 impl Bounded for bool {
     const MIN: Self = false;
     const MAX: Self = true;
@@ -258,6 +285,43 @@ mod tests {
     fn bounded_option_ordering() {
         // None < Some(anything) — confirms MIN < MAX
         assert!(<Option<u8> as Bounded>::MIN < <Option<u8> as Bounded>::MAX);
+    }
+
+    // --- AutoIncrementable trait tests ---
+
+    #[test]
+    fn auto_incrementable_unsigned() {
+        assert_eq!(u32::first(), 0);
+        assert_eq!(u32::first().successor(), 1);
+        assert_eq!(42u32.successor(), 43);
+    }
+
+    #[test]
+    fn auto_incrementable_signed() {
+        assert_eq!(i32::first(), 0);
+        assert_eq!(i32::first().successor(), 1);
+        assert_eq!((-5i32).successor(), -4);
+    }
+
+    #[test]
+    fn auto_incrementable_all_primitives() {
+        // Just verify they compile and produce sensible results.
+        assert_eq!(u8::first(), 0u8);
+        assert_eq!(u16::first(), 0u16);
+        assert_eq!(u64::first(), 0u64);
+        assert_eq!(u128::first(), 0u128);
+        assert_eq!(usize::first(), 0usize);
+        assert_eq!(i8::first(), 0i8);
+        assert_eq!(i16::first(), 0i16);
+        assert_eq!(i64::first(), 0i64);
+        assert_eq!(i128::first(), 0i128);
+        assert_eq!(isize::first(), 0isize);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn auto_incrementable_overflow_panics() {
+        u8::MAX.successor();
     }
 
     // --- FkCheck trait tests ---

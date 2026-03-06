@@ -12,6 +12,7 @@ pub struct ParsedField {
     pub ident: Ident,
     pub ty: Type,
     pub is_primary_key: bool,
+    pub is_auto_increment: bool,
     pub is_indexed: bool,
 }
 
@@ -30,12 +31,39 @@ pub fn parse_fields(fields: &syn::FieldsNamed) -> Vec<ParsedField> {
 fn parse_field(field: &Field) -> ParsedField {
     let ident = field.ident.clone().expect("named field");
     let ty = field.ty.clone();
-    let is_primary_key = field.attrs.iter().any(|a| a.path().is_ident("primary_key"));
+    let mut is_primary_key = false;
+    let mut is_auto_increment = false;
+    for attr in &field.attrs {
+        if attr.path().is_ident("primary_key") {
+            is_primary_key = true;
+            // Check for `#[primary_key(auto_increment)]`.
+            if let syn::Meta::List(meta_list) = &attr.meta {
+                let parsed: syn::Result<Ident> = syn::parse2(meta_list.tokens.clone());
+                match parsed {
+                    Ok(id) if id == "auto_increment" => {
+                        is_auto_increment = true;
+                    }
+                    Ok(id) => {
+                        // Will be caught at compile time via syn error, but
+                        // we can't return an error from here easily. Use panic
+                        // since this is a proc macro context.
+                        panic!(
+                            "unknown #[primary_key(...)] argument: `{id}`; expected `auto_increment`"
+                        );
+                    }
+                    Err(_) => {
+                        panic!("invalid #[primary_key(...)] syntax; expected `auto_increment`");
+                    }
+                }
+            }
+        }
+    }
     let is_indexed = field.attrs.iter().any(|a| a.path().is_ident("indexed"));
     ParsedField {
         ident,
         ty,
         is_primary_key,
+        is_auto_increment,
         is_indexed,
     }
 }

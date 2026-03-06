@@ -1,6 +1,6 @@
-//! Integration tests for `#[derive(Bounded)]`.
+//! Integration tests for `#[derive(Bounded)]` and `AutoIncrementable`.
 
-use tabulosity::Bounded;
+use tabulosity::{AutoIncrementable, Bounded};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
 struct CreatureId(u64);
@@ -42,4 +42,21 @@ fn bounded_option_of_newtype() {
         <Option<CreatureId> as Bounded>::MAX,
         Some(CreatureId(u64::MAX))
     );
+}
+
+// --- AutoIncrementable on newtypes ---
+
+#[test]
+fn auto_incrementable_newtype_first() {
+    assert_eq!(CreatureId::first(), CreatureId(0));
+    assert_eq!(SmallId::first(), SmallId(0));
+    assert_eq!(SignedId::first(), SignedId(0));
+}
+
+#[test]
+fn auto_incrementable_newtype_successor() {
+    assert_eq!(CreatureId(0).successor(), CreatureId(1));
+    assert_eq!(CreatureId(42).successor(), CreatureId(43));
+    assert_eq!(SmallId(254).successor(), SmallId(255));
+    assert_eq!(SignedId(-1).successor(), SignedId(0));
 }

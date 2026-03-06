@@ -47,10 +47,11 @@ struct FkDecl {
     on_delete: OnDeleteAction,
 }
 
-/// A parsed `#[table(singular = "...", fks(...))]` attribute.
+/// A parsed `#[table(singular = "...", fks(...), auto)]` attribute.
 struct TableAttr {
     singular: String,
     fks: Vec<FkDecl>,
+    is_auto: bool,
 }
 
 /// A fully parsed table field with all metadata needed for codegen.
@@ -121,6 +122,7 @@ impl Parse for FkList {
 fn parse_table_attr(attr: &syn::Attribute) -> syn::Result<TableAttr> {
     let mut singular = None;
     let mut fks = Vec::new();
+    let mut is_auto = false;
 
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("singular") {
@@ -134,8 +136,11 @@ fn parse_table_attr(attr: &syn::Attribute) -> syn::Result<TableAttr> {
             let fk_list: FkList = content.parse()?;
             fks = fk_list.fks;
             Ok(())
+        } else if meta.path.is_ident("auto") {
+            is_auto = true;
+            Ok(())
         } else {
-            Err(meta.error("expected `singular` or `fks`"))
+            Err(meta.error("expected `singular`, `fks`, or `auto`"))
         }
     })?;
 
@@ -143,7 +148,11 @@ fn parse_table_attr(attr: &syn::Attribute) -> syn::Result<TableAttr> {
         syn::Error::new_spanned(attr, "missing `singular = \"...\"` in #[table(...)]")
     })?;
 
-    Ok(TableAttr { singular, fks })
+    Ok(TableAttr {
+        singular,
+        fks,
+        is_auto,
+    })
 }
 
 pub fn derive(input: &DeriveInput) -> TokenStream {
@@ -422,11 +431,33 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                 })
                 .unwrap_or_default();
 
+            // Auto-increment insert method (only for auto tables).
+            let auto_insert_method = if tf.attr.is_auto {
+                let insert_auto_fn = format_ident!("insert_{}_auto", singular);
+                let fk_checks_auto = gen_fk_checks();
+                quote! {
+                    pub fn #insert_auto_fn(
+                        &mut self,
+                        f: impl ::std::ops::FnOnce(<#table_ty as ::tabulosity::TableMeta>::Key) -> #row_ty,
+                    ) -> ::std::result::Result<<#table_ty as ::tabulosity::TableMeta>::Key, ::tabulosity::Error> {
+                        let pk = self.#table_ident.next_id();
+                        let row = f(pk.clone());
+                        #(#fk_checks_auto)*
+                        self.#table_ident.insert_no_fk(row)?;
+                        ::std::result::Result::Ok(pk)
+                    }
+                }
+            } else {
+                quote! {}
+            };
+
             quote! {
                 pub fn #insert_fn(&mut self, row: #row_ty) -> ::std::result::Result<(), ::tabulosity::Error> {
                     #(#fk_checks_insert)*
                     self.#table_ident.insert_no_fk(row)
                 }
+
+                #auto_insert_method
 
                 pub fn #update_fn(&mut self, row: #row_ty) -> ::std::result::Result<(), ::tabulosity::Error> {
                     #(#fk_checks_update)*

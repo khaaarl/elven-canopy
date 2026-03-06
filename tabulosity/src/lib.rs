@@ -20,7 +20,9 @@ mod error;
 mod table;
 
 pub use error::{DeserializeError, Error};
-pub use table::{Bounded, FkCheck, IntoQuery, MatchAll, QueryBound, TableMeta, in_bounds};
+pub use table::{
+    AutoIncrementable, Bounded, FkCheck, IntoQuery, MatchAll, QueryBound, TableMeta, in_bounds,
+};
 
 // Re-export derives so users write `use tabulosity::Table` etc.
 pub use tabulosity_derive::{Bounded, Database, Table};
