@@ -41,6 +41,10 @@ impl_bounded!(
 /// Provides `first()` (the starting value) and `successor()` (the next value
 /// after `self`). Used by generated table code when `#[primary_key(auto_increment)]`
 /// is present.
+///
+/// For all integer primitives, `first()` returns 0 — including signed types.
+/// This means signed types have fewer usable IDs before overflow than their
+/// unsigned counterparts (e.g., `i8` overflows at 127, not 255).
 pub trait AutoIncrementable: Clone + Ord {
     fn first() -> Self;
     fn successor(&self) -> Self;

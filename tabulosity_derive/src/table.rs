@@ -43,7 +43,10 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
-            Fields::Named(named) => parse::parse_fields(named),
+            Fields::Named(named) => match parse::parse_fields(named) {
+                Ok(f) => f,
+                Err(e) => return e.to_compile_error(),
+            },
             _ => {
                 return syn::Error::new_spanned(
                     row_name,

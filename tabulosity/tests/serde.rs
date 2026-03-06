@@ -988,3 +988,98 @@ fn auto_table_empty_roundtrip() {
     assert!(table2.is_empty());
     assert_eq!(table2.next_id(), AutoItemId(0));
 }
+
+// --- Database-level auto-increment serde ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct AutoProjectId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct AutoProject {
+    #[primary_key(auto_increment)]
+    pub id: AutoProjectId,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct AutoTaskId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct AutoTask {
+    #[primary_key(auto_increment)]
+    pub id: AutoTaskId,
+    #[indexed]
+    pub project: AutoProjectId,
+    pub label: String,
+}
+
+#[derive(Database)]
+struct AutoDb {
+    #[table(singular = "project", auto)]
+    pub projects: AutoProjectTable,
+
+    #[table(singular = "task", auto, fks(project = "projects"))]
+    pub tasks: AutoTaskTable,
+}
+
+#[test]
+fn auto_database_roundtrip() {
+    let mut db = AutoDb::new();
+    let pid = db
+        .insert_project_auto(|pk| AutoProject {
+            id: pk,
+            name: "Alpha".into(),
+        })
+        .unwrap();
+    db.insert_task_auto(|pk| AutoTask {
+        id: pk,
+        project: pid,
+        label: "build".into(),
+    })
+    .unwrap();
+
+    let json = serde_json::to_string(&db).unwrap();
+    let db2: AutoDb = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(db2.projects.len(), 1);
+    assert_eq!(db2.tasks.len(), 1);
+    assert_eq!(db2.projects.get(&AutoProjectId(0)).unwrap().name, "Alpha");
+    assert_eq!(db2.tasks.get(&AutoTaskId(0)).unwrap().label, "build");
+
+    // next_id preserved — auto insert gets correct next ID.
+    assert_eq!(db2.projects.next_id(), AutoProjectId(1));
+    assert_eq!(db2.tasks.next_id(), AutoTaskId(1));
+}
+
+#[test]
+fn auto_database_roundtrip_then_auto_insert() {
+    let mut db = AutoDb::new();
+    db.insert_project_auto(|pk| AutoProject {
+        id: pk,
+        name: "A".into(),
+    })
+    .unwrap();
+
+    let json = serde_json::to_string(&db).unwrap();
+    let mut db2: AutoDb = serde_json::from_str(&json).unwrap();
+
+    // Auto insert after deserialization should work correctly.
+    let pid = db2
+        .insert_project_auto(|pk| AutoProject {
+            id: pk,
+            name: "B".into(),
+        })
+        .unwrap();
+    assert_eq!(pid, AutoProjectId(1));
+}
+
+#[test]
+fn auto_database_empty_roundtrip() {
+    let db = AutoDb::new();
+    let json = serde_json::to_string(&db).unwrap();
+    let db2: AutoDb = serde_json::from_str(&json).unwrap();
+    assert!(db2.projects.is_empty());
+    assert!(db2.tasks.is_empty());
+    assert_eq!(db2.projects.next_id(), AutoProjectId(0));
+    assert_eq!(db2.tasks.next_id(), AutoTaskId(0));
+}

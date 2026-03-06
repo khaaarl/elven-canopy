@@ -24,11 +24,11 @@ pub struct IndexDecl {
 }
 
 /// Parse all fields from a named struct, extracting tabulosity attributes.
-pub fn parse_fields(fields: &syn::FieldsNamed) -> Vec<ParsedField> {
+pub fn parse_fields(fields: &syn::FieldsNamed) -> syn::Result<Vec<ParsedField>> {
     fields.named.iter().map(parse_field).collect()
 }
 
-fn parse_field(field: &Field) -> ParsedField {
+fn parse_field(field: &Field) -> syn::Result<ParsedField> {
     let ident = field.ident.clone().expect("named field");
     let ty = field.ty.clone();
     let mut is_primary_key = false;
@@ -44,28 +44,31 @@ fn parse_field(field: &Field) -> ParsedField {
                         is_auto_increment = true;
                     }
                     Ok(id) => {
-                        // Will be caught at compile time via syn error, but
-                        // we can't return an error from here easily. Use panic
-                        // since this is a proc macro context.
-                        panic!(
-                            "unknown #[primary_key(...)] argument: `{id}`; expected `auto_increment`"
-                        );
+                        return Err(syn::Error::new(
+                            id.span(),
+                            format!(
+                                "unknown #[primary_key(...)] argument: `{id}`; expected `auto_increment`"
+                            ),
+                        ));
                     }
-                    Err(_) => {
-                        panic!("invalid #[primary_key(...)] syntax; expected `auto_increment`");
+                    Err(e) => {
+                        return Err(syn::Error::new(
+                            e.span(),
+                            "invalid #[primary_key(...)] syntax; expected `auto_increment`",
+                        ));
                     }
                 }
             }
         }
     }
     let is_indexed = field.attrs.iter().any(|a| a.path().is_ident("indexed"));
-    ParsedField {
+    Ok(ParsedField {
         ident,
         ty,
         is_primary_key,
         is_auto_increment,
         is_indexed,
-    }
+    })
 }
 
 /// Parse all `#[index(...)]` attributes from the struct-level attributes.

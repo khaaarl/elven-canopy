@@ -559,6 +559,7 @@ fn generate_serde_impls(
                 row_ty,
                 table_name_str,
                 &tf.attr.fks,
+                tf.attr.is_auto,
             )
         })
         .collect();
@@ -567,7 +568,7 @@ fn generate_serde_impls(
 
     let serialize_fields: Vec<TokenStream> = field_infos
         .iter()
-        .map(|(field_ident, field_name_str, _, _, _, _)| {
+        .map(|(field_ident, field_name_str, _, _, _, _, _)| {
             quote! {
                 state.serialize_field(#field_name_str, &self.#field_ident)?;
             }
@@ -576,7 +577,7 @@ fn generate_serde_impls(
 
     let row_tys_ser: Vec<_> = field_infos
         .iter()
-        .map(|(_, _, _, row_ty, _, _)| row_ty.clone())
+        .map(|(_, _, _, row_ty, _, _, _)| row_ty.clone())
         .collect();
 
     // --- Deserialize impl ---
@@ -584,70 +585,97 @@ fn generate_serde_impls(
     // Field name strings for the visitor.
     let field_name_strs: Vec<_> = field_infos
         .iter()
-        .map(|(_, s, _, _, _, _)| s.clone())
+        .map(|(_, s, _, _, _, _, _)| s.clone())
         .collect();
 
     // Local variable names for deserialized Vec<Row>.
     let vec_var_names: Vec<Ident> = field_infos
         .iter()
-        .map(|(fi, _, _, _, _, _)| format_ident!("__vec_{}", fi))
+        .map(|(fi, _, _, _, _, _, _)| format_ident!("__vec_{}", fi))
         .collect();
 
     // Local variable names for built tables.
     let table_var_names: Vec<Ident> = field_infos
         .iter()
-        .map(|(fi, _, _, _, _, _)| format_ident!("__table_{}", fi))
+        .map(|(fi, _, _, _, _, _, _)| format_ident!("__table_{}", fi))
         .collect();
 
     let row_tys_de: Vec<_> = field_infos
         .iter()
-        .map(|(_, _, _, row_ty, _, _)| row_ty.clone())
+        .map(|(_, _, _, row_ty, _, _, _)| row_ty.clone())
         .collect();
     let table_tys_de: Vec<_> = field_infos
         .iter()
-        .map(|(_, _, table_ty, _, _, _)| table_ty.clone())
+        .map(|(_, _, table_ty, _, _, _, _)| table_ty.clone())
         .collect();
     let table_name_strs: Vec<_> = field_infos
         .iter()
-        .map(|(_, _, _, _, tns, _)| tns.clone())
+        .map(|(_, _, _, _, tns, _, _)| tns.clone())
         .collect();
-    // Map access: deserialize each field as Vec<Row>.
+    // Map access: deserialize each field. Non-auto tables are deserialized as
+    // Vec<Row>; auto tables are deserialized directly as the table type (since
+    // they serialize as `{"next_id": N, "rows": [...]}`).
     let map_access_arms: Vec<TokenStream> = field_infos
         .iter()
         .enumerate()
-        .map(|(i, (_, field_name_str, _, row_ty, _, _))| {
+        .map(|(i, (_, field_name_str, _, row_ty, _, _, is_auto))| {
             let vec_var = &vec_var_names[i];
-            quote! {
-                #field_name_str => {
-                    if #vec_var.is_some() {
-                        return ::std::result::Result::Err(
-                            ::serde::de::Error::duplicate_field(#field_name_str),
+            if *is_auto {
+                let table_ty = &table_tys_de[i];
+                quote! {
+                    #field_name_str => {
+                        if #vec_var.is_some() {
+                            return ::std::result::Result::Err(
+                                ::serde::de::Error::duplicate_field(#field_name_str),
+                            );
+                        }
+                        #vec_var = ::std::option::Option::Some(
+                            map.next_value::<#table_ty>()?
                         );
                     }
-                    #vec_var = ::std::option::Option::Some(
-                        map.next_value::<::std::vec::Vec<#row_ty>>()?
-                    );
+                }
+            } else {
+                quote! {
+                    #field_name_str => {
+                        if #vec_var.is_some() {
+                            return ::std::result::Result::Err(
+                                ::serde::de::Error::duplicate_field(#field_name_str),
+                            );
+                        }
+                        #vec_var = ::std::option::Option::Some(
+                            map.next_value::<::std::vec::Vec<#row_ty>>()?
+                        );
+                    }
                 }
             }
         })
         .collect();
 
-    // Build tables from vecs, collecting duplicate key errors.
+    // Build tables from vecs, collecting duplicate key errors. Auto tables are
+    // already deserialized as table types, so they skip the Vec<Row> path.
     let build_tables: Vec<TokenStream> = field_infos
         .iter()
         .enumerate()
-        .map(|(i, (_, field_name_str, _, _, _, _))| {
+        .map(|(i, (_, field_name_str, _, _, _, _, is_auto))| {
             let vec_var = &vec_var_names[i];
             let table_var = &table_var_names[i];
             let table_ty = &table_tys_de[i];
-            quote! {
-                let __rows = #vec_var.ok_or_else(|| {
-                    ::serde::de::Error::missing_field(#field_name_str)
-                })?;
-                let mut #table_var = <#table_ty>::new();
-                for __row in __rows {
-                    if let ::std::result::Result::Err(e) = #table_var.insert_no_fk(__row) {
-                        __errors.push(e);
+            if *is_auto {
+                quote! {
+                    let mut #table_var = #vec_var.ok_or_else(|| {
+                        ::serde::de::Error::missing_field(#field_name_str)
+                    })?;
+                }
+            } else {
+                quote! {
+                    let __rows = #vec_var.ok_or_else(|| {
+                        ::serde::de::Error::missing_field(#field_name_str)
+                    })?;
+                    let mut #table_var = <#table_ty>::new();
+                    for __row in __rows {
+                        if let ::std::result::Result::Err(e) = #table_var.insert_no_fk(__row) {
+                            __errors.push(e);
+                        }
                     }
                 }
             }
@@ -658,7 +686,7 @@ fn generate_serde_impls(
     let fk_checks: Vec<TokenStream> = field_infos
         .iter()
         .enumerate()
-        .filter_map(|(i, (_, _, _, _, _, fks))| {
+        .filter_map(|(i, (_, _, _, _, _, fks, _))| {
             if fks.is_empty() {
                 return None;
             }
@@ -673,7 +701,7 @@ fn generate_serde_impls(
                     // Find the index of the target table field.
                     let target_idx = field_infos
                         .iter()
-                        .position(|(fi, _, _, _, _, _)| fi == &fk.target_table)
+                        .position(|(fi, _, _, _, _, _, _)| fi == &fk.target_table)
                         .unwrap_or_else(|| {
                             panic!(
                                 "FK {}.{} references table '{}' which is not a field in the database struct",
@@ -708,9 +736,47 @@ fn generate_serde_impls(
     let construct_fields: Vec<TokenStream> = field_infos
         .iter()
         .enumerate()
-        .map(|(i, (field_ident, _, _, _, _, _))| {
+        .map(|(i, (field_ident, _, _, _, _, _, _))| {
             let table_var = &table_var_names[i];
             quote! { #field_ident: #table_var }
+        })
+        .collect();
+
+    // Variable declarations for the visitor. Auto tables use Option<TableType>,
+    // non-auto tables use Option<Vec<Row>>.
+    let vec_var_decls: Vec<TokenStream> = field_infos
+        .iter()
+        .enumerate()
+        .map(|(i, (_, _, _, _, _, _, is_auto))| {
+            let vec_var = &vec_var_names[i];
+            if *is_auto {
+                let table_ty = &table_tys_de[i];
+                quote! {
+                    let mut #vec_var: ::std::option::Option<#table_ty> = ::std::option::Option::None;
+                }
+            } else {
+                let row_ty = &row_tys_de[i];
+                quote! {
+                    let mut #vec_var: ::std::option::Option<::std::vec::Vec<#row_ty>> = ::std::option::Option::None;
+                }
+            }
+        })
+        .collect();
+
+    // Extra where bounds for auto tables (their Serialize/Deserialize impls
+    // have additional constraints beyond just Row: Serialize/Deserialize).
+    let auto_ser_bounds: Vec<TokenStream> = field_infos
+        .iter()
+        .filter(|(_, _, _, _, _, _, is_auto)| *is_auto)
+        .map(|(_, _, table_ty, _, _, _, _)| {
+            quote! { #table_ty: ::serde::Serialize, }
+        })
+        .collect();
+    let auto_de_bounds: Vec<TokenStream> = field_infos
+        .iter()
+        .filter(|(_, _, _, _, _, _, is_auto)| *is_auto)
+        .map(|(_, _, table_ty, _, _, _, _)| {
+            quote! { #table_ty: ::serde::Deserialize<'de>, }
         })
         .collect();
 
@@ -722,6 +788,7 @@ fn generate_serde_impls(
         impl ::serde::Serialize for #db_name
         where
             #(#row_tys_ser: ::serde::Serialize,)*
+            #(#auto_ser_bounds)*
         {
             fn serialize<__S: ::serde::Serializer>(
                 &self,
@@ -738,6 +805,7 @@ fn generate_serde_impls(
         impl<'de> ::serde::Deserialize<'de> for #db_name
         where
             #(#row_tys_de: ::serde::Deserialize<'de>,)*
+            #(#auto_de_bounds)*
         {
             fn deserialize<__D: ::serde::Deserializer<'de>>(
                 deserializer: __D,
@@ -749,6 +817,7 @@ fn generate_serde_impls(
                 impl<'de> ::serde::de::Visitor<'de> for #visitor_name
                 where
                     #(#row_tys_de: ::serde::Deserialize<'de>,)*
+                    #(#auto_de_bounds)*
                 {
                     type Value = #db_name;
 
@@ -763,7 +832,7 @@ fn generate_serde_impls(
                         self,
                         mut map: __A,
                     ) -> ::std::result::Result<Self::Value, __A::Error> {
-                        #(let mut #vec_var_names: ::std::option::Option<::std::vec::Vec<#row_tys_de>> = ::std::option::Option::None;)*
+                        #(#vec_var_decls)*
 
                         while let ::std::option::Option::Some(__key) = map.next_key::<::std::string::String>()? {
                             match __key.as_str() {
