@@ -33,7 +33,7 @@ pub fn derive_bounded(input: TokenStream) -> TokenStream {
 ///
 /// Recognizes two field attributes: `#[primary_key]` (exactly one required)
 /// and `#[indexed]` (zero or more).
-#[proc_macro_derive(Table, attributes(primary_key, indexed))]
+#[proc_macro_derive(Table, attributes(primary_key, indexed, index))]
 pub fn derive_table(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
     table::derive(&input).into()

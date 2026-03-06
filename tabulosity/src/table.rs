@@ -1,19 +1,19 @@
 //! Shared traits and helpers used by tabulosity-generated code.
 //!
 //! - `Bounded` — provides `MIN`/`MAX` constants for primary key types and
-//!   indexed field types that support range queries.
+//!   indexed field types (legacy trait, no longer required by generated code).
 //! - `FkCheck` — uniform FK validation for both `T` and `Option<T>` fields.
 //! - `TableMeta` — associates a table companion struct with its key and row types.
-//! - `map_start_bound` / `map_end_bound` — translate `RangeBounds<Field>`
-//!   into composite `(Field, PK)` bounds for secondary index range scans.
+//! - `IntoQuery` / `QueryBound` / `MatchAll` — unified query API for compound
+//!   and simple indexes.
+//! - `in_bounds` — post-filter helper for range checks in generated query code.
 
-use std::ops::Bound;
+use std::ops::{Bound, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
 /// Types with known minimum and maximum values.
 ///
-/// Used by generated secondary index code to construct composite range bounds
-/// for equality and range queries. Primary key types must always implement
-/// this trait. Indexed field types need it only if range queries are desired.
+/// Legacy trait retained for user convenience. No longer required by generated
+/// index code (which uses tracked bounds instead).
 pub trait Bounded {
     const MIN: Self;
     const MAX: Self;
@@ -82,28 +82,126 @@ pub trait TableMeta {
     type Row;
 }
 
-// --- Range bound helpers (used by generated range query methods) ---
+// =============================================================================
+// Unified query API — IntoQuery, QueryBound, MatchAll
+// =============================================================================
 
-/// Translates the start bound of a `RangeBounds<Field>` into a composite
-/// `Bound<(Field, PK)>` for secondary index range scans.
-#[doc(hidden)]
-pub fn map_start_bound<F: Clone, PK: Bounded>(bound: Bound<&F>) -> Bound<(F, PK)> {
-    match bound {
-        Bound::Included(v) => Bound::Included((v.clone(), PK::MIN)),
-        Bound::Excluded(v) => Bound::Excluded((v.clone(), PK::MAX)),
-        Bound::Unbounded => Bound::Unbounded,
+/// Unit struct that matches all values for a field in a compound query.
+/// Named `MatchAll` (not `Any`) to avoid collision with `std::any::Any`.
+pub struct MatchAll;
+
+/// The resolved form of a query parameter for a single field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueryBound<T> {
+    /// Match exactly this value.
+    Exact(T),
+    /// Match values in this range.
+    Range { start: Bound<T>, end: Bound<T> },
+    /// Match all values (no constraint on this field).
+    MatchAll,
+}
+
+/// Converts a query parameter into a `QueryBound` for use in compound index
+/// queries. Implemented for references (exact match), standard range types,
+/// `MatchAll`, and arbitrary `(Bound<T>, Bound<T>)` pairs.
+pub trait IntoQuery<T> {
+    fn into_query(self) -> QueryBound<T>;
+}
+
+// Exact match from a reference — the most common case.
+impl<T: Clone> IntoQuery<T> for &T {
+    fn into_query(self) -> QueryBound<T> {
+        QueryBound::Exact(self.clone())
     }
 }
 
-/// Translates the end bound of a `RangeBounds<Field>` into a composite
-/// `Bound<(Field, PK)>` for secondary index range scans.
-#[doc(hidden)]
-pub fn map_end_bound<F: Clone, PK: Bounded>(bound: Bound<&F>) -> Bound<(F, PK)> {
-    match bound {
-        Bound::Included(v) => Bound::Included((v.clone(), PK::MAX)),
-        Bound::Excluded(v) => Bound::Excluded((v.clone(), PK::MIN)),
-        Bound::Unbounded => Bound::Unbounded,
+// Range types -> QueryBound::Range with appropriate bounds.
+impl<T: Clone> IntoQuery<T> for Range<T> {
+    fn into_query(self) -> QueryBound<T> {
+        QueryBound::Range {
+            start: Bound::Included(self.start),
+            end: Bound::Excluded(self.end),
+        }
     }
+}
+
+impl<T: Clone> IntoQuery<T> for RangeInclusive<T> {
+    fn into_query(self) -> QueryBound<T> {
+        let (start, end) = self.into_inner();
+        QueryBound::Range {
+            start: Bound::Included(start),
+            end: Bound::Included(end),
+        }
+    }
+}
+
+impl<T: Clone> IntoQuery<T> for RangeFrom<T> {
+    fn into_query(self) -> QueryBound<T> {
+        QueryBound::Range {
+            start: Bound::Included(self.start),
+            end: Bound::Unbounded,
+        }
+    }
+}
+
+impl<T: Clone> IntoQuery<T> for RangeTo<T> {
+    fn into_query(self) -> QueryBound<T> {
+        QueryBound::Range {
+            start: Bound::Unbounded,
+            end: Bound::Excluded(self.end),
+        }
+    }
+}
+
+impl<T: Clone> IntoQuery<T> for RangeToInclusive<T> {
+    fn into_query(self) -> QueryBound<T> {
+        QueryBound::Range {
+            start: Bound::Unbounded,
+            end: Bound::Included(self.end),
+        }
+    }
+}
+
+impl<T> IntoQuery<T> for RangeFull {
+    fn into_query(self) -> QueryBound<T> {
+        QueryBound::MatchAll
+    }
+}
+
+// The MatchAll unit struct — ergonomic shorthand for "no constraint".
+impl<T> IntoQuery<T> for MatchAll {
+    fn into_query(self) -> QueryBound<T> {
+        QueryBound::MatchAll
+    }
+}
+
+// Arbitrary bound combinations — covers cases with no named Rust range type.
+impl<T: Clone> IntoQuery<T> for (Bound<T>, Bound<T>) {
+    fn into_query(self) -> QueryBound<T> {
+        QueryBound::Range {
+            start: self.0,
+            end: self.1,
+        }
+    }
+}
+
+/// Returns true if `val` falls within the given bounds.
+///
+/// Used by generated query code for post-filtering fields that cannot be
+/// served by the index range scan.
+#[doc(hidden)]
+pub fn in_bounds<T: Ord>(val: &T, start: &Bound<T>, end: &Bound<T>) -> bool {
+    let start_ok = match start {
+        Bound::Included(s) => val >= s,
+        Bound::Excluded(s) => val > s,
+        Bound::Unbounded => true,
+    };
+    let end_ok = match end {
+        Bound::Included(e) => val <= e,
+        Bound::Excluded(e) => val < e,
+        Bound::Unbounded => true,
+    };
+    start_ok && end_ok
 }
 
 #[cfg(test)]
@@ -194,41 +292,117 @@ mod tests {
         assert!(!FkCheck::<u32>::check_fk(&val, |k| *k == 10));
     }
 
-    // --- Range bound helper tests ---
+    // --- IntoQuery trait tests ---
 
     #[test]
-    fn map_start_included() {
-        let bound = map_start_bound::<u32, u8>(Bound::Included(&50));
-        assert_eq!(bound, Bound::Included((50, u8::MIN)));
+    fn into_query_exact_from_ref() {
+        assert_eq!((&42u32).into_query(), QueryBound::Exact(42u32));
     }
 
     #[test]
-    fn map_start_excluded() {
-        let bound = map_start_bound::<u32, u8>(Bound::Excluded(&50));
-        assert_eq!(bound, Bound::Excluded((50, u8::MAX)));
+    fn into_query_range() {
+        assert_eq!(
+            (3u32..7u32).into_query(),
+            QueryBound::Range {
+                start: Bound::Included(3),
+                end: Bound::Excluded(7),
+            }
+        );
     }
 
     #[test]
-    fn map_start_unbounded() {
-        let bound = map_start_bound::<u32, u8>(Bound::Unbounded);
-        assert_eq!(bound, Bound::Unbounded);
+    fn into_query_range_inclusive() {
+        assert_eq!(
+            (3u32..=7u32).into_query(),
+            QueryBound::Range {
+                start: Bound::Included(3),
+                end: Bound::Included(7),
+            }
+        );
     }
 
     #[test]
-    fn map_end_included() {
-        let bound = map_end_bound::<u32, u8>(Bound::Included(&50));
-        assert_eq!(bound, Bound::Included((50, u8::MAX)));
+    fn into_query_range_from() {
+        assert_eq!(
+            (3u32..).into_query(),
+            QueryBound::Range {
+                start: Bound::Included(3),
+                end: Bound::Unbounded,
+            }
+        );
     }
 
     #[test]
-    fn map_end_excluded() {
-        let bound = map_end_bound::<u32, u8>(Bound::Excluded(&50));
-        assert_eq!(bound, Bound::Excluded((50, u8::MIN)));
+    fn into_query_range_to() {
+        assert_eq!(
+            (..7u32).into_query(),
+            QueryBound::Range {
+                start: Bound::Unbounded,
+                end: Bound::Excluded(7),
+            }
+        );
     }
 
     #[test]
-    fn map_end_unbounded() {
-        let bound = map_end_bound::<u32, u8>(Bound::Unbounded);
-        assert_eq!(bound, Bound::Unbounded);
+    fn into_query_range_to_inclusive() {
+        assert_eq!(
+            (..=7u32).into_query(),
+            QueryBound::Range {
+                start: Bound::Unbounded,
+                end: Bound::Included(7),
+            }
+        );
+    }
+
+    #[test]
+    fn into_query_range_full() {
+        assert_eq!((..).into_query(), QueryBound::<u32>::MatchAll);
+    }
+
+    #[test]
+    fn into_query_match_all() {
+        assert_eq!(MatchAll.into_query(), QueryBound::<u32>::MatchAll);
+    }
+
+    #[test]
+    fn into_query_arbitrary_bounds() {
+        assert_eq!(
+            (Bound::Excluded(3u32), Bound::Excluded(7u32)).into_query(),
+            QueryBound::Range {
+                start: Bound::Excluded(3),
+                end: Bound::Excluded(7),
+            }
+        );
+    }
+
+    // --- in_bounds tests ---
+
+    #[test]
+    fn in_bounds_included_both() {
+        assert!(in_bounds(&5, &Bound::Included(3), &Bound::Included(7)));
+        assert!(in_bounds(&3, &Bound::Included(3), &Bound::Included(7)));
+        assert!(in_bounds(&7, &Bound::Included(3), &Bound::Included(7)));
+        assert!(!in_bounds(&2, &Bound::Included(3), &Bound::Included(7)));
+        assert!(!in_bounds(&8, &Bound::Included(3), &Bound::Included(7)));
+    }
+
+    #[test]
+    fn in_bounds_excluded_both() {
+        assert!(in_bounds(&5, &Bound::Excluded(3), &Bound::Excluded(7)));
+        assert!(!in_bounds(&3, &Bound::Excluded(3), &Bound::Excluded(7)));
+        assert!(!in_bounds(&7, &Bound::Excluded(3), &Bound::Excluded(7)));
+    }
+
+    #[test]
+    fn in_bounds_unbounded() {
+        assert!(in_bounds(&5, &Bound::Unbounded, &Bound::Unbounded));
+        assert!(in_bounds(&u32::MAX, &Bound::Unbounded, &Bound::Unbounded));
+    }
+
+    #[test]
+    fn in_bounds_mixed() {
+        assert!(in_bounds(&5, &Bound::Excluded(3), &Bound::Included(7)));
+        assert!(!in_bounds(&3, &Bound::Excluded(3), &Bound::Included(7)));
+        assert!(in_bounds(&7, &Bound::Excluded(3), &Bound::Included(7)));
     }
 }

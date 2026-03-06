@@ -3,7 +3,7 @@
 #![cfg(feature = "serde")]
 
 use serde::{Deserialize, Serialize};
-use tabulosity::{Bounded, Database, Table};
+use tabulosity::{Bounded, Database, MatchAll, Table};
 
 // --- Row types ---
 
@@ -528,4 +528,252 @@ fn database_deserialize_fk_violations_across_tables() {
         "friendship FK violation should be reported: {}",
         err_msg,
     );
+}
+
+// --- Compound index serde ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct CompTaskId(u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+enum TaskStatus {
+    Pending,
+    InProgress,
+    Done,
+}
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[index(name = "assignee_priority", fields("assignee", "priority"))]
+struct CompTask {
+    #[primary_key]
+    pub id: CompTaskId,
+    #[indexed]
+    pub assignee: Option<CreatureId>,
+    pub priority: u8,
+    pub status: TaskStatus,
+}
+
+#[test]
+fn compound_index_serde_roundtrip() {
+    let mut table = CompTaskTable::new();
+    table
+        .insert_no_fk(CompTask {
+            id: CompTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
+    table
+        .insert_no_fk(CompTask {
+            id: CompTaskId(2),
+            assignee: Some(CreatureId(1)),
+            priority: 3,
+            status: TaskStatus::InProgress,
+        })
+        .unwrap();
+    table
+        .insert_no_fk(CompTask {
+            id: CompTaskId(3),
+            assignee: Some(CreatureId(2)),
+            priority: 5,
+            status: TaskStatus::Done,
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: CompTaskTable = serde_json::from_str(&json).unwrap();
+
+    // Rows preserved.
+    assert_eq!(table2.len(), 3);
+
+    // Simple index rebuilt.
+    assert_eq!(table2.count_by_assignee(&Some(CreatureId(1))), 2);
+
+    // Compound index rebuilt.
+    assert_eq!(
+        table2.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        1
+    );
+    assert_eq!(
+        table2.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        2
+    );
+    assert_eq!(
+        table2.count_by_assignee_priority(&Some(CreatureId(2)), &5u8),
+        1
+    );
+
+    // Range query on compound index works after deserialization.
+    let result = table2.by_assignee_priority(&Some(CreatureId(1)), 3u8..=5);
+    assert_eq!(result.len(), 2);
+}
+
+// --- Filtered index serde ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct FiltTaskId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[index(
+    name = "active_assignee",
+    fields("assignee"),
+    filter = "FiltTask::is_active"
+)]
+struct FiltTask {
+    #[primary_key]
+    pub id: FiltTaskId,
+    #[indexed]
+    pub assignee: Option<CreatureId>,
+    pub priority: u8,
+    pub status: TaskStatus,
+}
+
+impl FiltTask {
+    fn is_active(&self) -> bool {
+        matches!(self.status, TaskStatus::Pending | TaskStatus::InProgress)
+    }
+}
+
+#[test]
+fn filtered_index_serde_roundtrip() {
+    let mut table = FiltTaskTable::new();
+    table
+        .insert_no_fk(FiltTask {
+            id: FiltTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::Pending, // active
+        })
+        .unwrap();
+    table
+        .insert_no_fk(FiltTask {
+            id: FiltTaskId(2),
+            assignee: Some(CreatureId(1)),
+            priority: 3,
+            status: TaskStatus::Done, // inactive
+        })
+        .unwrap();
+    table
+        .insert_no_fk(FiltTask {
+            id: FiltTaskId(3),
+            assignee: Some(CreatureId(2)),
+            priority: 1,
+            status: TaskStatus::InProgress, // active
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: FiltTaskTable = serde_json::from_str(&json).unwrap();
+
+    // All rows preserved.
+    assert_eq!(table2.len(), 3);
+
+    // Simple index includes all rows.
+    assert_eq!(table2.count_by_assignee(&Some(CreatureId(1))), 2);
+
+    // Filtered index only includes active rows after rebuild.
+    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(2))), 1);
+    assert_eq!(table2.count_by_active_assignee(MatchAll), 2);
+}
+
+#[test]
+fn filtered_index_serde_preserves_mutation_behavior() {
+    // After deserializing, subsequent mutations must correctly maintain
+    // the filtered index.
+    let mut table = FiltTaskTable::new();
+    table
+        .insert_no_fk(FiltTask {
+            id: FiltTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let mut table2: FiltTaskTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+
+    // Insert a row that fails the filter.
+    table2
+        .insert_no_fk(FiltTask {
+            id: FiltTaskId(2),
+            assignee: Some(CreatureId(1)),
+            priority: 3,
+            status: TaskStatus::Done,
+        })
+        .unwrap();
+    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+
+    // Update existing row to exit filter.
+    table2
+        .update_no_fk(FiltTask {
+            id: FiltTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::Done,
+        })
+        .unwrap();
+    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 0);
+
+    // Update to re-enter filter.
+    table2
+        .update_no_fk(FiltTask {
+            id: FiltTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::InProgress,
+        })
+        .unwrap();
+    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+}
+
+#[test]
+fn serde_roundtrip_bounds_recomputed_from_current_data() {
+    // Tracked bounds after deserialization reflect current data,
+    // not stale pre-serialization bounds.
+    let mut table = CompTaskTable::new();
+    table
+        .insert_no_fk(CompTask {
+            id: CompTaskId(1),
+            assignee: Some(CreatureId(1)),
+            priority: 1,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
+    table
+        .insert_no_fk(CompTask {
+            id: CompTaskId(2),
+            assignee: Some(CreatureId(100)),
+            priority: 255,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
+
+    // Delete the extreme row.
+    table.remove_no_fk(&CompTaskId(2)).unwrap();
+
+    // Serialize with stale bounds, deserialize.
+    let json = serde_json::to_string(&table).unwrap();
+    let mut table2: CompTaskTable = serde_json::from_str(&json).unwrap();
+
+    // Bounds should be tight after rebuild during deserialization.
+    // Insert a new row and verify queries still work.
+    table2
+        .insert_no_fk(CompTask {
+            id: CompTaskId(3),
+            assignee: Some(CreatureId(1)),
+            priority: 5,
+            status: TaskStatus::Pending,
+        })
+        .unwrap();
+
+    assert_eq!(
+        table2.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        2
+    );
+    assert_eq!(table2.count_by_assignee_priority(MatchAll, MatchAll), 2);
 }
