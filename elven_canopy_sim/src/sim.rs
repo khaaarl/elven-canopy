@@ -5196,6 +5196,126 @@ impl SimState {
     }
 
     // -----------------------------------------------------------------------
+    // Solid voxel raycast
+    // -----------------------------------------------------------------------
+
+    /// DDA voxel raycast that returns the first solid voxel hit and the face
+    /// the ray entered through. Uses the same Amanatides & Woo algorithm as
+    /// `raycast_structure()`, but tracks `last_axis` (the axis most recently
+    /// stepped) to compute the entry face on hit.
+    ///
+    /// Face encoding matches `FaceDirection` ordinals:
+    ///   0=PosX, 1=NegX, 2=PosY, 3=NegY, 4=PosZ, 5=NegZ
+    /// The face returned is the face of the solid voxel that the ray entered
+    /// through. A ray stepping -Y (downward) enters through the PosY face
+    /// (2); a ray stepping +X enters through the NegX face (1); etc.
+    pub fn raycast_solid(
+        &self,
+        from: [f32; 3],
+        dir: [f32; 3],
+        max_steps: u32,
+    ) -> Option<(VoxelCoord, u8)> {
+        let mut voxel = [
+            from[0].floor() as i32,
+            from[1].floor() as i32,
+            from[2].floor() as i32,
+        ];
+
+        let mut step = [0i32; 3];
+        let mut t_max = [f32::INFINITY; 3];
+        let mut t_delta = [f32::INFINITY; 3];
+
+        for axis in 0..3 {
+            if dir[axis] > 0.0 {
+                step[axis] = 1;
+                t_delta[axis] = 1.0 / dir[axis];
+                t_max[axis] = ((voxel[axis] as f32 + 1.0) - from[axis]) / dir[axis];
+            } else if dir[axis] < 0.0 {
+                step[axis] = -1;
+                t_delta[axis] = 1.0 / (-dir[axis]);
+                t_max[axis] = (from[axis] - voxel[axis] as f32) / (-dir[axis]);
+            }
+        }
+
+        // Track which axis was last stepped to compute the entry face.
+        let mut last_axis: usize = 0;
+        let mut first_step = true;
+
+        for _ in 0..max_steps {
+            let coord = VoxelCoord::new(voxel[0], voxel[1], voxel[2]);
+
+            if !first_step && self.world.get(coord).is_solid() {
+                // Compute the face: the ray entered through the face opposite
+                // to the step direction on last_axis.
+                let face = match (last_axis, step[last_axis] > 0) {
+                    (0, true) => 1,  // stepped +X → entered through NegX face
+                    (0, false) => 0, // stepped -X → entered through PosX face
+                    (1, true) => 3,  // stepped +Y → entered through NegY face
+                    (1, false) => 2, // stepped -Y → entered through PosY face
+                    (2, true) => 5,  // stepped +Z → entered through NegZ face
+                    (2, false) => 4, // stepped -Z → entered through PosZ face
+                    _ => unreachable!(),
+                };
+                return Some((coord, face));
+            }
+
+            first_step = false;
+
+            // Advance along the axis with the smallest t_max.
+            last_axis = if t_max[0] <= t_max[1] && t_max[0] <= t_max[2] {
+                0
+            } else if t_max[1] <= t_max[2] {
+                1
+            } else {
+                2
+            };
+
+            voxel[last_axis] += step[last_axis];
+            t_max[last_axis] += t_delta[last_axis];
+        }
+
+        None
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto ladder orientation
+    // -----------------------------------------------------------------------
+
+    /// For a ladder column at `(x, y..y+height, z)`, count how many voxels
+    /// in the column have a solid neighbor in each of the 4 cardinal
+    /// directions. Return the orientation (as FaceDirection ordinal) with
+    /// the highest count. Tie-break: first in iteration order (East,
+    /// South, West, North).
+    pub fn auto_ladder_orientation(&self, x: i32, y: i32, z: i32, height: i32) -> u8 {
+        // Cardinal directions: East(+X)=0, South(+Z)=4, West(-X)=1, North(-Z)=5
+        let orientations: [(i32, i32, u8); 4] = [
+            (1, 0, 0),  // East (+X) → face PosX
+            (0, 1, 4),  // South (+Z) → face PosZ
+            (-1, 0, 1), // West (-X) → face NegX
+            (0, -1, 5), // North (-Z) → face NegZ
+        ];
+
+        let mut best_face: u8 = 0;
+        let mut best_count: i32 = -1;
+
+        for &(dx, dz, face) in &orientations {
+            let mut count = 0i32;
+            for dy in 0..height {
+                let neighbor = VoxelCoord::new(x + dx, y + dy, z + dz);
+                if self.world.get(neighbor).is_solid() {
+                    count += 1;
+                }
+            }
+            if count > best_count {
+                best_count = count;
+                best_face = face;
+            }
+        }
+
+        best_face
+    }
+
+    // -----------------------------------------------------------------------
     // Save/load helpers
     // -----------------------------------------------------------------------
 
@@ -15333,5 +15453,167 @@ mod tests {
             !has_acquire_task,
             "Elf at want target should NOT create AcquireItem task"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // raycast_solid tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn raycast_solid_finds_solid_voxel() {
+        let mut sim = test_sim(42);
+        // Place a known solid voxel and cast a ray at it.
+        let target = VoxelCoord::new(5, 5, 5);
+        sim.world.set(target, VoxelType::Trunk);
+        let from = [5.5, 10.0, 5.5];
+        let dir = [0.0, -1.0, 0.0];
+        let result = sim.raycast_solid(from, dir, 100);
+        assert!(result.is_some(), "Should hit the trunk voxel");
+        let (coord, face) = result.unwrap();
+        assert_eq!(coord, target);
+        assert_eq!(face, 2, "Should enter through PosY face (from above)");
+    }
+
+    #[test]
+    fn raycast_solid_returns_correct_face() {
+        let mut sim = test_sim(42);
+        // Place a solid voxel in a clear area far from the tree.
+        let target = VoxelCoord::new(5, 10, 5);
+        sim.world.set(target, VoxelType::Trunk);
+
+        // Ray from above → enters through PosY face (index 2).
+        let from_above = [5.5, 15.0, 5.5];
+        let dir_down = [0.0, -1.0, 0.0];
+        let (coord, face) = sim.raycast_solid(from_above, dir_down, 100).unwrap();
+        assert_eq!(coord, target);
+        assert_eq!(face, 2, "Ray from above should enter through PosY face");
+
+        // Ray from +X side → enters through PosX face (index 0).
+        let from_east = [10.5, 10.5, 5.5];
+        let dir_west = [-1.0, 0.0, 0.0];
+        let (coord, face) = sim.raycast_solid(from_east, dir_west, 100).unwrap();
+        assert_eq!(coord, target);
+        assert_eq!(face, 0, "Ray from +X should enter through PosX face");
+
+        // Ray from +Z side → enters through PosZ face (index 4).
+        let from_south = [5.5, 10.5, 10.5];
+        let dir_north = [0.0, 0.0, -1.0];
+        let (coord, face) = sim.raycast_solid(from_south, dir_north, 100).unwrap();
+        assert_eq!(coord, target);
+        assert_eq!(face, 4, "Ray from +Z should enter through PosZ face");
+    }
+
+    #[test]
+    fn raycast_solid_returns_none_for_empty_ray() {
+        let sim = test_sim(42);
+        // Cast a ray straight up from the top of the world — should hit nothing.
+        let from = [5.5, 50.0, 5.5];
+        let dir = [0.0, 1.0, 0.0];
+        let result = sim.raycast_solid(from, dir, 100);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn raycast_solid_negative_face_directions() {
+        let mut sim = test_sim(42);
+        let target = VoxelCoord::new(5, 10, 5);
+        sim.world.set(target, VoxelType::Trunk);
+
+        // Ray from -X side → enters through NegX face (index 1).
+        let from_west = [0.5, 10.5, 5.5];
+        let dir_east = [1.0, 0.0, 0.0];
+        let (coord, face) = sim.raycast_solid(from_west, dir_east, 100).unwrap();
+        assert_eq!(coord, target);
+        assert_eq!(face, 1, "Ray from -X should enter through NegX face");
+
+        // Ray from -Z side → enters through NegZ face (index 5).
+        let from_north = [5.5, 10.5, 0.5];
+        let dir_south = [0.0, 0.0, 1.0];
+        let (coord, face) = sim.raycast_solid(from_north, dir_south, 100).unwrap();
+        assert_eq!(coord, target);
+        assert_eq!(face, 5, "Ray from -Z should enter through NegZ face");
+    }
+
+    #[test]
+    fn raycast_solid_skips_starting_voxel() {
+        let mut sim = test_sim(42);
+        // Place two solid voxels adjacent vertically.
+        sim.world.set(VoxelCoord::new(5, 10, 5), VoxelType::Trunk);
+        sim.world.set(VoxelCoord::new(5, 11, 5), VoxelType::Trunk);
+        // Start inside the upper voxel, cast downward — should skip
+        // the starting voxel and hit the lower one.
+        let from = [5.5, 11.5, 5.5];
+        let dir = [0.0, -1.0, 0.0];
+        let result = sim.raycast_solid(from, dir, 100);
+        assert!(result.is_some());
+        let (coord, _face) = result.unwrap();
+        assert_eq!(
+            coord,
+            VoxelCoord::new(5, 10, 5),
+            "Should skip starting voxel"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // auto_ladder_orientation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn auto_ladder_orientation_faces_trunk() {
+        let mut sim = test_sim(42);
+        // Place a trunk column at (5, 10..14, 5) and test ladder at (6, 10, 5).
+        // Use an elevated position far from the real tree to avoid interference.
+        for y in 10..14 {
+            sim.world.set(VoxelCoord::new(5, y, 5), VoxelType::Trunk);
+        }
+        // Clear all neighbors around the ladder column to ensure only the
+        // trunk at x=5 is adjacent.
+        for y in 10..14 {
+            sim.world.set(VoxelCoord::new(6, y, 5), VoxelType::Air);
+            sim.world.set(VoxelCoord::new(7, y, 5), VoxelType::Air);
+            sim.world.set(VoxelCoord::new(6, y, 4), VoxelType::Air);
+            sim.world.set(VoxelCoord::new(6, y, 6), VoxelType::Air);
+        }
+
+        let face = sim.auto_ladder_orientation(6, 10, 5, 4);
+        // Trunk is to the west (-X) of the ladder, so the ladder should face
+        // NegX (face 1).
+        assert_eq!(face, 1, "Ladder should face the trunk (NegX)");
+    }
+
+    #[test]
+    fn auto_ladder_orientation_tie_breaks_to_first() {
+        let mut sim = test_sim(42);
+        // Place solid voxels on both +X and -X sides of the ladder column,
+        // creating a tie. The code iterates [PosX, PosZ, NegX, NegZ], so
+        // PosX (face 0) should win.
+        for y in 10..14 {
+            sim.world.set(VoxelCoord::new(4, y, 5), VoxelType::Trunk); // -X
+            sim.world.set(VoxelCoord::new(6, y, 5), VoxelType::Trunk); // +X
+            // Clear other neighbors.
+            sim.world.set(VoxelCoord::new(5, y, 4), VoxelType::Air);
+            sim.world.set(VoxelCoord::new(5, y, 6), VoxelType::Air);
+        }
+        let face = sim.auto_ladder_orientation(5, 10, 5, 4);
+        assert_eq!(
+            face, 0,
+            "Tie should break to PosX (first in iteration order)"
+        );
+    }
+
+    #[test]
+    fn auto_ladder_orientation_no_neighbors_defaults_east() {
+        let mut sim = test_sim(42);
+        // Clear all neighbors around the ladder column — no solid voxels.
+        for y in 10..14 {
+            sim.world.set(VoxelCoord::new(5, y, 5), VoxelType::Air);
+            sim.world.set(VoxelCoord::new(4, y, 5), VoxelType::Air);
+            sim.world.set(VoxelCoord::new(6, y, 5), VoxelType::Air);
+            sim.world.set(VoxelCoord::new(5, y, 4), VoxelType::Air);
+            sim.world.set(VoxelCoord::new(5, y, 6), VoxelType::Air);
+        }
+        let face = sim.auto_ladder_orientation(5, 10, 5, 4);
+        // All counts are 0, so first direction (PosX, face 0) wins.
+        assert_eq!(face, 0, "No neighbors should default to PosX (East)");
     }
 }

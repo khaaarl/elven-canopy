@@ -114,6 +114,12 @@
 // - **Species queries:** `is_species_ground_only(species_name)` — used by
 //   the placement controller to decide which nav nodes to show.
 //   `get_all_species_names()` — returns all species names for UI iteration.
+// - **Placement raycasting:** `raycast_solid(origin, dir)` — DDA raycast
+//   returning the first solid voxel and entry face as a Dictionary.
+//   `get_voxel_solidity_slice(y, cx, cz, radius)` — solid/air grid for
+//   height-slice wireframe rendering. `auto_ladder_orientation(x,y,z,h)`
+//   — picks the best facing for a ladder column. `get_world_size()` —
+//   world dimensions for clamping.
 //
 // All array data uses packed Godot types (`PackedInt32Array`,
 // `PackedVector3Array`) for efficient transfer across the GDExtension
@@ -1010,6 +1016,80 @@ impl SimBridge {
             Some(sid) => sid.0 as i64,
             None => -1,
         }
+    }
+
+    /// Cast a ray and return the first solid voxel hit and entry face.
+    /// Returns `{hit: true, voxel: Vector3i, face: int}` or `{hit: false}`.
+    /// Used by `construction_controller.gd` for building/ladder placement.
+    #[func]
+    fn raycast_solid(&self, origin: Vector3, dir: Vector3) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let Some(sim) = &self.session.sim else {
+            dict.set("hit", false);
+            return dict;
+        };
+        let from = [origin.x, origin.y, origin.z];
+        let d = [dir.x, dir.y, dir.z];
+        match sim.raycast_solid(from, d, 500) {
+            Some((coord, face)) => {
+                dict.set("hit", true);
+                dict.set("voxel", Vector3i::new(coord.x, coord.y, coord.z));
+                dict.set("face", face as i32);
+            }
+            None => {
+                dict.set("hit", false);
+            }
+        }
+        dict
+    }
+
+    /// Return a square grid of solid/air flags at the given Y-level, centered
+    /// on `(cx, cz)` with the given radius. Returns a `PackedByteArray` of
+    /// `(2*radius+1)^2` bytes, row-major (X varies fastest). 1=solid, 0=air.
+    /// Used by `height_grid_renderer.gd` for wireframe dimming over solid voxels.
+    #[func]
+    fn get_voxel_solidity_slice(&self, y: i32, cx: i32, cz: i32, radius: i32) -> PackedByteArray {
+        let Some(sim) = &self.session.sim else {
+            return PackedByteArray::new();
+        };
+        let side = (2 * radius + 1) as usize;
+        let mut data = Vec::with_capacity(side * side);
+        for z in (cz - radius)..=(cz + radius) {
+            for x in (cx - radius)..=(cx + radius) {
+                let coord = VoxelCoord::new(x, y, z);
+                data.push(if sim.world.get(coord).is_solid() {
+                    1u8
+                } else {
+                    0u8
+                });
+            }
+        }
+        PackedByteArray::from(data.as_slice())
+    }
+
+    /// Return the best ladder orientation for a column at `(x, y..y+height, z)`.
+    /// Returns the face direction index (0=PosX, 1=NegX, 4=PosZ, 5=NegZ).
+    /// Used by `construction_controller.gd` for auto-orientation.
+    #[func]
+    fn auto_ladder_orientation(&self, x: i32, y: i32, z: i32, height: i32) -> i32 {
+        let Some(sim) = &self.session.sim else {
+            return 0;
+        };
+        sim.auto_ladder_orientation(x, y, z, height) as i32
+    }
+
+    /// Return the world dimensions as `Vector3i(size_x, size_y, size_z)`.
+    /// Used by GDScript for clamping placement coordinates to world bounds.
+    #[func]
+    fn get_world_size(&self) -> Vector3i {
+        let Some(sim) = &self.session.sim else {
+            return Vector3i::new(0, 0, 0);
+        };
+        Vector3i::new(
+            sim.world.size_x as i32,
+            sim.world.size_y as i32,
+            sim.world.size_z as i32,
+        )
     }
 
     /// Return info about a completed structure as a Dictionary. Returns an

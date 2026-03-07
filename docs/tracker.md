@@ -69,6 +69,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-build-queue-ui       Construction queue/progress UI
+[ ] F-building-door     Player-controlled building door orientation
 [ ] F-cascade-fail         Cascading structural failure
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
@@ -111,7 +112,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-notifications        Player-visible event notifications
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
-[ ] F-placement-ui         Revamp construction placement UX
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
@@ -194,6 +194,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-orbital-cam          Orbital camera controller
 [x] F-pathfinding          A* pathfinding over nav graph
 [x] F-pause-menu           In-game pause overlay
+[x] F-placement-ui      Revamp construction placement UX
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
 [x] F-save-load            Save/load to JSON with versioning
 [x] F-select-struct        Selectable structures with interaction UI
@@ -355,6 +356,11 @@ cancel (reverts voxels and face data). Save/load preserves buildings.
 
 **Related:** F-construction, F-furnish, F-placement-ui, F-structure-reg
 
+#### F-building-door — Player-controlled building door orientation
+**Status:** Todo · **Phase:** 2
+
+**Related:** F-placement-ui
+
 #### F-carve-holes — Remove material (doors, storage hollows)
 **Status:** Done · **Phase:** 3 · **Refs:** §11
 
@@ -441,17 +447,28 @@ produces it. Conservation of mass prevents infinite building.
 **Related:** F-branch-growth, F-mana-system
 
 #### F-placement-ui — Revamp construction placement UX
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
-Revamp the construction placement UI with mode-specific interaction models.
-Platforms are placed freely in 3D space (the current layer-based designation
-approach), but buildings are more constrained — they sit on a surface and have
-a footprint, so mouse-based click-and-drag placement (like RTS building
-placement) would be more natural. This feature covers designing and
-implementing the right interaction pattern for each construction type. Expect
-significant experimentation to find what feels good.
+Revamp the construction placement UI with mode-specific interaction models
+and a five-state state machine (INACTIVE → ACTIVE → HOVER → DRAGGING →
+PREVIEW). Four placement modes:
 
-**Related:** F-blueprint-mode, F-building, F-construction
+- **Platforms:** height-slice wireframe grid at camera Y-level, click-drag
+  rectangle on horizontal plane, structural integrity preview.
+- **Buildings:** surface raycast to solid ground, click-drag footprint (min
+  3x3, flat terrain only), height +/- in preview.
+- **Ladders:** surface raycast for start/end, vertical 1x1 column, auto
+  orientation, wood/rope toggle.
+- **Carve:** height-slice grid, click-drag rectangle + camera height sweep
+  for 3D prism, height +/- in preview.
+
+All modes: hover highlight, confirm via Enter/button only (no left-click
+confirm), cancel via Escape/button, structural integrity warnings.
+Bridges and stairs deferred.
+
+**Draft:** `docs/drafts/placement_ui.md`
+
+**Related:** F-blueprint-mode, F-building, F-building-door, F-construction
 
 #### F-rope-retract — Retractable rope ladders (furl/unfurl)
 **Status:** Todo · **Phase:** 3 · **Refs:** §11

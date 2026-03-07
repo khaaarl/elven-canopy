@@ -10,8 +10,9 @@
 ## writing the JSON to `user://saves/<name>.json` via the SimBridge.
 ##
 ## ESC key toggles the menu via _unhandled_input. When the menu is hidden,
-## placement_controller.gd and selection_controller.gd consume ESC first
-## (via set_input_as_handled), so the pause menu only opens when nothing
+## placement_controller.gd, construction_controller.gd, and
+## selection_controller.gd consume ESC first (via
+## set_input_as_handled), so the pause menu only opens when nothing
 ## else claims ESC. While visible: Q = Quit, S = Save (if enabled). These
 ## hotkeys are suppressed while the save dialog is open (_save_dialog_open).
 ##

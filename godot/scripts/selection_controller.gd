@@ -19,8 +19,9 @@
 ## structure_info_panel.gd for the structure UI panel,
 ## ground_pile_info_panel.gd for the pile UI panel, orbital_camera.gd
 ## for follow mode, placement_controller.gd for the ray-snap algorithm
-## origin, elf_renderer.gd / capybara_renderer.gd / creature_renderer.gd
-## for sprite position offsets.
+## origin, construction_controller.gd for construction placement suppression,
+## elf_renderer.gd / capybara_renderer.gd / creature_renderer.gd for
+## sprite position offsets.
 
 extends Node3D
 
@@ -50,6 +51,7 @@ const SPECIES_Y_OFFSETS = {
 var _bridge: SimBridge
 var _camera: Camera3D
 var _placement_controller: Node3D
+var _construction_controller: Node
 var _render_tick: float = 0.0
 
 var _selected_species: String = ""
@@ -71,6 +73,10 @@ func set_render_tick(tick: float) -> void:
 
 func set_placement_controller(controller: Node3D) -> void:
 	_placement_controller = controller
+
+
+func set_construction_controller(controller: Node) -> void:
+	_construction_controller = controller
 
 
 func get_selected_species() -> String:
@@ -122,8 +128,10 @@ func deselect() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	# Don't process selection clicks during placement mode.
+	# Don't process selection clicks during placement or construction mode.
 	if _placement_controller and _placement_controller.is_placing():
+		return
+	if _construction_controller and _construction_controller.is_placing():
 		return
 
 	if event is InputEventMouseButton:

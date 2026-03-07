@@ -230,12 +230,21 @@ func _setup_common(bridge: SimBridge) -> void:
 	_placement_controller.setup(bridge, $CameraPivot/Camera3D)
 	_placement_controller.connect_toolbar(toolbar)
 
+	# Set up height grid renderer.
+	var grid_script = load("res://scripts/height_grid_renderer.gd")
+	var height_grid := Node3D.new()
+	height_grid.set_script(grid_script)
+	add_child(height_grid)
+	height_grid.setup(bridge, $CameraPivot)
+	height_grid.visible = false
+
 	# Set up construction controller.
 	var construction_script = load("res://scripts/construction_controller.gd")
 	_construction_controller = Node.new()
 	_construction_controller.set_script(construction_script)
 	add_child(_construction_controller)
 	_construction_controller.setup(bridge, $CameraPivot)
+	_construction_controller.set_height_grid_renderer(height_grid)
 	_construction_controller.connect_toolbar(toolbar)
 	canvas_layer.add_child(_construction_controller.get_panel())
 
@@ -332,6 +341,7 @@ func _setup_common(bridge: SimBridge) -> void:
 	add_child(_selector)
 	_selector.setup(bridge, $CameraPivot/Camera3D)
 	_selector.set_placement_controller(_placement_controller)
+	_selector.set_construction_controller(_construction_controller)
 
 	# Wire creature selection -> creature info panel.
 	_camera_pivot = $CameraPivot

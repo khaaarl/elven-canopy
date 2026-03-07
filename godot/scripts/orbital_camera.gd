@@ -15,19 +15,20 @@
 ## break follow automatically; rotation and zoom do not. The creature info
 ## panel's Follow/Unfollow button drives entry and exit.
 ##
-## Voxel snap mode: construction_controller.gd calls set_voxel_snap() to
-## enable/disable. When active and no movement inputs are held, the focal
-## point smoothly lerps to the nearest voxel center (+0.5 offset to match
-## renderer centering). get_focus_voxel() returns the current rounded voxel
-## coordinate for use by construction systems (e.g., ghost mesh placement).
+## Vertical snap mode: construction_controller.gd calls set_vertical_snap()
+## to enable/disable. When active and no vertical movement inputs are held,
+## the focal point's Y smoothly lerps to the nearest voxel center Y
+## (+0.5 offset to match renderer centering). X and Z are not snapped.
+## get_focus_voxel() returns the current floor'd voxel coordinate for use
+## by construction systems (e.g., height-slice projection).
 ##
 ## See also: main.gd which instantiates the scene and drives follow updates,
 ## selection_controller.gd and creature_info_panel.gd for the selection and
-## follow UI, construction_controller.gd for voxel snap toggling.
+## follow UI, construction_controller.gd for vertical snap toggling.
 
 extends Node3D
 
-## Lerp speed for voxel snap (units per second, exponential decay).
+## Lerp speed for vertical snap (units per second, exponential decay).
 const SNAP_LERP_SPEED: float = 8.0
 
 ## Horizontal move speed in units per second.
@@ -69,14 +70,14 @@ var _zoom: float = 30.0
 var _rotating: bool = false
 ## Whether the camera is in follow mode (tracking a creature).
 var _following: bool = false
-## Whether voxel-snap is enabled (construction mode).
-var _snap_to_voxel: bool = false
+## Whether vertical-snap is enabled (construction mode — Y axis only).
+var _vertical_snap: bool = false
 ## Whether a tentative snap target is active (for short key taps in snap mode).
 var _has_tentative: bool = false
-## Voxel center to snap to on short tap (when key released before crossing boundary).
-var _tentative_target: Vector3 = Vector3.ZERO
-## Voxel center when positional movement started in snap mode.
-var _snap_origin: Vector3 = Vector3.ZERO
+## Voxel center Y to snap to on short tap (when key released before crossing boundary).
+var _tentative_target_y: float = 0.0
+## Voxel center Y when vertical movement started in snap mode.
+var _snap_origin_y: float = 0.0
 
 @onready var _camera: Camera3D = $Camera3D
 
@@ -105,9 +106,10 @@ func is_following() -> bool:
 	return _following
 
 
-## Enable or disable voxel-snap mode (used by construction_controller.gd).
-func set_voxel_snap(enabled: bool) -> void:
-	_snap_to_voxel = enabled
+## Enable or disable vertical-snap mode (used by construction_controller.gd).
+## When active, only the Y axis snaps to voxel centers; X and Z move freely.
+func set_vertical_snap(enabled: bool) -> void:
+	_vertical_snap = enabled
 	_has_tentative = false
 
 
@@ -147,10 +149,8 @@ func _process(delta: float) -> void:
 	var position_moved := false
 	var move_dir := Vector3.ZERO
 
-	# Capture pre-movement voxel center for tentative snap tracking.
-	var pre_move_voxel := Vector3(
-		floor(position.x) + 0.5, floor(position.y) + 0.5, floor(position.z) + 0.5
-	)
+	# Capture pre-movement voxel center Y for tentative vertical snap tracking.
+	var pre_move_voxel_y: float = floorf(position.y) + 0.5
 
 	# Horizontal movement relative to camera facing.
 	var input_dir := Vector2.ZERO
@@ -215,55 +215,36 @@ func _process(delta: float) -> void:
 		position_moved = true
 		_following = false
 
-	# Tentative snap target: when moving in snap mode, track the intended
-	# next voxel so short key taps always advance by at least one voxel.
-	# On the first frame of movement, record the origin and compute the
-	# tentative target. On subsequent frames, clear tentative if we've
-	# crossed a voxel boundary (natural movement takes over).
-	if _snap_to_voxel and position_moved:
-		var post_move_voxel := Vector3(
-			floor(position.x) + 0.5, floor(position.y) + 0.5, floor(position.z) + 0.5
-		)
+	# Tentative vertical snap: when moving vertically in snap mode, track the
+	# intended next Y voxel so short PgUp/PgDn taps advance by one voxel.
+	if _vertical_snap and position_moved and abs(move_dir.y) > 0.001:
+		var post_move_voxel_y: float = floorf(position.y) + 0.5
 		if not _has_tentative:
-			# First frame of movement — record origin and set tentative.
-			_snap_origin = pre_move_voxel
+			_snap_origin_y = pre_move_voxel_y
 			_has_tentative = true
-			var dir := move_dir.normalized()
-			var step := Vector3.ZERO
-			if abs(dir.x) > 0.4:
-				step.x = signf(dir.x)
-			if abs(dir.y) > 0.4:
-				step.y = signf(dir.y)
-			if abs(dir.z) > 0.4:
-				step.z = signf(dir.z)
-			_tentative_target = _snap_origin + step
-		elif post_move_voxel.distance_squared_to(_snap_origin) > 0.01:
-			# Crossed a voxel boundary naturally — tentative no longer needed.
+			_tentative_target_y = _snap_origin_y + signf(move_dir.y)
+		elif abs(post_move_voxel_y - _snap_origin_y) > 0.01:
 			_has_tentative = false
 
 	if moved:
 		_update_camera_transform()
 
-	# Voxel snap: when enabled and no inputs are active, smoothly pull the
-	# focal point to the nearest voxel center (+0.5 to match renderer offset).
-	# If a tentative target exists (from a short key tap), snap there instead.
-	if _snap_to_voxel and not moved and not _rotating:
-		var snap_target: Vector3
+	# Vertical snap: when enabled and no inputs are active, smoothly pull the
+	# focal point's Y to the nearest voxel center Y. X and Z are not snapped.
+	if _vertical_snap and not moved and not _rotating:
+		var snap_y: float
 		if _has_tentative:
-			snap_target = _tentative_target
+			snap_y = _tentative_target_y
 		else:
-			snap_target = Vector3(
-				floor(position.x) + 0.5, floor(position.y) + 0.5, floor(position.z) + 0.5
-			)
-		var dist_sq := position.distance_squared_to(snap_target)
-		if dist_sq > 0.0001:
-			position = position.lerp(snap_target, SNAP_LERP_SPEED * delta)
+			snap_y = floorf(position.y) + 0.5
+		var dy: float = absf(position.y - snap_y)
+		if dy > 0.0001:
+			position.y = lerpf(position.y, snap_y, SNAP_LERP_SPEED * delta)
 			_update_camera_transform()
-		elif dist_sq > 0.0:
-			position = snap_target
+		elif dy > 0.0:
+			position.y = snap_y
 			_update_camera_transform()
-		# Clear tentative once we've arrived at the target.
-		if _has_tentative and position.distance_squared_to(_tentative_target) < 0.001:
+		if _has_tentative and abs(position.y - _tentative_target_y) < 0.001:
 			_has_tentative = false
 
 
