@@ -1591,3 +1591,95 @@ fn auto_increment_unique_upsert_insert_conflict() {
     assert!(matches!(err, Error::DuplicateIndex { .. }));
     assert_eq!(table.len(), 1);
 }
+
+/// Additional gap coverage tests for unique indexes: upsert update path
+/// preserving original row on unique violation, and DESC + offset on unique
+/// index range queries.
+mod gap_coverage {
+    use tabulosity::{Bounded, Error, QueryOpts, Table};
+
+    // --- Upsert update path: unique violation preserves original row ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct UId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct UniqueRow {
+        #[primary_key]
+        pub id: UId,
+        #[indexed(unique)]
+        pub email: String,
+        #[indexed]
+        pub category: u32,
+    }
+
+    #[test]
+    fn upsert_update_unique_violation_preserves_original() {
+        let mut table = UniqueRowTable::new();
+        table
+            .insert_no_fk(UniqueRow {
+                id: UId(1),
+                email: "a@b.com".into(),
+                category: 1,
+            })
+            .unwrap();
+        table
+            .insert_no_fk(UniqueRow {
+                id: UId(2),
+                email: "c@d.com".into(),
+                category: 2,
+            })
+            .unwrap();
+
+        // Upsert update path: row2 tries to take row1's email.
+        let err = table
+            .upsert_no_fk(UniqueRow {
+                id: UId(2),
+                email: "a@b.com".into(),
+                category: 3,
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::DuplicateIndex { .. }));
+
+        // Row2 should be completely unchanged.
+        let row2 = table.get(&UId(2)).unwrap();
+        assert_eq!(row2.email, "c@d.com");
+        assert_eq!(row2.category, 2);
+    }
+
+    // --- DESC + offset on unique index range queries ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct UqId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct UqRow {
+        #[primary_key]
+        pub id: UqId,
+        #[indexed(unique)]
+        pub code: u32,
+        pub label: String,
+    }
+
+    #[test]
+    fn unique_index_desc_offset_range_query() {
+        let mut table = UqRowTable::new();
+        for i in 1..=6 {
+            table
+                .insert_no_fk(UqRow {
+                    id: UqId(i),
+                    code: i * 10,
+                    label: format!("L{i}"),
+                })
+                .unwrap();
+        }
+
+        // Range 20..=50 -> codes 20, 30, 40, 50. DESC -> 50, 40, 30, 20. Offset 1 -> 40, 30, 20.
+        let result = table.by_code(20u32..=50, QueryOpts::DESC.with_offset(1));
+        let codes: Vec<u32> = result.iter().map(|r| r.code).collect();
+        assert_eq!(codes, vec![40, 30, 20]);
+
+        let count = table.count_by_code(20u32..=50, QueryOpts::DESC.with_offset(1));
+        assert_eq!(count, 3);
+    }
+}

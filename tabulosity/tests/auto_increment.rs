@@ -1234,3 +1234,163 @@ fn auto_unique_upsert_update_failure_preserves_state() {
     assert_eq!(table.get_ref(&AutoUniqueId(1)).unwrap().code, "DEF");
     assert_eq!(table.next_id(), AutoUniqueId(2));
 }
+
+/// Additional gap coverage tests for auto-increment edge cases: u8 overflow
+/// behavior, small integer types (u8/u16), and signed integer starting values.
+mod gap_coverage {
+    use std::panic;
+
+    use tabulosity::{Bounded, Table};
+
+    // --- u8 auto-increment overflow ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct TinyId(u8);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct TinyRow {
+        #[primary_key(auto_increment)]
+        pub id: TinyId,
+        pub value: u32,
+    }
+
+    #[test]
+    fn auto_increment_u8_fills_to_254() {
+        let mut table = TinyRowTable::new();
+
+        // Insert 255 rows (IDs 0..=254).
+        for i in 0..255u32 {
+            table
+                .insert_auto_no_fk(|pk| TinyRow { id: pk, value: i })
+                .unwrap();
+        }
+        assert_eq!(table.len(), 255);
+        assert_eq!(table.next_id(), TinyId(255));
+    }
+
+    #[test]
+    fn auto_increment_u8_last_id_causes_overflow_on_next() {
+        let mut table = TinyRowTable::new();
+
+        // Insert 255 rows (IDs 0..=254), next_id = 255.
+        for i in 0..255u32 {
+            table
+                .insert_auto_no_fk(|pk| TinyRow { id: pk, value: i })
+                .unwrap();
+        }
+
+        // Inserting ID 255 should succeed, but bumping next_id to 256 overflows u8.
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            table
+                .insert_auto_no_fk(|pk| TinyRow { id: pk, value: 255 })
+                .unwrap();
+        }));
+        assert!(
+            result.is_err(),
+            "Expected panic from AutoIncrementable overflow"
+        );
+    }
+
+    #[test]
+    fn auto_increment_u8_manual_insert_at_max_causes_overflow() {
+        let mut table = TinyRowTable::new();
+
+        // Manual insert at u8::MAX should trigger successor panic.
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            table
+                .insert_no_fk(TinyRow {
+                    id: TinyId(255),
+                    value: 0,
+                })
+                .unwrap();
+        }));
+        assert!(
+            result.is_err(),
+            "Expected panic from AutoIncrementable overflow on manual insert at MAX"
+        );
+    }
+
+    // --- u8 and u16 sequential auto-increment ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct SmallId(u8);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct SmallRow {
+        #[primary_key(auto_increment)]
+        pub id: SmallId,
+        pub value: String,
+    }
+
+    #[test]
+    fn auto_increment_u8_sequential_ids() {
+        let mut table = SmallRowTable::new();
+        for i in 0..255u8 {
+            let id = table
+                .insert_auto_no_fk(|pk| SmallRow {
+                    id: pk,
+                    value: format!("{i}"),
+                })
+                .unwrap();
+            assert_eq!(id, SmallId(i));
+        }
+        assert_eq!(table.len(), 255);
+        assert_eq!(table.next_id(), SmallId(255));
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct SmallId16(u16);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct SmallRow16 {
+        #[primary_key(auto_increment)]
+        pub id: SmallId16,
+        pub value: u32,
+    }
+
+    #[test]
+    fn auto_increment_u16_basic() {
+        let mut table = SmallRow16Table::new();
+        for i in 0..10u32 {
+            table
+                .insert_auto_no_fk(|pk| SmallRow16 { id: pk, value: i })
+                .unwrap();
+        }
+        assert_eq!(table.len(), 10);
+        assert_eq!(table.next_id(), SmallId16(10));
+    }
+
+    // --- Signed auto-increment starts at 0 ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct SignedId(i32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct SignedRow {
+        #[primary_key(auto_increment)]
+        pub id: SignedId,
+        pub value: String,
+    }
+
+    #[test]
+    fn signed_auto_increment_starts_at_zero() {
+        let mut table = SignedRowTable::new();
+        assert_eq!(table.next_id(), SignedId(0));
+
+        let id0 = table
+            .insert_auto_no_fk(|pk| SignedRow {
+                id: pk,
+                value: "first".into(),
+            })
+            .unwrap();
+        assert_eq!(id0, SignedId(0));
+
+        let id1 = table
+            .insert_auto_no_fk(|pk| SignedRow {
+                id: pk,
+                value: "second".into(),
+            })
+            .unwrap();
+        assert_eq!(id1, SignedId(1));
+    }
+}

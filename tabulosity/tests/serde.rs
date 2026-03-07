@@ -2001,3 +2001,270 @@ fn auto_unique_index_serde_roundtrip() {
     assert_eq!(id, AutoUserId(2));
     assert_eq!(table2.len(), 3);
 }
+
+// =============================================================================
+// Gap C10: Unique index enforcement post-deserialize
+// =============================================================================
+
+#[test]
+fn unique_index_enforced_after_deserialize() {
+    let mut table = UserTable::new();
+    table
+        .insert_no_fk(User {
+            id: UserId(1),
+            email: "a@b.com".into(),
+            name: "Alice".into(),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(User {
+            id: UserId(2),
+            email: "c@d.com".into(),
+            name: "Bob".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let mut table2: UserTable = serde_json::from_str(&json).unwrap();
+
+    // Insert with duplicate unique value should fail after deserialization.
+    let err = table2
+        .insert_no_fk(User {
+            id: UserId(3),
+            email: "a@b.com".into(),
+            name: "Charlie".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateIndex { .. }));
+}
+
+// =============================================================================
+// Gap I12: Serde roundtrip after modify_unchecked mutations
+// =============================================================================
+
+#[test]
+fn serde_roundtrip_after_modify_unchecked() {
+    let mut table = CreatureTable::new();
+    table
+        .insert_no_fk(Creature {
+            id: CreatureId(1),
+            name: "Aelindra".into(),
+            species: Species::Elf,
+        })
+        .unwrap();
+    table
+        .insert_no_fk(Creature {
+            id: CreatureId(2),
+            name: "Thorn".into(),
+            species: Species::Capybara,
+        })
+        .unwrap();
+
+    // Modify non-indexed field.
+    table
+        .modify_unchecked(&CreatureId(1), |c| {
+            c.name = "Modified".into();
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: CreatureTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.get(&CreatureId(1)).unwrap().name, "Modified");
+    assert_eq!(table2.get(&CreatureId(2)).unwrap().name, "Thorn");
+    // Indexes rebuilt correctly.
+    assert_eq!(table2.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+    assert_eq!(
+        table2.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        1
+    );
+}
+
+// =============================================================================
+// Gap I13: Auto-increment serde: next_id > max_pk preserved
+// =============================================================================
+
+#[test]
+fn auto_increment_serde_next_id_after_deletes() {
+    let mut table = AutoItemTable::new();
+    for _ in 0..5 {
+        table
+            .insert_auto_no_fk(|pk| AutoItem {
+                id: pk,
+                name: "x".into(),
+            })
+            .unwrap();
+    }
+    // Delete last 3.
+    table.remove_no_fk(&AutoItemId(4)).unwrap();
+    table.remove_no_fk(&AutoItemId(3)).unwrap();
+    table.remove_no_fk(&AutoItemId(2)).unwrap();
+    assert_eq!(table.len(), 2);
+    assert_eq!(table.next_id(), AutoItemId(5)); // IDs 0,1 remain; next_id = 5
+
+    let json = serde_json::to_string(&table).unwrap();
+    let mut table2: AutoItemTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(table2.len(), 2);
+    assert_eq!(table2.next_id(), AutoItemId(5));
+
+    // Next auto insert should get ID 5, not 2.
+    let id = table2
+        .insert_auto_no_fk(|pk| AutoItem {
+            id: pk,
+            name: "new".into(),
+        })
+        .unwrap();
+    assert_eq!(id, AutoItemId(5));
+}
+
+// =============================================================================
+// Gap I31: Serde roundtrip then query with DESC/offset
+// =============================================================================
+
+#[test]
+fn serde_roundtrip_then_desc_offset_query() {
+    let mut table = CreatureTable::new();
+    for i in 1..=5 {
+        table
+            .insert_no_fk(Creature {
+                id: CreatureId(i),
+                name: format!("C{i}"),
+                species: Species::Elf,
+            })
+            .unwrap();
+    }
+
+    let json = serde_json::to_string(&table).unwrap();
+    let table2: CreatureTable = serde_json::from_str(&json).unwrap();
+
+    // DESC + offset on deserialized table.
+    let result = table2.by_species(&Species::Elf, QueryOpts::DESC.with_offset(2));
+    let ids: Vec<u32> = result.iter().map(|c| c.id.0).collect();
+    // DESC: 5,4,3,2,1. Offset 2: 3,2,1.
+    assert_eq!(ids, vec![3, 2, 1]);
+
+    // count_by with offset.
+    assert_eq!(
+        table2.count_by_species(&Species::Elf, QueryOpts::DESC.with_offset(2)),
+        3
+    );
+}
+
+// =============================================================================
+// Gap I36: Auto-increment next_id defensive correction on deserialize
+// =============================================================================
+
+#[test]
+fn auto_increment_defensive_next_id_correction() {
+    // Manually craft JSON with next_id < max(PKs)+1.
+    let json = r#"{"next_id": 2, "rows": [
+        {"id": 0, "name": "zero"},
+        {"id": 5, "name": "five"}
+    ]}"#;
+
+    let mut table: AutoItemTable = serde_json::from_str(json).unwrap();
+    assert_eq!(table.len(), 2);
+
+    // Deserializer should have corrected next_id to max(5)+1 = 6.
+    assert_eq!(table.next_id(), AutoItemId(6));
+
+    // Next auto insert should get ID 6.
+    let id = table
+        .insert_auto_no_fk(|pk| AutoItem {
+            id: pk,
+            name: "new".into(),
+        })
+        .unwrap();
+    assert_eq!(id, AutoItemId(6));
+}
+
+// =============================================================================
+// Gap I20: Multiple serde roundtrip cycles with mutations between each
+// =============================================================================
+
+#[test]
+fn multiple_serde_roundtrip_cycles() {
+    let mut table = CreatureTable::new();
+    table
+        .insert_no_fk(Creature {
+            id: CreatureId(1),
+            name: "A".into(),
+            species: Species::Elf,
+        })
+        .unwrap();
+
+    // Cycle 1: serialize -> deserialize -> mutate.
+    let json1 = serde_json::to_string(&table).unwrap();
+    let mut table: CreatureTable = serde_json::from_str(&json1).unwrap();
+    table
+        .insert_no_fk(Creature {
+            id: CreatureId(2),
+            name: "B".into(),
+            species: Species::Capybara,
+        })
+        .unwrap();
+
+    // Cycle 2: serialize -> deserialize -> mutate.
+    let json2 = serde_json::to_string(&table).unwrap();
+    let mut table: CreatureTable = serde_json::from_str(&json2).unwrap();
+    table
+        .update_no_fk(Creature {
+            id: CreatureId(1),
+            name: "A-updated".into(),
+            species: Species::Elf,
+        })
+        .unwrap();
+
+    // Cycle 3: serialize -> deserialize -> verify.
+    let json3 = serde_json::to_string(&table).unwrap();
+    let table: CreatureTable = serde_json::from_str(&json3).unwrap();
+
+    assert_eq!(table.len(), 2);
+    assert_eq!(table.get(&CreatureId(1)).unwrap().name, "A-updated");
+    assert_eq!(table.get(&CreatureId(2)).unwrap().name, "B");
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+    assert_eq!(
+        table.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        1
+    );
+}
+
+// =============================================================================
+// Gap I35: Serde deserialization with duplicate unique -- documents behavior
+// =============================================================================
+
+#[test]
+fn deserialize_duplicate_unique_silently_accepted() {
+    // Currently, tabulosity deserialization does NOT validate unique constraints.
+    // Duplicate unique values in serialized data are silently accepted because
+    // rebuild_indexes just inserts all entries. This test documents the behavior.
+    let json = r#"[
+        {"id": 1, "email": "dup@test.com", "name": "Alice"},
+        {"id": 2, "email": "dup@test.com", "name": "Bob"},
+        {"id": 3, "email": "dup@test.com", "name": "Charlie"}
+    ]"#;
+
+    let table: UserTable = serde_json::from_str(json).unwrap();
+    assert_eq!(table.len(), 3);
+
+    // All 3 entries are in the "unique" index (constraint not enforced on deser).
+    assert_eq!(
+        table
+            .by_email(&"dup@test.com".to_string(), QueryOpts::ASC)
+            .len(),
+        3
+    );
+
+    // But new inserts with that value ARE rejected (unique check works on the
+    // rebuilt index).
+    let mut table = table;
+    let err = table
+        .insert_no_fk(User {
+            id: UserId(4),
+            email: "dup@test.com".into(),
+            name: "Dave".into(),
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateIndex { .. }));
+}

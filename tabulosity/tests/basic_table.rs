@@ -302,3 +302,17 @@ fn rebuild_indexes_no_indexed_fields() {
     assert_eq!(table.get(&ItemId(1)).unwrap().name, "Sword");
     assert_eq!(table.get(&ItemId(2)).unwrap().name, "Shield");
 }
+
+/// Gap coverage: verify Error and DeserializeError implement Send + Sync.
+mod gap_coverage {
+    fn _assert_send<T: Send>() {}
+    fn _assert_sync<T: Sync>() {}
+
+    #[test]
+    fn error_is_send_and_sync() {
+        _assert_send::<tabulosity::Error>();
+        _assert_sync::<tabulosity::Error>();
+        _assert_send::<tabulosity::DeserializeError>();
+        _assert_sync::<tabulosity::DeserializeError>();
+    }
+}

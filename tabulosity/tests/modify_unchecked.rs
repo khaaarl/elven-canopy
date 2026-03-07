@@ -1706,3 +1706,148 @@ fn database_modify_unchecked_all() {
         assert_eq!(db.creatures.get(&CreatureId(i)).unwrap().rest, 0);
     }
 }
+
+/// Additional gap coverage tests for modify_unchecked panic safety: partial
+/// mutation on closure panic (single row and range), and compound unique index
+/// field change detection.
+mod gap_coverage {
+    use std::panic;
+
+    use tabulosity::{Bounded, QueryOpts, Table};
+
+    // --- Panic safety for modify_unchecked ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct CId(u32);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    #[allow(dead_code)]
+    enum Species {
+        Elf,
+        Capybara,
+    }
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Creature {
+        #[primary_key]
+        pub id: CId,
+        pub name: String,
+        #[indexed]
+        pub species: Species,
+        pub hunger: u32,
+    }
+
+    // Note: modify_unchecked panic corrupting indexes is inherently about
+    // release-build behavior where debug assertions are skipped. In debug builds,
+    // changing indexed fields panics before any index issue arises. We test the
+    // non-indexed-field panic case to verify the row is partially mutated.
+
+    #[test]
+    fn modify_unchecked_closure_panic_on_non_indexed_field_leaves_partial_state() {
+        let mut table = CreatureTable::new();
+        table
+            .insert_no_fk(Creature {
+                id: CId(1),
+                name: "Aelindra".into(),
+                species: Species::Elf,
+                hunger: 100,
+            })
+            .unwrap();
+
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let _ = table.modify_unchecked(&CId(1), |c| {
+                c.hunger = 50; // This mutation happens
+                panic!("oops"); // Then closure panics
+            });
+        }));
+        assert!(result.is_err());
+
+        // The row was mutated in place before the panic -- verify partial state.
+        let c = table.get(&CId(1)).unwrap();
+        assert_eq!(c.hunger, 50, "mutation before panic should be visible");
+
+        // Index should still be consistent because we only changed a non-indexed field.
+        let elves = table.by_species(&Species::Elf, QueryOpts::ASC);
+        assert_eq!(elves.len(), 1);
+    }
+
+    #[test]
+    fn modify_unchecked_range_partial_mutation_on_panic() {
+        let mut table = CreatureTable::new();
+        for i in 1..=5 {
+            table
+                .insert_no_fk(Creature {
+                    id: CId(i),
+                    name: format!("C{i}"),
+                    species: Species::Elf,
+                    hunger: 100,
+                })
+                .unwrap();
+        }
+
+        let mut count = 0u32;
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            table.modify_unchecked_range(.., |_pk, c| {
+                count += 1;
+                c.hunger = 0;
+                if count == 3 {
+                    panic!("oops on third row");
+                }
+            });
+        }));
+        assert!(result.is_err());
+
+        // First 2 rows (CId(1), CId(2)) were fully mutated. CId(3) was mutated
+        // then panicked. CId(4) and CId(5) were not reached.
+        assert_eq!(table.get(&CId(1)).unwrap().hunger, 0);
+        assert_eq!(table.get(&CId(2)).unwrap().hunger, 0);
+        assert_eq!(table.get(&CId(3)).unwrap().hunger, 0); // mutation happened before panic
+        assert_eq!(table.get(&CId(4)).unwrap().hunger, 100);
+        assert_eq!(table.get(&CId(5)).unwrap().hunger, 100);
+    }
+
+    // --- Compound unique index field change detected by debug assertions ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct CompUqId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    #[index(name = "a_b", fields("a", "b"), unique)]
+    struct CompUqRow {
+        #[primary_key]
+        pub id: CompUqId,
+        pub a: u32,
+        pub b: u32,
+        pub label: String,
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "indexed field")]
+    fn modify_unchecked_compound_unique_catches_field_change() {
+        let mut table = CompUqRowTable::new();
+        table
+            .insert_no_fk(CompUqRow {
+                id: CompUqId(1),
+                a: 1,
+                b: 2,
+                label: "first".into(),
+            })
+            .unwrap();
+        table
+            .insert_no_fk(CompUqRow {
+                id: CompUqId(2),
+                a: 1,
+                b: 3,
+                label: "second".into(),
+            })
+            .unwrap();
+
+        // Changing b (part of compound unique index) should be caught by debug assertions.
+        table
+            .modify_unchecked(&CompUqId(2), |r| {
+                r.b = 2; // Would create duplicate (1, 2)
+            })
+            .unwrap();
+    }
+}

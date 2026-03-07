@@ -633,3 +633,581 @@ fn compound_desc_with_range_trailing_field() {
     // Priorities 10,20,30 → tasks 1,2,3 → DESC: 3,2,1
     assert_eq!(ids, vec![TaskId(3), TaskId(2), TaskId(1)]);
 }
+
+/// Additional gap coverage tests for QueryOpts edge cases: modify_each_by panic
+/// safety, unique index field change detection, half-open ranges with DESC/offset,
+/// modify_each interactions with filtered/compound indexes, and sequencing of
+/// modify_each + modify_unchecked.
+mod gap_coverage {
+    use std::panic;
+
+    use tabulosity::{Bounded, MatchAll, QueryOpts, Table};
+
+    // --- Shared types ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct CId(u32);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Species {
+        Elf,
+        Capybara,
+        Squirrel,
+    }
+
+    // Creature with hunger indexed -- used by tests that query by_hunger.
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Creature {
+        #[primary_key]
+        pub id: CId,
+        pub name: String,
+        #[indexed]
+        pub species: Species,
+        #[indexed]
+        pub hunger: u32,
+    }
+
+    // --- modify_each_by panic leaves partial state ---
+    // Uses a separate Creature type where `hunger` is NOT indexed, so the
+    // debug assertion does not fire when the closure mutates it.
+
+    mod panic_partial {
+        use std::panic;
+
+        use tabulosity::{Bounded, QueryOpts, Table};
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+        struct CId(u32);
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Species {
+            Elf,
+        }
+
+        #[derive(Table, Clone, Debug, PartialEq)]
+        struct Creature {
+            #[primary_key]
+            pub id: CId,
+            pub name: String,
+            #[indexed]
+            pub species: Species,
+            pub hunger: u32,
+        }
+
+        #[test]
+        fn modify_each_by_closure_panic_partial_state() {
+            let mut table = CreatureTable::new();
+            for i in 1..=5 {
+                table
+                    .insert_no_fk(Creature {
+                        id: CId(i),
+                        name: format!("C{i}"),
+                        species: Species::Elf,
+                        hunger: 100,
+                    })
+                    .unwrap();
+            }
+
+            let mut call_count = 0u32;
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                table.modify_each_by_species(&Species::Elf, QueryOpts::ASC, |_pk, c| {
+                    call_count += 1;
+                    c.hunger = 0;
+                    if call_count == 3 {
+                        panic!("oops on third row");
+                    }
+                });
+            }));
+            assert!(result.is_err());
+
+            // First 2 rows were fully mutated. 3rd was mutated then panicked.
+            // 4th and 5th were not reached.
+            assert_eq!(table.get(&CId(1)).unwrap().hunger, 0);
+            assert_eq!(table.get(&CId(2)).unwrap().hunger, 0);
+            assert_eq!(table.get(&CId(3)).unwrap().hunger, 0);
+            assert_eq!(table.get(&CId(4)).unwrap().hunger, 100);
+            assert_eq!(table.get(&CId(5)).unwrap().hunger, 100);
+        }
+    }
+
+    // --- modify_each_by panics on unique field change in debug ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct UId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct UniqueRow {
+        #[primary_key]
+        pub id: UId,
+        #[indexed(unique)]
+        pub email: String,
+        #[indexed]
+        pub category: u32,
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "indexed field")]
+    fn modify_each_by_panics_on_unique_field_change_debug() {
+        let mut table = UniqueRowTable::new();
+        table
+            .insert_no_fk(UniqueRow {
+                id: UId(1),
+                email: "a@b.com".into(),
+                category: 1,
+            })
+            .unwrap();
+        table
+            .insert_no_fk(UniqueRow {
+                id: UId(2),
+                email: "c@d.com".into(),
+                category: 1,
+            })
+            .unwrap();
+
+        // Changing a unique-indexed field via modify_each_by_* should panic in debug.
+        table.modify_each_by_category(&1u32, QueryOpts::ASC, |_pk, row| {
+            row.email = "same@value.com".into();
+        });
+    }
+
+    // --- Half-open ranges with DESC and offset ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct HId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct HRow {
+        #[primary_key]
+        pub id: HId,
+        #[indexed]
+        pub value: u32,
+    }
+
+    fn make_hrow_table() -> HRowTable {
+        let mut t = HRowTable::new();
+        for i in 0..10 {
+            t.insert_no_fk(HRow {
+                id: HId(i),
+                value: i * 10,
+            })
+            .unwrap();
+        }
+        t
+    }
+
+    #[test]
+    fn range_from_desc_offset() {
+        let table = make_hrow_table();
+        // value: 0,10,20,...,90. RangeFrom 30.. matches 30,40,50,60,70,80,90 (7 rows).
+        // DESC: 90,80,70,60,50,40,30. Offset 2: 70,60,50,40,30.
+        let result = table.by_value(30u32.., QueryOpts::DESC.with_offset(2));
+        let values: Vec<u32> = result.iter().map(|r| r.value).collect();
+        assert_eq!(values, vec![70, 60, 50, 40, 30]);
+    }
+
+    #[test]
+    fn range_to_desc_offset() {
+        let table = make_hrow_table();
+        // ..60 matches 0,10,20,30,40,50 (6 rows, exclusive end).
+        // DESC: 50,40,30,20,10,0. Offset 2: 30,20,10,0.
+        let result = table.by_value(..60u32, QueryOpts::DESC.with_offset(2));
+        let values: Vec<u32> = result.iter().map(|r| r.value).collect();
+        assert_eq!(values, vec![30, 20, 10, 0]);
+    }
+
+    #[test]
+    fn range_to_inclusive_desc_offset() {
+        let table = make_hrow_table();
+        // ..=50 matches 0,10,20,30,40,50 (6 rows, inclusive end).
+        // DESC: 50,40,30,20,10,0. Offset 3: 20,10,0.
+        let result = table.by_value(..=50u32, QueryOpts::DESC.with_offset(3));
+        let values: Vec<u32> = result.iter().map(|r| r.value).collect();
+        assert_eq!(values, vec![20, 10, 0]);
+    }
+
+    #[test]
+    fn range_full_desc_offset() {
+        let table = make_hrow_table();
+        // .. matches all 10 rows. DESC: 90,80,...,0. Offset 2: 70,60,...,0.
+        let result = table.by_value(.., QueryOpts::DESC.with_offset(2));
+        let values: Vec<u32> = result.iter().map(|r| r.value).collect();
+        assert_eq!(values, vec![70, 60, 50, 40, 30, 20, 10, 0]);
+    }
+
+    #[test]
+    fn iter_range_from_desc_offset() {
+        let table = make_hrow_table();
+        let values: Vec<u32> = table
+            .iter_by_value(30u32.., QueryOpts::DESC.with_offset(2))
+            .map(|r| r.value)
+            .collect();
+        assert_eq!(values, vec![70, 60, 50, 40, 30]);
+    }
+
+    #[test]
+    fn count_range_from_desc_offset() {
+        let table = make_hrow_table();
+        // 7 rows match 30.., offset 2 gives 5.
+        assert_eq!(
+            table.count_by_value(30u32.., QueryOpts::DESC.with_offset(2)),
+            5
+        );
+    }
+
+    // --- Offset exactly matches count returns empty ---
+
+    #[test]
+    fn offset_exactly_matches_count_returns_empty() {
+        let mut table = CreatureTable::new();
+        for i in 1..=3 {
+            table
+                .insert_no_fk(Creature {
+                    id: CId(i),
+                    name: format!("C{i}"),
+                    species: Species::Elf,
+                    hunger: 10,
+                })
+                .unwrap();
+        }
+
+        // 3 elves, offset 3 -> empty.
+        assert!(
+            table
+                .by_species(&Species::Elf, QueryOpts::offset(3))
+                .is_empty()
+        );
+        assert_eq!(
+            table.count_by_species(&Species::Elf, QueryOpts::offset(3)),
+            0
+        );
+
+        // Offset > count also returns empty.
+        assert!(
+            table
+                .by_species(&Species::Elf, QueryOpts::offset(100))
+                .is_empty()
+        );
+    }
+
+    // --- Compound DESC + offset on range query ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct WId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    #[index(name = "species_hunger", fields("species", "hunger"))]
+    struct Widget {
+        #[primary_key]
+        pub id: WId,
+        #[indexed]
+        pub species: u32,
+        pub hunger: u32,
+        pub label: String,
+    }
+
+    #[test]
+    fn compound_desc_offset_range_query() {
+        let mut table = WidgetTable::new();
+        for i in 0..5 {
+            table
+                .insert_no_fk(Widget {
+                    id: WId(i),
+                    species: 1,
+                    hunger: i * 10,
+                    label: format!("W{i}"),
+                })
+                .unwrap();
+        }
+
+        // species=1, hunger range 10..40 -> matches hunger 10,20,30 (ids 1,2,3).
+        // DESC: 3,2,1. Offset 1: 2,1.
+        let result = table.by_species_hunger(&1u32, 10u32..40u32, QueryOpts::DESC.with_offset(1));
+        let ids: Vec<u32> = result.iter().map(|w| w.id.0).collect();
+        assert_eq!(ids, vec![2, 1]);
+    }
+
+    // --- modify_each_by empty result set ---
+
+    #[test]
+    fn modify_each_by_empty_result_set() {
+        let mut table = CreatureTable::new();
+        table
+            .insert_no_fk(Creature {
+                id: CId(1),
+                name: "A".into(),
+                species: Species::Elf,
+                hunger: 10,
+            })
+            .unwrap();
+
+        // Squirrel doesn't exist -- closure should never be called.
+        let count =
+            table.modify_each_by_species(&Species::Squirrel, QueryOpts::ASC, |_pk, _row| {
+                panic!("should not be called");
+            });
+        assert_eq!(count, 0);
+
+        // Table should be unchanged.
+        assert_eq!(table.get(&CId(1)).unwrap().name, "A");
+    }
+
+    // --- modify_each on filtered index: mutation does not update membership ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct FId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    #[index(name = "active_score", fields("score"), filter = "FiltRow::is_active")]
+    struct FiltRow {
+        #[primary_key]
+        pub id: FId,
+        #[indexed]
+        pub score: u32,
+        pub active: bool,
+    }
+
+    impl FiltRow {
+        fn is_active(&self) -> bool {
+            self.active
+        }
+    }
+
+    #[test]
+    fn modify_each_does_not_update_filtered_index_membership() {
+        // modify_each_by_* bypasses index maintenance, so changing the filter
+        // condition field does NOT remove the row from the filtered index.
+        // This is by design -- like modify_unchecked, the caller is responsible
+        // for calling rebuild_indexes() if they change filter-relevant fields.
+        let mut table = FiltRowTable::new();
+        for i in 1..=3 {
+            table
+                .insert_no_fk(FiltRow {
+                    id: FId(i),
+                    score: i * 10,
+                    active: true,
+                })
+                .unwrap();
+        }
+
+        // All 3 rows are in the active_score filtered index.
+        assert_eq!(table.count_by_active_score(MatchAll, QueryOpts::ASC), 3);
+
+        // Changing `active` (the filter condition field) is NOT caught by debug
+        // assertions because it's not the indexed field.
+        let count = table.modify_each_by_active_score(MatchAll, QueryOpts::ASC, |_pk, r| {
+            r.active = false;
+        });
+        assert_eq!(count, 3);
+
+        // The rows still appear in the filtered index despite no longer matching
+        // the filter condition.
+        assert_eq!(table.count_by_active_score(MatchAll, QueryOpts::ASC), 3);
+
+        // After rebuild_indexes, the filtered index is corrected.
+        table.rebuild_indexes();
+        assert_eq!(table.count_by_active_score(MatchAll, QueryOpts::ASC), 0);
+    }
+
+    // --- modify_each does not change next_id ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct AutoId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct AutoRow {
+        #[primary_key(auto_increment)]
+        pub id: AutoId,
+        #[indexed]
+        pub category: u32,
+        pub label: String,
+    }
+
+    #[test]
+    fn modify_each_does_not_change_next_id() {
+        let mut table = AutoRowTable::new();
+        for i in 0..3 {
+            table
+                .insert_auto_no_fk(|pk| AutoRow {
+                    id: pk,
+                    category: 1,
+                    label: format!("R{i}"),
+                })
+                .unwrap();
+        }
+        assert_eq!(table.next_id(), AutoId(3));
+
+        table.modify_each_by_category(&1u32, QueryOpts::ASC, |_pk, row| {
+            row.label = "changed".into();
+        });
+
+        assert_eq!(table.next_id(), AutoId(3));
+    }
+
+    // --- RangeFull DESC + offset on index ---
+
+    #[test]
+    fn range_full_desc_offset_on_index() {
+        let mut table = CreatureTable::new();
+        for i in 1..=5 {
+            table
+                .insert_no_fk(Creature {
+                    id: CId(i),
+                    name: format!("C{i}"),
+                    species: Species::Elf,
+                    hunger: i * 10,
+                })
+                .unwrap();
+        }
+
+        // MatchAll on hunger index: all 5 rows. DESC + offset 2.
+        // DESC by (hunger, pk): (50,5), (40,4), (30,3), (20,2), (10,1). Offset 2: (30,3), (20,2), (10,1).
+        let result = table.by_hunger(.., QueryOpts::DESC.with_offset(2));
+        let hungers: Vec<u32> = result.iter().map(|c| c.hunger).collect();
+        assert_eq!(hungers, vec![30, 20, 10]);
+    }
+
+    // --- Prefix query DESC + offset ---
+
+    #[test]
+    fn prefix_query_desc_offset() {
+        let mut table = WidgetTable::new();
+        for i in 0..5 {
+            table
+                .insert_no_fk(Widget {
+                    id: WId(i),
+                    species: 1,
+                    hunger: i * 10,
+                    label: format!("W{i}"),
+                })
+                .unwrap();
+        }
+
+        // Prefix query: species=1, MatchAll on hunger. DESC + offset 1.
+        let result = table.by_species_hunger(&1u32, MatchAll, QueryOpts::DESC.with_offset(1));
+        let ids: Vec<u32> = result.iter().map(|w| w.id.0).collect();
+        assert_eq!(ids, vec![3, 2, 1, 0]);
+    }
+
+    // --- Filtered index DESC + offset ---
+
+    #[test]
+    fn filtered_index_desc_offset() {
+        let mut table = FiltRowTable::new();
+        for i in 1..=5 {
+            table
+                .insert_no_fk(FiltRow {
+                    id: FId(i),
+                    score: i * 10,
+                    active: true,
+                })
+                .unwrap();
+        }
+        // Add some inactive rows that should not appear.
+        table
+            .insert_no_fk(FiltRow {
+                id: FId(6),
+                score: 25,
+                active: false,
+            })
+            .unwrap();
+
+        // 5 active rows. DESC + offset 2.
+        let result = table.by_active_score(MatchAll, QueryOpts::DESC.with_offset(2));
+        let scores: Vec<u32> = result.iter().map(|r| r.score).collect();
+        // DESC: 50, 40, 30, 20, 10. Offset 2: 30, 20, 10.
+        assert_eq!(scores, vec![30, 20, 10]);
+    }
+
+    // --- modify_each on compound index with mixed QueryBounds ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct CompId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    #[index(name = "sp_hunger", fields("species", "hunger"))]
+    struct CompRow {
+        #[primary_key]
+        pub id: CompId,
+        pub species: Species,
+        pub hunger: u32,
+        pub name: String,
+    }
+
+    #[test]
+    fn modify_each_compound_exact_first_range_second() {
+        let mut table = CompRowTable::new();
+        // 5 Elf rows with hunger 10, 20, 30, 40, 50.
+        for i in 1..=5 {
+            table
+                .insert_no_fk(CompRow {
+                    id: CompId(i),
+                    species: Species::Elf,
+                    hunger: i * 10,
+                    name: format!("E{i}"),
+                })
+                .unwrap();
+        }
+        // 2 Capybara rows.
+        for i in 6..=7 {
+            table
+                .insert_no_fk(CompRow {
+                    id: CompId(i),
+                    species: Species::Capybara,
+                    hunger: i * 10,
+                    name: format!("C{i}"),
+                })
+                .unwrap();
+        }
+
+        // modify_each_by exact Elf + hunger range 20..40 (20, 30).
+        let count =
+            table.modify_each_by_sp_hunger(&Species::Elf, 20u32..40, QueryOpts::ASC, |_pk, r| {
+                r.name = "modified".into();
+            });
+        assert_eq!(count, 2);
+
+        // Verify only the targeted rows were modified.
+        assert_eq!(table.get(&CompId(1)).unwrap().name, "E1"); // hunger=10, outside range
+        assert_eq!(table.get(&CompId(2)).unwrap().name, "modified"); // hunger=20
+        assert_eq!(table.get(&CompId(3)).unwrap().name, "modified"); // hunger=30
+        assert_eq!(table.get(&CompId(4)).unwrap().name, "E4"); // hunger=40, excluded
+        assert_eq!(table.get(&CompId(5)).unwrap().name, "E5"); // hunger=50
+        assert_eq!(table.get(&CompId(6)).unwrap().name, "C6"); // Capybara, untouched
+    }
+
+    // --- modify_each then modify_unchecked in sequence ---
+
+    #[test]
+    fn modify_each_then_modify_unchecked_sequence() {
+        let mut table = CreatureTable::new();
+        for i in 1..=3 {
+            table
+                .insert_no_fk(Creature {
+                    id: CId(i),
+                    name: format!("C{i}"),
+                    species: Species::Elf,
+                    hunger: 50,
+                })
+                .unwrap();
+        }
+
+        // Batch modify non-indexed field.
+        table.modify_each_by_species(&Species::Elf, QueryOpts::ASC, |_pk, row| {
+            row.name = "batch".into();
+        });
+
+        // Then modify a specific row's non-indexed field via modify_unchecked.
+        table
+            .modify_unchecked(&CId(2), |c| {
+                c.name = "single".into();
+            })
+            .unwrap();
+
+        // Verify all queries still work correctly.
+        assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 3);
+        assert_eq!(table.get(&CId(2)).unwrap().name, "single");
+        assert_eq!(table.get(&CId(1)).unwrap().name, "batch");
+        assert_eq!(table.get(&CId(3)).unwrap().name, "batch");
+    }
+}

@@ -3092,3 +3092,313 @@ fn bounds_recomputed_on_rebuild() {
         2
     );
 }
+
+/// Additional gap coverage tests for indexed tables: reinsert with different
+/// index value, inverted ranges, single-value ranges, clear + reinsert, empty
+/// table queries, compound/simple index PK ordering, and filtered index
+/// behavior when all rows exit the filter.
+mod gap_coverage {
+    use tabulosity::{Bounded, MatchAll, QueryOpts, Table};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct CId(u32);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    #[allow(dead_code)]
+    enum Species {
+        Elf,
+        Capybara,
+        Squirrel,
+    }
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Creature {
+        #[primary_key]
+        pub id: CId,
+        pub name: String,
+        #[indexed]
+        pub species: Species,
+        #[indexed]
+        pub hunger: u32,
+    }
+
+    // --- Reinsert same PK with different index value ---
+
+    #[test]
+    fn reinsert_same_pk_different_index_value() {
+        let mut table = CreatureTable::new();
+        table
+            .insert_no_fk(Creature {
+                id: CId(1),
+                name: "A".into(),
+                species: Species::Elf,
+                hunger: 10,
+            })
+            .unwrap();
+
+        assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+
+        table.remove_no_fk(&CId(1)).unwrap();
+        assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 0);
+
+        // Reinsert same PK with different species.
+        table
+            .insert_no_fk(Creature {
+                id: CId(1),
+                name: "A".into(),
+                species: Species::Capybara,
+                hunger: 20,
+            })
+            .unwrap();
+
+        assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 0);
+        assert_eq!(
+            table.count_by_species(&Species::Capybara, QueryOpts::ASC),
+            1
+        );
+        // Also check the hunger index was cleaned up and rebuilt.
+        assert_eq!(table.count_by_hunger(&10u32, QueryOpts::ASC), 0);
+        assert_eq!(table.count_by_hunger(&20u32, QueryOpts::ASC), 1);
+    }
+
+    // --- Inverted range returns empty ---
+
+    #[test]
+    fn inverted_range_returns_empty() {
+        let mut table = CreatureTable::new();
+        for i in 0..5 {
+            table
+                .insert_no_fk(Creature {
+                    id: CId(i),
+                    name: format!("C{i}"),
+                    species: Species::Elf,
+                    hunger: i * 10,
+                })
+                .unwrap();
+        }
+
+        // Inverted range: 40..=10 (start > end).
+        let result = table.by_hunger(40u32..=10, QueryOpts::ASC);
+        assert!(result.is_empty(), "inverted range should return empty");
+
+        let count = table.count_by_hunger(40u32..=10, QueryOpts::ASC);
+        assert_eq!(count, 0);
+
+        let iter_result: Vec<_> = table.iter_by_hunger(40u32..=10, QueryOpts::ASC).collect();
+        assert!(iter_result.is_empty());
+    }
+
+    // --- Single-value range query ---
+
+    #[test]
+    fn single_value_range_query() {
+        let mut table = CreatureTable::new();
+        table
+            .insert_no_fk(Creature {
+                id: CId(1),
+                name: "A".into(),
+                species: Species::Elf,
+                hunger: 20,
+            })
+            .unwrap();
+        table
+            .insert_no_fk(Creature {
+                id: CId(2),
+                name: "B".into(),
+                species: Species::Elf,
+                hunger: 20,
+            })
+            .unwrap();
+        table
+            .insert_no_fk(Creature {
+                id: CId(3),
+                name: "C".into(),
+                species: Species::Elf,
+                hunger: 30,
+            })
+            .unwrap();
+
+        let result = table.by_hunger(20u32..=20u32, QueryOpts::ASC);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, CId(1));
+        assert_eq!(result[1].id, CId(2));
+    }
+
+    // --- Clear all rows then reinsert ---
+
+    #[test]
+    fn clear_all_rows_then_reinsert() {
+        let mut table = CreatureTable::new();
+        for i in 1..=3 {
+            table
+                .insert_no_fk(Creature {
+                    id: CId(i),
+                    name: format!("C{i}"),
+                    species: Species::Elf,
+                    hunger: i * 10,
+                })
+                .unwrap();
+        }
+
+        // Remove all rows.
+        for i in 1..=3 {
+            table.remove_no_fk(&CId(i)).unwrap();
+        }
+        assert!(table.is_empty());
+        assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 0);
+
+        // Reinsert new rows.
+        table
+            .insert_no_fk(Creature {
+                id: CId(10),
+                name: "X".into(),
+                species: Species::Capybara,
+                hunger: 50,
+            })
+            .unwrap();
+        table
+            .insert_no_fk(Creature {
+                id: CId(11),
+                name: "Y".into(),
+                species: Species::Elf,
+                hunger: 60,
+            })
+            .unwrap();
+
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+        assert_eq!(
+            table.count_by_species(&Species::Capybara, QueryOpts::ASC),
+            1
+        );
+        assert_eq!(table.count_by_hunger(&50u32, QueryOpts::ASC), 1);
+        assert_eq!(table.count_by_hunger(&60u32, QueryOpts::ASC), 1);
+    }
+
+    // --- Empty table index queries ---
+
+    #[test]
+    fn empty_table_index_queries() {
+        let table = CreatureTable::new();
+
+        assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 0);
+        assert!(table.by_species(&Species::Elf, QueryOpts::ASC).is_empty());
+        assert_eq!(
+            table.iter_by_species(&Species::Elf, QueryOpts::ASC).count(),
+            0
+        );
+
+        assert_eq!(table.count_by_hunger(&10u32, QueryOpts::ASC), 0);
+        assert!(table.by_hunger(0u32..100, QueryOpts::ASC).is_empty());
+        assert_eq!(table.count_by_hunger(.., QueryOpts::ASC), 0);
+    }
+
+    // --- Compound index PK ordering within bucket ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct WId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    #[index(name = "species_hunger", fields("species", "hunger"))]
+    struct Widget {
+        #[primary_key]
+        pub id: WId,
+        #[indexed]
+        pub species: u32,
+        pub hunger: u32,
+        pub label: String,
+    }
+
+    #[test]
+    fn compound_index_pk_ordered_within_bucket() {
+        let mut table = WidgetTable::new();
+        // Insert in non-PK order, all with same compound key.
+        for &id in &[5, 1, 3, 2, 4] {
+            table
+                .insert_no_fk(Widget {
+                    id: WId(id),
+                    species: 1,
+                    hunger: 10,
+                    label: format!("W{id}"),
+                })
+                .unwrap();
+        }
+
+        let result = table.by_species_hunger(&1u32, &10u32, QueryOpts::ASC);
+        let ids: Vec<u32> = result.iter().map(|w| w.id.0).collect();
+        assert_eq!(ids, vec![1, 2, 3, 4, 5]);
+    }
+
+    // --- Simple index: multiple same-value rows returned in PK order ---
+
+    #[test]
+    fn simple_index_pk_ordered() {
+        let mut table = CreatureTable::new();
+        for &id in &[3, 1, 2] {
+            table
+                .insert_no_fk(Creature {
+                    id: CId(id),
+                    name: format!("C{id}"),
+                    species: Species::Elf,
+                    hunger: 50,
+                })
+                .unwrap();
+        }
+
+        let elves = table.by_species(&Species::Elf, QueryOpts::ASC);
+        let ids: Vec<u32> = elves.iter().map(|c| c.id.0).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    // --- Filtered index: all rows exit filter via update ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct FId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    #[index(name = "active_score", fields("score"), filter = "FiltRow::is_active")]
+    struct FiltRow {
+        #[primary_key]
+        pub id: FId,
+        #[indexed]
+        pub score: u32,
+        pub active: bool,
+    }
+
+    impl FiltRow {
+        fn is_active(&self) -> bool {
+            self.active
+        }
+    }
+
+    #[test]
+    fn filtered_index_all_rows_exit_filter() {
+        let mut table = FiltRowTable::new();
+        for i in 1..=3 {
+            table
+                .insert_no_fk(FiltRow {
+                    id: FId(i),
+                    score: i * 10,
+                    active: true,
+                })
+                .unwrap();
+        }
+
+        assert_eq!(table.count_by_active_score(MatchAll, QueryOpts::ASC), 3);
+
+        // Deactivate all rows.
+        for i in 1..=3 {
+            table
+                .update_no_fk(FiltRow {
+                    id: FId(i),
+                    score: i * 10,
+                    active: false,
+                })
+                .unwrap();
+        }
+
+        // Filtered index should be empty.
+        assert_eq!(table.count_by_active_score(MatchAll, QueryOpts::ASC), 0);
+        assert!(table.by_active_score(MatchAll, QueryOpts::ASC).is_empty());
+    }
+}

@@ -1106,3 +1106,874 @@ fn restrict_after_cascade_clears_refs() {
     assert!(db.teams.is_empty());
     assert!(db.memos.is_empty());
 }
+
+/// Additional gap coverage tests for database-level FK semantics: self-referential
+/// FKs, deep cascade chains blocked by restrict, nullify + unique index
+/// interactions, filtered/unique index cleanup on cascade, modify_unchecked
+/// through the database API, mixed cascade/nullify on same parent, and
+/// multi-FK nullification.
+mod gap_coverage {
+    use std::panic;
+
+    use tabulosity::{Bounded, Database, Error, MatchAll, QueryOpts, Table};
+
+    // --- Self-referential FKs ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct EmpId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Employee {
+        #[primary_key]
+        pub id: EmpId,
+        #[indexed]
+        pub manager: Option<EmpId>,
+        pub name: String,
+    }
+
+    #[derive(Database)]
+    struct SelfRefNullifyDb {
+        #[table(singular = "employee", fks(manager? = "employees" on_delete nullify))]
+        pub employees: EmployeeTable,
+    }
+
+    #[test]
+    fn self_ref_nullify_deletes_manager() {
+        let mut db = SelfRefNullifyDb::new();
+        db.insert_employee(Employee {
+            id: EmpId(1),
+            name: "Boss".into(),
+            manager: None,
+        })
+        .unwrap();
+        db.insert_employee(Employee {
+            id: EmpId(2),
+            name: "Report".into(),
+            manager: Some(EmpId(1)),
+        })
+        .unwrap();
+
+        // Delete the manager -- report's manager should be nullified.
+        db.remove_employee(&EmpId(1)).unwrap();
+        assert_eq!(db.employees.len(), 1);
+        assert_eq!(db.employees.get(&EmpId(2)).unwrap().manager, None);
+    }
+
+    #[test]
+    fn self_ref_insert_referencing_self_fails() {
+        let mut db = SelfRefNullifyDb::new();
+        // Inserting an employee that references itself fails because the FK check
+        // runs before the row is in the table.
+        let err = db
+            .insert_employee(Employee {
+                id: EmpId(1),
+                name: "Self-manager".into(),
+                manager: Some(EmpId(1)),
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::FkTargetNotFound { .. }));
+    }
+
+    #[test]
+    fn self_ref_nullify_via_update_then_delete() {
+        let mut db = SelfRefNullifyDb::new();
+        // Insert with None, then update to reference self.
+        db.insert_employee(Employee {
+            id: EmpId(1),
+            name: "Self-manager".into(),
+            manager: None,
+        })
+        .unwrap();
+        db.update_employee(Employee {
+            id: EmpId(1),
+            name: "Self-manager".into(),
+            manager: Some(EmpId(1)),
+        })
+        .unwrap();
+
+        // Delete should nullify the self-reference (via update_no_fk), then remove.
+        db.remove_employee(&EmpId(1)).unwrap();
+        assert!(db.employees.is_empty());
+    }
+
+    #[test]
+    fn self_ref_nullify_chain() {
+        let mut db = SelfRefNullifyDb::new();
+        db.insert_employee(Employee {
+            id: EmpId(1),
+            name: "CEO".into(),
+            manager: None,
+        })
+        .unwrap();
+        db.insert_employee(Employee {
+            id: EmpId(2),
+            name: "VP".into(),
+            manager: Some(EmpId(1)),
+        })
+        .unwrap();
+        db.insert_employee(Employee {
+            id: EmpId(3),
+            name: "IC".into(),
+            manager: Some(EmpId(2)),
+        })
+        .unwrap();
+
+        // Delete CEO -- only VP's manager is nullified (VP references CEO).
+        // IC still references VP, which is fine.
+        db.remove_employee(&EmpId(1)).unwrap();
+        assert_eq!(db.employees.len(), 2);
+        assert_eq!(db.employees.get(&EmpId(2)).unwrap().manager, None);
+        assert_eq!(db.employees.get(&EmpId(3)).unwrap().manager, Some(EmpId(2)));
+    }
+
+    // NOTE: Self-referential cascade is correctly rejected at compile time as a
+    // cascade cycle. This is by design -- the cycle detection in derive(Database)
+    // prevents employees -> employees cascade loops.
+
+    // --- Deep cascade chain with restrict at leaf ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct RegionId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Region {
+        #[primary_key]
+        pub id: RegionId,
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct GuildId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Guild {
+        #[primary_key]
+        pub id: GuildId,
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct TeamId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Team {
+        #[primary_key]
+        pub id: TeamId,
+        #[indexed]
+        pub region: RegionId,
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct WorkerId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Worker {
+        #[primary_key]
+        pub id: WorkerId,
+        #[indexed]
+        pub team: TeamId,
+        #[indexed]
+        pub guild: GuildId,
+        pub name: String,
+    }
+
+    #[derive(Database)]
+    struct DeepCascadeDb {
+        #[table(singular = "region")]
+        pub regions: RegionTable,
+
+        #[table(singular = "guild")]
+        pub guilds: GuildTable,
+
+        #[table(singular = "team", fks(region = "regions" on_delete cascade))]
+        pub teams: TeamTable,
+
+        // Worker has cascade from team but restrict from guild.
+        #[table(singular = "worker", fks(team = "teams" on_delete cascade, guild = "guilds"))]
+        pub workers: WorkerTable,
+    }
+
+    #[test]
+    fn deep_cascade_blocked_by_restrict_is_not_atomic() {
+        // NOTE: The restrict check is on the *guild* table (when removing a guild,
+        // workers block it), not on the worker table when removing a worker. So
+        // cascade delete of worker succeeds since workers don't have inbound FKs.
+        let mut db = DeepCascadeDb::new();
+
+        db.insert_region(Region {
+            id: RegionId(1),
+            name: "North".into(),
+        })
+        .unwrap();
+        db.insert_guild(Guild {
+            id: GuildId(1),
+            name: "Fighters".into(),
+        })
+        .unwrap();
+        db.insert_team(Team {
+            id: TeamId(1),
+            region: RegionId(1),
+            name: "Alpha".into(),
+        })
+        .unwrap();
+        db.insert_worker(Worker {
+            id: WorkerId(1),
+            team: TeamId(1),
+            guild: GuildId(1),
+            name: "Bob".into(),
+        })
+        .unwrap();
+
+        db.remove_region(&RegionId(1)).unwrap();
+        assert!(db.regions.is_empty());
+        assert!(db.teams.is_empty());
+        assert!(db.workers.is_empty());
+        assert_eq!(db.guilds.len(), 1); // Guild is untouched
+    }
+
+    // Cascade leads to restrict failure: Region -> Team (cascade), Team restricted
+    // by Rule table.
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct RuleId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Rule {
+        #[primary_key]
+        pub id: RuleId,
+        #[indexed]
+        pub team: TeamId,
+        pub description: String,
+    }
+
+    #[derive(Database)]
+    struct CascadeRestrictDb {
+        #[table(singular = "region")]
+        pub regions: RegionTable,
+
+        #[table(singular = "team", fks(region = "regions" on_delete cascade))]
+        pub teams: TeamTable,
+
+        #[table(singular = "rule", fks(team = "teams"))]
+        pub rules: RuleTable,
+    }
+
+    #[test]
+    fn cascade_blocked_by_restrict_at_leaf() {
+        let mut db = CascadeRestrictDb::new();
+
+        db.insert_region(Region {
+            id: RegionId(1),
+            name: "North".into(),
+        })
+        .unwrap();
+        db.insert_team(Team {
+            id: TeamId(1),
+            region: RegionId(1),
+            name: "Alpha".into(),
+        })
+        .unwrap();
+        db.insert_rule(Rule {
+            id: RuleId(1),
+            team: TeamId(1),
+            description: "No running".into(),
+        })
+        .unwrap();
+
+        // Deleting region cascades to remove team, but team has restrict refs from rules.
+        let err = db.remove_region(&RegionId(1)).unwrap_err();
+        assert!(matches!(err, Error::FkViolation { .. }));
+
+        // Generated code order: restrict checks -> cascade -> nullify -> remove row.
+        // Region has no restrict FKs, so restrict passes. Cascade collects team
+        // PKs and calls remove_team for each. remove_team sees restrict violation
+        // from rules and returns Err, which propagates up. The region row has NOT
+        // been removed yet because row removal happens AFTER cascade in the
+        // generated code. So the entire operation fails with everything intact.
+        assert_eq!(db.regions.len(), 1, "region should still exist");
+        assert_eq!(db.teams.len(), 1, "team should still exist");
+        assert_eq!(db.rules.len(), 1, "rule should still exist");
+    }
+
+    // --- Nullify + unique index: multiple rows nullified to same None ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct ProjId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Project {
+        #[primary_key]
+        pub id: ProjId,
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct AssignId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Assignment {
+        #[primary_key]
+        pub id: AssignId,
+        #[indexed(unique)]
+        pub project: Option<ProjId>,
+        pub label: String,
+    }
+
+    #[derive(Database)]
+    struct NullifyUniqueDb {
+        #[table(singular = "project")]
+        pub projects: ProjectTable,
+
+        #[table(singular = "assignment", fks(project? = "projects" on_delete nullify))]
+        pub assignments: AssignmentTable,
+    }
+
+    #[test]
+    fn nullify_unique_index_single_row_to_none_works() {
+        let mut db = NullifyUniqueDb::new();
+
+        db.insert_project(Project {
+            id: ProjId(1),
+            name: "Alpha".into(),
+        })
+        .unwrap();
+        db.insert_project(Project {
+            id: ProjId(2),
+            name: "Beta".into(),
+        })
+        .unwrap();
+
+        db.insert_assignment(Assignment {
+            id: AssignId(1),
+            project: Some(ProjId(1)),
+            label: "A".into(),
+        })
+        .unwrap();
+        db.insert_assignment(Assignment {
+            id: AssignId(2),
+            project: Some(ProjId(2)),
+            label: "B".into(),
+        })
+        .unwrap();
+
+        // First nullify works fine -- no other None in the unique index.
+        db.remove_project(&ProjId(1)).unwrap();
+        assert_eq!(db.assignments.get(&AssignId(1)).unwrap().project, None);
+    }
+
+    #[test]
+    fn nullify_unique_index_multiple_rows_to_none_fails() {
+        // BUG: When a unique-indexed Option<T> field is nullified via on_delete
+        // nullify, the second nullification fails because the unique index already
+        // contains a None entry. The nullify path uses update_no_fk, which enforces
+        // unique constraints, and None is not exempt from uniqueness.
+        //
+        // This documents the current behavior. A fix would require either:
+        // 1. Exempting None from unique checks on Option<T> fields, or
+        // 2. Using a bypass path for nullify updates.
+        let mut db = NullifyUniqueDb::new();
+
+        db.insert_project(Project {
+            id: ProjId(1),
+            name: "Alpha".into(),
+        })
+        .unwrap();
+        db.insert_project(Project {
+            id: ProjId(2),
+            name: "Beta".into(),
+        })
+        .unwrap();
+
+        db.insert_assignment(Assignment {
+            id: AssignId(1),
+            project: Some(ProjId(1)),
+            label: "A".into(),
+        })
+        .unwrap();
+        db.insert_assignment(Assignment {
+            id: AssignId(2),
+            project: Some(ProjId(2)),
+            label: "B".into(),
+        })
+        .unwrap();
+
+        // First nullify succeeds.
+        db.remove_project(&ProjId(1)).unwrap();
+
+        // Second nullify panics -- None is already in the unique index.
+        // The generated nullify code calls update_no_fk(...).unwrap(), which panics
+        // when the unique check fails on the second None value.
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| db.remove_project(&ProjId(2))));
+        assert!(
+            result.is_err(),
+            "Expected panic from nullify unique conflict"
+        );
+    }
+
+    // --- Filtered index cleaned up on cascade delete ---
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Proj {
+        #[primary_key]
+        pub id: ProjId,
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct TaskId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    #[index(
+        name = "active_priority",
+        fields("priority"),
+        filter = "FiltTask::is_active"
+    )]
+    struct FiltTask {
+        #[primary_key]
+        pub id: TaskId,
+        #[indexed]
+        pub project: ProjId,
+        pub priority: u32,
+        pub active: bool,
+    }
+
+    impl FiltTask {
+        fn is_active(&self) -> bool {
+            self.active
+        }
+    }
+
+    #[derive(Database)]
+    struct FiltCascadeDb {
+        #[table(singular = "proj")]
+        pub projs: ProjTable,
+
+        #[table(singular = "filt_task", fks(project = "projs" on_delete cascade))]
+        pub filt_tasks: FiltTaskTable,
+    }
+
+    #[test]
+    fn filtered_index_cleaned_up_on_cascade_delete() {
+        let mut db = FiltCascadeDb::new();
+        db.insert_proj(Proj {
+            id: ProjId(1),
+            name: "Alpha".into(),
+        })
+        .unwrap();
+        db.insert_filt_task(FiltTask {
+            id: TaskId(1),
+            project: ProjId(1),
+            priority: 5,
+            active: true,
+        })
+        .unwrap();
+        db.insert_filt_task(FiltTask {
+            id: TaskId(2),
+            project: ProjId(1),
+            priority: 3,
+            active: false,
+        })
+        .unwrap();
+
+        // Before cascade: filtered index has 1 active task.
+        assert_eq!(
+            db.filt_tasks
+                .count_by_active_priority(MatchAll, QueryOpts::ASC),
+            1
+        );
+
+        // Cascade delete removes both tasks.
+        db.remove_proj(&ProjId(1)).unwrap();
+        assert!(db.filt_tasks.is_empty());
+        assert_eq!(
+            db.filt_tasks
+                .count_by_active_priority(MatchAll, QueryOpts::ASC),
+            0
+        );
+    }
+
+    // --- Cascade frees unique index values for reuse ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct UId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct UniqueChild {
+        #[primary_key]
+        pub id: UId,
+        #[indexed]
+        pub parent: ProjId,
+        #[indexed(unique)]
+        pub code: String,
+    }
+
+    #[derive(Database)]
+    struct UniqueCascadeDb {
+        #[table(singular = "proj")]
+        pub projs: ProjTable,
+
+        #[table(singular = "unique_child", fks(parent = "projs" on_delete cascade))]
+        pub unique_children: UniqueChildTable,
+    }
+
+    #[test]
+    fn cascade_delete_frees_unique_values_for_reuse() {
+        let mut db = UniqueCascadeDb::new();
+        db.insert_proj(Proj {
+            id: ProjId(1),
+            name: "Alpha".into(),
+        })
+        .unwrap();
+        db.insert_unique_child(UniqueChild {
+            id: UId(1),
+            parent: ProjId(1),
+            code: "ABC".into(),
+        })
+        .unwrap();
+
+        // Cascade delete frees the unique value "ABC".
+        db.remove_proj(&ProjId(1)).unwrap();
+        assert!(db.unique_children.is_empty());
+
+        // Re-insert with same unique value should succeed.
+        db.insert_proj(Proj {
+            id: ProjId(2),
+            name: "Beta".into(),
+        })
+        .unwrap();
+        db.insert_unique_child(UniqueChild {
+            id: UId(2),
+            parent: ProjId(2),
+            code: "ABC".into(),
+        })
+        .unwrap();
+        assert_eq!(db.unique_children.len(), 1);
+    }
+
+    // --- modify_unchecked through database API ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct OwnerId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Owner {
+        #[primary_key]
+        pub id: OwnerId,
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct PetId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Pet {
+        #[primary_key]
+        pub id: PetId,
+        #[indexed]
+        pub owner: Option<OwnerId>,
+        pub name: String,
+    }
+
+    #[derive(Database)]
+    struct PetDb {
+        #[table(singular = "owner")]
+        pub owners: OwnerTable,
+
+        #[table(singular = "pet", fks(owner? = "owners" on_delete nullify))]
+        pub pets: PetTable,
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "indexed field")]
+    fn modify_unchecked_fk_field_change_caught_by_debug_assertions() {
+        // FK fields are typically indexed. In debug builds, modify_unchecked catches
+        // changes to indexed fields. In release builds, this would silently bypass
+        // both FK validation and index maintenance, creating an orphaned FK.
+        let mut db = PetDb::new();
+        db.insert_owner(Owner {
+            id: OwnerId(1),
+            name: "Alice".into(),
+        })
+        .unwrap();
+        db.insert_pet(Pet {
+            id: PetId(1),
+            owner: Some(OwnerId(1)),
+            name: "Fluffy".into(),
+        })
+        .unwrap();
+
+        db.modify_unchecked_pet(&PetId(1), |p| {
+            p.owner = Some(OwnerId(999)); // nonexistent owner -- debug assertion fires
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn modify_unchecked_non_fk_field_on_pet() {
+        // Changing non-indexed fields is fine even through the database API.
+        let mut db = PetDb::new();
+        db.insert_owner(Owner {
+            id: OwnerId(1),
+            name: "Alice".into(),
+        })
+        .unwrap();
+        db.insert_pet(Pet {
+            id: PetId(1),
+            owner: Some(OwnerId(1)),
+            name: "Fluffy".into(),
+        })
+        .unwrap();
+
+        db.modify_unchecked_pet(&PetId(1), |p| {
+            p.name = "Renamed".into();
+        })
+        .unwrap();
+
+        assert_eq!(db.pets.get(&PetId(1)).unwrap().name, "Renamed");
+    }
+
+    // --- Mixed cascade/nullify: two FK fields on same table pointing at same parent ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct UserId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct User {
+        #[primary_key]
+        pub id: UserId,
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct DocId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Doc {
+        #[primary_key]
+        pub id: DocId,
+        #[indexed]
+        pub created_by: UserId,
+        #[indexed]
+        pub reviewed_by: Option<UserId>,
+        pub title: String,
+    }
+
+    #[derive(Database)]
+    struct MixedFkDb {
+        #[table(singular = "user")]
+        pub users: UserTable,
+
+        #[table(singular = "doc", fks(created_by = "users" on_delete cascade, reviewed_by? = "users" on_delete nullify))]
+        pub docs: DocTable,
+    }
+
+    #[test]
+    fn mixed_cascade_nullify_same_parent() {
+        let mut db = MixedFkDb::new();
+        db.insert_user(User {
+            id: UserId(1),
+            name: "Alice".into(),
+        })
+        .unwrap();
+        db.insert_user(User {
+            id: UserId(2),
+            name: "Bob".into(),
+        })
+        .unwrap();
+
+        // Doc created by user 1, reviewed by user 1.
+        db.insert_doc(Doc {
+            id: DocId(1),
+            created_by: UserId(1),
+            reviewed_by: Some(UserId(1)),
+            title: "Draft".into(),
+        })
+        .unwrap();
+        // Doc created by user 2, reviewed by user 1.
+        db.insert_doc(Doc {
+            id: DocId(2),
+            created_by: UserId(2),
+            reviewed_by: Some(UserId(1)),
+            title: "Report".into(),
+        })
+        .unwrap();
+
+        // Delete user 1:
+        // - cascade on created_by: delete Doc(1) (created_by = user 1)
+        // - nullify on reviewed_by: nullify Doc(2).reviewed_by
+        db.remove_user(&UserId(1)).unwrap();
+
+        assert_eq!(db.docs.len(), 1);
+        let doc2 = db.docs.get(&DocId(2)).unwrap();
+        assert_eq!(doc2.created_by, UserId(2));
+        assert_eq!(doc2.reviewed_by, None);
+    }
+
+    // --- Multiple nullifiable FKs on same row ---
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct ParentAId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct ParentA {
+        #[primary_key]
+        pub id: ParentAId,
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct ParentBId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct ParentB {
+        #[primary_key]
+        pub id: ParentBId,
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+    struct ChildId(u32);
+
+    #[derive(Table, Clone, Debug, PartialEq)]
+    struct Child {
+        #[primary_key]
+        pub id: ChildId,
+        #[indexed]
+        pub parent_a: Option<ParentAId>,
+        #[indexed]
+        pub parent_b: Option<ParentBId>,
+        pub label: String,
+    }
+
+    #[derive(Database)]
+    struct MultiNullifyDb {
+        #[table(singular = "parent_a")]
+        pub parent_as: ParentATable,
+
+        #[table(singular = "parent_b")]
+        pub parent_bs: ParentBTable,
+
+        #[table(singular = "child", fks(parent_a? = "parent_as" on_delete nullify, parent_b? = "parent_bs" on_delete nullify))]
+        pub children: ChildTable,
+    }
+
+    #[test]
+    fn multiple_fks_nullified_independently() {
+        let mut db = MultiNullifyDb::new();
+        db.insert_parent_a(ParentA {
+            id: ParentAId(1),
+            name: "A".into(),
+        })
+        .unwrap();
+        db.insert_parent_b(ParentB {
+            id: ParentBId(1),
+            name: "B".into(),
+        })
+        .unwrap();
+        db.insert_child(Child {
+            id: ChildId(1),
+            parent_a: Some(ParentAId(1)),
+            parent_b: Some(ParentBId(1)),
+            label: "C1".into(),
+        })
+        .unwrap();
+
+        // Delete parent A -- nullifies parent_a FK.
+        db.remove_parent_a(&ParentAId(1)).unwrap();
+        let child = db.children.get(&ChildId(1)).unwrap();
+        assert_eq!(child.parent_a, None);
+        assert_eq!(child.parent_b, Some(ParentBId(1)));
+
+        // Delete parent B -- nullifies parent_b FK.
+        db.remove_parent_b(&ParentBId(1)).unwrap();
+        let child = db.children.get(&ChildId(1)).unwrap();
+        assert_eq!(child.parent_a, None);
+        assert_eq!(child.parent_b, None);
+
+        // Child still exists.
+        assert_eq!(db.children.len(), 1);
+    }
+
+    // --- modify_each_by on indexed FK field caught by debug assertions ---
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn modify_each_on_indexed_fk_field_caught_by_debug_assertions() {
+        let mut db = PetDb::new();
+        db.insert_owner(Owner {
+            id: OwnerId(1),
+            name: "Alice".into(),
+        })
+        .unwrap();
+        db.insert_pet(Pet {
+            id: PetId(1),
+            owner: Some(OwnerId(1)),
+            name: "Fluffy".into(),
+        })
+        .unwrap();
+        db.insert_pet(Pet {
+            id: PetId(2),
+            owner: Some(OwnerId(1)),
+            name: "Buddy".into(),
+        })
+        .unwrap();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            db.pets
+                .modify_each_by_owner(&Some(OwnerId(1)), QueryOpts::ASC, |_pk, p| {
+                    p.owner = Some(OwnerId(999));
+                })
+        }));
+
+        // Debug assertions catch the indexed field change.
+        assert!(result.is_err());
+
+        // modify_each on non-indexed fields works fine through the table.
+        let count = db
+            .pets
+            .modify_each_by_owner(&Some(OwnerId(1)), QueryOpts::ASC, |_pk, p| {
+                p.name = "batch-renamed".into();
+            });
+        assert_eq!(count, 2);
+        assert_eq!(db.pets.get(&PetId(1)).unwrap().name, "batch-renamed");
+        assert_eq!(db.pets.get(&PetId(2)).unwrap().name, "batch-renamed");
+    }
+
+    // --- Cascade after modify_each ---
+
+    #[test]
+    fn cascade_after_modify_each() {
+        let mut db = FiltCascadeDb::new();
+        db.insert_proj(Proj {
+            id: ProjId(1),
+            name: "Alpha".into(),
+        })
+        .unwrap();
+        db.insert_filt_task(FiltTask {
+            id: TaskId(1),
+            project: ProjId(1),
+            priority: 5,
+            active: true,
+        })
+        .unwrap();
+        db.insert_filt_task(FiltTask {
+            id: TaskId(2),
+            project: ProjId(1),
+            priority: 3,
+            active: true,
+        })
+        .unwrap();
+
+        // Batch modify non-indexed field.
+        db.filt_tasks
+            .modify_each_by_project(&ProjId(1), QueryOpts::ASC, |_pk, row| {
+                row.active = false;
+            });
+
+        // FK graph should still be consistent -- cascade should work.
+        db.remove_proj(&ProjId(1)).unwrap();
+        assert!(db.filt_tasks.is_empty());
+    }
+}
