@@ -98,6 +98,16 @@ impl TestGameClient {
     /// *all* turns encountered (including empty ones that arrive first) to
     /// keep the sim tick in sync with the relay. Returns the sim_tick_target
     /// of the first turn that contained commands.
+    ///
+    /// **Caution:** This returns as soon as *any* turn with commands arrives.
+    /// When multiple players send commands concurrently, their commands may
+    /// land in different relay turns. Calling `poll_until_turn()` on each
+    /// client will only guarantee that *one* turn with commands was applied —
+    /// later turns (containing other players' commands) may not have arrived
+    /// yet. For tests where multiple players send commands in the same window,
+    /// use the pause-then-drain pattern instead: sleep briefly, call
+    /// `send_pause()` / `poll_until_paused()` on all clients, then
+    /// `drain_turns()` to deterministically apply all buffered turns.
     pub fn poll_until_turn(&mut self) -> u64 {
         let start = Instant::now();
         loop {

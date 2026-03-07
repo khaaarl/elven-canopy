@@ -165,10 +165,17 @@ fn bidirectional_commands() {
         position: spawn_pos_2,
     });
 
-    // Both poll until they get a turn with commands.
-    let tick_h = host.poll_until_turn();
-    let tick_j = joiner.poll_until_turn();
-    assert_eq!(tick_h, tick_j);
+    // Give both commands time to reach the relay, then pause so we drain
+    // deterministically — the two commands may land in different turns, so
+    // poll_until_turn() alone is insufficient.
+    thread::sleep(Duration::from_millis(200));
+
+    host.send_pause();
+    host.poll_until_paused();
+    joiner.poll_until_paused();
+
+    let _ = host.drain_turns();
+    let _ = joiner.drain_turns();
 
     let host_sim = host.sim.as_ref().unwrap();
     let joiner_sim = joiner.sim.as_ref().unwrap();
@@ -535,10 +542,19 @@ fn mid_game_join_then_commands() {
         position: spawn_pos_3,
     });
 
-    // All three poll for the turn with commands.
-    host.poll_until_turn();
-    joiner.poll_until_turn();
-    late_joiner.poll_until_turn();
+    // Give all commands time to reach the relay, then pause so we drain
+    // deterministically — commands from different players may land in
+    // different turns, so poll_until_turn() alone is insufficient.
+    thread::sleep(Duration::from_millis(200));
+
+    host.send_pause();
+    host.poll_until_paused();
+    joiner.poll_until_paused();
+    late_joiner.poll_until_paused();
+
+    let _ = host.drain_turns();
+    let _ = joiner.drain_turns();
+    let _ = late_joiner.drain_turns();
 
     // Should have 4 elves total (1 pre-join + 3 new).
     let host_sim = host.sim.as_ref().unwrap();
