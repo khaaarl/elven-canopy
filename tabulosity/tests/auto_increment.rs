@@ -3,7 +3,7 @@
 //! Tests both table-level (`insert_auto_no_fk`, `next_id`) and database-level
 //! (`insert_*_auto`) auto-increment behavior.
 
-use tabulosity::{Bounded, Database, Error, MatchAll, Table};
+use tabulosity::{Bounded, Database, Error, MatchAll, QueryOpts, Table};
 
 // =============================================================================
 // Table-level schema
@@ -393,11 +393,11 @@ fn auto_insert_maintains_simple_index() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_color(&Color::Red), 2);
-    assert_eq!(table.count_by_color(&Color::Blue), 1);
-    assert_eq!(table.count_by_color(&Color::Green), 0);
+    assert_eq!(table.count_by_color(&Color::Red, QueryOpts::ASC), 2);
+    assert_eq!(table.count_by_color(&Color::Blue, QueryOpts::ASC), 1);
+    assert_eq!(table.count_by_color(&Color::Green, QueryOpts::ASC), 0);
 
-    let reds = table.by_color(&Color::Red);
+    let reds = table.by_color(&Color::Red, QueryOpts::ASC);
     assert_eq!(reds.len(), 2);
     assert_eq!(reds[0].label, "A");
     assert_eq!(reds[1].label, "C");
@@ -421,11 +421,11 @@ fn auto_insert_then_remove_updates_index() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_color(&Color::Red), 2);
+    assert_eq!(table.count_by_color(&Color::Red, QueryOpts::ASC), 2);
 
     table.remove_no_fk(&id0).unwrap();
-    assert_eq!(table.count_by_color(&Color::Red), 1);
-    assert_eq!(table.by_color(&Color::Red)[0].label, "B");
+    assert_eq!(table.count_by_color(&Color::Red, QueryOpts::ASC), 1);
+    assert_eq!(table.by_color(&Color::Red, QueryOpts::ASC)[0].label, "B");
 
     // next_id should not have changed after remove.
     assert_eq!(table.next_id(), WidgetId(2));
@@ -442,8 +442,8 @@ fn auto_insert_then_update_updates_index() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_color(&Color::Red), 1);
-    assert_eq!(table.count_by_color(&Color::Blue), 0);
+    assert_eq!(table.count_by_color(&Color::Red, QueryOpts::ASC), 1);
+    assert_eq!(table.count_by_color(&Color::Blue, QueryOpts::ASC), 0);
 
     table
         .update_no_fk(Widget {
@@ -453,8 +453,8 @@ fn auto_insert_then_update_updates_index() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_color(&Color::Red), 0);
-    assert_eq!(table.count_by_color(&Color::Blue), 1);
+    assert_eq!(table.count_by_color(&Color::Red, QueryOpts::ASC), 0);
+    assert_eq!(table.count_by_color(&Color::Blue, QueryOpts::ASC), 1);
 }
 
 #[test]
@@ -509,8 +509,8 @@ fn upsert_update_path_does_not_bump_next_id_when_pk_below() {
         })
         .unwrap();
     assert_eq!(table.next_id(), WidgetId(2));
-    assert_eq!(table.count_by_color(&Color::Green), 1);
-    assert_eq!(table.count_by_color(&Color::Red), 0);
+    assert_eq!(table.count_by_color(&Color::Green, QueryOpts::ASC), 1);
+    assert_eq!(table.count_by_color(&Color::Red, QueryOpts::ASC), 0);
 }
 
 #[test]
@@ -534,7 +534,7 @@ fn upsert_insert_path_with_high_pk_bumps_next_id() {
         })
         .unwrap();
     assert_eq!(table.next_id(), WidgetId(11));
-    assert_eq!(table.count_by_color(&Color::Blue), 1);
+    assert_eq!(table.count_by_color(&Color::Blue, QueryOpts::ASC), 1);
 }
 
 // =============================================================================
@@ -590,25 +590,28 @@ fn auto_insert_maintains_compound_index() {
         .unwrap();
 
     // Simple index queries.
-    assert_eq!(table.count_by_color(&Color::Red), 2);
-    assert_eq!(table.count_by_color(&Color::Blue), 1);
+    assert_eq!(table.count_by_color(&Color::Red, QueryOpts::ASC), 2);
+    assert_eq!(table.count_by_color(&Color::Blue, QueryOpts::ASC), 1);
 
     // Compound index queries.
     assert_eq!(
-        table.count_by_color_priority(&Color::Red, &Priority::High),
+        table.count_by_color_priority(&Color::Red, &Priority::High, QueryOpts::ASC),
         1
     );
     assert_eq!(
-        table.count_by_color_priority(&Color::Red, &Priority::Low),
-        1
-    );
-    assert_eq!(table.count_by_color_priority(&Color::Red, MatchAll), 2);
-    assert_eq!(
-        table.count_by_color_priority(&Color::Blue, &Priority::High),
+        table.count_by_color_priority(&Color::Red, &Priority::Low, QueryOpts::ASC),
         1
     );
     assert_eq!(
-        table.count_by_color_priority(&Color::Blue, &Priority::Low),
+        table.count_by_color_priority(&Color::Red, MatchAll, QueryOpts::ASC),
+        2
+    );
+    assert_eq!(
+        table.count_by_color_priority(&Color::Blue, &Priority::High, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_color_priority(&Color::Blue, &Priority::Low, QueryOpts::ASC),
         0
     );
 }
@@ -634,13 +637,13 @@ fn auto_insert_compound_index_after_remove() {
         .unwrap();
 
     assert_eq!(
-        table.count_by_color_priority(&Color::Red, &Priority::High),
+        table.count_by_color_priority(&Color::Red, &Priority::High, QueryOpts::ASC),
         2
     );
 
     table.remove_no_fk(&id0).unwrap();
     assert_eq!(
-        table.count_by_color_priority(&Color::Red, &Priority::High),
+        table.count_by_color_priority(&Color::Red, &Priority::High, QueryOpts::ASC),
         1
     );
     assert_eq!(table.next_id(), EntryId(2));
@@ -703,12 +706,12 @@ fn auto_insert_maintains_filtered_index() {
         .unwrap();
 
     // Simple index includes all rows.
-    assert_eq!(table.count_by_color(&Color::Red), 2);
+    assert_eq!(table.count_by_color(&Color::Red, QueryOpts::ASC), 2);
 
     // Filtered index only includes active rows.
-    assert_eq!(table.count_by_active_color(&Color::Red), 1);
-    assert_eq!(table.count_by_active_color(&Color::Blue), 1);
-    assert_eq!(table.count_by_active_color(MatchAll), 2);
+    assert_eq!(table.count_by_active_color(&Color::Red, QueryOpts::ASC), 1);
+    assert_eq!(table.count_by_active_color(&Color::Blue, QueryOpts::ASC), 1);
+    assert_eq!(table.count_by_active_color(MatchAll, QueryOpts::ASC), 2);
 }
 
 #[test]
@@ -723,7 +726,7 @@ fn auto_insert_filtered_index_update_changes_membership() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_color(&Color::Red), 1);
+    assert_eq!(table.count_by_active_color(&Color::Red, QueryOpts::ASC), 1);
 
     // Deactivate: should leave the filtered index.
     table
@@ -734,7 +737,7 @@ fn auto_insert_filtered_index_update_changes_membership() {
             label: "A".into(),
         })
         .unwrap();
-    assert_eq!(table.count_by_active_color(&Color::Red), 0);
+    assert_eq!(table.count_by_active_color(&Color::Red, QueryOpts::ASC), 0);
 
     // Re-activate: should re-enter the filtered index.
     table
@@ -745,7 +748,7 @@ fn auto_insert_filtered_index_update_changes_membership() {
             label: "A".into(),
         })
         .unwrap();
-    assert_eq!(table.count_by_active_color(&Color::Red), 1);
+    assert_eq!(table.count_by_active_color(&Color::Red, QueryOpts::ASC), 1);
 }
 
 // =============================================================================
@@ -782,8 +785,8 @@ fn rebuild_indexes_on_auto_table() {
     table.rebuild_indexes();
     assert_eq!(table.next_id(), next_before);
     assert_eq!(table.len(), 3);
-    assert_eq!(table.count_by_color(&Color::Red), 2);
-    assert_eq!(table.count_by_color(&Color::Blue), 1);
+    assert_eq!(table.count_by_color(&Color::Red, QueryOpts::ASC), 2);
+    assert_eq!(table.count_by_color(&Color::Blue, QueryOpts::ASC), 1);
 }
 
 // =============================================================================
@@ -1108,10 +1111,10 @@ fn db_auto_insert_secondary_index_queries() {
     .unwrap();
 
     // Query tasks by project index.
-    assert_eq!(db.tasks.count_by_project(&p0), 2);
-    assert_eq!(db.tasks.count_by_project(&p1), 1);
+    assert_eq!(db.tasks.count_by_project(&p0, QueryOpts::ASC), 2);
+    assert_eq!(db.tasks.count_by_project(&p1, QueryOpts::ASC), 1);
 
-    let p0_tasks = db.tasks.by_project(&p0);
+    let p0_tasks = db.tasks.by_project(&p0, QueryOpts::ASC);
     assert_eq!(p0_tasks.len(), 2);
     assert_eq!(p0_tasks[0].label, "build");
     assert_eq!(p0_tasks[1].label, "test");

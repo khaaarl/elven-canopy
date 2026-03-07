@@ -2,7 +2,7 @@
 //! `#[index(..., unique)]`). Tests insert, update, upsert, and remove
 //! interactions with unique constraints.
 
-use tabulosity::{Bounded, Database, Error, MatchAll, Table};
+use tabulosity::{Bounded, Database, Error, MatchAll, QueryOpts, Table};
 
 // ============================================================================
 // Test types — simple unique index
@@ -319,7 +319,7 @@ fn query_by_unique_field() {
         })
         .unwrap();
 
-    let results = table.by_email(&"a@b.com".to_string());
+    let results = table.by_email(&"a@b.com".to_string(), QueryOpts::ASC);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].name, "Alice");
 }
@@ -761,8 +761,13 @@ fn mixed_unique_and_nonunique_indexes() {
     assert!(matches!(err, Error::DuplicateIndex { .. }));
 
     // Queries on both indexes work.
-    assert_eq!(table.by_badge(&100).len(), 1);
-    assert_eq!(table.by_department(&"eng".to_string()).len(), 2);
+    assert_eq!(table.by_badge(&100, QueryOpts::ASC).len(), 1);
+    assert_eq!(
+        table
+            .by_department(&"eng".to_string(), QueryOpts::ASC)
+            .len(),
+        2
+    );
 }
 
 // ============================================================================
@@ -970,7 +975,10 @@ fn failed_insert_leaves_table_completely_unchanged() {
     assert_eq!(table.len(), 1);
     assert_eq!(table.get_ref(&UserId(1)).unwrap().name, "Alice");
     // And query by unique index should still return exactly 1 result.
-    assert_eq!(table.by_email(&"a@b.com".to_string()).len(), 1);
+    assert_eq!(
+        table.by_email(&"a@b.com".to_string(), QueryOpts::ASC).len(),
+        1
+    );
 }
 
 // ============================================================================
@@ -1013,9 +1021,15 @@ fn count_by_unique_field() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_email(&"a@b.com".to_string()), 1);
-    assert_eq!(table.count_by_email(&"missing@x.com".to_string()), 0);
-    assert_eq!(table.count_by_email(MatchAll), 2);
+    assert_eq!(
+        table.count_by_email(&"a@b.com".to_string(), QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_email(&"missing@x.com".to_string(), QueryOpts::ASC),
+        0
+    );
+    assert_eq!(table.count_by_email(MatchAll, QueryOpts::ASC), 2);
 }
 
 #[test]
@@ -1037,7 +1051,7 @@ fn iter_by_unique_field() {
         .unwrap();
 
     let names: Vec<&str> = table
-        .iter_by_email(&"a@b.com".to_string())
+        .iter_by_email(&"a@b.com".to_string(), QueryOpts::ASC)
         .map(|u| u.name.as_str())
         .collect();
     assert_eq!(names, vec!["Alice"]);
@@ -1068,12 +1082,24 @@ fn compound_unique_count_and_query() {
         .unwrap();
 
     // Exact compound query.
-    assert_eq!(table.count_by_building_slot(&1u32, &1u32), 1);
-    assert_eq!(table.count_by_building_slot(&1u32, &2u32), 1);
-    assert_eq!(table.count_by_building_slot(&1u32, &99u32), 0);
+    assert_eq!(
+        table.count_by_building_slot(&1u32, &1u32, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_building_slot(&1u32, &2u32, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_building_slot(&1u32, &99u32, QueryOpts::ASC),
+        0
+    );
 
     // Prefix query (all slots in building 1).
-    assert_eq!(table.count_by_building_slot(&1u32, MatchAll), 2);
+    assert_eq!(
+        table.count_by_building_slot(&1u32, MatchAll, QueryOpts::ASC),
+        2
+    );
 }
 
 // ============================================================================

@@ -15,6 +15,8 @@
 //! - `modify_unchecked_range` / `modify_unchecked_all` — batch variants using
 //!   `BTreeMap::range_mut`, applying `FnMut` per row with the same debug checks
 //! - Per-index query methods using `IntoQuery` (by_*, iter_by_*, count_by_*)
+//!   with `QueryOpts` for ordering (asc/desc) and offset (skip N)
+//! - `modify_each_by_*` — query-driven batch mutation with debug-build safety
 //! - `rebuild_indexes()` for deserialization
 //! - `Serialize` / `Deserialize` impls (behind `#[cfg(feature = "serde")]`)
 //!
@@ -121,6 +123,10 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     let query_methods = gen_all_query_methods(&resolved_indexes, pk_ty, row_name, &fields);
 
     let table_name_str_ref = &table_name_str;
+
+    // --- modify_each_by_* methods ---
+    let modify_each_methods =
+        gen_all_modify_each_methods(&resolved_indexes, pk_ident, pk_ty, row_name);
 
     // --- modify_unchecked (single + range + all) ---
     let modify_unchecked_method = gen_modify_unchecked(
@@ -272,6 +278,8 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             // --- Index query methods ---
 
             #(#query_methods)*
+
+            #(#modify_each_methods)*
 
             // --- Mutation methods (doc-hidden, used by Database derive) ---
 
@@ -1283,26 +1291,26 @@ fn gen_query_methods(
 
     quote! {
         #[doc(hidden)]
-        fn #helper_fn(&self, #(#params_querybound),*) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = &#row_name> + '_> {
+        fn #helper_fn(&self, #(#params_querybound,)* __opts: ::tabulosity::QueryOpts) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = &#row_name> + '_> {
             #match_cascade
         }
 
         /// Returns cloned rows matching the query.
-        pub fn #by_fn(&self, #(#params_into_query),*) -> ::std::vec::Vec<#row_name> {
+        pub fn #by_fn(&self, #(#params_into_query,)* opts: ::tabulosity::QueryOpts) -> ::std::vec::Vec<#row_name> {
             #(#into_query_calls)*
-            self.#helper_fn(#(#qb_forwards),*).cloned().collect()
+            self.#helper_fn(#(#qb_forwards,)* opts).cloned().collect()
         }
 
         /// Returns a boxed iterator over references to matching rows.
-        pub fn #iter_by_fn(&self, #(#params_into_query),*) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = &#row_name> + '_> {
+        pub fn #iter_by_fn(&self, #(#params_into_query,)* opts: ::tabulosity::QueryOpts) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = &#row_name> + '_> {
             #(#into_query_calls)*
-            self.#helper_fn(#(#qb_forwards),*)
+            self.#helper_fn(#(#qb_forwards,)* opts)
         }
 
         /// Returns the count of matching rows.
-        pub fn #count_by_fn(&self, #(#params_into_query),*) -> usize {
+        pub fn #count_by_fn(&self, #(#params_into_query,)* opts: ::tabulosity::QueryOpts) -> usize {
             #(#into_query_calls)*
-            self.#helper_fn(#(#qb_forwards),*).count()
+            self.#helper_fn(#(#qb_forwards,)* opts).count()
         }
     }
 }
@@ -1485,19 +1493,46 @@ fn gen_arm_body(
             quote! { #(#filter_checks)&&* }
         };
 
+        // Generate a second set of clone variables for the Desc arm, since
+        // the `move` closures consume them.
+        let qb_clones_desc: Vec<TokenStream> = (num_exact..n)
+            .map(|i| {
+                let clone_var = format_ident!("__qbc{}", i);
+                let qbn = &qb_names[i];
+                quote! { let #clone_var = #qbn.clone(); }
+            })
+            .collect();
+
         quote! {
             #pk_bounds_check
             #(#bounds_checks)*
-            #(#qb_clones)*
             let __start = (#(#start_elems),*);
             let __end = (#(#end_elems),*);
-            ::std::boxed::Box::new(
-                self.#idx_name.range(__start..=__end)
-                    .filter(move |__entry| {
-                        #combined_filter
-                    })
-                    .map(|__entry| &self.rows[&__entry.#pk_idx])
-            )
+            match __opts.order {
+                ::tabulosity::QueryOrder::Asc => {
+                    #(#qb_clones)*
+                    ::std::boxed::Box::new(
+                        self.#idx_name.range(__start..=__end)
+                            .filter(move |__entry| {
+                                #combined_filter
+                            })
+                            .map(|__entry| &self.rows[&__entry.#pk_idx])
+                            .skip(__opts.offset)
+                    )
+                }
+                ::tabulosity::QueryOrder::Desc => {
+                    #(#qb_clones_desc)*
+                    ::std::boxed::Box::new(
+                        self.#idx_name.range(__start..=__end)
+                            .rev()
+                            .filter(move |__entry| {
+                                #combined_filter
+                            })
+                            .map(|__entry| &self.rows[&__entry.#pk_idx])
+                            .skip(__opts.offset)
+                    )
+                }
+            }
         }
     } else {
         // All exact — no post-filter needed.
@@ -1505,10 +1540,152 @@ fn gen_arm_body(
             #pk_bounds_check
             let __start = (#(#start_elems),*);
             let __end = (#(#end_elems),*);
-            ::std::boxed::Box::new(
-                self.#idx_name.range(__start..=__end)
-                    .map(|__entry| &self.rows[&__entry.#pk_idx])
-            )
+            match __opts.order {
+                ::tabulosity::QueryOrder::Asc => ::std::boxed::Box::new(
+                    self.#idx_name.range(__start..=__end)
+                        .map(|__entry| &self.rows[&__entry.#pk_idx])
+                        .skip(__opts.offset)
+                ),
+                ::tabulosity::QueryOrder::Desc => ::std::boxed::Box::new(
+                    self.#idx_name.range(__start..=__end)
+                        .rev()
+                        .map(|__entry| &self.rows[&__entry.#pk_idx])
+                        .skip(__opts.offset)
+                ),
+            }
+        }
+    }
+}
+
+// =============================================================================
+// modify_each_by_* codegen
+// =============================================================================
+
+/// Generates one `modify_each_by_{name}` method per index.
+///
+/// Each method queries matching rows via the existing `_query_{name}` helper,
+/// collects their PKs, then iterates and mutates via `rows.get_mut`. In debug
+/// builds, snapshots of the PK and all indexed fields are taken before the
+/// closure and asserted unchanged after.
+fn gen_all_modify_each_methods(
+    indexes: &[ResolvedIndex],
+    pk_ident: &Ident,
+    pk_ty: &Type,
+    row_name: &Ident,
+) -> Vec<TokenStream> {
+    // Collect all indexed field idents (deduplicated) across ALL indexes.
+    let mut seen = std::collections::BTreeSet::new();
+    let mut indexed_fields: Vec<&Ident> = Vec::new();
+    for idx in indexes {
+        for (fi, _) in &idx.fields {
+            if seen.insert(fi.to_string()) {
+                indexed_fields.push(fi);
+            }
+        }
+    }
+
+    indexes
+        .iter()
+        .map(|idx| gen_modify_each_method(idx, pk_ident, pk_ty, row_name, &indexed_fields))
+        .collect()
+}
+
+fn gen_modify_each_method(
+    idx: &ResolvedIndex,
+    pk_ident: &Ident,
+    pk_ty: &Type,
+    row_name: &Ident,
+    indexed_fields: &[&Ident],
+) -> TokenStream {
+    let n = idx.fields.len();
+    let modify_each_fn = format_ident!("modify_each_by_{}", idx.name);
+    let helper_fn = format_ident!("_query_{}", idx.name);
+
+    // Parameter declarations (IntoQuery).
+    let param_names: Vec<Ident> = (0..n).map(|i| format_ident!("__q{}", i)).collect();
+    let field_tys: Vec<&Type> = idx.fields.iter().map(|(_, ty)| ty).collect();
+
+    let params_into_query: Vec<TokenStream> = param_names
+        .iter()
+        .zip(field_tys.iter())
+        .map(|(pn, ty)| quote! { #pn: impl ::tabulosity::IntoQuery<#ty> })
+        .collect();
+
+    let qb_names: Vec<Ident> = (0..n).map(|i| format_ident!("__qb{}", i)).collect();
+    let into_query_calls: Vec<TokenStream> = param_names
+        .iter()
+        .zip(qb_names.iter())
+        .map(|(pn, qbn)| quote! { let #qbn = ::tabulosity::IntoQuery::into_query(#pn); })
+        .collect();
+
+    let qb_forwards: Vec<TokenStream> = qb_names.iter().map(|qbn| quote! { #qbn }).collect();
+
+    // Debug-build snapshot + assertion statements.
+    let method_name_str = modify_each_fn.to_string();
+    let snap_pk = format_ident!("__snap_{}", pk_ident);
+    let snap_stmts: Vec<TokenStream> = std::iter::once(quote! {
+        #[cfg(debug_assertions)]
+        let #snap_pk = __row.#pk_ident.clone();
+    })
+    .chain(indexed_fields.iter().map(|fi| {
+        let snap_name = format_ident!("__snap_{}", fi);
+        quote! {
+            #[cfg(debug_assertions)]
+            let #snap_name = __row.#fi.clone();
+        }
+    }))
+    .collect();
+
+    let pk_str = pk_ident.to_string();
+    let assert_stmts: Vec<TokenStream> = std::iter::once({
+        let msg = format!("{method_name_str}: primary key field `{pk_str}` was changed");
+        quote! {
+            assert!(
+                __row.#pk_ident == #snap_pk,
+                #msg,
+            );
+        }
+    })
+    .chain(indexed_fields.iter().map(|fi| {
+        let snap_name = format_ident!("__snap_{}", fi);
+        let field_str = fi.to_string();
+        let msg = format!("{method_name_str}: indexed field `{field_str}` was changed");
+        quote! {
+            assert!(
+                __row.#fi == #snap_name,
+                #msg,
+            );
+        }
+    }))
+    .collect();
+
+    quote! {
+        /// Mutates all matching rows in place via closure, bypassing index
+        /// maintenance. In debug builds, asserts that the primary key and all
+        /// indexed fields are unchanged after each closure call. Returns the
+        /// number of rows modified.
+        pub fn #modify_each_fn(
+            &mut self,
+            #(#params_into_query,)*
+            opts: ::tabulosity::QueryOpts,
+            mut f: impl ::std::ops::FnMut(&#pk_ty, &mut #row_name),
+        ) -> usize {
+            #(#into_query_calls)*
+            let __pks: ::std::vec::Vec<#pk_ty> = self.#helper_fn(#(#qb_forwards,)* opts)
+                .map(|__r| __r.#pk_ident.clone())
+                .collect();
+            let mut __count = 0usize;
+            for __pk in __pks {
+                let __row = self.rows.get_mut(&__pk).unwrap();
+                #(#snap_stmts)*
+                f(&__pk, __row);
+                #[cfg(debug_assertions)]
+                {
+                    #(#assert_stmts)*
+                }
+                __count += 1;
+            }
+            __count
         }
     }
 }

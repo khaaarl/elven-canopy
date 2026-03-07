@@ -2,7 +2,7 @@
 //! `modify_unchecked_all` — closure-based in-place mutation that bypasses
 //! index maintenance, with debug-build safety checks.
 
-use tabulosity::{Bounded, Database, Error, Table};
+use tabulosity::{Bounded, Database, Error, QueryOpts, Table};
 
 // --- Row types ---
 
@@ -149,12 +149,12 @@ fn indexes_remain_valid_after_modify_unchecked() {
         .unwrap();
 
     // Index queries should still work correctly.
-    let elves = table.by_species(&Species::Elf);
+    let elves = table.by_species(&Species::Elf, QueryOpts::ASC);
     assert_eq!(elves.len(), 1);
     assert_eq!(elves[0].id, CreatureId(1));
     assert_eq!(elves[0].food, 0);
 
-    let capybaras = table.by_species(&Species::Capybara);
+    let capybaras = table.by_species(&Species::Capybara, QueryOpts::ASC);
     assert_eq!(capybaras.len(), 1);
     assert_eq!(capybaras[0].id, CreatureId(2));
 }
@@ -527,7 +527,7 @@ fn modify_unchecked_unique_index_non_indexed_field() {
     assert_eq!(table.get(&UserId(1)).unwrap().name, "Alice Renamed");
 
     // Unique index queries should still work.
-    let results = table.by_email(&"a@b.com".to_string());
+    let results = table.by_email(&"a@b.com".to_string(), QueryOpts::ASC);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].name, "Alice Renamed");
 }
@@ -563,10 +563,22 @@ fn modify_unchecked_unique_index_preserves_integrity() {
         .unwrap();
 
     // Unique index still correctly maps each email.
-    assert_eq!(table.by_email(&"a@b.com".to_string()).len(), 1);
-    assert_eq!(table.by_email(&"c@d.com".to_string()).len(), 1);
-    assert_eq!(table.by_email(&"a@b.com".to_string())[0].name, "Alice v2");
-    assert_eq!(table.by_email(&"c@d.com".to_string())[0].name, "Bob v2");
+    assert_eq!(
+        table.by_email(&"a@b.com".to_string(), QueryOpts::ASC).len(),
+        1
+    );
+    assert_eq!(
+        table.by_email(&"c@d.com".to_string(), QueryOpts::ASC).len(),
+        1
+    );
+    assert_eq!(
+        table.by_email(&"a@b.com".to_string(), QueryOpts::ASC)[0].name,
+        "Alice v2"
+    );
+    assert_eq!(
+        table.by_email(&"c@d.com".to_string(), QueryOpts::ASC)[0].name,
+        "Bob v2"
+    );
 
     // Inserting a duplicate email should still fail (unique constraint intact).
     let err = table
@@ -670,12 +682,12 @@ fn modify_unchecked_filtered_index_non_indexed_field() {
     assert_eq!(table.get(&FiltTaskId(1)).unwrap().priority, 10);
 
     // Filtered index query should still work.
-    let active = table.by_active_assignee(&CreatureId(1));
+    let active = table.by_active_assignee(&CreatureId(1), QueryOpts::ASC);
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].priority, 10);
 
     // Unfiltered index query also works.
-    let all = table.by_assignee(&CreatureId(1));
+    let all = table.by_assignee(&CreatureId(1), QueryOpts::ASC);
     assert_eq!(all.len(), 1);
 }
 
@@ -723,8 +735,8 @@ fn modify_unchecked_auto_increment_table() {
     assert_eq!(table.get(&id1).unwrap().value, "second");
 
     // Index queries still correct.
-    assert_eq!(table.by_category(&1).len(), 1);
-    assert_eq!(table.by_category(&2).len(), 1);
+    assert_eq!(table.by_category(&1, QueryOpts::ASC).len(), 1);
+    assert_eq!(table.by_category(&2, QueryOpts::ASC).len(), 1);
 }
 
 #[cfg(debug_assertions)]
@@ -912,13 +924,13 @@ fn database_modify_unchecked_index_queries_correct() {
     .unwrap();
 
     // Index queries on tasks by assignee.
-    let tasks = db.tasks.by_assignee(&CreatureId(1));
+    let tasks = db.tasks.by_assignee(&CreatureId(1), QueryOpts::ASC);
     assert_eq!(tasks.len(), 2);
     assert_eq!(tasks[0].progress, 75.0); // task 1
     assert_eq!(tasks[1].progress, 10.0); // task 2
 
     // Index queries on creatures by species.
-    let elves = db.creatures.by_species(&Species::Elf);
+    let elves = db.creatures.by_species(&Species::Elf, QueryOpts::ASC);
     assert_eq!(elves.len(), 1);
     assert_eq!(elves[0].food, 42);
 }
@@ -1068,11 +1080,11 @@ fn modify_unchecked_range_indexes_intact() {
     });
 
     // Index queries should still return correct results.
-    let elves = table.by_species(&Species::Elf);
+    let elves = table.by_species(&Species::Elf, QueryOpts::ASC);
     assert_eq!(elves.len(), 3);
     assert!(elves.iter().all(|c| c.food == 0));
 
-    let capybaras = table.by_species(&Species::Capybara);
+    let capybaras = table.by_species(&Species::Capybara, QueryOpts::ASC);
     assert_eq!(capybaras.len(), 2);
     assert!(capybaras.iter().all(|c| c.food == 0));
 }
@@ -1182,15 +1194,15 @@ fn modify_unchecked_range_unique_index_table() {
 
     // Unique index queries still work.
     assert_eq!(
-        table.by_email(&"a@b.com".to_string())[0].name,
+        table.by_email(&"a@b.com".to_string(), QueryOpts::ASC)[0].name,
         "User-1-modified"
     );
     assert_eq!(
-        table.by_email(&"c@d.com".to_string())[0].name,
+        table.by_email(&"c@d.com".to_string(), QueryOpts::ASC)[0].name,
         "User-2-modified"
     );
     assert_eq!(
-        table.by_email(&"e@f.com".to_string())[0].name,
+        table.by_email(&"e@f.com".to_string(), QueryOpts::ASC)[0].name,
         "User-3-modified"
     );
 
@@ -1245,13 +1257,13 @@ fn modify_unchecked_range_filtered_index_table() {
     assert_eq!(count, 3);
 
     // Filtered index still returns only active tasks for assignee 1.
-    let active = table.by_active_assignee(&CreatureId(1));
+    let active = table.by_active_assignee(&CreatureId(1), QueryOpts::ASC);
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].id, FiltTaskId(1));
     assert_eq!(active[0].priority, 11);
 
     // Assignee 2 still in filtered index (InProgress is active).
-    let active2 = table.by_active_assignee(&CreatureId(2));
+    let active2 = table.by_active_assignee(&CreatureId(2), QueryOpts::ASC);
     assert_eq!(active2.len(), 1);
     assert_eq!(active2[0].priority, 13);
 }
@@ -1458,8 +1470,14 @@ fn modify_unchecked_all_unique_index_table() {
     assert_eq!(count, 3);
 
     // Unique index still correct.
-    assert_eq!(table.by_email(&"a@b.com".to_string())[0].name, "User-1-v2");
-    assert_eq!(table.by_email(&"c@d.com".to_string())[0].name, "User-2-v2");
+    assert_eq!(
+        table.by_email(&"a@b.com".to_string(), QueryOpts::ASC)[0].name,
+        "User-1-v2"
+    );
+    assert_eq!(
+        table.by_email(&"c@d.com".to_string(), QueryOpts::ASC)[0].name,
+        "User-2-v2"
+    );
 
     // Duplicate insert still rejected.
     let err = table

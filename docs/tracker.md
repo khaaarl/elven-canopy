@@ -128,7 +128,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-joins            Join iterators across tables
-[ ] F-tab-query-opts       Query options struct for index queries
 [ ] F-tab-schema-evol      Schema evolution and migrations
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
@@ -214,6 +213,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-compound-idx     Compound indexes with prefix queries
 [x] F-tab-filter-idx       Filtered/partial indexes
 [x] F-tab-modify-unchk  Closure-based row mutation (modify_unchecked)
+[x] F-tab-query-opts    Query options struct for index queries
 [x] F-tab-unique-idx    Unique index enforcement
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
 [x] F-thoughts             Creature thoughts (DF-style event reactions)
@@ -1818,7 +1818,7 @@ closure call. Database-level wrappers delegate to the table methods.
 **Related:** F-sim-db-impl, F-tab-query-opts
 
 #### F-tab-query-opts — Query options struct for index queries
-**Status:** Todo
+**Status:** Done
 
 `QueryOpts` struct passed as a required parameter to all index query methods
 (`by_*`, `iter_by_*`, `count_by_*`). Controls ordering (ascending/descending

@@ -350,14 +350,14 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 
                             if *is_optional {
                                 quote! {
-                                    let count = self.#src_table_ident.#count_fn(&::std::option::Option::Some(id.clone()));
+                                    let count = self.#src_table_ident.#count_fn(&::std::option::Option::Some(id.clone()), ::tabulosity::QueryOpts::ASC);
                                     if count > 0 {
                                         violations.push((#src_table_str, #fk_field_str, count));
                                     }
                                 }
                             } else {
                                 quote! {
-                                    let count = self.#src_table_ident.#count_fn(id);
+                                    let count = self.#src_table_ident.#count_fn(id, ::tabulosity::QueryOpts::ASC);
                                     if count > 0 {
                                         violations.push((#src_table_str, #fk_field_str, count));
                                     }
@@ -395,7 +395,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                             quote! {
                                 {
                                     let __cascade_pks: ::std::vec::Vec<<#src_table_ty as ::tabulosity::TableMeta>::Key> =
-                                        self.#src_table_ident.#iter_fn(#query_val)
+                                        self.#src_table_ident.#iter_fn(#query_val, ::tabulosity::QueryOpts::ASC)
                                             .map(|__r| __r.pk_ref().clone())
                                             .collect();
                                     for __cpk in __cascade_pks {
@@ -424,7 +424,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                             quote! {
                                 {
                                     let __nullify_pks: ::std::vec::Vec<<#src_table_ty as ::tabulosity::TableMeta>::Key> =
-                                        self.#src_table_ident.#iter_fn(&::std::option::Option::Some(id.clone()))
+                                        self.#src_table_ident.#iter_fn(&::std::option::Option::Some(id.clone()), ::tabulosity::QueryOpts::ASC)
                                             .map(|__r| __r.pk_ref().clone())
                                             .collect();
                                     for __npk in __nullify_pks {

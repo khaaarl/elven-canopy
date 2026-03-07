@@ -6,6 +6,7 @@
 //! - `TableMeta` — associates a table companion struct with its key and row types.
 //! - `IntoQuery` / `QueryBound` / `MatchAll` — unified query API for compound
 //!   and simple indexes.
+//! - `QueryOrder` / `QueryOpts` — ordering (asc/desc) and offset for query methods.
 //! - `in_bounds` — post-filter helper for range checks in generated query code.
 
 use std::ops::{Bound, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
@@ -233,6 +234,60 @@ pub fn in_bounds<T: Ord>(val: &T, start: &Bound<T>, end: &Bound<T>) -> bool {
         Bound::Unbounded => true,
     };
     start_ok && end_ok
+}
+
+/// Ordering direction for index query results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryOrder {
+    #[default]
+    Asc,
+    Desc,
+}
+
+/// Options controlling ordering and offset for index query methods.
+///
+/// All `by_*`, `iter_by_*`, and `count_by_*` methods accept a `QueryOpts`
+/// parameter. `QueryOpts::ASC` preserves the default ascending BTreeSet
+/// iteration order with no offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryOpts {
+    pub order: QueryOrder,
+    pub offset: usize,
+}
+
+impl Default for QueryOpts {
+    fn default() -> Self {
+        Self {
+            order: QueryOrder::Asc,
+            offset: 0,
+        }
+    }
+}
+
+impl QueryOpts {
+    pub const ASC: Self = Self {
+        order: QueryOrder::Asc,
+        offset: 0,
+    };
+    pub const DESC: Self = Self {
+        order: QueryOrder::Desc,
+        offset: 0,
+    };
+
+    pub fn desc() -> Self {
+        Self::DESC
+    }
+
+    pub fn offset(offset: usize) -> Self {
+        Self {
+            order: QueryOrder::Asc,
+            offset,
+        }
+    }
+
+    pub fn with_offset(self, offset: usize) -> Self {
+        Self { offset, ..self }
+    }
 }
 
 #[cfg(test)]

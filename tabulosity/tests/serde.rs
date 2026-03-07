@@ -3,7 +3,7 @@
 #![cfg(feature = "serde")]
 
 use serde::{Deserialize, Serialize};
-use tabulosity::{Bounded, Database, Error, MatchAll, Table};
+use tabulosity::{Bounded, Database, Error, MatchAll, QueryOpts, Table};
 
 // --- Row types ---
 
@@ -105,8 +105,11 @@ fn table_roundtrip() {
     assert_eq!(table2.get(&CreatureId(2)).unwrap().name, "B");
 
     // Indexes rebuilt.
-    assert_eq!(table2.count_by_species(&Species::Elf), 1);
-    assert_eq!(table2.count_by_species(&Species::Capybara), 1);
+    assert_eq!(table2.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+    assert_eq!(
+        table2.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -209,8 +212,11 @@ fn table_roundtrip_preserves_pk_order() {
     assert_eq!(keys, vec![CreatureId(1), CreatureId(2), CreatureId(3)]);
 
     // Indexes should be correct after deserialization.
-    assert_eq!(table2.count_by_species(&Species::Elf), 2);
-    assert_eq!(table2.count_by_species(&Species::Capybara), 1);
+    assert_eq!(table2.count_by_species(&Species::Elf, QueryOpts::ASC), 2);
+    assert_eq!(
+        table2.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        1
+    );
 }
 
 // --- Database-level serde ---
@@ -239,8 +245,16 @@ fn database_roundtrip() {
     assert_eq!(db2.creatures.get(&CreatureId(1)).unwrap().name, "Aelindra");
 
     // Indexes rebuilt after deserialization.
-    assert_eq!(db2.creatures.count_by_species(&Species::Elf), 1);
-    assert_eq!(db2.tasks.count_by_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        db2.creatures
+            .count_by_species(&Species::Elf, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        db2.tasks
+            .count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -445,15 +459,26 @@ fn database_deserialize_indexes_multi_row() {
     let db: TestDb = serde_json::from_str(json).unwrap();
 
     // Creature indexes.
-    assert_eq!(db.creatures.count_by_species(&Species::Elf), 2);
-    assert_eq!(db.creatures.count_by_species(&Species::Capybara), 1);
+    assert_eq!(
+        db.creatures.count_by_species(&Species::Elf, QueryOpts::ASC),
+        2
+    );
+    assert_eq!(
+        db.creatures
+            .count_by_species(&Species::Capybara, QueryOpts::ASC),
+        1
+    );
 
     // Task indexes.
-    assert_eq!(db.tasks.count_by_assignee(&Some(CreatureId(1))), 2);
-    assert_eq!(db.tasks.count_by_assignee(&None), 1);
+    assert_eq!(
+        db.tasks
+            .count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        2
+    );
+    assert_eq!(db.tasks.count_by_assignee(&None, QueryOpts::ASC), 1);
 
     // Verify actual row data from index query returns correct PK order.
-    let elves = db.creatures.by_species(&Species::Elf);
+    let elves = db.creatures.by_species(&Species::Elf, QueryOpts::ASC);
     assert_eq!(elves.len(), 2);
     assert_eq!(elves[0].id, CreatureId(1));
     assert_eq!(elves[1].id, CreatureId(3));
@@ -473,7 +498,10 @@ fn database_deserialize_mixed_empty_and_populated() {
     let db: TestDb = serde_json::from_str(json).unwrap();
     assert_eq!(db.creatures.len(), 2);
     assert!(db.tasks.is_empty());
-    assert_eq!(db.creatures.count_by_species(&Species::Elf), 1);
+    assert_eq!(
+        db.creatures.count_by_species(&Species::Elf, QueryOpts::ASC),
+        1
+    );
 }
 
 // --- 3-table schema tests (bare FK fields) ---
@@ -588,24 +616,27 @@ fn compound_index_serde_roundtrip() {
     assert_eq!(table2.len(), 3);
 
     // Simple index rebuilt.
-    assert_eq!(table2.count_by_assignee(&Some(CreatureId(1))), 2);
+    assert_eq!(
+        table2.count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        2
+    );
 
     // Compound index rebuilt.
     assert_eq!(
-        table2.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table2.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         1
     );
     assert_eq!(
-        table2.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table2.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         2
     );
     assert_eq!(
-        table2.count_by_assignee_priority(&Some(CreatureId(2)), &5u8),
+        table2.count_by_assignee_priority(&Some(CreatureId(2)), &5u8, QueryOpts::ASC),
         1
     );
 
     // Range query on compound index works after deserialization.
-    let result = table2.by_assignee_priority(&Some(CreatureId(1)), 3u8..=5);
+    let result = table2.by_assignee_priority(&Some(CreatureId(1)), 3u8..=5, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
 }
 
@@ -670,12 +701,21 @@ fn filtered_index_serde_roundtrip() {
     assert_eq!(table2.len(), 3);
 
     // Simple index includes all rows.
-    assert_eq!(table2.count_by_assignee(&Some(CreatureId(1))), 2);
+    assert_eq!(
+        table2.count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        2
+    );
 
     // Filtered index only includes active rows after rebuild.
-    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
-    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(2))), 1);
-    assert_eq!(table2.count_by_active_assignee(MatchAll), 2);
+    assert_eq!(
+        table2.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table2.count_by_active_assignee(&Some(CreatureId(2)), QueryOpts::ASC),
+        1
+    );
+    assert_eq!(table2.count_by_active_assignee(MatchAll, QueryOpts::ASC), 2);
 }
 
 #[test]
@@ -695,7 +735,10 @@ fn filtered_index_serde_preserves_mutation_behavior() {
     let json = serde_json::to_string(&table).unwrap();
     let mut table2: FiltTaskTable = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table2.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 
     // Insert a row that fails the filter.
     table2
@@ -706,7 +749,10 @@ fn filtered_index_serde_preserves_mutation_behavior() {
             status: TaskStatus::Done,
         })
         .unwrap();
-    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table2.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 
     // Update existing row to exit filter.
     table2
@@ -717,7 +763,10 @@ fn filtered_index_serde_preserves_mutation_behavior() {
             status: TaskStatus::Done,
         })
         .unwrap();
-    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 0);
+    assert_eq!(
+        table2.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        0
+    );
 
     // Update to re-enter filter.
     table2
@@ -728,7 +777,10 @@ fn filtered_index_serde_preserves_mutation_behavior() {
             status: TaskStatus::InProgress,
         })
         .unwrap();
-    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table2.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -772,10 +824,13 @@ fn serde_roundtrip_bounds_recomputed_from_current_data() {
         .unwrap();
 
     assert_eq!(
-        table2.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table2.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         2
     );
-    assert_eq!(table2.count_by_assignee_priority(MatchAll, MatchAll), 2);
+    assert_eq!(
+        table2.count_by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC),
+        2
+    );
 }
 
 // --- Cascade/nullify schema serde ---
@@ -1243,15 +1298,18 @@ fn auto_compound_index_serde_roundtrip() {
     assert_eq!(table2.next_id(), AutoEntryId(3));
 
     // Simple index rebuilt.
-    assert_eq!(table2.count_by_assignee(&Some(CreatureId(1))), 2);
+    assert_eq!(
+        table2.count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        2
+    );
 
     // Compound index rebuilt.
     assert_eq!(
-        table2.count_by_assignee_status(&Some(CreatureId(1)), &EntryStatus::Active),
+        table2.count_by_assignee_status(&Some(CreatureId(1)), &EntryStatus::Active, QueryOpts::ASC),
         1
     );
     assert_eq!(
-        table2.count_by_assignee_status(&Some(CreatureId(1)), MatchAll),
+        table2.count_by_assignee_status(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         2
     );
 }
@@ -1309,10 +1367,16 @@ fn auto_filtered_index_serde_roundtrip() {
     assert_eq!(table2.next_id(), AutoFiltId(2));
 
     // Simple index includes all.
-    assert_eq!(table2.count_by_assignee(&Some(CreatureId(1))), 2);
+    assert_eq!(
+        table2.count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        2
+    );
 
     // Filtered index only includes active.
-    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table2.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -1330,7 +1394,10 @@ fn auto_filtered_index_serde_preserves_mutation_behavior() {
     let json = serde_json::to_string(&table).unwrap();
     let mut table2: AutoFiltEntryTable = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table2.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 
     // Insert an archived entry — should not appear in filtered index.
     table2
@@ -1341,8 +1408,14 @@ fn auto_filtered_index_serde_preserves_mutation_behavior() {
             label: "B".into(),
         })
         .unwrap();
-    assert_eq!(table2.count_by_active_assignee(&Some(CreatureId(1))), 1);
-    assert_eq!(table2.count_by_assignee(&Some(CreatureId(1))), 2);
+    assert_eq!(
+        table2.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table2.count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        2
+    );
     assert_eq!(table2.next_id(), AutoFiltId(2));
 }
 
@@ -1631,8 +1704,16 @@ fn unique_index_table_serde_roundtrip() {
     assert_eq!(table2.get(&UserId(2)).unwrap().email, "c@d.com");
 
     // Unique index rebuilt — queries work.
-    assert_eq!(table2.by_email(&"a@b.com".to_string()).len(), 1);
-    assert_eq!(table2.count_by_email(&"a@b.com".to_string()), 1);
+    assert_eq!(
+        table2
+            .by_email(&"a@b.com".to_string(), QueryOpts::ASC)
+            .len(),
+        1
+    );
+    assert_eq!(
+        table2.count_by_email(&"a@b.com".to_string(), QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -1855,7 +1936,10 @@ fn deserialize_table_with_duplicate_unique_values() {
     // The index has both entries (since rebuild_indexes just inserts all).
     // A query for that email should return 2 (the index is not truly "unique"
     // at this point since we bypassed the check).
-    assert_eq!(table.by_email(&"a@b.com".to_string()).len(), 2);
+    assert_eq!(
+        table.by_email(&"a@b.com".to_string(), QueryOpts::ASC).len(),
+        2
+    );
 }
 
 // --- Auto-increment + unique index serde ---

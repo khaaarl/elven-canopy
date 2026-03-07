@@ -2,8 +2,11 @@
 //!
 //! Provides typed tables with primary keys, automatic secondary indexes
 //! (simple, compound, filtered, and unique), auto-increment primary keys,
-//! cross-table foreign key integrity, and `modify_unchecked` closure-based
-//! in-place mutation (bypasses index maintenance, with debug-build safety).
+//! cross-table foreign key integrity, `modify_unchecked` closure-based
+//! in-place mutation (bypasses index maintenance, with debug-build safety),
+//! `QueryOpts` for ordering (asc/desc) and offset (skip N) on all query
+//! methods, and `modify_each_by_*` query-driven batch mutation with the same
+//! debug-build safety checks.
 //! All internal data structures use `BTreeMap`/`BTreeSet` for deterministic
 //! iteration order.
 //!
@@ -22,8 +25,8 @@
 //!
 //! - `error.rs` — `Error` enum and `DeserializeError` for write failures.
 //! - `table.rs` — `Bounded` trait, `FkCheck` trait, `IntoQuery`/`QueryBound`/
-//!   `MatchAll` query types, `in_bounds` helper, and range bound helpers used
-//!   by generated code.
+//!   `MatchAll` query types, `QueryOrder`/`QueryOpts` for ordering and offset,
+//!   `in_bounds` helper, and range bound helpers used by generated code.
 //!
 //! The companion proc macro crate `tabulosity_derive` provides
 //! `#[derive(Bounded)]`, `#[derive(Table)]`, and `#[derive(Database)]`.
@@ -34,7 +37,8 @@ mod table;
 
 pub use error::{DeserializeError, Error};
 pub use table::{
-    AutoIncrementable, Bounded, FkCheck, IntoQuery, MatchAll, QueryBound, TableMeta, in_bounds,
+    AutoIncrementable, Bounded, FkCheck, IntoQuery, MatchAll, QueryBound, QueryOpts, QueryOrder,
+    TableMeta, in_bounds,
 };
 
 // Re-export derives so users write `use tabulosity::Table` etc.

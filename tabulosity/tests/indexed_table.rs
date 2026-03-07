@@ -2,7 +2,7 @@
 //! Tests simple indexes (#[indexed]), compound indexes (#[index(...)]),
 //! filtered indexes, and the unified IntoQuery-based query API.
 
-use tabulosity::{Bounded, IntoQuery, MatchAll, QueryBound, Table};
+use tabulosity::{Bounded, IntoQuery, MatchAll, QueryBound, QueryOpts, Table};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
 struct CreatureId(u32);
@@ -57,16 +57,16 @@ fn by_indexed_field_equality() {
         })
         .unwrap();
 
-    let elves = table.by_species(&Species::Elf);
+    let elves = table.by_species(&Species::Elf, QueryOpts::ASC);
     assert_eq!(elves.len(), 2);
     assert_eq!(elves[0].id, CreatureId(1));
     assert_eq!(elves[1].id, CreatureId(3));
 
-    let capybaras = table.by_species(&Species::Capybara);
+    let capybaras = table.by_species(&Species::Capybara, QueryOpts::ASC);
     assert_eq!(capybaras.len(), 1);
     assert_eq!(capybaras[0].name, "Thorn");
 
-    let squirrels = table.by_species(&Species::Squirrel);
+    let squirrels = table.by_species(&Species::Squirrel, QueryOpts::ASC);
     assert!(squirrels.is_empty());
 }
 
@@ -91,7 +91,7 @@ fn iter_by_indexed_field() {
         .unwrap();
 
     let names: Vec<_> = table
-        .iter_by_species(&Species::Elf)
+        .iter_by_species(&Species::Elf, QueryOpts::ASC)
         .map(|c| c.name.as_str())
         .collect();
     assert_eq!(names, vec!["A", "B"]);
@@ -125,9 +125,15 @@ fn count_by_indexed_field() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_species(&Species::Elf), 2);
-    assert_eq!(table.count_by_species(&Species::Capybara), 1);
-    assert_eq!(table.count_by_species(&Species::Squirrel), 0);
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 2);
+    assert_eq!(
+        table.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_species(&Species::Squirrel, QueryOpts::ASC),
+        0
+    );
 }
 
 // ============================================================================
@@ -152,7 +158,7 @@ fn make_hunger_table() -> CreatureTable {
 #[test]
 fn by_range_inclusive_start() {
     let table = make_hunger_table();
-    let hungry = table.by_hunger(20u32..);
+    let hungry = table.by_hunger(20u32.., QueryOpts::ASC);
     assert_eq!(hungry.len(), 3);
     assert_eq!(hungry[0].hunger, 20);
     assert_eq!(hungry[1].hunger, 30);
@@ -162,7 +168,7 @@ fn by_range_inclusive_start() {
 #[test]
 fn by_range_exclusive_end() {
     let table = make_hunger_table();
-    let not_hungry = table.by_hunger(..30u32);
+    let not_hungry = table.by_hunger(..30u32, QueryOpts::ASC);
     assert_eq!(not_hungry.len(), 3);
     assert_eq!(not_hungry[0].hunger, 0);
     assert_eq!(not_hungry[1].hunger, 10);
@@ -172,14 +178,14 @@ fn by_range_exclusive_end() {
 #[test]
 fn by_range_inclusive_end() {
     let table = make_hunger_table();
-    let result = table.by_hunger(..=20u32);
+    let result = table.by_hunger(..=20u32, QueryOpts::ASC);
     assert_eq!(result.len(), 3);
 }
 
 #[test]
 fn by_range_closed() {
     let table = make_hunger_table();
-    let result = table.by_hunger(10u32..=30);
+    let result = table.by_hunger(10u32..=30, QueryOpts::ASC);
     assert_eq!(result.len(), 3);
     assert_eq!(result[0].hunger, 10);
     assert_eq!(result[1].hunger, 20);
@@ -189,15 +195,18 @@ fn by_range_closed() {
 #[test]
 fn count_by_range() {
     let table = make_hunger_table();
-    assert_eq!(table.count_by_hunger(20u32..), 3);
-    assert_eq!(table.count_by_hunger(..30u32), 3);
-    assert_eq!(table.count_by_hunger(..), 5);
+    assert_eq!(table.count_by_hunger(20u32.., QueryOpts::ASC), 3);
+    assert_eq!(table.count_by_hunger(..30u32, QueryOpts::ASC), 3);
+    assert_eq!(table.count_by_hunger(.., QueryOpts::ASC), 5);
 }
 
 #[test]
 fn iter_by_range() {
     let table = make_hunger_table();
-    let ids: Vec<_> = table.iter_by_hunger(10u32..30).map(|c| c.id).collect();
+    let ids: Vec<_> = table
+        .iter_by_hunger(10u32..30, QueryOpts::ASC)
+        .map(|c| c.id)
+        .collect();
     assert_eq!(ids, vec![CreatureId(1), CreatureId(2)]);
 }
 
@@ -205,7 +214,10 @@ fn iter_by_range() {
 fn by_range_excluded_start() {
     let table = make_hunger_table();
     use std::ops::Bound;
-    let result = table.by_hunger((Bound::Excluded(10u32), Bound::Included(40u32)));
+    let result = table.by_hunger(
+        (Bound::Excluded(10u32), Bound::Included(40u32)),
+        QueryOpts::ASC,
+    );
     assert_eq!(result.len(), 3);
     assert_eq!(result[0].hunger, 20);
     assert_eq!(result[1].hunger, 30);
@@ -216,7 +228,10 @@ fn by_range_excluded_start() {
 fn by_range_excluded_both() {
     let table = make_hunger_table();
     use std::ops::Bound;
-    let result = table.by_hunger((Bound::Excluded(10u32), Bound::Excluded(40u32)));
+    let result = table.by_hunger(
+        (Bound::Excluded(10u32), Bound::Excluded(40u32)),
+        QueryOpts::ASC,
+    );
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].hunger, 20);
     assert_eq!(result[1].hunger, 30);
@@ -225,14 +240,14 @@ fn by_range_excluded_both() {
 #[test]
 fn by_match_all() {
     let table = make_hunger_table();
-    let all = table.by_hunger(MatchAll);
+    let all = table.by_hunger(MatchAll, QueryOpts::ASC);
     assert_eq!(all.len(), 5);
 }
 
 #[test]
 fn by_range_full() {
     let table = make_hunger_table();
-    let all = table.by_hunger(..);
+    let all = table.by_hunger(.., QueryOpts::ASC);
     assert_eq!(all.len(), 5);
 }
 
@@ -252,8 +267,11 @@ fn index_maintained_on_update() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_species(&Species::Elf), 1);
-    assert_eq!(table.count_by_species(&Species::Capybara), 0);
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+    assert_eq!(
+        table.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        0
+    );
 
     table
         .update_no_fk(Creature {
@@ -264,8 +282,11 @@ fn index_maintained_on_update() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_species(&Species::Elf), 0);
-    assert_eq!(table.count_by_species(&Species::Capybara), 1);
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 0);
+    assert_eq!(
+        table.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -280,7 +301,7 @@ fn index_maintained_on_upsert() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_species(&Species::Elf), 1);
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
 
     table
         .upsert_no_fk(Creature {
@@ -291,8 +312,11 @@ fn index_maintained_on_upsert() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_species(&Species::Elf), 0);
-    assert_eq!(table.count_by_species(&Species::Capybara), 1);
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 0);
+    assert_eq!(
+        table.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -307,13 +331,13 @@ fn index_maintained_on_remove() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_species(&Species::Elf), 1);
-    assert_eq!(table.count_by_hunger(&10u32), 1);
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+    assert_eq!(table.count_by_hunger(&10u32, QueryOpts::ASC), 1);
 
     table.remove_no_fk(&CreatureId(1)).unwrap();
 
-    assert_eq!(table.count_by_species(&Species::Elf), 0);
-    assert_eq!(table.count_by_hunger(&10u32), 0);
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 0);
+    assert_eq!(table.count_by_hunger(&10u32, QueryOpts::ASC), 0);
 }
 
 #[test]
@@ -338,10 +362,13 @@ fn rebuild_indexes() {
 
     table.rebuild_indexes();
 
-    assert_eq!(table.count_by_species(&Species::Elf), 1);
-    assert_eq!(table.count_by_species(&Species::Capybara), 1);
-    assert_eq!(table.count_by_hunger(&5u32), 1);
-    assert_eq!(table.count_by_hunger(&10u32), 1);
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+    assert_eq!(
+        table.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(table.count_by_hunger(&5u32, QueryOpts::ASC), 1);
+    assert_eq!(table.count_by_hunger(&10u32, QueryOpts::ASC), 1);
 }
 
 // ============================================================================
@@ -385,18 +412,24 @@ fn option_indexed_field_none_and_some() {
         })
         .unwrap();
 
-    let unassigned = table.by_assignee(&None);
+    let unassigned = table.by_assignee(&None, QueryOpts::ASC);
     assert_eq!(unassigned.len(), 1);
     assert_eq!(unassigned[0].id, TaskId(1));
 
-    let assigned_to_10 = table.by_assignee(&Some(CreatureId(10)));
+    let assigned_to_10 = table.by_assignee(&Some(CreatureId(10)), QueryOpts::ASC);
     assert_eq!(assigned_to_10.len(), 2);
     assert_eq!(assigned_to_10[0].id, TaskId(2));
     assert_eq!(assigned_to_10[1].id, TaskId(3));
 
-    assert_eq!(table.count_by_assignee(&None), 1);
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(10))), 2);
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(99))), 0);
+    assert_eq!(table.count_by_assignee(&None, QueryOpts::ASC), 1);
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(10)), QueryOpts::ASC),
+        2
+    );
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(99)), QueryOpts::ASC),
+        0
+    );
 }
 
 #[test]
@@ -432,27 +465,27 @@ fn option_indexed_range_queries() {
         .unwrap();
 
     // Full range — all rows.
-    let all = table.by_assignee(MatchAll);
+    let all = table.by_assignee(MatchAll, QueryOpts::ASC);
     assert_eq!(all.len(), 4);
 
     // Range from None captures everything (None < Some(..)).
-    let from_none = table.by_assignee(None..);
+    let from_none = table.by_assignee(None.., QueryOpts::ASC);
     assert_eq!(from_none.len(), 4);
     assert_eq!(from_none[0].id, TaskId(1)); // None first
 
     // Range that captures only Some values.
-    let some_only = table.by_assignee(Some(CreatureId(0))..);
+    let some_only = table.by_assignee(Some(CreatureId(0)).., QueryOpts::ASC);
     assert_eq!(some_only.len(), 3);
     assert_eq!(some_only[0].id, TaskId(2));
 
     // Closed range within Some values.
-    let mid = table.by_assignee(Some(CreatureId(5))..=Some(CreatureId(10)));
+    let mid = table.by_assignee(Some(CreatureId(5))..=Some(CreatureId(10)), QueryOpts::ASC);
     assert_eq!(mid.len(), 2);
     assert_eq!(mid[0].id, TaskId(2));
     assert_eq!(mid[1].id, TaskId(3));
 
     // Range up to (exclusive) Some(CreatureId(10)).
-    let up_to = table.by_assignee(..Some(CreatureId(10)));
+    let up_to = table.by_assignee(..Some(CreatureId(10)), QueryOpts::ASC);
     assert_eq!(up_to.len(), 2);
     assert_eq!(up_to[0].id, TaskId(1)); // None
     assert_eq!(up_to[1].id, TaskId(2)); // Some(5)
@@ -469,8 +502,11 @@ fn update_optional_index_some_to_none() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(10))), 1);
-    assert_eq!(table.count_by_assignee(&None), 0);
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(10)), QueryOpts::ASC),
+        1
+    );
+    assert_eq!(table.count_by_assignee(&None, QueryOpts::ASC), 0);
 
     table
         .update_no_fk(Task {
@@ -480,8 +516,11 @@ fn update_optional_index_some_to_none() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(10))), 0);
-    assert_eq!(table.count_by_assignee(&None), 1);
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(10)), QueryOpts::ASC),
+        0
+    );
+    assert_eq!(table.count_by_assignee(&None, QueryOpts::ASC), 1);
 }
 
 // ============================================================================
@@ -510,10 +549,13 @@ fn duplicate_insert_indexed_table_preserves_indexes() {
         .unwrap_err();
     assert!(matches!(err, tabulosity::Error::DuplicateKey { .. }));
 
-    assert_eq!(table.count_by_species(&Species::Elf), 1);
-    assert_eq!(table.count_by_species(&Species::Capybara), 0);
-    assert_eq!(table.count_by_hunger(&10u32), 1);
-    assert_eq!(table.count_by_hunger(&20u32), 0);
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+    assert_eq!(
+        table.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        0
+    );
+    assert_eq!(table.count_by_hunger(&10u32, QueryOpts::ASC), 1);
+    assert_eq!(table.count_by_hunger(&20u32, QueryOpts::ASC), 0);
 }
 
 #[test]
@@ -528,19 +570,19 @@ fn range_query_no_matches() {
         })
         .unwrap();
 
-    let result = table.by_hunger(1000u32..);
+    let result = table.by_hunger(1000u32.., QueryOpts::ASC);
     assert!(result.is_empty());
-    assert_eq!(table.count_by_hunger(1000u32..), 0);
-    assert_eq!(table.iter_by_hunger(1000u32..).count(), 0);
+    assert_eq!(table.count_by_hunger(1000u32.., QueryOpts::ASC), 0);
+    assert_eq!(table.iter_by_hunger(1000u32.., QueryOpts::ASC).count(), 0);
 }
 
 #[test]
 fn range_queries_on_empty_table() {
     let table = CreatureTable::new();
-    let result = table.by_hunger(MatchAll);
+    let result = table.by_hunger(MatchAll, QueryOpts::ASC);
     assert!(result.is_empty());
-    assert_eq!(table.count_by_hunger(MatchAll), 0);
-    assert_eq!(table.iter_by_hunger(MatchAll).count(), 0);
+    assert_eq!(table.count_by_hunger(MatchAll, QueryOpts::ASC), 0);
+    assert_eq!(table.iter_by_hunger(MatchAll, QueryOpts::ASC).count(), 0);
 }
 
 #[test]
@@ -566,10 +608,13 @@ fn rebuild_indexes_idempotent() {
     table.rebuild_indexes();
     table.rebuild_indexes();
 
-    assert_eq!(table.count_by_species(&Species::Elf), 1);
-    assert_eq!(table.count_by_species(&Species::Capybara), 1);
-    assert_eq!(table.count_by_hunger(&5u32), 1);
-    assert_eq!(table.count_by_hunger(&10u32), 1);
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+    assert_eq!(
+        table.count_by_species(&Species::Capybara, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(table.count_by_hunger(&5u32, QueryOpts::ASC), 1);
+    assert_eq!(table.count_by_hunger(&10u32, QueryOpts::ASC), 1);
 }
 
 #[test]
@@ -587,7 +632,10 @@ fn iter_by_returns_pk_order_regardless_of_insert_order() {
             .unwrap();
     }
 
-    let ids: Vec<_> = table.iter_by_species(&Species::Elf).map(|c| c.id).collect();
+    let ids: Vec<_> = table
+        .iter_by_species(&Species::Elf, QueryOpts::ASC)
+        .map(|c| c.id)
+        .collect();
     assert_eq!(ids, vec![CreatureId(1), CreatureId(2), CreatureId(3)]);
 }
 
@@ -645,11 +693,11 @@ fn compound_index_both_exact() {
         .unwrap();
 
     // Both fields exact — point lookup.
-    let result = table.by_assignee_priority(&Some(CreatureId(1)), &5u8);
+    let result = table.by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC);
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].id, CompTaskId(1));
 
-    let result = table.by_assignee_priority(&Some(CreatureId(1)), &3u8);
+    let result = table.by_assignee_priority(&Some(CreatureId(1)), &3u8, QueryOpts::ASC);
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].id, CompTaskId(2));
 }
@@ -685,7 +733,7 @@ fn compound_index_prefix_query() {
     // Prefix: exact first field, MatchAll second.
     // Results are in index order: (assignee, priority, pk).
     // Task 2 has priority 3, task 1 has priority 5.
-    let result = table.by_assignee_priority(&Some(CreatureId(1)), MatchAll);
+    let result = table.by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].id, CompTaskId(2)); // priority 3
     assert_eq!(result[1].id, CompTaskId(1)); // priority 5
@@ -705,7 +753,7 @@ fn compound_index_first_exact_second_range() {
             .unwrap();
     }
 
-    let result = table.by_assignee_priority(&Some(CreatureId(1)), 2u8..=4);
+    let result = table.by_assignee_priority(&Some(CreatureId(1)), 2u8..=4, QueryOpts::ASC);
     assert_eq!(result.len(), 3);
     assert_eq!(result[0].priority, 2);
     assert_eq!(result[1].priority, 3);
@@ -733,7 +781,7 @@ fn compound_index_both_matchall() {
         .unwrap();
 
     // MatchAll on both fields — returns everything in the index.
-    let result = table.by_assignee_priority(MatchAll, MatchAll);
+    let result = table.by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
 }
 
@@ -766,7 +814,7 @@ fn compound_index_first_matchall_second_exact() {
         .unwrap();
 
     // MatchAll on first, exact on second — post-filter.
-    let result = table.by_assignee_priority(MatchAll, &5u8);
+    let result = table.by_assignee_priority(MatchAll, &5u8, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].id, CompTaskId(1));
     assert_eq!(result[1].id, CompTaskId(2));
@@ -787,16 +835,16 @@ fn compound_index_count_and_iter() {
     }
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         5
     );
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), 2u8..=4),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), 2u8..=4, QueryOpts::ASC),
         3
     );
 
     let ids: Vec<_> = table
-        .iter_by_assignee_priority(&Some(CreatureId(1)), 2u8..=4)
+        .iter_by_assignee_priority(&Some(CreatureId(1)), 2u8..=4, QueryOpts::ASC)
         .map(|t| t.id)
         .collect();
     assert_eq!(ids, vec![CompTaskId(2), CompTaskId(3), CompTaskId(4)]);
@@ -815,7 +863,7 @@ fn compound_index_maintained_on_update() {
         .unwrap();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         1
     );
 
@@ -829,11 +877,11 @@ fn compound_index_maintained_on_update() {
         .unwrap();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         0
     );
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(2)), &3u8),
+        table.count_by_assignee_priority(&Some(CreatureId(2)), &3u8, QueryOpts::ASC),
         1
     );
 }
@@ -851,14 +899,14 @@ fn compound_index_maintained_on_remove() {
         .unwrap();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         1
     );
 
     table.remove_no_fk(&CompTaskId(1)).unwrap();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         0
     );
 }
@@ -876,7 +924,7 @@ fn compound_index_maintained_on_upsert() {
         .unwrap();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         1
     );
 
@@ -891,11 +939,11 @@ fn compound_index_maintained_on_upsert() {
         .unwrap();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         0
     );
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(2)), &3u8),
+        table.count_by_assignee_priority(&Some(CreatureId(2)), &3u8, QueryOpts::ASC),
         1
     );
 }
@@ -923,11 +971,11 @@ fn compound_index_rebuild() {
     table.rebuild_indexes();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         2
     );
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         1
     );
 }
@@ -936,10 +984,10 @@ fn compound_index_rebuild() {
 fn compound_index_empty_table() {
     let table = CompTaskTable::new();
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         0
     );
-    let result = table.by_assignee_priority(MatchAll, MatchAll);
+    let result = table.by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC);
     assert!(result.is_empty());
 }
 
@@ -988,9 +1036,12 @@ fn filtered_index_insert_matching() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 1);
     assert_eq!(
-        table.count_by_active_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_active_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         1
     );
 }
@@ -1007,13 +1058,19 @@ fn filtered_index_insert_non_matching() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 0);
     assert_eq!(
-        table.count_by_active_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        0
+    );
+    assert_eq!(
+        table.count_by_active_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         0
     );
     // But the simple index still has it.
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -1028,7 +1085,10 @@ fn filtered_index_update_enters_filter() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 0);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        0
+    );
 
     // Update: status changes from Done to Pending — enters filter.
     table
@@ -1040,7 +1100,10 @@ fn filtered_index_update_enters_filter() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -1055,7 +1118,10 @@ fn filtered_index_update_exits_filter() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 
     // Update: status changes from Pending to Done — exits filter.
     table
@@ -1067,7 +1133,10 @@ fn filtered_index_update_exits_filter() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 0);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        0
+    );
 }
 
 #[test]
@@ -1092,10 +1161,16 @@ fn filtered_index_update_stays_in_filter_field_change() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 0);
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(2))), 1);
     assert_eq!(
-        table.count_by_active_priority(&Some(CreatureId(2)), &3u8),
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        0
+    );
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(2)), QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_active_priority(&Some(CreatureId(2)), &3u8, QueryOpts::ASC),
         1
     );
 }
@@ -1112,11 +1187,17 @@ fn filtered_index_remove() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 
     table.remove_no_fk(&FiltTaskId(1)).unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 0);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        0
+    );
 }
 
 #[test]
@@ -1160,8 +1241,11 @@ fn filtered_index_rebuild() {
     table.rebuild_indexes();
 
     // Only the Pending task should be in the filtered index.
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 1);
-    let active = table.by_active_assignee(&Some(CreatureId(1)));
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
+    let active = table.by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC);
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].id, FiltTaskId(1));
 }
@@ -1197,7 +1281,7 @@ fn filtered_compound_index_prefix_query() {
     // Prefix on compound filtered index.
     // Results are in index order: (assignee, priority, pk).
     // Task 2 has priority 3, task 1 has priority 5.
-    let result = table.by_active_priority(&Some(CreatureId(1)), MatchAll);
+    let result = table.by_active_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].id, FiltTaskId(2)); // priority 3
     assert_eq!(result[1].id, FiltTaskId(1)); // priority 5
@@ -1216,7 +1300,10 @@ fn filtered_index_upsert_enters_and_exits() {
             status: TaskStatus::Pending,
         })
         .unwrap();
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 
     // Upsert update path: exits filter.
     table
@@ -1227,7 +1314,10 @@ fn filtered_index_upsert_enters_and_exits() {
             status: TaskStatus::Done,
         })
         .unwrap();
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 0);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        0
+    );
 
     // Upsert update path: re-enters filter.
     table
@@ -1238,7 +1328,10 @@ fn filtered_index_upsert_enters_and_exits() {
             status: TaskStatus::InProgress,
         })
         .unwrap();
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -1270,17 +1363,17 @@ fn filtered_index_matchall_returns_only_filtered_rows() {
         .unwrap();
 
     // MatchAll on filtered index returns only active tasks.
-    let result = table.by_active_assignee(MatchAll);
+    let result = table.by_active_assignee(MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].id, FiltTaskId(1));
     assert_eq!(result[1].id, FiltTaskId(3));
 
     // MatchAll on compound filtered index.
-    let result = table.by_active_priority(MatchAll, MatchAll);
+    let result = table.by_active_priority(MatchAll, MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
 
     // Simple index returns all rows regardless of filter.
-    let result = table.by_assignee(MatchAll);
+    let result = table.by_assignee(MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 3);
 }
 
@@ -1409,7 +1502,7 @@ fn triple_compound_all_exact() {
     }
 
     // All-exact: narrow point query.
-    let result = table.by_a_b_c(&0u8, &0u8, &0u8);
+    let result = table.by_a_b_c(&0u8, &0u8, &0u8, QueryOpts::ASC);
     // id=6: a=0, b=0, c=2 — doesn't match c=0
     // id=4: a=0, b=1, c=0 — doesn't match b=0
     // id=2: a=0, b=2, c=2 — doesn't match
@@ -1418,7 +1511,7 @@ fn triple_compound_all_exact() {
 
     // Check a known triple.
     // id=1: a=1, b=1, c=1
-    let result = table.by_a_b_c(&1u8, &1u8, &1u8);
+    let result = table.by_a_b_c(&1u8, &1u8, &1u8, QueryOpts::ASC);
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].id, TripleId(1));
 }
@@ -1437,9 +1530,9 @@ fn triple_compound_prefix_one() {
             .unwrap();
     }
 
-    let result = table.by_a_b_c(&0u8, MatchAll, MatchAll);
+    let result = table.by_a_b_c(&0u8, MatchAll, MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 3);
-    let result = table.by_a_b_c(&1u8, MatchAll, MatchAll);
+    let result = table.by_a_b_c(&1u8, MatchAll, MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 3);
 }
 
@@ -1472,7 +1565,7 @@ fn triple_compound_prefix_two() {
         .unwrap();
 
     // Prefix on first two fields.
-    let result = table.by_a_b_c(&1u8, &2u8, MatchAll);
+    let result = table.by_a_b_c(&1u8, &2u8, MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].c, 10);
     assert_eq!(result[1].c, 20);
@@ -1493,7 +1586,7 @@ fn triple_compound_middle_range() {
     }
 
     // Exact first, range second, MatchAll third.
-    let result = table.by_a_b_c(&1u8, 2u8..=4, MatchAll);
+    let result = table.by_a_b_c(&1u8, 2u8..=4, MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 3);
     assert_eq!(result[0].b, 2);
     assert_eq!(result[1].b, 3);
@@ -1514,16 +1607,16 @@ fn triple_compound_all_matchall() {
             .unwrap();
     }
 
-    let result = table.by_a_b_c(MatchAll, MatchAll, MatchAll);
+    let result = table.by_a_b_c(MatchAll, MatchAll, MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 5);
 }
 
 #[test]
 fn triple_compound_empty_table() {
     let table = TripleRowTable::new();
-    let result = table.by_a_b_c(&0u8, &0u8, &0u8);
+    let result = table.by_a_b_c(&0u8, &0u8, &0u8, QueryOpts::ASC);
     assert!(result.is_empty());
-    let result = table.by_a_b_c(MatchAll, MatchAll, MatchAll);
+    let result = table.by_a_b_c(MatchAll, MatchAll, MatchAll, QueryOpts::ASC);
     assert!(result.is_empty());
 }
 
@@ -1546,7 +1639,7 @@ fn range_from_query_on_table() {
     }
 
     // RangeFrom: hunger >= 80
-    let result = table.by_hunger(80u32..);
+    let result = table.by_hunger(80u32.., QueryOpts::ASC);
     assert_eq!(result.len(), 3); // 80, 90, 100
 }
 
@@ -1565,7 +1658,7 @@ fn range_to_query_on_table() {
     }
 
     // RangeTo: hunger < 30
-    let result = table.by_hunger(..30u32);
+    let result = table.by_hunger(..30u32, QueryOpts::ASC);
     assert_eq!(result.len(), 2); // 10, 20
 }
 
@@ -1584,7 +1677,7 @@ fn range_to_inclusive_query_on_table() {
     }
 
     // RangeToInclusive: hunger <= 30
-    let result = table.by_hunger(..=30u32);
+    let result = table.by_hunger(..=30u32, QueryOpts::ASC);
     assert_eq!(result.len(), 3); // 10, 20, 30
 }
 
@@ -1604,7 +1697,10 @@ fn bound_tuple_query_on_table() {
     }
 
     // Exclusive on both ends: 20 < hunger < 50
-    let result = table.by_hunger((Bound::Excluded(20u32), Bound::Excluded(50u32)));
+    let result = table.by_hunger(
+        (Bound::Excluded(20u32), Bound::Excluded(50u32)),
+        QueryOpts::ASC,
+    );
     assert_eq!(result.len(), 2); // 30, 40
 }
 
@@ -1630,10 +1726,10 @@ fn bounds_stale_after_all_rows_deleted() {
     // but queries should still return empty results because the
     // BTreeSet range scan finds nothing.
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         0
     );
-    let result = table.by_assignee_priority(MatchAll, MatchAll);
+    let result = table.by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC);
     assert!(result.is_empty());
 }
 
@@ -1657,12 +1753,12 @@ fn bounds_correct_with_many_inserts_and_deletes() {
     }
 
     // Query should still work correctly — only remaining rows returned.
-    let all = table.by_assignee_priority(MatchAll, MatchAll);
+    let all = table.by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC);
     assert_eq!(all.len(), 10);
 
     // Specific queries should match remaining data.
     for row in &all {
-        let matches = table.by_assignee_priority(&row.assignee, &row.priority);
+        let matches = table.by_assignee_priority(&row.assignee, &row.priority, QueryOpts::ASC);
         assert!(matches.iter().any(|m| m.id == row.id));
     }
 }
@@ -1674,10 +1770,13 @@ fn bounds_correct_with_many_inserts_and_deletes() {
 #[test]
 fn filtered_index_empty_table_query() {
     let table = FiltTaskTable::new();
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 0);
-    let result = table.by_active_assignee(MatchAll);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        0
+    );
+    let result = table.by_active_assignee(MatchAll, QueryOpts::ASC);
     assert!(result.is_empty());
-    let result = table.by_active_priority(MatchAll, MatchAll);
+    let result = table.by_active_priority(MatchAll, MatchAll, QueryOpts::ASC);
     assert!(result.is_empty());
 }
 
@@ -1695,14 +1794,20 @@ fn filtered_index_all_rows_excluded() {
             .unwrap();
     }
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 0);
     assert_eq!(
-        table.count_by_active_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        0
+    );
+    assert_eq!(
+        table.count_by_active_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         0
     );
 
     // But simple index should have them.
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(1))), 5);
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        5
+    );
 }
 
 #[test]
@@ -1727,10 +1832,19 @@ fn filtered_index_update_stays_outside_filter() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 0);
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(2))), 0);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        0
+    );
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(2)), QueryOpts::ASC),
+        0
+    );
     // Simple index should reflect the update.
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(2))), 1);
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(2)), QueryOpts::ASC),
+        1
+    );
 }
 
 // ============================================================================
@@ -1766,11 +1880,11 @@ fn compound_and_simple_index_on_same_field() {
         .unwrap();
 
     // Simple #[indexed] query.
-    let simple = table.by_assignee(&Some(CreatureId(1)));
+    let simple = table.by_assignee(&Some(CreatureId(1)), QueryOpts::ASC);
     assert_eq!(simple.len(), 2);
 
     // Compound index prefix query — same result but potentially different order.
-    let compound = table.by_assignee_priority(&Some(CreatureId(1)), MatchAll);
+    let compound = table.by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC);
     assert_eq!(compound.len(), 2);
 
     // After mutation, both indexes updated.
@@ -1783,12 +1897,18 @@ fn compound_and_simple_index_on_same_field() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(1))), 1);
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
         1
     );
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(3))), 1);
+    assert_eq!(
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(3)), QueryOpts::ASC),
+        1
+    );
 }
 
 // ============================================================================
@@ -1810,7 +1930,7 @@ fn duplicate_values_in_compound_index() {
             .unwrap();
     }
 
-    let result = table.by_assignee_priority(&Some(CreatureId(1)), &5u8);
+    let result = table.by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC);
     assert_eq!(result.len(), 5);
 
     // Verify all are returned.
@@ -1839,7 +1959,7 @@ fn compound_index_second_field_range_from() {
     }
 
     // RangeFrom on second field.
-    let result = table.by_assignee_priority(&Some(CreatureId(1)), 4u8..);
+    let result = table.by_assignee_priority(&Some(CreatureId(1)), 4u8.., QueryOpts::ASC);
     assert_eq!(result.len(), 2); // priority 4, 5
 }
 
@@ -1858,7 +1978,7 @@ fn compound_index_second_field_range_to() {
     }
 
     // RangeTo (exclusive) on second field.
-    let result = table.by_assignee_priority(&Some(CreatureId(1)), ..3u8);
+    let result = table.by_assignee_priority(&Some(CreatureId(1)), ..3u8, QueryOpts::ASC);
     assert_eq!(result.len(), 2); // priority 1, 2
 }
 
@@ -1879,17 +1999,23 @@ fn single_row_compound_index() {
         .unwrap();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         1
     );
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         1
     );
-    assert_eq!(table.count_by_assignee_priority(MatchAll, MatchAll), 1);
-    assert_eq!(table.count_by_assignee_priority(MatchAll, &5u8), 1);
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(2)), &5u8),
+        table.count_by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_assignee_priority(MatchAll, &5u8, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_assignee_priority(&Some(CreatureId(2)), &5u8, QueryOpts::ASC),
         0
     );
 }
@@ -1906,13 +2032,19 @@ fn single_row_filtered_index() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(1))), 1);
-    assert_eq!(table.count_by_active_assignee(MatchAll), 1);
     assert_eq!(
-        table.count_by_active_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_active_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
         1
     );
-    assert_eq!(table.count_by_active_priority(MatchAll, MatchAll), 1);
+    assert_eq!(table.count_by_active_assignee(MatchAll, QueryOpts::ASC), 1);
+    assert_eq!(
+        table.count_by_active_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
+        1
+    );
+    assert_eq!(
+        table.count_by_active_priority(MatchAll, MatchAll, QueryOpts::ASC),
+        1
+    );
 }
 
 // ============================================================================
@@ -1943,10 +2075,10 @@ fn compound_index_update_no_field_change() {
 
     // Index should still work correctly.
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         1
     );
-    let row = table.by_assignee_priority(&Some(CreatureId(1)), &5u8);
+    let row = table.by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC);
     assert_eq!(row[0].status, TaskStatus::InProgress);
 }
 
@@ -1983,10 +2115,10 @@ fn compound_index_option_none_query() {
         .unwrap();
 
     // Query unassigned tasks via compound index.
-    let result = table.by_assignee_priority(&None, MatchAll);
+    let result = table.by_assignee_priority(&None, MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
 
-    let result = table.by_assignee_priority(&None, &5u8);
+    let result = table.by_assignee_priority(&None, &5u8, QueryOpts::ASC);
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].id, CompTaskId(1));
 }
@@ -2019,12 +2151,12 @@ fn filtered_compound_range_second_field() {
         .unwrap();
 
     // Range query on second field of filtered compound index.
-    let result = table.by_active_priority(&Some(CreatureId(1)), 2u8..=4);
+    let result = table.by_active_priority(&Some(CreatureId(1)), 2u8..=4, QueryOpts::ASC);
     assert_eq!(result.len(), 3); // priorities 2, 3, 4 (all active)
 
     // Total active for this assignee.
     assert_eq!(
-        table.count_by_active_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_active_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         5
     );
 }
@@ -2048,7 +2180,7 @@ fn iter_by_compound_index() {
     }
 
     let priorities: Vec<u8> = table
-        .iter_by_assignee_priority(&Some(CreatureId(1)), 2u8..=4)
+        .iter_by_assignee_priority(&Some(CreatureId(1)), 2u8..=4, QueryOpts::ASC)
         .map(|t| t.priority)
         .collect();
     assert_eq!(priorities, vec![2, 3, 4]);
@@ -2083,7 +2215,7 @@ fn iter_by_filtered_index() {
         .unwrap();
 
     let ids: Vec<FiltTaskId> = table
-        .iter_by_active_assignee(MatchAll)
+        .iter_by_active_assignee(MatchAll, QueryOpts::ASC)
         .map(|t| t.id)
         .collect();
     assert_eq!(ids, vec![FiltTaskId(1), FiltTaskId(3)]);
@@ -2108,12 +2240,15 @@ fn compound_index_upsert_insert_path() {
         .unwrap();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         1
     );
 
     // Simple index too.
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(1))), 1);
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        1
+    );
 }
 
 // ============================================================================
@@ -2163,11 +2298,11 @@ fn multiple_compound_indexes() {
         .unwrap();
 
     // Query via first compound index.
-    let result = table.by_a_b(&1u8, &2u8);
+    let result = table.by_a_b(&1u8, &2u8, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
 
     // Query via second compound index.
-    let result = table.by_b_c(&2u8, &3u8);
+    let result = table.by_b_c(&2u8, &3u8, QueryOpts::ASC);
     assert_eq!(result.len(), 2);
     let ids: Vec<_> = result.iter().map(|r| r.id).collect();
     assert!(ids.contains(&MultiIdxId(1)));
@@ -2196,10 +2331,10 @@ fn multiple_compound_indexes_maintained_on_update() {
         })
         .unwrap();
 
-    assert_eq!(table.count_by_a_b(&1u8, &2u8), 0);
-    assert_eq!(table.count_by_a_b(&10u8, &20u8), 1);
-    assert_eq!(table.count_by_b_c(&2u8, &3u8), 0);
-    assert_eq!(table.count_by_b_c(&20u8, &30u8), 1);
+    assert_eq!(table.count_by_a_b(&1u8, &2u8, QueryOpts::ASC), 0);
+    assert_eq!(table.count_by_a_b(&10u8, &20u8, QueryOpts::ASC), 1);
+    assert_eq!(table.count_by_b_c(&2u8, &3u8, QueryOpts::ASC), 0);
+    assert_eq!(table.count_by_b_c(&20u8, &30u8, QueryOpts::ASC), 1);
 }
 
 // ============================================================================
@@ -2224,17 +2359,23 @@ fn rebuild_preserves_compound_and_simple_indexes() {
 
     // Compound index works.
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         2
     );
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(2)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(2)), MatchAll, QueryOpts::ASC),
         3
     );
 
     // Simple index works.
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(1))), 2);
-    assert_eq!(table.count_by_assignee(&Some(CreatureId(2))), 3);
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(1)), QueryOpts::ASC),
+        2
+    );
+    assert_eq!(
+        table.count_by_assignee(&Some(CreatureId(2)), QueryOpts::ASC),
+        3
+    );
 }
 
 // ============================================================================
@@ -2279,7 +2420,7 @@ fn compound_index_first_range_second_matchall() {
 
     // Range on first field (Option types: None < Some), MatchAll on second.
     // This is a non-prefix query (range on first field), so it hits the catch-all arm.
-    let result = table.by_assignee_priority(MatchAll, MatchAll);
+    let result = table.by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 4);
 }
 
@@ -2303,7 +2444,7 @@ fn filtered_compound_update_changes_indexed_fields_while_staying_in_filter() {
 
     // Verify initial state in compound filtered index.
     assert_eq!(
-        table.count_by_active_priority(&Some(CreatureId(10)), &5u8),
+        table.count_by_active_priority(&Some(CreatureId(10)), &5u8, QueryOpts::ASC),
         1
     );
 
@@ -2319,21 +2460,27 @@ fn filtered_compound_update_changes_indexed_fields_while_staying_in_filter() {
 
     // Old tuple must be gone.
     assert_eq!(
-        table.count_by_active_priority(&Some(CreatureId(10)), &5u8),
+        table.count_by_active_priority(&Some(CreatureId(10)), &5u8, QueryOpts::ASC),
         0
     );
     assert_eq!(
-        table.count_by_active_priority(&Some(CreatureId(10)), MatchAll),
+        table.count_by_active_priority(&Some(CreatureId(10)), MatchAll, QueryOpts::ASC),
         0
     );
     // New tuple must be present.
     assert_eq!(
-        table.count_by_active_priority(&Some(CreatureId(20)), &9u8),
+        table.count_by_active_priority(&Some(CreatureId(20)), &9u8, QueryOpts::ASC),
         1
     );
     // Single-field filtered index also updated.
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(10))), 0);
-    assert_eq!(table.count_by_active_assignee(&Some(CreatureId(20))), 1);
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(10)), QueryOpts::ASC),
+        0
+    );
+    assert_eq!(
+        table.count_by_active_assignee(&Some(CreatureId(20)), QueryOpts::ASC),
+        1
+    );
 }
 
 #[test]
@@ -2383,7 +2530,7 @@ fn filtered_compound_matchall_returns_only_filtered_subset() {
         .unwrap();
 
     // MatchAll on compound filtered index: only 3 active rows.
-    let result = table.by_active_priority(MatchAll, MatchAll);
+    let result = table.by_active_priority(MatchAll, MatchAll, QueryOpts::ASC);
     assert_eq!(result.len(), 3);
     let ids: Vec<_> = result.iter().map(|r| r.id).collect();
     assert!(ids.contains(&FiltTaskId(1)));
@@ -2391,10 +2538,10 @@ fn filtered_compound_matchall_returns_only_filtered_subset() {
     assert!(ids.contains(&FiltTaskId(5)));
 
     // MatchAll on single-field filtered index: same 3 active rows.
-    assert_eq!(table.count_by_active_assignee(MatchAll), 3);
+    assert_eq!(table.count_by_active_assignee(MatchAll, QueryOpts::ASC), 3);
 
     // Unfiltered simple index: all 5 rows.
-    assert_eq!(table.count_by_assignee(MatchAll), 5);
+    assert_eq!(table.count_by_assignee(MatchAll, QueryOpts::ASC), 5);
 }
 
 #[test]
@@ -2413,19 +2560,25 @@ fn compound_index_all_same_values() {
     }
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(42)), &7u8),
+        table.count_by_assignee_priority(&Some(CreatureId(42)), &7u8, QueryOpts::ASC),
         10
     );
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(42)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(42)), MatchAll, QueryOpts::ASC),
         10
     );
-    assert_eq!(table.count_by_assignee_priority(MatchAll, &7u8), 10);
-    assert_eq!(table.count_by_assignee_priority(MatchAll, MatchAll), 10);
+    assert_eq!(
+        table.count_by_assignee_priority(MatchAll, &7u8, QueryOpts::ASC),
+        10
+    );
+    assert_eq!(
+        table.count_by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC),
+        10
+    );
 
     // Verify PKs are all present and in order.
     let ids: Vec<_> = table
-        .iter_by_assignee_priority(&Some(CreatureId(42)), &7u8)
+        .iter_by_assignee_priority(&Some(CreatureId(42)), &7u8, QueryOpts::ASC)
         .map(|t| t.id)
         .collect();
     for i in 1..=10 {
@@ -2453,19 +2606,25 @@ fn large_scale_stress_test() {
     // Each of 5 assignees gets 20 rows.
     for a in 1..=5 {
         assert_eq!(
-            table.count_by_assignee_priority(&Some(CreatureId(a)), MatchAll),
+            table.count_by_assignee_priority(&Some(CreatureId(a)), MatchAll, QueryOpts::ASC),
             20
         );
-        assert_eq!(table.count_by_assignee(&Some(CreatureId(a))), 20);
+        assert_eq!(
+            table.count_by_assignee(&Some(CreatureId(a)), QueryOpts::ASC),
+            20
+        );
     }
 
     // Each priority 0-9 gets 10 rows.
     for p in 0..10u8 {
-        assert_eq!(table.count_by_assignee_priority(MatchAll, &p), 10);
+        assert_eq!(
+            table.count_by_assignee_priority(MatchAll, &p, QueryOpts::ASC),
+            10
+        );
     }
 
     // Range: priorities 3..=7 for assignee 1.
-    let result = table.by_assignee_priority(&Some(CreatureId(1)), 3u8..=7);
+    let result = table.by_assignee_priority(&Some(CreatureId(1)), 3u8..=7, QueryOpts::ASC);
     // Assignee 1 has i where i%5==0 → i=5,10,15,...,100. That's 20 rows.
     // Of those, priority = i%10: 5,0,5,0,5,0,...  — only priorities 0 and 5.
     // In range 3..=7: only priority 5 rows.
@@ -2473,14 +2632,20 @@ fn large_scale_stress_test() {
     assert_eq!(count_p5, 10);
 
     // MatchAll on both returns everything.
-    assert_eq!(table.count_by_assignee_priority(MatchAll, MatchAll), 100);
+    assert_eq!(
+        table.count_by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC),
+        100
+    );
 
     // Remove 50 rows.
     for i in 1..=50u32 {
         table.remove_no_fk(&CompTaskId(i)).unwrap();
     }
     assert_eq!(table.len(), 50);
-    assert_eq!(table.count_by_assignee_priority(MatchAll, MatchAll), 50);
+    assert_eq!(
+        table.count_by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC),
+        50
+    );
 }
 
 #[test]
@@ -2506,17 +2671,17 @@ fn compound_index_exact_match_no_results() {
 
     // Assignee exists but priority doesn't match.
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &99u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &99u8, QueryOpts::ASC),
         0
     );
     // Priority exists but assignee doesn't match.
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(99)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(99)), &5u8, QueryOpts::ASC),
         0
     );
     // Neither exists.
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(99)), &99u8),
+        table.count_by_assignee_priority(&Some(CreatureId(99)), &99u8, QueryOpts::ASC),
         0
     );
     // Verify table is non-empty.
@@ -2560,7 +2725,7 @@ fn triple_compound_matchall_first_range_second_exact_third() {
         .unwrap();
 
     // MatchAll on a, range 2..=4 on b, exact 10 on c.
-    let result = table.by_a_b_c(MatchAll, 2u8..=4, &10u8);
+    let result = table.by_a_b_c(MatchAll, 2u8..=4, &10u8, QueryOpts::ASC);
     // Expected: rows with b in {2,3,4} and c=10, any a.
     // a=1: b=2,3,4 c=10 → ids 2,3,4
     // a=2: b=2,3,4 c=10 → ids 7,8,9
@@ -2598,7 +2763,10 @@ fn triple_compound_update_and_remove() {
         .unwrap();
 
     // Verify initial state.
-    assert_eq!(table.count_by_a_b_c(&1u8, &2u8, MatchAll), 2);
+    assert_eq!(
+        table.count_by_a_b_c(&1u8, &2u8, MatchAll, QueryOpts::ASC),
+        2
+    );
 
     // Update row 1: change all indexed fields.
     table
@@ -2611,20 +2779,26 @@ fn triple_compound_update_and_remove() {
         .unwrap();
 
     // Old tuple gone.
-    assert_eq!(table.count_by_a_b_c(&1u8, &2u8, &3u8), 0);
+    assert_eq!(table.count_by_a_b_c(&1u8, &2u8, &3u8, QueryOpts::ASC), 0);
     // Row 2 still there.
-    assert_eq!(table.count_by_a_b_c(&1u8, &2u8, &4u8), 1);
+    assert_eq!(table.count_by_a_b_c(&1u8, &2u8, &4u8, QueryOpts::ASC), 1);
     // New tuple present.
-    assert_eq!(table.count_by_a_b_c(&10u8, &20u8, &30u8), 1);
+    assert_eq!(table.count_by_a_b_c(&10u8, &20u8, &30u8, QueryOpts::ASC), 1);
 
     // Remove row 2.
     table.remove_no_fk(&TripleId(2)).unwrap();
-    assert_eq!(table.count_by_a_b_c(&1u8, &2u8, MatchAll), 0);
-    assert_eq!(table.count_by_a_b_c(&10u8, &20u8, &30u8), 1);
+    assert_eq!(
+        table.count_by_a_b_c(&1u8, &2u8, MatchAll, QueryOpts::ASC),
+        0
+    );
+    assert_eq!(table.count_by_a_b_c(&10u8, &20u8, &30u8, QueryOpts::ASC), 1);
 
     // Remove row 1.
     table.remove_no_fk(&TripleId(1)).unwrap();
-    assert_eq!(table.count_by_a_b_c(MatchAll, MatchAll, MatchAll), 0);
+    assert_eq!(
+        table.count_by_a_b_c(MatchAll, MatchAll, MatchAll, QueryOpts::ASC),
+        0
+    );
     assert!(table.is_empty());
 }
 
@@ -2642,7 +2816,7 @@ fn compound_index_upsert_changes_only_one_indexed_field() {
         .unwrap();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         1
     );
 
@@ -2658,17 +2832,17 @@ fn compound_index_upsert_changes_only_one_indexed_field() {
 
     // Old compound tuple gone.
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &5u8, QueryOpts::ASC),
         0
     );
     // New compound tuple present.
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &9u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &9u8, QueryOpts::ASC),
         1
     );
     // Prefix query unchanged: still 1 row for this assignee.
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         1
     );
 
@@ -2683,11 +2857,11 @@ fn compound_index_upsert_changes_only_one_indexed_field() {
         .unwrap();
 
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), &9u8),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), &9u8, QueryOpts::ASC),
         0
     );
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(2)), &9u8),
+        table.count_by_assignee_priority(&Some(CreatureId(2)), &9u8, QueryOpts::ASC),
         1
     );
 }
@@ -2739,20 +2913,21 @@ fn filtered_single_field_range_query() {
 
     // Range on filtered index: assignee in Some(CreatureId(3))..=Some(CreatureId(12)).
     // Active rows with assignee in that range: id=2 (assignee 5), id=3 (assignee 10).
-    let result = table.by_active_assignee(Some(CreatureId(3))..=Some(CreatureId(12)));
+    let result =
+        table.by_active_assignee(Some(CreatureId(3))..=Some(CreatureId(12)), QueryOpts::ASC);
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].id, FiltTaskId(2));
     assert_eq!(result[1].id, FiltTaskId(3));
 
     // RangeFrom on filtered index: assignee >= Some(CreatureId(10)).
     // Active: id=3 (10), id=5 (20). id=4 (15) is inactive.
-    let result = table.by_active_assignee(Some(CreatureId(10))..);
+    let result = table.by_active_assignee(Some(CreatureId(10)).., QueryOpts::ASC);
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].id, FiltTaskId(3));
     assert_eq!(result[1].id, FiltTaskId(5));
 
     // Compare to unfiltered simple index for the same range.
-    let result = table.by_assignee(Some(CreatureId(10))..);
+    let result = table.by_assignee(Some(CreatureId(10)).., QueryOpts::ASC);
     assert_eq!(result.len(), 3); // includes inactive id=4
 }
 
@@ -2789,7 +2964,11 @@ fn compound_index_first_range_second_exact() {
         .unwrap();
 
     // Range on first, exact on second — hits catch-all arm with post-filtering.
-    let result = table.by_assignee_priority(Some(CreatureId(1))..=Some(CreatureId(2)), &5u8);
+    let result = table.by_assignee_priority(
+        Some(CreatureId(1))..=Some(CreatureId(2)),
+        &5u8,
+        QueryOpts::ASC,
+    );
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].id, CompTaskId(1));
     assert_eq!(result[1].id, CompTaskId(2));
@@ -2813,7 +2992,11 @@ fn compound_index_both_ranges() {
     }
 
     // Both fields are ranges — catch-all arm, post-filter both.
-    let result = table.by_assignee_priority(Some(CreatureId(2))..=Some(CreatureId(4)), 2u8..=4);
+    let result = table.by_assignee_priority(
+        Some(CreatureId(2))..=Some(CreatureId(4)),
+        2u8..=4,
+        QueryOpts::ASC,
+    );
     // Assignees 2,3,4 × priorities 2,3,4 = 9 rows.
     assert_eq!(result.len(), 9);
 }
@@ -2847,11 +3030,11 @@ fn bounds_insert_delete_insert_cycle() {
         .unwrap();
 
     // Query for the old value should return empty.
-    let result = table.by_hunger(&50u32);
+    let result = table.by_hunger(&50u32, QueryOpts::ASC);
     assert!(result.is_empty());
 
     // Query for the new value should return the new row.
-    let result = table.by_hunger(&30u32);
+    let result = table.by_hunger(&30u32, QueryOpts::ASC);
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].id, CreatureId(2));
 }
@@ -2901,8 +3084,11 @@ fn bounds_recomputed_on_rebuild() {
 
     // Verify queries work correctly with the tightened bounds.
     assert_eq!(
-        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll),
+        table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
         2
     );
-    assert_eq!(table.count_by_assignee_priority(MatchAll, MatchAll), 2);
+    assert_eq!(
+        table.count_by_assignee_priority(MatchAll, MatchAll, QueryOpts::ASC),
+        2
+    );
 }
