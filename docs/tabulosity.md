@@ -21,26 +21,31 @@ for current behavior. This document is the single source of truth.
    - [Simple Indexes](#simple-indexes)
    - [Compound Indexes](#compound-indexes)
    - [Filtered Indexes](#filtered-indexes)
+   - [Unique Indexes](#unique-indexes)
    - [Unified Query API (IntoQuery)](#unified-query-api-intoquery)
-5. [Tracked Bounds](#tracked-bounds)
-6. [Error Handling](#error-handling)
-7. [Implementation Details](#implementation-details)
-   - [FK Validation Behavior](#fk-validation-behavior)
-   - [Row Type Name Convention](#row-type-name-convention)
-   - [Type Name Canonicalization](#type-name-canonicalization)
-   - [Serde DeserializeError Wrapping](#serde-deserializeerror-wrapping)
-8. [Planned: Sim Integration](#planned-sim-integration)
-   - [Migration Strategy](#migration-strategy)
-   - [Candidate Tables](#candidate-tables)
-9. [Roadmap: Missing Features](#roadmap-missing-features)
-   - [Closure-based Row Update (F-tab-update-with)](#closure-based-row-update)
-   - [Unique Index Enforcement (F-tab-unique-idx)](#unique-index-enforcement)
-   - [Auto-generated Primary Keys (F-tab-auto-pk)](#auto-generated-primary-keys)
-   - [Cascade/Nullify on Delete (F-tab-cascade-del)](#cascadenullify-on-delete)
-   - [Change Tracking (F-tab-change-track)](#change-tracking)
-   - [Join Iterators (F-tab-joins)](#join-iterators)
-   - [Schema Evolution (F-tab-schema-evol)](#schema-evolution)
-   - [Other Gaps](#other-gaps)
+5. [Query Options (QueryOpts)](#query-options-queryopts)
+6. [Closure-based Mutation](#closure-based-mutation)
+   - [modify_unchecked (Single Row)](#modify_unchecked-single-row)
+   - [modify_unchecked_range / modify_unchecked_all (Batch)](#modify_unchecked_range--modify_unchecked_all-batch)
+   - [modify_each_by_* (Index-Driven Batch)](#modify_each_by-index-driven-batch)
+   - [Debug Assertions](#debug-assertions)
+7. [Auto-Increment Primary Keys](#auto-increment-primary-keys)
+8. [Tracked Bounds](#tracked-bounds)
+9. [Error Handling](#error-handling)
+10. [Implementation Details](#implementation-details)
+    - [FK Validation Behavior](#fk-validation-behavior)
+    - [Row Type Name Convention](#row-type-name-convention)
+    - [Type Name Canonicalization](#type-name-canonicalization)
+    - [Serde DeserializeError Wrapping](#serde-deserializeerror-wrapping)
+11. [Planned: Sim Integration](#planned-sim-integration)
+    - [Migration Strategy](#migration-strategy)
+    - [Candidate Tables](#candidate-tables)
+12. [Roadmap: Missing Features](#roadmap-missing-features)
+    - [Index-Maintaining Closure Update](#index-maintaining-closure-update)
+    - [Change Tracking (F-tab-change-track)](#change-tracking)
+    - [Join Iterators (F-tab-joins)](#join-iterators)
+    - [Schema Evolution (F-tab-schema-evol)](#schema-evolution)
+    - [Other Gaps](#other-gaps)
 
 ---
 
@@ -51,7 +56,17 @@ Rust. It provides:
 
 - **Typed tables** with primary keys and automatic secondary indexes
 - **Compound and filtered indexes** using BTreeSet storage
-- **Cross-table foreign key integrity** (restrict-on-delete)
+- **Unique index enforcement** -- `#[indexed(unique)]` with duplicate detection
+  on insert and update
+- **Auto-increment primary keys** -- `#[primary_key(auto_increment)]` with
+  monotonic counters that survive serde roundtrips
+- **Cross-table foreign key integrity** -- restrict, cascade, and nullify
+  on-delete semantics with cycle detection
+- **Query options** -- ascending/descending ordering and offset (skip N) on all
+  index query methods
+- **Closure-based mutation** -- `modify_unchecked` for in-place row mutation
+  bypassing index maintenance (single-row, range, and batch variants), plus
+  `modify_each_by_*` for index-driven batch mutation
 - **Derive macros** for zero-boilerplate table and database definitions
 - **Deterministic iteration** -- all internal data structures use
   `BTreeMap`/`BTreeSet` (no `HashMap`/`HashSet`)
@@ -81,13 +96,17 @@ Two crates in the workspace:
 
 - **`tabulosity`** -- runtime library. Contains error types (`Error`,
   `DeserializeError`), the `Bounded` trait, `FkCheck` trait, `TableMeta` trait,
-  and the unified query API (`IntoQuery`, `QueryBound`, `MatchAll`, `in_bounds`
-  helper). Re-exports the derive macros from `tabulosity_derive`.
+  `AutoIncrementable` trait, and the unified query API (`IntoQuery`,
+  `QueryBound`, `MatchAll`, `in_bounds` helper). Also provides `QueryOrder` and
+  `QueryOpts` for controlling result ordering and offset. Re-exports the derive
+  macros from `tabulosity_derive`.
 
 - **`tabulosity_derive`** -- proc macro crate. Three derive macros:
   - `#[derive(Bounded)]` -- newtype min/max delegation
-  - `#[derive(Table)]` -- companion table struct with CRUD, indexes, serde
-  - `#[derive(Database)]` -- FK-validated write methods, database-level serde
+  - `#[derive(Table)]` -- companion table struct with CRUD, indexes, serde,
+    modify_unchecked, and modify_each_by_*
+  - `#[derive(Database)]` -- FK-validated write methods, database-level serde,
+    delegation of modify_unchecked methods
 
 **Source files:**
 
@@ -95,14 +114,18 @@ Two crates in the workspace:
 tabulosity/
   src/
     lib.rs          -- re-exports, module declarations
-    error.rs        -- Error enum (4 variants), DeserializeError
-    table.rs        -- Bounded, FkCheck, TableMeta, IntoQuery, QueryBound, MatchAll, in_bounds
+    error.rs        -- Error enum (5 variants), DeserializeError
+    table.rs        -- Bounded, FkCheck, TableMeta, AutoIncrementable,
+                       IntoQuery, QueryBound, MatchAll, QueryOrder, QueryOpts,
+                       in_bounds
 tabulosity_derive/
   src/
     lib.rs          -- proc macro entry points
     bounded.rs      -- derive(Bounded) for newtypes
-    table.rs        -- derive(Table) -- companion struct, indexes, serde
-    database.rs     -- derive(Database) -- FK validation, write methods, serde
+    table.rs        -- derive(Table) -- companion struct, indexes, serde,
+                       modify_unchecked, modify_each_by_*
+    database.rs     -- derive(Database) -- FK validation, write methods, serde,
+                       modify_unchecked delegation
     parse.rs        -- shared attribute parsing (#[primary_key], #[indexed], #[index])
 ```
 
@@ -110,11 +133,15 @@ tabulosity_derive/
 
 ```
 tabulosity/tests/
+    auto_increment.rs   -- auto-increment PK generation and serde roundtrip
     basic_table.rs      -- CRUD on tables without indexes
     bounded.rs          -- derive(Bounded) on newtypes
-    database.rs         -- FK validation, restrict-on-delete
+    database.rs         -- FK validation, restrict/cascade/nullify on-delete
     indexed_table.rs    -- simple, compound, filtered indexes; IntoQuery API
+    modify_unchecked.rs -- single/range/all modify_unchecked variants + debug assertions
+    query_opts.rs       -- QueryOpts ordering/offset + modify_each_by_*
     serde.rs            -- serde roundtrip (feature-gated)
+    unique_index.rs     -- unique index enforcement on insert/update
 ```
 
 ## Current API
@@ -160,18 +187,31 @@ Generates a companion `{Name}Table` struct. Given a `Creature` struct, you get
 **Mutation methods** (doc-hidden, used by Database derive):
 - `insert_no_fk(row) -> Result<(), Error>` -- `DuplicateKey` on collision
 - `update_no_fk(row) -> Result<(), Error>` -- `NotFound` if missing
-- `upsert_no_fk(row)` -- infallible insert-or-update
+- `upsert_no_fk(row) -> Result<(), Error>` -- insert-or-update; can fail
+  with `DuplicateIndex` if a unique constraint is violated
 - `remove_no_fk(&PK) -> Result<Row, Error>` -- returns removed row
 
+**Closure-based mutation** (see [Closure-based Mutation](#closure-based-mutation)):
+- `modify_unchecked(&PK, FnOnce(&mut Row)) -> Result<(), Error>`
+- `modify_unchecked_range(range, FnMut(&PK, &mut Row)) -> usize`
+- `modify_unchecked_all(FnMut(&PK, &mut Row)) -> usize`
+- `modify_each_by_{index}(query..., opts, FnMut(&PK, &mut Row)) -> usize`
+
 **Index query methods** (per index): `by_{name}`, `iter_by_{name}`,
-`count_by_{name}` -- see [Index System](#index-system).
+`count_by_{name}` -- see [Index System](#index-system). All accept a final
+`QueryOpts` parameter for ordering and offset -- see
+[Query Options](#query-options-queryopts).
 
 **Other:** `new()` (empty table), `rebuild_indexes()` (used by deserialization),
 `Default` impl.
 
 **Field attributes:**
-- `#[primary_key]` -- exactly one required
+- `#[primary_key]` -- exactly one required. Optionally
+  `#[primary_key(auto_increment)]` for auto-generated keys (see
+  [Auto-Increment Primary Keys](#auto-increment-primary-keys)).
 - `#[indexed]` -- zero or more, creates a simple single-field index
+- `#[indexed(unique)]` -- unique index that rejects duplicate values on
+  insert/update (see [Unique Indexes](#unique-indexes))
 
 **Struct attributes:**
 - `#[index(name = "...", fields("a", "b"), filter = "...")]` -- compound and/or
@@ -236,16 +276,33 @@ struct GameDb {
 - `insert_{singular}(row) -> Result<(), Error>` -- FK check then insert
 - `update_{singular}(row) -> Result<(), Error>` -- FK check then update
 - `upsert_{singular}(row) -> Result<(), Error>` -- FK check then upsert
-- `remove_{singular}(&PK) -> Result<Row, Error>` -- restrict-on-delete check
+- `remove_{singular}(&PK) -> Result<(), Error>` -- restrict/cascade/nullify
+  on-delete check
+- `modify_unchecked_{singular}(&PK, FnOnce(&mut Row)) -> Result<(), Error>`
+  -- delegates to table's `modify_unchecked`
+- `modify_unchecked_range_{singular}(range, FnMut(&PK, &mut Row)) -> usize`
+  -- delegates to table's `modify_unchecked_range`
+- `modify_unchecked_all_{singular}(FnMut(&PK, &mut Row)) -> usize`
+  -- delegates to table's `modify_unchecked_all`
 
 **FK syntax:**
 - `fks(field_name = "target_table")` -- bare FK, field type is `T`
 - `fks(field_name? = "target_table")` -- optional FK, field type is `Option<T>`
 - Multiple FKs: `fks(source = "creatures", target = "creatures")`
 
+**On-delete semantics:**
+- `on_delete restrict` (default) -- block deletion if referencing rows exist
+- `on_delete cascade` -- automatically delete dependent rows
+- `on_delete nullify` -- set the FK field to `None` (requires `Option<T>` FK)
+
+Syntax: `fks(assignee? = "creatures" on_delete nullify)`.
+
 The `?` suffix on the field name signals that the field is `Option<T>`. For
 restrict-on-delete checks, optional FK fields are queried by wrapping the
 target PK in `Some(...)`.
+
+**Cycle detection:** Cascade chains are analyzed at compile time. If table A
+cascades to B and B cascades to A, the derive macro emits a compile-time error.
 
 **Also generates:** `new()`, `Default` impl.
 
@@ -280,7 +337,7 @@ species: Species,
 Produces `idx_species: BTreeSet<(Species, CreatureId)>` and methods
 `by_species`, `iter_by_species`, `count_by_species`.
 
-Each method accepts `impl IntoQuery<Species>`, so you can pass:
+Each method accepts `impl IntoQuery<Species>` and a `QueryOpts` parameter:
 - `&Species::Elf` -- exact match
 - `Species::Elf..Species::Capybara` -- range
 - `MatchAll` or `..` -- all values
@@ -296,20 +353,21 @@ Created by `#[index(name = "...", fields("a", "b"))]` on the struct.
 Produces `idx_species_hunger: BTreeSet<(Species, u32, CreatureId)>` and methods
 `by_species_hunger`, `iter_by_species_hunger`, `count_by_species_hunger`.
 
-Each method takes one `impl IntoQuery<T>` parameter per field:
+Each method takes one `impl IntoQuery<T>` parameter per field, plus a final
+`QueryOpts`:
 
 ```rust
-// Exact match on both fields
-table.by_species_hunger(&Species::Elf, &30)
+// Exact match on both fields, ascending
+table.by_species_hunger(&Species::Elf, &30, QueryOpts::ASC)
 
 // Prefix query: exact first, all second
-table.by_species_hunger(&Species::Elf, MatchAll)
+table.by_species_hunger(&Species::Elf, MatchAll, QueryOpts::ASC)
 
 // Range on first, exact on second
-table.by_species_hunger(Species::Elf..Species::Capybara, &30)
+table.by_species_hunger(Species::Elf..Species::Capybara, &30, QueryOpts::ASC)
 
 // All rows (useful for filtered indexes)
-table.by_species_hunger(MatchAll, MatchAll)
+table.by_species_hunger(MatchAll, MatchAll, QueryOpts::ASC)
 ```
 
 **Leftmost prefix semantics:** Leading exact fields use the BTreeSet range scan
@@ -346,6 +404,30 @@ maintenance (insert, update, or rebuild) leaves the table in an inconsistent
 state -- the row storage and index may disagree about which rows exist. Keep
 filter logic simple and infallible.
 
+### Unique Indexes
+
+Created by `#[indexed(unique)]` on a field:
+
+```rust
+#[indexed(unique)]
+name: String,
+```
+
+Unique indexes use the same BTreeSet storage as regular indexes, but enforce
+a uniqueness constraint on insert and update. If a duplicate value is found,
+the operation returns `Error::DuplicateIndex` with a message identifying the
+conflicting value.
+
+**Enforcement points:**
+- `insert_no_fk` / `insert_*` -- checks all unique indexes before inserting
+- `update_no_fk` / `update_*` -- checks all unique indexes before updating
+  (allows the row being updated to keep its own value)
+- `upsert_no_fk` / `upsert_*` -- checks all unique indexes (allows existing
+  row to keep its value on update path)
+
+Unique indexes are compatible with `QueryOpts`, `modify_unchecked`, and all
+other table features.
+
 ### Unified Query API (IntoQuery)
 
 The `IntoQuery<T>` trait converts query parameters into `QueryBound<T>`:
@@ -380,6 +462,186 @@ delegate to a private `_query_*` helper. The helper uses a match cascade with
 N+1 arms (from most exact to least exact), selecting the optimal BTreeSet range
 scan and post-filter strategy.
 
+## Query Options (QueryOpts)
+
+All index query methods (`by_*`, `iter_by_*`, `count_by_*`) and
+`modify_each_by_*` accept a final `QueryOpts` parameter that controls result
+ordering and offset.
+
+```rust
+pub enum QueryOrder { Asc, Desc }
+
+pub struct QueryOpts {
+    pub order: QueryOrder,
+    pub offset: usize,
+}
+```
+
+**Constants and constructors:**
+- `QueryOpts::ASC` -- ascending, no offset (the most common case)
+- `QueryOpts::DESC` -- descending, no offset
+- `QueryOpts::desc()` -- same as `DESC`
+- `QueryOpts::offset(n)` -- ascending with offset
+- `QueryOpts::desc().with_offset(n)` -- descending with offset
+
+**Ordering:** `Desc` reverses the BTreeSet's natural iteration using `.rev()`.
+For compound indexes, this reverses the full tuple order (all fields flip
+together -- there is no per-field ordering control).
+
+**Offset:** Skips the first N matching rows via `.skip()`. Applied after
+ordering. Useful for pagination-like access patterns.
+
+**Examples:**
+
+```rust
+// Get all elves, most hungry first (descending hunger)
+table.by_species(&Species::Elf, QueryOpts::DESC)
+
+// Skip the first 5 results
+table.by_species(&Species::Elf, QueryOpts::offset(5))
+
+// Descending with offset
+table.by_species(&Species::Elf, QueryOpts::desc().with_offset(10))
+
+// count_by respects offset (counts remaining after skip)
+table.count_by_species(&Species::Elf, QueryOpts::offset(3))
+```
+
+## Closure-based Mutation
+
+Tabulosity provides three families of closure-based mutation methods that
+modify rows in place without the clone-modify-update pattern.
+
+### modify_unchecked (Single Row)
+
+Mutates a single row by primary key using a `FnOnce(&mut Row)` closure.
+**Bypasses index maintenance** -- the caller is responsible for not changing
+indexed fields or the primary key.
+
+```rust
+table.modify_unchecked(&creature_id, |c| {
+    c.hunger += 10;  // OK: hunger is not indexed
+})?;
+```
+
+Returns `Result<(), Error>` -- `NotFound` if the PK doesn't exist.
+
+The "unchecked" name signals that index consistency is the caller's
+responsibility. The method is safe to use when the closure only modifies
+non-indexed, non-PK fields.
+
+### modify_unchecked_range / modify_unchecked_all (Batch)
+
+Batch variants that iterate multiple rows:
+
+```rust
+// Mutate rows in a PK range
+let count = table.modify_unchecked_range(id_5..id_10, |pk, row| {
+    row.hunger += 1;
+});
+
+// Mutate all rows
+let count = table.modify_unchecked_all(|pk, row| {
+    row.hunger += 1;
+});
+```
+
+Both use `FnMut(&PK, &mut Row)` and return the count of rows visited. The
+range variant accepts any `impl RangeBounds<PK>` and uses
+`BTreeMap::range_mut` internally. The all variant delegates to
+`modify_unchecked_range(.., f)` with an unbounded range.
+
+An empty range is not an error -- it returns 0.
+
+### modify_each_by_* (Index-Driven Batch)
+
+For each index on a table, a `modify_each_by_{index}` method is generated.
+It queries the index, collects matching PKs, then mutates each row via
+`get_mut`. Like `modify_unchecked`, it **bypasses index maintenance**.
+
+```rust
+// Modify all creatures of a species
+table.modify_each_by_species(&Species::Elf, QueryOpts::ASC, |_pk, creature| {
+    creature.hunger += 10;
+});
+
+// Compound index query with descending order
+table.modify_each_by_species_hunger(
+    &Species::Elf, MatchAll, QueryOpts::DESC, |_pk, creature| {
+        creature.rest -= 5;
+    },
+);
+```
+
+Each method takes the same query parameters as the corresponding `by_*` method,
+plus a `QueryOpts` and a `FnMut(&PK, &mut Row)` closure. Returns the count of
+rows modified.
+
+The PKs are collected into a `Vec` before mutation begins, which breaks the
+borrow conflict between the immutable index reference and the mutable row
+reference. This means the closure cannot observe index changes from earlier
+iterations (not that it should -- indexes aren't maintained).
+
+### Debug Assertions
+
+In debug builds (`#[cfg(debug_assertions)]`), all closure-based mutation
+methods snapshot the primary key and all indexed fields before calling the
+closure, then assert they are unchanged afterward. This catches accidental
+modification of indexed fields during development.
+
+```
+thread 'test' panicked at 'modify_unchecked: indexed field `species` was
+changed (from Elf to Human); use update() instead'
+```
+
+The assertions are compiled out in release builds for zero overhead.
+
+For batch variants (`modify_unchecked_range`, `modify_unchecked_all`,
+`modify_each_by_*`), snapshots are taken per-row inside the loop -- not as a
+bulk snapshot before iteration. This keeps the per-row overhead identical to
+calling `modify_unchecked` N times.
+
+## Auto-Increment Primary Keys
+
+Tables can use `#[primary_key(auto_increment)]` to generate primary keys
+automatically:
+
+```rust
+#[derive(Table, Clone, Debug)]
+struct LogEntry {
+    #[primary_key(auto_increment)]
+    id: u64,
+    message: String,
+}
+```
+
+This adds an `insert_auto_no_fk` method (or `insert_{singular}_auto` at the
+database level) that takes a closure receiving the auto-assigned PK and
+returning the row to insert:
+
+```rust
+let id = table.insert_auto_no_fk(|pk| LogEntry { id: pk, message: "hello".into() })?;
+// id == 0 (first insert)
+let id = table.insert_auto_no_fk(|pk| LogEntry { id: pk, message: "world".into() })?;
+// id == 1 (second insert)
+```
+
+**Counter behavior:**
+- Starts at `AutoIncrementable::first()` (0 for all integer types)
+- Advances to `successor()` after each insert
+- Never reuses IDs -- deleting a row does not reclaim its ID
+- Panics on overflow (e.g., `u8` after 256 inserts)
+
+**Serde:** The auto-increment counter is serialized and deserialized alongside
+the table data, so it survives save/load roundtrips. On deserialization, the
+counter is set to the maximum of the serialized counter and one past the
+highest PK in the loaded data -- this prevents ID reuse even if the serialized
+counter was stale.
+
+**Required trait:** The PK type must implement `AutoIncrementable`. Blanket
+impls exist for all integer types. Custom newtypes need a manual impl or a
+newtype over an integer with delegation.
+
 ## Tracked Bounds
 
 Instead of requiring the static `Bounded` trait on all indexed types, tabulosity
@@ -413,6 +675,7 @@ All errors are returned via the `Error` enum:
 ```rust
 pub enum Error {
     DuplicateKey { table: &'static str, key: String },
+    DuplicateIndex { table: &'static str, index: &'static str, key: String },
     NotFound { table: &'static str, key: String },
     FkTargetNotFound { table, field, referenced_table, key },
     FkViolation { table, key, referenced_by: Vec<(table, field, count)> },
@@ -515,50 +778,16 @@ Compound indexes would be valuable for queries like:
 
 Features needed for full sim integration, roughly ordered by priority.
 
-### Closure-based Row Update
+### Index-Maintaining Closure Update
 
-**Tracker:** F-tab-update-with
+`db.update_creature_with(&id, |c| c.hunger += 10)` -- like `modify_unchecked`,
+but **maintains indexes** by comparing old and new indexed field values after
+the closure runs and updating the index BTreeSets accordingly. Medium
+complexity. No tracker entry yet.
 
-`db.update_creature_with(&id, |c| c.hunger += 10)` to avoid the
-clone-modify-update pattern. The closure mutates the row in place; indexes are
-updated afterward by comparing old and new field values. Low complexity.
-
-This is the single highest-impact missing feature for sim integration. The
-current API requires cloning a row, modifying the clone, and calling
-`update_*()` -- verbose and wasteful for frequent field updates like hunger,
-position, and tick counters.
-
-### Unique Index Enforcement
-
-**Tracker:** F-tab-unique-idx
-
-`#[indexed(unique)]` enforced on insert and update -- returns an error if a
-duplicate value is found. Low complexity, builds on existing index
-infrastructure. Useful for fields like creature names or external identifiers
-that must be unique.
-
-### Auto-generated Primary Keys
-
-**Tracker:** F-tab-auto-pk
-
-`#[primary_key(auto)]` with a monotonic counter so callers don't need to
-generate IDs manually. `insert_creature_auto()` returns the generated key.
-Medium complexity.
-
-Simplifies entity creation in the sim, where IDs are currently managed by a
-hand-rolled counter. The auto-PK counter must be deterministic (part of sim
-state) and survive serde roundtrips.
-
-### Cascade/Nullify on Delete
-
-**Tracker:** F-tab-cascade-del
-
-`on_delete cascade` or `on_delete nullify` in the `fks()` syntax. Cascade
-removes dependent rows; nullify sets the FK field to `None`. Medium complexity.
-
-Currently, all FK violations use restrict semantics (block deletion). The sim
-needs cascade for "when a creature dies, remove its tasks" and nullify for
-"when a creature dies, unassign its items."
+The `modify_unchecked` variants fill the gap for non-indexed fields, but
+modifying indexed fields still requires the clone-modify-update pattern. This
+is the single highest-impact missing feature for sim integration.
 
 ### Change Tracking
 
@@ -599,16 +828,12 @@ tracker entries:
   that returns `&mut Row` would be useful for hot paths, but it cannot
   maintain indexes automatically. If exposed, it would need a manual
   `reindex(&PK)` call afterward, which is error-prone. The closure-based
-  approach (F-tab-update-with) is safer.
+  approach (see [Index-Maintaining Closure Update](#index-maintaining-closure-update))
+  is safer.
 
 - **Bulk operations.** `insert_batch`, `remove_where`, etc. for efficiency
   when making many changes at once (e.g., ticking all creatures). Currently
   each mutation is individual.
-
-- **Query result ordering.** Index queries return rows in index order (the
-  BTreeSet's natural order). There is no way to request a different sort
-  order. For compound indexes, this is the tuple's lexicographic order.
-  Alternative orderings require collecting and sorting the results.
 
 - **Row type `row = "..."` attribute.** The current convention of stripping
   `"Table"` from the type name to find the row type is fragile. An explicit

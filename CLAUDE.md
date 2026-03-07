@@ -65,22 +65,26 @@ elven-canopy/
 ├── tabulosity/                 # Typed in-memory relational store (derive macros)
 │   ├── src/
 │   │   ├── lib.rs              # Re-exports, module declarations
-│   │   ├── error.rs            # Error enum (4 variants), DeserializeError
-│   │   └── table.rs            # Bounded trait, FkCheck trait, TableMeta, range helpers
+│   │   ├── error.rs            # Error enum (5 variants), DeserializeError
+│   │   └── table.rs            # Bounded, FkCheck, TableMeta, AutoIncrementable, IntoQuery, QueryOpts
 │   ├── tests/
+│   │   ├── auto_increment.rs   # Auto-increment PK generation and serde roundtrip
 │   │   ├── basic_table.rs      # CRUD operations on derived tables
 │   │   ├── bounded.rs          # derive(Bounded) on newtypes
-│   │   ├── database.rs         # FK validation, restrict-on-delete
+│   │   ├── database.rs         # FK validation, restrict/cascade/nullify on-delete
 │   │   ├── indexed_table.rs    # Secondary indexes, range queries
-│   │   └── serde.rs            # Serde roundtrip (feature-gated)
+│   │   ├── modify_unchecked.rs # Closure-based mutation (single/range/all) + debug assertions
+│   │   ├── query_opts.rs       # QueryOpts ordering/offset + modify_each_by_*
+│   │   ├── serde.rs            # Serde roundtrip (feature-gated)
+│   │   └── unique_index.rs     # Unique index enforcement on insert/update
 │   └── Cargo.toml
 ├── tabulosity_derive/          # Proc macros: derive(Bounded), derive(Table), derive(Database)
 │   └── src/
 │       ├── lib.rs              # Proc macro entry points
 │       ├── bounded.rs          # derive(Bounded) for newtypes
-│       ├── database.rs         # derive(Database) with FK validation
+│       ├── database.rs         # derive(Database) — FK validation, cascade/nullify, modify_unchecked delegation
 │       ├── parse.rs            # Shared attribute parsing (#[primary_key], #[indexed])
-│       └── table.rs            # derive(Table) — companion struct, indexes, serde
+│       └── table.rs            # derive(Table) — companion struct, indexes, serde, modify_unchecked, modify_each_by_*
 ├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
 │   └── src/
 │       ├── lib.rs              # ExtensionLibrary entry point
