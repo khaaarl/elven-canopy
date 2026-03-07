@@ -695,13 +695,14 @@ impl SimBridge {
             return VarDictionary::new();
         };
         let creature = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .filter(|c| c.species == species)
             .nth(index as usize);
         match creature {
             Some(c) => {
-                let (x, y, z) = c.interpolated_position(render_tick);
+                let (x, y, z): (f32, f32, f32) = c.interpolated_position(render_tick);
                 let mut dict = VarDictionary::new();
                 dict.set("species", species_name.clone());
                 dict.set("x", x);
@@ -711,26 +712,12 @@ impl SimBridge {
                 let task_kind_str = c
                     .current_task
                     .as_ref()
-                    .and_then(|tid| {
-                        sim.tasks.get(tid).map(|t| match &t.kind {
-                            elven_canopy_sim::task::TaskKind::GoTo => "GoTo",
-                            elven_canopy_sim::task::TaskKind::Build { .. } => "Build",
-                            elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
-                            elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
-                            elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
-                            elven_canopy_sim::task::TaskKind::EatBread => "EatBread",
-                            elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
-                            elven_canopy_sim::task::TaskKind::Cook { .. } => "Cook",
-                            elven_canopy_sim::task::TaskKind::Harvest { .. } => "Harvest",
-                            elven_canopy_sim::task::TaskKind::AcquireItem { .. } => "AcquireItem",
-                            elven_canopy_sim::task::TaskKind::Mope => "Moping",
-                        })
-                    })
+                    .and_then(|tid| sim.db.tasks.get(tid).map(|t| t.kind_tag.display_name()))
                     .unwrap_or("");
                 dict.set("task_kind", GString::from(task_kind_str));
                 // Task location — resolve NavNodeId to VoxelCoord when a task exists.
                 if let Some(tid) = &c.current_task
-                    && let Some(task) = sim.tasks.get(tid)
+                    && let Some(task) = sim.db.tasks.get(tid)
                 {
                     let task_pos = sim.nav_graph.node(task.location).position;
                     dict.set("task_location_x", task_pos.x);
@@ -752,7 +739,11 @@ impl SimBridge {
                 dict.set("assigned_home", assigned_home);
                 // Thoughts: array of dicts with "text" and "tick", most recent first.
                 let mut thoughts_arr = VarArray::new();
-                for thought in c.thoughts.iter().rev() {
+                let creature_thoughts = sim
+                    .db
+                    .thoughts
+                    .by_creature_id(&c.id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+                for thought in creature_thoughts.iter().rev() {
                     let mut td = VarDictionary::new();
                     td.set("text", GString::from(thought.kind.description()));
                     td.set("tick", thought.tick as i64);
@@ -761,16 +752,21 @@ impl SimBridge {
                 dict.set("thoughts", thoughts_arr);
 
                 // Mood.
-                let (mood_score, mood_tier) = c.mood(&sim.config.mood);
+                let mood_score: i32 = creature_thoughts
+                    .iter()
+                    .map(|t| sim.config.mood.mood_weight(&t.kind))
+                    .sum();
+                let mood_tier = sim.config.mood.tier(mood_score);
                 dict.set("mood_score", mood_score);
-                dict.set("mood_tier", GString::from(mood_tier.label()));
+                let tier_label: &str = mood_tier.label();
+                dict.set("mood_tier", GString::from(tier_label));
 
                 // Inventory.
                 let mut inv_arr = VarArray::new();
-                for item in &c.inventory {
+                for stack in sim.inv_items(c.inventory_id) {
                     let mut item_dict = VarDictionary::new();
-                    item_dict.set("kind", GString::from(item.kind.display_name()));
-                    item_dict.set("quantity", item.quantity as i64);
+                    item_dict.set("kind", GString::from(stack.kind.display_name()));
+                    item_dict.set("quantity", stack.quantity as i64);
                     inv_arr.push(&item_dict.to_variant());
                 }
                 dict.set("inventory", inv_arr);
@@ -815,26 +811,13 @@ impl SimBridge {
         ];
 
         for &sp in &species_list {
-            for (idx, creature) in (0_i32..).zip(sim.creatures.values().filter(|c| c.species == sp))
+            for (idx, creature) in
+                (0_i32..).zip(sim.db.creatures.iter_all().filter(|c| c.species == sp))
             {
                 let task_kind = creature
                     .current_task
                     .as_ref()
-                    .and_then(|tid| {
-                        sim.tasks.get(tid).map(|t| match &t.kind {
-                            elven_canopy_sim::task::TaskKind::GoTo => "GoTo",
-                            elven_canopy_sim::task::TaskKind::Build { .. } => "Build",
-                            elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
-                            elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
-                            elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
-                            elven_canopy_sim::task::TaskKind::EatBread => "EatBread",
-                            elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
-                            elven_canopy_sim::task::TaskKind::Cook { .. } => "Cook",
-                            elven_canopy_sim::task::TaskKind::Harvest { .. } => "Harvest",
-                            elven_canopy_sim::task::TaskKind::AcquireItem { .. } => "AcquireItem",
-                            elven_canopy_sim::task::TaskKind::Mope => "Moping",
-                        })
-                    })
+                    .and_then(|tid| sim.db.tasks.get(tid).map(|t| t.kind_tag.display_name()))
                     .unwrap_or("");
 
                 entries.push((
@@ -895,7 +878,7 @@ impl SimBridge {
         };
 
         let mut result = VarArray::new();
-        for task in sim.tasks.values() {
+        for task in sim.db.tasks.iter_all() {
             if task.state == TaskState::Complete {
                 continue;
             }
@@ -909,20 +892,7 @@ impl SimBridge {
             dict.set("id_full", GString::from(&id_full));
 
             // Kind.
-            let kind_str = match &task.kind {
-                elven_canopy_sim::task::TaskKind::GoTo => "GoTo",
-                elven_canopy_sim::task::TaskKind::Build { .. } => "Build",
-                elven_canopy_sim::task::TaskKind::EatBread => "EatBread",
-                elven_canopy_sim::task::TaskKind::EatFruit { .. } => "EatFruit",
-                elven_canopy_sim::task::TaskKind::Furnish { .. } => "Furnish",
-                elven_canopy_sim::task::TaskKind::Sleep { .. } => "Sleep",
-                elven_canopy_sim::task::TaskKind::Haul { .. } => "Haul",
-                elven_canopy_sim::task::TaskKind::Cook { .. } => "Cook",
-                elven_canopy_sim::task::TaskKind::Harvest { .. } => "Harvest",
-                elven_canopy_sim::task::TaskKind::AcquireItem { .. } => "AcquireItem",
-                elven_canopy_sim::task::TaskKind::Mope => "Moping",
-            };
-            dict.set("kind", GString::from(kind_str));
+            dict.set("kind", GString::from(task.kind_tag.display_name()));
 
             // Origin.
             let origin_str = match task.origin {
@@ -950,32 +920,35 @@ impl SimBridge {
             dict.set("location_y", pos.y);
             dict.set("location_z", pos.z);
 
-            // Assignees — resolve CreatureId to species name + index.
+            // Assignees — query creatures assigned to this task.
             let mut assignees_arr = VarArray::new();
-            for assignee_id in &task.assignees {
-                if let Some(creature) = sim.creatures.get(assignee_id) {
-                    let mut a = VarDictionary::new();
-                    let cid_full = assignee_id.0.to_string();
-                    let cid_short: String = cid_full.chars().take(8).collect();
-                    a.set("id_short", GString::from(&cid_short));
-                    a.set("name", GString::from(creature.name.as_str()));
+            for creature in sim
+                .db
+                .creatures
+                .by_current_task(&Some(task.id), elven_canopy_sim::tabulosity::QueryOpts::ASC)
+            {
+                let mut a = VarDictionary::new();
+                let cid_full = creature.id.0.to_string();
+                let cid_short: String = cid_full.chars().take(8).collect();
+                a.set("id_short", GString::from(&cid_short));
+                a.set("name", GString::from(creature.name.as_str()));
 
-                    let sp = species_name(creature.species);
-                    a.set("species", GString::from(sp));
+                let sp = species_name(creature.species);
+                a.set("species", GString::from(sp));
 
-                    // Compute the species-filtered index: count how many
-                    // creatures of the same species come before this one in
-                    // BTreeMap iteration order.
-                    let index = sim
-                        .creatures
-                        .iter()
-                        .filter(|(_, c)| c.species == creature.species)
-                        .position(|(id, _)| *id == *assignee_id)
-                        .unwrap_or(0);
-                    a.set("index", index as i32);
+                // Compute the species-filtered index: count how many
+                // creatures of the same species come before this one in
+                // iteration order.
+                let index = sim
+                    .db
+                    .creatures
+                    .iter_all()
+                    .filter(|c| c.species == creature.species)
+                    .position(|c| c.id == creature.id)
+                    .unwrap_or(0);
+                a.set("index", index as i32);
 
-                    assignees_arr.push(&a.to_variant());
-                }
+                assignees_arr.push(&a.to_variant());
             }
             dict.set("assignees", assignees_arr);
 
@@ -996,7 +969,7 @@ impl SimBridge {
             return VarArray::new();
         };
         let mut result = VarArray::new();
-        for structure in sim.structures.values() {
+        for structure in sim.db.structures.iter_all() {
             let mut dict = VarDictionary::new();
             dict.set("id", structure.id.0 as i64);
             let build_type_str = match structure.build_type {
@@ -1048,7 +1021,7 @@ impl SimBridge {
             return VarDictionary::new();
         };
         let sid = StructureId(structure_id as u64);
-        let Some(structure) = sim.structures.get(&sid) else {
+        let Some(structure) = sim.db.structures.get(&sid) else {
             return VarDictionary::new();
         };
         let mut dict = VarDictionary::new();
@@ -1086,32 +1059,38 @@ impl SimBridge {
             None => "",
         };
         dict.set("furniture_noun", GString::from(furniture_kind_str));
-        dict.set(
-            "furniture_count",
-            structure.furniture_positions.len() as i64,
-        );
-        dict.set(
-            "planned_furniture_count",
-            (structure.furniture_positions.len() + structure.planned_furniture.len()) as i64,
-        );
+        let all_furn = sim
+            .db
+            .furniture
+            .by_structure_id(&sid, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+        let placed_count = all_furn.iter().filter(|f| f.placed).count();
+        dict.set("furniture_count", placed_count as i64);
+        dict.set("planned_furniture_count", all_furn.len() as i64);
         // Check if there's an active Furnish task for this structure.
-        let is_furnishing = sim.tasks.values().any(|t| {
-            matches!(
-                &t.kind,
-                elven_canopy_sim::task::TaskKind::Furnish { structure_id }
-                    if *structure_id == sid
-            ) && t.state != elven_canopy_sim::task::TaskState::Complete
-        });
+        let is_furnishing = sim
+            .db
+            .task_structure_refs
+            .by_structure_id(&sid, elven_canopy_sim::tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|r| {
+                r.role == elven_canopy_sim::db::TaskStructureRole::FurnishTarget
+                    && sim
+                        .db
+                        .tasks
+                        .get(&r.task_id)
+                        .is_some_and(|t| t.state != elven_canopy_sim::task::TaskState::Complete)
+            });
         dict.set("is_furnishing", is_furnishing);
 
-        // Home assignment data.
-        let (assigned_elf_id, assigned_elf_name) = if let Some(elf_id) = structure.assigned_elf {
-            let name = sim
-                .creatures
-                .get(&elf_id)
-                .map(|c| c.name.as_str())
-                .unwrap_or("");
-            (elf_id.0.to_string(), name.to_string())
+        // Home assignment data — query creatures by assigned_home.
+        let occupant = sim
+            .db
+            .creatures
+            .by_assigned_home(&Some(sid), elven_canopy_sim::tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next();
+        let (assigned_elf_id, assigned_elf_name) = if let Some(elf) = occupant {
+            (elf.id.0.to_string(), elf.name.clone())
         } else {
             (String::new(), String::new())
         };
@@ -1120,10 +1099,10 @@ impl SimBridge {
 
         // Inventory.
         let mut inv_arr = VarArray::new();
-        for item in &structure.inventory {
+        for stack in sim.inv_items(structure.inventory_id) {
             let mut item_dict = VarDictionary::new();
-            item_dict.set("kind", GString::from(item.kind.display_name()));
-            item_dict.set("quantity", item.quantity as i64);
+            item_dict.set("kind", GString::from(stack.kind.display_name()));
+            item_dict.set("quantity", stack.quantity as i64);
             inv_arr.push(&item_dict.to_variant());
         }
         dict.set("inventory", inv_arr);
@@ -1135,7 +1114,7 @@ impl SimBridge {
         };
         dict.set("logistics_priority", logistics_priority);
         let mut wants_arr = VarArray::new();
-        for want in &structure.logistics_wants {
+        for want in sim.inv_wants(structure.inventory_id) {
             let mut want_dict = VarDictionary::new();
             want_dict.set("kind", GString::from(want.item_kind.display_name()));
             want_dict.set("target_quantity", want.target_quantity as i64);
@@ -1154,23 +1133,25 @@ impl SimBridge {
             && structure.cooking_enabled
         {
             // Check bread count vs target.
-            let bread_count: u32 = structure
-                .inventory
-                .iter()
-                .filter(|i| i.kind == elven_canopy_sim::inventory::ItemKind::Bread)
-                .map(|i| i.quantity)
-                .sum();
+            let bread_count: u32 = sim.inv_item_count(
+                structure.inventory_id,
+                elven_canopy_sim::inventory::ItemKind::Bread,
+            );
             if bread_count >= structure.cooking_bread_target {
                 "Bread target reached"
             } else {
                 // Check for active Cook task.
-                let has_cook_task = sim.tasks.values().any(|t| {
-                    matches!(
-                        &t.kind,
-                        elven_canopy_sim::task::TaskKind::Cook { structure_id }
-                            if *structure_id == sid
-                    ) && t.state != elven_canopy_sim::task::TaskState::Complete
-                });
+                let has_cook_task = sim
+                    .db
+                    .task_structure_refs
+                    .by_structure_id(&sid, elven_canopy_sim::tabulosity::QueryOpts::ASC)
+                    .iter()
+                    .any(|r| {
+                        r.role == elven_canopy_sim::db::TaskStructureRole::CookAt
+                            && sim.db.tasks.get(&r.task_id).is_some_and(|t| {
+                                t.state != elven_canopy_sim::task::TaskState::Complete
+                            })
+                    });
                 if has_cook_task { "Cooking..." } else { "Idle" }
             }
         } else {
@@ -1209,8 +1190,9 @@ impl SimBridge {
         let rest_max = sim.species_table[&Species::Elf].rest_max;
         let mut arr = VarArray::new();
         for (index, creature) in sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .filter(|c| c.species == Species::Elf)
             .enumerate()
         {
@@ -1332,7 +1314,7 @@ impl SimBridge {
             return PackedVector3Array::new();
         };
         let mut arr = PackedVector3Array::new();
-        for creature in sim.creatures.values().filter(|c| c.species == species) {
+        for creature in sim.db.creatures.iter_all().filter(|c| c.species == species) {
             let (x, y, z) = creature.interpolated_position(render_tick);
             arr.push(Vector3::new(x, y, z));
         }
@@ -1454,7 +1436,7 @@ impl SimBridge {
                 godot_print!(
                     "SimBridge: loaded save (tick={}, creatures={})",
                     sim.tick,
-                    sim.creatures.len()
+                    sim.db.creatures.len()
                 );
                 let seconds_per_tick = sim.config.tick_duration_ms as f64 / 1000.0;
                 self.local_relay = Some(LocalRelay::new(seconds_per_tick));
@@ -1490,17 +1472,17 @@ impl SimBridge {
             return VarArray::new();
         };
         let mut result = VarArray::new();
-        for pile in sim.ground_piles.values() {
+        for pile in sim.db.ground_piles.iter_all() {
             let mut dict = VarDictionary::new();
             dict.set("x", pile.position.x);
             dict.set("y", pile.position.y);
             dict.set("z", pile.position.z);
 
             let mut inv_arr = VarArray::new();
-            for item in &pile.items {
+            for stack in sim.inv_items(pile.inventory_id) {
                 let mut item_dict = VarDictionary::new();
-                item_dict.set("kind", GString::from(item.kind.display_name()));
-                item_dict.set("quantity", item.quantity as i64);
+                item_dict.set("kind", GString::from(stack.kind.display_name()));
+                item_dict.set("quantity", stack.quantity as i64);
                 inv_arr.push(&item_dict.to_variant());
             }
             dict.set("inventory", inv_arr);
@@ -1522,7 +1504,13 @@ impl SimBridge {
             return VarDictionary::new();
         };
         let coord = VoxelCoord::new(x, y, z);
-        let Some(pile) = sim.ground_piles.get(&coord) else {
+        let Some(pile) = sim
+            .db
+            .ground_piles
+            .by_position(&coord, elven_canopy_sim::tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+        else {
             return VarDictionary::new();
         };
 
@@ -1532,10 +1520,10 @@ impl SimBridge {
         dict.set("z", pile.position.z);
 
         let mut inv_arr = VarArray::new();
-        for item in &pile.items {
+        for stack in sim.inv_items(pile.inventory_id) {
             let mut item_dict = VarDictionary::new();
-            item_dict.set("kind", GString::from(item.kind.display_name()));
-            item_dict.set("quantity", item.quantity as i64);
+            item_dict.set("kind", GString::from(stack.kind.display_name()));
+            item_dict.set("quantity", stack.quantity as i64);
             inv_arr.push(&item_dict.to_variant());
         }
         dict.set("inventory", inv_arr);
@@ -2007,7 +1995,7 @@ impl SimBridge {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
-        for bp in sim.blueprints.values() {
+        for bp in sim.db.blueprints.iter_all() {
             if bp.state == BlueprintState::Designated && bp.build_type != BuildType::Carve {
                 let target = bp.build_type.to_voxel_type();
                 for v in &bp.voxels {
@@ -2035,7 +2023,7 @@ impl SimBridge {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
-        for bp in sim.blueprints.values() {
+        for bp in sim.db.blueprints.iter_all() {
             if bp.state == BlueprintState::Designated && bp.build_type == BuildType::Carve {
                 for v in &bp.voxels {
                     if sim.world.get(*v) != VoxelType::Air {
@@ -2432,7 +2420,7 @@ impl SimBridge {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
-        for bp in sim.blueprints.values() {
+        for bp in sim.db.blueprints.iter_all() {
             if bp.state != BlueprintState::Designated {
                 continue;
             }
@@ -3016,16 +3004,22 @@ impl SimBridge {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
-        for structure in sim.structures.values() {
+        for structure in sim.db.structures.iter_all() {
             let kind = match &structure.furnishing {
                 Some(ft) => ft.furniture_kind() as i32,
                 None => FurnitureKind::Bed as i32,
             };
-            for pos in &structure.furniture_positions {
-                arr.push(pos.x);
-                arr.push(pos.y);
-                arr.push(pos.z);
-                arr.push(kind);
+            for furn in sim
+                .db
+                .furniture
+                .by_structure_id(&structure.id, elven_canopy_sim::tabulosity::QueryOpts::ASC)
+            {
+                if furn.placed {
+                    arr.push(furn.coord.x);
+                    arr.push(furn.coord.y);
+                    arr.push(furn.coord.z);
+                    arr.push(kind);
+                }
             }
         }
         arr

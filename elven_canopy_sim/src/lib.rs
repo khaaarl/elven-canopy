@@ -17,10 +17,11 @@
 // - `event.rs`:       EventQueue (priority queue) + narrative SimEvents.
 // - `config.rs`:      GameConfig + TreeProfile — all tunable parameters including nested tree presets.
 // - `species.rs`:     SpeciesData — data-driven creature behavior (DF-style).
-// - `task.rs`:        Task entities — units of work assigned to creatures.
+// - `db.rs`:          SimDb — tabulosity relational store for all entities (creatures, tasks, structures, etc.).
+// - `task.rs`:        Task creation DTOs (`Task`, `TaskKind`) — decomposed into DB tables by `insert_task()`.
 // - `blueprint.rs`:   Blueprint data model for the construction system.
 // - `structural.rs`:  Spring-mass structural integrity solver.
-// - `inventory.rs`:   Item/inventory data model (ItemKind, Item, GroundPile) + helpers.
+// - `inventory.rs`:   Item type enum (`ItemKind`). Storage is in `db.rs` tabulosity tables.
 // - `session.rs`:     GameSession — message-driven session management (players, commands, pause/resume).
 // - `local_relay.rs`: LocalRelay — accumulator-based tick pacer for single-player mode.
 // - `checksum.rs`:    FNV-1a hashing + interval constant for multiplayer desync detection.
@@ -41,6 +42,7 @@ pub mod building;
 pub mod checksum;
 pub mod command;
 pub mod config;
+pub mod db;
 pub mod event;
 pub mod inventory;
 pub mod local_relay;
@@ -48,6 +50,7 @@ pub mod mesh_gen;
 pub mod nav;
 pub mod pathfinding;
 pub use elven_canopy_prng as prng;
+pub use tabulosity;
 pub mod session;
 pub mod sim;
 pub mod species;

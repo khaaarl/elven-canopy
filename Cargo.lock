@@ -106,6 +106,7 @@ dependencies = [
  "elven_canopy_prng",
  "serde",
  "serde_json",
+ "tabulosity",
 ]
 
 [[package]]

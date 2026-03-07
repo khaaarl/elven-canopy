@@ -41,6 +41,7 @@
 use crate::prng::GameRng;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
+use tabulosity::Bounded;
 
 // ---------------------------------------------------------------------------
 // Spatial types
@@ -134,6 +135,11 @@ impl<'de> Deserialize<'de> for SimUuid {
     }
 }
 
+impl Bounded for SimUuid {
+    const MIN: Self = SimUuid([0u8; 16]);
+    const MAX: Self = SimUuid([0xFF; 16]);
+}
+
 impl fmt::Debug for SimUuid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "SimUuid({})", self)
@@ -202,6 +208,30 @@ ProjectId);
 entity_id!(/// Unique identifier for a task (go-to, build, harvest, etc.).
 TaskId);
 
+// Bounded impls for UUID-based entity IDs. These enable use as tabulosity
+// primary keys. AutoIncrementable is intentionally not implemented — UUIDs
+// are generated from the PRNG, not auto-incremented.
+impl Bounded for TreeId {
+    const MIN: Self = TreeId(SimUuid::MIN);
+    const MAX: Self = TreeId(SimUuid::MAX);
+}
+impl Bounded for CreatureId {
+    const MIN: Self = CreatureId(SimUuid::MIN);
+    const MAX: Self = CreatureId(SimUuid::MAX);
+}
+impl Bounded for PlayerId {
+    const MIN: Self = PlayerId(SimUuid::MIN);
+    const MAX: Self = PlayerId(SimUuid::MAX);
+}
+impl Bounded for ProjectId {
+    const MIN: Self = ProjectId(SimUuid::MIN);
+    const MAX: Self = ProjectId(SimUuid::MAX);
+}
+impl Bounded for TaskId {
+    const MIN: Self = TaskId(SimUuid::MIN);
+    const MAX: Self = TaskId(SimUuid::MAX);
+}
+
 // ---------------------------------------------------------------------------
 // Sequential IDs — user-friendly numbering, not UUIDs.
 // ---------------------------------------------------------------------------
@@ -213,11 +243,59 @@ TaskId);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct StructureId(pub u64);
 
+impl Bounded for StructureId {
+    const MIN: Self = StructureId(u64::MIN);
+    const MAX: Self = StructureId(u64::MAX);
+}
+
 impl fmt::Display for StructureId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#{}", self.0)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Auto-PK newtypes for tabulosity child tables
+// ---------------------------------------------------------------------------
+
+macro_rules! auto_pk_id {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Bounded)]
+        pub struct $name(pub u64);
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}({})", stringify!($name), self.0)
+            }
+        }
+    };
+}
+
+auto_pk_id!(/// Auto-increment ID for creature thoughts.
+ThoughtId);
+auto_pk_id!(/// Auto-increment ID for abstract inventory containers.
+InventoryId);
+auto_pk_id!(/// Auto-increment ID for item stacks within inventories.
+ItemStackId);
+auto_pk_id!(/// Auto-increment ID for ground item piles.
+GroundPileId);
+auto_pk_id!(/// Auto-increment ID for logistics want entries.
+LogisticsWantId);
+auto_pk_id!(/// Auto-increment ID for furniture placements.
+FurnitureId);
+auto_pk_id!(/// Auto-increment ID for task-to-blueprint references.
+TaskBlueprintRefId);
+auto_pk_id!(/// Auto-increment ID for task-to-structure references.
+TaskStructureRefId);
+auto_pk_id!(/// Auto-increment ID for task-to-voxel references.
+TaskVoxelRefId);
+auto_pk_id!(/// Auto-increment ID for haul task extension data.
+TaskHaulDataId);
+auto_pk_id!(/// Auto-increment ID for sleep task extension data.
+TaskSleepDataId);
+auto_pk_id!(/// Auto-increment ID for acquire task extension data.
+TaskAcquireDataId);
 
 // ---------------------------------------------------------------------------
 // Nav graph IDs — simple integers, not UUIDs, for compactness.
@@ -366,16 +444,6 @@ impl ThoughtKind {
             ThoughtKind::LowCeiling(_) => "Bothered by a low ceiling",
         }
     }
-}
-
-/// A single thought that a creature has accumulated. Thoughts are generated at
-/// specific moments (sleep completion, eating, entering low-ceiling buildings)
-/// and expire after a per-kind duration. Used for UI display and will later
-/// feed into the emotional dimension system (F-emotions).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Thought {
-    pub kind: ThoughtKind,
-    pub tick: u64,
 }
 
 /// Coarse mood category derived from the numeric mood score. Seven tiers from
@@ -1013,12 +1081,14 @@ mod tests {
 
     #[test]
     fn thought_serialization_roundtrip() {
-        let thought = Thought {
+        let thought = crate::db::Thought {
+            id: ThoughtId(1),
+            creature_id: CreatureId(SimUuid::new_v4(&mut crate::prng::GameRng::new(1))),
             kind: ThoughtKind::SleptInOwnHome(StructureId(42)),
             tick: 12345,
         };
         let json = serde_json::to_string(&thought).unwrap();
-        let restored: Thought = serde_json::from_str(&json).unwrap();
+        let restored: crate::db::Thought = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.kind, thought.kind);
         assert_eq!(restored.tick, thought.tick);
     }

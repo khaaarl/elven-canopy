@@ -1,13 +1,23 @@
-// Task entities — units of work that creatures can be assigned to.
+// Task creation types — DTOs for constructing tasks before DB insertion.
 //
-// Tasks are the core of the assignment system. The sim maintains a task
-// registry (`BTreeMap<TaskId, Task>` on `SimState`), and each creature's
-// activation loop checks for available tasks before defaulting to wandering.
+// This file defines `Task`, `TaskKind`, `TaskState`, `TaskOrigin`, and
+// supporting enums (`HaulSource`, `HaulPhase`, `SleepLocation`) used when
+// creating tasks. At runtime, task data is stored in the tabulosity DB:
+// the base row lives in `db::Task` (with `kind_tag` discriminant), and
+// variant-specific data lives in extension tables (`task_blueprint_refs`,
+// `task_structure_refs`, `task_voxel_refs`, `task_haul_data`,
+// `task_sleep_data`, `task_acquire_data`). See `db.rs` for the table
+// definitions and `sim.rs` `insert_task()` for the decomposition logic.
+//
+// The `Task` struct here serves as a **creation DTO**: callers construct a
+// `task::Task` with the full `TaskKind` enum, pass it to `insert_task()`,
+// which decomposes it into DB tables. The `TaskKind` enum is never
+// reconstructed from the DB — reads use query helpers on `SimState`.
 //
 // ## Data model
 //
 // A `Task` has a `kind` (`TaskKind` enum), a `state` (`TaskState` lifecycle),
-// a `location` (nav node where work happens), and an `assignees` list. Tasks
+// a `location` (nav node where work happens), and progress tracking. Tasks
 // with nonzero `total_cost` track `progress` toward completion; tasks with
 // `total_cost == 0.0` (like `GoTo`) complete instantly on arrival.
 //
@@ -82,19 +92,20 @@
 // - `InProgress` — at least one creature has claimed it and is walking toward
 //   it or doing work. `find_available_task()` in `sim.rs` skips these, so
 //   only one creature transitions a task out of `Available`.
-// - `Complete` — finished. All assignees have their `current_task` cleared
-//   and return to wandering.
+// - `Complete` — finished. All assigned creatures have their `current_task`
+//   cleared and return to wandering.
 //
 // See also: `sim.rs` for the activation loop that executes task behavior and
 // handles assignment/completion, `types.rs` for `TaskId`, `command.rs` for
 // the `CreateTask` command that adds tasks, `sim_bridge.rs` (in the gdext
 // crate) for the GDScript-facing `create_goto_task()` wrapper.
 //
-// **Critical constraint: determinism.** Tasks are stored in `BTreeMap` and
-// iterated in deterministic order. Task IDs come from the sim PRNG.
+// **Critical constraint: determinism.** Tasks are stored in tabulosity tables
+// (BTreeMap-backed) and iterated in deterministic order. Task IDs come from
+// the sim PRNG.
 
 use crate::inventory::ItemKind;
-use crate::types::{CreatureId, NavNodeId, ProjectId, Species, StructureId, TaskId, VoxelCoord};
+use crate::types::{NavNodeId, ProjectId, Species, StructureId, TaskId, VoxelCoord};
 use serde::{Deserialize, Serialize};
 
 /// Where a haul task picks up items from.
@@ -210,7 +221,7 @@ pub enum TaskOrigin {
 }
 
 /// Lifecycle state of a task.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TaskState {
     /// No one is working on this task yet. Available for assignment.
     Available,
@@ -229,7 +240,6 @@ pub struct Task {
     /// The nav node where creatures go to work on this task.
     pub location: NavNodeId,
     /// Creatures currently assigned to this task.
-    pub assignees: Vec<CreatureId>,
     /// Current progress toward completion (0.0 to 1.0).
     pub progress: f32,
     /// Total work units needed to complete. 0.0 for instant tasks (e.g. GoTo).
@@ -258,7 +268,7 @@ mod tests {
             kind: TaskKind::Build { project_id },
             state: TaskState::Available,
             location,
-            assignees: Vec::new(),
+
             progress: 0.0,
             total_cost: 5000.0,
             required_species: Some(Species::Elf),
@@ -290,7 +300,7 @@ mod tests {
             kind: TaskKind::EatFruit { fruit_pos },
             state: TaskState::InProgress,
             location,
-            assignees: Vec::new(),
+
             progress: 0.0,
             total_cost: 0.0,
             required_species: Some(Species::Elf),
@@ -321,7 +331,7 @@ mod tests {
             kind: TaskKind::EatBread,
             state: TaskState::InProgress,
             location,
-            assignees: Vec::new(),
+
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
@@ -351,7 +361,7 @@ mod tests {
             },
             state: TaskState::InProgress,
             location,
-            assignees: Vec::new(),
+
             progress: 0.0,
             total_cost: 10000.0,
             required_species: Some(Species::Elf),
@@ -412,7 +422,7 @@ mod tests {
             },
             state: TaskState::Available,
             location,
-            assignees: Vec::new(),
+
             progress: 0.0,
             total_cost: 0.0,
             required_species: Some(Species::Elf),
@@ -456,7 +466,7 @@ mod tests {
             },
             state: TaskState::InProgress,
             location: dest_node,
-            assignees: Vec::new(),
+
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
@@ -489,7 +499,7 @@ mod tests {
             },
             state: TaskState::InProgress,
             location,
-            assignees: Vec::new(),
+
             progress: 0.0,
             total_cost: 0.0,
             required_species: Some(Species::Elf),
@@ -526,7 +536,7 @@ mod tests {
             kind: TaskKind::Mope,
             state: TaskState::InProgress,
             location,
-            assignees: Vec::new(),
+
             progress: 50.0,
             total_cost: 10000.0,
             required_species: Some(Species::Elf),
@@ -558,7 +568,7 @@ mod tests {
             kind: TaskKind::GoTo,
             state: TaskState::Available,
             location,
-            assignees: Vec::new(),
+
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
@@ -572,7 +582,7 @@ mod tests {
         assert_eq!(retrieved.id, task_id);
         assert_eq!(retrieved.state, TaskState::Available);
         assert_eq!(retrieved.location, location);
-        assert!(retrieved.assignees.is_empty());
+
         assert_eq!(retrieved.progress, 0.0);
         assert_eq!(retrieved.total_cost, 0.0);
     }

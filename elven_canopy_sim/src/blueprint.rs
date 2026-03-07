@@ -27,12 +27,13 @@
 // `ProjectId`s generated from the sim's PRNG. Blueprint storage uses
 // `BTreeMap` for deterministic iteration order.
 
-use crate::types::{BuildType, FaceData, Priority, ProjectId, TaskId, VoxelCoord, VoxelType};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+
+// Re-export Blueprint from db module where it's defined as a tabulosity Table.
+pub use crate::db::Blueprint;
 
 /// The lifecycle state of a blueprint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum BlueprintState {
     /// Player has designated the build; not yet constructed.
     Designated,
@@ -40,48 +41,11 @@ pub enum BlueprintState {
     Complete,
 }
 
-/// A recorded build intent — the sim-side representation of a player's
-/// designation.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Blueprint {
-    pub id: ProjectId,
-    pub build_type: BuildType,
-    pub voxels: Vec<VoxelCoord>,
-    pub priority: Priority,
-    pub state: BlueprintState,
-    /// The Build task linked to this blueprint, if one has been created.
-    #[serde(default)]
-    pub task_id: Option<TaskId>,
-    /// Per-face layout for Building blueprints. `None` for non-building types.
-    /// Stored as a Vec of (coord, face_data) pairs since VoxelCoord can't be
-    /// a JSON map key. Use `face_layout_map()` for O(1) lookup.
-    #[serde(default)]
-    pub face_layout: Option<Vec<(VoxelCoord, FaceData)>>,
-    /// Set by structural validation when the blueprint is under significant
-    /// stress (above warn threshold but below block threshold).
-    #[serde(default)]
-    pub stress_warning: bool,
-    /// Original voxel types for convertible voxels (Leaf/Fruit) that will be
-    /// replaced during construction. Used by `cancel_build()` to restore the
-    /// original type instead of reverting to Air.
-    #[serde(default)]
-    pub original_voxels: Vec<(VoxelCoord, VoxelType)>,
-}
-
-impl Blueprint {
-    /// Get the face layout as a BTreeMap for O(1) lookup. Returns None if
-    /// this is not a Building blueprint.
-    pub fn face_layout_map(&self) -> Option<BTreeMap<VoxelCoord, FaceData>> {
-        self.face_layout
-            .as_ref()
-            .map(|list| list.iter().cloned().collect())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::prng::GameRng;
+    use crate::types::{BuildType, FaceData, Priority, ProjectId, VoxelCoord, VoxelType};
     use std::collections::BTreeMap;
 
     #[test]

@@ -87,7 +87,7 @@ fn two_player_lifecycle() {
     // Both sims should start at tick 0 with the same tree.
     assert_eq!(host_sim.tick, joiner_sim.tick);
     assert_eq!(host_sim.player_tree_id, joiner_sim.player_tree_id);
-    assert_eq!(host_sim.creatures.len(), joiner_sim.creatures.len());
+    assert_eq!(host_sim.db.creatures.len(), joiner_sim.db.creatures.len());
     assert_eq!(host_sim.trees.len(), joiner_sim.trees.len());
 
     // Verify full state match via JSON serialization.

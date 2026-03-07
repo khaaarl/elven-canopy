@@ -1,8 +1,9 @@
 // Core simulation state and tick loop.
 //
-// `SimState` is the single source of truth for the entire game world. It owns
-// all entity data (including creature inventories and ground item piles), the
-// voxel world, the nav graph, the event queue, the PRNG, and the game config.
+// `SimState` is the single source of truth for the entire game world. Entity
+// data (creatures, tasks, blueprints, structures, ground piles) lives in
+// `SimState.db` (a tabulosity `SimDb`). The sim also owns the voxel world,
+// the nav graph, the event queue, the PRNG, and the game config.
 // The sim is a pure function:
 // `(state, commands) -> (new_state, events)`.
 //
@@ -73,8 +74,14 @@
 //
 // ## Task system
 //
-// Tasks are the core assignment mechanism. The sim maintains a task registry
-// (`BTreeMap<TaskId, Task>`) and each creature stores an optional `current_task`.
+// Tasks are the core assignment mechanism. The sim's `db.tasks` table stores
+// the base task data; variant-specific data is decomposed into extension tables
+// (`task_haul_data`, `task_sleep_data`, `task_acquire_data`) and relationship
+// tables (`task_blueprint_refs`, `task_structure_refs`, `task_voxel_refs`).
+// Query helpers on `SimState` (`task_project_id`, `task_structure_ref`,
+// `task_voxel_ref`, `task_haul_data`, `task_sleep_data`, `task_acquire_data`,
+// `task_haul_source`, `task_acquire_source`, `task_sleep_location`) abstract
+// the extension table lookups. Each creature stores an optional `current_task`.
 //
 // ### Task entity (`task.rs`)
 //
@@ -83,7 +90,7 @@
 //   `EatFruit`, `Sleep`, `Furnish`, `Haul`, `Cook`, `Harvest`, `AcquireItem`).
 // - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
 // - `location: NavNodeId` — where creatures go to work on the task.
-// - `assignees: Vec<CreatureId>` — supports multiple workers.
+// - Assignment tracked via `creature.current_task` FK.
 // - `progress: f32` and `total_cost: f32` — for tasks that require work units
 //   (0.0 total_cost means instant completion, e.g. GoTo).
 // - `required_species: Option<Species>` — species restriction (if `Some`,
@@ -96,15 +103,15 @@
 // 2. On its next activation, an idle creature whose species matches calls
 //    `find_available_task`, which returns the first `Available` task in
 //    deterministic BTreeMap order. The creature calls `claim_task`, which
-//    sets the task to `InProgress`, adds the creature to `assignees`, and
+//    sets the task to `InProgress`, sets the creature's `current_task`, and
 //    computes an A* path to `task.location`.
 // 3. Each subsequent activation runs the task's behavior script (see below).
 // 4. On completion, `complete_task` sets the task to `Complete` and clears
-//    `current_task` for all assignees, returning them to wandering.
+//    `current_task` for assigned creatures, returning them to wandering.
 //
 // Only one creature can transition a task from `Available` → `InProgress`.
 // Once `InProgress`, `find_available_task` skips it, preventing pile-ons.
-// (Multi-worker tasks are structurally supported via `assignees` but not yet
+// (Multi-worker tasks are structurally supported via creature FK but not yet
 // used — a future task kind could transition back to `Available` to recruit
 // more workers.)
 //
@@ -213,9 +220,9 @@
 use crate::blueprint::Blueprint;
 use crate::blueprint::BlueprintState;
 use crate::building;
-use crate::building::CompletedStructure;
 use crate::command::{SimAction, SimCommand};
 use crate::config::GameConfig;
+use crate::db::SimDb;
 use crate::event::{EventQueue, ScheduledEventKind, SimEvent, SimEventKind};
 use crate::inventory;
 use crate::nav::{self, NavGraph};
@@ -233,63 +240,6 @@ use std::collections::BTreeMap;
 
 /// Serde helper: serialize `BTreeMap<VoxelCoord, V>` with string keys `"x,y,z"`
 /// so JSON output has valid string keys (JSON objects require string keys).
-mod serde_voxel_map {
-    use super::*;
-    use serde::de::{self, MapAccess, Visitor};
-    use serde::ser::SerializeMap;
-    use serde::{Deserializer, Serializer};
-    use std::fmt;
-
-    pub fn serialize<V, S>(map: &BTreeMap<VoxelCoord, V>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        V: Serialize,
-        S: Serializer,
-    {
-        let mut ser_map = serializer.serialize_map(Some(map.len()))?;
-        for (coord, value) in map {
-            let key = format!("{},{},{}", coord.x, coord.y, coord.z);
-            ser_map.serialize_entry(&key, value)?;
-        }
-        ser_map.end()
-    }
-
-    pub fn deserialize<'de, V, D>(deserializer: D) -> Result<BTreeMap<VoxelCoord, V>, D::Error>
-    where
-        V: Deserialize<'de>,
-        D: Deserializer<'de>,
-    {
-        struct VoxelMapVisitor<V>(std::marker::PhantomData<V>);
-
-        impl<'de, V: Deserialize<'de>> Visitor<'de> for VoxelMapVisitor<V> {
-            type Value = BTreeMap<VoxelCoord, V>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a map with \"x,y,z\" string keys")
-            }
-
-            fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                let mut map = BTreeMap::new();
-                while let Some((key, value)) = access.next_entry::<String, V>()? {
-                    let parts: Vec<&str> = key.split(',').collect();
-                    if parts.len() != 3 {
-                        return Err(de::Error::custom(format!("invalid VoxelCoord key: {key}")));
-                    }
-                    let x = parts[0].parse::<i32>().map_err(de::Error::custom)?;
-                    let y = parts[1].parse::<i32>().map_err(de::Error::custom)?;
-                    let z = parts[2].parse::<i32>().map_err(de::Error::custom)?;
-                    map.insert(VoxelCoord::new(x, y, z), value);
-                }
-                Ok(map)
-            }
-        }
-
-        deserializer.deserialize_map(VoxelMapVisitor(std::marker::PhantomData))
-    }
-}
-
 /// Top-level simulation state. This is the entire game world.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SimState {
@@ -305,19 +255,16 @@ pub struct SimState {
     /// The event priority queue driving the discrete event simulation.
     pub event_queue: EventQueue,
 
+    /// The tabulosity relational database storing all simulation entities.
+    /// Replaces the old per-entity BTreeMap collections with a typed,
+    /// FK-validated, indexed in-memory database.
+    #[serde(default)]
+    pub db: SimDb,
+
     /// All tree entities, keyed by ID. BTreeMap for deterministic iteration.
     pub trees: BTreeMap<TreeId, Tree>,
 
-    /// All creature entities (elves, capybaras, etc.), keyed by ID.
-    pub creatures: BTreeMap<CreatureId, Creature>,
-
-    /// All tasks (go-to, build, harvest, etc.), keyed by ID.
-    pub tasks: BTreeMap<TaskId, task::Task>,
-
-    /// All build blueprints (designated or complete), keyed by ProjectId.
-    #[serde(default)]
-    pub blueprints: BTreeMap<ProjectId, Blueprint>,
-
+    // creatures field removed — now in self.db.creatures
     /// Voxels placed by construction (persisted for save/load).
     /// Each entry is `(coord, voxel_type)`. On world rebuild, these are
     /// placed after tree voxels to restore construction progress.
@@ -352,10 +299,6 @@ pub struct SimState {
     /// Rebuilt from `ladder_orientations_list` after deserialization.
     #[serde(skip)]
     pub ladder_orientations: BTreeMap<VoxelCoord, FaceDirection>,
-
-    /// All completed structures, keyed by sequential `StructureId`.
-    #[serde(default)]
-    pub structures: BTreeMap<StructureId, CompletedStructure>,
 
     /// Counter for the next `StructureId` to assign (monotonically increasing).
     #[serde(default)]
@@ -402,12 +345,6 @@ pub struct SimState {
     /// which structure the player clicked on.
     #[serde(skip)]
     pub structure_voxels: BTreeMap<VoxelCoord, StructureId>,
-
-    /// Items dropped on the ground, keyed by voxel position. BTreeMap for
-    /// deterministic iteration order. Uses string keys (`"x,y,z"`) in JSON
-    /// because JSON objects require string keys.
-    #[serde(default, with = "serde_voxel_map")]
-    pub ground_piles: BTreeMap<VoxelCoord, crate::inventory::GroundPile>,
 }
 
 /// A tree entity — the primary world structure.
@@ -443,157 +380,6 @@ pub struct CreaturePath {
     pub remaining_nodes: Vec<NavNodeId>,
     /// Remaining edge indices to traverse (next edge is index 0).
     pub remaining_edge_indices: Vec<usize>,
-}
-
-/// A creature entity — an autonomous agent (elf, capybara, etc.).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Creature {
-    pub id: CreatureId,
-    pub species: Species,
-    pub position: VoxelCoord,
-    /// Creature's display name (e.g., Vaelith name for elves). Empty for unnamed species.
-    #[serde(default)]
-    pub name: String,
-    /// English meaning gloss of the name (e.g., "star-tree song-glow"). Empty if unnamed.
-    #[serde(default)]
-    pub name_meaning: String,
-    /// Current nav node the creature is at (or moving from).
-    pub current_node: Option<NavNodeId>,
-    /// Active path the creature is traversing (used when walking toward a task).
-    pub path: Option<CreaturePath>,
-    /// The task this creature is currently assigned to, or `None` for wandering.
-    pub current_task: Option<TaskId>,
-    /// Food gauge. Starts at species `food_max`, decreases by
-    /// `food_decay_per_tick` each tick (batch-applied at heartbeat). 0 = starving.
-    #[serde(default = "default_food")]
-    pub food: i64,
-    /// Rest gauge. Starts at species `rest_max`, decreases by
-    /// `rest_decay_per_tick` each tick (batch-applied at heartbeat). 0 = exhausted.
-    #[serde(default = "default_rest")]
-    pub rest: i64,
-
-    /// The home structure this creature is assigned to, if any.
-    /// Only meaningful for elves. Set via `SimAction::AssignHome`.
-    #[serde(default)]
-    pub assigned_home: Option<StructureId>,
-
-    /// Accumulated thoughts. Generated at trigger points (sleep completion,
-    /// eating, low ceilings) and expired during heartbeat. Used for UI display
-    /// and will later feed into the emotional system (F-emotions).
-    #[serde(default)]
-    pub thoughts: Vec<Thought>,
-
-    /// Items carried by this creature.
-    #[serde(default)]
-    pub inventory: Vec<crate::inventory::Item>,
-
-    /// Personal item desires. Same `LogisticsWant` type used by buildings.
-    /// Idle elves check these during heartbeat and create `AcquireItem` tasks
-    /// to pick up unowned items from any haulable source.
-    #[serde(default)]
-    pub wants: Vec<building::LogisticsWant>,
-
-    // --- Movement interpolation metadata (rendering only) ---
-    // These fields record the visual start/end of each movement for smooth
-    // rendering interpolation. They are never read by sim logic — only by
-    // `interpolated_position()` which is called from the GDExtension bridge.
-    /// Position the creature is visually moving FROM (None when stationary).
-    #[serde(default)]
-    pub move_from: Option<VoxelCoord>,
-    /// Position the creature is visually moving TO (None when stationary).
-    #[serde(default)]
-    pub move_to: Option<VoxelCoord>,
-    /// Tick when the current movement started.
-    #[serde(default)]
-    pub move_start_tick: u64,
-    /// Tick when the current movement completes.
-    #[serde(default)]
-    pub move_end_tick: u64,
-}
-
-fn default_food() -> i64 {
-    1_000_000_000_000_000
-}
-
-fn default_rest() -> i64 {
-    1_000_000_000_000_000
-}
-
-impl Creature {
-    /// Add a thought, subject to dedup. If an identical thought (same `kind`)
-    /// was added within the dedup cooldown window, the new thought is skipped.
-    /// When the thought list exceeds the cap, the oldest thought is dropped.
-    pub fn add_thought(
-        &mut self,
-        kind: ThoughtKind,
-        tick: u64,
-        thought_config: &crate::config::ThoughtConfig,
-    ) {
-        let cooldown = thought_config.dedup_ticks(&kind);
-        let dominated = self
-            .thoughts
-            .iter()
-            .rev()
-            .any(|t| t.kind == kind && tick.saturating_sub(t.tick) < cooldown);
-        if dominated {
-            return;
-        }
-        self.thoughts.push(Thought { kind, tick });
-        if self.thoughts.len() > thought_config.cap {
-            self.thoughts.remove(0);
-        }
-    }
-
-    /// Compute the creature's mood score and tier from its active thoughts.
-    ///
-    /// The score is the sum of per-ThoughtKind weights from `MoodConfig`.
-    /// The tier is derived from threshold boundaries in the config.
-    /// Computed on demand — never stored as persistent state.
-    pub fn mood(&self, mood_config: &crate::config::MoodConfig) -> (i32, crate::types::MoodTier) {
-        let score: i32 = self
-            .thoughts
-            .iter()
-            .map(|t| mood_config.mood_weight(&t.kind))
-            .sum();
-        (score, mood_config.tier(score))
-    }
-
-    /// Remove thoughts that have expired based on their per-kind expiry duration.
-    pub fn expire_thoughts(&mut self, tick: u64, thought_config: &crate::config::ThoughtConfig) {
-        self.thoughts
-            .retain(|t| tick.saturating_sub(t.tick) < thought_config.expiry_ticks(&t.kind));
-    }
-
-    /// Compute an interpolated world position for rendering.
-    ///
-    /// If the creature is mid-movement (both `move_from` and `move_to` are
-    /// `Some` with a positive tick duration), linearly interpolates between
-    /// the two positions based on `render_tick`. The `t` parameter is clamped
-    /// to [0, 1], so positions before the start or after the end are safe.
-    ///
-    /// If the creature is stationary (`move_from` or `move_to` is `None`),
-    /// returns `self.position` converted to floats.
-    ///
-    /// This method returns floats and is only called by the GDExtension bridge
-    /// for rendering — it is never used by sim logic.
-    pub fn interpolated_position(&self, render_tick: f64) -> (f32, f32, f32) {
-        if let (Some(from), Some(to)) = (self.move_from, self.move_to) {
-            let duration = self.move_end_tick as f64 - self.move_start_tick as f64;
-            if duration > 0.0 {
-                let t =
-                    ((render_tick - self.move_start_tick as f64) / duration).clamp(0.0, 1.0) as f32;
-                let x = from.x as f32 + (to.x as f32 - from.x as f32) * t;
-                let y = from.y as f32 + (to.y as f32 - from.y as f32) * t;
-                let z = from.z as f32 + (to.z as f32 - from.z as f32) * t;
-                return (x, y, z);
-            }
-        }
-        (
-            self.position.x as f32,
-            self.position.y as f32,
-            self.position.z as f32,
-        )
-    }
 }
 
 /// The result of processing commands and advancing the simulation.
@@ -692,17 +478,14 @@ impl SimState {
             rng,
             config,
             event_queue: EventQueue::new(),
+            db: SimDb::new(),
             trees,
-            creatures: BTreeMap::new(),
-            tasks: BTreeMap::new(),
-            blueprints: BTreeMap::new(),
             placed_voxels: Vec::new(),
             carved_voxels: Vec::new(),
             face_data_list: Vec::new(),
             face_data: BTreeMap::new(),
             ladder_orientations_list: Vec::new(),
             ladder_orientations: BTreeMap::new(),
-            structures: BTreeMap::new(),
             next_structure_id: 0,
             player_tree_id,
             player_id,
@@ -713,7 +496,6 @@ impl SimState {
             lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
             structure_voxels: BTreeMap::new(),
-            ground_piles: BTreeMap::new(),
         };
 
         // The world rebuild above produces thousands of set() calls that
@@ -841,9 +623,10 @@ impl SimState {
                 self.designate_carve(voxels, *priority, events);
             }
             SimAction::RenameStructure { structure_id, name } => {
-                if let Some(structure) = self.structures.get_mut(structure_id) {
-                    structure.name = name.clone();
-                }
+                let name_clone = name.clone();
+                let _ = self.db.structures.modify_unchecked(structure_id, |s| {
+                    s.name = name_clone;
+                });
             }
             SimAction::FurnishStructure {
                 structure_id,
@@ -861,67 +644,63 @@ impl SimState {
                 structure_id,
                 priority,
             } => {
-                if let Some(s) = self.structures.get_mut(structure_id) {
-                    s.logistics_priority = *priority;
-                }
+                let priority_val = *priority;
+                let _ = self.db.structures.modify_unchecked(structure_id, |s| {
+                    s.logistics_priority = priority_val;
+                });
             }
             SimAction::SetLogisticsWants {
                 structure_id,
                 wants,
             } => {
-                if let Some(s) = self.structures.get_mut(structure_id) {
-                    s.logistics_wants = wants.clone();
-                }
+                let inv_id = self.structure_inv(*structure_id);
+                self.set_inv_wants(inv_id, wants);
             }
             SimAction::SetCookingConfig {
                 structure_id,
                 cooking_enabled,
                 cooking_bread_target,
             } => {
-                if let Some(s) = self.structures.get_mut(structure_id)
-                    && s.furnishing == Some(FurnishingType::Kitchen)
+                if self
+                    .db
+                    .structures
+                    .get(structure_id)
+                    .is_some_and(|s| s.furnishing == Some(FurnishingType::Kitchen))
                 {
-                    s.cooking_enabled = *cooking_enabled;
-                    s.cooking_bread_target = *cooking_bread_target;
+                    let cooking_enabled_val = *cooking_enabled;
+                    let cooking_bread_target_val = *cooking_bread_target;
+                    let _ = self.db.structures.modify_unchecked(structure_id, |s| {
+                        s.cooking_enabled = cooking_enabled_val;
+                        s.cooking_bread_target = cooking_bread_target_val;
+                    });
                 }
             }
             SimAction::SetCreatureFood { creature_id, food } => {
-                if let Some(creature) = self.creatures.get_mut(creature_id) {
+                let _ = self.db.creatures.modify_unchecked(creature_id, |creature| {
                     creature.food = *food;
-                }
+                });
             }
             SimAction::SetCreatureRest { creature_id, rest } => {
-                if let Some(creature) = self.creatures.get_mut(creature_id) {
+                let _ = self.db.creatures.modify_unchecked(creature_id, |creature| {
                     creature.rest = *rest;
-                }
+                });
             }
             SimAction::AddCreatureItem {
                 creature_id,
                 item_kind,
                 quantity,
             } => {
-                if let Some(creature) = self.creatures.get_mut(creature_id) {
-                    crate::inventory::add_item(
-                        &mut creature.inventory,
-                        *item_kind,
-                        *quantity,
-                        Some(*creature_id),
-                        None,
-                    );
-                }
+                let inv_id = self.creature_inv(*creature_id);
+                self.inv_add_item(inv_id, *item_kind, *quantity, Some(*creature_id), None);
             }
             SimAction::AddGroundPileItem {
                 position,
                 item_kind,
                 quantity,
             } => {
-                let pile = self.ground_piles.entry(*position).or_insert_with(|| {
-                    crate::inventory::GroundPile {
-                        position: *position,
-                        items: Vec::new(),
-                    }
-                });
-                crate::inventory::add_item(&mut pile.items, *item_kind, *quantity, None, None);
+                let pile_id = self.ensure_ground_pile(*position);
+                let pile = self.db.ground_piles.get(&pile_id).unwrap();
+                self.inv_add_item(pile.inventory_id, *item_kind, *quantity, None, None);
             }
         }
     }
@@ -1039,13 +818,12 @@ impl SimState {
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
             location: task_location,
-            assignees: Vec::new(),
             progress: 0.0,
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
         };
-        self.tasks.insert(task_id, build_task);
+        self.insert_task(build_task);
 
         let bp = Blueprint {
             id: project_id,
@@ -1058,7 +836,7 @@ impl SimState {
             stress_warning,
             original_voxels,
         };
-        self.blueprints.insert(project_id, bp);
+        self.db.blueprints.insert_no_fk(bp).unwrap();
         events.push(SimEvent {
             tick: self.tick,
             kind: SimEventKind::BlueprintDesignated { project_id },
@@ -1153,13 +931,12 @@ impl SimState {
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
             location: task_location,
-            assignees: Vec::new(),
             progress: 0.0,
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
         };
-        self.tasks.insert(task_id, build_task);
+        self.insert_task(build_task);
 
         let bp = Blueprint {
             id: project_id,
@@ -1172,7 +949,7 @@ impl SimState {
             stress_warning,
             original_voxels: Vec::new(),
         };
-        self.blueprints.insert(project_id, bp);
+        self.db.blueprints.insert_no_fk(bp).unwrap();
         events.push(SimEvent {
             tick: self.tick,
             kind: SimEventKind::BlueprintDesignated { project_id },
@@ -1287,13 +1064,12 @@ impl SimState {
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
             location: task_location,
-            assignees: Vec::new(),
             progress: 0.0,
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
         };
-        self.tasks.insert(task_id, build_task);
+        self.insert_task(build_task);
 
         // Store the orientation in the blueprint's face_layout field for later
         // use during materialization. We encode it as a map from each voxel to
@@ -1314,7 +1090,7 @@ impl SimState {
             stress_warning: false,
             original_voxels,
         };
-        self.blueprints.insert(project_id, bp);
+        self.db.blueprints.insert_no_fk(bp).unwrap();
         events.push(SimEvent {
             tick: self.tick,
             kind: SimEventKind::BlueprintDesignated { project_id },
@@ -1391,13 +1167,12 @@ impl SimState {
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
             location: task_location,
-            assignees: Vec::new(),
             progress: 0.0,
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
         };
-        self.tasks.insert(task_id, build_task);
+        self.insert_task(build_task);
 
         let bp = Blueprint {
             id: project_id,
@@ -1410,7 +1185,7 @@ impl SimState {
             stress_warning,
             original_voxels,
         };
-        self.blueprints.insert(project_id, bp);
+        self.db.blueprints.insert_no_fk(bp).unwrap();
         events.push(SimEvent {
             tick: self.tick,
             kind: SimEventKind::BlueprintDesignated { project_id },
@@ -1422,9 +1197,9 @@ impl SimState {
     /// the nav graph. Emits `BuildCancelled` if found.
     /// Silent no-op if the ProjectId doesn't exist (idempotent for multiplayer).
     fn cancel_build(&mut self, project_id: ProjectId, events: &mut Vec<SimEvent>) {
-        let bp = match self.blueprints.remove(&project_id) {
-            Some(bp) => bp,
-            None => return,
+        let bp = match self.db.blueprints.remove_no_fk(&project_id) {
+            Ok(bp) => bp,
+            Err(_) => return,
         };
 
         // Remove any completed structure for this project (linear scan — map is small).
@@ -1432,17 +1207,30 @@ impl SimState {
         for &coord in &bp.voxels {
             self.structure_voxels.remove(&coord);
         }
-        self.structures.retain(|_, s| s.project_id != project_id);
+        let structure_ids_to_remove: Vec<StructureId> = self
+            .db
+            .structures
+            .iter_all()
+            .filter(|s| s.project_id == project_id)
+            .map(|s| s.id)
+            .collect();
+        for sid in structure_ids_to_remove {
+            let _ = self.db.structures.remove_no_fk(&sid);
+        }
 
         // Remove the associated Build task and unassign workers.
         if let Some(task_id) = bp.task_id
-            && let Some(task) = self.tasks.remove(&task_id)
+            && let Ok(_task) = self.db.tasks.remove_no_fk(&task_id)
         {
-            for cid in &task.assignees {
-                if let Some(creature) = self.creatures.get_mut(cid) {
-                    creature.current_task = None;
-                    creature.path = None;
-                }
+            // Unassign any creatures working on this task.
+            for mut creature in self
+                .db
+                .creatures
+                .by_current_task(&Some(task_id), tabulosity::QueryOpts::ASC)
+            {
+                creature.current_task = None;
+                creature.path = None;
+                let _ = self.db.creatures.update_no_fk(creature);
             }
         }
 
@@ -1526,13 +1314,12 @@ impl SimState {
             kind,
             state: task::TaskState::Available,
             location,
-            assignees: Vec::new(),
             progress: 0.0,
             total_cost: 0.0,
             required_species,
             origin: task::TaskOrigin::PlayerDirected,
         };
-        self.tasks.insert(task_id, new_task);
+        self.insert_task(new_task);
     }
 
     /// Process a single scheduled event.
@@ -1544,7 +1331,7 @@ impl SimState {
 
                 // Phase 1: apply food and rest decay, read state for need checks.
                 let (should_seek_food, should_seek_sleep) =
-                    if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                    if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                         let species = creature.species;
                         let species_data = &self.species_table[&species];
                         let interval = species_data.heartbeat_interval_ticks;
@@ -1557,9 +1344,6 @@ impl SimState {
                         let rest_decay = species_data.rest_decay_per_tick * interval as i64;
                         creature.rest = (creature.rest - rest_decay).max(0);
 
-                        // Expire old thoughts.
-                        creature.expire_thoughts(self.tick, &self.config.thoughts);
-
                         let food_threshold =
                             species_data.food_max * species_data.food_hunger_threshold_pct / 100;
                         let is_hungry = creature.food < food_threshold;
@@ -1569,6 +1353,12 @@ impl SimState {
                         let is_tired = creature.rest < rest_threshold;
 
                         let is_idle = creature.current_task.is_none();
+
+                        // Write back mutated fields.
+                        let _ = self.db.creatures.update_no_fk(creature);
+
+                        // Expire old thoughts.
+                        self.expire_creature_thoughts(creature_id);
 
                         // Reschedule the next heartbeat.
                         let next_tick = self.tick + interval;
@@ -1592,11 +1382,12 @@ impl SimState {
                 if should_seek_food {
                     // Check for owned bread in inventory.
                     let has_bread = self
+                        .db
                         .creatures
                         .get(&creature_id)
                         .map(|c| {
-                            inventory::count_owned(
-                                &c.inventory,
+                            self.inv_count_owned(
+                                c.inventory_id,
                                 inventory::ItemKind::Bread,
                                 creature_id,
                             ) > 0
@@ -1605,6 +1396,7 @@ impl SimState {
 
                     if has_bread
                         && let Some(nav_node) = self
+                            .db
                             .creatures
                             .get(&creature_id)
                             .and_then(|c| c.current_node)
@@ -1615,15 +1407,15 @@ impl SimState {
                             kind: task::TaskKind::EatBread,
                             state: task::TaskState::InProgress,
                             location: nav_node,
-                            assignees: vec![creature_id],
                             progress: 0.0,
                             total_cost: 0.0,
                             required_species: None,
                             origin: task::TaskOrigin::Autonomous,
                         };
-                        self.tasks.insert(task_id, new_task);
-                        if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                        self.insert_task(new_task);
+                        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                             creature.current_task = Some(task_id);
+                            let _ = self.db.creatures.update_no_fk(creature);
                         }
                         ate_bread = true;
                     }
@@ -1640,15 +1432,15 @@ impl SimState {
                         kind: task::TaskKind::EatFruit { fruit_pos },
                         state: task::TaskState::InProgress,
                         location: nav_node,
-                        assignees: vec![creature_id],
                         progress: 0.0,
                         total_cost: 0.0,
                         required_species: None,
                         origin: task::TaskOrigin::Autonomous,
                     };
-                    self.tasks.insert(task_id, new_task);
-                    if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                    self.insert_task(new_task);
+                    if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                         creature.current_task = Some(task_id);
+                        let _ = self.db.creatures.update_no_fk(creature);
                     }
                 }
 
@@ -1671,7 +1463,7 @@ impl SimState {
                                 self.config.sleep_ticks_bed,
                                 task::SleepLocation::Dormitory(sid),
                             )
-                        } else if let Some(creature) = self.creatures.get(&creature_id)
+                        } else if let Some(creature) = self.db.creatures.get(&creature_id)
                             && let Some(node) = creature.current_node
                         {
                             (
@@ -1693,15 +1485,15 @@ impl SimState {
                         },
                         state: task::TaskState::InProgress,
                         location: nav_node,
-                        assignees: vec![creature_id],
                         progress: 0.0,
                         total_cost: sleep_ticks as f32,
                         required_species: None,
                         origin: task::TaskOrigin::Autonomous,
                     };
-                    self.tasks.insert(task_id, new_task);
-                    if let Some(creature) = self.creatures.get_mut(&creature_id) {
+                    self.insert_task(new_task);
+                    if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                         creature.current_task = Some(task_id);
+                        let _ = self.db.creatures.update_no_fk(creature);
                     }
                 }
 
@@ -1712,6 +1504,7 @@ impl SimState {
                 // Phase 2c: if idle (no task from hunger or sleep), check
                 // personal wants and acquire items from unowned sources.
                 let still_idle = self
+                    .db
                     .creatures
                     .get(&creature_id)
                     .is_some_and(|c| c.current_task.is_none());
@@ -1759,9 +1552,13 @@ impl SimState {
         events: &mut Vec<SimEvent>,
     ) -> Option<CreatureId> {
         let species_data = &self.species_table[&species];
+        let food_max = species_data.food_max;
+        let rest_max = species_data.rest_max;
+        let heartbeat_interval = species_data.heartbeat_interval_ticks;
+        let ground_only = species_data.ground_only;
         let graph = self.graph_for_species(species);
 
-        let nearest_node = if species_data.ground_only {
+        let nearest_node = if ground_only {
             graph.find_nearest_ground_node(position)
         } else {
             graph.find_nearest_node(position)
@@ -1787,13 +1584,16 @@ impl SimState {
             (String::new(), String::new())
         };
 
-        let wants = if species == Species::Elf {
+        let default_wants = if species == Species::Elf {
             self.config.elf_default_wants.clone()
         } else {
             Vec::new()
         };
 
-        let creature = Creature {
+        // Create an inventory for this creature.
+        let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::Creature);
+
+        let creature = crate::db::Creature {
             id: creature_id,
             species,
             position: node_pos,
@@ -1802,27 +1602,27 @@ impl SimState {
             current_node: Some(nearest_node),
             path: None,
             current_task: None,
-            food: species_data.food_max,
-            rest: species_data.rest_max,
+            food: food_max,
+            rest: rest_max,
             assigned_home: None,
-            thoughts: Vec::new(),
-            inventory: Vec::new(),
-            wants,
+            inventory_id: inv_id,
             move_from: None,
             move_to: None,
             move_start_tick: 0,
             move_end_tick: 0,
         };
 
-        self.creatures.insert(creature_id, creature);
+        self.db.creatures.insert_no_fk(creature).unwrap();
+
+        // Set default logistics wants for this creature.
+        if !default_wants.is_empty() {
+            self.set_inv_wants(inv_id, &default_wants);
+        }
 
         // Give elves starting bread so they don't immediately forage.
-        if species == Species::Elf
-            && self.config.elf_starting_bread > 0
-            && let Some(c) = self.creatures.get_mut(&creature_id)
-        {
-            inventory::add_item(
-                &mut c.inventory,
+        if species == Species::Elf && self.config.elf_starting_bread > 0 {
+            self.inv_add_item(
+                inv_id,
                 inventory::ItemKind::Bread,
                 self.config.elf_starting_bread,
                 Some(creature_id),
@@ -1838,7 +1638,7 @@ impl SimState {
         );
 
         // Schedule first heartbeat (periodic non-movement checks).
-        let heartbeat_tick = self.tick + species_data.heartbeat_interval_ticks;
+        let heartbeat_tick = self.tick + heartbeat_interval;
         self.event_queue.schedule(
             heartbeat_tick,
             ScheduledEventKind::CreatureHeartbeat { creature_id },
@@ -1866,6 +1666,30 @@ impl SimState {
         VoxelCoord::new(x, 1, z)
     }
 
+    /// Get or create a ground pile at the given position, returning its ID.
+    /// If no pile exists at `pos`, inserts a new empty one.
+    fn ensure_ground_pile(&mut self, pos: VoxelCoord) -> GroundPileId {
+        if let Some(pile) = self
+            .db
+            .ground_piles
+            .by_position(&pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+        {
+            pile.id
+        } else {
+            let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
+            self.db
+                .ground_piles
+                .insert_auto_no_fk(|id| crate::db::GroundPile {
+                    id,
+                    position: pos,
+                    inventory_id: inv_id,
+                })
+                .unwrap()
+        }
+    }
+
     /// Spawn initial creatures and ground piles from `config.initial_creatures`
     /// and `config.initial_ground_piles`. Called once when a new game starts.
     pub fn spawn_initial_creatures(&mut self, events: &mut Vec<SimEvent>) {
@@ -1883,26 +1707,32 @@ impl SimState {
                     };
 
                 // Apply per-creature food override.
-                if let Some(&pct) = spec.food_pcts.get(i)
-                    && let Some(creature) = self.creatures.get_mut(&creature_id)
-                {
-                    creature.food = species_data.food_max * pct as i64 / 100;
+                if let Some(&pct) = spec.food_pcts.get(i) {
+                    let _ = self
+                        .db
+                        .creatures
+                        .modify_unchecked(&creature_id, |creature| {
+                            creature.food = species_data.food_max * pct as i64 / 100;
+                        });
                 }
 
                 // Apply per-creature rest override.
-                if let Some(&pct) = spec.rest_pcts.get(i)
-                    && let Some(creature) = self.creatures.get_mut(&creature_id)
-                {
-                    creature.rest = species_data.rest_max * pct as i64 / 100;
+                if let Some(&pct) = spec.rest_pcts.get(i) {
+                    let _ = self
+                        .db
+                        .creatures
+                        .modify_unchecked(&creature_id, |creature| {
+                            creature.rest = species_data.rest_max * pct as i64 / 100;
+                        });
                 }
 
                 // Apply per-creature bread count.
                 if let Some(&count) = spec.bread_counts.get(i)
                     && count > 0
-                    && let Some(creature) = self.creatures.get_mut(&creature_id)
                 {
-                    crate::inventory::add_item(
-                        &mut creature.inventory,
+                    let inv_id = self.creature_inv(creature_id);
+                    self.inv_add_item(
+                        inv_id,
                         crate::inventory::ItemKind::Bread,
                         count,
                         Some(creature_id),
@@ -1915,15 +1745,10 @@ impl SimState {
         let pile_specs = self.config.initial_ground_piles.clone();
         for pile_spec in &pile_specs {
             let pos = self.find_surface_position(pile_spec.position.x, pile_spec.position.z);
-            let pile =
-                self.ground_piles
-                    .entry(pos)
-                    .or_insert_with(|| crate::inventory::GroundPile {
-                        position: pos,
-                        items: Vec::new(),
-                    });
-            crate::inventory::add_item(
-                &mut pile.items,
+            let pile_id = self.ensure_ground_pile(pos);
+            let pile = self.db.ground_piles.get(&pile_id).unwrap();
+            self.inv_add_item(
+                pile.inventory_id,
                 pile_spec.item_kind,
                 pile_spec.quantity,
                 None,
@@ -1943,7 +1768,7 @@ impl SimState {
     /// uses species-filtered A*.
     fn process_creature_activation(&mut self, creature_id: CreatureId) {
         let (mut current_node, species, current_task) = {
-            let creature = match self.creatures.get(&creature_id) {
+            let creature = match self.db.creatures.get(&creature_id) {
                 Some(c) => c,
                 None => return,
             };
@@ -1957,17 +1782,23 @@ impl SimState {
         // Guard: if current_node is a dead slot (removed by incremental nav
         // update), resnap the creature before proceeding.
         if !self.graph_for_species(species).is_node_alive(current_node) {
-            let pos = self.creatures[&creature_id].position;
+            let pos = self
+                .db
+                .creatures
+                .get(&creature_id)
+                .map(|c| c.position)
+                .unwrap();
             let graph = self.graph_for_species(species);
             let new_node = match graph.find_nearest_node(pos) {
                 Some(n) => n,
                 None => return,
             };
             let new_pos = graph.node(new_node).position;
-            let c = self.creatures.get_mut(&creature_id).unwrap();
-            c.current_node = Some(new_node);
-            c.position = new_pos;
-            c.path = None;
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.current_node = Some(new_node);
+                c.position = new_pos;
+                c.path = None;
+            });
             current_node = new_node;
         }
 
@@ -1990,11 +1821,12 @@ impl SimState {
     /// Respects species restrictions: tasks with `required_species` are only
     /// visible to matching creatures.
     fn find_available_task(&self, creature_id: CreatureId) -> Option<TaskId> {
-        let creature = self.creatures.get(&creature_id)?;
+        let creature = self.db.creatures.get(&creature_id)?;
         let species = creature.species;
 
-        self.tasks
-            .values()
+        self.db
+            .tasks
+            .iter_all()
             .find(|t| {
                 t.state == task::TaskState::Available
                     && t.required_species.is_none_or(|s| s == species)
@@ -2004,12 +1836,13 @@ impl SimState {
 
     /// Assign a creature to a task.
     fn claim_task(&mut self, creature_id: CreatureId, task_id: TaskId) {
-        if let Some(task) = self.tasks.get_mut(&task_id) {
-            task.assignees.push(creature_id);
+        if let Some(mut task) = self.db.tasks.get(&task_id) {
             task.state = task::TaskState::InProgress;
+            let _ = self.db.tasks.update_no_fk(task);
         }
-        if let Some(creature) = self.creatures.get_mut(&creature_id) {
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = Some(task_id);
+            let _ = self.db.creatures.update_no_fk(creature);
         }
     }
 
@@ -2020,13 +1853,14 @@ impl SimState {
         task_id: TaskId,
         current_node: NavNodeId,
     ) {
-        let task_location = match self.tasks.get(&task_id) {
+        let task_location = match self.db.tasks.get(&task_id) {
             Some(t) => t.location,
             None => {
                 // Task was removed — unassign and wander.
-                if let Some(c) = self.creatures.get_mut(&creature_id) {
+                if let Some(mut c) = self.db.creatures.get(&creature_id) {
                     c.current_task = None;
                     c.path = None;
+                    let _ = self.db.creatures.update_no_fk(c);
                 }
                 self.wander(creature_id, current_node);
                 return;
@@ -2038,6 +1872,7 @@ impl SimState {
         // (e.g. construction solidifying a voxel). If either is dead, abandon
         // the task and wander.
         let species = self
+            .db
             .creatures
             .get(&creature_id)
             .map(|c| c.species)
@@ -2049,19 +1884,21 @@ impl SimState {
             self.cleanup_cook_task(task_id);
             self.cleanup_harvest_task(task_id);
             self.cleanup_acquire_item_task(task_id);
-            if let Some(c) = self.creatures.get_mut(&creature_id) {
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.current_task = None;
                 c.path = None;
+                let _ = self.db.creatures.update_no_fk(c);
             }
             // Resnap the creature to a live node before wandering.
             let graph = self.graph_for_species(species);
-            if let Some(c) = self.creatures.get(&creature_id) {
+            if let Some(c) = self.db.creatures.get(&creature_id) {
                 let pos = c.position;
                 if let Some(new_node) = graph.find_nearest_node(pos) {
                     let new_pos = graph.node(new_node).position;
-                    let c = self.creatures.get_mut(&creature_id).unwrap();
-                    c.current_node = Some(new_node);
-                    c.position = new_pos;
+                    let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                        c.current_node = Some(new_node);
+                        c.position = new_pos;
+                    });
                     self.wander(creature_id, new_node);
                 }
             }
@@ -2079,51 +1916,75 @@ impl SimState {
 
     /// Execute task-kind-specific logic when the creature is at the task location.
     fn execute_task_at_location(&mut self, creature_id: CreatureId, task_id: TaskId) {
-        let task = match self.tasks.get(&task_id) {
+        let task = match self.db.tasks.get(&task_id) {
             Some(t) => t,
             None => return,
         };
 
-        match task.kind.clone() {
-            task::TaskKind::GoTo => {
-                // GoTo completes instantly on arrival.
+        match task.kind_tag {
+            crate::db::TaskKindTag::GoTo => {
                 self.complete_task(task_id);
             }
-            task::TaskKind::EatBread => {
+            crate::db::TaskKindTag::EatBread => {
                 self.do_eat_bread(creature_id, task_id);
             }
-            task::TaskKind::EatFruit { fruit_pos } => {
+            crate::db::TaskKindTag::EatFruit => {
+                let fruit_pos =
+                    match self.task_voxel_ref(task_id, crate::db::TaskVoxelRole::FruitTarget) {
+                        Some(p) => p,
+                        None => return,
+                    };
                 self.do_eat_fruit(creature_id, task_id, fruit_pos);
             }
-            task::TaskKind::Build { project_id } => {
+            crate::db::TaskKindTag::Build => {
+                let project_id = match self.task_project_id(task_id) {
+                    Some(p) => p,
+                    None => return,
+                };
                 self.do_build_work(creature_id, task_id, project_id);
-                return; // do_build_work handles its own next-activation scheduling.
+                return;
             }
-            task::TaskKind::Furnish { structure_id } => {
+            crate::db::TaskKindTag::Furnish => {
+                let structure_id = match self
+                    .task_structure_ref(task_id, crate::db::TaskStructureRole::FurnishTarget)
+                {
+                    Some(s) => s,
+                    None => return,
+                };
                 self.do_furnish_work(creature_id, task_id, structure_id);
-                return; // do_furnish_work handles its own next-activation scheduling.
+                return;
             }
-            task::TaskKind::Sleep { bed_pos, location } => {
+            crate::db::TaskKindTag::Sleep => {
+                let bed_pos = self.task_voxel_ref(task_id, crate::db::TaskVoxelRole::BedPosition);
+                let location = match self.task_sleep_location(task_id) {
+                    Some(l) => l,
+                    None => return,
+                };
                 self.do_sleep(creature_id, task_id, bed_pos, location);
-                return; // do_sleep handles its own next-activation scheduling.
+                return;
             }
-            task::TaskKind::Haul { .. } => {
+            crate::db::TaskKindTag::Haul => {
                 self.do_haul(creature_id, task_id);
-                return; // do_haul handles its own next-activation scheduling.
+                return;
             }
-            task::TaskKind::Cook { .. } => {
+            crate::db::TaskKindTag::Cook => {
                 self.do_cook(creature_id, task_id);
-                return; // do_cook handles its own next-activation scheduling.
+                return;
             }
-            task::TaskKind::Harvest { fruit_pos } => {
+            crate::db::TaskKindTag::Harvest => {
+                let fruit_pos =
+                    match self.task_voxel_ref(task_id, crate::db::TaskVoxelRole::FruitTarget) {
+                        Some(p) => p,
+                        None => return,
+                    };
                 self.do_harvest(creature_id, task_id, fruit_pos);
             }
-            task::TaskKind::AcquireItem { .. } => {
+            crate::db::TaskKindTag::AcquireItem => {
                 self.do_acquire_item(creature_id, task_id);
             }
-            task::TaskKind::Mope => {
+            crate::db::TaskKindTag::Mope => {
                 self.do_mope(creature_id, task_id);
-                return; // do_mope handles its own next-activation scheduling.
+                return;
             }
         }
 
@@ -2137,17 +1998,24 @@ impl SimState {
 
     /// Complete a task: set state to Complete, unassign all workers.
     fn complete_task(&mut self, task_id: TaskId) {
-        let assignee_ids: Vec<CreatureId> = if let Some(task) = self.tasks.get_mut(&task_id) {
-            task.state = task::TaskState::Complete;
-            task.assignees.clone()
-        } else {
+        // Find creatures assigned to this task before completing it.
+        let assignees = self
+            .db
+            .creatures
+            .by_current_task(&Some(task_id), tabulosity::QueryOpts::ASC);
+        if assignees.is_empty() && self.db.tasks.get(&task_id).is_none() {
             return;
-        };
+        }
+        if let Some(mut task) = self.db.tasks.get(&task_id) {
+            task.state = task::TaskState::Complete;
+            let _ = self.db.tasks.update_no_fk(task);
+        }
 
-        for cid in &assignee_ids {
-            if let Some(creature) = self.creatures.get_mut(cid) {
+        for cid in assignees.iter().map(|c| &c.id) {
+            if let Some(mut creature) = self.db.creatures.get(cid) {
                 creature.current_task = None;
                 creature.path = None;
+                let _ = self.db.creatures.update_no_fk(creature);
             }
         }
     }
@@ -2158,7 +2026,7 @@ impl SimState {
     /// Returns the fruit voxel coordinate and its nearest nav node, or `None`
     /// if no fruit exists or none is reachable by this creature.
     fn find_nearest_fruit(&self, creature_id: CreatureId) -> Option<(VoxelCoord, NavNodeId)> {
-        let creature = self.creatures.get(&creature_id)?;
+        let creature = self.db.creatures.get(&creature_id)?;
         let start_node = creature.current_node?;
         let species_data = &self.species_table[&creature.species];
         let graph = self.graph_for_species(creature.species);
@@ -2203,12 +2071,16 @@ impl SimState {
     /// complete the task.
     fn do_eat_fruit(&mut self, creature_id: CreatureId, task_id: TaskId, fruit_pos: VoxelCoord) {
         // Restore food.
-        if let Some(creature) = self.creatures.get(&creature_id) {
+        if let Some(creature) = self.db.creatures.get(&creature_id) {
             let species_data = &self.species_table[&creature.species];
             let restore = species_data.food_max * species_data.food_restore_pct / 100;
             let food_max = species_data.food_max;
-            let creature = self.creatures.get_mut(&creature_id).unwrap();
-            creature.food = (creature.food + restore).min(food_max);
+            let _ = self
+                .db
+                .creatures
+                .modify_unchecked(&creature_id, |creature| {
+                    creature.food = (creature.food + restore).min(food_max);
+                });
         }
 
         // Remove fruit from world and tree's fruit_positions list.
@@ -2220,9 +2092,7 @@ impl SimState {
         }
 
         // Generate AteMeal thought.
-        if let Some(creature) = self.creatures.get_mut(&creature_id) {
-            creature.add_thought(ThoughtKind::AteMeal, self.tick, &self.config.thoughts);
-        }
+        self.add_creature_thought(creature_id, ThoughtKind::AteMeal);
 
         self.complete_task(task_id);
     }
@@ -2242,16 +2112,11 @@ impl SimState {
             }
 
             // Create ground pile at creature's position.
-            if let Some(creature) = self.creatures.get(&creature_id) {
+            if let Some(creature) = self.db.creatures.get(&creature_id) {
                 let pile_pos = creature.position;
-                let pile =
-                    self.ground_piles
-                        .entry(pile_pos)
-                        .or_insert_with(|| inventory::GroundPile {
-                            position: pile_pos,
-                            items: Vec::new(),
-                        });
-                inventory::add_item(&mut pile.items, inventory::ItemKind::Fruit, 1, None, None);
+                let pile_id = self.ensure_ground_pile(pile_pos);
+                let pile = self.db.ground_piles.get(&pile_id).unwrap();
+                self.inv_add_item(pile.inventory_id, inventory::ItemKind::Fruit, 1, None, None);
             }
         }
 
@@ -2262,32 +2127,36 @@ impl SimState {
     /// creature's personal inventory with ownership. Cleans up empty ground
     /// piles. Instant task (total_cost = 0).
     fn do_acquire_item(&mut self, creature_id: CreatureId, task_id: TaskId) {
-        let task = match self.tasks.get(&task_id) {
-            Some(t) => t.kind.clone(),
+        let acquire = match self.task_acquire_data(task_id) {
+            Some(a) => a,
             None => return,
         };
-        let task::TaskKind::AcquireItem {
-            ref source,
-            item_kind,
-            quantity,
-        } = task
-        else {
-            return;
+        let source = match self.task_acquire_source(task_id, acquire.source_kind) {
+            Some(s) => s,
+            None => return,
         };
+        let item_kind = acquire.item_kind;
+        let quantity = acquire.quantity;
 
         // Remove reserved items from source.
-        let picked_up = match source {
+        let picked_up = match &source {
             task::HaulSource::GroundPile(pos) => {
-                if let Some(pile) = self.ground_piles.get_mut(pos) {
-                    inventory::remove_reserved_items(&mut pile.items, item_kind, quantity, task_id)
+                if let Some(pile) = self
+                    .db
+                    .ground_piles
+                    .by_position(pos, tabulosity::QueryOpts::ASC)
+                    .into_iter()
+                    .next()
+                {
+                    self.inv_remove_reserved_items(pile.inventory_id, item_kind, quantity, task_id)
                 } else {
                     0
                 }
             }
             task::HaulSource::Building(sid) => {
-                if let Some(structure) = self.structures.get_mut(sid) {
-                    inventory::remove_reserved_items(
-                        &mut structure.inventory,
+                if let Some(structure) = self.db.structures.get(sid) {
+                    self.inv_remove_reserved_items(
+                        structure.inventory_id,
                         item_kind,
                         quantity,
                         task_id,
@@ -2299,25 +2168,22 @@ impl SimState {
         };
 
         // Clean up empty ground piles.
-        if let task::HaulSource::GroundPile(pos) = source
-            && let Some(pile) = self.ground_piles.get(pos)
-            && pile.items.is_empty()
+        if let task::HaulSource::GroundPile(pos) = &source
+            && let Some(pile) = self
+                .db
+                .ground_piles
+                .by_position(pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+            && self.inv_items(pile.inventory_id).is_empty()
         {
-            let pos = *pos;
-            self.ground_piles.remove(&pos);
+            let _ = self.db.ground_piles.remove_no_fk(&pile.id);
         }
 
         // Add to creature inventory with ownership.
-        if picked_up > 0
-            && let Some(creature) = self.creatures.get_mut(&creature_id)
-        {
-            inventory::add_item(
-                &mut creature.inventory,
-                item_kind,
-                picked_up,
-                Some(creature_id),
-                None,
-            );
+        if picked_up > 0 {
+            let inv_id = self.creature_inv(creature_id);
+            self.inv_add_item(inv_id, item_kind, picked_up, Some(creature_id), None);
         }
 
         self.complete_task(task_id);
@@ -2326,51 +2192,58 @@ impl SimState {
     /// Clean up an AcquireItem task on abandonment: clear reservations at
     /// the source. No items are in transit (pickup only happens on arrival).
     fn cleanup_acquire_item_task(&mut self, task_id: TaskId) {
-        let source = match self.tasks.get(&task_id) {
-            Some(t) => match &t.kind {
-                task::TaskKind::AcquireItem { source, .. } => source.clone(),
-                _ => return,
-            },
+        let acquire = match self.task_acquire_data(task_id) {
+            Some(a) => a,
+            None => return,
+        };
+        let source = match self.task_acquire_source(task_id, acquire.source_kind) {
+            Some(s) => s,
             None => return,
         };
         match &source {
             task::HaulSource::GroundPile(pos) => {
-                if let Some(pile) = self.ground_piles.get_mut(pos) {
-                    inventory::clear_reservations(&mut pile.items, task_id);
+                if let Some(pile) = self
+                    .db
+                    .ground_piles
+                    .by_position(pos, tabulosity::QueryOpts::ASC)
+                    .into_iter()
+                    .next()
+                {
+                    self.inv_clear_reservations(pile.inventory_id, task_id);
                 }
             }
             task::HaulSource::Building(sid) => {
-                if let Some(structure) = self.structures.get_mut(sid) {
-                    inventory::clear_reservations(&mut structure.inventory, task_id);
+                if let Some(structure) = self.db.structures.get(sid) {
+                    self.inv_clear_reservations(structure.inventory_id, task_id);
                 }
             }
         }
-        if let Some(t) = self.tasks.get_mut(&task_id) {
+        if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.state = task::TaskState::Complete;
+            let _ = self.db.tasks.update_no_fk(t);
         }
     }
 
     /// Eat bread from inventory: remove 1 owned bread, restore food by
     /// `bread_restore_pct`%, generate AteMeal thought, and complete the task.
     fn do_eat_bread(&mut self, creature_id: CreatureId, task_id: TaskId) {
-        if let Some(creature) = self.creatures.get(&creature_id) {
+        if let Some(creature) = self.db.creatures.get(&creature_id) {
             let species_data = &self.species_table[&creature.species];
             let restore = species_data.food_max * species_data.bread_restore_pct / 100;
             let food_max = species_data.food_max;
-            let creature = self.creatures.get_mut(&creature_id).unwrap();
-            inventory::remove_owned_item(
-                &mut creature.inventory,
+            self.inv_remove_owned_item(
+                creature.inventory_id,
                 inventory::ItemKind::Bread,
                 creature_id,
                 1,
             );
-            creature.food = (creature.food + restore).min(food_max);
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.food = (c.food + restore).min(food_max);
+            });
         }
 
         // Generate AteMeal thought.
-        if let Some(creature) = self.creatures.get_mut(&creature_id) {
-            creature.add_thought(ThoughtKind::AteMeal, self.tick, &self.config.thoughts);
-        }
+        self.add_creature_thought(creature_id, ThoughtKind::AteMeal);
 
         self.complete_task(task_id);
     }
@@ -2385,16 +2258,21 @@ impl SimState {
         &self,
         creature_id: CreatureId,
     ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
-        let creature = self.creatures.get(&creature_id)?;
+        let creature = self.db.creatures.get(&creature_id)?;
         let home_id = creature.assigned_home?;
-        let structure = self.structures.get(&home_id)?;
+        let structure = self.db.structures.get(&home_id)?;
         if structure.furnishing != Some(FurnishingType::Home) {
             return None;
         }
-        let bed_pos = structure.furniture_positions.first()?;
+        let bed = self
+            .db
+            .furniture
+            .by_structure_id(&home_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|f| f.placed)?;
         let graph = self.graph_for_species(creature.species);
-        let nav_node = graph.find_nearest_node(*bed_pos)?;
-        Some((*bed_pos, nav_node, home_id))
+        let nav_node = graph.find_nearest_node(bed.coord)?;
+        Some((bed.coord, nav_node, home_id))
     }
 
     /// Find the nearest reachable dormitory bed for a creature, using Dijkstra
@@ -2407,38 +2285,44 @@ impl SimState {
         &self,
         creature_id: CreatureId,
     ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
-        let creature = self.creatures.get(&creature_id)?;
+        let creature = self.db.creatures.get(&creature_id)?;
         let start_node = creature.current_node?;
         let species_data = &self.species_table[&creature.species];
         let graph = self.graph_for_species(creature.species);
 
         // Collect all occupied bed positions from active Sleep tasks.
         let occupied_beds: Vec<VoxelCoord> = self
-            .tasks
-            .values()
-            .filter(|t| t.state != task::TaskState::Complete)
-            .filter_map(|t| match &t.kind {
-                task::TaskKind::Sleep {
-                    bed_pos: Some(pos), ..
-                } => Some(*pos),
-                _ => None,
+            .db
+            .task_voxel_refs
+            .iter_all()
+            .filter(|r| r.role == crate::db::TaskVoxelRole::BedPosition)
+            .filter(|r| {
+                self.db
+                    .tasks
+                    .get(&r.task_id)
+                    .is_some_and(|t| t.state != task::TaskState::Complete)
             })
+            .map(|r| r.coord)
             .collect();
 
         // Collect unoccupied bed positions from all dormitory structures.
         let mut nav_to_bed: Vec<(NavNodeId, VoxelCoord, StructureId)> = Vec::new();
         let mut target_nodes: Vec<NavNodeId> = Vec::new();
-        for structure in self.structures.values() {
+        for structure in self.db.structures.iter_all() {
             if structure.furnishing != Some(FurnishingType::Dormitory) {
                 continue;
             }
-            for &bed_pos in &structure.furniture_positions {
-                if occupied_beds.contains(&bed_pos) {
+            for furn in self
+                .db
+                .furniture
+                .by_structure_id(&structure.id, tabulosity::QueryOpts::ASC)
+            {
+                if !furn.placed || occupied_beds.contains(&furn.coord) {
                     continue;
                 }
-                if let Some(nav_node) = graph.find_nearest_node(bed_pos) {
+                if let Some(nav_node) = graph.find_nearest_node(furn.coord) {
                     target_nodes.push(nav_node);
-                    nav_to_bed.push((nav_node, bed_pos, structure.id));
+                    nav_to_bed.push((nav_node, furn.coord, structure.id));
                 }
             }
         }
@@ -2475,18 +2359,25 @@ impl SimState {
         location: task::SleepLocation,
     ) {
         // Restore rest.
-        if let Some(creature) = self.creatures.get(&creature_id) {
+        if let Some(creature) = self.db.creatures.get(&creature_id) {
             let species_data = &self.species_table[&creature.species];
             let rest_max = species_data.rest_max;
             let restore = species_data.rest_per_sleep_tick;
-            let creature = self.creatures.get_mut(&creature_id).unwrap();
-            creature.rest = (creature.rest + restore).min(rest_max);
+            let _ = self
+                .db
+                .creatures
+                .modify_unchecked(&creature_id, |creature| {
+                    creature.rest = (creature.rest + restore).min(rest_max);
+                });
         }
 
         // Increment progress and check completion.
-        let done = if let Some(task) = self.tasks.get_mut(&task_id) {
-            task.progress += 1.0;
-            let first_tick = task.progress == 1.0;
+        let done = if let Some(task) = self.db.tasks.get(&task_id) {
+            let first_tick = task.progress == 0.0;
+            let done = task.progress + 1.0 >= task.total_cost;
+            let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+                t.progress += 1.0;
+            });
             // On first sleep tick, check for low ceiling.
             if first_tick {
                 let structure_id = match &location {
@@ -2496,25 +2387,21 @@ impl SimState {
                     task::SleepLocation::Ground => None,
                 };
                 if let Some(sid) = structure_id
-                    && let Some(structure) = self.structures.get(&sid)
+                    && let Some(structure) = self.db.structures.get(&sid)
                     && structure.build_type == BuildType::Building
                     && structure.height == 1
-                    && let Some(creature) = self.creatures.get_mut(&creature_id)
                 {
-                    creature.add_thought(
-                        ThoughtKind::LowCeiling(sid),
-                        self.tick,
-                        &self.config.thoughts,
-                    );
+                    self.add_creature_thought(creature_id, ThoughtKind::LowCeiling(sid));
                 }
             }
-            task.progress >= task.total_cost
+            done
         } else {
             true
         };
 
         // Also complete if rest is full.
         let rest_full = self
+            .db
             .creatures
             .get(&creature_id)
             .map(|c| {
@@ -2530,9 +2417,7 @@ impl SimState {
                 task::SleepLocation::Dormitory(sid) => ThoughtKind::SleptInDormitory(*sid),
                 task::SleepLocation::Ground => ThoughtKind::SleptOnGround,
             };
-            if let Some(creature) = self.creatures.get_mut(&creature_id) {
-                creature.add_thought(thought_kind, self.tick, &self.config.thoughts);
-            }
+            self.add_creature_thought(creature_id, thought_kind);
             self.complete_task(task_id);
         }
 
@@ -2547,9 +2432,12 @@ impl SimState {
     /// progress by 1.0. Completes when `progress >= total_cost`. No side
     /// effects beyond consuming the creature's time.
     fn do_mope(&mut self, creature_id: CreatureId, task_id: TaskId) {
-        let done = if let Some(task) = self.tasks.get_mut(&task_id) {
-            task.progress += 1.0;
-            task.progress >= task.total_cost
+        let done = if let Some(task) = self.db.tasks.get(&task_id) {
+            let done = task.progress + 1.0 >= task.total_cost;
+            let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+                t.progress += 1.0;
+            });
+            done
         } else {
             true
         };
@@ -2571,30 +2459,38 @@ impl SimState {
     /// **GoingToDestination phase (deposit):** Remove items from creature
     /// inventory, add to destination building, complete task.
     fn do_haul(&mut self, creature_id: CreatureId, task_id: TaskId) {
-        let task = match self.tasks.get(&task_id) {
-            Some(t) => t.kind.clone(),
+        let haul = match self.task_haul_data(task_id) {
+            Some(h) => h,
             None => return,
         };
-        let task::TaskKind::Haul {
-            item_kind,
-            quantity,
-            ref source,
-            destination,
-            phase,
-            destination_nav_node,
-        } = task
-        else {
-            return;
+        let source = match self.task_haul_source(task_id, haul.source_kind) {
+            Some(s) => s,
+            None => return,
         };
+        let destination =
+            match self.task_structure_ref(task_id, crate::db::TaskStructureRole::HaulDestination) {
+                Some(d) => d,
+                None => return,
+            };
+        let item_kind = haul.item_kind;
+        let quantity = haul.quantity;
+        let phase = haul.phase;
+        let destination_nav_node = haul.destination_nav_node;
 
         match phase {
             task::HaulPhase::GoingToSource => {
                 // Pick up items from source.
                 let picked_up = match &source {
                     task::HaulSource::GroundPile(pos) => {
-                        if let Some(pile) = self.ground_piles.get_mut(pos) {
-                            inventory::remove_reserved_items(
-                                &mut pile.items,
+                        if let Some(pile) = self
+                            .db
+                            .ground_piles
+                            .by_position(pos, tabulosity::QueryOpts::ASC)
+                            .into_iter()
+                            .next()
+                        {
+                            self.inv_remove_reserved_items(
+                                pile.inventory_id,
                                 item_kind,
                                 quantity,
                                 task_id,
@@ -2604,9 +2500,9 @@ impl SimState {
                         }
                     }
                     task::HaulSource::Building(sid) => {
-                        if let Some(structure) = self.structures.get_mut(sid) {
-                            inventory::remove_reserved_items(
-                                &mut structure.inventory,
+                        if let Some(structure) = self.db.structures.get(sid) {
+                            self.inv_remove_reserved_items(
+                                structure.inventory_id,
                                 item_kind,
                                 quantity,
                                 task_id,
@@ -2619,11 +2515,15 @@ impl SimState {
 
                 // Clean up empty ground piles.
                 if let task::HaulSource::GroundPile(pos) = &source
-                    && let Some(pile) = self.ground_piles.get(pos)
-                    && pile.items.is_empty()
+                    && let Some(pile) = self
+                        .db
+                        .ground_piles
+                        .by_position(pos, tabulosity::QueryOpts::ASC)
+                        .into_iter()
+                        .next()
+                    && self.inv_items(pile.inventory_id).is_empty()
                 {
-                    let pos = *pos;
-                    self.ground_piles.remove(&pos);
+                    let _ = self.db.ground_piles.remove_no_fk(&pile.id);
                 }
 
                 if picked_up == 0 {
@@ -2637,35 +2537,37 @@ impl SimState {
                 }
 
                 // Add items to creature inventory.
-                if let Some(creature) = self.creatures.get_mut(&creature_id) {
-                    inventory::add_item(&mut creature.inventory, item_kind, picked_up, None, None);
-                }
+                let inv_id = self.creature_inv(creature_id);
+                self.inv_add_item(inv_id, item_kind, picked_up, None, None);
 
                 // Switch to GoingToDestination phase.
-                if let Some(task) = self.tasks.get_mut(&task_id) {
-                    task.kind = task::TaskKind::Haul {
-                        item_kind,
-                        quantity: picked_up,
-                        source: source.clone(),
-                        destination,
-                        phase: task::HaulPhase::GoingToDestination,
-                        destination_nav_node,
-                    };
+                // Update haul extension data.
+                let mut updated_haul = haul.clone();
+                updated_haul.phase = task::HaulPhase::GoingToDestination;
+                updated_haul.quantity = picked_up;
+                let _ = self.db.task_haul_data.update_no_fk(updated_haul);
+                // Update task location for the new destination.
+                let _ = self.db.tasks.modify_unchecked(&task_id, |task| {
                     task.location = destination_nav_node;
-                }
+                });
                 // Clear cached path so creature re-pathfinds to new destination.
-                if let Some(creature) = self.creatures.get_mut(&creature_id) {
-                    creature.path = None;
-                }
+                let _ = self
+                    .db
+                    .creatures
+                    .modify_unchecked(&creature_id, |creature| {
+                        creature.path = None;
+                    });
             }
             task::HaulPhase::GoingToDestination => {
                 // Deposit items into destination building.
-                if let Some(creature) = self.creatures.get_mut(&creature_id) {
-                    inventory::remove_item(&mut creature.inventory, item_kind, quantity);
-                }
-                if let Some(structure) = self.structures.get_mut(&destination) {
-                    inventory::add_item(&mut structure.inventory, item_kind, quantity, None, None);
-                }
+                self.inv_remove_item(self.creature_inv(creature_id), item_kind, quantity);
+                self.inv_add_item(
+                    self.structure_inv(destination),
+                    item_kind,
+                    quantity,
+                    None,
+                    None,
+                );
                 self.complete_task(task_id);
             }
         }
@@ -2682,52 +2584,49 @@ impl SimState {
     /// - **GoingToSource:** Release reserved items at source.
     /// - **GoingToDestination:** Creature is carrying items — drop as ground pile.
     fn cleanup_haul_task(&mut self, creature_id: CreatureId, task_id: TaskId) {
-        let task_kind = match self.tasks.get(&task_id) {
-            Some(t) => t.kind.clone(),
+        let haul = match self.task_haul_data(task_id) {
+            Some(h) => h,
             None => return,
         };
-        let task::TaskKind::Haul {
-            item_kind,
-            quantity,
-            ref source,
-            phase,
-            ..
-        } = task_kind
-        else {
-            return;
+        let source = match self.task_haul_source(task_id, haul.source_kind) {
+            Some(s) => s,
+            None => return,
         };
+        let item_kind = haul.item_kind;
+        let quantity = haul.quantity;
+        let phase = haul.phase;
 
         match phase {
             task::HaulPhase::GoingToSource => {
                 // Clear reservations at the source.
-                match source {
+                match &source {
                     task::HaulSource::GroundPile(pos) => {
-                        if let Some(pile) = self.ground_piles.get_mut(pos) {
-                            inventory::clear_reservations(&mut pile.items, task_id);
+                        if let Some(pile) = self
+                            .db
+                            .ground_piles
+                            .by_position(pos, tabulosity::QueryOpts::ASC)
+                            .into_iter()
+                            .next()
+                        {
+                            self.inv_clear_reservations(pile.inventory_id, task_id);
                         }
                     }
                     task::HaulSource::Building(sid) => {
-                        if let Some(structure) = self.structures.get_mut(sid) {
-                            inventory::clear_reservations(&mut structure.inventory, task_id);
+                        if let Some(structure) = self.db.structures.get(sid) {
+                            self.inv_clear_reservations(structure.inventory_id, task_id);
                         }
                     }
                 }
             }
             task::HaulPhase::GoingToDestination => {
                 // Creature is carrying items — drop as ground pile at current position.
-                if let Some(creature) = self.creatures.get_mut(&creature_id) {
-                    let removed =
-                        inventory::remove_item(&mut creature.inventory, item_kind, quantity);
+                if let Some(creature) = self.db.creatures.get(&creature_id) {
+                    let pos = creature.position;
+                    let removed = self.inv_remove_item(creature.inventory_id, item_kind, quantity);
                     if removed > 0 {
-                        let pos = creature.position;
-                        let pile =
-                            self.ground_piles
-                                .entry(pos)
-                                .or_insert_with(|| inventory::GroundPile {
-                                    position: pos,
-                                    items: Vec::new(),
-                                });
-                        inventory::add_item(&mut pile.items, item_kind, removed, None, None);
+                        let pile_id = self.ensure_ground_pile(pos);
+                        let pile = self.db.ground_piles.get(&pile_id).unwrap();
+                        self.inv_add_item(pile.inventory_id, item_kind, removed, None, None);
                     }
                 }
             }
@@ -2738,48 +2637,42 @@ impl SimState {
     /// when complete, consumes reserved fruit and produces bread in the
     /// kitchen's inventory.
     fn do_cook(&mut self, creature_id: CreatureId, task_id: TaskId) {
-        let total_cost = match self.tasks.get(&task_id) {
+        let total_cost = match self.db.tasks.get(&task_id) {
             Some(t) => t.total_cost,
             None => return,
         };
-        let structure_id = match self.tasks.get(&task_id) {
-            Some(t) => match &t.kind {
-                task::TaskKind::Cook { structure_id } => *structure_id,
-                _ => return,
-            },
-            None => return,
-        };
+        let structure_id =
+            match self.task_structure_ref(task_id, crate::db::TaskStructureRole::CookAt) {
+                Some(s) => s,
+                None => return,
+            };
 
         // Increment progress.
-        if let Some(t) = self.tasks.get_mut(&task_id) {
+        let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
             t.progress += 1.0;
-        }
+        });
 
-        let progress = self.tasks.get(&task_id).map(|t| t.progress).unwrap_or(0.0);
+        let progress = self
+            .db
+            .tasks
+            .get(&task_id)
+            .map(|t| t.progress)
+            .unwrap_or(0.0);
         if progress >= total_cost {
             // Cooking complete — consume fruit, produce bread.
             let fruit_input = self.config.cook_fruit_input;
             let bread_output = self.config.cook_bread_output;
-            if let Some(structure) = self.structures.get_mut(&structure_id) {
-                let removed = inventory::remove_reserved_items(
-                    &mut structure.inventory,
-                    inventory::ItemKind::Fruit,
-                    fruit_input,
-                    task_id,
-                );
-                if removed < fruit_input {
-                    // Fruit somehow missing — release any remaining reservations.
-                    inventory::clear_reservations(&mut structure.inventory, task_id);
-                } else {
-                    // Add bread to kitchen inventory (unowned, unreserved).
-                    inventory::add_item(
-                        &mut structure.inventory,
-                        inventory::ItemKind::Bread,
-                        bread_output,
-                        None,
-                        None,
-                    );
-                }
+            let inv_id = self.structure_inv(structure_id);
+            let removed = self.inv_remove_reserved_items(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                fruit_input,
+                task_id,
+            );
+            if removed < fruit_input {
+                self.inv_clear_reservations(inv_id, task_id);
+            } else {
+                self.inv_add_item(inv_id, inventory::ItemKind::Bread, bread_output, None, None);
             }
             self.complete_task(task_id);
         }
@@ -2795,18 +2688,15 @@ impl SimState {
     /// the kitchen's inventory and set the task to Complete so the kitchen
     /// monitor can create a fresh task on the next heartbeat.
     fn cleanup_cook_task(&mut self, task_id: TaskId) {
-        let structure_id = match self.tasks.get(&task_id) {
-            Some(t) => match &t.kind {
-                task::TaskKind::Cook { structure_id } => *structure_id,
-                _ => return,
-            },
-            None => return,
-        };
-        if let Some(structure) = self.structures.get_mut(&structure_id) {
-            inventory::clear_reservations(&mut structure.inventory, task_id);
-        }
-        if let Some(t) = self.tasks.get_mut(&task_id) {
+        let structure_id =
+            match self.task_structure_ref(task_id, crate::db::TaskStructureRole::CookAt) {
+                Some(s) => s,
+                None => return,
+            };
+        self.inv_clear_reservations(self.structure_inv(structure_id), task_id);
+        if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.state = task::TaskState::Complete;
+            let _ = self.db.tasks.update_no_fk(t);
         }
     }
 
@@ -2815,11 +2705,13 @@ impl SimState {
     /// can create a replacement on the next heartbeat.
     fn cleanup_harvest_task(&mut self, task_id: TaskId) {
         let is_harvest = self
+            .db
             .tasks
             .get(&task_id)
-            .is_some_and(|t| matches!(t.kind, task::TaskKind::Harvest { .. }));
-        if is_harvest && let Some(t) = self.tasks.get_mut(&task_id) {
+            .is_some_and(|t| t.kind_tag == crate::db::TaskKindTag::Harvest);
+        if is_harvest && let Some(mut t) = self.db.tasks.get(&task_id) {
             t.state = task::TaskState::Complete;
+            let _ = self.db.tasks.update_no_fk(t);
         }
     }
 
@@ -2829,20 +2721,20 @@ impl SimState {
     fn process_harvest_tasks(&mut self) {
         // 1. Sum total fruit demand across logistics-enabled buildings.
         let mut total_demand: u32 = 0;
-        for structure in self.structures.values() {
+        for structure in self.db.structures.iter_all() {
             if structure.logistics_priority.is_none() {
                 continue;
             }
-            for want in &structure.logistics_wants {
-                if want.item_kind == inventory::ItemKind::Fruit {
-                    let current =
-                        inventory::item_count(&structure.inventory, inventory::ItemKind::Fruit);
-                    let in_transit =
-                        self.count_in_transit_items(structure.id, inventory::ItemKind::Fruit);
-                    let effective = current + in_transit;
-                    if want.target_quantity > effective {
-                        total_demand += want.target_quantity - effective;
-                    }
+            let fruit_target =
+                self.inv_want_target(structure.inventory_id, inventory::ItemKind::Fruit);
+            if fruit_target > 0 {
+                let current =
+                    self.inv_item_count(structure.inventory_id, inventory::ItemKind::Fruit);
+                let in_transit =
+                    self.count_in_transit_items(structure.id, inventory::ItemKind::Fruit);
+                let effective = current + in_transit;
+                if fruit_target > effective {
+                    total_demand += fruit_target - effective;
                 }
             }
         }
@@ -2855,26 +2747,25 @@ impl SimState {
         // logistics-enabled building inventories). Non-logistics buildings are excluded
         // because their fruit can't be hauled out.
         let mut available_items: u32 = 0;
-        for pile in self.ground_piles.values() {
+        for pile in self.db.ground_piles.iter_all() {
             available_items +=
-                inventory::unreserved_item_count(&pile.items, inventory::ItemKind::Fruit);
+                self.inv_unreserved_item_count(pile.inventory_id, inventory::ItemKind::Fruit);
         }
-        for structure in self.structures.values() {
+        for structure in self.db.structures.iter_all() {
             if structure.logistics_priority.is_some() {
-                available_items += inventory::unreserved_item_count(
-                    &structure.inventory,
-                    inventory::ItemKind::Fruit,
-                );
+                available_items += self
+                    .inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Fruit);
             }
         }
 
         // 3. Count pending Harvest tasks (non-Complete).
         let being_harvested: u32 = self
+            .db
             .tasks
-            .values()
+            .iter_all()
             .filter(|t| {
                 t.state != task::TaskState::Complete
-                    && matches!(t.kind, task::TaskKind::Harvest { .. })
+                    && t.kind_tag == crate::db::TaskKindTag::Harvest
             })
             .count() as u32;
 
@@ -2885,15 +2776,19 @@ impl SimState {
         }
 
         // 5. Collect unclaimed fruit positions (skip those with existing Harvest or EatFruit tasks).
+        // FruitTarget role is shared by both Harvest and EatFruit tasks.
         let claimed_positions: Vec<VoxelCoord> = self
-            .tasks
-            .values()
-            .filter(|t| t.state != task::TaskState::Complete)
-            .filter_map(|t| match &t.kind {
-                task::TaskKind::Harvest { fruit_pos } => Some(*fruit_pos),
-                task::TaskKind::EatFruit { fruit_pos } => Some(*fruit_pos),
-                _ => None,
+            .db
+            .task_voxel_refs
+            .iter_all()
+            .filter(|r| r.role == crate::db::TaskVoxelRole::FruitTarget)
+            .filter(|r| {
+                self.db
+                    .tasks
+                    .get(&r.task_id)
+                    .is_some_and(|t| t.state != task::TaskState::Complete)
             })
+            .map(|r| r.coord)
             .collect();
 
         let mut unclaimed_fruit: Vec<(VoxelCoord, NavNodeId)> = Vec::new();
@@ -2918,13 +2813,12 @@ impl SimState {
                 kind: task::TaskKind::Harvest { fruit_pos },
                 state: task::TaskState::Available,
                 location: nav_node,
-                assignees: Vec::new(),
                 progress: 0.0,
                 total_cost: 0.0,
                 required_species: Some(Species::Elf),
                 origin: task::TaskOrigin::Automated,
             };
-            self.tasks.insert(task_id, new_task);
+            self.insert_task(new_task);
         }
     }
 
@@ -2935,9 +2829,10 @@ impl SimState {
 
         // Collect buildings with logistics enabled, sorted by priority desc then StructureId asc.
         let mut logistics_buildings: Vec<(StructureId, u8)> = self
+            .db
             .structures
-            .iter()
-            .filter_map(|(&sid, s)| s.logistics_priority.map(|p| (sid, p)))
+            .iter_all()
+            .filter_map(|s| s.logistics_priority.map(|p| (s.id, p)))
             .collect();
         logistics_buildings.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
@@ -2949,10 +2844,11 @@ impl SimState {
                 break;
             }
 
-            let wants = match self.structures.get(building_id) {
-                Some(s) => s.logistics_wants.clone(),
+            let inv_id = match self.db.structures.get(building_id) {
+                Some(s) => s.inventory_id,
                 None => continue,
             };
+            let wants = self.inv_wants(inv_id);
 
             for want in &wants {
                 if tasks_created >= max_tasks {
@@ -2961,9 +2857,10 @@ impl SimState {
 
                 // Count current inventory in this building for this item kind.
                 let current = self
+                    .db
                     .structures
                     .get(building_id)
-                    .map(|s| inventory::item_count(&s.inventory, want.item_kind))
+                    .map(|s| self.inv_item_count(s.inventory_id, want.item_kind))
                     .unwrap_or(0);
 
                 // Count in-transit items (from active Haul tasks targeting this building).
@@ -2985,7 +2882,7 @@ impl SimState {
                     // Find destination nav node.
                     let dest_nav_node = match self
                         .nav_graph
-                        .find_nearest_node(self.structures[building_id].anchor)
+                        .find_nearest_node(self.db.structures.get(building_id).unwrap().anchor)
                     {
                         Some(n) => n,
                         None => continue,
@@ -3008,13 +2905,12 @@ impl SimState {
                         },
                         state: task::TaskState::Available,
                         location: source_nav_node,
-                        assignees: Vec::new(),
                         progress: 0.0,
                         total_cost: 0.0,
                         required_species: Some(Species::Elf),
                         origin: task::TaskOrigin::Automated,
                     };
-                    self.tasks.insert(task_id, new_task);
+                    self.insert_task(new_task);
                     tasks_created += 1;
                 }
             }
@@ -3028,11 +2924,12 @@ impl SimState {
     fn process_kitchen_monitor(&mut self) {
         // Collect kitchen IDs to avoid borrowing self during iteration.
         let kitchen_ids: Vec<StructureId> = self
+            .db
             .structures
-            .iter()
-            .filter_map(|(&sid, s)| {
+            .iter_all()
+            .filter_map(|s| {
                 if s.furnishing == Some(FurnishingType::Kitchen) && s.cooking_enabled {
-                    Some(sid)
+                    Some(s.id)
                 } else {
                     None
                 }
@@ -3043,36 +2940,45 @@ impl SimState {
         let cook_work_ticks = self.config.cook_work_ticks;
 
         for sid in kitchen_ids {
-            let structure = match self.structures.get(&sid) {
+            let structure = match self.db.structures.get(&sid) {
                 Some(s) => s,
                 None => continue,
             };
 
             // Skip if bread target reached.
             let bread_count =
-                inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Bread);
+                self.inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Bread);
             if bread_count >= structure.cooking_bread_target {
                 continue;
             }
 
             // Skip if not enough unreserved fruit.
             let fruit_count =
-                inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Fruit);
+                self.inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Fruit);
             if fruit_count < cook_fruit_input {
                 continue;
             }
 
             // Skip if there's already an active (non-Complete) Cook task for this kitchen.
-            let has_active_cook = self.tasks.values().any(|t| {
-                t.state != task::TaskState::Complete
-                    && matches!(t.kind, task::TaskKind::Cook { structure_id } if structure_id == sid)
-            });
+            let has_active_cook = self
+                .db
+                .task_structure_refs
+                .by_structure_id(&sid, tabulosity::QueryOpts::ASC)
+                .iter()
+                .any(|r| {
+                    r.role == crate::db::TaskStructureRole::CookAt
+                        && self
+                            .db
+                            .tasks
+                            .get(&r.task_id)
+                            .is_some_and(|t| t.state != task::TaskState::Complete)
+                });
             if has_active_cook {
                 continue;
             }
 
             // Find nav node inside the kitchen.
-            let interior_pos = self.structures[&sid].anchor;
+            let interior_pos = self.db.structures.get(&sid).unwrap().anchor;
             let location = match self.nav_graph.find_nearest_node(interior_pos) {
                 Some(n) => n,
                 None => continue,
@@ -3080,8 +2986,8 @@ impl SimState {
 
             // Create Cook task with reserved fruit.
             let task_id = TaskId::new(&mut self.rng);
-            inventory::reserve_items(
-                &mut self.structures.get_mut(&sid).unwrap().inventory,
+            self.inv_reserve_items(
+                self.structure_inv(sid),
                 inventory::ItemKind::Fruit,
                 cook_fruit_input,
                 task_id,
@@ -3092,13 +2998,12 @@ impl SimState {
                 kind: task::TaskKind::Cook { structure_id: sid },
                 state: task::TaskState::Available,
                 location,
-                assignees: Vec::new(),
                 progress: 0.0,
                 total_cost: cook_work_ticks as f32,
                 required_species: Some(Species::Elf),
                 origin: task::TaskOrigin::Automated,
             };
-            self.tasks.insert(task_id, new_task);
+            self.insert_task(new_task);
         }
     }
 
@@ -3109,20 +3014,22 @@ impl SimState {
         structure_id: StructureId,
         item_kind: inventory::ItemKind,
     ) -> u32 {
-        self.tasks
-            .values()
-            .filter_map(|t| {
-                if t.state == task::TaskState::Complete {
+        // Find haul tasks targeting this structure via HaulDestination refs.
+        self.db
+            .task_structure_refs
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|r| r.role == crate::db::TaskStructureRole::HaulDestination)
+            .filter_map(|r| {
+                let task = self.db.tasks.get(&r.task_id)?;
+                if task.state == task::TaskState::Complete {
                     return None;
                 }
-                match &t.kind {
-                    task::TaskKind::Haul {
-                        item_kind: ik,
-                        quantity,
-                        destination,
-                        ..
-                    } if *destination == structure_id && *ik == item_kind => Some(*quantity),
-                    _ => None,
+                let haul = self.task_haul_data(r.task_id)?;
+                if haul.item_kind == item_kind {
+                    Some(haul.quantity)
+                } else {
+                    None
                 }
             })
             .sum()
@@ -3141,13 +3048,13 @@ impl SimState {
         requester_priority: u8,
     ) -> Option<(task::HaulSource, u32, NavNodeId)> {
         // Check ground piles first.
-        for (pos, pile) in &self.ground_piles {
-            let available = inventory::unreserved_item_count(&pile.items, item_kind);
+        for pile in self.db.ground_piles.iter_all() {
+            let available = self.inv_unreserved_item_count(pile.inventory_id, item_kind);
             if available > 0
-                && let Some(nav_node) = self.nav_graph.find_nearest_node(*pos)
+                && let Some(nav_node) = self.nav_graph.find_nearest_node(pile.position)
             {
                 return Some((
-                    task::HaulSource::GroundPile(*pos),
+                    task::HaulSource::GroundPile(pile.position),
                     available.min(needed),
                     nav_node,
                 ));
@@ -3155,7 +3062,8 @@ impl SimState {
         }
 
         // Check other buildings with strictly lower priority.
-        for (&sid, structure) in &self.structures {
+        for structure in self.db.structures.iter_all() {
+            let sid = structure.id;
             if sid == exclude_building {
                 continue;
             }
@@ -3165,7 +3073,7 @@ impl SimState {
             if src_priority >= requester_priority {
                 continue;
             }
-            let available = inventory::unreserved_item_count(&structure.inventory, item_kind);
+            let available = self.inv_unreserved_item_count(structure.inventory_id, item_kind);
             if available > 0
                 && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
             {
@@ -3180,20 +3088,16 @@ impl SimState {
         // Check logistics-enabled buildings (any priority) for surplus items.
         // A building has surplus when it holds more unreserved items of this kind
         // than its own logistics_wants target for that kind.
-        for (&sid, structure) in &self.structures {
+        for structure in self.db.structures.iter_all() {
+            let sid = structure.id;
             if sid == exclude_building {
                 continue;
             }
             if structure.logistics_priority.is_none() {
                 continue;
             }
-            let held = inventory::unreserved_item_count(&structure.inventory, item_kind);
-            let wanted = structure
-                .logistics_wants
-                .iter()
-                .find(|w| w.item_kind == item_kind)
-                .map(|w| w.target_quantity)
-                .unwrap_or(0);
+            let held = self.inv_unreserved_item_count(structure.inventory_id, item_kind);
+            let wanted = self.inv_want_target(structure.inventory_id, item_kind);
             let surplus = held.saturating_sub(wanted);
             if surplus > 0
                 && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
@@ -3219,18 +3123,19 @@ impl SimState {
     ) {
         match source {
             task::HaulSource::GroundPile(pos) => {
-                if let Some(pile) = self.ground_piles.get_mut(pos) {
-                    inventory::reserve_items(&mut pile.items, item_kind, quantity, task_id);
+                if let Some(pile) = self
+                    .db
+                    .ground_piles
+                    .by_position(pos, tabulosity::QueryOpts::ASC)
+                    .into_iter()
+                    .next()
+                {
+                    self.inv_reserve_items(pile.inventory_id, item_kind, quantity, task_id);
                 }
             }
             task::HaulSource::Building(sid) => {
-                if let Some(structure) = self.structures.get_mut(sid) {
-                    inventory::reserve_items(
-                        &mut structure.inventory,
-                        item_kind,
-                        quantity,
-                        task_id,
-                    );
+                if let Some(structure) = self.db.structures.get(sid) {
+                    self.inv_reserve_items(structure.inventory_id, item_kind, quantity, task_id);
                 }
             }
         }
@@ -3247,13 +3152,13 @@ impl SimState {
         needed: u32,
     ) -> Option<(task::HaulSource, u32, NavNodeId)> {
         // Check ground piles.
-        for (pos, pile) in &self.ground_piles {
-            let available = inventory::count_unowned_unreserved(&pile.items, kind);
+        for pile in self.db.ground_piles.iter_all() {
+            let available = self.inv_count_unowned_unreserved(pile.inventory_id, kind);
             if available > 0
-                && let Some(nav_node) = self.nav_graph.find_nearest_node(*pos)
+                && let Some(nav_node) = self.nav_graph.find_nearest_node(pile.position)
             {
                 return Some((
-                    task::HaulSource::GroundPile(*pos),
+                    task::HaulSource::GroundPile(pile.position),
                     available.min(needed),
                     nav_node,
                 ));
@@ -3261,8 +3166,9 @@ impl SimState {
         }
 
         // Check building inventories.
-        for (&sid, structure) in &self.structures {
-            let available = inventory::count_unowned_unreserved(&structure.inventory, kind);
+        for structure in self.db.structures.iter_all() {
+            let sid = structure.id;
+            let available = self.inv_count_unowned_unreserved(structure.inventory_id, kind);
             if available > 0
                 && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
             {
@@ -3282,7 +3188,7 @@ impl SimState {
     /// Only fires for elves (only species with meaningful thoughts). Uses a
     /// Poisson-like integer probability: `roll % mean < elapsed`.
     fn check_mope(&mut self, creature_id: CreatureId) {
-        let creature = match self.creatures.get(&creature_id) {
+        let creature = match self.db.creatures.get(&creature_id) {
             Some(c) => c,
             None => return,
         };
@@ -3292,7 +3198,7 @@ impl SimState {
             return;
         }
 
-        let (_, tier) = creature.mood(&self.config.mood);
+        let (_, tier) = self.mood_for_creature(creature_id);
         let mean = self.config.mood_consequences.mope_mean_ticks(tier);
         if mean == 0 {
             return; // This tier never mopes.
@@ -3311,7 +3217,7 @@ impl SimState {
             }
             let has_autonomous_task = creature
                 .current_task
-                .and_then(|tid| self.tasks.get(&tid))
+                .and_then(|tid| self.db.tasks.get(&tid))
                 .is_some_and(|t| t.origin == task::TaskOrigin::Autonomous);
             if has_autonomous_task {
                 return;
@@ -3340,7 +3246,8 @@ impl SimState {
             .find_assigned_home_bed(creature_id)
             .map(|(_, nav_node, _)| nav_node)
             .or_else(|| {
-                self.creatures
+                self.db
+                    .creatures
                     .get(&creature_id)
                     .and_then(|c| c.current_node)
             });
@@ -3356,15 +3263,15 @@ impl SimState {
             kind: task::TaskKind::Mope,
             state: task::TaskState::InProgress,
             location: mope_node,
-            assignees: vec![creature_id],
             progress: 0.0,
             total_cost: duration as f32,
             required_species: None,
             origin: task::TaskOrigin::Autonomous,
         };
-        self.tasks.insert(task_id, new_task);
-        if let Some(creature) = self.creatures.get_mut(&creature_id) {
+        self.insert_task(new_task);
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = Some(task_id);
+            let _ = self.db.creatures.update_no_fk(creature);
         }
     }
 
@@ -3374,19 +3281,19 @@ impl SimState {
     fn check_creature_wants(&mut self, creature_id: CreatureId) {
         // Gather want info from creature (borrow creature briefly, then release).
         let owned_counts = {
-            let creature = match self.creatures.get(&creature_id) {
+            let creature = match self.db.creatures.get(&creature_id) {
                 Some(c) => c,
                 None => return,
             };
-            if creature.wants.is_empty() {
+            let wants = self.inv_wants(creature.inventory_id);
+            if wants.is_empty() {
                 return;
             }
-            creature
-                .wants
+            wants
                 .iter()
                 .map(|w| {
                     let owned =
-                        inventory::count_owned(&creature.inventory, w.item_kind, creature_id);
+                        self.inv_count_owned(creature.inventory_id, w.item_kind, creature_id);
                     (w.item_kind, w.target_quantity, owned)
                 })
                 .collect::<Vec<(inventory::ItemKind, u32, u32)>>()
@@ -3409,9 +3316,15 @@ impl SimState {
             let task_id = TaskId::new(&mut self.rng);
             match &source {
                 task::HaulSource::GroundPile(pos) => {
-                    if let Some(pile) = self.ground_piles.get_mut(pos) {
-                        inventory::reserve_unowned_items(
-                            &mut pile.items,
+                    if let Some(pile) = self
+                        .db
+                        .ground_piles
+                        .by_position(pos, tabulosity::QueryOpts::ASC)
+                        .into_iter()
+                        .next()
+                    {
+                        self.inv_reserve_unowned_items(
+                            pile.inventory_id,
                             *item_kind,
                             quantity,
                             task_id,
@@ -3419,9 +3332,9 @@ impl SimState {
                     }
                 }
                 task::HaulSource::Building(sid) => {
-                    if let Some(structure) = self.structures.get_mut(sid) {
-                        inventory::reserve_unowned_items(
-                            &mut structure.inventory,
+                    if let Some(structure) = self.db.structures.get(sid) {
+                        self.inv_reserve_unowned_items(
+                            structure.inventory_id,
                             *item_kind,
                             quantity,
                             task_id,
@@ -3440,15 +3353,15 @@ impl SimState {
                 },
                 state: task::TaskState::InProgress,
                 location: nav_node,
-                assignees: vec![creature_id],
                 progress: 0.0,
                 total_cost: 0.0,
                 required_species: None,
                 origin: task::TaskOrigin::Autonomous,
             };
-            self.tasks.insert(task_id, new_task);
-            if let Some(creature) = self.creatures.get_mut(&creature_id) {
+            self.insert_task(new_task);
+            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                 creature.current_task = Some(task_id);
+                let _ = self.db.creatures.update_no_fk(creature);
             }
             return; // One task per heartbeat.
         }
@@ -3461,7 +3374,7 @@ impl SimState {
         task_location: NavNodeId,
         current_node: NavNodeId,
     ) {
-        let creature = match self.creatures.get(&creature_id) {
+        let creature = match self.db.creatures.get(&creature_id) {
             Some(c) => c,
             None => return,
         };
@@ -3527,11 +3440,15 @@ impl SimState {
             let first_dest = path_result.nodes[1];
 
             // Store remaining path for future activations.
-            let creature = self.creatures.get_mut(&creature_id).unwrap();
-            creature.path = Some(CreaturePath {
-                remaining_nodes: path_result.nodes[1..].to_vec(),
-                remaining_edge_indices: path_result.edge_indices.to_vec(),
-            });
+            let _ = self
+                .db
+                .creatures
+                .modify_unchecked(&creature_id, |creature| {
+                    creature.path = Some(CreaturePath {
+                        remaining_nodes: path_result.nodes[1..].to_vec(),
+                        remaining_edge_indices: path_result.edge_indices.to_vec(),
+                    });
+                });
 
             (first_edge, first_dest)
         };
@@ -3550,26 +3467,31 @@ impl SimState {
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
         let dest_pos = graph.node(dest_node).position;
 
-        let creature = self.creatures.get_mut(&creature_id).unwrap();
-        let old_pos = creature.position;
-        creature.position = dest_pos;
-        creature.current_node = Some(dest_node);
+        let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
+        let tick = self.tick;
+        let _ = self
+            .db
+            .creatures
+            .modify_unchecked(&creature_id, |creature| {
+                creature.position = dest_pos;
+                creature.current_node = Some(dest_node);
 
-        // Set movement interpolation metadata for smooth rendering.
-        creature.move_from = Some(old_pos);
-        creature.move_to = Some(dest_pos);
-        creature.move_start_tick = self.tick;
-        creature.move_end_tick = self.tick + delay;
+                // Set movement interpolation metadata for smooth rendering.
+                creature.move_from = Some(old_pos);
+                creature.move_to = Some(dest_pos);
+                creature.move_start_tick = tick;
+                creature.move_end_tick = tick + delay;
 
-        // Advance stored path.
-        if let Some(ref mut path) = creature.path {
-            if !path.remaining_nodes.is_empty() {
-                path.remaining_nodes.remove(0);
-            }
-            if !path.remaining_edge_indices.is_empty() {
-                path.remaining_edge_indices.remove(0);
-            }
-        }
+                // Advance stored path.
+                if let Some(ref mut path) = creature.path {
+                    if !path.remaining_nodes.is_empty() {
+                        path.remaining_nodes.remove(0);
+                    }
+                    if !path.remaining_edge_indices.is_empty() {
+                        path.remaining_edge_indices.remove(0);
+                    }
+                }
+            });
 
         // Schedule next activation.
         self.event_queue.schedule(
@@ -3580,27 +3502,841 @@ impl SimState {
 
     /// Remove a creature from its assigned task.
     fn unassign_creature_from_task(&mut self, creature_id: CreatureId) {
-        let task_id = match self.creatures.get(&creature_id) {
+        let task_id = match self.db.creatures.get(&creature_id) {
             Some(c) => c.current_task,
             None => return,
         };
         if let Some(tid) = task_id
-            && let Some(task) = self.tasks.get_mut(&tid)
+            && let Some(mut task) = self.db.tasks.get(&tid)
         {
-            task.assignees.retain(|&id| id != creature_id);
-            if task.assignees.is_empty() && matches!(task.state, task::TaskState::InProgress) {
+            // Check if any other creature is still assigned to this task.
+            let remaining = self
+                .db
+                .creatures
+                .by_current_task(&Some(tid), tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .filter(|c| c.id != creature_id)
+                .count();
+            if remaining == 0 && matches!(task.state, task::TaskState::InProgress) {
                 task.state = task::TaskState::Available;
+                let _ = self.db.tasks.update_no_fk(task);
             }
         }
-        if let Some(creature) = self.creatures.get_mut(&creature_id) {
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = None;
             creature.path = None;
+            let _ = self.db.creatures.update_no_fk(creature);
         }
+    }
+
+    /// Add a thought to a creature via the thoughts table, with dedup and cap.
+    pub(crate) fn add_creature_thought(&mut self, creature_id: CreatureId, kind: ThoughtKind) {
+        let cooldown = self.config.thoughts.dedup_ticks(&kind);
+        let existing = self
+            .db
+            .thoughts
+            .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC);
+        // Dedup: skip if same kind was added within cooldown.
+        if existing
+            .iter()
+            .rev()
+            .any(|t| t.kind == kind && self.tick.saturating_sub(t.tick) < cooldown)
+        {
+            return;
+        }
+        // Insert the new thought.
+        let _ = self.db.thoughts.insert_auto_no_fk(|id| crate::db::Thought {
+            id,
+            creature_id,
+            kind: kind.clone(),
+            tick: self.tick,
+        });
+        // Cap enforcement: remove oldest if over cap.
+        let thoughts = self
+            .db
+            .thoughts
+            .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC);
+        if thoughts.len() > self.config.thoughts.cap {
+            // Remove the oldest (first in ASC order by PK, which is insertion order).
+            let _ = self.db.thoughts.remove_no_fk(&thoughts[0].id);
+        }
+    }
+
+    /// Remove expired thoughts for a creature.
+    pub(crate) fn expire_creature_thoughts(&mut self, creature_id: CreatureId) {
+        let thoughts = self
+            .db
+            .thoughts
+            .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC);
+        for t in &thoughts {
+            if self.tick.saturating_sub(t.tick) >= self.config.thoughts.expiry_ticks(&t.kind) {
+                let _ = self.db.thoughts.remove_no_fk(&t.id);
+            }
+        }
+    }
+
+    /// Compute mood score and tier for a creature from the thoughts table.
+    pub(crate) fn mood_for_creature(
+        &self,
+        creature_id: CreatureId,
+    ) -> (i32, crate::types::MoodTier) {
+        let score: i32 = self
+            .db
+            .thoughts
+            .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .map(|t| self.config.mood.mood_weight(&t.kind))
+            .sum();
+        (score, self.config.mood.tier(score))
+    }
+
+    // -----------------------------------------------------------------------
+    // Inventory helpers (operate on item_stacks table via inventory_id)
+    // -----------------------------------------------------------------------
+
+    /// Create a new Inventory row and return its ID.
+    fn create_inventory(&mut self, owner_kind: crate::db::InventoryOwnerKind) -> InventoryId {
+        self.db
+            .inventories
+            .insert_auto_no_fk(|id| crate::db::Inventory { id, owner_kind })
+            .unwrap()
+    }
+
+    /// Add items to an inventory, stacking with existing items that match
+    /// `(kind, owner, reserved_by)`. Returns the resulting quantity.
+    fn inv_add_item(
+        &mut self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        quantity: u32,
+        owner: Option<CreatureId>,
+        reserved_by: Option<TaskId>,
+    ) -> u32 {
+        // Try to stack with an existing item_stack.
+        for stack in self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        {
+            if stack.kind == kind && stack.owner == owner && stack.reserved_by == reserved_by {
+                let new_qty = stack.quantity + quantity;
+                let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                    s.quantity = new_qty;
+                });
+                return new_qty;
+            }
+        }
+        // No matching stack — create a new one.
+        let _ = self
+            .db
+            .item_stacks
+            .insert_auto_no_fk(|id| crate::db::ItemStack {
+                id,
+                inventory_id: inv_id,
+                kind,
+                quantity,
+                owner,
+                reserved_by,
+            });
+        quantity
+    }
+
+    /// Remove up to `quantity` items of the given kind from an inventory.
+    /// Returns the amount actually removed. Drops stacks that reach zero.
+    fn inv_remove_item(
+        &mut self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        quantity: u32,
+    ) -> u32 {
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let mut remaining = quantity;
+        let mut removed = 0u32;
+        for stack in &stacks {
+            if stack.kind == kind && remaining > 0 {
+                let take = remaining.min(stack.quantity);
+                let new_qty = stack.quantity - take;
+                if new_qty == 0 {
+                    let _ = self.db.item_stacks.remove_no_fk(&stack.id);
+                } else {
+                    let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                        s.quantity = new_qty;
+                    });
+                }
+                remaining -= take;
+                removed += take;
+            }
+        }
+        removed
+    }
+
+    /// Count the total quantity of a given item kind in an inventory.
+    pub fn inv_item_count(&self, inv_id: InventoryId, kind: inventory::ItemKind) -> u32 {
+        self.db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|s| s.kind == kind)
+            .map(|s| s.quantity)
+            .sum()
+    }
+
+    /// Count items of a given kind owned by a specific creature.
+    fn inv_count_owned(
+        &self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        owner: CreatureId,
+    ) -> u32 {
+        self.db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|s| s.kind == kind && s.owner == Some(owner))
+            .map(|s| s.quantity)
+            .sum()
+    }
+
+    /// Count unreserved items of the given kind.
+    fn inv_unreserved_item_count(&self, inv_id: InventoryId, kind: inventory::ItemKind) -> u32 {
+        self.db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|s| s.kind == kind && s.reserved_by.is_none())
+            .map(|s| s.quantity)
+            .sum()
+    }
+
+    /// Remove up to `quantity` items of the given kind owned by a creature.
+    fn inv_remove_owned_item(
+        &mut self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        owner: CreatureId,
+        quantity: u32,
+    ) -> u32 {
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let mut remaining = quantity;
+        let mut removed = 0u32;
+        for stack in &stacks {
+            if stack.kind == kind && stack.owner == Some(owner) && remaining > 0 {
+                let take = remaining.min(stack.quantity);
+                let new_qty = stack.quantity - take;
+                if new_qty == 0 {
+                    let _ = self.db.item_stacks.remove_no_fk(&stack.id);
+                } else {
+                    let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                        s.quantity = new_qty;
+                    });
+                }
+                remaining -= take;
+                removed += take;
+            }
+        }
+        removed
+    }
+
+    /// Reserve up to `quantity` unreserved items of the given kind for a task.
+    /// Splits stacks as needed. Returns the amount actually reserved.
+    fn inv_reserve_items(
+        &mut self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        quantity: u32,
+        task_id: TaskId,
+    ) -> u32 {
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let mut remaining = quantity;
+        let mut reserved = 0u32;
+        for stack in &stacks {
+            if stack.kind == kind && stack.reserved_by.is_none() && remaining > 0 {
+                let take = remaining.min(stack.quantity);
+                if take == stack.quantity {
+                    // Reserve the entire stack — changes indexed field.
+                    let mut s = stack.clone();
+                    s.reserved_by = Some(task_id);
+                    let _ = self.db.item_stacks.update_no_fk(s);
+                } else {
+                    // Split: reduce this stack and create a new reserved stack.
+                    let new_qty = stack.quantity - take;
+                    let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                        s.quantity = new_qty;
+                    });
+                    let _ = self
+                        .db
+                        .item_stacks
+                        .insert_auto_no_fk(|id| crate::db::ItemStack {
+                            id,
+                            inventory_id: inv_id,
+                            kind,
+                            quantity: take,
+                            owner: stack.owner,
+                            reserved_by: Some(task_id),
+                        });
+                }
+                remaining -= take;
+                reserved += take;
+            }
+        }
+        reserved
+    }
+
+    /// Clear all reservations for a task, then re-merge matching stacks.
+    fn inv_clear_reservations(&mut self, inv_id: InventoryId, task_id: TaskId) {
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        for stack in &stacks {
+            if stack.reserved_by == Some(task_id) {
+                let mut s = stack.clone();
+                s.reserved_by = None;
+                let _ = self.db.item_stacks.update_no_fk(s);
+            }
+        }
+        self.inv_merge_stacks(inv_id);
+    }
+
+    /// Remove up to `quantity` items reserved by a specific task.
+    fn inv_remove_reserved_items(
+        &mut self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        quantity: u32,
+        task_id: TaskId,
+    ) -> u32 {
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let mut remaining = quantity;
+        let mut removed = 0u32;
+        for stack in &stacks {
+            if stack.kind == kind && stack.reserved_by == Some(task_id) && remaining > 0 {
+                let take = remaining.min(stack.quantity);
+                let new_qty = stack.quantity - take;
+                if new_qty == 0 {
+                    let _ = self.db.item_stacks.remove_no_fk(&stack.id);
+                } else {
+                    let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                        s.quantity = new_qty;
+                    });
+                }
+                remaining -= take;
+                removed += take;
+            }
+        }
+        removed
+    }
+
+    /// Count unowned (`owner == None`) and unreserved items.
+    fn inv_count_unowned_unreserved(&self, inv_id: InventoryId, kind: inventory::ItemKind) -> u32 {
+        self.db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|s| s.kind == kind && s.owner.is_none() && s.reserved_by.is_none())
+            .map(|s| s.quantity)
+            .sum()
+    }
+
+    /// Reserve up to `quantity` unowned unreserved items for a task.
+    fn inv_reserve_unowned_items(
+        &mut self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        quantity: u32,
+        task_id: TaskId,
+    ) -> u32 {
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let mut remaining = quantity;
+        let mut reserved = 0u32;
+        for stack in &stacks {
+            if stack.kind == kind
+                && stack.owner.is_none()
+                && stack.reserved_by.is_none()
+                && remaining > 0
+            {
+                let take = remaining.min(stack.quantity);
+                if take == stack.quantity {
+                    let mut s = stack.clone();
+                    s.reserved_by = Some(task_id);
+                    let _ = self.db.item_stacks.update_no_fk(s);
+                } else {
+                    let new_qty = stack.quantity - take;
+                    let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                        s.quantity = new_qty;
+                    });
+                    let _ = self
+                        .db
+                        .item_stacks
+                        .insert_auto_no_fk(|id| crate::db::ItemStack {
+                            id,
+                            inventory_id: inv_id,
+                            kind,
+                            quantity: take,
+                            owner: None,
+                            reserved_by: Some(task_id),
+                        });
+                }
+                remaining -= take;
+                reserved += take;
+            }
+        }
+        reserved
+    }
+
+    /// Merge stacks within an inventory that match on `(kind, owner, reserved_by)`.
+    fn inv_merge_stacks(&mut self, inv_id: InventoryId) {
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        // Collect merge groups: (kind, owner, reserved_by) -> (primary_id, total_qty, duplicates).
+        type MergeKey = (inventory::ItemKind, Option<CreatureId>, Option<TaskId>);
+        type MergeVal = (ItemStackId, u32, Vec<ItemStackId>);
+        let mut groups: BTreeMap<MergeKey, MergeVal> = BTreeMap::new();
+        for stack in &stacks {
+            let key = (stack.kind, stack.owner, stack.reserved_by);
+            let entry = groups.entry(key).or_insert((stack.id, 0, Vec::new()));
+            entry.1 += stack.quantity;
+            if stack.id != entry.0 {
+                entry.2.push(stack.id);
+            }
+        }
+        for (primary_id, total_qty, duplicates) in groups.values() {
+            if !duplicates.is_empty() {
+                let qty = *total_qty;
+                let _ = self.db.item_stacks.modify_unchecked(primary_id, |s| {
+                    s.quantity = qty;
+                });
+                for dup_id in duplicates {
+                    let _ = self.db.item_stacks.remove_no_fk(dup_id);
+                }
+            }
+        }
+    }
+
+    /// Get the inventory_id for a creature, or return a sentinel. Panics in debug
+    /// if the creature doesn't exist.
+    fn creature_inv(&self, creature_id: CreatureId) -> InventoryId {
+        self.db
+            .creatures
+            .get(&creature_id)
+            .expect("creature must exist")
+            .inventory_id
+    }
+
+    /// Get the inventory_id for a structure.
+    fn structure_inv(&self, structure_id: StructureId) -> InventoryId {
+        self.db
+            .structures
+            .get(&structure_id)
+            .expect("structure must exist")
+            .inventory_id
+    }
+
+    /// Get all item stacks in an inventory as a vec (for bridge/display use).
+    pub fn inv_items(&self, inv_id: InventoryId) -> Vec<crate::db::ItemStack> {
+        self.db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+    }
+
+    /// Get all logistics wants for an inventory.
+    pub fn inv_wants(&self, inv_id: InventoryId) -> Vec<crate::db::LogisticsWantRow> {
+        self.db
+            .logistics_want_rows
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+    }
+
+    /// Set logistics wants for an inventory (replaces all existing wants).
+    fn set_inv_wants(&mut self, inv_id: InventoryId, wants: &[building::LogisticsWant]) {
+        // Remove existing wants for this inventory.
+        let existing = self
+            .db
+            .logistics_want_rows
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        for row in &existing {
+            let _ = self.db.logistics_want_rows.remove_no_fk(&row.id);
+        }
+        // Insert new wants.
+        for want in wants {
+            let _ =
+                self.db
+                    .logistics_want_rows
+                    .insert_auto_no_fk(|id| crate::db::LogisticsWantRow {
+                        id,
+                        inventory_id: inv_id,
+                        item_kind: want.item_kind,
+                        target_quantity: want.target_quantity,
+                    });
+        }
+    }
+
+    /// Find the target quantity for a specific item kind in an inventory's wants.
+    fn inv_want_target(&self, inv_id: InventoryId, kind: inventory::ItemKind) -> u32 {
+        self.db
+            .logistics_want_rows
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .find(|w| w.item_kind == kind)
+            .map(|w| w.target_quantity)
+            .unwrap_or(0)
+    }
+
+    // -----------------------------------------------------------------------
+    // Task extension table query helpers
+    // -----------------------------------------------------------------------
+
+    /// Get the project_id for a Build task from the task_blueprint_refs table.
+    fn task_project_id(&self, task_id: TaskId) -> Option<ProjectId> {
+        self.db
+            .task_blueprint_refs
+            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .map(|r| r.project_id)
+    }
+
+    /// Get a structure_id from a task's structure refs by role.
+    fn task_structure_ref(
+        &self,
+        task_id: TaskId,
+        role: crate::db::TaskStructureRole,
+    ) -> Option<StructureId> {
+        self.db
+            .task_structure_refs
+            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.role == role)
+            .map(|r| r.structure_id)
+    }
+
+    /// Get a voxel coord from a task's voxel refs by role.
+    fn task_voxel_ref(
+        &self,
+        task_id: TaskId,
+        role: crate::db::TaskVoxelRole,
+    ) -> Option<VoxelCoord> {
+        self.db
+            .task_voxel_refs
+            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.role == role)
+            .map(|r| r.coord)
+    }
+
+    /// Get the haul data for a Haul task.
+    fn task_haul_data(&self, task_id: TaskId) -> Option<crate::db::TaskHaulData> {
+        self.db
+            .task_haul_data
+            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+    }
+
+    /// Get the sleep data for a Sleep task.
+    fn task_sleep_data(&self, task_id: TaskId) -> Option<crate::db::TaskSleepData> {
+        self.db
+            .task_sleep_data
+            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+    }
+
+    /// Get the acquire data for an AcquireItem task.
+    fn task_acquire_data(&self, task_id: TaskId) -> Option<crate::db::TaskAcquireData> {
+        self.db
+            .task_acquire_data
+            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+    }
+
+    /// Reconstruct a HaulSource enum from the task's extension tables.
+    fn task_haul_source(
+        &self,
+        task_id: TaskId,
+        source_kind: crate::db::HaulSourceKind,
+    ) -> Option<task::HaulSource> {
+        match source_kind {
+            crate::db::HaulSourceKind::Pile => {
+                let pos = self.task_voxel_ref(task_id, crate::db::TaskVoxelRole::HaulSourcePile)?;
+                Some(task::HaulSource::GroundPile(pos))
+            }
+            crate::db::HaulSourceKind::Building => {
+                let sid = self.task_structure_ref(
+                    task_id,
+                    crate::db::TaskStructureRole::HaulSourceBuilding,
+                )?;
+                Some(task::HaulSource::Building(sid))
+            }
+        }
+    }
+
+    /// Reconstruct a HaulSource for an AcquireItem task.
+    fn task_acquire_source(
+        &self,
+        task_id: TaskId,
+        source_kind: crate::db::HaulSourceKind,
+    ) -> Option<task::HaulSource> {
+        match source_kind {
+            crate::db::HaulSourceKind::Pile => {
+                let pos =
+                    self.task_voxel_ref(task_id, crate::db::TaskVoxelRole::AcquireSourcePile)?;
+                Some(task::HaulSource::GroundPile(pos))
+            }
+            crate::db::HaulSourceKind::Building => {
+                let sid = self.task_structure_ref(
+                    task_id,
+                    crate::db::TaskStructureRole::AcquireSourceBuilding,
+                )?;
+                Some(task::HaulSource::Building(sid))
+            }
+        }
+    }
+
+    /// Reconstruct a SleepLocation from the task's extension tables.
+    fn task_sleep_location(&self, task_id: TaskId) -> Option<task::SleepLocation> {
+        let sleep_data = self.task_sleep_data(task_id)?;
+        match sleep_data.sleep_location {
+            crate::db::SleepLocationType::Home => {
+                let sid =
+                    self.task_structure_ref(task_id, crate::db::TaskStructureRole::SleepAt)?;
+                Some(task::SleepLocation::Home(sid))
+            }
+            crate::db::SleepLocationType::Dormitory => {
+                let sid =
+                    self.task_structure_ref(task_id, crate::db::TaskStructureRole::SleepAt)?;
+                Some(task::SleepLocation::Dormitory(sid))
+            }
+            crate::db::SleepLocationType::Ground => Some(task::SleepLocation::Ground),
+        }
+    }
+
+    /// Insert a task and populate its relationship/extension tables based on kind.
+    fn insert_task(&mut self, task: task::Task) {
+        let task_id = task.id;
+        let kind = &task.kind;
+
+        // Populate relationship and extension tables.
+        match kind {
+            task::TaskKind::Build { project_id } => {
+                let _ = self.db.task_blueprint_refs.insert_auto_no_fk(|id| {
+                    crate::db::TaskBlueprintRef {
+                        id,
+                        task_id,
+                        project_id: *project_id,
+                    }
+                });
+            }
+            task::TaskKind::EatFruit { fruit_pos } | task::TaskKind::Harvest { fruit_pos } => {
+                let _ = self
+                    .db
+                    .task_voxel_refs
+                    .insert_auto_no_fk(|id| crate::db::TaskVoxelRef {
+                        id,
+                        task_id,
+                        coord: *fruit_pos,
+                        role: crate::db::TaskVoxelRole::FruitTarget,
+                    });
+            }
+            task::TaskKind::Furnish { structure_id } => {
+                let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                    crate::db::TaskStructureRef {
+                        id,
+                        task_id,
+                        structure_id: *structure_id,
+                        role: crate::db::TaskStructureRole::FurnishTarget,
+                    }
+                });
+            }
+            task::TaskKind::Cook { structure_id } => {
+                let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                    crate::db::TaskStructureRef {
+                        id,
+                        task_id,
+                        structure_id: *structure_id,
+                        role: crate::db::TaskStructureRole::CookAt,
+                    }
+                });
+            }
+            task::TaskKind::Sleep { bed_pos, location } => {
+                if let Some(pos) = bed_pos {
+                    let _ =
+                        self.db
+                            .task_voxel_refs
+                            .insert_auto_no_fk(|id| crate::db::TaskVoxelRef {
+                                id,
+                                task_id,
+                                coord: *pos,
+                                role: crate::db::TaskVoxelRole::BedPosition,
+                            });
+                }
+                let sleep_loc = match location {
+                    task::SleepLocation::Home(sid) => {
+                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                            crate::db::TaskStructureRef {
+                                id,
+                                task_id,
+                                structure_id: *sid,
+                                role: crate::db::TaskStructureRole::SleepAt,
+                            }
+                        });
+                        crate::db::SleepLocationType::Home
+                    }
+                    task::SleepLocation::Dormitory(sid) => {
+                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                            crate::db::TaskStructureRef {
+                                id,
+                                task_id,
+                                structure_id: *sid,
+                                role: crate::db::TaskStructureRole::SleepAt,
+                            }
+                        });
+                        crate::db::SleepLocationType::Dormitory
+                    }
+                    task::SleepLocation::Ground => crate::db::SleepLocationType::Ground,
+                };
+                let _ = self
+                    .db
+                    .task_sleep_data
+                    .insert_auto_no_fk(|id| crate::db::TaskSleepData {
+                        id,
+                        task_id,
+                        sleep_location: sleep_loc,
+                    });
+            }
+            task::TaskKind::Haul {
+                item_kind,
+                quantity,
+                source,
+                destination,
+                phase,
+                destination_nav_node,
+            } => {
+                // Destination structure ref.
+                let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                    crate::db::TaskStructureRef {
+                        id,
+                        task_id,
+                        structure_id: *destination,
+                        role: crate::db::TaskStructureRole::HaulDestination,
+                    }
+                });
+                // Source ref.
+                let source_kind = match source {
+                    task::HaulSource::GroundPile(pos) => {
+                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|id| {
+                            crate::db::TaskVoxelRef {
+                                id,
+                                task_id,
+                                coord: *pos,
+                                role: crate::db::TaskVoxelRole::HaulSourcePile,
+                            }
+                        });
+                        crate::db::HaulSourceKind::Pile
+                    }
+                    task::HaulSource::Building(sid) => {
+                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                            crate::db::TaskStructureRef {
+                                id,
+                                task_id,
+                                structure_id: *sid,
+                                role: crate::db::TaskStructureRole::HaulSourceBuilding,
+                            }
+                        });
+                        crate::db::HaulSourceKind::Building
+                    }
+                };
+                let _ = self
+                    .db
+                    .task_haul_data
+                    .insert_auto_no_fk(|id| crate::db::TaskHaulData {
+                        id,
+                        task_id,
+                        item_kind: *item_kind,
+                        quantity: *quantity,
+                        phase: *phase,
+                        source_kind,
+                        destination_nav_node: *destination_nav_node,
+                    });
+            }
+            task::TaskKind::AcquireItem {
+                source,
+                item_kind,
+                quantity,
+            } => {
+                let source_kind = match source {
+                    task::HaulSource::GroundPile(pos) => {
+                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|id| {
+                            crate::db::TaskVoxelRef {
+                                id,
+                                task_id,
+                                coord: *pos,
+                                role: crate::db::TaskVoxelRole::AcquireSourcePile,
+                            }
+                        });
+                        crate::db::HaulSourceKind::Pile
+                    }
+                    task::HaulSource::Building(sid) => {
+                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                            crate::db::TaskStructureRef {
+                                id,
+                                task_id,
+                                structure_id: *sid,
+                                role: crate::db::TaskStructureRole::AcquireSourceBuilding,
+                            }
+                        });
+                        crate::db::HaulSourceKind::Building
+                    }
+                };
+                let _ =
+                    self.db
+                        .task_acquire_data
+                        .insert_auto_no_fk(|id| crate::db::TaskAcquireData {
+                            id,
+                            task_id,
+                            item_kind: *item_kind,
+                            quantity: *quantity,
+                            source_kind,
+                        });
+            }
+            // GoTo, EatBread, Mope — no extra data.
+            task::TaskKind::GoTo | task::TaskKind::EatBread | task::TaskKind::Mope => {}
+        }
+
+        // Insert the base task row.
+        let db_task = crate::db::Task {
+            id: task.id,
+            kind_tag: crate::db::TaskKindTag::from_kind(&task.kind),
+            state: task.state,
+            location: task.location,
+            progress: task.progress,
+            total_cost: task.total_cost,
+            required_species: task.required_species,
+            origin: task.origin,
+        };
+        self.db.tasks.insert_no_fk(db_task).unwrap();
     }
 
     /// Wander: pick a random adjacent nav node and move there.
     fn wander(&mut self, creature_id: CreatureId, current_node: NavNodeId) {
-        let creature = match self.creatures.get(&creature_id) {
+        let creature = match self.db.creatures.get(&creature_id) {
             Some(c) => c,
             None => return,
         };
@@ -3663,16 +4399,21 @@ impl SimState {
 
         // Move creature to the destination.
         let dest_pos = graph.node(dest_node).position;
-        let creature = self.creatures.get_mut(&creature_id).unwrap();
-        let old_pos = creature.position;
-        creature.position = dest_pos;
-        creature.current_node = Some(dest_node);
+        let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
+        let tick = self.tick;
+        let _ = self
+            .db
+            .creatures
+            .modify_unchecked(&creature_id, |creature| {
+                creature.position = dest_pos;
+                creature.current_node = Some(dest_node);
 
-        // Set movement interpolation metadata for smooth rendering.
-        creature.move_from = Some(old_pos);
-        creature.move_to = Some(dest_pos);
-        creature.move_start_tick = self.tick;
-        creature.move_end_tick = self.tick + delay;
+                // Set movement interpolation metadata for smooth rendering.
+                creature.move_from = Some(old_pos);
+                creature.move_to = Some(dest_pos);
+                creature.move_start_tick = tick;
+                creature.move_end_tick = tick + delay;
+            });
 
         // Schedule next activation based on edge traversal time.
         self.event_queue.schedule(
@@ -3687,43 +4428,50 @@ impl SimState {
         creature_id: CreatureId,
         arrived_at: NavNodeId,
     ) {
-        let creature = match self.creatures.get_mut(&creature_id) {
-            Some(c) => c,
+        let species = match self.db.creatures.get(&creature_id) {
+            Some(c) => c.species,
             None => return, // Creature was removed.
         };
 
-        let species = creature.species;
         let graph = self.graph_for_species(species);
         let node_pos = graph.node(arrived_at).position;
 
-        let creature = self.creatures.get_mut(&creature_id).unwrap();
+        // Update position, current node, clear interpolation, and advance path.
+        let should_continue = {
+            let mut creature = self.db.creatures.get(&creature_id).unwrap();
+            creature.position = node_pos;
+            creature.current_node = Some(arrived_at);
+            creature.move_from = None;
+            creature.move_to = None;
 
-        // Update position and current node.
-        creature.position = node_pos;
-        creature.current_node = Some(arrived_at);
-
-        // Clear movement interpolation metadata on arrival.
-        creature.move_from = None;
-        creature.move_to = None;
-
-        // Advance path.
-        let should_continue = if let Some(ref mut path) = creature.path {
-            if !path.remaining_nodes.is_empty() {
-                path.remaining_nodes.remove(0);
-            }
-            if !path.remaining_edge_indices.is_empty() {
-                path.remaining_edge_indices.remove(0);
-            }
-            !path.remaining_edge_indices.is_empty()
-        } else {
-            false
+            let cont = if let Some(ref mut path) = creature.path {
+                if !path.remaining_nodes.is_empty() {
+                    path.remaining_nodes.remove(0);
+                }
+                if !path.remaining_edge_indices.is_empty() {
+                    path.remaining_edge_indices.remove(0);
+                }
+                !path.remaining_edge_indices.is_empty()
+            } else {
+                false
+            };
+            let _ = self.db.creatures.update_no_fk(creature);
+            cont
         };
 
         if should_continue {
             // Schedule next movement using distance * species ticks-per-voxel.
             let species_data = &self.species_table[&species];
             let graph = self.graph_for_species(species);
-            let path = self.creatures[&creature_id].path.as_ref().unwrap();
+            let path = self
+                .db
+                .creatures
+                .get(&creature_id)
+                .unwrap()
+                .path
+                .as_ref()
+                .unwrap()
+                .clone();
             let next_edge_idx = path.remaining_edge_indices[0];
             let next_edge = graph.edge(next_edge_idx);
             let tpv = match next_edge.edge_type {
@@ -3746,11 +4494,16 @@ impl SimState {
             let arrival_tick = self.tick + delay;
 
             // Set movement interpolation metadata for the next leg.
-            let creature = self.creatures.get_mut(&creature_id).unwrap();
-            creature.move_from = Some(node_pos);
-            creature.move_to = Some(next_dest_pos);
-            creature.move_start_tick = self.tick;
-            creature.move_end_tick = arrival_tick;
+            let tick = self.tick;
+            let _ = self
+                .db
+                .creatures
+                .modify_unchecked(&creature_id, |creature| {
+                    creature.move_from = Some(node_pos);
+                    creature.move_to = Some(next_dest_pos);
+                    creature.move_start_tick = tick;
+                    creature.move_end_tick = arrival_tick;
+                });
 
             self.event_queue.schedule(
                 arrival_tick,
@@ -3761,7 +4514,9 @@ impl SimState {
             );
         } else {
             // Path complete.
-            self.creatures.get_mut(&creature_id).unwrap().path = None;
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.path = None;
+            });
         }
     }
 
@@ -3832,6 +4587,7 @@ impl SimState {
     fn do_build_work(&mut self, creature_id: CreatureId, task_id: TaskId, project_id: ProjectId) {
         // Look up the blueprint to determine if this is a carve or build.
         let is_carve = self
+            .db
             .blueprints
             .get(&project_id)
             .is_some_and(|bp| bp.build_type.is_carve());
@@ -3843,14 +4599,16 @@ impl SimState {
         };
 
         // Increment progress.
-        let task = match self.tasks.get_mut(&task_id) {
+        let task = match self.db.tasks.get(&task_id) {
             Some(t) => t,
             None => return,
         };
         let old_progress = task.progress;
-        task.progress += 1.0;
-        let new_progress = task.progress;
+        let new_progress = old_progress + 1.0;
         let total_cost = task.total_cost;
+        let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+            t.progress += 1.0;
+        });
 
         // Check if we crossed a voxel-placement threshold.
         let old_voxels = (old_progress / ticks_per_voxel).floor() as u64;
@@ -3885,7 +4643,7 @@ impl SimState {
     /// 3. Prefer voxels NOT occupied by any creature.
     /// 4. If all eligible are occupied, pick randomly using the sim PRNG.
     fn materialize_next_build_voxel(&mut self, project_id: ProjectId) {
-        let bp = match self.blueprints.get(&project_id) {
+        let bp = match self.db.blueprints.get(&project_id) {
             Some(bp) => bp,
             None => return,
         };
@@ -3949,7 +4707,7 @@ impl SimState {
 
         // Collect creature positions for occupancy check.
         let creature_positions: Vec<VoxelCoord> =
-            self.creatures.values().map(|c| c.position).collect();
+            self.db.creatures.iter_all().map(|c| c.position).collect();
 
         // Prefer unoccupied voxels.
         let unoccupied: Vec<VoxelCoord> = eligible
@@ -3972,7 +4730,7 @@ impl SimState {
 
         // For buildings and ladders, copy face data from the blueprint into sim state.
         if is_building || is_ladder {
-            if let Some(bp) = self.blueprints.get(&project_id)
+            if let Some(bp) = self.db.blueprints.get(&project_id)
                 && let Some(layout) = bp.face_layout_map()
                 && let Some(fd) = layout.get(&chosen)
             {
@@ -3981,7 +4739,7 @@ impl SimState {
             }
             // For ladders, also store the orientation.
             if is_ladder
-                && let Some(bp) = self.blueprints.get(&project_id)
+                && let Some(bp) = self.db.blueprints.get(&project_id)
                 && let Some(layout) = bp.face_layout_map()
                 && let Some(fd) = layout.get(&chosen)
             {
@@ -4034,7 +4792,7 @@ impl SimState {
     /// Selection: find voxels that are still solid, pick one randomly using
     /// the sim PRNG (no adjacency constraint for carving).
     fn materialize_next_carve_voxel(&mut self, project_id: ProjectId) {
-        let bp = match self.blueprints.get(&project_id) {
+        let bp = match self.db.blueprints.get(&project_id) {
             Some(bp) => bp,
             None => return,
         };
@@ -4076,20 +4834,23 @@ impl SimState {
     /// Mark a blueprint as Complete, register the completed structure, and
     /// complete its associated task.
     fn complete_build(&mut self, project_id: ProjectId, task_id: TaskId) {
-        if let Some(bp) = self.blueprints.get_mut(&project_id) {
+        if let Some(mut bp) = self.db.blueprints.get(&project_id) {
             bp.state = BlueprintState::Complete;
+            let _ = self.db.blueprints.update_no_fk(bp);
         }
 
         // Register a CompletedStructure if the blueprint exists.
-        if let Some(bp) = self.blueprints.get(&project_id) {
+        if let Some(bp) = self.db.blueprints.get(&project_id) {
             let structure_id = StructureId(self.next_structure_id);
             self.next_structure_id += 1;
             // Populate structure_voxels ownership map.
             for &coord in &bp.voxels {
                 self.structure_voxels.insert(coord, structure_id);
             }
-            let structure = CompletedStructure::from_blueprint(structure_id, bp, self.tick);
-            self.structures.insert(structure_id, structure);
+            let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::Structure);
+            let structure =
+                crate::db::CompletedStructure::from_blueprint(structure_id, &bp, self.tick, inv_id);
+            self.db.structures.insert_no_fk(structure).unwrap();
         }
 
         self.complete_task(task_id);
@@ -4105,7 +4866,7 @@ impl SimState {
     /// a Furnish task for an elf to work on.
     fn furnish_structure(&mut self, structure_id: StructureId, furnishing_type: FurnishingType) {
         // Validate: structure exists, is a Building, and has no furnishing yet.
-        let structure = match self.structures.get(&structure_id) {
+        let structure = match self.db.structures.get(&structure_id) {
             Some(s) => s,
             None => return,
         };
@@ -4124,16 +4885,29 @@ impl SimState {
         }
         let planned_count = planned_furniture.len();
 
-        // Set furnishing type and planned furniture on the structure.
-        let structure = self.structures.get_mut(&structure_id).unwrap();
+        // Insert planned furniture rows.
+        for coord in &planned_furniture {
+            let _ = self
+                .db
+                .furniture
+                .insert_auto_no_fk(|id| crate::db::Furniture {
+                    id,
+                    structure_id,
+                    coord: *coord,
+                    placed: false,
+                });
+        }
+
+        // Set furnishing type on the structure.
+        let mut structure = self.db.structures.get(&structure_id).unwrap();
         structure.furnishing = Some(furnishing_type);
-        structure.planned_furniture = planned_furniture;
 
         // Set default logistics and cooking config based on furnishing type.
-        match furnishing_type {
+        let inv_id = structure.inventory_id;
+        let default_wants = match furnishing_type {
             FurnishingType::Storehouse => {
                 structure.logistics_priority = Some(self.config.storehouse_default_priority);
-                structure.logistics_wants = vec![
+                vec![
                     building::LogisticsWant {
                         item_kind: inventory::ItemKind::Fruit,
                         target_quantity: self.config.storehouse_default_fruit_want,
@@ -4142,23 +4916,25 @@ impl SimState {
                         item_kind: inventory::ItemKind::Bread,
                         target_quantity: self.config.storehouse_default_bread_want,
                     },
-                ];
+                ]
             }
             FurnishingType::Kitchen => {
                 structure.logistics_priority = Some(self.config.kitchen_default_priority);
-                structure.logistics_wants = vec![building::LogisticsWant {
-                    item_kind: inventory::ItemKind::Fruit,
-                    target_quantity: self.config.kitchen_default_fruit_want,
-                }];
                 structure.cooking_enabled = true;
                 structure.cooking_bread_target = self.config.kitchen_default_bread_target;
+                vec![building::LogisticsWant {
+                    item_kind: inventory::ItemKind::Fruit,
+                    target_quantity: self.config.kitchen_default_fruit_want,
+                }]
             }
-            _ => {}
-        }
+            _ => Vec::new(),
+        };
 
         // Find a nav node inside the building to use as the task location.
         let interior_pos = structure.floor_interior_positions();
         let task_pos = interior_pos.first().copied().unwrap_or(structure.anchor);
+        let _ = self.db.structures.update_no_fk(structure);
+        self.set_inv_wants(inv_id, &default_wants);
         let location = match self.nav_graph.find_nearest_node(task_pos) {
             Some(n) => n,
             None => return,
@@ -4173,13 +4949,12 @@ impl SimState {
             kind: task::TaskKind::Furnish { structure_id },
             state: task::TaskState::Available,
             location,
-            assignees: Vec::new(),
             progress: 0.0,
             total_cost,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
         };
-        self.tasks.insert(task_id, new_task);
+        self.insert_task(new_task);
     }
 
     // -----------------------------------------------------------------------
@@ -4188,54 +4963,52 @@ impl SimState {
 
     /// Assign a creature to a home structure, or unassign if `structure_id`
     /// is `None`. Validates: creature is an Elf, target is a Home-furnished
-    /// building. Clears the old home's `assigned_elf` if the creature had one,
-    /// evicts a previous occupant if the target already has one.
+    /// building. Evicts a previous occupant if the target already has one.
     fn assign_home(&mut self, creature_id: CreatureId, structure_id: Option<StructureId>) {
         // Validate creature exists and is an Elf.
-        let creature = match self.creatures.get(&creature_id) {
-            Some(c) if c.species == Species::Elf => c,
+        match self.db.creatures.get(&creature_id) {
+            Some(c) if c.species == Species::Elf => {}
             _ => return,
         };
 
-        // Clear old home's assigned_elf.
-        if let Some(old_home_id) = creature.assigned_home
-            && let Some(old_home) = self.structures.get_mut(&old_home_id)
-            && old_home.assigned_elf == Some(creature_id)
-        {
-            old_home.assigned_elf = None;
-        }
+        // Nothing to clear on old home — creature.assigned_home is the
+        // single source of truth for home assignment.
 
         let target_id = match structure_id {
             Some(id) => id,
             None => {
                 // Unassign only.
-                if let Some(c) = self.creatures.get_mut(&creature_id) {
+                if let Some(mut c) = self.db.creatures.get(&creature_id) {
                     c.assigned_home = None;
+                    let _ = self.db.creatures.update_no_fk(c);
                 }
                 return;
             }
         };
 
         // Validate target structure exists and is a Home.
-        let structure = match self.structures.get(&target_id) {
-            Some(s) if s.furnishing == Some(FurnishingType::Home) => s,
+        match self.db.structures.get(&target_id) {
+            Some(s) if s.furnishing == Some(FurnishingType::Home) => {}
             _ => return,
         };
 
         // Evict previous occupant if there is one.
-        if let Some(prev_elf_id) = structure.assigned_elf
-            && prev_elf_id != creature_id
-            && let Some(prev_elf) = self.creatures.get_mut(&prev_elf_id)
-        {
-            prev_elf.assigned_home = None;
+        let prev_occupants = self
+            .db
+            .creatures
+            .by_assigned_home(&Some(target_id), tabulosity::QueryOpts::ASC);
+        for prev_elf in prev_occupants {
+            if prev_elf.id != creature_id {
+                let mut prev = prev_elf;
+                prev.assigned_home = None;
+                let _ = self.db.creatures.update_no_fk(prev);
+            }
         }
 
-        // Set both sides.
-        if let Some(structure) = self.structures.get_mut(&target_id) {
-            structure.assigned_elf = Some(creature_id);
-        }
-        if let Some(c) = self.creatures.get_mut(&creature_id) {
+        // Set creature's assigned_home.
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.assigned_home = Some(target_id);
+            let _ = self.db.creatures.update_no_fk(c);
         }
     }
 
@@ -4243,8 +5016,8 @@ impl SimState {
     ///
     /// Follows the same pattern as `do_build_work()`: increments progress,
     /// and every `furnish_work_ticks_per_item` units, one furniture item is
-    /// placed from the structure's `planned_furniture` into
-    /// `furniture_positions`. When all items are placed, the task completes.
+    /// placed by marking a `furniture` row as `placed = true`.
+    /// When all items are placed, the task completes.
     fn do_furnish_work(
         &mut self,
         creature_id: CreatureId,
@@ -4254,26 +5027,33 @@ impl SimState {
         let ticks_per_item = self.config.furnish_work_ticks_per_item as f32;
 
         // Increment progress.
-        let task = match self.tasks.get_mut(&task_id) {
+        let task = match self.db.tasks.get(&task_id) {
             Some(t) => t,
             None => return,
         };
         let old_progress = task.progress;
-        task.progress += 1.0;
-        let new_progress = task.progress;
+        let new_progress = old_progress + 1.0;
         let total_cost = task.total_cost;
+        let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+            t.progress += 1.0;
+        });
 
         // Check if we crossed an item-placement threshold.
         let old_items = (old_progress / ticks_per_item).floor() as usize;
         let new_items = (new_progress / ticks_per_item).floor() as usize;
 
         if new_items > old_items {
-            // Place the next furniture item.
-            if let Some(structure) = self.structures.get_mut(&structure_id)
-                && let Some(pos) = structure.planned_furniture.first().copied()
+            // Place the next unplaced furniture item.
+            if let Some(furn) = self
+                .db
+                .furniture
+                .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .find(|f| !f.placed)
             {
-                structure.planned_furniture.remove(0);
-                structure.furniture_positions.push(pos);
+                let _ = self.db.furniture.modify_unchecked(&furn.id, |f| {
+                    f.placed = true;
+                });
             }
         }
 
@@ -4294,20 +5074,22 @@ impl SimState {
     /// NavNodeIds change when the graph is rebuilt.
     fn resnap_creature_nodes(&mut self) {
         let creature_info: Vec<(CreatureId, Species, VoxelCoord)> = self
+            .db
             .creatures
-            .values()
+            .iter_all()
             .map(|c| (c.id, c.species, c.position))
             .collect();
         for (cid, species, pos) in creature_info {
             let graph = self.graph_for_species(species);
             let new_node = graph.find_nearest_node(pos);
             let new_pos = new_node.map(|nid| graph.node(nid).position);
-            let creature = self.creatures.get_mut(&cid).unwrap();
-            creature.current_node = new_node;
-            creature.path = None;
-            if let Some(p) = new_pos {
-                creature.position = p;
-            }
+            let _ = self.db.creatures.modify_unchecked(&cid, |creature| {
+                creature.current_node = new_node;
+                creature.path = None;
+                if let Some(p) = new_pos {
+                    creature.position = p;
+                }
+            });
         }
     }
 
@@ -4319,8 +5101,9 @@ impl SimState {
             return;
         }
         let to_resnap: Vec<(CreatureId, Species, VoxelCoord)> = self
+            .db
             .creatures
-            .values()
+            .iter_all()
             .filter(|c| matches!(c.current_node, Some(nid) if removed.contains(&nid)))
             .map(|c| (c.id, c.species, c.position))
             .collect();
@@ -4328,12 +5111,13 @@ impl SimState {
             let graph = self.graph_for_species(species);
             let new_node = graph.find_nearest_node(pos);
             let new_pos = new_node.map(|nid| graph.node(nid).position);
-            let creature = self.creatures.get_mut(&cid).unwrap();
-            creature.current_node = new_node;
-            creature.path = None;
-            if let Some(p) = new_pos {
-                creature.position = p;
-            }
+            let _ = self.db.creatures.modify_unchecked(&cid, |creature| {
+                creature.current_node = new_node;
+                creature.path = None;
+                if let Some(p) = new_pos {
+                    creature.position = p;
+                }
+            });
         }
     }
 
@@ -4508,10 +5292,15 @@ impl SimState {
 
         // Rebuild structure_voxels from completed blueprints.
         self.structure_voxels.clear();
-        for bp in self.blueprints.values() {
+        for bp in self.db.blueprints.iter_all() {
             if bp.state == BlueprintState::Complete {
                 // Find the StructureId for this blueprint's project.
-                if let Some(structure) = self.structures.values().find(|s| s.project_id == bp.id) {
+                if let Some(structure) = self
+                    .db
+                    .structures
+                    .iter_all()
+                    .find(|s| s.project_id == bp.id)
+                {
                     let sid = structure.id;
                     for &coord in &bp.voxels {
                         self.structure_voxels.insert(coord, sid);
@@ -4545,8 +5334,9 @@ impl SimState {
 
     /// Count creatures of a given species.
     pub fn creature_count(&self, species: Species) -> usize {
-        self.creatures
-            .values()
+        self.db
+            .creatures
+            .iter_all()
             .filter(|c| c.species == species)
             .count()
     }
@@ -4578,6 +5368,7 @@ impl SimState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::{CompletedStructure, TaskKindTag};
     use crate::task::{Task, TaskKind, TaskOrigin, TaskState};
     use std::sync::LazyLock;
 
@@ -4762,8 +5553,9 @@ mod tests {
         assert_eq!(sim.creature_count(Species::Elf), 1);
 
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .expect("elf should exist");
 
@@ -4807,8 +5599,8 @@ mod tests {
         sim1.step(&[cmd1], 2);
         sim2.step(&[cmd2], 2);
 
-        let elf1 = sim1.creatures.values().next().unwrap();
-        let elf2 = sim2.creatures.values().next().unwrap();
+        let elf1 = sim1.db.creatures.iter_all().next().unwrap();
+        let elf2 = sim2.db.creatures.iter_all().next().unwrap();
         assert_eq!(elf1.name, elf2.name);
         assert_eq!(elf1.name_meaning, elf2.name_meaning);
     }
@@ -4829,8 +5621,9 @@ mod tests {
 
         sim.step(&[cmd], 2);
         let capy = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Capybara)
             .expect("capybara should exist");
 
@@ -4860,8 +5653,9 @@ mod tests {
 
         assert_eq!(sim.creature_count(Species::Elf), 1);
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         assert!(elf.current_node.is_some());
@@ -4890,9 +5684,9 @@ mod tests {
         sim_b.step(&[spawn], 1000);
 
         // Both sims should have identical creature positions.
-        assert_eq!(sim_a.creatures.len(), sim_b.creatures.len());
-        for (id, creature_a) in &sim_a.creatures {
-            let creature_b = &sim_b.creatures[id];
+        assert_eq!(sim_a.db.creatures.len(), sim_b.db.creatures.len());
+        for creature_a in sim_a.db.creatures.iter_all() {
+            let creature_b = sim_b.db.creatures.get(&creature_a.id).unwrap();
             assert_eq!(creature_a.position, creature_b.position);
             assert_eq!(creature_a.current_node, creature_b.current_node);
         }
@@ -4926,8 +5720,9 @@ mod tests {
 
         // Capybara should be at a ground-level node (y=1, air above ForestFloor).
         let capybara = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Capybara)
             .unwrap();
         assert_eq!(capybara.position.y, 1);
@@ -4954,8 +5749,9 @@ mod tests {
 
         assert_eq!(sim.creature_count(Species::Capybara), 1);
         let capybara = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Capybara)
             .unwrap();
         assert!(capybara.current_node.is_some());
@@ -4982,8 +5778,9 @@ mod tests {
         for target in (10000..100000).step_by(10000) {
             sim.step(&[], target);
             let capybara = sim
+                .db
                 .creatures
-                .values()
+                .iter_all()
                 .find(|c| c.species == Species::Capybara)
                 .unwrap();
             assert_eq!(
@@ -5013,9 +5810,9 @@ mod tests {
         sim_a.step(&[spawn.clone()], 1000);
         sim_b.step(&[spawn], 1000);
 
-        assert_eq!(sim_a.creatures.len(), sim_b.creatures.len());
-        for (id, creature_a) in &sim_a.creatures {
-            let creature_b = &sim_b.creatures[id];
+        assert_eq!(sim_a.db.creatures.len(), sim_b.db.creatures.len());
+        for creature_a in sim_a.db.creatures.iter_all() {
+            let creature_b = sim_b.db.creatures.get(&creature_a.id).unwrap();
             assert_eq!(creature_a.position, creature_b.position);
             assert_eq!(creature_a.current_node, creature_b.current_node);
         }
@@ -5038,8 +5835,9 @@ mod tests {
         sim.step(&[cmd], 2);
 
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         let initial_node = elf.current_node.unwrap();
@@ -5050,8 +5848,9 @@ mod tests {
         sim.step(&[], 50000);
 
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         let final_node = elf.current_node.unwrap();
@@ -5091,8 +5890,9 @@ mod tests {
         for target in (10000..100000).step_by(10000) {
             sim.step(&[], target);
             let elf = sim
+                .db
                 .creatures
-                .values()
+                .iter_all()
                 .find(|c| c.species == Species::Elf)
                 .unwrap();
             let node = elf
@@ -5125,8 +5925,9 @@ mod tests {
             },
         };
         sim.step(&[cmd], sim.tick + 2);
-        sim.creatures
-            .values()
+        sim.db
+            .creatures
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id
@@ -5140,13 +5941,12 @@ mod tests {
             kind: TaskKind::GoTo,
             state: TaskState::Available,
             location,
-            assignees: Vec::new(),
             progress: 0.0,
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::PlayerDirected,
         };
-        sim.tasks.insert(task_id, task);
+        sim.insert_task(task);
         task_id
     }
 
@@ -5164,16 +5964,19 @@ mod tests {
         // walk_ticks_per_voxel=500).
         sim.step(&[], sim.tick + 10000);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert_eq!(
             elf.current_task,
             Some(task_id),
             "Elf should have claimed the available task"
         );
-        let task = &sim.tasks[&task_id];
+        let task = sim.db.tasks.get(&task_id).unwrap();
         assert!(
-            task.assignees.contains(&elf_id),
-            "Task assignees should include the elf"
+            sim.db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(task.id)),
+            "Elf should be assigned to the task"
         );
         assert_eq!(task.state, TaskState::InProgress);
     }
@@ -5188,14 +5991,22 @@ mod tests {
         let task_location = sim.nav_graph.node(far_node).position;
         let _task_id = insert_goto_task(&mut sim, far_node);
 
-        let initial_dist = sim.creatures[&elf_id]
+        let initial_dist = sim
+            .db
+            .creatures
+            .get(&elf_id)
+            .unwrap()
             .position
             .manhattan_distance(task_location);
 
         // Step a moderate amount — creature should be closer to the target.
         sim.step(&[], sim.tick + 50000);
 
-        let mid_dist = sim.creatures[&elf_id]
+        let mid_dist = sim
+            .db
+            .creatures
+            .get(&elf_id)
+            .unwrap()
             .position
             .manhattan_distance(task_location);
 
@@ -5211,19 +6022,19 @@ mod tests {
         let elf_id = spawn_elf(&mut sim);
 
         // Put the task at the elf's current location for instant completion.
-        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
         let task_id = insert_goto_task(&mut sim, elf_node);
 
         // One activation should be enough: elf claims task, is already there, completes.
         sim.step(&[], sim.tick + 10000);
 
-        let task = &sim.tasks[&task_id];
+        let task = sim.db.tasks.get(&task_id).unwrap();
         assert_eq!(
             task.state,
             TaskState::Complete,
             "GoTo task should be complete"
         );
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert_eq!(
             elf.current_task, None,
             "Elf should be unassigned after task completion"
@@ -5236,23 +6047,28 @@ mod tests {
         let elf_id = spawn_elf(&mut sim);
 
         // Put the task at the elf's current location for instant completion.
-        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
         let _task_id = insert_goto_task(&mut sim, elf_node);
 
         // Complete the task.
         sim.step(&[], sim.tick + 10000);
-        let pos_after_task = sim.creatures[&elf_id].position;
+        let pos_after_task = sim.db.creatures.get(&elf_id).unwrap().position;
 
         // Continue ticking — elf should resume wandering (position changes).
         sim.step(&[], sim.tick + 50000);
 
-        let pos_after_wander = sim.creatures[&elf_id].position;
+        let pos_after_wander = sim.db.creatures.get(&elf_id).unwrap().position;
         assert_ne!(
             pos_after_task, pos_after_wander,
             "Elf should have wandered after task completion"
         );
         assert!(
-            sim.creatures[&elf_id].current_task.is_none(),
+            sim.db
+                .creatures
+                .get(&elf_id)
+                .unwrap()
+                .current_task
+                .is_none(),
             "Elf should still have no task"
         );
     }
@@ -5273,10 +6089,10 @@ mod tests {
         };
         sim.step(&[cmd], 2);
 
-        assert_eq!(sim.tasks.len(), 1, "Should have 1 task");
-        let task = sim.tasks.values().next().unwrap();
+        assert_eq!(sim.db.tasks.len(), 1, "Should have 1 task");
+        let task = sim.db.tasks.iter_all().next().unwrap();
         assert_eq!(task.state, TaskState::Available);
-        assert!(matches!(task.kind, TaskKind::GoTo));
+        assert!(task.kind_tag == TaskKindTag::GoTo);
     }
 
     #[test]
@@ -5307,13 +6123,13 @@ mod tests {
         };
         sim.step(&[task_cmd], 4);
 
-        assert_eq!(sim.tasks.len(), 1);
-        let task_id = *sim.tasks.keys().next().unwrap();
+        assert_eq!(sim.db.tasks.len(), 1);
+        let task_id = *sim.db.tasks.iter_keys().next().unwrap();
 
         // Tick until the elf completes the task.
         sim.step(&[], 50000);
 
-        let task = &sim.tasks[&task_id];
+        let task = sim.db.tasks.get(&task_id).unwrap();
         assert_eq!(
             task.state,
             TaskState::Complete,
@@ -5322,8 +6138,9 @@ mod tests {
 
         // Elf should be unassigned and wandering again.
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         assert!(elf.current_task.is_none());
@@ -5362,24 +6179,38 @@ mod tests {
         let far_node = NavNodeId((sim.nav_graph.node_count() - 1) as u32);
         let task_id = insert_goto_task(&mut sim, far_node);
 
-        // Tick enough for all creatures to have several activations.
-        sim.step(&[], sim.tick + 50000);
+        // Tick enough for creatures to have activations and claim the task,
+        // but not enough for the elf to arrive at the far node (GoTo completes
+        // instantly on arrival, clearing current_task).
+        sim.step(&[], sim.tick + 1000);
 
         // Exactly one elf should have claimed it.
-        let task = &sim.tasks[&task_id];
+        let task = sim.db.tasks.get(&task_id).unwrap();
         assert_eq!(
-            task.assignees.len(),
+            sim.db
+                .creatures
+                .by_current_task(&Some(task.id), tabulosity::QueryOpts::ASC)
+                .len(),
             1,
             "Exactly one creature should claim the task, got {}",
-            task.assignees.len()
+            sim.db
+                .creatures
+                .by_current_task(&Some(task.id), tabulosity::QueryOpts::ASC)
+                .len()
         );
 
         // The assignee must be an elf.
-        let assignee = &sim.creatures[&task.assignees[0]];
+        let assignee = sim
+            .db
+            .creatures
+            .by_current_task(&Some(task.id), tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(assignee.species, Species::Elf);
 
         // No capybara should have a task.
-        for creature in sim.creatures.values() {
+        for creature in sim.db.creatures.iter_all() {
             if creature.species == Species::Capybara {
                 assert!(
                     creature.current_task.is_none(),
@@ -5653,9 +6484,9 @@ mod tests {
         let restored = SimState::from_json(&sim.to_json().unwrap()).unwrap();
 
         assert_eq!(sim.tick, restored.tick);
-        assert_eq!(sim.creatures.len(), restored.creatures.len());
-        for (id, creature) in &sim.creatures {
-            let restored_creature = &restored.creatures[id];
+        assert_eq!(sim.db.creatures.len(), restored.db.creatures.len());
+        for creature in sim.db.creatures.iter_all() {
+            let restored_creature = restored.db.creatures.get(&creature.id).unwrap();
             assert_eq!(creature.position, restored_creature.position);
             assert_eq!(creature.species, restored_creature.species);
             assert_eq!(creature.name, restored_creature.name);
@@ -5689,11 +6520,12 @@ mod tests {
         restored.step(&[], 700);
 
         // Creature positions must match.
-        for (id, creature) in &sim.creatures {
-            let restored_creature = &restored.creatures[id];
+        for creature in sim.db.creatures.iter_all() {
+            let restored_creature = restored.db.creatures.get(&creature.id).unwrap();
             assert_eq!(
                 creature.position, restored_creature.position,
-                "Creature {id:?} position diverged after roundtrip + 500 ticks"
+                "Creature {:?} position diverged after roundtrip + 500 ticks",
+                creature.id
             );
         }
         // PRNG state must match.
@@ -5720,8 +6552,9 @@ mod tests {
         restored.step(&[cmd], 2);
 
         let elf = restored
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .expect("elf should exist after roundtrip spawn");
         assert!(
@@ -5811,9 +6644,10 @@ mod tests {
         sim.spawn_creature(Species::Elephant, spawn_pos, &mut events);
 
         // There should be exactly one elephant.
-        let elephants: Vec<&Creature> = sim
+        let elephants: Vec<&crate::db::Creature> = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .filter(|c| c.species == Species::Elephant)
             .collect();
         assert_eq!(elephants.len(), 1, "Should have spawned one elephant");
@@ -5858,19 +6692,21 @@ mod tests {
 
         assert_eq!(sim.creature_count(Species::Elf), 1);
         assert_eq!(sim.creature_count(Species::Capybara), 1);
-        assert_eq!(sim.creatures.len(), 2);
+        assert_eq!(sim.db.creatures.len(), 2);
 
         // Verify species are correctly stored.
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         assert_eq!(elf.species, Species::Elf);
 
         let capy = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Capybara)
             .unwrap();
         assert_eq!(capy.species, Species::Capybara);
@@ -5898,8 +6734,9 @@ mod tests {
 
         // Verify food starts at food_max.
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         assert_eq!(elf.food, food_max);
@@ -5909,8 +6746,9 @@ mod tests {
         sim.step(&[], target_tick);
 
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         let expected_decay = decay_per_tick * heartbeat_interval as i64 * 3;
@@ -5946,8 +6784,9 @@ mod tests {
         sim.step(&[], target_tick);
 
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         assert_eq!(elf.food, 0);
@@ -5979,8 +6818,9 @@ mod tests {
 
         // Verify rest starts at rest_max.
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         assert_eq!(elf.rest, rest_max);
@@ -5990,8 +6830,9 @@ mod tests {
         sim.step(&[], target_tick);
 
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         let expected_decay = decay_per_tick * heartbeat_interval as i64 * 3;
@@ -6022,8 +6863,9 @@ mod tests {
         sim.step(&[], target_tick);
 
         let elf = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
         assert_eq!(elf.rest, 0);
@@ -6048,31 +6890,35 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set rest below threshold (50%) and food well above threshold.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 30 / 100;
-        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
+        let food_max_val = sim.species_table[&Species::Elf].food_max;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.rest = rest_max * 30 / 100;
+            c.food = food_max_val;
+        });
 
         // Advance past the next heartbeat.
         let target_tick = 1 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
         // The elf should now have a Sleep task.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_some(),
             "Tired idle elf should have been assigned a Sleep task"
         );
-        let task = &sim.tasks[&elf.current_task.unwrap()];
+        let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
         assert!(
-            matches!(task.kind, TaskKind::Sleep { .. }),
+            task.kind_tag == TaskKindTag::Sleep,
             "Task should be Sleep, got {:?}",
-            task.kind
+            task.kind_tag
         );
     }
 
@@ -6099,9 +6945,10 @@ mod tests {
 
         // No Sleep task should exist.
         let has_sleep_task = sim
+            .db
             .tasks
-            .values()
-            .any(|t| matches!(t.kind, TaskKind::Sleep { .. }));
+            .iter_all()
+            .any(|t| t.kind_tag == TaskKindTag::Sleep);
         assert!(
             !has_sleep_task,
             "Well-rested elf should not create a Sleep task"
@@ -6127,15 +6974,19 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set rest very low but keep food high.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 10 / 100;
-        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
+        let food_max_val = sim.species_table[&Species::Elf].food_max;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.rest = rest_max * 10 / 100;
+            c.food = food_max_val;
+        });
 
         // Give the elf a GoTo task so it's busy.
         let task_id = TaskId::new(&mut sim.rng);
@@ -6144,30 +6995,32 @@ mod tests {
             kind: TaskKind::GoTo,
             state: TaskState::InProgress,
             location: NavNodeId(0),
-            assignees: vec![elf_id],
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
         };
-        sim.tasks.insert(task_id, goto_task);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.insert_task(goto_task);
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
 
         // Advance past the heartbeat.
         let target_tick = 1 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
         // The elf should still have its GoTo task, not a Sleep one.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert_eq!(
             elf.current_task,
             Some(task_id),
             "Busy elf should keep its existing task"
         );
         let sleep_task_count = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Sleep { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Sleep)
             .count();
         assert_eq!(
             sleep_task_count, 0,
@@ -6202,31 +7055,34 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Both food AND rest below threshold.
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 20 / 100;
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 20 / 100;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.food = food_max * 20 / 100;
+            c.rest = rest_max * 20 / 100;
+        });
 
         // Advance past the heartbeat.
         let target_tick = 1 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
         // Hunger takes priority — should get EatFruit, not Sleep.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_some(),
             "Hungry+tired elf should get a task"
         );
-        let task = &sim.tasks[&elf.current_task.unwrap()];
+        let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
         assert!(
-            matches!(task.kind, TaskKind::EatFruit { .. }),
+            task.kind_tag == TaskKindTag::EatFruit,
             "Hunger should take priority over tiredness, got {:?}",
-            task.kind
+            task.kind_tag
         );
     }
 
@@ -6250,33 +7106,34 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set rest below threshold, food high.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 30 / 100;
-        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
+        let food_max_val = sim.species_table[&Species::Elf].food_max;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.rest = rest_max * 30 / 100;
+            c.food = food_max_val;
+        });
 
         // Advance past the heartbeat.
         let target_tick = 1 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
         // Should have a Sleep task with bed_pos: None (ground sleep).
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_some(),
             "Tired elf should get a Sleep task"
         );
-        let task = &sim.tasks[&elf.current_task.unwrap()];
-        match &task.kind {
-            TaskKind::Sleep { bed_pos, .. } => {
-                assert_eq!(*bed_pos, None, "No dormitories — should be ground sleep");
-            }
-            other => panic!("Expected Sleep task, got {:?}", other),
-        }
+        let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+        assert_eq!(task.kind_tag, TaskKindTag::Sleep, "Expected Sleep task");
+        let bed_pos = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+        assert_eq!(bed_pos, None, "No dormitories — should be ground sleep");
         // Ground sleep should use sleep_ticks_ground for total_cost.
         assert_eq!(
             task.total_cost, sim.config.sleep_ticks_ground as f32,
@@ -6286,8 +7143,6 @@ mod tests {
 
     #[test]
     fn find_nearest_bed_excludes_occupied() {
-        use crate::building::CompletedStructure;
-
         let mut sim = test_sim(42);
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let rest_max = sim.species_table[&Species::Elf].rest_max;
@@ -6301,9 +7156,10 @@ mod tests {
         // Add a dormitory structure with exactly one bed.
         let structure_id = StructureId(999);
         let project_id = ProjectId::new(&mut sim.rng);
-        sim.structures.insert(
-            structure_id,
-            CompletedStructure {
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.db
+            .structures
+            .insert_no_fk(CompletedStructure {
                 id: structure_id,
                 project_id,
                 build_type: BuildType::Building,
@@ -6314,16 +7170,21 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: Some(FurnishingType::Dormitory),
-                assigned_elf: None,
-                furniture_positions: vec![bed_pos],
-                planned_furniture: vec![],
-                inventory: Vec::new(),
+                inventory_id: inv_id,
                 logistics_priority: None,
-                logistics_wants: Vec::new(),
                 cooking_enabled: false,
                 cooking_bread_target: 0,
-            },
-        );
+            })
+            .unwrap();
+        let _ = sim
+            .db
+            .furniture
+            .insert_auto_no_fk(|id| crate::db::Furniture {
+                id,
+                structure_id,
+                coord: bed_pos,
+                placed: true,
+            });
 
         // Spawn two elves.
         let cmds = vec![
@@ -6347,18 +7208,21 @@ mod tests {
         sim.step(&cmds, 1);
 
         let elf_ids: Vec<CreatureId> = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .filter(|c| c.species == Species::Elf)
             .map(|c| c.id)
             .collect();
         assert_eq!(elf_ids.len(), 2);
 
         // Make both elves tired with high food.
+        let food_max_val = sim.species_table[&Species::Elf].food_max;
         for &elf_id in &elf_ids {
-            sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 20 / 100;
-            sim.creatures.get_mut(&elf_id).unwrap().food =
-                sim.species_table[&Species::Elf].food_max;
+            let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+                c.rest = rest_max * 20 / 100;
+                c.food = food_max_val;
+            });
         }
 
         // Advance past the heartbeat.
@@ -6369,15 +7233,17 @@ mod tests {
         let mut bed_sleep_count = 0;
         let mut ground_sleep_count = 0;
         for &elf_id in &elf_ids {
-            let elf = &sim.creatures[&elf_id];
+            let elf = sim.db.creatures.get(&elf_id).unwrap();
             if let Some(task_id) = elf.current_task {
-                if let Some(task) = sim.tasks.get(&task_id) {
-                    match &task.kind {
-                        TaskKind::Sleep {
-                            bed_pos: Some(_), ..
-                        } => bed_sleep_count += 1,
-                        TaskKind::Sleep { bed_pos: None, .. } => ground_sleep_count += 1,
-                        _ => {}
+                if let Some(task) = sim.db.tasks.get(&task_id) {
+                    if task.kind_tag == TaskKindTag::Sleep {
+                        let bed =
+                            sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+                        if bed.is_some() {
+                            bed_sleep_count += 1;
+                        } else {
+                            ground_sleep_count += 1;
+                        }
                     }
                 }
             }
@@ -6392,8 +7258,6 @@ mod tests {
 
     #[test]
     fn tired_elf_sleeps_and_rest_increases() {
-        use crate::building::CompletedStructure;
-
         // Integration test: set low rest, add a dormitory with beds, run many
         // ticks, verify rest increased (proves sleeping happened).
         let mut config = test_config();
@@ -6413,9 +7277,10 @@ mod tests {
 
         let structure_id = StructureId(999);
         let project_id = ProjectId::new(&mut sim.rng);
-        sim.structures.insert(
-            structure_id,
-            CompletedStructure {
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.db
+            .structures
+            .insert_no_fk(CompletedStructure {
                 id: structure_id,
                 project_id,
                 build_type: BuildType::Building,
@@ -6426,16 +7291,21 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: Some(FurnishingType::Dormitory),
-                assigned_elf: None,
-                furniture_positions: vec![bed_pos],
-                planned_furniture: vec![],
-                inventory: Vec::new(),
+                inventory_id: inv_id,
                 logistics_priority: None,
-                logistics_wants: Vec::new(),
                 cooking_enabled: false,
                 cooking_bread_target: 0,
-            },
-        );
+            })
+            .unwrap();
+        let _ = sim
+            .db
+            .furniture
+            .insert_auto_no_fk(|id| crate::db::Furniture {
+                id,
+                structure_id,
+                coord: bed_pos,
+                placed: true,
+            });
 
         // Spawn an elf.
         let cmd = SimCommand {
@@ -6449,20 +7319,23 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set rest to 20% — well below the 50% threshold.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 20 / 100;
-        let rest_before = sim.creatures[&elf_id].rest;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.rest = rest_max * 20 / 100;
+        });
+        let rest_before = sim.db.creatures.get(&elf_id).unwrap().rest;
 
         // Run for 50_000 ticks — enough for heartbeat + pathfind + sleep.
         sim.step(&[], 50_001);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         // If the elf slept, rest should be meaningfully higher than 20%.
         // With rest_per_sleep_tick=60B and sleep_ticks_bed=10_000 activations,
         // full bed sleep restores 600T = 60% of rest_max. Even with continued
@@ -6479,12 +7352,18 @@ mod tests {
     // Movement interpolation tests
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn interpolated_position_midpoint() {
-        let creature = Creature {
+    /// Helper: create a minimal `db::Creature` for interpolation tests.
+    fn make_interp_creature(
+        position: VoxelCoord,
+        move_from: Option<VoxelCoord>,
+        move_to: Option<VoxelCoord>,
+        move_start_tick: u64,
+        move_end_tick: u64,
+    ) -> crate::db::Creature {
+        crate::db::Creature {
             id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
             species: Species::Elf,
-            position: VoxelCoord::new(10, 0, 0),
+            position,
             name: String::new(),
             name_meaning: String::new(),
             current_node: None,
@@ -6493,14 +7372,23 @@ mod tests {
             food: 1000,
             rest: 1000,
             assigned_home: None,
-            thoughts: Vec::new(),
-            inventory: Vec::new(),
-            wants: Vec::new(),
-            move_from: Some(VoxelCoord::new(0, 0, 0)),
-            move_to: Some(VoxelCoord::new(10, 0, 0)),
-            move_start_tick: 100,
-            move_end_tick: 200,
-        };
+            inventory_id: InventoryId(0),
+            move_from,
+            move_to,
+            move_start_tick,
+            move_end_tick,
+        }
+    }
+
+    #[test]
+    fn interpolated_position_midpoint() {
+        let creature = make_interp_creature(
+            VoxelCoord::new(10, 0, 0),
+            Some(VoxelCoord::new(0, 0, 0)),
+            Some(VoxelCoord::new(10, 0, 0)),
+            100,
+            200,
+        );
         let (x, y, z) = creature.interpolated_position(150.0);
         assert!((x - 5.0).abs() < 0.001, "x should be 5.0, got {x}");
         assert!((y - 0.0).abs() < 0.001, "y should be 0.0, got {y}");
@@ -6509,78 +7397,39 @@ mod tests {
 
     #[test]
     fn interpolated_position_at_start() {
-        let creature = Creature {
-            id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
-            species: Species::Elf,
-            position: VoxelCoord::new(10, 0, 0),
-            name: String::new(),
-            name_meaning: String::new(),
-            current_node: None,
-            path: None,
-            current_task: None,
-            food: 1000,
-            rest: 1000,
-            assigned_home: None,
-            thoughts: Vec::new(),
-            inventory: Vec::new(),
-            wants: Vec::new(),
-            move_from: Some(VoxelCoord::new(0, 0, 0)),
-            move_to: Some(VoxelCoord::new(10, 0, 0)),
-            move_start_tick: 100,
-            move_end_tick: 200,
-        };
+        let creature = make_interp_creature(
+            VoxelCoord::new(10, 0, 0),
+            Some(VoxelCoord::new(0, 0, 0)),
+            Some(VoxelCoord::new(10, 0, 0)),
+            100,
+            200,
+        );
         let (x, _, _) = creature.interpolated_position(100.0);
         assert!((x - 0.0).abs() < 0.001, "At t=0 should be at from, got {x}");
     }
 
     #[test]
     fn interpolated_position_at_end() {
-        let creature = Creature {
-            id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
-            species: Species::Elf,
-            position: VoxelCoord::new(10, 0, 0),
-            name: String::new(),
-            name_meaning: String::new(),
-            current_node: None,
-            path: None,
-            current_task: None,
-            food: 1000,
-            rest: 1000,
-            assigned_home: None,
-            thoughts: Vec::new(),
-            inventory: Vec::new(),
-            wants: Vec::new(),
-            move_from: Some(VoxelCoord::new(0, 0, 0)),
-            move_to: Some(VoxelCoord::new(10, 0, 0)),
-            move_start_tick: 100,
-            move_end_tick: 200,
-        };
+        let creature = make_interp_creature(
+            VoxelCoord::new(10, 0, 0),
+            Some(VoxelCoord::new(0, 0, 0)),
+            Some(VoxelCoord::new(10, 0, 0)),
+            100,
+            200,
+        );
         let (x, _, _) = creature.interpolated_position(200.0);
         assert!((x - 10.0).abs() < 0.001, "At t=1 should be at to, got {x}");
     }
 
     #[test]
     fn interpolated_position_clamped_past_end() {
-        let creature = Creature {
-            id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
-            species: Species::Elf,
-            position: VoxelCoord::new(10, 0, 0),
-            name: String::new(),
-            name_meaning: String::new(),
-            current_node: None,
-            path: None,
-            current_task: None,
-            food: 1000,
-            rest: 1000,
-            assigned_home: None,
-            thoughts: Vec::new(),
-            inventory: Vec::new(),
-            wants: Vec::new(),
-            move_from: Some(VoxelCoord::new(0, 0, 0)),
-            move_to: Some(VoxelCoord::new(10, 0, 0)),
-            move_start_tick: 100,
-            move_end_tick: 200,
-        };
+        let creature = make_interp_creature(
+            VoxelCoord::new(10, 0, 0),
+            Some(VoxelCoord::new(0, 0, 0)),
+            Some(VoxelCoord::new(10, 0, 0)),
+            100,
+            200,
+        );
         let (x, _, _) = creature.interpolated_position(999.0);
         assert!(
             (x - 10.0).abs() < 0.001,
@@ -6590,26 +7439,7 @@ mod tests {
 
     #[test]
     fn interpolated_position_stationary() {
-        let creature = Creature {
-            id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
-            species: Species::Elf,
-            position: VoxelCoord::new(5, 3, 7),
-            name: String::new(),
-            name_meaning: String::new(),
-            current_node: None,
-            path: None,
-            current_task: None,
-            food: 1000,
-            rest: 1000,
-            assigned_home: None,
-            thoughts: Vec::new(),
-            inventory: Vec::new(),
-            wants: Vec::new(),
-            move_from: None,
-            move_to: None,
-            move_start_tick: 0,
-            move_end_tick: 0,
-        };
+        let creature = make_interp_creature(VoxelCoord::new(5, 3, 7), None, None, 0, 0);
         let (x, y, z) = creature.interpolated_position(50.0);
         assert!((x - 5.0).abs() < 0.001);
         assert!((y - 3.0).abs() < 0.001);
@@ -6634,14 +7464,15 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Before the first activation, the elf should have no movement metadata.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(elf.move_from.is_none());
         assert!(elf.move_to.is_none());
 
@@ -6650,7 +7481,7 @@ mod tests {
         // Step to tick 2 — the first activation fires and the elf wanders.
         sim.step(&[], 2);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.move_from.is_some(),
             "move_from should be set after wander"
@@ -6719,8 +7550,8 @@ mod tests {
         };
         let result = sim.step(&[cmd], 1);
 
-        assert_eq!(sim.blueprints.len(), 1);
-        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
         assert_eq!(bp.voxels, vec![air_coord]);
         assert_eq!(bp.state, BlueprintState::Designated);
         assert!(
@@ -6748,8 +7579,8 @@ mod tests {
         sim.step(&[cmd], 1);
 
         // Blueprint should exist and have a linked task.
-        assert_eq!(sim.blueprints.len(), 1);
-        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
         assert!(
             bp.task_id.is_some(),
             "Blueprint should have a linked task_id"
@@ -6757,8 +7588,8 @@ mod tests {
 
         // Task should exist.
         let task_id = bp.task_id.unwrap();
-        let task = &sim.tasks[&task_id];
-        assert!(matches!(task.kind, crate::task::TaskKind::Build { .. }));
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert!(task.kind_tag == TaskKindTag::Build);
         assert_eq!(task.state, TaskState::Available);
         assert_eq!(
             task.total_cost,
@@ -6783,7 +7614,7 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
     }
 
     #[test]
@@ -6803,7 +7634,7 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
     }
 
     #[test]
@@ -6825,7 +7656,7 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
     }
 
     #[test]
@@ -6843,7 +7674,7 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
     }
 
     #[test]
@@ -6862,8 +7693,8 @@ mod tests {
             },
         };
         sim.step(&[cmd1], 1);
-        assert_eq!(sim.blueprints.len(), 1);
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
         // Now cancel.
         let cmd2 = SimCommand {
@@ -6873,7 +7704,7 @@ mod tests {
         };
         let result = sim.step(&[cmd2], 2);
 
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
         assert!(
             result
                 .events
@@ -6896,7 +7727,7 @@ mod tests {
         };
         let result = sim.step(&[cmd], 1);
 
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
         assert!(
             !result
                 .events
@@ -6922,9 +7753,9 @@ mod tests {
         };
         sim.step(&[cmd1], 1);
 
-        let project_id = *sim.blueprints.keys().next().unwrap();
-        let task_id = sim.blueprints[&project_id].task_id.unwrap();
-        assert!(sim.tasks.contains_key(&task_id));
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+        let task_id = sim.db.blueprints.get(&project_id).unwrap().task_id.unwrap();
+        assert!(sim.db.tasks.contains(&task_id));
 
         // Cancel.
         let cmd2 = SimCommand {
@@ -6934,8 +7765,8 @@ mod tests {
         };
         sim.step(&[cmd2], 2);
 
-        assert!(sim.blueprints.is_empty());
-        assert!(!sim.tasks.contains_key(&task_id));
+        assert!(sim.db.blueprints.is_empty());
+        assert!(!sim.db.tasks.contains(&task_id));
     }
 
     #[test]
@@ -6958,16 +7789,21 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 2);
 
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
-        // Tick enough for the elf to claim the task.
-        sim.step(&[], sim.tick + 50000);
+        // Tick enough for the elf to claim the task, but not complete it.
+        // Build total_cost is build_work_ticks_per_voxel (1000) for 1 voxel,
+        // and once at the site the elf does 1 work per tick. Use 1000 ticks
+        // so the elf claims but hasn't finished.
+        sim.step(&[], sim.tick + 1000);
 
-        let task_id = sim.blueprints[&project_id].task_id.unwrap();
-        let task = &sim.tasks[&task_id];
+        let task_id = sim.db.blueprints.get(&project_id).unwrap().task_id.unwrap();
         // The elf should have claimed it (it's the only available task).
         assert!(
-            task.assignees.contains(&elf_id),
+            sim.db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(task_id)),
             "Elf should have claimed the build task"
         );
 
@@ -6980,7 +7816,7 @@ mod tests {
         sim.step(&[cmd2], sim.tick + 2);
 
         // Elf should be unassigned.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_none(),
             "Elf should have no task after cancel"
@@ -7003,7 +7839,7 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
         // Simulate partial construction by manually placing a voxel.
         sim.placed_voxels
@@ -7041,13 +7877,13 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        assert_eq!(sim.blueprints.len(), 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
 
         let json = sim.to_json().unwrap();
         let restored = SimState::from_json(&json).unwrap();
 
-        assert_eq!(restored.blueprints.len(), 1);
-        let bp = restored.blueprints.values().next().unwrap();
+        assert_eq!(restored.db.blueprints.len(), 1);
+        let bp = restored.db.blueprints.iter_all().next().unwrap();
         assert_eq!(bp.voxels, vec![air_coord]);
         assert_eq!(bp.state, BlueprintState::Designated);
     }
@@ -7082,8 +7918,8 @@ mod tests {
         sim_a.step(&[cmd_a], 1);
         sim_b.step(&[cmd_b], 1);
 
-        let id_a = *sim_a.blueprints.keys().next().unwrap();
-        let id_b = *sim_b.blueprints.keys().next().unwrap();
+        let id_a = *sim_a.db.blueprints.iter_keys().next().unwrap();
+        let id_b = *sim_b.db.blueprints.iter_keys().next().unwrap();
         assert_eq!(id_a, id_b);
         assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
     }
@@ -7118,8 +7954,9 @@ mod tests {
 
         // Boar is ground-only — should be at y=1.
         let boar = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Boar)
             .unwrap();
         assert_eq!(boar.position.y, 1);
@@ -7151,8 +7988,9 @@ mod tests {
 
         // Deer is ground-only — should be at y=1.
         let deer = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Deer)
             .unwrap();
         assert_eq!(deer.position.y, 1);
@@ -7227,8 +8065,9 @@ mod tests {
         for target in (10000..100000).step_by(10000) {
             sim.step(&[], target);
             let boar = sim
+                .db
                 .creatures
-                .values()
+                .iter_all()
                 .find(|c| c.species == Species::Boar)
                 .unwrap();
             assert_eq!(
@@ -7257,8 +8096,9 @@ mod tests {
         for target in (10000..100000).step_by(10000) {
             sim.step(&[], target);
             let deer = sim
+                .db
                 .creatures
-                .values()
+                .iter_all()
                 .find(|c| c.species == Species::Deer)
                 .unwrap();
             assert_eq!(
@@ -7288,8 +8128,9 @@ mod tests {
         sim.step(&[], 100000);
 
         let monkey = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Monkey)
             .unwrap();
         // Monkey is not ground_only, so it should be able to reach y > 1
@@ -7317,8 +8158,9 @@ mod tests {
         sim.step(&[], 100000);
 
         let squirrel = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Squirrel)
             .unwrap();
         assert!(squirrel.current_node.is_some());
@@ -7351,15 +8193,15 @@ mod tests {
             tick = sim.tick + 1;
         }
 
-        assert_eq!(sim.creatures.len(), 6);
+        assert_eq!(sim.db.creatures.len(), 6);
         for &species in &species_list {
             assert_eq!(sim.creature_count(species), 1, "Expected 1 {:?}", species);
         }
 
         // Run for a while — all should remain alive with valid nodes.
         sim.step(&[], 50000);
-        assert_eq!(sim.creatures.len(), 6);
-        for creature in sim.creatures.values() {
+        assert_eq!(sim.db.creatures.len(), 6);
+        for creature in sim.db.creatures.iter_all() {
             assert!(
                 creature.current_node.is_some(),
                 "{:?} has no current node",
@@ -7426,14 +8268,14 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 2);
 
-        let project_id = *sim.blueprints.keys().next().unwrap();
-        let task_id = sim.blueprints[&project_id].task_id.unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+        let task_id = sim.db.blueprints.get(&project_id).unwrap().task_id.unwrap();
 
         // Tick until completion (elf needs to pathfind + do work).
         sim.step(&[], sim.tick + 200_000);
 
         // Blueprint should be Complete.
-        let bp = &sim.blueprints[&project_id];
+        let bp = &sim.db.blueprints.get(&project_id).unwrap();
         assert_eq!(
             bp.state,
             BlueprintState::Complete,
@@ -7448,11 +8290,11 @@ mod tests {
         );
 
         // Task should be Complete.
-        let task = &sim.tasks[&task_id];
+        let task = sim.db.tasks.get(&task_id).unwrap();
         assert_eq!(task.state, TaskState::Complete);
 
         // Elf should be freed (no current task).
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_none(),
             "Elf should be free after build completion"
@@ -7490,7 +8332,7 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 2);
 
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
         // Tick enough for the elf to arrive and do partial work (enough for
         // 1 voxel but not all 3). Elf walk speed is 500 tpv, so a few
@@ -7512,7 +8354,7 @@ mod tests {
 
         // Blueprint should still be Designated (not all voxels done).
         if placed_count < 3 {
-            let bp = &sim.blueprints[&project_id];
+            let bp = &sim.db.blueprints.get(&project_id).unwrap();
             assert_eq!(bp.state, BlueprintState::Designated);
         }
     }
@@ -7576,9 +8418,10 @@ mod tests {
             let node_pos = sim.nav_graph.node(node_id).position;
             if node_pos == air_coord {
                 // Move the elf there.
-                let elf = sim.creatures.get_mut(&elf_id).unwrap();
-                elf.position = air_coord;
-                elf.current_node = Some(node_id);
+                let _ = sim.db.creatures.modify_unchecked(&elf_id, |elf| {
+                    elf.position = air_coord;
+                    elf.current_node = Some(node_id);
+                });
             }
         }
 
@@ -7615,7 +8458,7 @@ mod tests {
 
         // The first elf should have been displaced — its position should not
         // be at air_coord (which is now solid).
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert_ne!(
             elf.position, air_coord,
             "Elf should have been displaced from the now-solid voxel"
@@ -7715,8 +8558,8 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert_eq!(sim.blueprints.len(), 1);
-        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
         assert_eq!(bp.build_type, BuildType::Building);
         assert_eq!(bp.voxels.len(), 9); // 3x3x1
         assert!(bp.face_layout.is_some());
@@ -7741,15 +8584,12 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert_eq!(sim.tasks.len(), 1);
-        let task = sim.tasks.values().next().unwrap();
+        assert_eq!(sim.db.tasks.len(), 1);
+        let task = sim.db.tasks.iter_all().next().unwrap();
         assert_eq!(task.state, TaskState::Available);
-        match &task.kind {
-            TaskKind::Build { project_id } => {
-                assert!(sim.blueprints.contains_key(project_id));
-            }
-            _ => panic!("Expected Build task"),
-        }
+        assert_eq!(task.kind_tag, TaskKindTag::Build, "Expected Build task");
+        let project_id = sim.task_project_id(task.id).unwrap();
+        assert!(sim.db.blueprints.contains(&project_id));
     }
 
     #[test]
@@ -7769,7 +8609,7 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
     }
 
     #[test]
@@ -7789,7 +8629,7 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
     }
 
     #[test]
@@ -7809,7 +8649,7 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
         // Manually materialize one voxel.
         sim.materialize_next_build_voxel(project_id);
@@ -7846,7 +8686,7 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
         sim.materialize_next_build_voxel(project_id);
 
@@ -7874,7 +8714,7 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
         // Materialize some voxels.
         sim.materialize_next_build_voxel(project_id);
@@ -7895,7 +8735,7 @@ mod tests {
             sim.placed_voxels.is_empty(),
             "placed_voxels should be cleared",
         );
-        assert!(sim.blueprints.is_empty(), "blueprint should be removed");
+        assert!(sim.db.blueprints.is_empty(), "blueprint should be removed");
 
         // Verify voxels reverted to Air.
         for x in anchor.x..anchor.x + 3 {
@@ -7925,7 +8765,7 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
         // Materialize some voxels.
         sim.materialize_next_build_voxel(project_id);
@@ -7985,7 +8825,7 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
     }
 
     // --- CompletedStructure integration tests ---
@@ -8017,7 +8857,7 @@ mod tests {
             },
         };
         sim.step(&[cmd], 2);
-        assert_eq!(sim.blueprints.len(), 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
 
         // Run the sim forward until the blueprint is Complete.
         // The elf will claim the task, walk to the site, and do build work.
@@ -8027,16 +8867,18 @@ mod tests {
         while sim.tick < max_tick {
             sim.step(&[], sim.tick + 100);
             let all_complete = sim
+                .db
                 .blueprints
-                .values()
+                .iter_all()
                 .all(|bp| bp.state == BlueprintState::Complete);
             if all_complete {
                 break;
             }
         }
         assert!(
-            sim.blueprints
-                .values()
+            sim.db
+                .blueprints
+                .iter_all()
                 .all(|bp| bp.state == BlueprintState::Complete),
             "Build did not complete within tick limit"
         );
@@ -8047,8 +8889,8 @@ mod tests {
     fn completed_structure_registered_on_build_complete() {
         let sim = designate_and_complete_build(test_sim(42));
 
-        assert_eq!(sim.structures.len(), 1);
-        let structure = sim.structures.values().next().unwrap();
+        assert_eq!(sim.db.structures.len(), 1);
+        let structure = sim.db.structures.iter_all().next().unwrap();
         assert_eq!(structure.id, StructureId(0));
         assert_eq!(structure.build_type, BuildType::Platform);
         assert_eq!(structure.width, 1);
@@ -8090,15 +8932,19 @@ mod tests {
         while sim.tick < max_tick {
             sim.step(&[], sim.tick + 100);
             let all_complete = sim
+                .db
                 .blueprints
-                .values()
+                .iter_all()
                 .all(|bp| bp.state == BlueprintState::Complete);
             if all_complete {
                 break;
             }
         }
-        assert_eq!(sim.structures.len(), 1);
-        assert_eq!(sim.structures.values().next().unwrap().id, StructureId(0));
+        assert_eq!(sim.db.structures.len(), 1);
+        assert_eq!(
+            sim.db.structures.iter_all().next().unwrap().id,
+            StructureId(0)
+        );
 
         // Find another air coord for the second build.
         let mut second_air = None;
@@ -8146,17 +8992,18 @@ mod tests {
         while sim.tick < max_tick {
             sim.step(&[], sim.tick + 100);
             let all_complete = sim
+                .db
                 .blueprints
-                .values()
+                .iter_all()
                 .all(|bp| bp.state == BlueprintState::Complete);
             if all_complete {
                 break;
             }
         }
-        assert_eq!(sim.structures.len(), 2);
+        assert_eq!(sim.db.structures.len(), 2);
 
         // IDs should be 0 and 1.
-        let ids: Vec<StructureId> = sim.structures.keys().copied().collect();
+        let ids: Vec<StructureId> = sim.db.structures.iter_keys().copied().collect();
         assert!(ids.contains(&StructureId(0)));
         assert!(ids.contains(&StructureId(1)));
     }
@@ -8164,10 +9011,10 @@ mod tests {
     #[test]
     fn cancel_completed_structure_removes_entry() {
         let mut sim = designate_and_complete_build(test_sim(42));
-        assert_eq!(sim.structures.len(), 1);
+        assert_eq!(sim.db.structures.len(), 1);
 
         // Get the project_id of the completed structure.
-        let project_id = sim.structures.values().next().unwrap().project_id;
+        let project_id = sim.db.structures.iter_all().next().unwrap().project_id;
 
         // Cancel the build (should remove from structures too).
         let tick = sim.tick + 1;
@@ -8179,7 +9026,7 @@ mod tests {
         sim.step(&[cmd], tick);
 
         assert!(
-            sim.structures.is_empty(),
+            sim.db.structures.is_empty(),
             "Cancelling a completed build should remove it from structures"
         );
     }
@@ -8194,10 +9041,11 @@ mod tests {
 
         // The completed build should populate structure_voxels.
         assert!(!sim.structure_voxels.is_empty());
-        let structure = sim.structures.values().next().unwrap();
+        let structure = sim.db.structures.iter_all().next().unwrap();
         let bp = sim
+            .db
             .blueprints
-            .values()
+            .iter_all()
             .find(|bp| bp.state == BlueprintState::Complete)
             .unwrap();
         for &coord in &bp.voxels {
@@ -8215,7 +9063,7 @@ mod tests {
         let mut sim = designate_and_complete_build(test_sim(42));
         assert!(!sim.structure_voxels.is_empty());
 
-        let project_id = sim.structures.values().next().unwrap().project_id;
+        let project_id = sim.db.structures.iter_all().next().unwrap().project_id;
 
         let tick = sim.tick + 1;
         let cmd = SimCommand {
@@ -8250,10 +9098,11 @@ mod tests {
     #[test]
     fn raycast_structure_finds_structure_voxel() {
         let sim = designate_and_complete_build(test_sim(42));
-        let structure = sim.structures.values().next().unwrap();
+        let structure = sim.db.structures.iter_all().next().unwrap();
         let bp = sim
+            .db
             .blueprints
-            .values()
+            .iter_all()
             .find(|bp| bp.state == BlueprintState::Complete)
             .unwrap();
         let voxel = bp.voxels[0];
@@ -8278,8 +9127,9 @@ mod tests {
     fn raycast_structure_stops_at_trunk() {
         let sim = designate_and_complete_build(test_sim(42));
         let bp = sim
+            .db
             .blueprints
-            .values()
+            .iter_all()
             .find(|bp| bp.state == BlueprintState::Complete)
             .unwrap();
         let voxel = bp.voxels[0];
@@ -8320,9 +9170,12 @@ mod tests {
     #[test]
     fn rename_structure_sets_custom_name() {
         let mut sim = designate_and_complete_build(test_sim(42));
-        assert_eq!(sim.structures.len(), 1);
-        let sid = *sim.structures.keys().next().unwrap();
-        assert_eq!(sim.structures[&sid].display_name(), "Platform #0");
+        assert_eq!(sim.db.structures.len(), 1);
+        let sid = *sim.db.structures.iter_keys().next().unwrap();
+        assert_eq!(
+            sim.db.structures.get(&sid).unwrap().display_name(),
+            "Platform #0"
+        );
 
         let cmd = SimCommand {
             player_id: sim.player_id,
@@ -8333,13 +9186,16 @@ mod tests {
             },
         };
         sim.step(&[cmd], sim.tick + 1);
-        assert_eq!(sim.structures[&sid].display_name(), "Great Hall");
+        assert_eq!(
+            sim.db.structures.get(&sid).unwrap().display_name(),
+            "Great Hall"
+        );
     }
 
     #[test]
     fn rename_structure_to_none_resets_to_default() {
         let mut sim = designate_and_complete_build(test_sim(42));
-        let sid = *sim.structures.keys().next().unwrap();
+        let sid = *sim.db.structures.iter_keys().next().unwrap();
 
         // Set a custom name.
         let cmd = SimCommand {
@@ -8351,7 +9207,10 @@ mod tests {
             },
         };
         sim.step(&[cmd], sim.tick + 1);
-        assert_eq!(sim.structures[&sid].display_name(), "Great Hall");
+        assert_eq!(
+            sim.db.structures.get(&sid).unwrap().display_name(),
+            "Great Hall"
+        );
 
         // Reset to default.
         let cmd = SimCommand {
@@ -8363,7 +9222,10 @@ mod tests {
             },
         };
         sim.step(&[cmd], sim.tick + 1);
-        assert_eq!(sim.structures[&sid].display_name(), "Platform #0");
+        assert_eq!(
+            sim.db.structures.get(&sid).unwrap().display_name(),
+            "Platform #0"
+        );
     }
 
     #[test]
@@ -8381,7 +9243,7 @@ mod tests {
         };
         // Should not panic.
         sim.step(&[cmd], sim.tick + 1);
-        assert!(sim.structures.is_empty());
+        assert!(sim.db.structures.is_empty());
         assert!(sim.tick > tick_before);
     }
 
@@ -8410,8 +9272,9 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
@@ -8454,16 +9317,20 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
-        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
 
         // Set elf food low.
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max / 10;
-        let food_before = sim.creatures[&elf_id].food;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.food = food_max / 10);
+        let food_before = sim.db.creatures.get(&elf_id).unwrap().food;
 
         // Manually create an EatFruit task at the elf's current node (instant arrival).
         let fruit_pos = VoxelCoord::new(0, 0, 0); // dummy — food restore doesn't depend on real fruit
@@ -8473,19 +9340,22 @@ mod tests {
             kind: TaskKind::EatFruit { fruit_pos },
             state: TaskState::InProgress,
             location: elf_node,
-            assignees: vec![elf_id],
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::Autonomous,
         };
-        sim.tasks.insert(task_id, eat_task);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.insert_task(eat_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         // Advance 1 tick — the elf's next activation should complete the task.
         sim.step(&[], sim.tick + 2);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         let expected_restore = food_max * restore_pct / 100;
         assert!(
             elf.food >= food_before + expected_restore - 1, // allow tiny rounding
@@ -8521,30 +9391,34 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set food below threshold (threshold is 50% by default).
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 30 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
 
         // Advance past the next heartbeat — hunger check should fire.
         let target_tick = 1 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
         // The elf should now have an EatFruit task.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_some(),
             "Hungry idle elf should have been assigned an EatFruit task"
         );
-        let task = &sim.tasks[&elf.current_task.unwrap()];
+        let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
         assert!(
-            matches!(task.kind, TaskKind::EatFruit { .. }),
+            task.kind_tag == TaskKindTag::EatFruit,
             "Task should be EatFruit, got {:?}",
-            task.kind
+            task.kind_tag
         );
     }
 
@@ -8571,9 +9445,10 @@ mod tests {
 
         // No EatFruit task should exist.
         let has_eat_task = sim
+            .db
             .tasks
-            .values()
-            .any(|t| matches!(t.kind, TaskKind::EatFruit { .. }));
+            .iter_all()
+            .any(|t| t.kind_tag == TaskKindTag::EatFruit);
         assert!(
             !has_eat_task,
             "Well-fed elf should not create an EatFruit task"
@@ -8599,14 +9474,18 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set food very low.
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 10 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.food = food_max * 10 / 100);
 
         // Give the elf a GoTo task so it's busy.
         let task_id = TaskId::new(&mut sim.rng);
@@ -8615,30 +9494,34 @@ mod tests {
             kind: TaskKind::GoTo,
             state: TaskState::InProgress,
             location: NavNodeId(0),
-            assignees: vec![elf_id],
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
         };
-        sim.tasks.insert(task_id, goto_task);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.insert_task(goto_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         // Advance past the heartbeat.
         let target_tick = 1 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
         // The elf should still have its GoTo task, not an EatFruit one.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert_eq!(
             elf.current_task,
             Some(task_id),
             "Busy elf should keep its existing task"
         );
         let eat_task_count = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::EatFruit { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::EatFruit)
             .count();
         assert_eq!(
             eat_task_count, 0,
@@ -8679,19 +9562,23 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set food to 20% — well below the 50% threshold.
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 20 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.food = food_max * 20 / 100);
 
         // Run for 50_000 ticks — enough for heartbeat + pathfind + eat.
         sim.step(&[], 50_001);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
 
         // With decay alone at 100_000_000_000/tick * 3000 ticks/heartbeat =
         // 300_000_000_000_000 per heartbeat. 50_000 ticks = ~16 heartbeats.
@@ -8729,15 +9616,16 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Give the elf owned bread.
-        inventory::add_item(
-            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+        sim.inv_add_item(
+            sim.creature_inv(elf_id),
             inventory::ItemKind::Bread,
             3,
             Some(elf_id),
@@ -8745,23 +9633,26 @@ mod tests {
         );
 
         // Set food below hunger threshold.
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 30 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
 
         // Advance past the next heartbeat.
         let target_tick = 1 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
         // The elf should have an EatBread task, not EatFruit.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_some(),
             "Hungry elf with bread should have a task"
         );
-        let task = &sim.tasks[&elf.current_task.unwrap()];
+        let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
         assert!(
-            matches!(task.kind, TaskKind::EatBread),
+            task.kind_tag == TaskKindTag::EatBread,
             "Task should be EatBread, got {:?}",
-            task.kind
+            task.kind_tag
         );
     }
 
@@ -8785,16 +9676,17 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
-        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
 
         // Give the elf owned bread.
-        inventory::add_item(
-            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+        sim.inv_add_item(
+            sim.creature_inv(elf_id),
             inventory::ItemKind::Bread,
             3,
             Some(elf_id),
@@ -8802,8 +9694,11 @@ mod tests {
         );
 
         // Set food low.
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max / 10;
-        let food_before = sim.creatures[&elf_id].food;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.food = food_max / 10);
+        let food_before = sim.db.creatures.get(&elf_id).unwrap().food;
 
         // Manually create an EatBread task at the elf's current node.
         let task_id = TaskId::new(&mut sim.rng);
@@ -8812,19 +9707,22 @@ mod tests {
             kind: TaskKind::EatBread,
             state: TaskState::InProgress,
             location: elf_node,
-            assignees: vec![elf_id],
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::Autonomous,
         };
-        sim.tasks.insert(task_id, eat_task);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.insert_task(eat_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         // Advance 1 tick — the elf's activation should complete the task.
         sim.step(&[], sim.tick + 2);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         let expected_restore = food_max * bread_restore_pct / 100;
         assert!(
             elf.food >= food_before + expected_restore - 1,
@@ -8836,8 +9734,7 @@ mod tests {
         assert!(elf.current_task.is_none(), "Task should be complete");
 
         // Should have consumed 1 bread (2 remaining).
-        let bread_count =
-            inventory::count_owned(&elf.inventory, inventory::ItemKind::Bread, elf_id);
+        let bread_count = sim.inv_count_owned(elf.inventory_id, inventory::ItemKind::Bread, elf_id);
         assert_eq!(bread_count, 2, "Should have consumed 1 bread, leaving 2");
     }
 
@@ -8867,27 +9764,31 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set food below threshold.
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 30 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
 
         // Advance past heartbeat.
         let target_tick = 1 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
         // Should have EatFruit, not EatBread.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(elf.current_task.is_some(), "Hungry elf should have a task");
-        let task = &sim.tasks[&elf.current_task.unwrap()];
+        let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
         assert!(
-            matches!(task.kind, TaskKind::EatFruit { .. }),
+            task.kind_tag == TaskKindTag::EatFruit,
             "Elf without bread should seek fruit, got {:?}",
-            task.kind
+            task.kind_tag
         );
     }
 
@@ -8917,15 +9818,16 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Give the elf bread with no owner (unowned).
-        inventory::add_item(
-            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+        sim.inv_add_item(
+            sim.creature_inv(elf_id),
             inventory::ItemKind::Bread,
             5,
             None,
@@ -8933,20 +9835,23 @@ mod tests {
         );
 
         // Set food below threshold.
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 30 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
 
         // Advance past heartbeat.
         let target_tick = 1 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
         // Should have EatFruit since the bread is not owned by this elf.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(elf.current_task.is_some(), "Hungry elf should have a task");
-        let task = &sim.tasks[&elf.current_task.unwrap()];
+        let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
         assert!(
-            matches!(task.kind, TaskKind::EatFruit { .. }),
+            task.kind_tag == TaskKindTag::EatFruit,
             "Elf with unowned bread should seek fruit, got {:?}",
-            task.kind
+            task.kind_tag
         );
     }
 
@@ -8968,22 +9873,26 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
-        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
 
         // Give bread and set food low.
-        inventory::add_item(
-            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+        sim.inv_add_item(
+            sim.creature_inv(elf_id),
             inventory::ItemKind::Bread,
             1,
             Some(elf_id),
             None,
         );
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max / 10;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.food = food_max / 10);
 
         // Create EatBread task at current node.
         let task_id = TaskId::new(&mut sim.rng);
@@ -8992,25 +9901,32 @@ mod tests {
             kind: TaskKind::EatBread,
             state: TaskState::InProgress,
             location: elf_node,
-            assignees: vec![elf_id],
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::Autonomous,
         };
-        sim.tasks.insert(task_id, eat_task);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.insert_task(eat_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         // Advance to trigger activation.
         sim.step(&[], sim.tick + 2);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
-            elf.thoughts.iter().any(|t| t.kind == ThoughtKind::AteMeal),
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+                .iter()
+                .any(|t| t.kind == ThoughtKind::AteMeal),
             "Eating bread should generate AteMeal thought"
         );
         // Piggyback: mood should reflect the AteMeal thought.
-        let (score, tier) = elf.mood(&sim.config.mood);
+        let (score, tier) = sim.mood_for_creature(elf_id);
         assert!(
             score > 0,
             "AteMeal should produce positive mood score, got {score}"
@@ -9067,8 +9983,8 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert_eq!(sim.blueprints.len(), 1, "Blueprint should be created");
-        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(sim.db.blueprints.len(), 1, "Blueprint should be created");
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
         assert_eq!(bp.voxels, vec![leaf_coord]);
         assert_eq!(bp.original_voxels.len(), 1);
         assert_eq!(bp.original_voxels[0], (leaf_coord, VoxelType::Leaf));
@@ -9091,7 +10007,7 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert!(sim.blueprints.is_empty(), "All-trunk should be rejected");
+        assert!(sim.db.blueprints.is_empty(), "All-trunk should be rejected");
         assert_eq!(
             sim.last_build_message.as_deref(),
             Some("Nothing to build — all voxels are already wood.")
@@ -9137,8 +10053,8 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert_eq!(sim.blueprints.len(), 1);
-        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
         // Only the air voxel should be in the blueprint.
         assert_eq!(bp.voxels, vec![air_coord]);
         assert!(bp.original_voxels.is_empty());
@@ -9164,7 +10080,7 @@ mod tests {
         sim.step(&[cmd], 1);
 
         assert!(
-            sim.blueprints.is_empty(),
+            sim.db.blueprints.is_empty(),
             "Blocked voxel should reject build"
         );
     }
@@ -9190,7 +10106,7 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 2);
 
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
         // Tick until completion.
         sim.step(&[], sim.tick + 200_000);
@@ -9203,7 +10119,7 @@ mod tests {
         );
 
         // Blueprint should be Complete.
-        let bp = &sim.blueprints[&project_id];
+        let bp = &sim.db.blueprints.get(&project_id).unwrap();
         assert_eq!(bp.state, BlueprintState::Complete);
     }
 
@@ -9225,7 +10141,7 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
         // Simulate partial construction by manually placing the voxel.
         sim.placed_voxels
@@ -9263,13 +10179,13 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        assert_eq!(sim.blueprints.len(), 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
 
         let json = sim.to_json().unwrap();
         let restored = SimState::from_json(&json).unwrap();
 
-        assert_eq!(restored.blueprints.len(), 1);
-        let bp = restored.blueprints.values().next().unwrap();
+        assert_eq!(restored.db.blueprints.len(), 1);
+        let bp = restored.db.blueprints.iter_all().next().unwrap();
         assert_eq!(bp.original_voxels.len(), 1);
         assert_eq!(bp.original_voxels[0], (leaf_coord, VoxelType::Leaf));
     }
@@ -9304,12 +10220,12 @@ mod tests {
         sim_a.step(&[cmd_a], 1);
         sim_b.step(&[cmd_b], 1);
 
-        let id_a = *sim_a.blueprints.keys().next().unwrap();
-        let id_b = *sim_b.blueprints.keys().next().unwrap();
+        let id_a = *sim_a.db.blueprints.iter_keys().next().unwrap();
+        let id_b = *sim_b.db.blueprints.iter_keys().next().unwrap();
         assert_eq!(id_a, id_b);
 
-        let bp_a = &sim_a.blueprints[&id_a];
-        let bp_b = &sim_b.blueprints[&id_b];
+        let bp_a = sim_a.db.blueprints.get(&id_a).unwrap();
+        let bp_b = sim_b.db.blueprints.get(&id_b).unwrap();
         assert_eq!(bp_a.voxels, bp_b.voxels);
         assert_eq!(bp_a.original_voxels, bp_b.original_voxels);
         assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
@@ -9332,7 +10248,7 @@ mod tests {
         sim.step(&[cmd], 1);
 
         assert!(
-            sim.blueprints.is_empty(),
+            sim.db.blueprints.is_empty(),
             "Wall does not allow overlap, should reject leaf"
         );
     }
@@ -9356,10 +10272,10 @@ mod tests {
         };
         sim.step(&[spawn_cmd], 2);
 
-        let elf_id = *sim.creatures.keys().next().unwrap();
+        let elf_id = *sim.db.creatures.iter_keys().next().unwrap();
 
         // Find a ground nav node different from the elf's to use as task target.
-        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
         let task_node = sim
             .nav_graph
             .ground_node_ids()
@@ -9369,21 +10285,21 @@ mod tests {
 
         // Create a GoTo task at that nav node and assign it to the elf.
         let task_id = TaskId::new(&mut sim.rng);
-        sim.tasks.insert(
-            task_id,
-            Task {
-                id: task_id,
-                kind: TaskKind::GoTo,
-                state: TaskState::InProgress,
-                location: task_node,
-                assignees: vec![elf_id],
-                progress: 0.0,
-                total_cost: 0.0,
-                required_species: None,
-                origin: TaskOrigin::PlayerDirected,
-            },
-        );
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.insert_task(Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::InProgress,
+            location: task_node,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+        });
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         // Directly kill the task node's slot to simulate an incremental update
         // that removed it without recycling the slot. This is the exact state
@@ -9401,7 +10317,7 @@ mod tests {
         sim.step(&[], 50000);
 
         // The elf should have dropped the task (can't reach dead node).
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_none(),
             "Elf should abandon task with dead location node",
@@ -9445,8 +10361,8 @@ mod tests {
         sim.step(&[cmd], 1);
 
         // A blueprint should exist with only the solid voxel.
-        assert_eq!(sim.blueprints.len(), 1);
-        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
         assert_eq!(bp.build_type, BuildType::Carve);
         assert_eq!(bp.voxels.len(), 1);
         assert_eq!(bp.voxels[0], solid);
@@ -9485,7 +10401,7 @@ mod tests {
 
         // Ensure carve blueprint was created (not blocked by structural check).
         assert_eq!(
-            sim.blueprints.len(),
+            sim.db.blueprints.len(),
             1,
             "Blueprint should exist; last_build_message: {:?}",
             sim.last_build_message
@@ -9554,8 +10470,8 @@ mod tests {
         };
         let result = sim.step(&[cmd], 1);
 
-        assert_eq!(sim.blueprints.len(), 1);
-        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
         assert_eq!(bp.build_type, BuildType::WoodLadder);
         assert_eq!(bp.voxels.len(), 3);
         assert_eq!(bp.state, BlueprintState::Designated);
@@ -9587,8 +10503,8 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert_eq!(sim.blueprints.len(), 1);
-        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
         assert_eq!(bp.build_type, BuildType::RopeLadder);
     }
 
@@ -9610,7 +10526,7 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
         assert_eq!(
             sim.last_build_message.as_deref(),
             Some("Ladder orientation must be horizontal.")
@@ -9635,7 +10551,7 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
         assert_eq!(
             sim.last_build_message.as_deref(),
             Some("Ladder height must be at least 1.")
@@ -9663,7 +10579,7 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert!(sim.blueprints.is_empty());
+        assert!(sim.db.blueprints.is_empty());
     }
 
     #[test]
@@ -9684,10 +10600,10 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        let bp = sim.blueprints.values().next().unwrap();
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
         assert!(bp.task_id.is_some());
-        let task = &sim.tasks[&bp.task_id.unwrap()];
-        assert!(matches!(task.kind, crate::task::TaskKind::Build { .. }));
+        let task = sim.db.tasks.get(&bp.task_id.unwrap()).unwrap();
+        assert!(task.kind_tag == TaskKindTag::Build);
         assert_eq!(task.required_species, Some(Species::Elf));
         assert_eq!(
             task.total_cost,
@@ -9746,9 +10662,9 @@ mod tests {
             },
         };
         sim.step(&[cmd], 1);
-        assert_eq!(sim.blueprints.len(), 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
 
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
         let cancel_cmd = SimCommand {
             player_id: sim.player_id,
             tick: 2,
@@ -9756,8 +10672,8 @@ mod tests {
         };
         let result = sim.step(&[cancel_cmd], 2);
 
-        assert!(sim.blueprints.is_empty());
-        assert!(sim.tasks.is_empty());
+        assert!(sim.db.blueprints.is_empty());
+        assert!(sim.db.tasks.is_empty());
         assert!(
             result
                 .events
@@ -9787,7 +10703,7 @@ mod tests {
 
         // No blueprint should be created — ForestFloor is not carvable.
         assert!(
-            sim.blueprints.is_empty(),
+            sim.db.blueprints.is_empty(),
             "ForestFloor should not be carvable"
         );
         assert_eq!(sim.last_build_message.as_deref(), Some("Nothing to carve."));
@@ -9831,7 +10747,7 @@ mod tests {
         assert_eq!(sim.world.get(v1), VoxelType::Air);
 
         // Now cancel the build.
-        let project_id = *sim.blueprints.keys().next().unwrap();
+        let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
         let cancel_cmd = SimCommand {
             player_id: sim.player_id,
             tick: 500_001,
@@ -9871,8 +10787,8 @@ mod tests {
 
         let json = sim.to_json().unwrap();
         let restored = SimState::from_json(&json).unwrap();
-        assert_eq!(restored.blueprints.len(), 1);
-        let bp = restored.blueprints.values().next().unwrap();
+        assert_eq!(restored.db.blueprints.len(), 1);
+        let bp = restored.db.blueprints.iter_all().next().unwrap();
         assert_eq!(bp.build_type, BuildType::WoodLadder);
     }
 
@@ -9911,7 +10827,7 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert_eq!(sim.blueprints.len(), 0);
+        assert_eq!(sim.db.blueprints.len(), 0);
         assert!(sim.last_build_message.is_some());
     }
 
@@ -9962,8 +10878,8 @@ mod tests {
         };
         sim.step(&[cmd], 1);
 
-        assert_eq!(sim.blueprints.len(), 1);
-        let bp = sim.blueprints.values().next().unwrap();
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
         assert_eq!(bp.build_type, BuildType::RopeLadder);
         assert_eq!(bp.voxels.len(), 3);
     }
@@ -10027,7 +10943,7 @@ mod tests {
         sim_a.step(&[cmd_a], 1);
         sim_b.step(&[cmd_b], 1);
 
-        assert_eq!(sim_a.blueprints.len(), sim_b.blueprints.len());
+        assert_eq!(sim_a.db.blueprints.len(), sim_b.db.blueprints.len());
     }
 
     #[test]
@@ -10128,7 +11044,7 @@ mod tests {
         );
 
         // Verify the original type is in the blueprint's original_voxels.
-        let bp = restored.blueprints.values().next().unwrap();
+        let bp = restored.db.blueprints.iter_all().next().unwrap();
         let orig = bp.original_voxels.iter().find(|(c, _)| *c == solid);
         assert!(orig.is_some());
         assert_eq!(orig.unwrap().1, original_type);
@@ -10197,10 +11113,10 @@ mod tests {
         // blueprint voxels (BuildingInterior), which is one above foundation.
         let interior_anchor = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z);
 
-        let mut rng = GameRng::new(42);
+        let project_id = ProjectId::new(&mut sim.rng);
         let structure = CompletedStructure {
             id,
-            project_id: ProjectId::new(&mut rng),
+            project_id,
             build_type: BuildType::Building,
             anchor: interior_anchor,
             width: 3,
@@ -10209,16 +11125,28 @@ mod tests {
             completed_tick: sim.tick,
             name: None,
             furnishing: None,
-            assigned_elf: None,
-            furniture_positions: Vec::new(),
-            planned_furniture: Vec::new(),
-            inventory: Vec::new(),
+            inventory_id: sim.create_inventory(crate::db::InventoryOwnerKind::Structure),
             logistics_priority: None,
-            logistics_wants: Vec::new(),
             cooking_enabled: false,
             cooking_bread_target: 0,
         };
-        sim.structures.insert(id, structure);
+        sim.db.structures.insert_no_fk(structure).unwrap();
+
+        // Insert a dummy blueprint so FK validation passes on deserialization.
+        sim.db
+            .blueprints
+            .insert_no_fk(crate::db::Blueprint {
+                id: project_id,
+                build_type: BuildType::Building,
+                voxels: Vec::new(),
+                priority: crate::types::Priority::Normal,
+                state: crate::blueprint::BlueprintState::Complete,
+                task_id: None,
+                face_layout: None,
+                stress_warning: false,
+                original_voxels: Vec::new(),
+            })
+            .unwrap();
 
         // Rebuild nav graph so there are nav nodes inside the building.
         sim.nav_graph = nav::build_nav_graph(&sim.world, &sim.face_data);
@@ -10240,12 +11168,8 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
-            assigned_elf: None,
-            furniture_positions: Vec::new(),
-            planned_furniture: Vec::new(),
-            inventory: Vec::new(),
+            inventory_id: InventoryId(0),
             logistics_priority: None,
-            logistics_wants: Vec::new(),
             cooking_enabled: false,
             cooking_bread_target: 0,
         };
@@ -10278,12 +11202,8 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
-            assigned_elf: None,
-            furniture_positions: Vec::new(),
-            planned_furniture: Vec::new(),
-            inventory: Vec::new(),
+            inventory_id: InventoryId(0),
             logistics_priority: None,
-            logistics_wants: Vec::new(),
             cooking_enabled: false,
             cooking_bread_target: 0,
         };
@@ -10342,12 +11262,8 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: Some(FurnishingType::Dormitory),
-            assigned_elf: None,
-            furniture_positions: Vec::new(),
-            planned_furniture: Vec::new(),
-            inventory: Vec::new(),
+            inventory_id: InventoryId(0),
             logistics_priority: None,
-            logistics_wants: Vec::new(),
             cooking_enabled: false,
             cooking_bread_target: 0,
         };
@@ -10369,12 +11285,8 @@ mod tests {
             completed_tick: 0,
             name: Some("Starlight Hall".to_string()),
             furnishing: Some(FurnishingType::Dormitory),
-            assigned_elf: None,
-            furniture_positions: Vec::new(),
-            planned_furniture: Vec::new(),
-            inventory: Vec::new(),
+            inventory_id: InventoryId(0),
             logistics_priority: None,
-            logistics_wants: Vec::new(),
             cooking_enabled: false,
             cooking_bread_target: 0,
         };
@@ -10400,9 +11312,10 @@ mod tests {
 
         // Should have created a Furnish task.
         let furnish_tasks: Vec<_> = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Furnish { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Furnish)
             .collect();
         assert_eq!(furnish_tasks.len(), 1);
         let task = furnish_tasks[0];
@@ -10410,14 +11323,27 @@ mod tests {
         assert_eq!(task.required_species, Some(Species::Elf));
 
         // Structure should have furnishing set and planned furniture computed.
-        let structure = &sim.structures[&structure_id];
+        let structure = sim.db.structures.get(&structure_id).unwrap();
         assert_eq!(structure.furnishing, Some(FurnishingType::Dormitory));
-        assert!(!structure.planned_furniture.is_empty());
-        assert!(structure.furniture_positions.is_empty());
+        let planned = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .filter(|f| !f.placed)
+            .count();
+        let placed = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .filter(|f| f.placed)
+            .count();
+        assert!(planned > 0);
+        assert_eq!(placed, 0);
 
-        // Total cost should be planned_furniture * furnish_work_ticks_per_item.
-        let expected_cost = structure.planned_furniture.len() as f32
-            * sim.config.furnish_work_ticks_per_item as f32;
+        // Total cost should be planned count * furnish_work_ticks_per_item.
+        let expected_cost = planned as f32 * sim.config.furnish_work_ticks_per_item as f32;
         assert_eq!(task.total_cost, expected_cost);
     }
 
@@ -10429,7 +11355,7 @@ mod tests {
 
         // Before furnishing: "Building #N"
         assert_eq!(
-            sim.structures[&structure_id].display_name(),
+            sim.db.structures.get(&structure_id).unwrap().display_name(),
             format!("Building #{}", structure_id.0)
         );
 
@@ -10445,7 +11371,7 @@ mod tests {
 
         // After furnishing: "Dormitory #N"
         assert_eq!(
-            sim.structures[&structure_id].display_name(),
+            sim.db.structures.get(&structure_id).unwrap().display_name(),
             format!("Dormitory #{}", structure_id.0)
         );
     }
@@ -10467,7 +11393,7 @@ mod tests {
         };
         sim.step(&[rename_cmd], sim.tick + 1);
         assert_eq!(
-            sim.structures[&structure_id].display_name(),
+            sim.db.structures.get(&structure_id).unwrap().display_name(),
             "Starlight Hall"
         );
 
@@ -10483,11 +11409,11 @@ mod tests {
         sim.step(&[furnish_cmd], sim.tick + 1);
 
         assert_eq!(
-            sim.structures[&structure_id].furnishing,
+            sim.db.structures.get(&structure_id).unwrap().furnishing,
             Some(FurnishingType::Dormitory)
         );
         assert_eq!(
-            sim.structures[&structure_id].display_name(),
+            sim.db.structures.get(&structure_id).unwrap().display_name(),
             "Starlight Hall"
         );
     }
@@ -10511,16 +11437,12 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
-            assigned_elf: None,
-            furniture_positions: Vec::new(),
-            planned_furniture: Vec::new(),
-            inventory: Vec::new(),
+            inventory_id: sim.create_inventory(crate::db::InventoryOwnerKind::Structure),
             logistics_priority: None,
-            logistics_wants: Vec::new(),
             cooking_enabled: false,
             cooking_bread_target: 0,
         };
-        sim.structures.insert(id, structure);
+        sim.db.structures.insert_no_fk(structure).unwrap();
 
         let cmd = SimCommand {
             player_id: sim.player_id,
@@ -10534,11 +11456,12 @@ mod tests {
 
         // Should NOT have created a task or set furnishing.
         assert!(
-            sim.tasks
-                .values()
-                .all(|t| !matches!(t.kind, TaskKind::Furnish { .. }))
+            sim.db
+                .tasks
+                .iter_all()
+                .all(|t| t.kind_tag != TaskKindTag::Furnish)
         );
-        assert_eq!(sim.structures[&id].furnishing, None);
+        assert_eq!(sim.db.structures.get(&id).unwrap().furnishing, None);
     }
 
     #[test]
@@ -10558,9 +11481,10 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 1);
         assert_eq!(
-            sim.tasks
-                .values()
-                .filter(|t| matches!(t.kind, TaskKind::Furnish { .. }))
+            sim.db
+                .tasks
+                .iter_all()
+                .filter(|t| t.kind_tag == TaskKindTag::Furnish)
                 .count(),
             1
         );
@@ -10578,9 +11502,10 @@ mod tests {
 
         // Should still have exactly one Furnish task (second was rejected).
         assert_eq!(
-            sim.tasks
-                .values()
-                .filter(|t| matches!(t.kind, TaskKind::Furnish { .. }))
+            sim.db
+                .tasks
+                .iter_all()
+                .filter(|t| t.kind_tag == TaskKindTag::Furnish)
                 .count(),
             1
         );
@@ -10603,7 +11528,13 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 1);
 
-        let planned_count = sim.structures[&structure_id].planned_furniture.len();
+        let planned_count = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .filter(|f| !f.placed)
+            .count();
         assert!(planned_count > 0);
 
         // Spawn an elf near the building so it can claim the task.
@@ -10625,9 +11556,15 @@ mod tests {
         let advance_ticks = ticks_per_item * 3 + 5000; // generous for walking
         sim.step(&[], sim.tick + advance_ticks);
 
-        let structure = &sim.structures[&structure_id];
+        let placed_count = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .filter(|f| f.placed)
+            .count();
         assert!(
-            !structure.furniture_positions.is_empty(),
+            placed_count > 0,
             "Expected at least one item placed after {} ticks, got 0. planned={}",
             advance_ticks,
             planned_count
@@ -10651,8 +11588,11 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 1);
 
-        let total_planned = sim.structures[&structure_id].planned_furniture.len()
-            + sim.structures[&structure_id].furniture_positions.len();
+        let all_furniture = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+        let total_planned = all_furniture.len();
         assert!(total_planned > 0);
 
         // Spawn an elf near the building.
@@ -10672,24 +11612,36 @@ mod tests {
         let advance_ticks = ticks_per_item * (total_planned as u64 + 2) + 10000;
         sim.step(&[], sim.tick + advance_ticks);
 
-        let structure = &sim.structures[&structure_id];
+        let placed_count = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .filter(|f| f.placed)
+            .count();
+        let unplaced_count = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .filter(|f| !f.placed)
+            .count();
         assert_eq!(
-            structure.furniture_positions.len(),
-            total_planned,
+            placed_count, total_planned,
             "Expected all {} items placed, got {}",
-            total_planned,
-            structure.furniture_positions.len()
+            total_planned, placed_count
         );
-        assert!(
-            structure.planned_furniture.is_empty(),
-            "Expected planned_furniture empty after completion"
+        assert_eq!(
+            unplaced_count, 0,
+            "Expected no unplaced furniture after completion"
         );
 
         // The Furnish task should be complete.
         let furnish_tasks: Vec<_> = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Furnish { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Furnish)
             .collect();
         assert!(
             furnish_tasks.is_empty()
@@ -10719,11 +11671,25 @@ mod tests {
         let json = serde_json::to_string(&sim).unwrap();
         let restored: SimState = serde_json::from_str(&json).unwrap();
 
-        let orig = &sim.structures[&structure_id];
-        let rest = &restored.structures[&structure_id];
+        let orig = sim.db.structures.get(&structure_id).unwrap();
+        let rest = restored.db.structures.get(&structure_id).unwrap();
         assert_eq!(orig.furnishing, rest.furnishing);
-        assert_eq!(orig.planned_furniture, rest.planned_furniture);
-        assert_eq!(orig.furniture_positions, rest.furniture_positions);
+        // Check furniture rows survived serialization.
+        let orig_furn: Vec<_> = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .map(|f| (f.coord, f.placed))
+            .collect();
+        let rest_furn: Vec<_> = restored
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .map(|f| (f.coord, f.placed))
+            .collect();
+        assert_eq!(orig_furn, rest_furn);
     }
 
     #[test]
@@ -10740,12 +11706,8 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
-            assigned_elf: None,
-            furniture_positions: Vec::new(),
-            planned_furniture: Vec::new(),
-            inventory: Vec::new(),
+            inventory_id: InventoryId(0),
             logistics_priority: None,
-            logistics_wants: Vec::new(),
             cooking_enabled: false,
             cooking_bread_target: 0,
         };
@@ -10771,12 +11733,8 @@ mod tests {
             completed_tick: 0,
             name: None,
             furnishing: None,
-            assigned_elf: None,
-            furniture_positions: Vec::new(),
-            planned_furniture: Vec::new(),
-            inventory: Vec::new(),
+            inventory_id: InventoryId(0),
             logistics_priority: None,
-            logistics_wants: Vec::new(),
             cooking_enabled: false,
             cooking_bread_target: 0,
         };
@@ -10820,12 +11778,8 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: Some(furnishing_type),
-                assigned_elf: None,
-                furniture_positions: Vec::new(),
-                planned_furniture: Vec::new(),
-                inventory: Vec::new(),
+                inventory_id: InventoryId(0),
                 logistics_priority: None,
-                logistics_wants: Vec::new(),
                 cooking_enabled: false,
                 cooking_bread_target: 0,
             };
@@ -10854,9 +11808,16 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 1);
 
-        let structure = &sim.structures[&structure_id];
+        let structure = sim.db.structures.get(&structure_id).unwrap();
         assert_eq!(structure.furnishing, Some(FurnishingType::Workshop));
-        assert!(!structure.planned_furniture.is_empty());
+        let planned_furn = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .filter(|f| !f.placed)
+            .count();
+        assert!(planned_furn > 0);
         assert_eq!(
             structure.display_name(),
             format!("Workshop #{}", structure_id.0)
@@ -10868,18 +11829,29 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Create a completed building at `anchor`, furnish it as Home, and manually
-    /// place 1 bed in `furniture_positions` (skipping the furnishing task flow).
+    /// place 1 bed in the furniture table (skipping the furnishing task flow).
     fn insert_completed_home(sim: &mut SimState, anchor: VoxelCoord) -> StructureId {
         let structure_id = insert_completed_building(sim, anchor);
 
         // Find a valid bed position inside the building interior.
-        let structure = sim.structures.get(&structure_id).unwrap();
+        let structure = sim.db.structures.get(&structure_id).unwrap();
         let interior = structure.floor_interior_positions();
         let bed_pos = interior[0]; // First interior tile.
 
-        let structure = sim.structures.get_mut(&structure_id).unwrap();
+        let mut structure = sim.db.structures.get(&structure_id).unwrap();
         structure.furnishing = Some(FurnishingType::Home);
-        structure.furniture_positions = vec![bed_pos];
+        let _ = sim.db.structures.update_no_fk(structure);
+
+        // Insert a placed furniture row for the bed.
+        let _ = sim
+            .db
+            .furniture
+            .insert_auto_no_fk(|id| crate::db::Furniture {
+                id,
+                structure_id,
+                coord: bed_pos,
+                placed: true,
+            });
 
         structure_id
     }
@@ -10902,8 +11874,9 @@ mod tests {
         };
         sim.step(&[cmd], 1);
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
@@ -10919,8 +11892,19 @@ mod tests {
         };
         sim.step(&[cmd], 2);
 
-        assert_eq!(sim.creatures[&elf_id].assigned_home, Some(home_id));
-        assert_eq!(sim.structures[&home_id].assigned_elf, Some(elf_id));
+        assert_eq!(
+            sim.db.creatures.get(&elf_id).unwrap().assigned_home,
+            Some(home_id)
+        );
+        assert_eq!(
+            sim.db
+                .creatures
+                .by_assigned_home(&Some(home_id), tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .map(|c| c.id),
+            Some(elf_id)
+        );
     }
 
     #[test]
@@ -10941,8 +11925,9 @@ mod tests {
         };
         sim.step(&[cmd], 1);
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
@@ -10958,7 +11943,10 @@ mod tests {
             }],
             2,
         );
-        assert_eq!(sim.creatures[&elf_id].assigned_home, Some(home_id));
+        assert_eq!(
+            sim.db.creatures.get(&elf_id).unwrap().assigned_home,
+            Some(home_id)
+        );
 
         // Unassign.
         sim.step(
@@ -10972,8 +11960,13 @@ mod tests {
             }],
             3,
         );
-        assert_eq!(sim.creatures[&elf_id].assigned_home, None);
-        assert_eq!(sim.structures[&home_id].assigned_elf, None);
+        assert_eq!(sim.db.creatures.get(&elf_id).unwrap().assigned_home, None);
+        assert!(
+            sim.db
+                .creatures
+                .by_assigned_home(&Some(home_id), tabulosity::QueryOpts::ASC)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -10995,8 +11988,9 @@ mod tests {
         };
         sim.step(&[cmd], 1);
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
@@ -11013,7 +12007,10 @@ mod tests {
             }],
             2,
         );
-        assert_eq!(sim.creatures[&elf_id].assigned_home, Some(home_a));
+        assert_eq!(
+            sim.db.creatures.get(&elf_id).unwrap().assigned_home,
+            Some(home_a)
+        );
 
         // Reassign to home B.
         sim.step(
@@ -11027,9 +12024,25 @@ mod tests {
             }],
             3,
         );
-        assert_eq!(sim.creatures[&elf_id].assigned_home, Some(home_b));
-        assert_eq!(sim.structures[&home_a].assigned_elf, None);
-        assert_eq!(sim.structures[&home_b].assigned_elf, Some(elf_id));
+        assert_eq!(
+            sim.db.creatures.get(&elf_id).unwrap().assigned_home,
+            Some(home_b)
+        );
+        assert!(
+            sim.db
+                .creatures
+                .by_assigned_home(&Some(home_a), tabulosity::QueryOpts::ASC)
+                .is_empty()
+        );
+        assert_eq!(
+            sim.db
+                .creatures
+                .by_assigned_home(&Some(home_b), tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .map(|c| c.id),
+            Some(elf_id)
+        );
     }
 
     #[test]
@@ -11060,8 +12073,9 @@ mod tests {
         ];
         sim.step(&cmds, 1);
         let elf_ids: Vec<CreatureId> = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .filter(|c| c.species == Species::Elf)
             .map(|c| c.id)
             .collect();
@@ -11081,7 +12095,15 @@ mod tests {
             }],
             2,
         );
-        assert_eq!(sim.structures[&home_id].assigned_elf, Some(elf_a));
+        assert_eq!(
+            sim.db
+                .creatures
+                .by_assigned_home(&Some(home_id), tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .map(|c| c.id),
+            Some(elf_a)
+        );
 
         // Assign elf B to same home — evicts elf A.
         sim.step(
@@ -11095,9 +12117,20 @@ mod tests {
             }],
             3,
         );
-        assert_eq!(sim.structures[&home_id].assigned_elf, Some(elf_b));
-        assert_eq!(sim.creatures[&elf_a].assigned_home, None);
-        assert_eq!(sim.creatures[&elf_b].assigned_home, Some(home_id));
+        assert_eq!(
+            sim.db
+                .creatures
+                .by_assigned_home(&Some(home_id), tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .map(|c| c.id),
+            Some(elf_b)
+        );
+        assert_eq!(sim.db.creatures.get(&elf_a).unwrap().assigned_home, None);
+        assert_eq!(
+            sim.db.creatures.get(&elf_b).unwrap().assigned_home,
+            Some(home_id)
+        );
     }
 
     #[test]
@@ -11108,7 +12141,11 @@ mod tests {
         let structure_id = insert_completed_building(&mut sim, anchor);
 
         // Furnish as Dormitory (not Home).
-        sim.structures.get_mut(&structure_id).unwrap().furnishing = Some(FurnishingType::Dormitory);
+        {
+            let mut s = sim.db.structures.get(&structure_id).unwrap();
+            s.furnishing = Some(FurnishingType::Dormitory);
+            let _ = sim.db.structures.update_no_fk(s);
+        }
 
         let cmd = SimCommand {
             player_id: sim.player_id,
@@ -11120,8 +12157,9 @@ mod tests {
         };
         sim.step(&[cmd], 1);
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
@@ -11139,8 +12177,13 @@ mod tests {
         );
 
         // Should be rejected — no assignment set.
-        assert_eq!(sim.creatures[&elf_id].assigned_home, None);
-        assert_eq!(sim.structures[&structure_id].assigned_elf, None);
+        assert_eq!(sim.db.creatures.get(&elf_id).unwrap().assigned_home, None);
+        assert!(
+            sim.db
+                .creatures
+                .by_assigned_home(&Some(structure_id), tabulosity::QueryOpts::ASC)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -11161,8 +12204,9 @@ mod tests {
         };
         sim.step(&[cmd], 1);
         let capy_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Capybara)
             .unwrap()
             .id;
@@ -11180,8 +12224,13 @@ mod tests {
         );
 
         // Should be rejected — capybaras can't have homes.
-        assert_eq!(sim.creatures[&capy_id].assigned_home, None);
-        assert_eq!(sim.structures[&home_id].assigned_elf, None);
+        assert_eq!(sim.db.creatures.get(&capy_id).unwrap().assigned_home, None);
+        assert!(
+            sim.db
+                .creatures
+                .by_assigned_home(&Some(home_id), tabulosity::QueryOpts::ASC)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -11194,7 +12243,14 @@ mod tests {
         // Create a home with a bed.
         let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
         let home_id = insert_completed_home(&mut sim, anchor);
-        let home_bed = sim.structures[&home_id].furniture_positions[0];
+        let home_bed = sim
+            .db
+            .furniture
+            .by_structure_id(&home_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|f| f.placed)
+            .unwrap()
+            .coord;
 
         // Spawn and assign.
         let cmd = SimCommand {
@@ -11207,8 +12263,9 @@ mod tests {
         };
         sim.step(&[cmd], 1);
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
@@ -11226,31 +12283,33 @@ mod tests {
         );
 
         // Make elf tired.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 30 / 100;
-        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
-        // Clear any existing task so the elf is idle.
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = None;
+        {
+            let food_max_val = sim.species_table[&Species::Elf].food_max;
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.rest = rest_max * 30 / 100;
+            c.food = food_max_val;
+            // Clear any existing task so the elf is idle.
+            c.current_task = None;
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         // Advance past heartbeat.
         let target_tick = 2 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_some(),
             "Tired elf with home should get a Sleep task"
         );
-        let task = &sim.tasks[&elf.current_task.unwrap()];
-        match &task.kind {
-            TaskKind::Sleep { bed_pos, .. } => {
-                assert_eq!(
-                    *bed_pos,
-                    Some(home_bed),
-                    "Elf should sleep in their assigned home bed"
-                );
-            }
-            other => panic!("Expected Sleep task, got {:?}", other),
-        }
+        let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+        assert_eq!(task.kind_tag, TaskKindTag::Sleep, "Expected Sleep task");
+        let bed_pos = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+        assert_eq!(
+            bed_pos,
+            Some(home_bed),
+            "Elf should sleep in their assigned home bed"
+        );
     }
 
     #[test]
@@ -11265,11 +12324,20 @@ mod tests {
         // Create a dormitory (not a home).
         let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
         let structure_id = insert_completed_building(&mut sim, anchor);
-        let structure = sim.structures.get(&structure_id).unwrap();
+        let structure = sim.db.structures.get(&structure_id).unwrap();
         let bed_pos = structure.floor_interior_positions()[0];
-        let structure = sim.structures.get_mut(&structure_id).unwrap();
+        let mut structure = sim.db.structures.get(&structure_id).unwrap();
         structure.furnishing = Some(FurnishingType::Dormitory);
-        structure.furniture_positions = vec![bed_pos];
+        let _ = sim.db.structures.update_no_fk(structure);
+        let _ = sim
+            .db
+            .furniture
+            .insert_auto_no_fk(|id| crate::db::Furniture {
+                id,
+                structure_id,
+                coord: bed_pos,
+                placed: true,
+            });
 
         // Spawn elf (no home assignment).
         let cmd = SimCommand {
@@ -11282,34 +12350,35 @@ mod tests {
         };
         sim.step(&[cmd], 1);
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Make tired and idle.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 30 / 100;
-        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = None;
+        {
+            let food_max_val = sim.species_table[&Species::Elf].food_max;
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.rest = rest_max * 30 / 100;
+            c.food = food_max_val;
+            c.current_task = None;
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         let target_tick = 1 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_some(),
             "Tired elf should get a Sleep task from dormitory"
         );
-        let task = &sim.tasks[&elf.current_task.unwrap()];
-        match &task.kind {
-            TaskKind::Sleep {
-                bed_pos: Some(pos), ..
-            } => {
-                assert_eq!(*pos, bed_pos, "Should sleep in dormitory bed");
-            }
-            other => panic!("Expected Sleep with bed, got {:?}", other),
-        }
+        let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+        assert_eq!(task.kind_tag, TaskKindTag::Sleep, "Expected Sleep task");
+        let task_bed = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+        assert_eq!(task_bed, Some(bed_pos), "Should sleep in dormitory bed");
     }
 
     #[test]
@@ -11319,12 +12388,13 @@ mod tests {
         let rest_max = sim.species_table[&Species::Elf].rest_max;
         let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
-        // Create a home with empty furniture_positions.
+        // Create a home without any placed furniture.
         let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
         let structure_id = insert_completed_building(&mut sim, anchor);
-        let structure = sim.structures.get_mut(&structure_id).unwrap();
+        let mut structure = sim.db.structures.get(&structure_id).unwrap();
         structure.furnishing = Some(FurnishingType::Home);
-        // No furniture_positions — bed not yet placed.
+        // No furniture placed — bed not yet built.
+        let _ = sim.db.structures.update_no_fk(structure);
 
         // Spawn and assign.
         let cmd = SimCommand {
@@ -11337,8 +12407,9 @@ mod tests {
         };
         sim.step(&[cmd], 1);
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
@@ -11356,94 +12427,85 @@ mod tests {
         );
 
         // Make tired and idle.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 30 / 100;
-        sim.creatures.get_mut(&elf_id).unwrap().food = sim.species_table[&Species::Elf].food_max;
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = None;
+        {
+            let food_max_val = sim.species_table[&Species::Elf].food_max;
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.rest = rest_max * 30 / 100;
+            c.food = food_max_val;
+            c.current_task = None;
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         let target_tick = 2 + heartbeat_interval + 1;
         sim.step(&[], target_tick);
 
         // Should fall back to ground sleep (no dormitories and home has no bed).
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
             elf.current_task.is_some(),
             "Tired elf should get a ground Sleep task"
         );
-        let task = &sim.tasks[&elf.current_task.unwrap()];
-        match &task.kind {
-            TaskKind::Sleep { bed_pos, .. } => {
-                assert_eq!(*bed_pos, None, "Should fall back to ground sleep");
-            }
-            other => panic!("Expected Sleep task, got {:?}", other),
-        }
+        let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+        assert_eq!(task.kind_tag, TaskKindTag::Sleep, "Expected Sleep task");
+        let bed_pos = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+        assert_eq!(bed_pos, None, "Should fall back to ground sleep");
     }
 
     // -----------------------------------------------------------------------
     // Thought system tests
     // -----------------------------------------------------------------------
 
-    /// Helper: create a minimal creature for thought tests (no sim needed).
-    fn make_test_creature() -> Creature {
-        let mut rng = GameRng::new(42);
-        Creature {
-            id: CreatureId::new(&mut rng),
-            species: Species::Elf,
-            position: VoxelCoord::new(0, 1, 0),
-            name: String::new(),
-            name_meaning: String::new(),
-            current_node: None,
-            path: None,
-            current_task: None,
-            food: 1_000_000_000_000_000,
-            rest: 1_000_000_000_000_000,
-            assigned_home: None,
-            thoughts: Vec::new(),
-            inventory: Vec::new(),
-            wants: Vec::new(),
-            move_from: None,
-            move_to: None,
-            move_start_tick: 0,
-            move_end_tick: 0,
-        }
+    /// Helper: create a `SimState` with an elf spawned for thought/mood tests.
+    /// Returns `(sim, creature_id)`.
+    fn sim_with_elf_for_thoughts() -> (SimState, CreatureId) {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        sim.tick = 1000; // Advance tick for thought timestamps.
+        (sim, elf_id)
     }
 
     #[test]
     fn thought_dedup_within_cooldown() {
-        let cfg = crate::config::ThoughtConfig::default();
-        let mut creature = make_test_creature();
-        let kind = ThoughtKind::AteMeal;
-        creature.add_thought(kind.clone(), 1000, &cfg);
-        creature.add_thought(kind.clone(), 1001, &cfg);
-        assert_eq!(
-            creature.thoughts.len(),
-            1,
-            "Dedup should prevent second add"
-        );
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        sim.tick = 1000;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+        sim.tick = 1001;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+        let thoughts = sim
+            .db
+            .thoughts
+            .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+        assert_eq!(thoughts.len(), 1, "Dedup should prevent second add");
     }
 
     #[test]
     fn thought_dedup_allows_after_cooldown() {
-        let cfg = crate::config::ThoughtConfig::default();
-        let mut creature = make_test_creature();
-        let kind = ThoughtKind::AteMeal;
-        creature.add_thought(kind.clone(), 1000, &cfg);
-        // Advance past dedup cooldown (default 150_000).
-        creature.add_thought(kind.clone(), 1000 + cfg.dedup_ate_meal_ticks, &cfg);
-        assert_eq!(
-            creature.thoughts.len(),
-            2,
-            "Should allow add after cooldown expires"
-        );
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        let cooldown = sim.config.thoughts.dedup_ate_meal_ticks;
+        sim.tick = 1000;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+        sim.tick = 1000 + cooldown;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+        let thoughts = sim
+            .db
+            .thoughts
+            .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+        assert_eq!(thoughts.len(), 2, "Should allow add after cooldown expires");
     }
 
     #[test]
     fn thought_dedup_distinguishes_structure_ids() {
-        let cfg = crate::config::ThoughtConfig::default();
-        let mut creature = make_test_creature();
-        creature.add_thought(ThoughtKind::SleptInOwnHome(StructureId(1)), 1000, &cfg);
-        creature.add_thought(ThoughtKind::SleptInOwnHome(StructureId(2)), 1001, &cfg);
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        sim.tick = 1000;
+        sim.add_creature_thought(cid, ThoughtKind::SleptInOwnHome(StructureId(1)));
+        sim.tick = 1001;
+        sim.add_creature_thought(cid, ThoughtKind::SleptInOwnHome(StructureId(2)));
+        let thoughts = sim
+            .db
+            .thoughts
+            .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
         assert_eq!(
-            creature.thoughts.len(),
+            thoughts.len(),
             2,
             "Different structure IDs are distinct thoughts"
         );
@@ -11451,43 +12513,63 @@ mod tests {
 
     #[test]
     fn thought_cap_enforced() {
-        let mut cfg = crate::config::ThoughtConfig::default();
-        cfg.cap = 5;
-        cfg.dedup_ate_meal_ticks = 0; // Disable dedup for this test.
-        let mut creature = make_test_creature();
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        sim.config.thoughts.cap = 5;
+        sim.config.thoughts.dedup_ate_meal_ticks = 0; // Disable dedup.
         for i in 0..7 {
-            creature.add_thought(ThoughtKind::AteMeal, i * 1000, &cfg);
+            sim.tick = i * 1000;
+            sim.add_creature_thought(cid, ThoughtKind::AteMeal);
         }
-        assert_eq!(creature.thoughts.len(), 5, "Should not exceed cap");
+        let thoughts = sim
+            .db
+            .thoughts
+            .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+        assert_eq!(thoughts.len(), 5, "Should not exceed cap");
         // Oldest should have been dropped — first remaining is tick 2000.
-        assert_eq!(creature.thoughts[0].tick, 2000);
+        assert_eq!(thoughts[0].tick, 2000);
     }
 
     #[test]
     fn thought_expiry() {
-        let cfg = crate::config::ThoughtConfig::default();
-        let mut creature = make_test_creature();
-        creature.add_thought(ThoughtKind::AteMeal, 1000, &cfg);
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        let expiry = sim.config.thoughts.expiry_ate_meal_ticks;
+        sim.tick = 1000;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
         // Before expiry: should remain.
-        creature.expire_thoughts(1000 + cfg.expiry_ate_meal_ticks - 1, &cfg);
-        assert_eq!(creature.thoughts.len(), 1, "Should not expire yet");
+        sim.tick = 1000 + expiry - 1;
+        sim.expire_creature_thoughts(cid);
+        let thoughts = sim
+            .db
+            .thoughts
+            .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+        assert_eq!(thoughts.len(), 1, "Should not expire yet");
         // At expiry: should be removed.
-        creature.expire_thoughts(1000 + cfg.expiry_ate_meal_ticks, &cfg);
-        assert_eq!(creature.thoughts.len(), 0, "Should expire at expiry tick");
+        sim.tick = 1000 + expiry;
+        sim.expire_creature_thoughts(cid);
+        let thoughts = sim
+            .db
+            .thoughts
+            .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+        assert_eq!(thoughts.len(), 0, "Should expire at expiry tick");
     }
 
     #[test]
-    fn thought_serialization_on_creature() {
-        let mut creature = make_test_creature();
-        let cfg = crate::config::ThoughtConfig::default();
-        creature.add_thought(ThoughtKind::SleptOnGround, 5000, &cfg);
-        creature.add_thought(ThoughtKind::AteMeal, 6000, &cfg);
+    fn thought_serde_roundtrip_via_simstate() {
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        sim.tick = 5000;
+        sim.add_creature_thought(cid, ThoughtKind::SleptOnGround);
+        sim.tick = 6000;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
 
-        let json = serde_json::to_string(&creature).unwrap();
-        let restored: Creature = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.thoughts.len(), 2);
-        assert_eq!(restored.thoughts[0].kind, ThoughtKind::SleptOnGround);
-        assert_eq!(restored.thoughts[1].kind, ThoughtKind::AteMeal);
+        let json = serde_json::to_string(&sim).unwrap();
+        let restored: SimState = serde_json::from_str(&json).unwrap();
+        let thoughts = restored
+            .db
+            .thoughts
+            .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+        assert_eq!(thoughts.len(), 2);
+        assert_eq!(thoughts[0].kind, ThoughtKind::SleptOnGround);
+        assert_eq!(thoughts[1].kind, ThoughtKind::AteMeal);
     }
 
     // -----------------------------------------------------------------------
@@ -11496,47 +12578,40 @@ mod tests {
 
     #[test]
     fn mood_empty_thoughts_is_zero() {
-        let creature = make_test_creature();
-        let cfg = crate::config::MoodConfig::default();
-        let (score, tier) = creature.mood(&cfg);
+        let (sim, cid) = sim_with_elf_for_thoughts();
+        let (score, tier) = sim.mood_for_creature(cid);
         assert_eq!(score, 0);
         assert_eq!(tier, MoodTier::Neutral);
     }
 
     #[test]
     fn mood_single_positive_thought() {
-        let mut creature = make_test_creature();
-        let thought_cfg = crate::config::ThoughtConfig::default();
-        creature.add_thought(ThoughtKind::AteMeal, 1000, &thought_cfg);
-        let cfg = crate::config::MoodConfig::default();
-        let (score, tier) = creature.mood(&cfg);
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        sim.tick = 1000;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+        let (score, tier) = sim.mood_for_creature(cid);
         assert_eq!(score, 60);
         assert_eq!(tier, MoodTier::Content);
     }
 
     #[test]
     fn mood_single_negative_thought() {
-        let mut creature = make_test_creature();
-        let thought_cfg = crate::config::ThoughtConfig::default();
-        creature.add_thought(ThoughtKind::SleptOnGround, 1000, &thought_cfg);
-        let cfg = crate::config::MoodConfig::default();
-        let (score, tier) = creature.mood(&cfg);
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        sim.tick = 1000;
+        sim.add_creature_thought(cid, ThoughtKind::SleptOnGround);
+        let (score, tier) = sim.mood_for_creature(cid);
         assert_eq!(score, -100);
         assert_eq!(tier, MoodTier::Unhappy);
     }
 
     #[test]
     fn mood_mixed_thoughts() {
-        let mut creature = make_test_creature();
-        let thought_cfg = crate::config::ThoughtConfig::default();
-        creature.add_thought(
-            ThoughtKind::SleptInOwnHome(StructureId(1)),
-            1000,
-            &thought_cfg,
-        );
-        creature.add_thought(ThoughtKind::LowCeiling(StructureId(2)), 2000, &thought_cfg);
-        let cfg = crate::config::MoodConfig::default();
-        let (score, tier) = creature.mood(&cfg);
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        sim.tick = 1000;
+        sim.add_creature_thought(cid, ThoughtKind::SleptInOwnHome(StructureId(1)));
+        sim.tick = 2000;
+        sim.add_creature_thought(cid, ThoughtKind::LowCeiling(StructureId(2)));
+        let (score, tier) = sim.mood_for_creature(cid);
         // +80 + (-50) = +30
         assert_eq!(score, 30);
         assert_eq!(tier, MoodTier::Content);
@@ -11544,14 +12619,15 @@ mod tests {
 
     #[test]
     fn mood_stacking_same_kind() {
-        let mut creature = make_test_creature();
-        let mut thought_cfg = crate::config::ThoughtConfig::default();
-        thought_cfg.dedup_ate_meal_ticks = 0; // Disable dedup.
-        creature.add_thought(ThoughtKind::AteMeal, 1000, &thought_cfg);
-        creature.add_thought(ThoughtKind::AteMeal, 2000, &thought_cfg);
-        creature.add_thought(ThoughtKind::AteMeal, 3000, &thought_cfg);
-        let cfg = crate::config::MoodConfig::default();
-        let (score, tier) = creature.mood(&cfg);
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        sim.config.thoughts.dedup_ate_meal_ticks = 0; // Disable dedup.
+        sim.tick = 1000;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+        sim.tick = 2000;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+        sim.tick = 3000;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+        let (score, tier) = sim.mood_for_creature(cid);
         // 3 * 60 = 180
         assert_eq!(score, 180);
         assert_eq!(tier, MoodTier::Happy);
@@ -11580,12 +12656,11 @@ mod tests {
 
     #[test]
     fn mood_custom_config_weights() {
-        let mut creature = make_test_creature();
-        let thought_cfg = crate::config::ThoughtConfig::default();
-        creature.add_thought(ThoughtKind::AteMeal, 1000, &thought_cfg);
-        let mut cfg = crate::config::MoodConfig::default();
-        cfg.weight_ate_meal = 200;
-        let (score, _) = creature.mood(&cfg);
+        let (mut sim, cid) = sim_with_elf_for_thoughts();
+        sim.tick = 1000;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+        sim.config.mood.weight_ate_meal = 200;
+        let (score, _) = sim.mood_for_creature(cid);
         assert_eq!(score, 200);
     }
 
@@ -11641,32 +12716,42 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set rest very low to trigger sleep.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 10 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
 
         // Advance past heartbeat to trigger sleep + enough ticks for it to complete.
         let target_tick = 1 + heartbeat_interval + sim.config.sleep_ticks_ground + 1000;
         sim.step(&[], target_tick);
 
         // Elf should have a SleptOnGround thought.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
                 .iter()
                 .any(|t| t.kind == ThoughtKind::SleptOnGround),
             "Elf should have SleptOnGround thought after ground sleep. thoughts={:?}",
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
         );
         // Piggyback: mood should reflect the negative SleptOnGround thought.
-        let (score, _tier) = elf.mood(&sim.config.mood);
-        let expected: i32 = elf
+        let (score, _tier) = sim.mood_for_creature(elf_id);
+        let expected: i32 = sim
+            .db
             .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
             .iter()
             .map(|t| sim.config.mood.mood_weight(&t.kind))
             .sum();
@@ -11701,14 +12786,18 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Make the elf hungry.
-        sim.creatures.get_mut(&elf_id).unwrap().food = food_max * 10 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.food = food_max * 10 / 100);
 
         // Advance enough ticks for the elf to find fruit, walk to it, and eat it.
         // Walk could be up to ~50 voxels at 500 tpv = 25000 ticks.
@@ -11716,11 +12805,17 @@ mod tests {
         sim.step(&[], target_tick);
 
         // Elf should have an AteMeal thought.
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
-            elf.thoughts.iter().any(|t| t.kind == ThoughtKind::AteMeal),
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+                .iter()
+                .any(|t| t.kind == ThoughtKind::AteMeal),
             "Elf should have AteMeal thought after eating. thoughts={:?}",
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
         );
     }
 
@@ -11731,17 +12826,14 @@ mod tests {
         let mut sim = test_sim(42);
         let elf_id = spawn_elf(&mut sim);
         // Elves now spawn with starting bread (config.elf_starting_bread = 2).
-        let bread_count = inventory::count_owned(
-            &sim.creatures[&elf_id].inventory,
-            inventory::ItemKind::Bread,
-            elf_id,
-        );
+        let bread_count =
+            sim.inv_count_owned(sim.creature_inv(elf_id), inventory::ItemKind::Bread, elf_id);
         assert_eq!(
             bread_count, 2,
             "Elf should spawn with 2 owned bread from elf_starting_bread config"
         );
         assert_eq!(
-            sim.creatures[&elf_id].inventory.len(),
+            sim.inv_items(sim.creature_inv(elf_id)).len(),
             1,
             "Inventory should have exactly one stack (bread)"
         );
@@ -11750,8 +12842,6 @@ mod tests {
     #[test]
     fn dormitory_sleep_generates_thought() {
         // Integration test: elf sleeps in dormitory → has SleptInDormitory thought.
-        use crate::building::CompletedStructure;
-
         let mut config = test_config();
         let elf_species = config.species.get_mut(&Species::Elf).unwrap();
         elf_species.food_decay_per_tick = 0;
@@ -11767,9 +12857,10 @@ mod tests {
 
         let structure_id = StructureId(999);
         let project_id = ProjectId::new(&mut sim.rng);
-        sim.structures.insert(
-            structure_id,
-            CompletedStructure {
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.db
+            .structures
+            .insert_no_fk(CompletedStructure {
                 id: structure_id,
                 project_id,
                 build_type: BuildType::Building,
@@ -11780,16 +12871,21 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: Some(FurnishingType::Dormitory),
-                assigned_elf: None,
-                furniture_positions: vec![bed_pos],
-                planned_furniture: vec![],
-                inventory: Vec::new(),
+                inventory_id: inv_id,
                 logistics_priority: None,
-                logistics_wants: Vec::new(),
                 cooking_enabled: false,
                 cooking_bread_target: 0,
-            },
-        );
+            })
+            .unwrap();
+        let _ = sim
+            .db
+            .furniture
+            .insert_auto_no_fk(|id| crate::db::Furniture {
+                id,
+                structure_id,
+                coord: bed_pos,
+                placed: true,
+            });
 
         // Spawn an elf.
         let cmd = SimCommand {
@@ -11803,14 +12899,18 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set rest very low to trigger sleep.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 10 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
         let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
         // Advance enough ticks for sleep to trigger, walk to bed, and complete.
@@ -11818,18 +12918,24 @@ mod tests {
         let target_tick = 1 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
         sim.step(&[], target_tick);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
                 .iter()
                 .any(|t| t.kind == ThoughtKind::SleptInDormitory(structure_id)),
             "Elf should have SleptInDormitory thought. thoughts={:?}",
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
         );
         // Piggyback: mood should reflect dormitory sleep thought.
-        let (score, _tier) = elf.mood(&sim.config.mood);
-        let expected: i32 = elf
+        let (score, _tier) = sim.mood_for_creature(elf_id);
+        let expected: i32 = sim
+            .db
             .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
             .iter()
             .map(|t| sim.config.mood.mood_weight(&t.kind))
             .sum();
@@ -11845,18 +12951,15 @@ mod tests {
         sim.config.elf_starting_bread = 0;
         let elf_id = spawn_elf(&mut sim);
 
-        crate::inventory::add_item(
-            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+        sim.inv_add_item(
+            sim.creature_inv(elf_id),
             crate::inventory::ItemKind::Bread,
             5,
             Some(elf_id),
             None,
         );
 
-        let count = crate::inventory::item_count(
-            &sim.creatures[&elf_id].inventory,
-            crate::inventory::ItemKind::Bread,
-        );
+        let count = sim.inv_item_count(sim.creature_inv(elf_id), crate::inventory::ItemKind::Bread);
         assert_eq!(count, 5);
     }
 
@@ -11866,27 +12969,22 @@ mod tests {
         sim.config.elf_starting_bread = 0;
         let elf_id = spawn_elf(&mut sim);
 
-        crate::inventory::add_item(
-            &mut sim.creatures.get_mut(&elf_id).unwrap().inventory,
+        sim.inv_add_item(
+            sim.creature_inv(elf_id),
             crate::inventory::ItemKind::Bread,
             3,
             Some(elf_id),
             None,
         );
 
-        let json = serde_json::to_string(&sim.creatures[&elf_id]).unwrap();
-        let restored: Creature = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            crate::inventory::item_count(&restored.inventory, crate::inventory::ItemKind::Bread),
-            3
-        );
+        // Verify via inv_item_count (serialization of item_stacks is tested separately).
+        let count = sim.inv_item_count(sim.creature_inv(elf_id), crate::inventory::ItemKind::Bread);
+        assert_eq!(count, 3);
     }
 
     #[test]
     fn home_sleep_generates_thought() {
         // Integration test: elf sleeps in assigned home → has SleptInOwnHome thought.
-        use crate::building::CompletedStructure;
-
         let mut config = test_config();
         let elf_species = config.species.get_mut(&Species::Elf).unwrap();
         elf_species.food_decay_per_tick = 0;
@@ -11902,9 +13000,10 @@ mod tests {
 
         let structure_id = StructureId(888);
         let project_id = ProjectId::new(&mut sim.rng);
-        sim.structures.insert(
-            structure_id,
-            CompletedStructure {
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.db
+            .structures
+            .insert_no_fk(CompletedStructure {
                 id: structure_id,
                 project_id,
                 build_type: BuildType::Building,
@@ -11915,16 +13014,21 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: Some(FurnishingType::Home),
-                assigned_elf: None,
-                furniture_positions: vec![bed_pos],
-                planned_furniture: vec![],
-                inventory: Vec::new(),
+                inventory_id: inv_id,
                 logistics_priority: None,
-                logistics_wants: Vec::new(),
                 cooking_enabled: false,
                 cooking_bread_target: 0,
-            },
-        );
+            })
+            .unwrap();
+        let _ = sim
+            .db
+            .furniture
+            .insert_auto_no_fk(|id| crate::db::Furniture {
+                id,
+                structure_id,
+                coord: bed_pos,
+                placed: true,
+            });
 
         // Spawn an elf.
         let cmd = SimCommand {
@@ -11938,8 +13042,9 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
@@ -11958,25 +13063,34 @@ mod tests {
         );
 
         // Set rest very low to trigger sleep.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 10 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
         let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
         // Advance enough ticks for sleep to trigger, walk to bed, and complete.
         let target_tick = 2 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
         sim.step(&[], target_tick);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
                 .iter()
                 .any(|t| t.kind == ThoughtKind::SleptInOwnHome(structure_id)),
             "Elf should have SleptInOwnHome thought. thoughts={:?}",
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
         );
         // Piggyback: mood should reflect home sleep thought.
-        let (score, _tier) = elf.mood(&sim.config.mood);
-        let expected: i32 = elf
+        let (score, _tier) = sim.mood_for_creature(elf_id);
+        let expected: i32 = sim
+            .db
             .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
             .iter()
             .map(|t| sim.config.mood.mood_weight(&t.kind))
             .sum();
@@ -11989,8 +13103,6 @@ mod tests {
     #[test]
     fn low_ceiling_generates_thought() {
         // Integration test: elf sleeps in height-1 building → LowCeiling thought.
-        use crate::building::CompletedStructure;
-
         let mut config = test_config();
         let elf_species = config.species.get_mut(&Species::Elf).unwrap();
         elf_species.food_decay_per_tick = 0;
@@ -12006,9 +13118,10 @@ mod tests {
 
         let structure_id = StructureId(888);
         let project_id = ProjectId::new(&mut sim.rng);
-        sim.structures.insert(
-            structure_id,
-            CompletedStructure {
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.db
+            .structures
+            .insert_no_fk(CompletedStructure {
                 id: structure_id,
                 project_id,
                 build_type: BuildType::Building,
@@ -12019,16 +13132,21 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: Some(FurnishingType::Dormitory),
-                assigned_elf: None,
-                furniture_positions: vec![bed_pos],
-                planned_furniture: vec![],
-                inventory: Vec::new(),
+                inventory_id: inv_id,
                 logistics_priority: None,
-                logistics_wants: Vec::new(),
                 cooking_enabled: false,
                 cooking_bread_target: 0,
-            },
-        );
+            })
+            .unwrap();
+        let _ = sim
+            .db
+            .furniture
+            .insert_auto_no_fk(|id| crate::db::Furniture {
+                id,
+                structure_id,
+                coord: bed_pos,
+                placed: true,
+            });
 
         // Spawn an elf.
         let cmd = SimCommand {
@@ -12042,40 +13160,54 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
 
         // Set rest very low to trigger sleep.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = rest_max * 10 / 100;
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
         let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
         // Advance enough ticks for sleep to trigger, walk to bed, and complete.
         let target_tick = 1 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
         sim.step(&[], target_tick);
 
-        let elf = &sim.creatures[&elf_id];
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
                 .iter()
                 .any(|t| t.kind == ThoughtKind::LowCeiling(structure_id)),
             "Elf should have LowCeiling thought from height-1 building. thoughts={:?}",
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
         );
         // Should also have the dormitory sleep thought.
         assert!(
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
                 .iter()
                 .any(|t| t.kind == ThoughtKind::SleptInDormitory(structure_id)),
             "Elf should also have SleptInDormitory thought. thoughts={:?}",
-            elf.thoughts
+            sim.db
+                .thoughts
+                .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
         );
         // Piggyback: mood should reflect both dormitory sleep and low ceiling.
-        let (score, _tier) = elf.mood(&sim.config.mood);
-        let expected: i32 = elf
+        let (score, _tier) = sim.mood_for_creature(elf_id);
+        let expected: i32 = sim
+            .db
             .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
             .iter()
             .map(|t| sim.config.mood.mood_weight(&t.kind))
             .sum();
@@ -12089,22 +13221,27 @@ mod tests {
     fn ground_piles_in_sim_state() {
         let mut sim = test_sim(42);
         let pos = VoxelCoord::new(10, 5, 20);
-        let pile = crate::inventory::GroundPile {
-            position: pos,
-            items: vec![crate::inventory::Item {
-                kind: crate::inventory::ItemKind::Bread,
-                quantity: 4,
-                owner: None,
-                reserved_by: None,
-            }],
-        };
-        sim.ground_piles.insert(pos, pile);
-        assert_eq!(sim.ground_piles.len(), 1);
+        {
+            let pile_id = sim.ensure_ground_pile(pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                4,
+                None,
+                None,
+            );
+        }
+        assert_eq!(sim.db.ground_piles.len(), 1);
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(
-            crate::inventory::item_count(
-                &sim.ground_piles[&pos].items,
-                crate::inventory::ItemKind::Bread
-            ),
+            sim.inv_item_count(pile.inventory_id, crate::inventory::ItemKind::Bread),
             4
         );
     }
@@ -12114,45 +13251,55 @@ mod tests {
         let mut sim = test_sim(42);
         let pos1 = VoxelCoord::new(10, 5, 20);
         let pos2 = VoxelCoord::new(-3, 1, 7);
-        sim.ground_piles.insert(
-            pos1,
-            crate::inventory::GroundPile {
-                position: pos1,
-                items: vec![crate::inventory::Item {
-                    kind: crate::inventory::ItemKind::Fruit,
-                    quantity: 2,
-                    owner: None,
-                    reserved_by: None,
-                }],
-            },
-        );
-        sim.ground_piles.insert(
-            pos2,
-            crate::inventory::GroundPile {
-                position: pos2,
-                items: vec![crate::inventory::Item {
-                    kind: crate::inventory::ItemKind::Bread,
-                    quantity: 5,
-                    owner: None,
-                    reserved_by: None,
-                }],
-            },
-        );
+        {
+            let pile_id = sim.ensure_ground_pile(pos1);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Fruit,
+                2,
+                None,
+                None,
+            );
+        }
+        {
+            let pile_id = sim.ensure_ground_pile(pos2);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                5,
+                None,
+                None,
+            );
+        }
 
         let json = serde_json::to_string(&sim).unwrap();
         let restored: SimState = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(restored.ground_piles.len(), 2);
-        let pile1 = &restored.ground_piles[&pos1];
+        assert_eq!(restored.db.ground_piles.len(), 2);
+        let pile1 = restored
+            .db
+            .ground_piles
+            .by_position(&pos1, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(pile1.position, pos1);
         assert_eq!(
-            crate::inventory::item_count(&pile1.items, crate::inventory::ItemKind::Fruit),
+            restored.inv_item_count(pile1.inventory_id, crate::inventory::ItemKind::Fruit),
             2
         );
-        let pile2 = &restored.ground_piles[&pos2];
+        let pile2 = restored
+            .db
+            .ground_piles
+            .by_position(&pos2, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(pile2.position, pos2);
         assert_eq!(
-            crate::inventory::item_count(&pile2.items, crate::inventory::ItemKind::Bread),
+            restored.inv_item_count(pile2.inventory_id, crate::inventory::ItemKind::Bread),
             5
         );
     }
@@ -12161,25 +13308,35 @@ mod tests {
     fn ground_piles_serde_roundtrip() {
         let mut sim = test_sim(42);
         let pos = VoxelCoord::new(10, 5, 20);
-        let pile = crate::inventory::GroundPile {
-            position: pos,
-            items: vec![crate::inventory::Item {
-                kind: crate::inventory::ItemKind::Bread,
-                quantity: 7,
-                owner: None,
-                reserved_by: None,
-            }],
-        };
-        sim.ground_piles.insert(pos, pile);
+        {
+            let pile_id = sim.ensure_ground_pile(pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                7,
+                None,
+                None,
+            );
+        }
 
         // Serialize → deserialize round-trip.
         let json = sim.to_json().expect("serialization should succeed");
         let restored = SimState::from_json(&json).expect("deserialization should succeed");
 
-        assert_eq!(restored.ground_piles.len(), 1);
-        let restored_pile = &restored.ground_piles[&pos];
+        assert_eq!(restored.db.ground_piles.len(), 1);
+        let restored_pile = restored
+            .db
+            .ground_piles
+            .by_position(&pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(
-            crate::inventory::item_count(&restored_pile.items, crate::inventory::ItemKind::Bread),
+            restored.inv_item_count(
+                restored_pile.inventory_id,
+                crate::inventory::ItemKind::Bread
+            ),
             7
         );
 
@@ -12199,9 +13356,10 @@ mod tests {
         let sid = StructureId(sim.next_structure_id);
         sim.next_structure_id += 1;
         let project_id = ProjectId::new(&mut sim.rng);
-        sim.structures.insert(
-            sid,
-            CompletedStructure {
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.db
+            .structures
+            .insert_no_fk(CompletedStructure {
                 id: sid,
                 project_id,
                 build_type: BuildType::Building,
@@ -12212,16 +13370,13 @@ mod tests {
                 completed_tick: 0,
                 name: None,
                 furnishing: Some(FurnishingType::Storehouse),
-                assigned_elf: None,
-                furniture_positions: Vec::new(),
-                planned_furniture: Vec::new(),
-                inventory: Vec::new(),
+                inventory_id: inv_id,
                 logistics_priority,
-                logistics_wants: wants,
                 cooking_enabled: false,
                 cooking_bread_target: 0,
-            },
-        );
+            })
+            .unwrap();
+        sim.set_inv_wants(inv_id, &wants);
         sid
     }
 
@@ -12231,16 +13386,17 @@ mod tests {
 
         // Place a ground pile with bread.
         let pile_pos = sim.trees[&sim.player_tree_id].position;
-        let pile = crate::inventory::GroundPile {
-            position: pile_pos,
-            items: vec![crate::inventory::Item {
-                kind: crate::inventory::ItemKind::Bread,
-                quantity: 10,
-                owner: None,
-                reserved_by: None,
-            }],
-        };
-        sim.ground_piles.insert(pile_pos, pile);
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                10,
+                None,
+                None,
+            );
+        }
 
         // Create a building that wants bread.
         let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
@@ -12259,32 +13415,31 @@ mod tests {
 
         // Should have created a haul task.
         let haul_tasks: Vec<_> = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Haul)
             .collect();
         assert_eq!(haul_tasks.len(), 1, "Expected 1 haul task");
 
-        match &haul_tasks[0].kind {
-            TaskKind::Haul {
-                item_kind,
-                quantity,
-                source,
-                phase,
-                ..
-            } => {
-                assert_eq!(*item_kind, crate::inventory::ItemKind::Bread);
-                assert_eq!(*quantity, 5);
-                assert!(matches!(source, task::HaulSource::GroundPile(_)));
-                assert_eq!(*phase, task::HaulPhase::GoingToSource);
-            }
-            _ => panic!("Expected Haul task"),
-        }
+        let haul = sim
+            .task_haul_data(haul_tasks[0].id)
+            .expect("Haul task should have haul data");
+        assert_eq!(haul.item_kind, crate::inventory::ItemKind::Bread);
+        assert_eq!(haul.quantity, 5);
+        assert_eq!(haul.source_kind, crate::db::HaulSourceKind::Pile);
+        assert_eq!(haul.phase, task::HaulPhase::GoingToSource);
 
         // Ground pile items should be reserved.
-        let pile = &sim.ground_piles[&pile_pos];
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
         let unreserved =
-            crate::inventory::unreserved_item_count(&pile.items, crate::inventory::ItemKind::Bread);
+            sim.inv_unreserved_item_count(pile.inventory_id, crate::inventory::ItemKind::Bread);
         assert_eq!(unreserved, 5, "5 items should remain unreserved");
     }
 
@@ -12294,16 +13449,17 @@ mod tests {
 
         // Place bread on the ground.
         let pile_pos = sim.trees[&sim.player_tree_id].position;
-        let pile = crate::inventory::GroundPile {
-            position: pile_pos,
-            items: vec![crate::inventory::Item {
-                kind: crate::inventory::ItemKind::Bread,
-                quantity: 3,
-                owner: None,
-                reserved_by: None,
-            }],
-        };
-        sim.ground_piles.insert(pile_pos, pile);
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                3,
+                None,
+                None,
+            );
+        }
 
         // High-priority building wants 2 bread.
         let high_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
@@ -12334,16 +13490,23 @@ mod tests {
         // Should create 2 haul tasks: one for high-priority (2 bread), one for
         // low-priority (1 remaining bread).
         let haul_tasks: Vec<_> = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Haul)
             .collect();
         assert_eq!(haul_tasks.len(), 2, "Expected 2 haul tasks");
 
         // All bread should be reserved.
-        let pile = &sim.ground_piles[&pile_pos];
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
         let unreserved =
-            crate::inventory::unreserved_item_count(&pile.items, crate::inventory::ItemKind::Bread);
+            sim.inv_unreserved_item_count(pile.inventory_id, crate::inventory::ItemKind::Bread);
         assert_eq!(unreserved, 0, "All bread should be reserved");
     }
 
@@ -12354,14 +13517,23 @@ mod tests {
         // Place bread on the ground, some already reserved.
         let pile_pos = sim.trees[&sim.player_tree_id].position;
         let task_id = TaskId::new(&mut sim.rng);
-        let mut items = Vec::new();
-        crate::inventory::add_item(&mut items, crate::inventory::ItemKind::Bread, 5, None, None);
-        crate::inventory::reserve_items(&mut items, crate::inventory::ItemKind::Bread, 3, task_id);
-        let pile = crate::inventory::GroundPile {
-            position: pile_pos,
-            items,
-        };
-        sim.ground_piles.insert(pile_pos, pile);
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                5,
+                None,
+                None,
+            );
+            sim.inv_reserve_items(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                3,
+                task_id,
+            );
+        }
 
         // Building wants 5 bread.
         let anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
@@ -12379,17 +13551,16 @@ mod tests {
 
         // Should only create a task for 2 unreserved bread, not all 5.
         let haul_tasks: Vec<_> = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Haul)
             .collect();
         assert_eq!(haul_tasks.len(), 1);
-        match &haul_tasks[0].kind {
-            TaskKind::Haul { quantity, .. } => {
-                assert_eq!(*quantity, 2, "Only 2 unreserved bread available");
-            }
-            _ => panic!("Expected Haul task"),
-        }
+        let haul = sim
+            .task_haul_data(haul_tasks[0].id)
+            .expect("Haul task should have haul data");
+        assert_eq!(haul.quantity, 2, "Only 2 unreserved bread available");
     }
 
     #[test]
@@ -12398,16 +13569,17 @@ mod tests {
 
         // Place 10 bread on ground.
         let pile_pos = sim.trees[&sim.player_tree_id].position;
-        let pile = crate::inventory::GroundPile {
-            position: pile_pos,
-            items: vec![crate::inventory::Item {
-                kind: crate::inventory::ItemKind::Bread,
-                quantity: 10,
-                owner: None,
-                reserved_by: None,
-            }],
-        };
-        sim.ground_piles.insert(pile_pos, pile);
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                10,
+                None,
+                None,
+            );
+        }
 
         let anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
         let sid = insert_building(
@@ -12434,29 +13606,27 @@ mod tests {
             },
             state: TaskState::InProgress,
             location: NavNodeId(0),
-            assignees: Vec::new(),
             progress: 0.0,
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Automated,
         };
-        sim.tasks.insert(fake_task_id, existing_haul);
+        sim.insert_task(existing_haul);
 
         sim.process_logistics_heartbeat();
 
         // In-transit counts as 5, target is 8, so need 3 more.
         let new_haul_tasks: Vec<_> = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| t.id != fake_task_id && matches!(t.kind, TaskKind::Haul { .. }))
+            .iter_all()
+            .filter(|t| t.id != fake_task_id && t.kind_tag == TaskKindTag::Haul)
             .collect();
         assert_eq!(new_haul_tasks.len(), 1, "Expected 1 new haul task");
-        match &new_haul_tasks[0].kind {
-            TaskKind::Haul { quantity, .. } => {
-                assert_eq!(*quantity, 3);
-            }
-            _ => panic!("Expected Haul"),
-        }
+        let haul = sim
+            .task_haul_data(new_haul_tasks[0].id)
+            .expect("Haul task should have haul data");
+        assert_eq!(haul.quantity, 3);
     }
 
     #[test]
@@ -12468,8 +13638,8 @@ mod tests {
         // Building A (priority 3) has bread.
         let anchor_a = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
         let sid_a = insert_building(&mut sim, anchor_a, Some(3), Vec::new());
-        crate::inventory::add_item(
-            &mut sim.structures.get_mut(&sid_a).unwrap().inventory,
+        sim.inv_add_item(
+            sim.structure_inv(sid_a),
             crate::inventory::ItemKind::Bread,
             5,
             None,
@@ -12491,23 +13661,24 @@ mod tests {
         sim.process_logistics_heartbeat();
 
         let haul_tasks: Vec<_> = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Haul)
             .collect();
         assert_eq!(haul_tasks.len(), 1);
-        match &haul_tasks[0].kind {
-            TaskKind::Haul {
-                source, quantity, ..
-            } => {
-                assert!(
-                    matches!(source, task::HaulSource::Building(s) if *s == sid_a),
-                    "Should pull from building A"
-                );
-                assert_eq!(*quantity, 3);
-            }
-            _ => panic!("Expected Haul"),
-        }
+        let haul = sim
+            .task_haul_data(haul_tasks[0].id)
+            .expect("Haul task should have haul data");
+        assert_eq!(haul.source_kind, crate::db::HaulSourceKind::Building);
+        let source_sid = sim
+            .task_structure_ref(
+                haul_tasks[0].id,
+                crate::db::TaskStructureRole::HaulSourceBuilding,
+            )
+            .expect("Should have source building ref");
+        assert_eq!(source_sid, sid_a, "Should pull from building A");
+        assert_eq!(haul.quantity, 3);
     }
 
     #[test]
@@ -12519,8 +13690,8 @@ mod tests {
         // Kitchen (priority 8) has 10 bread, wants 0 bread → 10 surplus.
         let anchor_k = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
         let sid_k = insert_building(&mut sim, anchor_k, Some(8), Vec::new());
-        crate::inventory::add_item(
-            &mut sim.structures.get_mut(&sid_k).unwrap().inventory,
+        sim.inv_add_item(
+            sim.structure_inv(sid_k),
             crate::inventory::ItemKind::Bread,
             10,
             None,
@@ -12542,27 +13713,31 @@ mod tests {
         sim.process_logistics_heartbeat();
 
         let haul_tasks: Vec<_> = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Haul)
             .collect();
         assert_eq!(
             haul_tasks.len(),
             1,
             "Should create a haul task for surplus bread"
         );
-        match &haul_tasks[0].kind {
-            TaskKind::Haul {
-                source, quantity, ..
-            } => {
-                assert!(
-                    matches!(source, task::HaulSource::Building(s) if *s == sid_k),
-                    "Should pull from the kitchen (surplus source)"
-                );
-                assert_eq!(*quantity, 5);
-            }
-            _ => panic!("Expected Haul"),
-        }
+        let haul = sim
+            .task_haul_data(haul_tasks[0].id)
+            .expect("Haul task should have haul data");
+        assert_eq!(haul.source_kind, crate::db::HaulSourceKind::Building);
+        let source_sid = sim
+            .task_structure_ref(
+                haul_tasks[0].id,
+                crate::db::TaskStructureRole::HaulSourceBuilding,
+            )
+            .expect("Should have source building ref");
+        assert_eq!(
+            source_sid, sid_k,
+            "Should pull from the kitchen (surplus source)"
+        );
+        assert_eq!(haul.quantity, 5);
     }
 
     #[test]
@@ -12572,16 +13747,17 @@ mod tests {
         sim.config.max_haul_tasks_per_heartbeat = 2;
 
         let tree_pos = sim.trees[&sim.player_tree_id].position;
-        let pile = crate::inventory::GroundPile {
-            position: tree_pos,
-            items: vec![crate::inventory::Item {
-                kind: crate::inventory::ItemKind::Bread,
-                quantity: 100,
-                owner: None,
-                reserved_by: None,
-            }],
-        };
-        sim.ground_piles.insert(tree_pos, pile);
+        {
+            let pile_id = sim.ensure_ground_pile(tree_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                100,
+                None,
+                None,
+            );
+        }
 
         // Create 5 buildings that each want 10 bread.
         for i in 0..5 {
@@ -12600,9 +13776,10 @@ mod tests {
         sim.process_logistics_heartbeat();
 
         let haul_count = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Haul { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Haul)
             .count();
         assert_eq!(haul_count, 2, "Should be capped at 2 tasks per heartbeat");
     }
@@ -12617,14 +13794,15 @@ mod tests {
         let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
         let sid = insert_completed_building(&mut sim, anchor);
         {
-            let s = sim.structures.get_mut(&sid).unwrap();
+            let mut s = sim.db.structures.get(&sid).unwrap();
             s.furnishing = Some(FurnishingType::Kitchen);
             s.cooking_enabled = true;
             s.cooking_bread_target = 50;
             s.logistics_priority = Some(8);
+            let _ = sim.db.structures.update_no_fk(s);
         }
-        inventory::add_item(
-            &mut sim.structures.get_mut(&sid).unwrap().inventory,
+        sim.inv_add_item(
+            sim.structure_inv(sid),
             inventory::ItemKind::Fruit,
             1,
             None,
@@ -12635,18 +13813,19 @@ mod tests {
 
         // Verify a Cook task was created.
         let cook_tasks: Vec<_> = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Cook { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Cook)
             .collect();
         assert_eq!(cook_tasks.len(), 1, "Should create 1 Cook task");
         assert_eq!(cook_tasks[0].state, task::TaskState::Available);
         assert_eq!(cook_tasks[0].required_species, Some(Species::Elf));
 
         // Verify fruit is reserved.
-        let structure = &sim.structures[&sid];
+        let structure = sim.db.structures.get(&sid).unwrap();
         let unreserved =
-            inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Fruit);
+            sim.inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Fruit);
         assert_eq!(unreserved, 0, "Fruit should be reserved for cook task");
     }
 
@@ -12660,12 +13839,16 @@ mod tests {
         // Insert a kitchen building with 1 fruit (reserved for the cook task).
         let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
         let sid = insert_completed_building(&mut sim, anchor);
-        sim.structures.get_mut(&sid).unwrap().furnishing = Some(FurnishingType::Kitchen);
-        sim.structures.get_mut(&sid).unwrap().cooking_enabled = true;
-        sim.structures.get_mut(&sid).unwrap().cooking_bread_target = 50;
+        {
+            let mut s = sim.db.structures.get(&sid).unwrap();
+            s.furnishing = Some(FurnishingType::Kitchen);
+            s.cooking_enabled = true;
+            s.cooking_bread_target = 50;
+            let _ = sim.db.structures.update_no_fk(s);
+        }
 
         // Find a nav node inside the kitchen.
-        let interior_pos = sim.structures[&sid].anchor;
+        let interior_pos = sim.db.structures.get(&sid).unwrap().anchor;
         let kitchen_nav = sim.nav_graph.find_nearest_node(interior_pos).unwrap();
 
         // Create Cook task at the kitchen's nav node.
@@ -12675,17 +13858,16 @@ mod tests {
             kind: task::TaskKind::Cook { structure_id: sid },
             state: task::TaskState::Available,
             location: kitchen_nav,
-            assignees: Vec::new(),
             progress: 0.0,
             total_cost: sim.config.cook_work_ticks as f32,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::Automated,
         };
-        sim.tasks.insert(task_id, cook_task);
+        sim.insert_task(cook_task);
 
         // Add 1 fruit reserved by this task.
-        inventory::add_item(
-            &mut sim.structures.get_mut(&sid).unwrap().inventory,
+        sim.inv_add_item(
+            sim.structure_inv(sid),
             inventory::ItemKind::Fruit,
             1,
             None,
@@ -12701,16 +13883,16 @@ mod tests {
         sim.step(&[], sim.tick + 15000);
 
         // Verify: fruit consumed, bread produced.
-        let structure = &sim.structures[&sid];
+        let structure = sim.db.structures.get(&sid).unwrap();
         let fruit_count =
-            inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Fruit);
+            sim.inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Fruit);
         let bread_count =
-            inventory::unreserved_item_count(&structure.inventory, inventory::ItemKind::Bread);
+            sim.inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Bread);
         assert_eq!(fruit_count, 0, "Fruit should be consumed");
         assert_eq!(bread_count, 10, "Should produce 10 bread");
 
         // Verify task is complete.
-        let task = &sim.tasks[&task_id];
+        let task = sim.db.tasks.get(&task_id).unwrap();
         assert_eq!(task.state, task::TaskState::Complete);
     }
 
@@ -12734,9 +13916,10 @@ mod tests {
 
         // Place the elf at the fruit nav node.
         let elf_pos = sim.nav_graph.node(fruit_nav).position;
-        let elf = sim.creatures.get_mut(&elf_id).unwrap();
-        elf.current_node = Some(fruit_nav);
-        elf.position = elf_pos;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |elf| {
+            elf.current_node = Some(fruit_nav);
+            elf.position = elf_pos;
+        });
 
         // Create a Harvest task at the fruit nav node.
         let task_id = TaskId::new(&mut sim.rng);
@@ -12745,14 +13928,17 @@ mod tests {
             kind: TaskKind::Harvest { fruit_pos },
             state: TaskState::InProgress,
             location: fruit_nav,
-            assignees: vec![elf_id],
             progress: 0.0,
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Automated,
         };
-        sim.tasks.insert(task_id, harvest_task);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.insert_task(harvest_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         // Execute the task directly.
         sim.do_harvest(elf_id, task_id, fruit_pos);
@@ -12773,18 +13959,21 @@ mod tests {
 
         // Assert: ground pile created at elf's position with 1 Fruit.
         let pile = sim
+            .db
             .ground_piles
-            .get(&elf_pos)
+            .by_position(&elf_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
             .expect("Ground pile should exist at elf position");
         assert_eq!(
-            inventory::item_count(&pile.items, inventory::ItemKind::Fruit),
+            sim.inv_item_count(pile.inventory_id, inventory::ItemKind::Fruit),
             1,
             "Ground pile should have 1 fruit"
         );
 
         // Assert: task completed.
         assert_eq!(
-            sim.tasks[&task_id].state,
+            sim.db.tasks.get(&task_id).unwrap().state,
             TaskState::Complete,
             "Harvest task should be complete"
         );
@@ -12800,7 +13989,7 @@ mod tests {
         assert!(fruit_count > 0, "Tree should have fruit for this test");
 
         // Ensure no ground piles with fruit exist.
-        assert!(sim.ground_piles.is_empty());
+        assert_eq!(sim.db.ground_piles.len(), 0);
 
         // Create a building that wants fruit (kitchen with logistics).
         let tree_pos = sim.trees[&sim.player_tree_id].position;
@@ -12816,8 +14005,9 @@ mod tests {
             }],
         );
         {
-            let s = sim.structures.get_mut(&sid).unwrap();
+            let mut s = sim.db.structures.get(&sid).unwrap();
             s.furnishing = Some(FurnishingType::Kitchen);
+            let _ = sim.db.structures.update_no_fk(s);
         }
 
         // Run logistics heartbeat.
@@ -12825,9 +14015,10 @@ mod tests {
 
         // Assert: at least one Harvest task was created.
         let harvest_tasks: Vec<_> = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Harvest { .. }))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Harvest)
             .collect();
         assert!(
             !harvest_tasks.is_empty(),
@@ -12836,13 +14027,14 @@ mod tests {
 
         // Each harvest task should target a valid fruit position.
         for task in &harvest_tasks {
-            if let TaskKind::Harvest { fruit_pos } = &task.kind {
-                assert_eq!(
-                    sim.world.get(*fruit_pos),
-                    VoxelType::Fruit,
-                    "Harvest task should target an actual fruit voxel"
-                );
-            }
+            let fruit_pos = sim
+                .task_voxel_ref(task.id, crate::db::TaskVoxelRole::FruitTarget)
+                .expect("Harvest task should have a FruitTarget voxel ref");
+            assert_eq!(
+                sim.world.get(fruit_pos),
+                VoxelType::Fruit,
+                "Harvest task should target an actual fruit voxel"
+            );
             assert_eq!(task.state, TaskState::Available);
             assert_eq!(task.required_species, Some(Species::Elf));
             assert_eq!(task.origin, TaskOrigin::Automated);
@@ -12881,28 +14073,36 @@ mod tests {
         // Insert storehouse — only wants bread (small target to keep test focused).
         let sid_store = insert_completed_building(&mut sim, site1);
         {
-            let s = sim.structures.get_mut(&sid_store).unwrap();
+            let mut s = sim.db.structures.get(&sid_store).unwrap();
             s.furnishing = Some(FurnishingType::Storehouse);
             s.logistics_priority = Some(sim.config.storehouse_default_priority);
-            s.logistics_wants = vec![building::LogisticsWant {
+            let _ = sim.db.structures.update_no_fk(s);
+        }
+        sim.set_inv_wants(
+            sim.structure_inv(sid_store),
+            &[building::LogisticsWant {
                 item_kind: inventory::ItemKind::Bread,
                 target_quantity: 10,
-            }];
-        }
+            }],
+        );
 
         // Insert kitchen with reduced wants to keep test fast and focused.
         let sid_kitchen = insert_completed_building(&mut sim, site2);
         {
-            let s = sim.structures.get_mut(&sid_kitchen).unwrap();
+            let mut s = sim.db.structures.get(&sid_kitchen).unwrap();
             s.furnishing = Some(FurnishingType::Kitchen);
             s.logistics_priority = Some(sim.config.kitchen_default_priority);
-            s.logistics_wants = vec![building::LogisticsWant {
-                item_kind: inventory::ItemKind::Fruit,
-                target_quantity: 1,
-            }];
             s.cooking_enabled = true;
             s.cooking_bread_target = 1;
+            let _ = sim.db.structures.update_no_fk(s);
         }
+        sim.set_inv_wants(
+            sim.structure_inv(sid_kitchen),
+            &[building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                target_quantity: 1,
+            }],
+        );
 
         // Spawn 1 elf near the tree.
         let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
@@ -12914,9 +14114,8 @@ mod tests {
         sim.step(&[], sim.tick + 500_000);
 
         // Storehouse should have bread from cooking (full pipeline: harvest → haul → cook → haul).
-        let store = &sim.structures[&sid_store];
         let store_bread =
-            inventory::unreserved_item_count(&store.inventory, inventory::ItemKind::Bread);
+            sim.inv_unreserved_item_count(sim.structure_inv(sid_store), inventory::ItemKind::Bread);
         assert!(
             store_bread >= 10,
             "Storehouse should have at least 10 bread from cooking, got {store_bread}"
@@ -12954,24 +14153,29 @@ mod tests {
         let site = VoxelCoord::new(tree_pos.x + 3, 0, tree_pos.z);
         let sid_kitchen = insert_completed_building(&mut sim, site);
         {
-            let s = sim.structures.get_mut(&sid_kitchen).unwrap();
+            let mut s = sim.db.structures.get(&sid_kitchen).unwrap();
             s.furnishing = Some(FurnishingType::Kitchen);
             s.logistics_priority = Some(sim.config.kitchen_default_priority);
-            s.logistics_wants = vec![building::LogisticsWant {
-                item_kind: inventory::ItemKind::Fruit,
-                target_quantity: 1,
-            }];
             s.cooking_enabled = true;
             s.cooking_bread_target = 1;
+            let _ = sim.db.structures.update_no_fk(s);
         }
+        sim.set_inv_wants(
+            sim.structure_inv(sid_kitchen),
+            &[building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                target_quantity: 1,
+            }],
+        );
 
         // Spawn 1 elf.
         let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
         let mut events = Vec::new();
         sim.spawn_creature(Species::Elf, spawn_pos, &mut events);
         let elf_id = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap()
             .id;
@@ -12980,11 +14184,8 @@ mod tests {
         sim.step(&[], sim.tick + 500_000);
 
         // Elf should have acquired bread.
-        let elf_bread = inventory::count_owned(
-            &sim.creatures[&elf_id].inventory,
-            inventory::ItemKind::Bread,
-            elf_id,
-        );
+        let elf_bread =
+            sim.inv_count_owned(sim.creature_inv(elf_id), inventory::ItemKind::Bread, elf_id);
         assert!(
             elf_bread > 0,
             "Elf should have acquired bread from kitchen pipeline, got {elf_bread}"
@@ -13017,25 +14218,34 @@ mod tests {
             },
             state: TaskState::InProgress,
             location: source_nav,
-            assignees: Vec::new(),
             progress: 0.0,
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Automated,
         };
-        sim.tasks.insert(task_id, haul_task);
+        sim.insert_task(haul_task);
 
         // Spawn an elf and manually assign it to the haul task at the source.
         let elf_id = spawn_elf(&mut sim);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
-        sim.creatures.get_mut(&elf_id).unwrap().current_node = Some(source_nav);
-        sim.tasks.get_mut(&task_id).unwrap().assignees.push(elf_id);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&elf_id, |c| c.current_node = Some(source_nav));
+        let _ = sim
+            .db
+            .tasks
+            .modify_unchecked(&task_id, |t| t.state = task::TaskState::InProgress);
 
         // Execute the task — no ground pile exists, so pickup should find 0 items.
         sim.do_haul(elf_id, task_id);
 
         // Task should be completed (cancelled due to empty source).
-        let task = &sim.tasks[&task_id];
+        let task = sim.db.tasks.get(&task_id).unwrap();
         assert_eq!(task.state, TaskState::Complete, "Task should be completed");
     }
 
@@ -13059,7 +14269,7 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 2);
 
-        assert_eq!(sim.creatures[&elf_id].food, 42_000);
+        assert_eq!(sim.db.creatures.get(&elf_id).unwrap().food, 42_000);
     }
 
     #[test]
@@ -13077,7 +14287,7 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 2);
 
-        assert_eq!(sim.creatures[&elf_id].rest, 99_000);
+        assert_eq!(sim.db.creatures.get(&elf_id).unwrap().rest, 99_000);
     }
 
     #[test]
@@ -13097,12 +14307,8 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 2);
 
-        let bread_count: u32 = sim.creatures[&elf_id]
-            .inventory
-            .iter()
-            .filter(|item| item.kind == crate::inventory::ItemKind::Bread)
-            .map(|item| item.quantity)
-            .sum();
+        let bread_count =
+            sim.inv_item_count(sim.creature_inv(elf_id), crate::inventory::ItemKind::Bread);
         assert_eq!(bread_count, 5);
     }
 
@@ -13122,13 +14328,14 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 2);
 
-        let pile = sim.ground_piles.get(&pos).expect("pile should exist");
-        let bread_count: u32 = pile
-            .items
-            .iter()
-            .filter(|item| item.kind == crate::inventory::ItemKind::Bread)
-            .map(|item| item.quantity)
-            .sum();
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .expect("pile should exist");
+        let bread_count = sim.inv_item_count(pile.inventory_id, crate::inventory::ItemKind::Bread);
         assert_eq!(bread_count, 3);
     }
 
@@ -13175,18 +14382,20 @@ mod tests {
         sim.spawn_initial_creatures(&mut events);
 
         let elf_count = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .filter(|c| c.species == Species::Elf)
             .count();
         let capy_count = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .filter(|c| c.species == Species::Capybara)
             .count();
         assert_eq!(elf_count, 2);
         assert_eq!(capy_count, 1);
-        assert_eq!(sim.creatures.len(), 3);
+        assert_eq!(sim.db.creatures.len(), 3);
 
         // Should have emitted CreatureArrived events for all 3.
         let arrived: Vec<_> = events
@@ -13207,8 +14416,9 @@ mod tests {
         let elf_rest_max = sim.species_table[&Species::Elf].rest_max;
 
         let mut elves: Vec<_> = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .filter(|c| c.species == Species::Elf)
             .collect();
         // Sort by food descending to identify first (100%) vs second (50%).
@@ -13220,12 +14430,10 @@ mod tests {
         assert_eq!(elves[1].rest, elf_rest_max * 40 / 100);
 
         // Second elf should have 3 bread.
-        let bread_count: u32 = elves[1]
-            .inventory
-            .iter()
-            .filter(|item| item.kind == crate::inventory::ItemKind::Bread)
-            .map(|item| item.quantity)
-            .sum();
+        let bread_count = sim.inv_item_count(
+            sim.creature_inv(elves[1].id),
+            crate::inventory::ItemKind::Bread,
+        );
         assert_eq!(bread_count, 3);
     }
 
@@ -13240,15 +14448,13 @@ mod tests {
         // find_surface_position, so look up by the expected surface position.
         let surface_pos = sim.find_surface_position(32, 34);
         let pile = sim
+            .db
             .ground_piles
-            .get(&surface_pos)
+            .by_position(&surface_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
             .expect("ground pile should exist");
-        let bread_count: u32 = pile
-            .items
-            .iter()
-            .filter(|item| item.kind == crate::inventory::ItemKind::Bread)
-            .map(|item| item.quantity)
-            .sum();
+        let bread_count = sim.inv_item_count(pile.inventory_id, crate::inventory::ItemKind::Bread);
         assert_eq!(bread_count, 5);
     }
 
@@ -13291,34 +14497,39 @@ mod tests {
         // Create a ground pile with unowned bread.
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
-        let pile = inventory::GroundPile {
-            position: pile_pos,
-            items: Vec::new(),
-        };
-        sim.ground_piles.insert(pile_pos, pile);
-        inventory::add_item(
-            &mut sim.ground_piles.get_mut(&pile_pos).unwrap().items,
-            inventory::ItemKind::Bread,
-            3,
-            None,
-            None,
-        );
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(pile.inventory_id, inventory::ItemKind::Bread, 3, None, None);
+        }
 
         // Spawn elf, position at pile.
         let elf_id = spawn_elf(&mut sim);
         let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
-        sim.creatures.get_mut(&elf_id).unwrap().current_node = Some(pile_nav);
-        sim.creatures.get_mut(&elf_id).unwrap().position = sim.nav_graph.node(pile_nav).position;
+        let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.current_node = Some(pile_nav);
+            c.position = pile_nav_pos;
+        });
 
         // Create AcquireItem task with reservations.
         let task_id = TaskId::new(&mut sim.rng);
         let source = task::HaulSource::GroundPile(pile_pos);
-        inventory::reserve_unowned_items(
-            &mut sim.ground_piles.get_mut(&pile_pos).unwrap().items,
-            inventory::ItemKind::Bread,
-            2,
-            task_id,
-        );
+        {
+            let pile = sim
+                .db
+                .ground_piles
+                .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .unwrap();
+            sim.inv_reserve_unowned_items(
+                pile.inventory_id,
+                inventory::ItemKind::Bread,
+                2,
+                task_id,
+            );
+        }
         let acquire_task = Task {
             id: task_id,
             kind: TaskKind::AcquireItem {
@@ -13328,30 +14539,38 @@ mod tests {
             },
             state: TaskState::InProgress,
             location: pile_nav,
-            assignees: vec![elf_id],
             progress: 0.0,
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
         };
-        sim.tasks.insert(task_id, acquire_task);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.insert_task(acquire_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         // Execute.
         sim.do_acquire_item(elf_id, task_id);
 
         // Assert: bread removed from ground pile (1 unreserved remains).
-        let pile = &sim.ground_piles[&pile_pos];
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(
-            inventory::item_count(&pile.items, inventory::ItemKind::Bread),
+            sim.inv_item_count(pile.inventory_id, inventory::ItemKind::Bread),
             1,
             "Ground pile should have 1 bread left"
         );
 
         // Assert: elf now has 2 bread owned by the elf (plus starting bread).
-        let elf = &sim.creatures[&elf_id];
-        let owned_bread =
-            inventory::count_owned(&elf.inventory, inventory::ItemKind::Bread, elf_id);
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        let owned_bread = sim.inv_count_owned(elf.inventory_id, inventory::ItemKind::Bread, elf_id);
         // Elf gets starting bread (default 2) + acquired 2 = 4.
         assert_eq!(
             owned_bread, 4,
@@ -13359,7 +14578,10 @@ mod tests {
         );
 
         // Assert: task completed.
-        assert_eq!(sim.tasks[&task_id].state, TaskState::Complete);
+        assert_eq!(
+            sim.db.tasks.get(&task_id).unwrap().state,
+            TaskState::Complete
+        );
     }
 
     #[test]
@@ -13389,52 +14611,38 @@ mod tests {
 
         // Verify elf has 0 bread and wants set.
         assert_eq!(
-            inventory::count_owned(
-                &sim.creatures[&elf_id].inventory,
-                inventory::ItemKind::Bread,
-                elf_id,
-            ),
+            sim.inv_count_owned(sim.creature_inv(elf_id), inventory::ItemKind::Bread, elf_id),
             0
         );
-        assert_eq!(sim.creatures[&elf_id].wants.len(), 1);
+        assert_eq!(sim.inv_wants(sim.creature_inv(elf_id)).len(), 1);
 
         // Create unowned bread in a ground pile near the elf.
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
-        sim.ground_piles.insert(
-            pile_pos,
-            inventory::GroundPile {
-                position: pile_pos,
-                items: Vec::new(),
-            },
-        );
-        inventory::add_item(
-            &mut sim.ground_piles.get_mut(&pile_pos).unwrap().items,
-            inventory::ItemKind::Bread,
-            5,
-            None,
-            None,
-        );
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(pile.inventory_id, inventory::ItemKind::Bread, 5, None, None);
+        }
 
         // Advance past a heartbeat (heartbeat interval is 3000 for elves).
         sim.step(&[], sim.tick + 5000);
 
         // Assert: elf should have an AcquireItem task created.
-        let has_acquire_task = sim.tasks.values().any(|t| {
-            matches!(
-                t.kind,
-                TaskKind::AcquireItem {
-                    item_kind: inventory::ItemKind::Bread,
-                    ..
-                }
-            ) && t.assignees.contains(&elf_id)
+        let has_acquire_task = sim.db.tasks.iter_all().any(|t| {
+            t.kind_tag == TaskKindTag::AcquireItem
+                && sim
+                    .task_acquire_data(t.id)
+                    .is_some_and(|a| a.item_kind == inventory::ItemKind::Bread)
+                && sim
+                    .db
+                    .creatures
+                    .get(&elf_id)
+                    .is_some_and(|c| c.current_task == Some(t.id))
         });
         // Either has an active task, or already completed one and picked up bread.
-        let elf_bread = inventory::count_owned(
-            &sim.creatures[&elf_id].inventory,
-            inventory::ItemKind::Bread,
-            elf_id,
-        );
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        let elf_bread = sim.inv_count_owned(elf.inventory_id, inventory::ItemKind::Bread, elf_id);
         assert!(
             has_acquire_task || elf_bread > 0,
             "Elf should have created an AcquireItem task or already acquired bread, \
@@ -13466,20 +14674,11 @@ mod tests {
         // Create exactly 2 unowned bread.
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
-        sim.ground_piles.insert(
-            pile_pos,
-            inventory::GroundPile {
-                position: pile_pos,
-                items: Vec::new(),
-            },
-        );
-        inventory::add_item(
-            &mut sim.ground_piles.get_mut(&pile_pos).unwrap().items,
-            inventory::ItemKind::Bread,
-            2,
-            None,
-            None,
-        );
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(pile.inventory_id, inventory::ItemKind::Bread, 2, None, None);
+        }
 
         // Spawn 2 elves (each wants 2 bread, only 2 available total).
         let elf1 = spawn_elf(&mut sim);
@@ -13494,8 +14693,9 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 2);
         let elf2 = sim
+            .db
             .creatures
-            .values()
+            .iter_all()
             .find(|c| c.species == Species::Elf && c.id != elf1)
             .unwrap()
             .id;
@@ -13504,16 +14704,10 @@ mod tests {
         sim.step(&[], sim.tick + 50_000);
 
         // Count total bread across both elves. Should be exactly 2 (no duplication).
-        let elf1_bread = inventory::count_owned(
-            &sim.creatures[&elf1].inventory,
-            inventory::ItemKind::Bread,
-            elf1,
-        );
-        let elf2_bread = inventory::count_owned(
-            &sim.creatures[&elf2].inventory,
-            inventory::ItemKind::Bread,
-            elf2,
-        );
+        let elf1_bread =
+            sim.inv_count_owned(sim.creature_inv(elf1), inventory::ItemKind::Bread, elf1);
+        let elf2_bread =
+            sim.inv_count_owned(sim.creature_inv(elf2), inventory::ItemKind::Bread, elf2);
         assert_eq!(
             elf1_bread + elf2_bread,
             2,
@@ -13552,16 +14746,15 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = *sim
+            .db
             .creatures
-            .keys()
-            .find(|id| sim.creatures[id].species == Species::Elf)
+            .iter_keys()
+            .find(|id| sim.db.creatures.get(id).unwrap().species == Species::Elf)
             .expect("elf should exist");
 
         // Inject thoughts.
         for thought in thoughts {
-            if let Some(creature) = sim.creatures.get_mut(&elf_id) {
-                creature.add_thought(thought.clone(), sim.tick, &sim.config.thoughts);
-            }
+            sim.add_creature_thought(elf_id, thought.clone());
         }
 
         (sim, elf_id)
@@ -13591,7 +14784,11 @@ mod tests {
         sim.step(&[], sim.tick + interval * 100);
 
         // No Mope task should exist.
-        let has_mope = sim.tasks.values().any(|t| matches!(t.kind, TaskKind::Mope));
+        let has_mope = sim
+            .db
+            .tasks
+            .iter_all()
+            .any(|t| t.kind_tag == TaskKindTag::Mope);
         assert!(!has_mope, "Zero mean should never produce a Mope task");
     }
 
@@ -13614,9 +14811,10 @@ mod tests {
 
         // With P ≈ 1.0 and 10 heartbeats, at least one Mope should fire.
         let mope_count = sim
+            .db
             .tasks
-            .values()
-            .filter(|t| matches!(t.kind, TaskKind::Mope))
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Mope)
             .count();
         assert!(
             mope_count >= 1,
@@ -13677,10 +14875,14 @@ mod tests {
         let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
         sim.step(&[], sim.tick + interval * 20);
 
-        let has_mope = sim
-            .tasks
-            .values()
-            .any(|t| matches!(t.kind, TaskKind::Mope) && t.assignees.contains(&elf_id));
+        let has_mope = sim.db.tasks.iter_all().any(|t| {
+            t.kind_tag == TaskKindTag::Mope
+                && sim
+                    .db
+                    .creatures
+                    .get(&elf_id)
+                    .is_some_and(|c| c.current_task == Some(t.id))
+        });
         assert!(has_mope, "Unhappy elf should eventually get a Mope task");
     }
 
@@ -13693,10 +14895,14 @@ mod tests {
         let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
         sim.step(&[], sim.tick + interval * 50);
 
-        let has_mope = sim
-            .tasks
-            .values()
-            .any(|t| matches!(t.kind, TaskKind::Mope) && t.assignees.contains(&elf_id));
+        let has_mope = sim.db.tasks.iter_all().any(|t| {
+            t.kind_tag == TaskKindTag::Mope
+                && sim
+                    .db
+                    .creatures
+                    .get(&elf_id)
+                    .is_some_and(|c| c.current_task == Some(t.id))
+        });
         assert!(!has_mope, "Content elf should never mope");
     }
 
@@ -13730,23 +14936,30 @@ mod tests {
             kind: TaskKind::GoTo,
             state: TaskState::InProgress,
             location: far_node,
-            assignees: vec![elf_id],
             progress: 0.0,
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
         };
-        sim.tasks.insert(task_id, goto_task);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.insert_task(goto_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
         sim.step(&[], sim.tick + interval * 20);
 
         // Elf should have abandoned GoTo and started moping.
-        let has_mope = sim
-            .tasks
-            .values()
-            .any(|t| matches!(t.kind, TaskKind::Mope) && t.assignees.contains(&elf_id));
+        let has_mope = sim.db.tasks.iter_all().any(|t| {
+            t.kind_tag == TaskKindTag::Mope
+                && sim
+                    .db
+                    .creatures
+                    .get(&elf_id)
+                    .is_some_and(|c| c.current_task == Some(t.id))
+        });
         assert!(
             has_mope,
             "Miserable elf with mope_can_interrupt_task should interrupt GoTo and start moping"
@@ -13774,9 +14987,10 @@ mod tests {
 
         // At least one completed Mope should exist (state == Complete).
         let completed_mope = sim
+            .db
             .tasks
-            .values()
-            .any(|t| matches!(t.kind, TaskKind::Mope) && t.state == TaskState::Complete);
+            .iter_all()
+            .any(|t| t.kind_tag == TaskKindTag::Mope && t.state == TaskState::Complete);
         assert!(
             completed_mope,
             "Mope task should complete after mope_duration_ticks"
@@ -13816,25 +15030,22 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = *sim
+            .db
             .creatures
-            .keys()
-            .find(|id| sim.creatures[id].species == Species::Elf)
+            .iter_keys()
+            .find(|id| sim.db.creatures.get(id).unwrap().species == Species::Elf)
             .unwrap();
 
         // Drain rest to 0 so the elf won't complete sleep via rest_full.
-        sim.creatures.get_mut(&elf_id).unwrap().rest = 0;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| c.rest = 0);
 
         // Inject Devastated-level thoughts.
         for _ in 0..4 {
-            sim.creatures.get_mut(&elf_id).unwrap().add_thought(
-                ThoughtKind::SleptOnGround,
-                sim.tick,
-                &sim.config.thoughts,
-            );
+            sim.add_creature_thought(elf_id, ThoughtKind::SleptOnGround);
         }
 
         // Manually assign a Sleep task to the elf.
-        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
         let sleep_task_id = TaskId::new(&mut sim.rng);
         let sleep_task = Task {
             id: sleep_task_id,
@@ -13844,21 +15055,24 @@ mod tests {
             },
             state: TaskState::InProgress,
             location: elf_node,
-            assignees: vec![elf_id],
             progress: 0.0,
             total_cost: 1_000_000.0,
             required_species: None,
             origin: TaskOrigin::Autonomous,
         };
-        sim.tasks.insert(sleep_task_id, sleep_task);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(sleep_task_id);
+        sim.insert_task(sleep_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(sleep_task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         // Run several heartbeats — mope rate is P≈1.0 but should not interrupt sleep.
         let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
         sim.step(&[], sim.tick + interval * 10);
 
         // The elf should still be sleeping — same task, never interrupted.
-        let current_task = sim.creatures.get(&elf_id).and_then(|c| c.current_task);
+        let current_task = sim.db.creatures.get(&elf_id).and_then(|c| c.current_task);
         assert_eq!(
             current_task,
             Some(sleep_task_id),
@@ -13891,13 +15105,15 @@ mod tests {
 
         // Elf should have a mope task.
         let mope_task_id = sim
+            .db
             .creatures
             .get(&elf_id)
             .and_then(|c| c.current_task)
             .filter(|tid| {
-                sim.tasks
+                sim.db
+                    .tasks
                     .get(tid)
-                    .is_some_and(|t| matches!(t.kind, TaskKind::Mope))
+                    .is_some_and(|t| t.kind_tag == TaskKindTag::Mope)
             });
         assert!(mope_task_id.is_some(), "Elf should be moping");
         let first_mope_id = mope_task_id.unwrap();
@@ -13905,7 +15121,7 @@ mod tests {
         // Run more heartbeats — mope rate is P≈1.0 but should not replace existing mope.
         sim.step(&[], sim.tick + interval * 10);
 
-        let current_task = sim.creatures.get(&elf_id).and_then(|c| c.current_task);
+        let current_task = sim.db.creatures.get(&elf_id).and_then(|c| c.current_task);
         assert_eq!(
             current_task,
             Some(first_mope_id),
@@ -13936,7 +15152,7 @@ mod tests {
 
         // Assign a long-running Build task at the elf's current node so it
         // stays in-progress for the entire test window.
-        let elf_node = sim.creatures[&elf_id].current_node.unwrap();
+        let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
         let task_id = TaskId::new(&mut sim.rng);
         let project_id = crate::types::ProjectId::new(&mut sim.rng);
         let build_task = Task {
@@ -13944,20 +15160,23 @@ mod tests {
             kind: TaskKind::Build { project_id },
             state: TaskState::InProgress,
             location: elf_node,
-            assignees: vec![elf_id],
             progress: 0.0,
             total_cost: 1_000_000.0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
         };
-        sim.tasks.insert(task_id, build_task);
-        sim.creatures.get_mut(&elf_id).unwrap().current_task = Some(task_id);
+        sim.insert_task(build_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
 
         let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
         sim.step(&[], sim.tick + interval * 10);
 
         // The elf should still have the Build task — mope never interrupted it.
-        let current_task = sim.creatures.get(&elf_id).and_then(|c| c.current_task);
+        let current_task = sim.db.creatures.get(&elf_id).and_then(|c| c.current_task);
         assert_eq!(
             current_task,
             Some(task_id),
@@ -13988,7 +15207,14 @@ mod tests {
         let home_id = insert_completed_home(&mut sim, anchor);
 
         // Get the home's bed nav node (this is the location mope should target).
-        let bed_pos = sim.structures[&home_id].furniture_positions[0];
+        let bed_pos = sim
+            .db
+            .furniture
+            .by_structure_id(&home_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|f| f.placed)
+            .unwrap()
+            .coord;
         let home_nav_node = sim.nav_graph.find_nearest_node(bed_pos).unwrap();
 
         // Spawn an elf.
@@ -14003,9 +15229,10 @@ mod tests {
         sim.step(&[cmd], 1);
 
         let elf_id = *sim
+            .db
             .creatures
-            .keys()
-            .find(|id| sim.creatures[id].species == Species::Elf)
+            .iter_keys()
+            .find(|id| sim.db.creatures.get(id).unwrap().species == Species::Elf)
             .unwrap();
 
         // Assign elf to home.
@@ -14021,11 +15248,7 @@ mod tests {
 
         // Inject negative thoughts.
         for _ in 0..3 {
-            sim.creatures.get_mut(&elf_id).unwrap().add_thought(
-                ThoughtKind::SleptOnGround,
-                sim.tick,
-                &sim.config.thoughts,
-            );
+            sim.add_creature_thought(elf_id, ThoughtKind::SleptOnGround);
         }
 
         // Run heartbeats until mope triggers.
@@ -14033,10 +15256,14 @@ mod tests {
         sim.step(&[], sim.tick + interval * 10);
 
         // Find the mope task and verify its location is the home nav node.
-        let mope_task = sim
-            .tasks
-            .values()
-            .find(|t| matches!(t.kind, TaskKind::Mope) && t.assignees.contains(&elf_id));
+        let mope_task = sim.db.tasks.iter_all().find(|t| {
+            t.kind_tag == TaskKindTag::Mope
+                && sim
+                    .db
+                    .creatures
+                    .get(&elf_id)
+                    .is_some_and(|c| c.current_task == Some(t.id))
+        });
         assert!(mope_task.is_some(), "Elf should have a Mope task");
         assert_eq!(
             mope_task.unwrap().location,
@@ -14071,38 +15298,36 @@ mod tests {
 
         // Verify elf has exactly 2 bread.
         assert_eq!(
-            inventory::count_owned(
-                &sim.creatures[&elf_id].inventory,
-                inventory::ItemKind::Bread,
-                elf_id,
-            ),
+            sim.inv_count_owned(sim.creature_inv(elf_id), inventory::ItemKind::Bread, elf_id),
             2
         );
 
         // Add unowned bread to world.
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
-        sim.ground_piles.insert(
-            pile_pos,
-            inventory::GroundPile {
-                position: pile_pos,
-                items: Vec::new(),
-            },
-        );
-        inventory::add_item(
-            &mut sim.ground_piles.get_mut(&pile_pos).unwrap().items,
-            inventory::ItemKind::Bread,
-            10,
-            None,
-            None,
-        );
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                inventory::ItemKind::Bread,
+                10,
+                None,
+                None,
+            );
+        }
 
         // Advance past heartbeat.
         sim.step(&[], sim.tick + 5000);
 
         // Assert: no AcquireItem task created (elf already has enough).
-        let has_acquire_task = sim.tasks.values().any(|t| {
-            matches!(t.kind, TaskKind::AcquireItem { .. }) && t.assignees.contains(&elf_id)
+        let has_acquire_task = sim.db.tasks.iter_all().any(|t| {
+            t.kind_tag == TaskKindTag::AcquireItem
+                && sim
+                    .db
+                    .creatures
+                    .get(&elf_id)
+                    .is_some_and(|c| c.current_task == Some(t.id))
         });
         assert!(
             !has_acquire_task,

@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn commands_dont_apply_until_advance_to() {
         let mut session = test_session_with_loaded_sim();
-        let initial_count = session.sim.as_ref().unwrap().creatures.len();
+        let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
 
         session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
@@ -596,11 +596,14 @@ mod tests {
             },
         });
         // Command is buffered, not applied.
-        assert_eq!(session.sim.as_ref().unwrap().creatures.len(), initial_count);
+        assert_eq!(
+            session.sim.as_ref().unwrap().db.creatures.len(),
+            initial_count
+        );
 
         session.process(SessionMessage::AdvanceTo { tick: 1 });
         assert_eq!(
-            session.sim.as_ref().unwrap().creatures.len(),
+            session.sim.as_ref().unwrap().db.creatures.len(),
             initial_count + 1
         );
     }
@@ -608,7 +611,7 @@ mod tests {
     #[test]
     fn multiple_commands_flush() {
         let mut session = test_session_with_loaded_sim();
-        let initial_count = session.sim.as_ref().unwrap().creatures.len();
+        let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
 
         session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
@@ -627,7 +630,7 @@ mod tests {
 
         session.process(SessionMessage::AdvanceTo { tick: 1 });
         assert_eq!(
-            session.sim.as_ref().unwrap().creatures.len(),
+            session.sim.as_ref().unwrap().db.creatures.len(),
             initial_count + 2
         );
     }
@@ -680,7 +683,7 @@ mod tests {
             json: CACHED_SIM_JSON.clone(),
         });
 
-        let initial_count = session.sim.as_ref().unwrap().creatures.len();
+        let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
 
         session.process(SessionMessage::SimCommand {
             from: p1,
@@ -699,7 +702,7 @@ mod tests {
 
         session.process(SessionMessage::AdvanceTo { tick: 1 });
         assert_eq!(
-            session.sim.as_ref().unwrap().creatures.len(),
+            session.sim.as_ref().unwrap().db.creatures.len(),
             initial_count + 2
         );
     }
@@ -730,7 +733,7 @@ mod tests {
     #[test]
     fn commands_buffer_while_paused() {
         let mut session = test_session_with_loaded_sim();
-        let initial_count = session.sim.as_ref().unwrap().creatures.len();
+        let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
 
         session.process(SessionMessage::Pause {
             by: SessionPlayerId::LOCAL,
@@ -749,7 +752,7 @@ mod tests {
         });
         session.process(SessionMessage::AdvanceTo { tick: 1 });
         assert_eq!(
-            session.sim.as_ref().unwrap().creatures.len(),
+            session.sim.as_ref().unwrap().db.creatures.len(),
             initial_count + 1
         );
     }
@@ -757,7 +760,7 @@ mod tests {
     #[test]
     fn pause_command_reject_resume_accept() {
         let mut session = test_session_with_loaded_sim();
-        let initial_count = session.sim.as_ref().unwrap().creatures.len();
+        let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
 
         session.process(SessionMessage::Pause {
             by: SessionPlayerId::LOCAL,
@@ -773,7 +776,10 @@ mod tests {
         // AdvanceTo while paused — rejected.
         session.process(SessionMessage::AdvanceTo { tick: 100 });
         assert_eq!(session.current_tick(), 0);
-        assert_eq!(session.sim.as_ref().unwrap().creatures.len(), initial_count);
+        assert_eq!(
+            session.sim.as_ref().unwrap().db.creatures.len(),
+            initial_count
+        );
 
         // Resume, then AdvanceTo — accepted.
         session.process(SessionMessage::Resume {
@@ -782,7 +788,7 @@ mod tests {
         session.process(SessionMessage::AdvanceTo { tick: 100 });
         assert_eq!(session.current_tick(), 100);
         assert_eq!(
-            session.sim.as_ref().unwrap().creatures.len(),
+            session.sim.as_ref().unwrap().db.creatures.len(),
             initial_count + 1
         );
     }
@@ -859,7 +865,7 @@ mod tests {
     #[test]
     fn guard_preserves_pending() {
         let mut session = test_session_with_loaded_sim();
-        let initial_count = session.sim.as_ref().unwrap().creatures.len();
+        let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
 
         session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
@@ -876,7 +882,7 @@ mod tests {
         // Accepted.
         session.process(SessionMessage::AdvanceTo { tick: 1 });
         assert_eq!(
-            session.sim.as_ref().unwrap().creatures.len(),
+            session.sim.as_ref().unwrap().db.creatures.len(),
             initial_count + 1
         );
         assert!(session.pending_commands.is_empty());
@@ -1021,12 +1027,12 @@ mod tests {
         let sim_b = session_b.sim.as_ref().unwrap();
 
         // Same number of creatures.
-        assert_eq!(sim_a.creatures.len(), sim_b.creatures.len());
-        assert_eq!(sim_a.creatures.len(), 3);
+        assert_eq!(sim_a.db.creatures.len(), sim_b.db.creatures.len());
+        assert_eq!(sim_a.db.creatures.len(), 3);
 
         // Same creature IDs (deterministic PRNG).
-        let ids_a: Vec<_> = sim_a.creatures.keys().collect();
-        let ids_b: Vec<_> = sim_b.creatures.keys().collect();
+        let ids_a: Vec<_> = sim_a.db.creatures.iter_keys().collect();
+        let ids_b: Vec<_> = sim_b.db.creatures.iter_keys().collect();
         assert_eq!(ids_a, ids_b);
 
         // Same state checksums.
