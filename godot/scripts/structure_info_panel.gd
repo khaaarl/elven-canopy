@@ -82,7 +82,7 @@ var _elf_picker_vbox: VBoxContainer
 var _inventory_label: Label
 var _logistics_section: VBoxContainer
 var _logistics_priority_hbox: HBoxContainer
-var _logistics_priority_spin: SpinBox
+var _logistics_priority_edit: LineEdit
 var _logistics_enabled_check: CheckButton
 var _logistics_wants_vbox: VBoxContainer
 var _logistics_add_button: Button
@@ -90,7 +90,7 @@ var _logistics_item_picker: VBoxContainer
 var _cooking_wrapper: VBoxContainer
 var _cooking_section: VBoxContainer
 var _cooking_enabled_check: CheckButton
-var _cooking_bread_target_spin: SpinBox
+var _cooking_bread_target_edit: LineEdit
 var _cooking_status_label: Label
 var _crafting_wrapper: VBoxContainer
 var _crafting_summary_label: Label
@@ -268,14 +268,26 @@ func _ready() -> void:
 	priority_label.text = "Priority:"
 	_logistics_priority_hbox.add_child(priority_label)
 
-	_logistics_priority_spin = SpinBox.new()
-	_logistics_priority_spin.min_value = 1
-	_logistics_priority_spin.max_value = 10
-	_logistics_priority_spin.value = 5
-	_logistics_priority_spin.step = 1
-	_logistics_priority_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_logistics_priority_spin.value_changed.connect(_on_logistics_priority_value_changed)
-	_logistics_priority_hbox.add_child(_logistics_priority_spin)
+	var priority_minus := Button.new()
+	priority_minus.text = "-1"
+	priority_minus.custom_minimum_size.x = 36
+	priority_minus.pressed.connect(_on_logistics_priority_button.bind(-1))
+	_logistics_priority_hbox.add_child(priority_minus)
+
+	_logistics_priority_edit = LineEdit.new()
+	_logistics_priority_edit.text = "5"
+	_logistics_priority_edit.custom_minimum_size.x = 36
+	_logistics_priority_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_logistics_priority_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_logistics_priority_edit.text_submitted.connect(_on_logistics_priority_submitted)
+	_logistics_priority_edit.focus_exited.connect(_on_logistics_priority_focus_exited)
+	_logistics_priority_hbox.add_child(_logistics_priority_edit)
+
+	var priority_plus := Button.new()
+	priority_plus.text = "+1"
+	priority_plus.custom_minimum_size.x = 36
+	priority_plus.pressed.connect(_on_logistics_priority_button.bind(1))
+	_logistics_priority_hbox.add_child(priority_plus)
 
 	# Wants list.
 	_logistics_wants_vbox = VBoxContainer.new()
@@ -326,14 +338,26 @@ func _ready() -> void:
 	bread_target_label.text = "Bread Target:"
 	bread_target_hbox.add_child(bread_target_label)
 
-	_cooking_bread_target_spin = SpinBox.new()
-	_cooking_bread_target_spin.min_value = 0
-	_cooking_bread_target_spin.max_value = 500
-	_cooking_bread_target_spin.value = 50
-	_cooking_bread_target_spin.step = 10
-	_cooking_bread_target_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_cooking_bread_target_spin.value_changed.connect(_on_cooking_bread_target_changed)
-	bread_target_hbox.add_child(_cooking_bread_target_spin)
+	var bread_minus := Button.new()
+	bread_minus.text = "-10"
+	bread_minus.custom_minimum_size.x = 40
+	bread_minus.pressed.connect(_on_cooking_bread_target_button.bind(-10))
+	bread_target_hbox.add_child(bread_minus)
+
+	_cooking_bread_target_edit = LineEdit.new()
+	_cooking_bread_target_edit.text = "0"
+	_cooking_bread_target_edit.custom_minimum_size.x = 48
+	_cooking_bread_target_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_cooking_bread_target_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_cooking_bread_target_edit.text_submitted.connect(_on_cooking_bread_target_submitted)
+	_cooking_bread_target_edit.focus_exited.connect(_on_cooking_bread_target_focus_exited)
+	bread_target_hbox.add_child(_cooking_bread_target_edit)
+
+	var bread_plus := Button.new()
+	bread_plus.text = "+10"
+	bread_plus.custom_minimum_size.x = 40
+	bread_plus.pressed.connect(_on_cooking_bread_target_button.bind(10))
+	bread_target_hbox.add_child(bread_plus)
 
 	_cooking_status_label = Label.new()
 	_cooking_status_label.text = ""
@@ -606,9 +630,9 @@ func _update_logistics(info: Dictionary, furnishing: String) -> void:
 	var priority: int = info.get("logistics_priority", -1)
 	var is_enabled := priority >= 0
 	_logistics_enabled_check.set_pressed_no_signal(is_enabled)
-	_logistics_priority_spin.editable = is_enabled
-	if is_enabled:
-		_logistics_priority_spin.set_value_no_signal(priority)
+	_logistics_priority_edit.editable = is_enabled
+	if is_enabled and not _logistics_priority_edit.has_focus():
+		_logistics_priority_edit.text = str(priority)
 
 	# Rebuild wants list.
 	for child in _logistics_wants_vbox.get_children():
@@ -640,8 +664,9 @@ func _update_cooking(info: Dictionary, furnishing: String) -> void:
 	var cook_status: String = info.get("cook_status", "")
 
 	_cooking_enabled_check.set_pressed_no_signal(cooking_enabled)
-	_cooking_bread_target_spin.editable = cooking_enabled
-	_cooking_bread_target_spin.set_value_no_signal(bread_target)
+	_cooking_bread_target_edit.editable = cooking_enabled
+	if not _cooking_bread_target_edit.has_focus():
+		_cooking_bread_target_edit.text = str(bread_target)
 
 	if cook_status != "":
 		_cooking_status_label.text = cook_status
@@ -653,28 +678,38 @@ func _update_cooking(info: Dictionary, furnishing: String) -> void:
 func _on_cooking_enabled_toggled(_pressed: bool) -> void:
 	if _current_structure_id < 0:
 		return
-	(
-		cooking_config_changed
-		. emit(
-			_current_structure_id,
-			_cooking_enabled_check.button_pressed,
-			int(_cooking_bread_target_spin.value),
-		)
-	)
+	_emit_cooking_config()
 
 
-func _on_cooking_bread_target_changed(_value: float) -> void:
+func _on_cooking_bread_target_button(delta: int) -> void:
 	if _current_structure_id < 0:
 		return
-	if _cooking_enabled_check.button_pressed:
-		(
-			cooking_config_changed
-			. emit(
-				_current_structure_id,
-				true,
-				int(_cooking_bread_target_spin.value),
-			)
-		)
+	var current := maxi(0, int(_cooking_bread_target_edit.text))
+	_cooking_bread_target_edit.text = str(maxi(0, current + delta))
+	_emit_cooking_config()
+
+
+func _on_cooking_bread_target_submitted(_text: String) -> void:
+	if _current_structure_id < 0:
+		return
+	var val := maxi(0, int(_cooking_bread_target_edit.text))
+	_cooking_bread_target_edit.text = str(val)
+	_cooking_bread_target_edit.release_focus()
+
+
+func _on_cooking_bread_target_focus_exited() -> void:
+	if _current_structure_id < 0:
+		return
+	var val := maxi(0, int(_cooking_bread_target_edit.text))
+	_cooking_bread_target_edit.text = str(val)
+	_emit_cooking_config()
+
+
+func _emit_cooking_config() -> void:
+	var bread_target := maxi(0, int(_cooking_bread_target_edit.text))
+	cooking_config_changed.emit(
+		_current_structure_id, _cooking_enabled_check.button_pressed, bread_target
+	)
 
 
 func _update_crafting(info: Dictionary, furnishing: String) -> void:
@@ -930,17 +965,37 @@ func _on_logistics_enabled_toggled(pressed: bool) -> void:
 	if _current_structure_id < 0:
 		return
 	if pressed:
-		var p := int(_logistics_priority_spin.value)
+		var p := clampi(int(_logistics_priority_edit.text), 1, 10)
 		logistics_priority_changed.emit(_current_structure_id, p)
 	else:
 		logistics_priority_changed.emit(_current_structure_id, -1)
 
 
-func _on_logistics_priority_value_changed(value: float) -> void:
+func _on_logistics_priority_button(delta: int) -> void:
 	if _current_structure_id < 0:
 		return
+	var current := clampi(int(_logistics_priority_edit.text), 1, 10)
+	var new_val := clampi(current + delta, 1, 10)
+	_logistics_priority_edit.text = str(new_val)
 	if _logistics_enabled_check.button_pressed:
-		logistics_priority_changed.emit(_current_structure_id, int(value))
+		logistics_priority_changed.emit(_current_structure_id, new_val)
+
+
+func _on_logistics_priority_submitted(_text: String) -> void:
+	if _current_structure_id < 0:
+		return
+	var val := clampi(int(_logistics_priority_edit.text), 1, 10)
+	_logistics_priority_edit.text = str(val)
+	_logistics_priority_edit.release_focus()
+
+
+func _on_logistics_priority_focus_exited() -> void:
+	if _current_structure_id < 0:
+		return
+	var val := clampi(int(_logistics_priority_edit.text), 1, 10)
+	_logistics_priority_edit.text = str(val)
+	if _logistics_enabled_check.button_pressed:
+		logistics_priority_changed.emit(_current_structure_id, val)
 
 
 func _on_logistics_add_pressed() -> void:
