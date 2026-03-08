@@ -17,8 +17,11 @@
 // The server is strictly read-only — it never mutates sim state, so it has
 // no impact on determinism.
 //
-// See also: `sim_bridge.rs` which owns the `EncyclopediaServer` and calls
-// `start()`/`stop()`/`update_data()`. The design doc is at
+// Species data is embedded at compile time via `include_str!` (same pattern
+// as `elven_canopy_lang`'s lexicon), so there are no runtime file path issues.
+//
+// See also: `sim_bridge.rs` which manages the global `EncyclopediaServer`
+// static and calls `update_data()`. The design doc is at
 // `docs/drafts/encyclopedia_civs.md` §Encyclopedia (Web-Based).
 
 use serde::Deserialize;
@@ -453,9 +456,8 @@ fn html_escape(s: &str) -> String {
 // Loading
 // ---------------------------------------------------------------------------
 
-/// Load species data from the JSON file at the given path.
-pub fn load_species_data(path: &str) -> Result<Vec<SpeciesEntry>, String> {
-    let contents =
-        std::fs::read_to_string(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
-    serde_json::from_str(&contents).map_err(|e| format!("Failed to parse {path}: {e}"))
+/// Load species data embedded at compile time from `data/species_encyclopedia.json`.
+pub fn load_species_data() -> Vec<SpeciesEntry> {
+    let json = include_str!("../../data/species_encyclopedia.json");
+    serde_json::from_str(json).expect("embedded species_encyclopedia.json is malformed")
 }

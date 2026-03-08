@@ -270,6 +270,9 @@ When making changes to a file, consider whether documentation elsewhere needs up
 
 Things that are non-obvious or surprising about this codebase:
 
+**Data file loading (CRITICAL):**
+- **Never use runtime file I/O (`std::fs`, `FileAccess`) to load static data files** (JSON configs, lexicons, etc.). Always use `include_str!` or `include_bytes!` to embed them at compile time. Runtime paths break in exported Godot builds because `res://` points into the PCK bundle and relative paths outside it don't exist. See `elven_canopy_lang/src/lib.rs` and `elven_canopy_gdext/src/encyclopedia_server.rs` for examples of the correct pattern.
+
 **Tick rate and sim decoupling:**
 - The sim runs at **1000 ticks per simulated second** (`tick_duration_ms = 1`). All tick-denominated config values (heartbeat intervals, food decay rates, species speed params) are calibrated for this rate.
 - The sim is decoupled from the frame rate. `main.gd` calls `bridge.frame_update(delta)` each frame. In single-player, a `LocalRelay` on the Rust side handles tick pacing with a time-based accumulator, capped at 5000 ticks per frame to prevent spiral-of-death.

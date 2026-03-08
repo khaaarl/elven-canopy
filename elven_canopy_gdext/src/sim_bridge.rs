@@ -3502,22 +3502,14 @@ impl SimBridge {
         if guard.is_some() {
             return;
         }
-        let res_path = godot::classes::ProjectSettings::singleton()
-            .globalize_path("res://")
-            .to_string();
-        let species_path = format!("{res_path}/../data/species_encyclopedia.json");
-        match crate::encyclopedia_server::load_species_data(&species_path) {
-            Ok(species) => match crate::encyclopedia_server::EncyclopediaServer::start(species) {
-                Some(server) => {
-                    godot_print!("SimBridge: encyclopedia server started at {}", server.url());
-                    *guard = Some(server);
-                }
-                None => {
-                    godot_warn!("SimBridge: failed to bind encyclopedia server");
-                }
-            },
-            Err(e) => {
-                godot_warn!("SimBridge: failed to load species encyclopedia: {e}");
+        let species = crate::encyclopedia_server::load_species_data();
+        match crate::encyclopedia_server::EncyclopediaServer::start(species) {
+            Some(server) => {
+                godot_print!("SimBridge: encyclopedia server started at {}", server.url());
+                *guard = Some(server);
+            }
+            None => {
+                godot_warn!("SimBridge: failed to bind encyclopedia server");
             }
         }
     }
