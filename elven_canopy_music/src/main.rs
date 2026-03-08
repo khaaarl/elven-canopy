@@ -152,7 +152,7 @@ fn main() {
 
     // Generate structure
     println!("[2/5] Planning structure ({} sections)...", num_sections);
-    let plan = generate_structure(&motif_library, num_sections, &mut rng);
+    let plan = generate_structure(&motif_library, num_sections, None, &mut rng);
     println!(
         "  Total beats: {} ({:.1} bars of 4/4)",
         plan.total_beats,
@@ -453,7 +453,7 @@ fn run_batch(args: &[String]) {
         let seed = base_seed + i as u64;
         let mut rng = GameRng::new(seed);
 
-        let plan = generate_structure(&motif_library, num_sections, &mut rng);
+        let plan = generate_structure(&motif_library, num_sections, None, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
         grid.tempo_bpm = tempo;
         let mut structural = apply_structure(&mut grid, &plan);
@@ -575,7 +575,7 @@ fn run_mode_scan(args: &[String]) {
         let mode = ModeInstance::new(*mode_enum, *final_pc);
         let mut rng = GameRng::new(seed);
 
-        let plan = generate_structure(&motif_library, num_sections, &mut rng);
+        let plan = generate_structure(&motif_library, num_sections, None, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
         grid.tempo_bpm = tempo;
         let mut structural = apply_structure(&mut grid, &plan);

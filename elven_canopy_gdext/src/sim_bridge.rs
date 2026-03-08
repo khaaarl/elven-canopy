@@ -141,6 +141,7 @@
 // `blueprint_renderer.gd` for blueprint visualization.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use elven_canopy_protocol::message::ServerMessage;
 use elven_canopy_relay::server::{RelayConfig, RelayHandle, start_relay};
@@ -226,6 +227,9 @@ pub struct SimBridge {
     mp_events: Vec<String>,
     mp_ticks_per_turn: u32,
     mp_time_since_turn: f64,
+    /// Background music composition results, keyed by CompositionId.
+    /// Each entry is None while generating, Some(pcm_data) when ready.
+    pending_compositions: BTreeMap<u64, Arc<Mutex<Option<Vec<f32>>>>>,
 }
 
 #[godot_api]
@@ -243,6 +247,7 @@ impl INode for SimBridge {
             mp_events: Vec::new(),
             mp_ticks_per_turn: 50,
             mp_time_since_turn: 0.0,
+            pending_compositions: BTreeMap::new(),
         }
     }
 }
@@ -1762,6 +1767,190 @@ impl SimBridge {
         self.apply_or_send(SimAction::DebugNotification {
             message: message.to_string(),
         });
+    }
+
+    // -------------------------------------------------------------------
+    // Music composition
+    // -------------------------------------------------------------------
+
+    /// Start background generation for any Pending compositions in the sim.
+    ///
+    /// Called each frame from GDScript. Checks the sim's MusicComposition
+    /// table for rows with status=Pending that don't already have a
+    /// background thread running, and spawns generation threads for them.
+    #[func]
+    fn poll_composition_starts(&mut self) {
+        let Some(sim) = &self.session.sim else {
+            return;
+        };
+
+        for comp in sim.db.music_compositions.iter_all() {
+            if comp.status != elven_canopy_sim::db::CompositionStatus::Pending {
+                continue;
+            }
+            let id_val = comp.id.0;
+            if self.pending_compositions.contains_key(&id_val) {
+                continue; // Already generating
+            }
+
+            let result: Arc<Mutex<Option<Vec<f32>>>> = Arc::new(Mutex::new(None));
+            let result_clone = Arc::clone(&result);
+            self.pending_compositions.insert(id_val, result);
+
+            let params = elven_canopy_music::generate::GenerateParams {
+                seed: comp.seed,
+                sections: comp.sections as usize,
+                mode_index: comp.mode_index as usize,
+                brightness: comp.brightness,
+                sa_iterations: comp.sa_iterations as usize,
+                tempo_bpm: 72, // Placeholder; overridden below.
+                max_beats: None,
+            };
+            let target_duration_ms = comp.target_duration_ms;
+
+            std::thread::spawn(move || {
+                let mut grid = elven_canopy_music::generate::generate_piece(&params);
+
+                // Derive the exact BPM so the rendered PCM matches the build
+                // duration. Formula: duration = total_beats * 30 / bpm, so
+                // bpm = total_beats * 30 / target_secs.
+                let target_secs = target_duration_ms as f32 / 1000.0;
+                let exact_bpm = if target_secs > 0.0 {
+                    (grid.num_beats as f32 * 30.0 / target_secs).round() as u16
+                } else {
+                    78 // Fallback: middle of range
+                };
+                // Clamp to a broad but reasonable range.
+                grid.tempo_bpm = exact_bpm.clamp(45, 120);
+
+                let pcm = elven_canopy_music::synth::render_grid_to_pcm(&grid);
+                if let Ok(mut lock) = result_clone.lock() {
+                    *lock = Some(pcm);
+                }
+            });
+        }
+    }
+
+    /// Collect composition IDs that are ready to play.
+    ///
+    /// A composition is playable when both conditions are met:
+    /// 1. The background thread has finished generating PCM data.
+    /// 2. An elf has started building (build_started == true in SimDb).
+    ///
+    /// Returns a PackedInt64Array of CompositionId values. Also marks them
+    /// as Ready in the sim database so they won't be re-polled.
+    #[func]
+    fn poll_ready_compositions(&mut self) -> PackedInt64Array {
+        let mut ready_ids = PackedInt64Array::new();
+        let mut newly_ready = Vec::new();
+
+        // Check which compositions have finished generating.
+        let mut generated = Vec::new();
+        for (&id_val, result) in &self.pending_compositions {
+            let Ok(lock) = result.lock() else { continue };
+            if lock.is_some() {
+                generated.push(id_val);
+            }
+        }
+
+        // Only report compositions where building has actually started.
+        if let Some(sim) = &self.session.sim {
+            for id_val in generated {
+                let comp_id = elven_canopy_sim::types::CompositionId(id_val);
+                let started = sim
+                    .db
+                    .music_compositions
+                    .get(&comp_id)
+                    .is_some_and(|c| c.build_started);
+                if started {
+                    ready_ids.push(id_val as i64);
+                    newly_ready.push(id_val);
+                }
+            }
+        }
+
+        // Mark as Ready in the sim DB
+        if let Some(sim) = &mut self.session.sim {
+            for &id_val in &newly_ready {
+                let comp_id = elven_canopy_sim::types::CompositionId(id_val);
+                let _ = sim
+                    .db
+                    .music_compositions
+                    .modify_unchecked(&comp_id, |comp| {
+                        comp.status = elven_canopy_sim::db::CompositionStatus::Ready;
+                    });
+            }
+        }
+
+        ready_ids
+    }
+
+    /// Get the PCM audio data for a completed composition.
+    ///
+    /// Returns a PackedFloat32Array of mono samples at 44100 Hz.
+    /// Returns empty if the composition is not ready or not found.
+    #[func]
+    fn get_composition_pcm(&self, composition_id: i64) -> PackedFloat32Array {
+        let id_val = composition_id as u64;
+        let Some(result) = self.pending_compositions.get(&id_val) else {
+            return PackedFloat32Array::new();
+        };
+        let Ok(lock) = result.lock() else {
+            return PackedFloat32Array::new();
+        };
+        match lock.as_ref() {
+            Some(pcm) => {
+                let mut arr = PackedFloat32Array::new();
+                arr.resize(pcm.len());
+                for (i, &sample) in pcm.iter().enumerate() {
+                    arr[i] = sample;
+                }
+                arr
+            }
+            None => PackedFloat32Array::new(),
+        }
+    }
+
+    /// Clean up composition data for a finished/cancelled build.
+    ///
+    /// Removes the cached PCM from memory. Call when a build completes
+    /// or is cancelled and the audio should stop.
+    #[func]
+    fn drop_composition(&mut self, composition_id: i64) {
+        self.pending_compositions.remove(&(composition_id as u64));
+    }
+
+    /// Check which playing compositions should stop because their build
+    /// finished or was cancelled.
+    ///
+    /// Takes a PackedInt64Array of currently-playing composition IDs and
+    /// returns the subset whose associated blueprint is Complete, cancelled
+    /// (removed), or otherwise no longer actively building.
+    #[func]
+    fn poll_finished_compositions(&self, active_ids: PackedInt64Array) -> PackedInt64Array {
+        let mut finished = PackedInt64Array::new();
+        let Some(sim) = &self.session.sim else {
+            return finished;
+        };
+        for i in 0..active_ids.len() {
+            let id_val = active_ids[i] as u64;
+            let comp_id = elven_canopy_sim::types::CompositionId(id_val);
+            // Check if the composition's blueprint is still actively building.
+            // Find the blueprint that references this composition.
+            let bp = sim
+                .db
+                .blueprints
+                .iter_all()
+                .find(|b| b.composition_id == Some(comp_id));
+            let should_stop = match bp {
+                None => true, // Blueprint gone (cancelled) — stop.
+                Some(b) => b.state == elven_canopy_sim::blueprint::BlueprintState::Complete,
+            };
+            if should_stop {
+                finished.push(id_val as i64);
+            }
+        }
+        finished
     }
 
     /// Check whether a single voxel is a valid build position.

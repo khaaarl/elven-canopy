@@ -6,15 +6,15 @@
 //
 // ## Table layout
 //
-// The database has 21 tables organized in three tiers:
+// The database has 22 tables organized in three tiers:
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures` — the
 // primary simulation entities, keyed by UUID-based or sequential IDs.
 //
 // **Child tables:** `thoughts`, `notifications`, `inventories`, `item_stacks`,
-// `ground_piles`, `logistics_wants`, `furniture` — normalized data that was
-// previously stored as inline `Vec` fields on parent entities, plus
-// player-visible notifications.
+// `ground_piles`, `logistics_wants`, `furniture`, `music_compositions` —
+// normalized data that was previously stored as inline `Vec` fields on parent
+// entities, plus player-visible notifications and construction music metadata.
 //
 // **Task decomposition tables:** `task_blueprint_refs`, `task_structure_refs`,
 // `task_voxel_refs`, `task_haul_data`, `task_sleep_data`, `task_acquire_data`,
@@ -49,11 +49,11 @@
 use crate::inventory::{EffectKind, ItemKind, Material};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
-    BuildType, CreatureId, EnchantmentEffectId, EnchantmentId, FurnishingType, FurnitureId,
-    GroundPileId, InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId, NavNodeId,
-    NotificationId, ProjectId, Species, StructureId, TaskAcquireDataId, TaskBlueprintRefId,
-    TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId,
-    ThoughtId, ThoughtKind, VoxelCoord,
+    BuildType, CompositionId, CreatureId, EnchantmentEffectId, EnchantmentId, FurnishingType,
+    FurnitureId, GroundPileId, InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId,
+    NavNodeId, NotificationId, ProjectId, Species, StructureId, TaskAcquireDataId,
+    TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId,
+    TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -231,6 +231,48 @@ pub struct Notification {
     pub message: String,
 }
 
+/// Status of a music composition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum CompositionStatus {
+    /// Composition has been seeded but not yet generated.
+    Pending,
+    /// Audio has been generated (by the rendering layer, not the sim).
+    Ready,
+}
+
+/// A music composition associated with a construction project (or potentially
+/// other future sources like concerts). Stores only the seed and generation
+/// parameters — the actual Grid and PCM are produced by the rendering layer
+/// (gdext) to keep the sim free of audio dependencies.
+///
+/// Created when a blueprint is designated. The rendering layer polls for
+/// Pending compositions, generates audio on a background thread, and marks
+/// them Ready.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct MusicComposition {
+    #[primary_key(auto_increment)]
+    pub id: CompositionId,
+    /// PRNG seed for deterministic generation.
+    pub seed: u64,
+    /// Number of SA sections (2–5). More sections = longer piece.
+    pub sections: u8,
+    /// Church mode index (0–5: dorian, phrygian, lydian, mixolydian, aeolian, ionian).
+    pub mode_index: u8,
+    /// Vaelith vowel brightness (0.0–1.0).
+    pub brightness: f32,
+    /// SA iteration budget (higher = better quality, slower generation).
+    pub sa_iterations: u32,
+    /// Target playback duration in milliseconds (= build time at 1x speed).
+    /// The rendering layer uses this to derive the exact BPM after generation.
+    pub target_duration_ms: u32,
+    /// Sim tick when the composition was requested.
+    pub requested_tick: u64,
+    /// Whether an elf has started building (first work tick on the blueprint).
+    pub build_started: bool,
+    /// Current status (Pending → Ready, set by rendering layer).
+    pub status: CompositionStatus,
+}
+
 /// A task — a unit of work that a creature can be assigned to.
 ///
 /// Variant-specific data lives in extension tables: `task_blueprint_refs`,
@@ -338,6 +380,9 @@ pub struct Blueprint {
     pub state: BlueprintState,
     #[indexed]
     pub task_id: Option<TaskId>,
+    /// FK to the construction singing composition (if any).
+    #[indexed]
+    pub composition_id: Option<CompositionId>,
     pub face_layout: Option<Vec<(VoxelCoord, FaceData)>>,
     pub stress_warning: bool,
     pub original_voxels: Vec<(VoxelCoord, VoxelType)>,
@@ -691,6 +736,7 @@ impl std::fmt::Debug for SimDb {
             .field("ground_piles", &self.ground_piles.len())
             .field("furniture", &self.furniture.len())
             .field("notifications", &self.notifications.len())
+            .field("music_compositions", &self.music_compositions.len())
             .finish()
     }
 }
@@ -747,8 +793,12 @@ pub struct SimDb {
             fks(task_id = "tasks" on_delete cascade))]
     pub task_craft_data: TaskCraftDataTable,
 
+    #[table(singular = "music_composition", auto)]
+    pub music_compositions: MusicCompositionTable,
+
     #[table(singular = "blueprint",
-            fks(task_id? = "tasks"))]
+            fks(task_id? = "tasks",
+                composition_id? = "music_compositions"))]
     pub blueprints: BlueprintTable,
 
     #[table(singular = "structure", fks(project_id = "blueprints"))]

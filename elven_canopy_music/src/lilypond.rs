@@ -591,7 +591,7 @@ mod tests {
         let motif_library = MotifLibrary::default_library();
         let mode = ModeInstance::new(Mode::Dorian, 2);
 
-        let plan = generate_structure(&motif_library, 2, &mut rng);
+        let plan = generate_structure(&motif_library, 2, None, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
         grid.tempo_bpm = 72;
         let mut structural = apply_structure(&mut grid, &plan);

@@ -531,7 +531,7 @@ mod tests {
         let mode = ModeInstance::d_dorian();
         let mut rng = GameRng::new(42);
 
-        let plan = generate_structure(&library, 2, &mut rng);
+        let plan = generate_structure(&library, 2, None, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
         let mut structural = apply_structure(&mut grid, &plan);
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
@@ -564,7 +564,7 @@ mod tests {
         let mode = ModeInstance::d_dorian();
         let mut rng = GameRng::new(42);
 
-        let plan = generate_structure(&library, 2, &mut rng);
+        let plan = generate_structure(&library, 2, None, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
         let structural = apply_structure(&mut grid, &plan);
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
@@ -591,7 +591,7 @@ mod tests {
         let mode = ModeInstance::d_dorian();
         let mut rng = GameRng::new(42);
 
-        let plan = generate_structure(&library, 2, &mut rng);
+        let plan = generate_structure(&library, 2, None, &mut rng);
         let mut grid = Grid::new(plan.total_beats);
         let structural = apply_structure(&mut grid, &plan);
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);

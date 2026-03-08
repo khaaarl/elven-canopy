@@ -10,6 +10,7 @@ workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+elven_canopy_music = { path = "../elven_canopy_music" }
 elven_canopy_protocol = { path = "../elven_canopy_protocol" }
 elven_canopy_relay = { path = "../elven_canopy_relay" }
 elven_canopy_sim = { path = "../elven_canopy_sim" }

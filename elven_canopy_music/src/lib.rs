@@ -7,6 +7,7 @@
 // ensures counterpoint correctness and tonal contour compliance.
 //
 // Architecture:
+// - generate.rs: High-level runtime API (full pipeline in one function call)
 // - grid.rs: Core score representation (SATB voices on an eighth-note grid)
 // - mode.rs: Church mode definitions (dorian through ionian), pitch mapping + snapping
 // - markov.rs: Loaded Markov transition tables for melodic/harmonic guidance
@@ -16,6 +17,7 @@
 //   + tension curve + interval distribution + tonal contour)
 // - sa.rs: Simulated annealing with pitch/duration/text-swap mutations and
 //   adaptive cooling
+// - synth.rs: Phase 1 waveform synthesizer (Grid → mono PCM via triangle waves)
 // - midi.rs: MIDI file output from completed grids
 // - lilypond.rs: LilyPond sheet music output (.ly files for engraving)
 // - vaelith.rs: Vaelith phrase generation (types + vocabulary from elven_canopy_lang)
@@ -26,6 +28,7 @@
 // the same PRNG used by the simulation crate — no external RNG dependencies.
 
 pub mod draft;
+pub mod generate;
 pub mod grid;
 pub mod lilypond;
 pub mod markov;
@@ -34,5 +37,6 @@ pub mod mode;
 pub mod sa;
 pub mod scoring;
 pub mod structure;
+pub mod synth;
 pub mod text_mapping;
 pub mod vaelith;

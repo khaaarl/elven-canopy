@@ -60,7 +60,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
-[ ] F-audio-synth          Waveform synthesis for audio rendering
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
 [ ] F-bldg-concert         Concert hall
@@ -115,7 +114,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
-[ ] F-music-runtime        Integrate music generator into game
 [ ] F-narrative-log        Events and narrative log
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
@@ -158,6 +156,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
+[x] F-audio-synth          Waveform synthesis for audio rendering
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
 [x] F-bldg-kitchen         Kitchen (cooking from ingredients)
@@ -200,6 +199,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-mp-integ-test        Multiplayer integration test harness
 [x] F-mp-mid-join          Mid-game join with state snapshot
 [x] F-music-gen            Palestrina-style music generator (standalone)
+[x] F-music-runtime        Integrate music generator into game
 [x] F-music-use-lang       Migrate music crate to shared lang crate
 [x] F-nav-graph            Navigation graph construction
 [x] F-nav-incremental      Incremental nav graph updates
@@ -1208,16 +1208,15 @@ panel. Later feeds into emotional dimensions when `F-emotions` lands.
 Phase 2 audio: pre-recorded or AI-generated vocal syllables from the Vaelith
 phoneme inventory, concatenated for singing.
 
-**Blocked by:** F-audio-synth, F-vaelith-expand
+**Blocked by:** F-vaelith-expand
 **Blocks:** F-audio-vocal
 
 #### F-audio-synth — Waveform synthesis for audio rendering
-**Status:** Todo · **Phase:** 6 · **Refs:** §21
+**Status:** Done · **Phase:** 6 · **Refs:** §21
 
 Phase 1 audio: generate waveforms from MIDI-like note data for playback in
 Godot. Debugging and validation tool, placeholder for richer audio later.
 
-**Blocks:** F-audio-sampled, F-music-runtime
 **Related:** F-sound-effects
 
 #### F-audio-vocal — Continuous vocal synthesis
@@ -1267,13 +1266,12 @@ simulated annealing optimization, MIDI + LilyPond output, CLI with
 batch/mode-scan.
 
 #### F-music-runtime — Integrate music generator into game
-**Status:** Todo · **Phase:** 6 · **Refs:** §21
+**Status:** Done · **Phase:** 6 · **Refs:** §21
 
 Bridge the standalone music crate into the Godot runtime. Generate music
 in response to game events (construction, celebrations, idle time). Requires
 audio output path (see F-audio-synth).
 
-**Blocked by:** F-audio-synth
 **Related:** F-bldg-concert, F-choir-build, F-choir-harmony
 
 #### F-music-use-lang — Migrate music crate to shared lang crate

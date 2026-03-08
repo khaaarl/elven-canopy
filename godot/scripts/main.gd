@@ -94,6 +94,7 @@ var _furniture_renderer: Node3D
 var _pile_renderer: Node3D
 var _tooltip_controller: Node
 var _notification_display: VBoxContainer
+var _construction_music: Node
 ## Highest notification ID seen so far, for polling new notifications.
 ## Initialized from the sim after load so historical notifications aren't
 ## replayed as toasts.
@@ -242,6 +243,13 @@ func _setup_common(bridge: SimBridge) -> void:
 	_notification_display = VBoxContainer.new()
 	_notification_display.set_script(notif_script)
 	canvas_layer.add_child(_notification_display)
+
+	# Set up construction music controller.
+	var music_script = load("res://scripts/construction_music.gd")
+	_construction_music = Node.new()
+	_construction_music.set_script(music_script)
+	_construction_music.bridge = bridge
+	add_child(_construction_music)
 
 	# Set up placement controller.
 	var controller_script = load("res://scripts/placement_controller.gd")
@@ -644,6 +652,9 @@ func _try_load_save(bridge: SimBridge, save_path: String) -> bool:
 	if json.is_empty():
 		push_error("main: save file is empty: %s" % save_path)
 		return false
+	# Stop any playing construction music before loading new state.
+	if _construction_music:
+		_construction_music.stop_all()
 	var ok := bridge.load_game_json(json)
 	if ok:
 		print("Elven Canopy: loaded save from %s (tick=%d)" % [save_path, bridge.current_tick()])
@@ -778,6 +789,10 @@ func _process(delta: float) -> void:
 				_last_notification_id = nid
 			if not msg.is_empty():
 				_notification_display.push_notification(msg)
+
+	# Poll for construction music composition completions.
+	if _construction_music:
+		_construction_music.poll_compositions()
 
 
 ## Move the camera to look at a world-space position, stopping any active

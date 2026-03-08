@@ -854,6 +854,7 @@ impl SimState {
         };
         self.insert_task(build_task);
 
+        let composition_id = Some(self.create_composition(build_voxels.len()));
         let bp = Blueprint {
             id: project_id,
             build_type,
@@ -861,6 +862,7 @@ impl SimState {
             priority,
             state: BlueprintState::Designated,
             task_id: Some(task_id),
+            composition_id,
             face_layout: None,
             stress_warning,
             original_voxels,
@@ -967,6 +969,7 @@ impl SimState {
         };
         self.insert_task(build_task);
 
+        let composition_id = Some(self.create_composition(voxels.len()));
         let bp = Blueprint {
             id: project_id,
             build_type: BuildType::Building,
@@ -974,6 +977,7 @@ impl SimState {
             priority,
             state: BlueprintState::Designated,
             task_id: Some(task_id),
+            composition_id,
             face_layout: Some(face_layout.into_iter().collect()),
             stress_warning,
             original_voxels: Vec::new(),
@@ -1108,6 +1112,7 @@ impl SimState {
             .map(|&coord| (coord, ladder_face_data(orientation)))
             .collect();
 
+        let composition_id = Some(self.create_composition(build_voxels.len()));
         let bp = Blueprint {
             id: project_id,
             build_type,
@@ -1115,6 +1120,7 @@ impl SimState {
             priority,
             state: BlueprintState::Designated,
             task_id: Some(task_id),
+            composition_id,
             face_layout: Some(face_layout.into_iter().collect()),
             stress_warning: false,
             original_voxels,
@@ -1210,6 +1216,7 @@ impl SimState {
             priority,
             state: BlueprintState::Designated,
             task_id: Some(task_id),
+            composition_id: None,
             face_layout: None,
             stress_warning,
             original_voxels,
@@ -3948,6 +3955,74 @@ impl SimState {
             .unwrap()
     }
 
+    // -----------------------------------------------------------------------
+    // Music composition helpers
+    // -----------------------------------------------------------------------
+
+    /// Create a music composition for a construction project. Derives seed
+    /// and generation parameters from the sim PRNG. Returns the composition ID.
+    fn create_composition(&mut self, voxel_count: usize) -> CompositionId {
+        use crate::db::{CompositionStatus, MusicComposition};
+
+        let seed = self.rng.next_u64();
+
+        // Build duration = voxel_count × ticks_per_voxel / 1000 (seconds at 1x).
+        let build_ms = (voxel_count as u64 * self.config.build_work_ticks_per_voxel) as u32;
+        let build_secs = build_ms as f32 / 1000.0;
+
+        // Pick section count so that the typical grid length for that many
+        // sections would need a BPM within the Palestrina range (60–96) to
+        // match the build duration.
+        //
+        // Typical eighth-note beat counts per section count (from structure.rs):
+        //   1 section  ≈  55 beats  → duration range at 60–96 BPM: 17–28s
+        //   2 sections ≈ 125 beats  → 39–63s
+        //   3 sections ≈ 195 beats  → 61–98s
+        //   4 sections ≈ 270 beats  → 84–135s
+        //
+        // For each candidate, the ideal BPM would be:
+        //   bpm = typical_beats * 30 / build_secs
+        // We pick the section count whose ideal BPM is closest to the middle
+        // of the range (78 BPM).
+        const TYPICAL_BEATS: &[(u8, f32)] = &[(1, 55.0), (2, 125.0), (3, 195.0), (4, 270.0)];
+        let mut best_sections = 1u8;
+        let mut best_dist = f32::MAX;
+        for &(s, beats) in TYPICAL_BEATS {
+            let ideal_bpm = beats * 30.0 / build_secs;
+            let dist = (ideal_bpm - 78.0).abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best_sections = s;
+            }
+        }
+
+        // Random mode (0-5) and brightness (0.2-0.8).
+        let mode_index = (self.rng.next_u64() % 6) as u8;
+        let brightness = 0.2 + (self.rng.next_u64() % 600) as f32 / 1000.0;
+        // SA budget scaled with piece length (longer pieces benefit more).
+        let sa_iterations = match best_sections {
+            1 => 2000,
+            2 => 3000,
+            _ => 5000,
+        };
+
+        self.db
+            .music_compositions
+            .insert_auto_no_fk(|id| MusicComposition {
+                id,
+                seed,
+                sections: best_sections,
+                mode_index,
+                brightness,
+                sa_iterations,
+                target_duration_ms: build_ms,
+                requested_tick: self.tick,
+                build_started: false,
+                status: CompositionStatus::Pending,
+            })
+            .unwrap()
+    }
+
     /// Add items to an inventory, stacking with existing items that match
     /// all stackability fields. Returns the resulting quantity.
     #[allow(clippy::too_many_arguments)]
@@ -5029,6 +5104,17 @@ impl SimState {
         let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
             t.progress += 1.0;
         });
+
+        // Mark the composition as build_started on the first work tick,
+        // so the rendering layer knows when to begin playback.
+        if old_progress == 0.0
+            && let Some(bp) = self.db.blueprints.get(&project_id)
+            && let Some(comp_id) = bp.composition_id
+        {
+            let _ = self.db.music_compositions.modify_unchecked(&comp_id, |c| {
+                c.build_started = true;
+            });
+        }
 
         // Check if we crossed a voxel-placement threshold.
         let old_voxels = (old_progress / ticks_per_voxel).floor() as u64;
@@ -8141,6 +8227,176 @@ mod tests {
                 .events
                 .iter()
                 .any(|e| matches!(e.kind, SimEventKind::BlueprintDesignated { .. }))
+        );
+    }
+
+    #[test]
+    fn designate_build_creates_composition() {
+        let mut sim = test_sim(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Blueprint should have a composition FK.
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
+        assert!(
+            bp.composition_id.is_some(),
+            "Build blueprint should have a composition"
+        );
+
+        // The composition should exist in the DB with Pending status.
+        let comp_id = bp.composition_id.unwrap();
+        let comp = sim.db.music_compositions.get(&comp_id).unwrap();
+        assert_eq!(comp.status, crate::db::CompositionStatus::Pending);
+        assert!(!comp.build_started);
+        assert!(comp.seed != 0, "Composition should have a non-trivial seed");
+        assert!(comp.sections >= 1 && comp.sections <= 4);
+        assert!(comp.mode_index <= 5);
+        assert!(comp.brightness >= 0.2 && comp.brightness <= 0.8);
+        // 1 voxel × 1000 ticks/voxel = 1000ms target duration.
+        assert_eq!(comp.target_duration_ms, 1000);
+    }
+
+    #[test]
+    fn composition_persists_across_serde_roundtrip() {
+        let mut sim = test_sim(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
+        let comp_id = bp.composition_id.unwrap();
+        let comp = sim.db.music_compositions.get(&comp_id).unwrap();
+        let orig_seed = comp.seed;
+        let orig_sections = comp.sections;
+        let orig_mode = comp.mode_index;
+
+        // Serialize and deserialize.
+        let json = serde_json::to_string(&sim).unwrap();
+        let restored: SimState = serde_json::from_str(&json).unwrap();
+
+        // Composition should survive roundtrip.
+        let comp = restored.db.music_compositions.get(&comp_id).unwrap();
+        assert_eq!(comp.seed, orig_seed);
+        assert_eq!(comp.sections, orig_sections);
+        assert_eq!(comp.mode_index, orig_mode);
+        assert_eq!(comp.status, crate::db::CompositionStatus::Pending);
+
+        // Blueprint FK should still point to it.
+        let bp = restored.db.blueprints.iter_all().next().unwrap();
+        assert_eq!(bp.composition_id, Some(comp_id));
+    }
+
+    #[test]
+    fn designate_carve_has_no_composition() {
+        let mut sim = test_sim(42);
+
+        // Find a solid trunk voxel to carve.
+        let mut carve_coord = None;
+        for y in 1..sim.world.size_y as i32 {
+            for z in 0..sim.world.size_z as i32 {
+                for x in 0..sim.world.size_x as i32 {
+                    let coord = VoxelCoord::new(x, y, z);
+                    if sim.world.get(coord) == VoxelType::Trunk {
+                        carve_coord = Some(coord);
+                        break;
+                    }
+                }
+                if carve_coord.is_some() {
+                    break;
+                }
+            }
+            if carve_coord.is_some() {
+                break;
+            }
+        }
+        let carve_coord = carve_coord.expect("Should find a trunk voxel to carve");
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateCarve {
+                voxels: vec![carve_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        if !sim.db.blueprints.is_empty() {
+            let bp = sim.db.blueprints.iter_all().next().unwrap();
+            assert!(
+                bp.composition_id.is_none(),
+                "Carve blueprint should not have a composition"
+            );
+        }
+        // No compositions should have been created for carving.
+        assert_eq!(
+            sim.db.music_compositions.len(),
+            0,
+            "Carving should not create compositions"
+        );
+    }
+
+    #[test]
+    fn build_work_sets_composition_build_started() {
+        let mut config = test_config();
+        config.build_work_ticks_per_voxel = 50000;
+        let mut sim = SimState::with_config(42, config);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        spawn_elf(&mut sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+
+        // Composition should not be started yet (no work done).
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
+        let comp_id = bp.composition_id.unwrap();
+        assert!(
+            !sim.db
+                .music_compositions
+                .get(&comp_id)
+                .unwrap()
+                .build_started,
+            "Composition should not be started before any work"
+        );
+
+        // Run enough ticks for the elf to arrive and do at least one tick of work.
+        sim.step(&[], sim.tick + 100_000);
+
+        assert!(
+            sim.db
+                .music_compositions
+                .get(&comp_id)
+                .unwrap()
+                .build_started,
+            "Composition should be started after elf begins building"
         );
     }
 
@@ -11728,6 +11984,7 @@ mod tests {
                 priority: crate::types::Priority::Normal,
                 state: crate::blueprint::BlueprintState::Complete,
                 task_id: None,
+                composition_id: None,
                 face_layout: None,
                 stress_warning: false,
                 original_voxels: Vec::new(),

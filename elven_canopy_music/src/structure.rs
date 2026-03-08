@@ -98,9 +98,14 @@ const TRANSPOSITION_SCHEMES: &[[i8; 4]] = &[
 /// Creates a sequence of imitation points using motifs from the library,
 /// planning voice entries at staggered offsets. Varies entry order,
 /// transposition, and number of participating voices for variety.
+///
+/// If `max_beats` is `Some(n)`, section generation stops once `current_beat`
+/// reaches `n`. The final cadence (8 beats) is always appended regardless.
+/// This allows the caller to cap composition length to match a target duration.
 pub fn generate_structure(
     motif_library: &MotifLibrary,
     num_sections: usize,
+    max_beats: Option<usize>,
     rng: &mut GameRng,
 ) -> StructurePlan {
     let mut imitation_points = Vec::new();
@@ -115,6 +120,13 @@ pub fn generate_structure(
         .sum();
 
     for section_idx in 0..num_sections {
+        // Stop adding sections if we've reached the beat cap.
+        if let Some(cap) = max_beats
+            && current_beat >= cap
+        {
+            break;
+        }
+
         // Pick a motif weighted by frequency (more common = more idiomatic)
         let motif = pick_weighted_motif(motif_library, total_freq, rng);
 
@@ -455,7 +467,7 @@ mod tests {
     fn test_generate_structure() {
         let library = MotifLibrary::default_library();
         let mut rng = GameRng::new(42);
-        let plan = generate_structure(&library, 3, &mut rng);
+        let plan = generate_structure(&library, 3, None, &mut rng);
 
         assert_eq!(plan.imitation_points.len(), 3);
         assert!(plan.total_beats > 0);
@@ -469,7 +481,7 @@ mod tests {
     fn test_apply_structure() {
         let library = MotifLibrary::default_library();
         let mut rng = GameRng::new(42);
-        let plan = generate_structure(&library, 2, &mut rng);
+        let plan = generate_structure(&library, 2, None, &mut rng);
 
         let mut grid = Grid::new(plan.total_beats);
         let structural = apply_structure(&mut grid, &plan);
@@ -494,7 +506,7 @@ mod tests {
         let mut rng = GameRng::new(42);
 
         // Use 4 sections to trigger thol at midpoint
-        let plan = generate_structure(&library, 4, &mut rng);
+        let plan = generate_structure(&library, 4, None, &mut rng);
 
         let mut grid = Grid::new(plan.total_beats);
         let mut structural = apply_structure(&mut grid, &plan);

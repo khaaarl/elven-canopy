@@ -306,6 +306,8 @@ auto_pk_id!(/// Auto-increment ID for individual enchantment effects.
 EnchantmentEffectId);
 auto_pk_id!(/// Auto-increment ID for craft task extension data.
 TaskCraftDataId);
+auto_pk_id!(/// Auto-increment ID for music compositions.
+CompositionId);
 
 // ---------------------------------------------------------------------------
 // Nav graph IDs — simple integers, not UUIDs, for compactness.
