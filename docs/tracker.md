@@ -78,11 +78,13 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-civilizations        Procedural civilization generation and diplomacy
 [ ] F-combat               Combat and invader threat system
 [ ] F-crafting             Non-construction jobs and crafting
+[ ] F-creature-actions     Formalize creature action system with next_action_tick
 [ ] F-creature-death       Basic creature death (starvation)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
+[ ] F-dynamic-pursuit      Dynamic repathfinding for moving-target tasks
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
@@ -133,6 +135,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-joins            Join iterators across tables
+[ ] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
@@ -145,6 +148,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
+[ ] F-worldgen-framework   Worldgen generator framework
 [ ] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 ```
 
@@ -741,6 +745,68 @@ data passing to Godot), `tree_renderer.gd` (per-chunk material creation).
 
 ### Navigation & Pathfinding
 
+#### F-dynamic-pursuit — Dynamic repathfinding for moving-target tasks
+**Status:** Todo
+
+The current task system assumes every task has a static `location: NavNodeId`.
+When a creature claims a task, `walk_toward_task()` computes an A* path once
+and the creature walks it step by step. If the path is exhausted or absent, a
+new path is computed to the same fixed location. This works for all existing
+task kinds (Build, Haul, Cook, Sleep, etc.) because their destinations don't
+move.
+
+Combat introduces tasks whose destination is another creature — AttackTarget
+needs to pathfind toward a moving target. This requires changes to the
+task/movement infrastructure.
+
+**Task base table stays unchanged.** `location` remains `NavNodeId` (not
+optional). For AttackTarget, `location` is set to the target's position at
+task creation time and updated when repathfinding. Target creature references
+live in extension tables (`TaskAttackTargetData.target`,
+`TaskAttackMoveData.current_target`), preserving the decomposition pattern.
+
+**Dynamic repathfinding in `walk_toward_task()`:**
+- When a task tracks a moving target (via its extension table), the cached
+  `CreaturePath` becomes stale as the target moves.
+- Repathfinding policy: repath when the target has moved beyond some threshold
+  distance from the path's original goal, or when the cached path is exhausted.
+  Full repath every activation is too expensive for large nav graphs.
+- On repath, update `task.location` to the target's current position so
+  UI/rendering code that reads `task.location` stays correct.
+- Possible heuristic: store the `NavNodeId` the path was computed toward; on
+  each activation, compare to target's current node. If different, repath.
+  Could also add a tick-based cooldown (repath at most once every N ticks).
+
+**Path invalidation and edge cases:**
+- Target dies mid-pursuit: `target`'s vital status must be polled each
+  activation. If dead (or row missing from future cleanup), task completes.
+- Target becomes unreachable (e.g., enters a disconnected nav region): must
+  handle gracefully — abandon pursuit after failed pathfinding, not panic.
+- Target is already adjacent: skip pathfinding, proceed to combat actions.
+
+**Integration with activation chain:**
+- `execute_task_behavior()` currently reads `task.location` unconditionally
+  and passes it to `walk_toward_task()`. For pursuit tasks, the activation
+  logic must check path validity against the target's current position before
+  walking.
+- Existing task kinds must continue to work unchanged — this is a backward-
+  compatible extension, not a rewrite.
+
+**Design questions to resolve during implementation:**
+- Repathfinding frequency vs. cost tradeoff (every activation? every N ticks?
+  only when target node changes?).
+- Whether `walk_toward_task()` should accept a `NavNodeId` (already resolved)
+  or do the resolution itself.
+- How AttackMove (which has both a fixed destination AND an optional moving
+  target) interacts with this system.
+
+Identified during combat design review (docs/drafts/combat_military.md §5).
+This is a prerequisite for combat task kinds but is a separable infrastructure
+change that benefits from independent implementation and testing.
+
+**Blocks:** F-combat
+**Related:** F-creature-actions
+
 #### F-flying-nav — 3D flight navigation system
 **Status:** Todo · **Phase:** 8+ · **Refs:** §10
 
@@ -800,6 +866,23 @@ hunger/satiation state; bread is the concrete item that fills it).
 
 Capybara species with ground-only movement restriction, own sprite renderer,
 and species-specific speed config.
+
+#### F-creature-actions — Formalize creature action system with next_action_tick
+**Status:** Todo
+
+Currently, everything a creature does (including moving from one voxel to
+another) is conceptually an "action," but the code uses `move_end_tick` to
+gate action availability. This conflates movement timing with general action
+readiness. This feature adds a proper `next_action_tick: u64` field (or
+equivalent) to each creature, so that combat actions (melee strikes, shooting
+arrows) and other non-movement actions can have their own cooldowns that
+integrate cleanly into the activation chain.
+
+This is a foundational refactor that requires human design input before
+implementation begins — the action model, cooldown semantics, and interaction
+with the existing task/event system need to be specified first.
+
+**Related:** F-dynamic-pursuit
 
 #### F-creature-death — Basic creature death (starvation)
 **Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
@@ -1325,6 +1408,7 @@ infrastructure.
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
+**Blocked by:** F-dynamic-pursuit
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -2030,6 +2114,9 @@ unchanged after; in release builds, zero overhead beyond the map lookup +
 closure call. Database-level wrappers delegate to the table methods.
 
 **Related:** F-sim-db-impl, F-tab-query-opts
+
+#### F-tab-parent-pk — Tabulosity: allow parent PK as child table PK for 1:1 relations
+**Status:** Todo
 
 #### F-tab-query-opts — Query options struct for index queries
 **Status:** Done
