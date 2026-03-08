@@ -337,20 +337,23 @@ fn database_deserialize_field_order_independent() {
 }
 
 #[test]
-fn database_deserialize_missing_field() {
-    // Omit the "tasks" field entirely.
+fn database_deserialize_missing_table_defaults_to_empty() {
+    // Omit the "tasks" field entirely — should succeed with an empty tasks table.
     let json = r#"{"creatures": [{"id": 1, "name": "A", "species": "Elf"}]}"#;
 
-    let result: Result<TestDb, _> = serde_json::from_str(json);
-    let err_msg = match result {
-        Ok(_) => panic!("should reject missing field"),
-        Err(e) => e.to_string(),
-    };
-    assert!(
-        err_msg.contains("tasks"),
-        "error should mention the missing field: {}",
-        err_msg,
-    );
+    let db: TestDb = serde_json::from_str(json).unwrap();
+    assert_eq!(db.creatures.len(), 1);
+    assert!(db.tasks.is_empty());
+}
+
+#[test]
+fn database_deserialize_all_tables_missing_gives_empty_db() {
+    // Completely empty JSON object — all tables default to empty.
+    let json = r#"{}"#;
+
+    let db: TestDb = serde_json::from_str(json).unwrap();
+    assert!(db.creatures.is_empty());
+    assert!(db.tasks.is_empty());
 }
 
 #[test]
@@ -2267,4 +2270,121 @@ fn deserialize_duplicate_unique_silently_accepted() {
         })
         .unwrap_err();
     assert!(matches!(err, Error::DuplicateIndex { .. }));
+}
+
+// =============================================================================
+// Schema versioning
+// =============================================================================
+
+#[derive(Database)]
+#[schema_version(3)]
+struct VersionedDb {
+    #[table(singular = "creature")]
+    pub creatures: CreatureTable,
+
+    #[table(singular = "task", fks(assignee? = "creatures"))]
+    pub tasks: TaskTable,
+}
+
+#[test]
+fn versioned_db_serialization_includes_version() {
+    let db = VersionedDb::new();
+    let json = serde_json::to_string(&db).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(val["schema_version"], 3);
+}
+
+#[test]
+fn versioned_db_roundtrip() {
+    let mut db = VersionedDb::new();
+    db.insert_creature(Creature {
+        id: CreatureId(1),
+        name: "Aelindra".into(),
+        species: Species::Elf,
+    })
+    .unwrap();
+
+    let json = serde_json::to_string(&db).unwrap();
+    let db2: VersionedDb = serde_json::from_str(&json).unwrap();
+    assert_eq!(db2.creatures.len(), 1);
+}
+
+#[test]
+fn versioned_db_rejects_wrong_version() {
+    // Version 99 instead of the expected 3.
+    let json = r#"{"schema_version": 99, "creatures": [], "tasks": []}"#;
+    let result: Result<VersionedDb, _> = serde_json::from_str(json);
+    let err_msg = match result {
+        Ok(_) => panic!("should reject wrong version"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err_msg.contains("schema version mismatch"),
+        "expected schema version mismatch error, got: {}",
+        err_msg,
+    );
+}
+
+#[test]
+fn versioned_db_rejects_missing_version() {
+    // No schema_version field at all.
+    let json = r#"{"creatures": [], "tasks": []}"#;
+    let result: Result<VersionedDb, _> = serde_json::from_str(json);
+    let err_msg = match result {
+        Ok(_) => panic!("should reject missing version"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err_msg.contains("schema_version"),
+        "expected missing schema_version error, got: {}",
+        err_msg,
+    );
+}
+
+#[test]
+fn unversioned_db_has_no_schema_version_field() {
+    // TestDb has no #[schema_version] attribute — serialized form should
+    // not contain a schema_version field.
+    let db = TestDb::new();
+    let json = serde_json::to_string(&db).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(
+        val.get("schema_version").is_none(),
+        "unversioned DB should not have schema_version in JSON"
+    );
+}
+
+// =============================================================================
+// serde(default) convention for additive schema changes
+// =============================================================================
+
+/// Row type with a new field that has a serde default. This simulates adding
+/// a column to an existing table across save versions.
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct CreatureV2 {
+    #[primary_key]
+    pub id: CreatureId,
+    pub name: String,
+    #[indexed]
+    pub species: Species,
+    /// New field added in V2 — old saves won't have it.
+    #[serde(default)]
+    pub mood_score: i32,
+}
+
+#[derive(Database)]
+struct TestDbV2 {
+    #[table(singular = "creature")]
+    pub creatures: CreatureV2Table,
+}
+
+#[test]
+fn serde_default_field_on_old_data() {
+    // Simulate loading data that was serialized without the `mood_score` field.
+    let json = r#"{"creatures": [{"id": 1, "name": "A", "species": "Elf"}]}"#;
+
+    let db: TestDbV2 = serde_json::from_str(json).unwrap();
+    assert_eq!(db.creatures.len(), 1);
+    let creature = db.creatures.get(&CreatureId(1)).unwrap();
+    assert_eq!(creature.mood_score, 0); // i32::default()
 }

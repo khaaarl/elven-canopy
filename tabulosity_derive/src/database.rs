@@ -12,7 +12,18 @@
 //! - `Serialize` and `Deserialize` impls (behind `#[cfg(feature = "serde")]`).
 //!   The `Deserialize` impl validates FK constraints and collects ALL errors
 //!   (duplicate PKs + FK violations) into a `DeserializeError`, rather than
-//!   failing fast on the first problem.
+//!   failing fast on the first problem. Missing tables in the serialized data
+//!   default to empty, making additive schema changes (new tables) work without
+//!   migration code.
+//!
+//! ## Schema versioning
+//!
+//! An optional struct-level `#[schema_version(N)]` attribute (where N is a u64)
+//! enables schema versioning. When present:
+//! - Serialization includes a `"schema_version": N` field in the JSON output.
+//! - Deserialization requires the version field and rejects mismatches.
+//!
+//! When absent, no version field is serialized or expected.
 //!
 //! FK validation on insert/update uses the `FkCheck` trait for uniform handling
 //! of both `T` and `Option<T>` FK fields.
@@ -158,8 +169,26 @@ fn parse_table_attr(attr: &syn::Attribute) -> syn::Result<TableAttr> {
     })
 }
 
+/// Parse an optional `#[schema_version(N)]` attribute from the struct's attrs.
+fn parse_schema_version(attrs: &[syn::Attribute]) -> Option<u64> {
+    for attr in attrs {
+        if attr.path().is_ident("schema_version") {
+            let version: syn::LitInt = attr
+                .parse_args()
+                .expect("#[schema_version] requires an integer literal, e.g. #[schema_version(1)]");
+            return Some(
+                version
+                    .base10_parse::<u64>()
+                    .expect("#[schema_version] must be a valid u64"),
+            );
+        }
+    }
+    None
+}
+
 pub fn derive(input: &DeriveInput) -> TokenStream {
     let db_name = &input.ident;
+    let schema_version = parse_schema_version(&input.attrs);
 
     let raw_fields = match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -534,7 +563,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
         })
         .collect();
 
-    let serde_impls = generate_serde_impls(db_name, &table_fields, raw_fields);
+    let serde_impls = generate_serde_impls(db_name, &table_fields, raw_fields, schema_version);
 
     quote! {
         impl #db_name {
@@ -562,6 +591,7 @@ fn generate_serde_impls(
     db_name: &Ident,
     table_fields: &[TableField],
     raw_fields: &syn::punctuated::Punctuated<syn::Field, Token![,]>,
+    schema_version: Option<u64>,
 ) -> TokenStream {
     let field_count = table_fields.len();
     let db_name_str = db_name.to_string();
@@ -595,6 +625,20 @@ fn generate_serde_impls(
         .collect();
 
     // --- Serialize impl ---
+
+    let ser_field_count = if schema_version.is_some() {
+        field_count + 1
+    } else {
+        field_count
+    };
+
+    let serialize_version: TokenStream = if let Some(ver) = schema_version {
+        quote! {
+            state.serialize_field("schema_version", &#ver)?;
+        }
+    } else {
+        quote! {}
+    };
 
     let serialize_fields: Vec<TokenStream> = field_infos
         .iter()
@@ -681,26 +725,23 @@ fn generate_serde_impls(
         })
         .collect();
 
-    // Build tables from vecs, collecting duplicate key errors. Auto tables are
-    // already deserialized as table types, so they skip the Vec<Row> path.
+    // Build tables from vecs, collecting duplicate key errors. Missing tables
+    // default to empty — this makes additive schema changes (new tables) work
+    // without migration code.
     let build_tables: Vec<TokenStream> = field_infos
         .iter()
         .enumerate()
-        .map(|(i, (_, field_name_str, _, _, _, _, is_auto))| {
+        .map(|(i, (_, _field_name_str, _, _, _, _, is_auto))| {
             let vec_var = &vec_var_names[i];
             let table_var = &table_var_names[i];
             let table_ty = &table_tys_de[i];
             if *is_auto {
                 quote! {
-                    let mut #table_var = #vec_var.ok_or_else(|| {
-                        ::serde::de::Error::missing_field(#field_name_str)
-                    })?;
+                    let mut #table_var = #vec_var.unwrap_or_else(|| <#table_ty>::new());
                 }
             } else {
                 quote! {
-                    let __rows = #vec_var.ok_or_else(|| {
-                        ::serde::de::Error::missing_field(#field_name_str)
-                    })?;
+                    let __rows = #vec_var.unwrap_or_default();
                     let mut #table_var = <#table_ty>::new();
                     for __row in __rows {
                         if let ::std::result::Result::Err(e) = #table_var.insert_no_fk(__row) {
@@ -813,6 +854,34 @@ fn generate_serde_impls(
     let visitor_name = format_ident!("__{}Visitor", db_name);
     let fields_const = format_ident!("__FIELDS_{}", db_name.to_string().to_uppercase());
 
+    // Schema version checking code for the Deserialize visitor.
+    let version_check: TokenStream = if let Some(ver) = schema_version {
+        quote! {
+            if __ver != #ver {
+                return ::std::result::Result::Err(::serde::de::Error::custom(
+                    ::std::format!(
+                        "schema version mismatch: expected {}, found {}",
+                        #ver, __ver,
+                    ),
+                ));
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let version_required_check: TokenStream = if schema_version.is_some() {
+        quote! {
+            if !__schema_version_seen {
+                return ::std::result::Result::Err(
+                    ::serde::de::Error::missing_field("schema_version"),
+                );
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         #[cfg(feature = "serde")]
         impl ::serde::Serialize for #db_name
@@ -825,7 +894,8 @@ fn generate_serde_impls(
                 serializer: __S,
             ) -> ::std::result::Result<__S::Ok, __S::Error> {
                 use ::serde::ser::SerializeStruct;
-                let mut state = serializer.serialize_struct(#db_name_str, #field_count)?;
+                let mut state = serializer.serialize_struct(#db_name_str, #ser_field_count)?;
+                #serialize_version
                 #(#serialize_fields)*
                 state.end()
             }
@@ -863,9 +933,16 @@ fn generate_serde_impls(
                         mut map: __A,
                     ) -> ::std::result::Result<Self::Value, __A::Error> {
                         #(#vec_var_decls)*
+                        let mut __schema_version_seen: bool = false;
 
                         while let ::std::option::Option::Some(__key) = map.next_key::<::std::string::String>()? {
                             match __key.as_str() {
+                                "schema_version" => {
+                                    let __ver = map.next_value::<u64>()?;
+                                    __schema_version_seen = true;
+                                    #version_check
+                                    let _ = __ver;
+                                }
                                 #(#map_access_arms)*
                                 _ => {
                                     let _ = map.next_value::<::serde::de::IgnoredAny>()?;
@@ -873,9 +950,11 @@ fn generate_serde_impls(
                             }
                         }
 
+                        #version_required_check
+
                         let mut __errors: ::std::vec::Vec<::tabulosity::Error> = ::std::vec::Vec::new();
 
-                        // Build tables, collecting duplicate key errors.
+                        // Build tables — missing tables default to empty.
                         #(#build_tables)*
 
                         // Validate FK constraints.

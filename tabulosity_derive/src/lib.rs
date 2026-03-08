@@ -47,7 +47,10 @@ pub fn derive_table(input: TokenStream) -> TokenStream {
 ///
 /// Every field must have a `#[table(singular = "...", fks(...), auto)]`
 /// attribute. The `auto` flag generates an `insert_{singular}_auto` method.
-#[proc_macro_derive(Database, attributes(table))]
+/// An optional struct-level `#[schema_version(N)]` attribute enables schema
+/// versioning: the version number is included in serialized output and
+/// checked on deserialization.
+#[proc_macro_derive(Database, attributes(table, schema_version))]
 pub fn derive_database(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
     database::derive(&input).into()

@@ -95,7 +95,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-fruit-prod           Basic fruit production and harvesting
-[ ] F-fruit-variety     Procedural fruit variety and processing
+[ ] F-fruit-variety        Procedural fruit variety and processing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-keybind-help         Keyboard shortcuts help overlay
@@ -132,7 +132,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
-[ ] F-tab-schema-ver       Schema versioning fundamentals
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
@@ -225,6 +224,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-filter-idx       Filtered/partial indexes
 [x] F-tab-modify-unchk     Closure-based row mutation (modify_unchecked)
 [x] F-tab-query-opts       Query options struct for index queries
+[x] F-tab-schema-ver       Schema versioning fundamentals
 [x] F-tab-unique-idx       Unique index enforcement
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
 [x] F-thoughts             Creature thoughts (DF-style event reactions)
@@ -1977,7 +1977,7 @@ to beta. **Draft:** `docs/drafts/schema_migrations.md`
 **Related:** F-save-load, F-sim-db-impl, F-tab-schema-ver
 
 #### F-tab-schema-ver — Schema versioning fundamentals
-**Status:** Todo
+**Status:** Done
 
 Schema versioning fundamentals for tabulosity: (1) version number on Database
 (included in serialized output, checked on deserialization), (2) missing tables
