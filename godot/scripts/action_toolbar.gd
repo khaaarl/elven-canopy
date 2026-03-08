@@ -179,6 +179,21 @@ func _ready() -> void:
 	elephant_button.pressed.connect(_on_spawn.bind("Elephant"))
 	_debug_row.add_child(elephant_button)
 
+	var goblin_button := Button.new()
+	goblin_button.text = "Goblin"
+	goblin_button.pressed.connect(_on_spawn.bind("Goblin"))
+	_debug_row.add_child(goblin_button)
+
+	var orc_button := Button.new()
+	orc_button.text = "Orc"
+	orc_button.pressed.connect(_on_spawn.bind("Orc"))
+	_debug_row.add_child(orc_button)
+
+	var troll_button := Button.new()
+	troll_button.text = "Troll"
+	troll_button.pressed.connect(_on_spawn.bind("Troll"))
+	_debug_row.add_child(troll_button)
+
 	var summon_button := Button.new()
 	summon_button.text = "Summon Elf"
 	summon_button.pressed.connect(_on_summon_pressed)

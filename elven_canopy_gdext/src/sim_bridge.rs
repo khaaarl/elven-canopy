@@ -176,8 +176,11 @@ fn parse_species(name: &str) -> Option<Species> {
         "Boar" => Some(Species::Boar),
         "Deer" => Some(Species::Deer),
         "Elephant" => Some(Species::Elephant),
+        "Goblin" => Some(Species::Goblin),
         "Monkey" => Some(Species::Monkey),
+        "Orc" => Some(Species::Orc),
         "Squirrel" => Some(Species::Squirrel),
+        "Troll" => Some(Species::Troll),
         _ => None,
     }
 }
@@ -190,8 +193,11 @@ fn species_name(species: Species) -> &'static str {
         Species::Boar => "Boar",
         Species::Deer => "Deer",
         Species::Elephant => "Elephant",
+        Species::Goblin => "Goblin",
         Species::Monkey => "Monkey",
+        Species::Orc => "Orc",
         Species::Squirrel => "Squirrel",
+        Species::Troll => "Troll",
     }
 }
 

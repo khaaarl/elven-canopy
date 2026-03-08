@@ -7127,14 +7127,17 @@ mod tests {
     #[test]
     fn species_data_loaded_from_config() {
         let sim = test_sim(42);
-        assert_eq!(sim.species_table.len(), 7);
+        assert_eq!(sim.species_table.len(), 10);
         assert!(sim.species_table.contains_key(&Species::Elf));
         assert!(sim.species_table.contains_key(&Species::Capybara));
         assert!(sim.species_table.contains_key(&Species::Boar));
         assert!(sim.species_table.contains_key(&Species::Deer));
         assert!(sim.species_table.contains_key(&Species::Elephant));
+        assert!(sim.species_table.contains_key(&Species::Goblin));
         assert!(sim.species_table.contains_key(&Species::Monkey));
+        assert!(sim.species_table.contains_key(&Species::Orc));
         assert!(sim.species_table.contains_key(&Species::Squirrel));
+        assert!(sim.species_table.contains_key(&Species::Troll));
 
         let elf_data = &sim.species_table[&Species::Elf];
         assert!(!elf_data.ground_only);
@@ -7210,6 +7213,32 @@ mod tests {
         assert_eq!(
             node.position, elephant.position,
             "Elephant position should match its large graph node",
+        );
+    }
+
+    #[test]
+    fn troll_spawns_on_large_graph() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+        let spawn_pos = VoxelCoord::new(10, 1, 10);
+        sim.spawn_creature(Species::Troll, spawn_pos, &mut events);
+
+        let trolls: Vec<&crate::db::Creature> = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == Species::Troll)
+            .collect();
+        assert_eq!(trolls.len(), 1, "Should have spawned one troll");
+
+        let troll = trolls[0];
+        let node_id = troll
+            .current_node
+            .expect("Troll should have a current_node");
+        let node = sim.large_nav_graph.node(node_id);
+        assert_eq!(
+            node.position, troll.position,
+            "Troll position should match its large graph node",
         );
     }
 
@@ -8720,7 +8749,7 @@ mod tests {
     }
 
     #[test]
-    fn all_six_species_spawn_and_coexist() {
+    fn all_small_species_spawn_and_coexist() {
         let mut sim = test_sim(42);
         let tree_pos = sim.trees[&sim.player_tree_id].position;
 
@@ -8729,7 +8758,9 @@ mod tests {
             Species::Capybara,
             Species::Boar,
             Species::Deer,
+            Species::Goblin,
             Species::Monkey,
+            Species::Orc,
             Species::Squirrel,
         ];
         let mut tick = 1;
@@ -8746,14 +8777,14 @@ mod tests {
             tick = sim.tick + 1;
         }
 
-        assert_eq!(sim.db.creatures.len(), 6);
+        assert_eq!(sim.db.creatures.len(), 8);
         for &species in &species_list {
             assert_eq!(sim.creature_count(species), 1, "Expected 1 {:?}", species);
         }
 
         // Run for a while — all should remain alive with valid nodes.
         sim.step(&[], 50000);
-        assert_eq!(sim.db.creatures.len(), 6);
+        assert_eq!(sim.db.creatures.len(), 8);
         for creature in sim.db.creatures.iter_all() {
             assert!(
                 creature.current_node.is_some(),

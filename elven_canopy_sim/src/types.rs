@@ -332,8 +332,11 @@ pub enum Species {
     Boar,
     Deer,
     Elephant,
+    Goblin,
     Monkey,
+    Orc,
     Squirrel,
+    Troll,
 }
 
 /// Priority level for build projects and tasks.

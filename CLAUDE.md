@@ -23,7 +23,7 @@ For full details, see `docs/design_doc.md`. Note that the design doc is an aspir
 Loose overview of where things stand. See `docs/tracker.md` for the full project tracker with per-feature status, blocking relationships, and design doc cross-references. **Keep this section roughly in sync with the tracker** — it's a quick orientation aid, not a detailed status report.
 
 - **Phase 0 (Foundations):** Complete.
-- **Phase 1 (A Tree and an Elf):** Complete.
+- **Phase 1 (A Tree and an Elf):** Complete. Ten species implemented: Elf, Capybara, Boar, Deer, Elephant, Goblin, Monkey, Orc, Squirrel, Troll (all with procedural sprites, data-driven behavior). Goblin/Orc/Troll are hostile-faction placeholders — spawnable via debug UI, wander and climb, no food decay or mood system yet.
 - **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, Rust chunk-based mesh generation with face culling replaces GDScript MultiMesh rendering. Mouse-driven click-drag placement UI with height-slice grid overlay implemented. Hover tooltips for creatures, structures, ground piles, and fruit. No mana economy, no visual smoothing.
 - **Phase 6 (Culture and Language):** Music crate complete as standalone generator, not yet integrated into game runtime. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation.
 - **Phase 4 (Economy and Ecology):** Kitchen cooking, workshop manufacturing (bow/arrow/bowstring recipes), elf personal item acquisition, creature thoughts, and basic mood scoring implemented. Notification system with sim-side persistence (SimDb table), multiplayer-aware command pipeline, toast UI, and moping notifications; rest not started.

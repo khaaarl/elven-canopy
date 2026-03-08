@@ -181,6 +181,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
+[x] F-hostile-species   Goblin, Orc, and Troll species
 [x] F-items                Items and inventory system
 [x] F-ladders              Rope/wood ladders as cheap connectors
 [x] F-lang-crate           Shared Vaelith language crate
@@ -865,6 +866,9 @@ Food level per creature, decaying over time. Displayed in creature info
 panel and as overhead bar.
 
 **Related:** F-bread, F-creature-death, F-elf-needs, F-fruit-prod
+
+#### F-hostile-species — Goblin, Orc, and Troll species
+**Status:** Done
 
 #### F-move-interp — Smooth creature movement interpolation
 **Status:** Done · **Refs:** §10

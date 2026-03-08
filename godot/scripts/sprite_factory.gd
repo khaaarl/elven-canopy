@@ -15,9 +15,12 @@
 ## - Capybara (40x32): body color, accessory variants
 ## - Boar (44x36): body color, tusk size variants
 ## - Deer (44x44): body color, antler style, spot pattern variants
-## - Elephant (48x40): body color, tusk type variants
+## - Elephant (96x80): body color, tusk type variants
+## - Goblin (36x40): skin color, ear style variants
 ## - Monkey (40x44): fur color, face marking variants
+## - Orc (48x48): skin color, war paint variants
 ## - Squirrel (32x32): fur color, tail fluffiness variants
+## - Troll (96x80): skin color, horn style variants
 ##
 ## Drawing helpers (_set_px, _draw_circle, _draw_ellipse, _draw_rect,
 ## _draw_hline, _draw_vline) handle bounds checking and primitive shapes.
@@ -146,6 +149,45 @@ const ELEPHANT_BODY_COLORS = [
 ]
 
 const ELEPHANT_TUSK_TYPES = ["short", "long", "none"]
+
+# ---------------------------------------------------------------------------
+# Goblin palette constants
+# ---------------------------------------------------------------------------
+
+const GOBLIN_SKIN_COLORS = [
+	Color(0.35, 0.55, 0.25),  # classic green
+	Color(0.40, 0.60, 0.30),  # bright green
+	Color(0.30, 0.48, 0.22),  # dark green
+	Color(0.45, 0.55, 0.20),  # olive green
+]
+
+const GOBLIN_EAR_STYLES = ["pointed", "droopy", "wide"]
+
+# ---------------------------------------------------------------------------
+# Orc palette constants
+# ---------------------------------------------------------------------------
+
+const ORC_SKIN_COLORS = [
+	Color(0.38, 0.50, 0.30),  # gray-green
+	Color(0.42, 0.45, 0.28),  # olive
+	Color(0.35, 0.42, 0.25),  # dark olive
+	Color(0.48, 0.52, 0.32),  # light gray-green
+]
+
+const ORC_WAR_PAINTS = ["none", "stripe", "cross"]
+
+# ---------------------------------------------------------------------------
+# Troll palette constants
+# ---------------------------------------------------------------------------
+
+const TROLL_SKIN_COLORS = [
+	Color(0.38, 0.42, 0.35),  # mossy gray
+	Color(0.32, 0.38, 0.30),  # dark moss
+	Color(0.42, 0.45, 0.38),  # stone green
+	Color(0.35, 0.35, 0.32),  # dark stone
+]
+
+const TROLL_HORN_STYLES = ["short", "curved", "none"]
 
 # ---------------------------------------------------------------------------
 # Drawing helpers
@@ -1003,7 +1045,7 @@ static func create_squirrel(params: Dictionary) -> ImageTexture:
 
 
 # ---------------------------------------------------------------------------
-# Elephant generation (48x40)
+# Elephant generation (96x80)
 # ---------------------------------------------------------------------------
 
 
@@ -1101,6 +1143,303 @@ static func create_elephant(params: Dictionary) -> ImageTexture:
 
 
 # ---------------------------------------------------------------------------
+# Goblin generation (36x40)
+# ---------------------------------------------------------------------------
+
+
+static func goblin_params_from_seed(seed: int) -> Dictionary:
+	var h := absi(seed * 2654435761)
+	return {
+		"skin_color": GOBLIN_SKIN_COLORS[absi(h) % GOBLIN_SKIN_COLORS.size()],
+		"ear_style": GOBLIN_EAR_STYLES[absi(h / 17) % GOBLIN_EAR_STYLES.size()],
+		"seed": seed,
+	}
+
+
+## Create a 36x40 goblin sprite — small, green-skinned, big pointy ears.
+static func create_goblin(params: Dictionary) -> ImageTexture:
+	var W := 36
+	var H := 40
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var skin: Color = params.get("skin_color", GOBLIN_SKIN_COLORS[0])
+	var ear_style: String = params.get("ear_style", "pointed")
+
+	var skin_dark := _darken(skin, 0.15)
+	var skin_light := _lighten(skin, 0.10)
+	var outline := Color(0.12, 0.15, 0.08, 1.0)
+	var eye_color := Color(0.90, 0.75, 0.10, 1.0)  # yellow eyes
+	var pupil := Color(0.10, 0.05, 0.02, 1.0)
+	var mouth := Color(0.20, 0.10, 0.08, 1.0)
+	var loincloth := Color(0.45, 0.35, 0.22, 1.0)
+
+	# Head — largish for body
+	var head_cx := 18
+	var head_cy := 12
+	_draw_circle(img, head_cx, head_cy, 10, outline)
+	_draw_circle(img, head_cx, head_cy, 9, skin)
+	_draw_circle(img, head_cx - 1, head_cy + 1, 5, skin_light)
+
+	# Ears
+	if ear_style == "pointed":
+		# Left ear — tall pointed
+		for i in range(8):
+			_set_px(img, head_cx - 10 - i / 2, head_cy - 4 + i, outline)
+			_set_px(img, head_cx - 9 - i / 2, head_cy - 4 + i, skin_dark)
+		# Right ear
+		for i in range(8):
+			_set_px(img, head_cx + 10 + i / 2, head_cy - 4 + i, outline)
+			_set_px(img, head_cx + 9 + i / 2, head_cy - 4 + i, skin_dark)
+	elif ear_style == "droopy":
+		for i in range(6):
+			_set_px(img, head_cx - 10, head_cy + i, outline)
+			_set_px(img, head_cx - 9, head_cy + i, skin_dark)
+			_set_px(img, head_cx + 10, head_cy + i, outline)
+			_set_px(img, head_cx + 9, head_cy + i, skin_dark)
+	else:  # wide
+		_draw_ellipse(img, head_cx - 12, head_cy, 4, 3, outline)
+		_draw_ellipse(img, head_cx - 12, head_cy, 3, 2, skin_dark)
+		_draw_ellipse(img, head_cx + 12, head_cy, 4, 3, outline)
+		_draw_ellipse(img, head_cx + 12, head_cy, 3, 2, skin_dark)
+
+	# Eyes — big and yellow
+	_draw_rect(img, head_cx - 6, head_cy - 3, 4, 4, eye_color)
+	_draw_rect(img, head_cx - 5, head_cy - 2, 2, 2, pupil)
+	_draw_rect(img, head_cx + 3, head_cy - 3, 4, 4, eye_color)
+	_draw_rect(img, head_cx + 4, head_cy - 2, 2, 2, pupil)
+
+	# Nose — small bump
+	_set_px(img, head_cx - 1, head_cy + 3, skin_dark)
+	_set_px(img, head_cx + 1, head_cy + 3, skin_dark)
+
+	# Mouth — wide grin
+	_draw_hline(img, head_cx - 4, head_cx + 4, head_cy + 6, mouth)
+	_set_px(img, head_cx - 4, head_cy + 5, mouth)
+	_set_px(img, head_cx + 4, head_cy + 5, mouth)
+
+	# Body — scrawny
+	var body_cx := 18
+	var body_cy := 27
+	_draw_ellipse(img, body_cx, body_cy, 7, 8, outline)
+	_draw_ellipse(img, body_cx, body_cy, 6, 7, skin)
+
+	# Loincloth
+	_draw_rect(img, body_cx - 5, body_cy + 2, 10, 4, loincloth)
+
+	# Arms — thin
+	_draw_rect(img, body_cx - 9, body_cy - 4, 3, 10, outline)
+	_draw_rect(img, body_cx - 8, body_cy - 3, 1, 8, skin_dark)
+	_draw_rect(img, body_cx + 7, body_cy - 4, 3, 10, outline)
+	_draw_rect(img, body_cx + 8, body_cy - 3, 1, 8, skin_dark)
+
+	# Legs — thin
+	_draw_rect(img, body_cx - 4, body_cy + 6, 3, 7, outline)
+	_draw_rect(img, body_cx - 3, body_cy + 7, 1, 5, skin_dark)
+	_draw_rect(img, body_cx + 2, body_cy + 6, 3, 7, outline)
+	_draw_rect(img, body_cx + 3, body_cy + 7, 1, 5, skin_dark)
+
+	return ImageTexture.create_from_image(img)
+
+
+# ---------------------------------------------------------------------------
+# Orc generation (48x48)
+# ---------------------------------------------------------------------------
+
+
+static func orc_params_from_seed(seed: int) -> Dictionary:
+	var h := absi(seed * 2654435761)
+	return {
+		"skin_color": ORC_SKIN_COLORS[absi(h) % ORC_SKIN_COLORS.size()],
+		"war_paint": ORC_WAR_PAINTS[absi(h / 17) % ORC_WAR_PAINTS.size()],
+		"seed": seed,
+	}
+
+
+## Create a 48x48 orc sprite — big, bulky, gray-green, tusked.
+static func create_orc(params: Dictionary) -> ImageTexture:
+	var W := 48
+	var H := 48
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var skin: Color = params.get("skin_color", ORC_SKIN_COLORS[0])
+	var war_paint: String = params.get("war_paint", "none")
+
+	var skin_dark := _darken(skin, 0.12)
+	var skin_light := _lighten(skin, 0.10)
+	var outline := Color(0.15, 0.15, 0.10, 1.0)
+	var eye_color := Color(0.85, 0.20, 0.10, 1.0)  # red eyes
+	var pupil := Color(0.10, 0.05, 0.02, 1.0)
+	var tusk_color := Color(0.88, 0.85, 0.75, 1.0)
+	var paint_color := Color(0.70, 0.15, 0.10, 1.0)
+	var armor := Color(0.35, 0.30, 0.25, 1.0)
+	var armor_dark := Color(0.25, 0.22, 0.18, 1.0)
+
+	# Head — big and square-ish
+	var head_cx := 24
+	var head_cy := 12
+	_draw_circle(img, head_cx, head_cy, 11, outline)
+	_draw_circle(img, head_cx, head_cy, 10, skin)
+	# Brow ridge — darker line above the eyes
+	_draw_hline(img, head_cx - 8, head_cx + 8, head_cy - 5, skin_dark)
+	_draw_hline(img, head_cx - 7, head_cx + 7, head_cy - 6, skin_dark)
+
+	# Eyes — angry red
+	_draw_rect(img, head_cx - 6, head_cy - 3, 4, 3, eye_color)
+	_draw_rect(img, head_cx - 5, head_cy - 2, 2, 2, pupil)
+	_draw_rect(img, head_cx + 3, head_cy - 3, 4, 3, eye_color)
+	_draw_rect(img, head_cx + 4, head_cy - 2, 2, 2, pupil)
+
+	# Nose — broad
+	_draw_rect(img, head_cx - 2, head_cy + 1, 4, 3, skin_dark)
+
+	# Tusks — protruding from lower jaw
+	_draw_rect(img, head_cx - 5, head_cy + 5, 2, 4, tusk_color)
+	_draw_rect(img, head_cx + 4, head_cy + 5, 2, 4, tusk_color)
+
+	# Ears — small
+	_draw_circle(img, head_cx - 10, head_cy - 1, 3, outline)
+	_draw_circle(img, head_cx - 10, head_cy - 1, 2, skin_dark)
+	_draw_circle(img, head_cx + 10, head_cy - 1, 3, outline)
+	_draw_circle(img, head_cx + 10, head_cy - 1, 2, skin_dark)
+
+	# War paint
+	if war_paint == "stripe":
+		_draw_hline(img, head_cx - 7, head_cx + 7, head_cy - 2, paint_color)
+		_draw_hline(img, head_cx - 6, head_cx + 6, head_cy - 1, paint_color)
+	elif war_paint == "cross":
+		_draw_vline(img, head_cx, head_cy - 6, head_cy + 3, paint_color)
+		_draw_hline(img, head_cx - 4, head_cx + 4, head_cy - 2, paint_color)
+
+	# Body — broad and muscular
+	var body_cx := 24
+	var body_cy := 30
+	_draw_ellipse(img, body_cx, body_cy, 12, 10, outline)
+	_draw_ellipse(img, body_cx, body_cy, 11, 9, skin)
+
+	# Leather armor vest
+	_draw_ellipse(img, body_cx, body_cy, 9, 7, armor)
+	_draw_ellipse(img, body_cx, body_cy + 1, 7, 5, armor_dark)
+
+	# Arms — thick
+	_draw_rect(img, body_cx - 14, body_cy - 6, 4, 14, outline)
+	_draw_rect(img, body_cx - 13, body_cy - 5, 2, 12, skin_dark)
+	_draw_rect(img, body_cx + 11, body_cy - 6, 4, 14, outline)
+	_draw_rect(img, body_cx + 12, body_cy - 5, 2, 12, skin_dark)
+
+	# Legs — sturdy
+	_draw_rect(img, body_cx - 6, body_cy + 8, 5, 8, outline)
+	_draw_rect(img, body_cx - 5, body_cy + 9, 3, 6, skin_dark)
+	_draw_rect(img, body_cx + 2, body_cy + 8, 5, 8, outline)
+	_draw_rect(img, body_cx + 3, body_cy + 9, 3, 6, skin_dark)
+
+	return ImageTexture.create_from_image(img)
+
+
+# ---------------------------------------------------------------------------
+# Troll generation (96x80)
+# ---------------------------------------------------------------------------
+
+
+static func troll_params_from_seed(seed: int) -> Dictionary:
+	var h := absi(seed * 2654435761)
+	return {
+		"skin_color": TROLL_SKIN_COLORS[absi(h) % TROLL_SKIN_COLORS.size()],
+		"horn_style": TROLL_HORN_STYLES[absi(h / 17) % TROLL_HORN_STYLES.size()],
+		"seed": seed,
+	}
+
+
+## Create a 96x80 troll sprite — massive, dark, brutish, mossy texture.
+static func create_troll(params: Dictionary) -> ImageTexture:
+	var W := 96
+	var H := 80
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var skin: Color = params.get("skin_color", TROLL_SKIN_COLORS[0])
+	var horn_style: String = params.get("horn_style", "short")
+
+	var skin_dark := _darken(skin, 0.12)
+	var skin_light := _lighten(skin, 0.08)
+	var outline := Color(0.15, 0.15, 0.12, 1.0)
+	var eye_color := Color(0.90, 0.60, 0.10, 1.0)  # orange-yellow eyes
+	var pupil := Color(0.10, 0.05, 0.02, 1.0)
+	var horn_color := Color(0.50, 0.45, 0.35, 1.0)
+	var moss := Color(0.30, 0.45, 0.20, 0.60)  # semi-transparent moss patches
+
+	# Body — massive barrel-shaped
+	var body_cx := 48
+	var body_cy := 46
+	_draw_ellipse(img, body_cx, body_cy, 28, 22, outline)
+	_draw_ellipse(img, body_cx, body_cy, 26, 20, skin)
+	_draw_ellipse(img, body_cx, body_cy + 2, 20, 14, skin_light)
+
+	# Head — smaller relative to body, hunched forward
+	var head_cx := 28
+	var head_cy := 22
+	_draw_circle(img, head_cx, head_cy, 16, outline)
+	_draw_circle(img, head_cx, head_cy, 14, skin)
+	# Heavy brow
+	_draw_hline(img, head_cx - 12, head_cx + 12, head_cy - 8, skin_dark)
+	_draw_hline(img, head_cx - 11, head_cx + 11, head_cy - 9, skin_dark)
+	_draw_hline(img, head_cx - 10, head_cx + 10, head_cy - 10, skin_dark)
+
+	# Horns
+	if horn_style == "short":
+		_draw_rect(img, head_cx - 10, head_cy - 16, 4, 6, horn_color)
+		_draw_rect(img, head_cx + 7, head_cy - 16, 4, 6, horn_color)
+	elif horn_style == "curved":
+		for i in range(8):
+			_set_px(img, head_cx - 10 - i / 3, head_cy - 12 - i, horn_color)
+			_set_px(img, head_cx - 9 - i / 3, head_cy - 12 - i, horn_color)
+			_set_px(img, head_cx + 10 + i / 3, head_cy - 12 - i, horn_color)
+			_set_px(img, head_cx + 11 + i / 3, head_cy - 12 - i, horn_color)
+
+	# Eyes — deep-set, glowing
+	_draw_rect(img, head_cx - 8, head_cy - 4, 6, 5, outline)
+	_draw_rect(img, head_cx - 6, head_cy - 2, 2, 2, eye_color)
+	_draw_rect(img, head_cx + 3, head_cy - 4, 6, 5, outline)
+	_draw_rect(img, head_cx + 5, head_cy - 2, 2, 2, eye_color)
+	_set_px(img, head_cx - 6, head_cy - 4, eye_color)
+	_set_px(img, head_cx + 5, head_cy - 4, eye_color)
+
+	# Nose — big flat
+	_draw_rect(img, head_cx - 3, head_cy + 2, 6, 4, skin_dark)
+
+	# Jaw — wide, underbite
+	_draw_rect(img, head_cx - 8, head_cy + 8, 16, 4, skin_dark)
+	# Teeth
+	for tx in range(head_cx - 6, head_cx + 6, 4):
+		_draw_rect(img, tx, head_cy + 6, 2, 3, Color(0.85, 0.82, 0.75, 1.0))
+
+	# Moss patches on body
+	_draw_circle(img, body_cx - 12, body_cy - 8, 4, moss)
+	_draw_circle(img, body_cx + 15, body_cy - 4, 3, moss)
+	_draw_circle(img, body_cx - 8, body_cy + 10, 5, moss)
+
+	# Arms — massive
+	_draw_rect(img, body_cx - 30, body_cy - 10, 8, 24, outline)
+	_draw_rect(img, body_cx - 28, body_cy - 8, 4, 20, skin_dark)
+	_draw_rect(img, body_cx + 23, body_cy - 10, 8, 24, outline)
+	_draw_rect(img, body_cx + 25, body_cy - 8, 4, 20, skin_dark)
+	# Fists
+	_draw_circle(img, body_cx - 26, body_cy + 14, 5, outline)
+	_draw_circle(img, body_cx - 26, body_cy + 14, 3, skin_dark)
+	_draw_circle(img, body_cx + 27, body_cy + 14, 5, outline)
+	_draw_circle(img, body_cx + 27, body_cy + 14, 3, skin_dark)
+
+	# Legs — thick, stumpy
+	_draw_rect(img, body_cx - 16, body_cy + 16, 12, 14, outline)
+	_draw_rect(img, body_cx - 14, body_cy + 16, 8, 12, skin_dark)
+	_draw_rect(img, body_cx + 5, body_cy + 16, 12, 14, outline)
+	_draw_rect(img, body_cx + 7, body_cy + 16, 8, 12, skin_dark)
+
+	return ImageTexture.create_from_image(img)
+
+
+# ---------------------------------------------------------------------------
 # Generic dispatch — look up species by name
 # ---------------------------------------------------------------------------
 
@@ -1118,10 +1457,16 @@ static func species_params_from_seed(species_name: String, seed: int) -> Diction
 			return deer_params_from_seed(seed)
 		"Elephant":
 			return elephant_params_from_seed(seed)
+		"Goblin":
+			return goblin_params_from_seed(seed)
 		"Monkey":
 			return monkey_params_from_seed(seed)
+		"Orc":
+			return orc_params_from_seed(seed)
 		"Squirrel":
 			return squirrel_params_from_seed(seed)
+		"Troll":
+			return troll_params_from_seed(seed)
 		_:
 			return {"seed": seed}
 
@@ -1140,10 +1485,16 @@ static func create_species_sprite(species_name: String, params: Dictionary) -> I
 			return create_deer(params)
 		"Elephant":
 			return create_elephant(params)
+		"Goblin":
+			return create_goblin(params)
 		"Monkey":
 			return create_monkey(params)
+		"Orc":
+			return create_orc(params)
 		"Squirrel":
 			return create_squirrel(params)
+		"Troll":
+			return create_troll(params)
 		_:
 			# Fallback: 16x16 magenta square
 			var img := Image.create(16, 16, false, Image.FORMAT_RGBA8)

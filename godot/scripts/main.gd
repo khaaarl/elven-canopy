@@ -60,8 +60,11 @@ const SPECIES_Y_OFFSETS = {
 	"Boar": 0.38,
 	"Deer": 0.46,
 	"Elephant": 0.8,
+	"Goblin": 0.36,
 	"Monkey": 0.44,
+	"Orc": 0.48,
 	"Squirrel": 0.28,
+	"Troll": 0.8,
 }
 
 ## The simulation seed. Deterministic: same seed = same game.
@@ -213,8 +216,11 @@ func _setup_common(bridge: SimBridge) -> void:
 		["Boar", 0.38],
 		["Deer", 0.46],
 		["Elephant", 0.8],
+		["Goblin", 0.36],
 		["Monkey", 0.44],
+		["Orc", 0.48],
 		["Squirrel", 0.28],
+		["Troll", 0.8],
 	]:
 		var r := Node3D.new()
 		r.set_script(renderer_script)

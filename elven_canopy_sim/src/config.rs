@@ -1284,6 +1284,28 @@ impl Default for GameConfig {
             },
         );
         species.insert(
+            Species::Goblin,
+            SpeciesData {
+                walk_ticks_per_voxel: 450,
+                climb_ticks_per_voxel: Some(2500), // 2x slower than elf
+                heartbeat_interval_ticks: 3000,
+                allowed_edge_types: None,
+                ground_only: false,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 0,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 40,
+                bread_restore_pct: 30,
+                footprint: [1, 1, 1],
+                wood_ladder_tpv: Some(800),
+                rope_ladder_tpv: Some(950),
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
+            },
+        );
+        species.insert(
             Species::Monkey,
             SpeciesData {
                 walk_ticks_per_voxel: 550,
@@ -1306,6 +1328,28 @@ impl Default for GameConfig {
             },
         );
         species.insert(
+            Species::Orc,
+            SpeciesData {
+                walk_ticks_per_voxel: 600,
+                climb_ticks_per_voxel: Some(5000), // 2x slower than goblin
+                heartbeat_interval_ticks: 3000,
+                allowed_edge_types: None,
+                ground_only: false,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 0,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 40,
+                bread_restore_pct: 30,
+                footprint: [1, 1, 1],
+                wood_ladder_tpv: Some(800),
+                rope_ladder_tpv: Some(950),
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
+            },
+        );
+        species.insert(
             Species::Squirrel,
             SpeciesData {
                 walk_ticks_per_voxel: 700,
@@ -1321,6 +1365,28 @@ impl Default for GameConfig {
                 footprint: [1, 1, 1],
                 wood_ladder_tpv: Some(500),
                 rope_ladder_tpv: Some(600),
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
+            },
+        );
+        species.insert(
+            Species::Troll,
+            SpeciesData {
+                walk_ticks_per_voxel: 600,         // same as orc
+                climb_ticks_per_voxel: Some(5000), // same as orc
+                heartbeat_interval_ticks: 5000,
+                allowed_edge_types: None,
+                ground_only: false,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 0,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 0, // don't eat fruit
+                bread_restore_pct: 0,
+                footprint: [2, 2, 2],
+                wood_ladder_tpv: Some(3000), // slow on ladders
+                rope_ladder_tpv: Some(3500),
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -1442,8 +1508,8 @@ mod tests {
             config.tree_profile.growth.initial_energy,
             restored.tree_profile.growth.initial_energy
         );
-        // Verify species data survived (7 species: Elf, Capybara, Boar, Deer, Elephant, Monkey, Squirrel).
-        assert_eq!(config.species.len(), 7);
+        // Verify species data survived (10 species).
+        assert_eq!(config.species.len(), 10);
         assert_eq!(config.species.len(), restored.species.len());
         let elf_data = &restored.species[&Species::Elf];
         assert_eq!(elf_data.heartbeat_interval_ticks, 3000);
