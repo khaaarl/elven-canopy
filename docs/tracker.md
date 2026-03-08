@@ -58,6 +58,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-apprentice           Skill transfer via proximity
+[ ] F-attack-move          Attack-move task (walk + fight en route)
+[ ] F-attack-task          AttackCreature task (player-directed target pursuit)
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
@@ -90,16 +92,21 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-encyclopedia-know    Encyclopedia civ/fruit knowledge pages
+[ ] F-encyclopedia-srv     Embedded localhost HTTP encyclopedia server
+[ ] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
 [ ] F-fire-structure       Fire x structural integrity cascades
+[ ] F-flee                 Flee behavior for civilians
 [ ] F-flying-nav           3D flight navigation system
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-variety        Procedural fruit variety and processing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
+[ ] F-hostile-detection    Hostile detection and faction logic
+[ ] F-hp-death             HP, VitalStatus, and creature death handling
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-keybind-help         Keyboard shortcuts help overlay
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
@@ -107,7 +114,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
 [ ] F-mass-conserve        Wood mass tracking and conservation
+[ ] F-melee-action         Melee attack action
 [ ] F-military-campaign    Send elves on world expeditions
+[ ] F-military-groups      Military group data model and configuration
 [ ] F-military-org         Squad management and organization
 [ ] F-minimap              Minimap with tree silhouette and creature positions
 [ ] F-modding              Scripting layer for modding support
@@ -119,14 +128,19 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
+[ ] F-preemption           Task priority and preemption system
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
+[ ] F-projectiles          Projectile physics system (arrows)
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
+[ ] F-rts-selection        RTS box selection and multi-creature commands
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
 [ ] F-seasons              Seasonal visual and gameplay effects
+[ ] F-shoot-action         Ranged attack action (shooting arrows)
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
+[ ] F-spatial-index        Creature spatial index for voxel-level position queries
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-status-bar           Persistent status bar (population, idle count, active tasks)
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
@@ -135,6 +149,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
+[ ] F-task-interruption    Unified task interruption and cleanup
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
@@ -804,8 +819,8 @@ Identified during combat design review (docs/drafts/combat_military.md §5).
 This is a prerequisite for combat task kinds but is a separable infrastructure
 change that benefits from independent implementation and testing.
 
-**Blocks:** F-combat
-**Related:** F-creature-actions
+**Blocks:** F-attack-task, F-combat
+**Related:** F-creature-actions, F-task-interruption
 
 #### F-flying-nav — 3D flight navigation system
 **Status:** Todo · **Phase:** 8+ · **Refs:** §10
@@ -882,7 +897,8 @@ This is a foundational refactor that requires human design input before
 implementation begins — the action model, cooldown semantics, and interaction
 with the existing task/event system need to be specified first.
 
-**Related:** F-dynamic-pursuit
+**Blocks:** F-melee-action, F-shoot-action
+**Related:** F-dynamic-pursuit, F-preemption, F-task-interruption
 
 #### F-creature-death — Basic creature death (starvation)
 **Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
@@ -893,7 +909,10 @@ passage, resurrection) covered by F-soul-mech. Needs: death event, creature
 removal, corpse cleanup, UI notification. A prerequisite for food scarcity
 having real consequences.
 
-**Related:** F-elf-needs, F-food-gauge, F-soul-mech
+Superseded by F-hp-death which covers the general death system including
+combat death. F-creature-death covers the starvation trigger specifically.
+
+**Related:** F-elf-needs, F-food-gauge, F-hp-death, F-soul-mech
 
 #### F-elf-assign — Elf-to-building assignment UI
 **Status:** Todo · **Phase:** 3
@@ -959,6 +978,27 @@ panel and as overhead bar.
 #### F-hostile-species — Goblin, Orc, and Troll species
 **Status:** Done
 
+#### F-hp-death — HP, VitalStatus, and creature death handling
+**Status:** Todo
+
+Add hp, hp_max, vital_status fields to Creature. VitalStatus enum (Alive, Dead, future: Ghost, SpiritInTree, Undead). hp_max in SpeciesData. Death transition: vital_status → Dead, creature row NOT deleted (supports future states). On death: call unified task interruption (F-task-interruption), drop inventory as ground pile, clear assigned_home, remove from spatial index, emit CreatureDied event, terminate activation/heartbeat chains (no rescheduling). All existing queries that iterate creatures must filter by vital_status == Alive (rendering, task assignment, logistics, heartbeat processing). #[indexed] on vital_status for efficient filtering. #[serde(default)] on new fields for save compat. Supersedes F-creature-death (which only covered starvation — this is the general death system). Debug "kill creature" command for testing.
+
+**Draft:** docs/drafts/combat_military.md (§3)
+
+**Blocked by:** F-task-interruption
+**Blocks:** F-combat, F-melee-action, F-shoot-action
+**Related:** F-creature-death
+
+#### F-melee-action — Melee attack action
+**Status:** Todo
+
+Melee strike as a creature ACTION (not a task). When adjacent to a hostile target (has nav edge to target's node), check cooldown (current_tick - last_melee_tick >= melee_interval_ticks), apply melee_damage (from SpeciesData) to target, emit CreatureDamaged event, trigger death if HP ≤ 0. New fields on Creature: last_melee_tick (u64, #[serde(default)]). New SpeciesData fields: melee_damage, melee_interval_ticks. Small and self-contained.
+
+**Draft:** docs/drafts/combat_military.md (§5 "Melee Attack Action")
+
+**Blocked by:** F-creature-actions, F-hp-death
+**Blocks:** F-attack-task, F-combat, F-enemy-ai
+
 #### F-move-interp — Smooth creature movement interpolation
 **Status:** Done · **Refs:** §10
 
@@ -975,6 +1015,99 @@ mana level). Possible birth mechanic for established populations. Rate
 limited by tree carrying capacity and available food/shelter.
 
 **Related:** F-fruit-prod, F-mana-system, F-tree-capacity
+
+#### F-preemption — Task priority and preemption system
+**Status:** Todo
+
+PreemptionLevel enum with explicit level() method (NOT derived Ord). 8 levels: Idle(0), Autonomous(1), PlayerDirected(2), Survival(3), Mood(4), AutonomousCombat(5), PlayerCombat(6), Flee(7). Computed from (TaskKindTag, TaskOrigin) → PreemptionLevel via a mapping function — NOT stored on Task. Must handle all three TaskOrigin variants (PlayerDirected, Autonomous, Automated). On each creature activation, check if a higher-priority action is available; if so, interrupt current task via F-task-interruption. Testable without combat: verify mope preempts idle tasks, player GoTo preempts autonomous hauling. Note: mope initiation stays heartbeat-driven (probability roll calibrated for ~3000-tick intervals); preemption CHECK runs on activation. Supersedes existing mope_can_interrupt_task config field. Design question: existing code protects eating/sleeping from mope interruption (death-spiral prevention) — need to decide if Mood(4) > Survival(3) is correct or if they should be equal.
+
+**Draft:** docs/drafts/combat_military.md (§8)
+
+**Blocked by:** F-task-interruption
+**Blocks:** F-attack-task, F-combat, F-enemy-ai, F-flee
+**Related:** F-creature-actions
+
+#### F-shoot-action — Ranged attack action (shooting arrows)
+**Status:** Todo
+
+Ranged attack as a creature ACTION. Requires: LOS to target (voxel ray march / DDA, multi-voxel targets check any occupied voxel), range check (archer_range_sq in SpeciesData), ammo in inventory, shoot cooldown elapsed. On shoot: compute aim velocity via iterative guess-and-simulate (same integer physics as real projectiles, max 5 iterations), consume arrow from inventory, spawn Projectile entity, emit ProjectileLaunched event. Aim skill tiers (novice/skilled/expert) for future. New fields: last_shoot_tick on Creature, shoot_cooldown_ticks in GameConfig, archer_range_sq in SpeciesData. LOS and aim computation are pure algorithms, unit-testable independently.
+
+**Draft:** docs/drafts/combat_military.md (§5)
+
+**Blocked by:** F-creature-actions, F-hp-death, F-projectiles
+**Blocks:** F-combat
+
+#### F-task-interruption — Unified task interruption and cleanup
+**Status:** Todo
+
+Task cleanup on interruption is currently scattered across five per-kind
+functions (`cleanup_haul_task`, `cleanup_cook_task`, `cleanup_craft_task`,
+`cleanup_harvest_task`, `cleanup_acquire_item_task`) called ad-hoc at each
+interruption site. There is no single entry point that correctly handles all
+task kinds, and the call sites are inconsistent — the mope preemption code
+(sim.rs ~3546) calls four of the five cleanup functions but omits
+`cleanup_craft_task`, meaning a creature interrupted from crafting by moping
+will leak item reservations at the workshop.
+
+**What needs to exist:** A single `interrupt_task(creature_id, task_id)` (or
+similar) function that:
+
+1. Dispatches to per-kind cleanup based on `TaskKindTag`.
+2. Handles ALL 12 task kinds correctly:
+   - **GoTo:** No cleanup needed. Cancel task.
+   - **Build:** Resumable — return to `Available` for another creature.
+   - **Furnish:** Resumable — return to `Available`.
+   - **Haul:** Phase-dependent. GoingToSource: clear source reservations,
+     cancel. GoingToDestination: drop carried items as ground pile at
+     creature's current position, cancel.
+   - **Cook:** Clear reservations at kitchen inventory. Cancel task.
+   - **Craft:** Clear reservations at workshop inventory. Cancel task.
+   - **Harvest:** Cancel task (no reservations to clear).
+   - **EatBread:** Cancel task (personal, no reservations).
+   - **EatFruit:** Cancel task (personal, no reservations).
+   - **Sleep:** Cancel task (personal, no reservations).
+   - **AcquireItem:** Clear reservations at source inventory. Cancel task.
+   - **Mope:** Cancel task (personal, no reservations).
+3. Clears the creature's `current_task` and `path`.
+4. Works for ANY interruption source — death, flee, preemption, player
+   cancel, nav graph invalidation, or any future source. Callers should
+   not need to know which cleanup functions to call.
+
+**Current call sites that would use this function:**
+- Nav graph invalidation abandonment (sim.rs ~1870): calls all 5 cleanup
+  functions plus manual creature field clearing.
+- Mope preemption (sim.rs ~3546): calls 4 of 5 cleanup functions (MISSING
+  `cleanup_craft_task`), then calls `unassign_creature_from_task`.
+- `unassign_creature_from_task` (sim.rs ~3822): only clears creature fields
+  and returns task to Available — does NOT call any per-kind cleanup.
+- Future: death handler (combat_military.md section 3), flee behavior
+  (section 7), task preemption system (section 8).
+
+**Existing per-kind cleanup functions and what they do:**
+- `cleanup_haul_task`: Phase-aware. GoingToSource clears source inventory
+  reservations. GoingToDestination removes items from creature inventory
+  and drops them as a ground pile.
+- `cleanup_cook_task`: Clears reservations at kitchen inventory, marks
+  task Complete.
+- `cleanup_craft_task`: Clears reservations at workshop inventory, marks
+  task Complete.
+- `cleanup_harvest_task`: Marks task Complete (no reservations).
+- `cleanup_acquire_item_task`: Clears reservations at source inventory
+  (ground pile or building), marks task Complete.
+
+**Known bug:** Mope preemption omits `cleanup_craft_task`, so interrupting
+a creature mid-craft leaks workshop item reservations.
+
+**Design note:** The combat design doc (docs/drafts/combat_military.md)
+distinguishes resumable tasks (Build, Furnish — return to Available) from
+non-resumable tasks (everything else — cancel outright). The unified
+function should encode this distinction. The preemption system (section 8)
+also needs this function as a prerequisite.
+
+**Draft:** docs/drafts/combat_military.md (sections 3, 7, 8)
+
+**Blocks:** F-combat, F-flee, F-hp-death, F-preemption
+**Related:** F-creature-actions, F-dynamic-pursuit
 
 ### Economy & Logistics
 
@@ -1402,13 +1535,35 @@ infrastructure.
 
 ### Combat & Defense
 
+#### F-attack-move — Attack-move task (walk + fight en route)
+**Status:** Todo
+
+TaskKindTag::AttackMove — hotkey A + click on ground. Extension table TaskAttackMoveData with destination (VoxelCoord) and current_target (Option<CreatureId>, plain ID). Walk toward destination; on each activation scan for hostiles. If hostile detected, set current_target and engage (melee/ranged actions). Poll current_target vital_status — if Dead or missing, nullify and resume walking. On arrival at destination with no active target, task completes.
+
+**Draft:** docs/drafts/combat_military.md (§2 "Attack-Move")
+
+**Blocked by:** F-attack-task, F-hostile-detection
+**Blocks:** F-combat
+**Related:** F-attack-task
+
+#### F-attack-task — AttackCreature task (player-directed target pursuit)
+**Status:** Todo
+
+TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates task with TaskOrigin::PlayerDirected, PreemptionLevel::PlayerCombat(6). Extension table TaskAttackTargetData with target: CreatureId (plain ID, not FK). Behavior: pathfind toward target via dynamic pursuit, when adjacent perform melee actions, when in range with LOS perform shoot actions. Poll target vital_status each activation — if Dead or row missing, task completes. Works with melee-only initially; ranged is additive.
+
+**Draft:** docs/drafts/combat_military.md (§5 "Attack Tasks")
+
+**Blocked by:** F-dynamic-pursuit, F-melee-action, F-preemption
+**Blocks:** F-attack-move, F-combat
+**Related:** F-attack-move
+
 #### F-combat — Combat and invader threat system
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
 
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-dynamic-pursuit
+**Blocked by:** F-attack-move, F-attack-task, F-dynamic-pursuit, F-enemy-ai, F-flee, F-hostile-detection, F-hp-death, F-melee-action, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action, F-spatial-index, F-task-interruption
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1428,6 +1583,36 @@ Weapon types with different ranges, damage, and crafting requirements.
 **Blocked by:** F-combat, F-crafting
 **Related:** F-bldg-workshop
 
+#### F-enemy-ai — Hostile creature AI (goblin/orc/troll behavior)
+**Status:** Todo
+
+Simple aggression AI for non-civ hostile creatures. On activation: if already engaged (has AttackTarget task with living target), continue pursuit. Otherwise scan for hostiles via F-hostile-detection, select closest by squared euclidean distance, pathfind toward it. When adjacent, perform melee attack action. When no targets found, wander. Two-phase proximity: squared distance filter (cheap) then pathfind to nearest candidates. This is the first "it all comes together" milestone — debug-spawn a goblin and watch it chase and attack an elf.
+
+**Draft:** docs/drafts/combat_military.md (§6 "Initial Behavior")
+
+**Blocked by:** F-hostile-detection, F-melee-action, F-preemption
+**Blocks:** F-combat
+
+#### F-flee — Flee behavior for civilians
+**Status:** Todo
+
+Creatures with Flee response (civilian military group default, or FleeOnly combat_ai) detect hostile within range, preempt current task, and perform greedy retreat. At each activation, pick nav neighbor maximizing squared euclidean distance from threat (anchor voxel for multi-voxel threats). Ties broken by NavNodeId. Continue fleeing while hostile is in detection range. Design question: persistence mechanism — flee is not a task, so how does creature remember it's fleeing between activations? Options: (a) fleeing_from field on Creature, (b) re-detect on every activation (stops fleeing the moment threat leaves range). Dead-end trapping is acceptable (mirrors panic behavior, motivates escape route construction). Future: cornered behavior, bounded A* instead of greedy.
+
+**Draft:** docs/drafts/combat_military.md (§7)
+
+**Blocked by:** F-hostile-detection, F-preemption, F-task-interruption
+**Blocks:** F-combat
+
+#### F-hostile-detection — Hostile detection and faction logic
+**Status:** Todo
+
+Activation-driven hostile scanning. On each creature activation, scan for hostiles within hostile_detection_range_sq (SpeciesData, squared euclidean voxels). Hostility determination: per-direction (not mutual). Civ creatures check CivOpinion::Hostile toward other civ. Non-civ creatures with combat_ai: AggressiveMelee/AggressiveRanged treat all civ creatures as hostile (except same-species exemption). Non-civ aggressors don't attack each other. CombatAI enum on SpeciesData (Passive, FleeOnly, AggressiveMelee, AggressiveRanged). Auto-escalation when attacked (design question: no target civ for non-civ attackers — may only apply to civ-vs-civ). Detection is O(n) scan over all creatures with squared-distance filter (BTreeMap spatial index doesn't support 3D range queries). Height makes detection range ineffective across tree levels — design decision needed on whether this is intentional.
+
+**Draft:** docs/drafts/combat_military.md (§6, §7)
+
+**Blocked by:** F-civilizations, F-spatial-index
+**Blocks:** F-attack-move, F-combat, F-enemy-ai, F-flee
+
 #### F-military-campaign — Send elves on world expeditions
 **Status:** Todo · **Phase:** 8+ · **Refs:** §26
 
@@ -1435,6 +1620,16 @@ Send elf parties on expeditions in the wider world with direct tactical
 control (unlike Dwarf Fortress's hands-off approach).
 
 **Blocked by:** F-combat, F-military-org
+
+#### F-military-groups — Military group data model and configuration
+**Status:** Todo
+
+MilitaryGroup table in SimDb with civ_id FK (cascade on civ delete). Auto-increment PK. Fields: name, armor_policy, weapon_policy, food_carry, behavior (None/Train), hostile_response (Fight/Flee). Two default groups per civ during worldgen (Civilians, Soldiers). Creature gains military_group: Option<MilitaryGroupId> (nullable FK, nullify on group delete). Civ creatures assigned to Civilians at spawn; non-civ creatures get None. Player can create additional groups. Group configuration UI is Phase E (polish).
+
+**Draft:** docs/drafts/combat_military.md (§1)
+
+**Blocked by:** F-civilizations
+**Blocks:** F-combat
 
 #### F-military-org — Squad management and organization
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
@@ -1444,6 +1639,27 @@ positions, and alert levels.
 
 **Blocked by:** F-combat
 **Blocks:** F-military-campaign
+
+#### F-projectiles — Projectile physics system (arrows)
+**Status:** Todo
+
+SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity table in SimDb (no FK constraints, serialized normally). Ballistic trajectory with symplectic Euler integration (velocity updated before position). ProjectileTick batched event — one event per tick while any projectiles are in flight, advances all projectiles. Per-tick: save prev_voxel (initialized to shooter position at spawn), apply gravity to velocity, apply velocity to position, check voxel collision (solid → surface impact, ground pile at prev_voxel), check bounds (out of world → despawn). Speed-dependent damage formula: base_damage * impact_speed_sq / launch_speed_sq (all i128, min 1 damage). Arrow durability and recovery. Rendering: projectile_renderer.gd (pool pattern), SimBridge returns stride-6 float array (pos+vel), interpolation via position + velocity * fractional_offset.
+
+**Draft:** docs/drafts/combat_military.md (§4)
+
+**Blocked by:** F-spatial-index
+**Blocks:** F-combat, F-shoot-action
+**Related:** F-spatial-index
+
+#### F-spatial-index — Creature spatial index for voxel-level position queries
+**Status:** Todo
+
+BTreeMap<VoxelCoord, Vec<CreatureId>> on SimState, #[serde(skip)], rebuilt on load from Alive creatures. Maintained at every position mutation point (wander, walk_toward_task, handle_creature_movement_complete, resnap_creatures, spawn, death). Centralized update_creature_position() helper. Multi-voxel creatures (trolls 2x2x2) register at all occupied voxels. Used by projectile hit detection and hostile detection scanning. Note: BTreeMap with VoxelCoord lexicographic ordering does NOT support efficient 3D range queries — detection scans are O(n) over all creatures with a squared-distance filter, not range queries.
+
+**Draft:** docs/drafts/combat_military.md (§4 "Creature Spatial Index")
+
+**Blocks:** F-combat, F-hostile-detection, F-projectiles
+**Related:** F-projectiles
 
 ### World Expansion & Ecology
 
@@ -1476,7 +1692,7 @@ for non-elf civs, Vaelith names for elf civs.
 
 **Draft:** `docs/drafts/encyclopedia_civs.md` §Civilizations
 
-**Blocks:** F-civ-knowledge
+**Blocks:** F-civ-knowledge, F-hostile-detection, F-military-groups
 **Related:** F-fruit-variety
 
 #### F-cultural-drift — Inter-tree cultural divergence
@@ -1720,6 +1936,15 @@ Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 **Status:** Done · **Refs:** §26
 
 ESC-triggered pause menu with Resume, Save, Load, and Quit options.
+
+#### F-rts-selection — RTS box selection and multi-creature commands
+**Status:** Todo
+
+Godot-side UI work. Box selection (click-drag rectangle) in selection_controller.gd. Multi-creature selection state (client-local, not sim state). Group info panel (portraits/icons, count by species). Right-click context commands: ground → GoTo, hostile creature → AttackCreature. Attack-move hotkey (A + click). All commands dispatch SimAction variants for each selected creature. Selection state not saved, not synced in multiplayer.
+
+**Draft:** docs/drafts/combat_military.md (§2)
+
+**Blocks:** F-combat
 
 #### F-rust-mesh-complex — Rust mesh gen for buildings/ladders
 **Status:** Todo · **Phase:** 3
