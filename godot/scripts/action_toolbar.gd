@@ -3,8 +3,9 @@
 ## The main toolbar row contains gameplay buttons: speed controls (pause/play/
 ## fast/very fast), Build, Tasks, Structures, Units, Tree Info, and Debug toggle.
 ## A "Debug" toggle button (or F12) reveals a second row with dev/test tools:
-## creature spawn buttons and Summon Elf. When the debug row is hidden, its
-## keyboard shortcuts (1–7) are inactive.
+## creature spawn buttons, Summon Elf, and Test Notif (triggers a test
+## notification toast). When the debug row is hidden, its keyboard shortcuts
+## (1–7) are inactive.
 ##
 ## Keyboard shortcuts:
 ## [Space] Toggle pause/resume, [1] Normal, [2] Fast, [3] Very Fast
@@ -181,6 +182,11 @@ func _ready() -> void:
 	summon_button.pressed.connect(_on_summon_pressed)
 	_debug_row.add_child(summon_button)
 
+	var notif_button := Button.new()
+	notif_button.text = "Test Notif"
+	notif_button.pressed.connect(_on_test_notif_pressed)
+	_debug_row.add_child(notif_button)
+
 	_update_speed_highlight()
 
 
@@ -291,3 +297,7 @@ func _on_units_pressed() -> void:
 
 func _on_tree_info_pressed() -> void:
 	action_requested.emit("TreeInfo")
+
+
+func _on_test_notif_pressed() -> void:
+	action_requested.emit("TestNotification")

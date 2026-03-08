@@ -48,6 +48,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [~] F-multiplayer          Relay-coordinator multiplayer networking
+[~] F-notifications     Player-visible event notifications
 ```
 
 ### Todo
@@ -111,7 +112,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-music-runtime        Integrate music generator into game
 [ ] F-narrative-log        Events and narrative log
-[ ] F-notifications        Player-visible event notifications
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-poetry-reading       Social gatherings and poetry readings
@@ -1077,12 +1077,24 @@ Sim emits narrative events (arguments, friendships formed, dramatic moments).
 Log viewable by player, drives emergent storytelling.
 
 #### F-notifications — Player-visible event notifications
-**Status:** Todo · **Phase:** 4
+**Status:** In Progress · **Phase:** 4
 
-Toast-style or log-style notification system for important sim events that the
-player shouldn't miss (elf left the tree, structure collapsed, etc.). Needed
-before any feature that has dramatic irreversible consequences the player must
-know about.
+Toast-style notification system for important sim events.
+
+**Done so far:**
+- Toast display UI (notification_display.gd): toasts appear in bottom-right,
+  stay 4s, fade out over 1s, max 8 visible, mouse-transparent.
+- Debug "Test Notif" button in toolbar debug row for manual testing.
+
+**Still needed:**
+- Notification history panel: a bell icon button (bottom-right, near where
+  toasts appear) that opens a scrollable log of all past notifications.
+  Unread indicator (count badge or color) until panel is opened.
+- Sim-side notification table: notifications need to be tracked in SimDb so
+  they persist across saves. Table should store tick, message text, read/unread
+  status. Bridge methods to query notification list and mark as read.
+- Wire sim events to push notifications (construction complete, creature idle,
+  structure collapsed, elf left, etc.).
 
 **Blocks:** F-elf-leave
 **Related:** F-status-bar

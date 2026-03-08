@@ -40,6 +40,7 @@
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
 ## tooltip_controller.gd for hover tooltips,
+## notification_display.gd for toast-style notifications,
 ## creature_info_panel.gd for the creature info panel,
 ## structure_info_panel.gd for the structure info panel,
 ## ground_pile_info_panel.gd for the ground pile info panel,
@@ -89,6 +90,7 @@ var _ladder_renderer: Node3D
 var _furniture_renderer: Node3D
 var _pile_renderer: Node3D
 var _tooltip_controller: Node
+var _notification_display: VBoxContainer
 var _pause_menu: ColorRect
 var _lobby_overlay: ColorRect
 
@@ -224,6 +226,12 @@ func _setup_common(bridge: SimBridge) -> void:
 	var toolbar := MarginContainer.new()
 	toolbar.set_script(toolbar_script)
 	canvas_layer.add_child(toolbar)
+
+	# Set up notification display (toast-style, bottom-right corner).
+	var notif_script = load("res://scripts/notification_display.gd")
+	_notification_display = VBoxContainer.new()
+	_notification_display.set_script(notif_script)
+	canvas_layer.add_child(_notification_display)
 
 	# Set up placement controller.
 	var controller_script = load("res://scripts/placement_controller.gd")
@@ -560,6 +568,10 @@ func _setup_common(bridge: SimBridge) -> void:
 					if _camera_pivot:
 						_camera_pivot.stop_follow()
 				_tree_info_panel.toggle()
+			elif action == "TestNotification":
+				_notification_display.push_notification(
+					"Test notification at tick %d" % bridge.current_tick()
+				)
 	)
 
 	_task_panel.zoom_to_creature.connect(
