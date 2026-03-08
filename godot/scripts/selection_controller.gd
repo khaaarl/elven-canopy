@@ -15,7 +15,9 @@
 ## Uses a data-driven SPECIES_Y_OFFSETS dict so adding new species doesn't
 ## require code changes here — just add the entry.
 ##
-## See also: creature_info_panel.gd for the creature UI panel,
+## See also: tooltip_controller.gd for hover tooltips (shares the same
+## ray-cast pattern, SPECIES_Y_OFFSETS, and SNAP_THRESHOLD),
+## creature_info_panel.gd for the creature UI panel,
 ## structure_info_panel.gd for the structure UI panel,
 ## ground_pile_info_panel.gd for the pile UI panel, orbital_camera.gd
 ## for follow mode, placement_controller.gd for the ray-snap algorithm

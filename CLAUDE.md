@@ -24,7 +24,7 @@ Loose overview of where things stand. See `docs/tracker.md` for the full project
 
 - **Phase 0 (Foundations):** Complete.
 - **Phase 1 (A Tree and an Elf):** Complete.
-- **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, Rust chunk-based mesh generation with face culling replaces GDScript MultiMesh rendering. Mouse-driven click-drag placement UI with height-slice grid overlay implemented. No mana economy, no visual smoothing.
+- **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, Rust chunk-based mesh generation with face culling replaces GDScript MultiMesh rendering. Mouse-driven click-drag placement UI with height-slice grid overlay implemented. Hover tooltips for creatures, structures, ground piles, and fruit. No mana economy, no visual smoothing.
 - **Phase 6 (Culture and Language):** Music crate complete as standalone generator, not yet integrated into game runtime. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation.
 - **Phase 4 (Economy and Ecology):** Kitchen cooking, elf personal item acquisition, creature thoughts, and basic mood scoring implemented; rest not started.
 - **Tabulosity (sim DB):** Typed in-memory relational store complete — derive macros for `Bounded`, `Table`, `Database` with FK validation and serde support (feature-gated). Includes compound indexes (`#[index(...)]`) with prefix queries, filtered/partial indexes, unified `IntoQuery` API, tracked runtime bounds, `on_delete cascade`/`nullify` FK semantics with cycle detection, auto-increment primary keys (`#[primary_key(auto_increment)]`), unique index enforcement (`#[indexed(unique)]`), `modify_unchecked` closure-based in-place mutation with debug-build safety checks, `QueryOpts` for ordering (asc/desc) and offset (skip N) on all query methods, and `modify_each_by_*` query-driven batch mutation. **Integrated into `elven_canopy_sim`:** `SimDb` (16 tables) replaces all BTreeMap entity storage — creatures, tasks (with decomposed extension tables), blueprints, structures, inventories, item stacks, ground piles, thoughts, furniture, and logistics wants.
@@ -133,6 +133,7 @@ elven-canopy/
 │       ├── height_grid_renderer.gd    # Wireframe height-slice grid overlay
 │       ├── placement_controller.gd  # Click-to-place for spawns and tasks
 │       ├── selection_controller.gd  # Click-to-select creatures
+│       ├── tooltip_controller.gd    # Hover tooltips for world objects
 │       └── creature_info_panel.gd   # Right-side creature info + follow button
 ├── data/                       # Shared data files (lexicon, Markov models)
 │   ├── vaelith_lexicon.json    # Vaelith vocabulary (41 entries with syllables + tones)

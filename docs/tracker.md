@@ -76,7 +76,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-combat               Combat and invader threat system
 [ ] F-crafting             Non-construction jobs and crafting
 [ ] F-creature-death       Basic creature death (starvation)
-[ ] F-creature-tooltip     Creature hover tooltip
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
@@ -160,6 +159,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crate-structure      Two-crate sim/gdext structure
 [x] F-creature-info        Creature info panel with follow button
+[x] F-creature-tooltip  Hover tooltips for world objects
 [x] F-debug-menu           Move spawn/summon into debug menu
 [x] F-elf-acquire          Elf personal item acquisition
 [x] F-elf-names            Elf name generation from conlang rules
@@ -1398,13 +1398,18 @@ position). Follow button to lock camera.
 
 **Related:** F-creature-tooltip, F-tree-info
 
-#### F-creature-tooltip — Creature hover tooltip
-**Status:** Todo · **Phase:** 2
+#### F-creature-tooltip — Hover tooltips for world objects
+**Status:** Done · **Phase:** 2
 
-Quick info on mouse hover over a creature without requiring click-to-select.
-Shows species, name (once F-elf-names exists), and current activity in a
-small floating tooltip. Reduces friction compared to the full selection +
-info panel flow for casual inspection.
+Floating tooltip on mouse hover over any world object. Covers:
+
+- **Creatures:** Species + name + current activity (e.g., "Elf: Vaelindra — Eating")
+- **Buildings/furniture:** Type + custom name (e.g., "Kitchen: Hearthglow")
+- **Ground piles:** Up to 3 item stacks shown inline (e.g., "Apple x3, Wood x2").
+  If more stacks exist, append summary (e.g., "and 5 more stacks of 23 items").
+- **Fruit:** Item name (e.g., "Apple")
+
+Broadened from creature-only tooltip to cover all hoverable world objects.
 
 **Related:** F-creature-info, F-elf-names, F-selection
 

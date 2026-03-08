@@ -39,6 +39,7 @@
 ## action_toolbar.gd for the toolbar UI, placement_controller.gd for
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
+## tooltip_controller.gd for hover tooltips,
 ## creature_info_panel.gd for the creature info panel,
 ## structure_info_panel.gd for the structure info panel,
 ## ground_pile_info_panel.gd for the ground pile info panel,
@@ -87,6 +88,8 @@ var _bldg_renderer: Node3D
 var _ladder_renderer: Node3D
 var _furniture_renderer: Node3D
 var _pile_renderer: Node3D
+var _tooltip_controller: Node
+var _pause_menu: ColorRect
 var _lobby_overlay: ColorRect
 
 
@@ -334,6 +337,18 @@ func _setup_common(bridge: SimBridge) -> void:
 	_pile_info_panel.set_script(pile_panel_script)
 	info_panel_layer.add_child(_pile_info_panel)
 
+	# Set up tooltip controller (hover tooltips on CanvasLayer 4 so they
+	# render above info panels on layer 3).
+	var tooltip_layer := CanvasLayer.new()
+	tooltip_layer.layer = 4
+	add_child(tooltip_layer)
+
+	var tooltip_script = load("res://scripts/tooltip_controller.gd")
+	_tooltip_controller = Node.new()
+	_tooltip_controller.set_script(tooltip_script)
+	add_child(_tooltip_controller)
+	_tooltip_controller.setup(bridge, $CameraPivot/Camera3D, tooltip_layer)
+
 	# Set up selection controller.
 	var selector_script = load("res://scripts/selection_controller.gd")
 	_selector = Node3D.new()
@@ -342,6 +357,8 @@ func _setup_common(bridge: SimBridge) -> void:
 	_selector.setup(bridge, $CameraPivot/Camera3D)
 	_selector.set_placement_controller(_placement_controller)
 	_selector.set_construction_controller(_construction_controller)
+	_tooltip_controller.set_placement_controller(_placement_controller)
+	_tooltip_controller.set_construction_controller(_construction_controller)
 
 	# Wire creature selection -> creature info panel.
 	_camera_pivot = $CameraPivot
@@ -455,11 +472,11 @@ func _setup_common(bridge: SimBridge) -> void:
 	add_child(pause_layer)
 
 	var pause_script = load("res://scripts/pause_menu.gd")
-	var pause_menu := ColorRect.new()
-	pause_menu.set_script(pause_script)
-	pause_layer.add_child(pause_menu)
-	pause_menu.setup(bridge)
-	menu_btn.pressed.connect(pause_menu.toggle)
+	_pause_menu = ColorRect.new()
+	_pause_menu.set_script(pause_script)
+	pause_layer.add_child(_pause_menu)
+	_pause_menu.setup(bridge)
+	menu_btn.pressed.connect(_pause_menu.toggle)
 
 	# Task panel overlay.
 	var task_panel_layer := CanvasLayer.new()
@@ -625,6 +642,16 @@ func _process(delta: float) -> void:
 	for r in _extra_renderers:
 		r.set_render_tick(render_tick)
 	_selector.set_render_tick(render_tick)
+	if _tooltip_controller:
+		_tooltip_controller.set_render_tick(render_tick)
+		# Suppress tooltip when any overlay panel is open.
+		var any_overlay := (
+			(_pause_menu and _pause_menu.visible)
+			or (_task_panel and _task_panel.visible)
+			or (_structure_panel and _structure_panel.visible)
+			or (_units_panel and _units_panel.visible)
+		)
+		_tooltip_controller.set_suppressed(any_overlay)
 
 	# Refresh tree renderer so carved voxels disappear and new fruit appears.
 	if _tree_renderer:
