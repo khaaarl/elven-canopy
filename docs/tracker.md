@@ -76,6 +76,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-cascade-fail         Cascading structural failure
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
+[ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
+[ ] F-civilizations        Procedural civilization generation and diplomacy
 [ ] F-combat               Combat and invader threat system
 [ ] F-crafting             Non-construction jobs and crafting
 [ ] F-creature-death       Basic creature death (starvation)
@@ -87,6 +89,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-emotions             Multi-dimensional emotional state
+[ ] F-encyclopedia-know    Encyclopedia civ/fruit knowledge pages
+[ ] F-encyclopedia-srv     Embedded localhost HTTP encyclopedia server
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
@@ -144,6 +148,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
+[ ] F-worldgen-framework   Worldgen generator framework
 [ ] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 ```
 
@@ -955,7 +960,9 @@ cultivate a single chosen species. Some fruits are wild-only.
 (property-based recipe matching), F-food-chain (logistics pipeline),
 item schema (FruitSpeciesId references).
 
-**Related:** F-bldg-kitchen, F-food-chain, F-fruit-prod, F-recipes
+**Blocked by:** F-worldgen-framework
+**Blocks:** F-civ-knowledge
+**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-prod, F-recipes
 
 #### F-hauling — Item hauling task type
 **Status:** Done · **Phase:** 3
@@ -1359,6 +1366,39 @@ positions, and alert levels.
 
 ### World Expansion & Ecology
 
+#### F-civ-knowledge — Civilization knowledge system (fruit tiers, discovery)
+**Status:** Todo
+
+Civilization knowledge system: CivFruitKnowledge table with three tiers
+(Awareness → Properties → Cultivation). Worldgen distributes fruit
+knowledge across civs biased by species/culture. Player civ starts with
+4-5 fruits at Cultivation, 5-10 at Properties, most at Awareness.
+DiscoverCiv, SetCivOpinion, and LearnFruit SimAction commands (initially
+exercised only by worldgen and debug). Knowledge is monotonically
+increasing (no forgetting).
+
+**Draft:** `docs/drafts/encyclopedia_civs.md` §Knowledge System
+
+**Blocked by:** F-civilizations, F-fruit-variety
+**Blocks:** F-encyclopedia-know
+**Related:** F-encyclopedia-know, F-fruit-variety
+
+#### F-civilizations — Procedural civilization generation and diplomacy
+**Status:** Todo
+
+Procedural civilization generation during worldgen: ~10 civs with
+CivSpecies (Elf/Human/Dwarf/Goblin/Orc/Troll), culture tags, asymmetric
+diplomacy graph. Civilization table in SimDb, CivRelationship table with
+directed opinion pairs, player_controlled flag, Creature.civ_id column.
+Session-side player→civ assignment (not persisted). Placeholder naming
+for non-elf civs, Vaelith names for elf civs.
+
+**Draft:** `docs/drafts/encyclopedia_civs.md` §Civilizations
+
+**Blocked by:** F-worldgen-framework
+**Blocks:** F-civ-knowledge
+**Related:** F-fruit-variety
+
 #### F-cultural-drift — Inter-tree cultural divergence
 **Status:** Todo · **Phase:** 7 · **Refs:** §7, §18
 
@@ -1415,6 +1455,19 @@ scope, gameplay implications, and interaction with existing tree generation
 are not yet specified.
 
 **Related:** F-branch-growth, F-multi-tree
+
+#### F-worldgen-framework — Worldgen generator framework
+**Status:** Todo
+
+Worldgen entry point called during StartGame that runs generators in
+defined order (tree → fruits → civs → knowledge). Dedicated worldgen
+PRNG seeded from world seed. WorldgenConfig subsection of GameConfig
+grouping FruitConfig and CivConfig. Small plumbing feature — establishes
+the pattern for generator sequencing.
+
+**Draft:** `docs/drafts/encyclopedia_civs.md` §Worldgen Framework
+
+**Blocks:** F-civilizations, F-fruit-variety
 
 ### Soul Mechanics & Magic
 
@@ -1512,6 +1565,34 @@ structure) to reflect that it's no longer spawn-centric.
 The debug menu should be easy to hide entirely for non-dev builds later.
 
 **Related:** F-spawn-toolbar
+
+#### F-encyclopedia-know — Encyclopedia civ/fruit knowledge pages
+**Status:** Todo
+
+Adds knowledge-gated pages to the encyclopedia web server: Civilizations
+tab (known civs with asymmetric opinions) and Fruits tab (tier-gated
+detail — Awareness shows name/appearance, Properties shows parts and
+processing paths, Cultivation shows growing info). Queries sim state
+through the same read handle as the base encyclopedia server.
+
+**Draft:** `docs/drafts/encyclopedia_civs.md` §Encyclopedia (Web-Based)
+
+**Blocked by:** F-civ-knowledge, F-encyclopedia-srv
+**Related:** F-civ-knowledge
+
+#### F-encyclopedia-srv — Embedded localhost HTTP encyclopedia server
+**Status:** Todo
+
+Embedded HTTP server on localhost (127.0.0.1, configurable port) serving
+the encyclopedia as HTML pages in the player's web browser. Server runs
+on a dedicated thread with read-only access to sim state. Species
+bestiary from JSON data file. In-game toolbar button shows URL and opens
+browser on click. Server-rendered HTML templates, no JavaScript required.
+Auto-refresh via meta tag. Independent of all sim/worldgen features.
+
+**Draft:** `docs/drafts/encyclopedia_civs.md` §Encyclopedia (Web-Based)
+
+**Blocks:** F-encyclopedia-know
 
 #### F-godot-setup — Godot 4 project setup
 **Status:** Done · **Phase:** 0 · **Refs:** §3
