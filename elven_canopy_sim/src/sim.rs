@@ -7,9 +7,10 @@
 // The sim is a pure function:
 // `(state, commands) -> (new_state, events)`.
 //
-// On construction (`new()`/`with_config()`), the sim generates tree geometry
-// via `tree_gen.rs`, builds the navigation graph via `nav.rs`, and initializes
-// the voxel world via `world.rs`. Two nav graphs are maintained: the standard
+// On construction (`new()`/`with_config()`), the sim delegates world creation
+// to `worldgen.rs`, which runs generators in order (tree → fruits → civs →
+// knowledge) using a dedicated worldgen PRNG. The runtime PRNG is derived from
+// the worldgen PRNG's final state. Two nav graphs are maintained: the standard
 // graph for 1x1x1 creatures and a large graph for 2x2x2 creatures (elephants).
 // `graph_for_species()` dispatches to the correct graph based on the species'
 // `footprint` field from `species.rs`. Creature spawning and movement are
@@ -250,7 +251,6 @@ use crate::prng::GameRng;
 use crate::species::SpeciesData;
 use crate::structural;
 use crate::task;
-use crate::tree_gen;
 use crate::types::*;
 use crate::world::VoxelWorld;
 use elven_canopy_lang::Lexicon;
@@ -426,75 +426,27 @@ impl SimState {
     }
 
     /// Create a new simulation with the given seed and config.
+    ///
+    /// Delegates world creation to `worldgen::run_worldgen()`, which runs
+    /// generators in a defined order (tree → fruits → civs → knowledge) using
+    /// a dedicated worldgen PRNG. The runtime PRNG is derived from the worldgen
+    /// PRNG's final state, ensuring deterministic separation.
     pub fn with_config(seed: u64, config: GameConfig) -> Self {
-        let mut rng = GameRng::new(seed);
-        let player_id = PlayerId::new(&mut rng);
-        let player_tree_id = TreeId::new(&mut rng);
+        use crate::worldgen;
 
-        let (ws_x, ws_y, ws_z) = config.world_size;
-        let center_x = ws_x as i32 / 2;
-        let center_z = ws_z as i32 / 2;
+        let wg = worldgen::run_worldgen(seed, &config);
 
-        // Generate tree geometry with structural validation retry loop.
-        // If the tree fails under its own weight, regenerate (the RNG has
-        // advanced, producing different geometry).
-        let mut world = VoxelWorld::new(ws_x, ws_y, ws_z);
-        let mut tree_result = None;
-        for _attempt in 0..config.structural.tree_gen_max_retries {
-            let candidate = tree_gen::generate_tree(&mut world, &config, &mut rng);
-            if structural::validate_tree(&world, &config) {
-                tree_result = Some(candidate);
-                break;
-            }
-            // Clear and rebuild world for retry.
-            world = VoxelWorld::new(ws_x, ws_y, ws_z);
-            let floor_extent = config.floor_extent;
-            for dx in -floor_extent..=floor_extent {
-                for dz in -floor_extent..=floor_extent {
-                    world.set(
-                        VoxelCoord::new(center_x + dx, 0, center_z + dz),
-                        VoxelType::ForestFloor,
-                    );
-                }
-            }
-        }
-        let tree_result = tree_result.expect(
-            "Tree generation failed structural validation after max retries. \
-             Tree profile parameters are incompatible with material properties.",
-        );
-
-        let home_tree = Tree {
-            id: player_tree_id,
-            position: VoxelCoord::new(center_x, 0, center_z),
-            health: 100.0,
-            growth_level: 1,
-            mana_stored: config.starting_mana,
-            mana_capacity: config.starting_mana_capacity,
-            fruit_production_rate: config.fruit_production_base_rate,
-            carrying_capacity: 20.0,
-            current_load: 0.0,
-            owner: Some(player_id),
-            trunk_voxels: tree_result.trunk_voxels,
-            branch_voxels: tree_result.branch_voxels,
-            leaf_voxels: tree_result.leaf_voxels,
-            root_voxels: tree_result.root_voxels,
-            dirt_voxels: tree_result.dirt_voxels,
-            fruit_positions: Vec::new(),
-        };
-
-        // Build nav graphs from voxel world geometry.
-        let nav_graph = nav::build_nav_graph(&world, &BTreeMap::new());
-        let large_nav_graph = nav::build_large_nav_graph(&world);
+        let player_tree_id = wg.home_tree.id;
 
         let mut trees = BTreeMap::new();
-        trees.insert(player_tree_id, home_tree);
+        trees.insert(player_tree_id, wg.home_tree);
 
         // Build species table from config.
         let species_table = config.species.clone();
 
         let mut state = Self {
             tick: 0,
-            rng,
+            rng: wg.runtime_rng,
             config,
             event_queue: EventQueue::new(),
             db: SimDb::new(),
@@ -507,10 +459,10 @@ impl SimState {
             ladder_orientations: BTreeMap::new(),
             next_structure_id: 0,
             player_tree_id,
-            player_id,
-            world,
-            nav_graph,
-            large_nav_graph,
+            player_id: wg.player_id,
+            world: wg.world,
+            nav_graph: wg.nav_graph,
+            large_nav_graph: wg.large_nav_graph,
             species_table,
             lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
@@ -8658,19 +8610,34 @@ mod tests {
         let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
         // Tick enough for the elf to claim the task, but not complete it.
-        // Build total_cost is build_work_ticks_per_voxel (1000) for 1 voxel,
-        // and once at the site the elf does 1 work per tick. Use 1000 ticks
-        // so the elf claims but hasn't finished.
-        sim.step(&[], sim.tick + 1000);
+        // The elf claims on its next idle activation after the build is
+        // designated. Elf walk speed is 500 tpv, so one wander step takes
+        // ~500 ticks. We need enough ticks for at least one idle activation
+        // to occur after the build designation, but not enough for the elf to
+        // finish the build (1000 work ticks). 800 ticks is enough for one
+        // full activation cycle.
+        sim.step(&[], sim.tick + 800);
 
         let task_id = sim.db.blueprints.get(&project_id).unwrap().task_id.unwrap();
-        // The elf should have claimed it (it's the only available task).
-        assert!(
-            sim.db
+        // Wait for the elf to claim the build task. The elf claims on its next
+        // idle activation, which depends on when its wander step finishes.
+        // Tick in small increments to avoid overshooting past task completion.
+        let mut claimed = false;
+        for _ in 0..20 {
+            sim.step(&[], sim.tick + 100);
+            if sim
+                .db
                 .creatures
                 .get(&elf_id)
-                .is_some_and(|c| c.current_task == Some(task_id)),
-            "Elf should have claimed the build task"
+                .is_some_and(|c| c.current_task == Some(task_id))
+            {
+                claimed = true;
+                break;
+            }
+        }
+        assert!(
+            claimed,
+            "Elf should have claimed the build task within 2000 ticks"
         );
 
         // Cancel the build.

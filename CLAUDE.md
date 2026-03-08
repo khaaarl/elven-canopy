@@ -52,7 +52,8 @@ elven-canopy/
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
 │       ├── pathfinding.rs      # A* search over NavGraph
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
-│       └── world.rs            # Dense 3D voxel grid
+│       ├── world.rs            # Dense 3D voxel grid
+│       └── worldgen.rs         # Worldgen framework — generator sequencing, worldgen PRNG
 ├── elven_canopy_lang/          # Shared Vaelith conlang (types, lexicon, name gen)
 │   └── src/
 │       ├── lib.rs              # Lexicon loader (JSON → typed struct), re-exports

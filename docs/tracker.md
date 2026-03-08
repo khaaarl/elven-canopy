@@ -145,7 +145,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
-[ ] F-worldgen-framework   Worldgen generator framework
 [ ] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 ```
 
@@ -239,6 +238,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tree-overlap         Construction overlap with tree geometry
 [x] F-voxel-fem            Voxel FEM structural analysis
 [x] F-voxel-textures       Per-face Perlin noise voxel textures
+[x] F-worldgen-framework   Worldgen generator framework
 ```
 
 ---
@@ -960,7 +960,6 @@ cultivate a single chosen species. Some fruits are wild-only.
 (property-based recipe matching), F-food-chain (logistics pipeline),
 item schema (FruitSpeciesId references).
 
-**Blocked by:** F-worldgen-framework
 **Blocks:** F-civ-knowledge
 **Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-prod, F-recipes
 
@@ -1393,7 +1392,6 @@ for non-elf civs, Vaelith names for elf civs.
 
 **Draft:** `docs/drafts/encyclopedia_civs.md` §Civilizations
 
-**Blocked by:** F-worldgen-framework
 **Blocks:** F-civ-knowledge
 **Related:** F-fruit-variety
 
@@ -1455,7 +1453,7 @@ are not yet specified.
 **Related:** F-branch-growth, F-multi-tree
 
 #### F-worldgen-framework — Worldgen generator framework
-**Status:** Todo
+**Status:** Done
 
 Worldgen entry point called during StartGame that runs generators in
 defined order (tree → fruits → civs → knowledge). Dedicated worldgen
@@ -1464,8 +1462,6 @@ grouping FruitConfig and CivConfig. Small plumbing feature — establishes
 the pattern for generator sequencing.
 
 **Draft:** `docs/drafts/encyclopedia_civs.md` §Worldgen Framework
-
-**Blocks:** F-civilizations, F-fruit-variety
 
 ### Soul Mechanics & Magic
 

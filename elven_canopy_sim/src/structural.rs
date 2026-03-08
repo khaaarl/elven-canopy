@@ -30,8 +30,9 @@
 //
 // ## Integration points
 //
-// - `sim.rs`: `with_config()` wraps tree generation in a retry loop using
-//   `validate_tree()`. `designate_build()` and `designate_building()` call
+// - `worldgen.rs`: `generate_tree()` wraps tree generation in a retry loop
+//   using `validate_tree()`.
+// - `sim.rs`: `designate_build()` and `designate_building()` call
 //   `validate_blueprint()` to gate construction. `designate_carve()` calls
 //   `validate_carve_fast()` to block or warn on structurally dangerous carves.
 // - `config.rs`: `StructuralConfig` holds all material/face properties and

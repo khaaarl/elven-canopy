@@ -1093,6 +1093,12 @@ pub struct GameConfig {
     /// Default logistics priority for newly furnished workshops.
     #[serde(default = "default_workshop_priority")]
     pub workshop_default_priority: u8,
+
+    /// Worldgen generator configuration. Groups config for generators that run
+    /// during world creation (fruit variety, civilizations, knowledge). The
+    /// existing tree profile stays at the top level for backward compatibility.
+    #[serde(default)]
+    pub worldgen: crate::worldgen::WorldgenConfig,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -1483,6 +1489,7 @@ impl Default for GameConfig {
             }],
             recipes: default_recipes(),
             workshop_default_priority: default_workshop_priority(),
+            worldgen: crate::worldgen::WorldgenConfig::default(),
         }
     }
 }

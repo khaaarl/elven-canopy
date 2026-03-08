@@ -44,7 +44,7 @@
 //
 // See also: `world.rs` for the voxel grid being populated, `nav.rs` for the
 // navigation graph built on top of the generated geometry, `config.rs` for
-// `TreeProfile` and its sub-structs, `sim.rs` which calls `generate_tree()`.
+// `TreeProfile` and its sub-structs, `worldgen.rs` which calls `generate_tree()`.
 //
 // **Critical constraint: determinism.** All randomness comes from the `GameRng`
 // passed by the caller. The FIFO work queue ensures breadth-first processing

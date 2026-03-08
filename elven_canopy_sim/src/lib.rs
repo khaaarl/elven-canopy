@@ -27,6 +27,7 @@
 // - `checksum.rs`:    FNV-1a hashing + interval constant for multiplayer desync detection.
 // - `prng`:           Re-exported from `elven_canopy_prng` — xoshiro256++ PRNG with SplitMix64 seeding.
 // - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.
+// - `worldgen.rs`:    Worldgen framework — generator sequencing, worldgen PRNG, WorldgenConfig.
 //
 // The companion crate `elven_canopy_gdext` wraps this library for Godot
 // via GDExtension. That boundary is enforced at the compiler level — this
@@ -60,6 +61,7 @@ pub mod texture_gen;
 pub mod tree_gen;
 pub mod types;
 pub mod world;
+pub mod worldgen;
 
 #[cfg(test)]
 mod tests {
