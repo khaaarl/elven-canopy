@@ -298,6 +298,14 @@ auto_pk_id!(/// Auto-increment ID for acquire task extension data.
 TaskAcquireDataId);
 auto_pk_id!(/// Auto-increment ID for player-visible notifications.
 NotificationId);
+auto_pk_id!(/// Auto-increment ID for item subcomponent records.
+ItemSubcomponentId);
+auto_pk_id!(/// Auto-increment ID for item enchantment instances.
+EnchantmentId);
+auto_pk_id!(/// Auto-increment ID for individual enchantment effects.
+EnchantmentEffectId);
+auto_pk_id!(/// Auto-increment ID for craft task extension data.
+TaskCraftDataId);
 
 // ---------------------------------------------------------------------------
 // Nav graph IDs — simple integers, not UUIDs, for compactness.

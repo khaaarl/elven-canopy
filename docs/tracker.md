@@ -47,6 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
+[~] F-manufacturing     Item schema expansion + workshop manufacturing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 ```
@@ -117,7 +118,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
-[ ] F-recipes              Recipe system for crafting/cooking
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
@@ -156,6 +156,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
 [x] F-bldg-kitchen         Kitchen (cooking from ingredients)
+[x] F-bldg-workshop     Craftself's workshop
 [x] F-bread                Bread items and elf food management
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
@@ -201,6 +202,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-pathfinding          A* pathfinding over nav graph
 [x] F-pause-menu           In-game pause overlay
 [x] F-placement-ui         Revamp construction placement UX
+[x] F-recipes              Recipe system for crafting/cooking
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
 [x] F-save-load            Save/load to JSON with versioning
 [x] F-select-struct        Selectable structures with interaction UI
@@ -296,7 +298,7 @@ via logistics and cook it into bread. Cooking is controlled via the
 structure info panel (enable/disable, bread target). **Draft:**
 `docs/drafts/kitchen_cooking.md`
 
-**Related:** F-bldg-dining, F-bread, F-elf-acquire, F-elf-assign, F-food-chain, F-fruit-variety, F-jobs, F-recipes
+**Related:** F-bldg-dining, F-bread, F-elf-acquire, F-elf-assign, F-food-chain, F-fruit-variety, F-jobs, F-manufacturing, F-recipes
 
 #### F-bldg-storehouse — Storehouse (item storage)
 **Status:** Todo · **Phase:** 4
@@ -307,7 +309,7 @@ and are accessible to elves for retrieval.
 **Related:** F-food-chain, F-logistics
 
 #### F-bldg-workshop — Craftself's workshop
-**Status:** Todo · **Phase:** 4
+**Status:** Done · **Phase:** 4
 
 Workshop where craftself elves create tools and equipment (bows, spears,
 and other gear).
@@ -784,7 +786,7 @@ can be dropped, and kitchens produce it from fruit. Eating bread adds to
 the existing food gauge (the gauge remains as the creature's internal
 hunger/satiation state; bread is the concrete item that fills it).
 
-**Related:** F-bldg-kitchen, F-elf-acquire, F-elf-needs, F-food-chain, F-food-gauge
+**Related:** F-bldg-kitchen, F-elf-acquire, F-elf-needs, F-food-chain, F-food-gauge, F-manufacturing
 
 #### F-capybara — Capybara species
 **Status:** Done · **Refs:** §15
@@ -969,7 +971,7 @@ buildings (especially storehouses) can hold items. Each item has a type,
 quantity, and location (carried by creature, on ground at coord, or in
 building). Foundation for food management, crafting, and logistics.
 
-**Related:** F-crafting, F-logistics
+**Related:** F-crafting, F-logistics, F-manufacturing
 
 #### F-jobs — Elf job/role specialization
 **Status:** Todo · **Phase:** 3
@@ -1005,8 +1007,27 @@ produce more mana, mana enables growth, growth makes elves happier.
 **Blocks:** F-mana-mood, F-root-network
 **Related:** F-branch-growth, F-choir-build, F-mass-conserve, F-population, F-tree-info
 
+#### F-manufacturing — Item schema expansion + workshop manufacturing
+**Status:** In Progress
+
+Item schema expansion (quality, materials, subcomponents, enchantments),
+data-driven recipe system, and workshop manufacturing pipeline.
+
+**Done:** Item schema (ItemKind: Bow/Arrow/Bowstring, Material enum,
+enchantment tables, subcomponent table), recipe system in GameConfig
+(bowstring/bow/arrow recipes), workshop furnishing activation, Craft
+task + workshop monitor (process_workshop_monitor/do_craft), bridge
+methods (set_workshop_config/get_recipes/get_structure_info workshop
+fields), SetWorkshopConfig command, logistics wants from recipes.
+
+**TODO:** GDScript crafting UI section in structure info panel (display
+workshop_enabled, recipe list, craft_status — mirrors kitchen cooking
+section).
+
+**Related:** F-bldg-kitchen, F-bread, F-items
+
 #### F-recipes — Recipe system for crafting/cooking
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
 Shared recipe abstraction for kitchens and workshops: input items +
 processing time → output items. Kitchens use recipes to convert fruit

@@ -1,6 +1,8 @@
 // Item type enum for the simulation.
 //
-// Provides `ItemKind`, the enum of distinct item types (Bread, Fruit, etc.).
+// Provides `ItemKind` (the enum of distinct item types: Bread, Fruit, Bow,
+// Arrow, Bowstring), `Material` (wood species for crafted items), and
+// `EffectKind` (stubbed enchantment effect types for future use).
 // Item storage is now handled by the `db::ItemStack` and `db::Inventory`
 // tabulosity tables. `SimState` has `inv_*` methods (in `sim.rs`) for all
 // inventory operations (add, remove, count, reserve, etc.).
@@ -15,6 +17,9 @@ use serde::{Deserialize, Serialize};
 pub enum ItemKind {
     Bread,
     Fruit,
+    Bow,
+    Arrow,
+    Bowstring,
 }
 
 impl ItemKind {
@@ -23,6 +28,47 @@ impl ItemKind {
         match self {
             ItemKind::Bread => "Bread",
             ItemKind::Fruit => "Fruit",
+            ItemKind::Bow => "Bow",
+            ItemKind::Arrow => "Arrow",
+            ItemKind::Bowstring => "Bowstring",
+        }
+    }
+}
+
+/// Material variant for items. Optional — many items have `material: None`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Material {
+    Oak,
+    Birch,
+    Willow,
+    Ash,
+    Yew,
+}
+
+impl Material {
+    /// Human-readable display name for this material.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Material::Oak => "Oak",
+            Material::Birch => "Birch",
+            Material::Willow => "Willow",
+            Material::Ash => "Ash",
+            Material::Yew => "Yew",
+        }
+    }
+}
+
+/// Kind of enchantment effect. Stubbed for future magic item system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum EffectKind {
+    Placeholder,
+}
+
+impl EffectKind {
+    /// Human-readable display name for this effect kind.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            EffectKind::Placeholder => "Placeholder",
         }
     }
 }

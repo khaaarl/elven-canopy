@@ -206,6 +206,14 @@ pub enum TaskKind {
     /// mood check when mood is Unhappy or worse. Duration comes from
     /// `total_cost` on the Task struct (same pattern as Sleep).
     Mope,
+    /// Craft an item at a workshop. An elf walks to the workshop, works for
+    /// the recipe's `work_ticks`, then converts reserved inputs into outputs
+    /// in the workshop's inventory. Created by `process_workshop_monitor()`
+    /// when a workshop has available inputs for a configured recipe.
+    Craft {
+        structure_id: StructureId,
+        recipe_id: String,
+    },
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.

@@ -408,5 +408,30 @@
       "item_kind": "Bread",
       "quantity": 5
     }
-  ]
+  ],
+  "recipes": [
+    {
+      "id": "bowstring",
+      "display_name": "Bowstring",
+      "inputs": [{ "item_kind": "Fruit", "quantity": 1 }],
+      "outputs": [{ "item_kind": "Bowstring", "quantity": 20 }],
+      "work_ticks": 5000
+    },
+    {
+      "id": "bow",
+      "display_name": "Bow",
+      "inputs": [{ "item_kind": "Bowstring", "quantity": 1 }],
+      "outputs": [{ "item_kind": "Bow", "quantity": 1 }],
+      "work_ticks": 8000,
+      "subcomponent_records": [{ "input_kind": "Bowstring", "quantity_per_item": 1 }]
+    },
+    {
+      "id": "arrow",
+      "display_name": "Arrow",
+      "inputs": [],
+      "outputs": [{ "item_kind": "Arrow", "quantity": 20 }],
+      "work_ticks": 3000
+    }
+  ],
+  "workshop_default_priority": 8
 }

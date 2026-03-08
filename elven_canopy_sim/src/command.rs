@@ -39,6 +39,8 @@
 // - `AddCreatureItem` — add items to a creature's inventory.
 // - `AddGroundPileItem` — add items to a ground pile (creating it if needed).
 // - `DebugNotification` — create a debug notification for testing.
+// - `SetWorkshopConfig` — enable/disable a workshop and set which recipe IDs
+//   it should produce. Recomputes logistics wants from recipe inputs.
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -170,6 +172,12 @@ pub enum SimAction {
     },
     /// Create a debug notification for testing the notification pipeline.
     DebugNotification { message: String },
+    /// Set workshop configuration (enabled state and active recipe IDs).
+    SetWorkshopConfig {
+        structure_id: StructureId,
+        workshop_enabled: bool,
+        recipe_ids: Vec<String>,
+    },
 }
 
 #[cfg(test)]

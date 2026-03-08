@@ -29,7 +29,7 @@
 // simulation logic. All clients must use identical configs for identical
 // results.
 
-use crate::inventory::ItemKind;
+use crate::inventory::{ItemKind, Material};
 use crate::nav::EdgeType;
 use crate::species::SpeciesData;
 use crate::types::{FaceType, MoodTier, Species, ThoughtKind, VoxelCoord, VoxelType};
@@ -798,6 +798,106 @@ pub struct InitialGroundPileSpec {
 }
 
 // ---------------------------------------------------------------------------
+// Recipe system
+// ---------------------------------------------------------------------------
+
+/// An input requirement for a recipe.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecipeInput {
+    pub item_kind: ItemKind,
+    pub quantity: u32,
+}
+
+/// An output product from a recipe.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecipeOutput {
+    pub item_kind: ItemKind,
+    pub quantity: u32,
+    #[serde(default)]
+    pub material: Option<Material>,
+    #[serde(default)]
+    pub quality: i32,
+}
+
+/// A subcomponent to attach to each output item. Records what components
+/// went into crafting it (e.g., a Bow contains 1 Bowstring).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecipeSubcomponentRecord {
+    pub input_kind: ItemKind,
+    pub quantity_per_item: u32,
+}
+
+/// A data-driven crafting recipe. Defines inputs, outputs, work time, and
+/// subcomponent records for the workshop manufacturing pipeline.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Recipe {
+    pub id: String,
+    pub display_name: String,
+    pub inputs: Vec<RecipeInput>,
+    pub outputs: Vec<RecipeOutput>,
+    pub work_ticks: u64,
+    #[serde(default)]
+    pub subcomponent_records: Vec<RecipeSubcomponentRecord>,
+}
+
+fn default_recipes() -> Vec<Recipe> {
+    vec![
+        Recipe {
+            id: "bowstring".to_string(),
+            display_name: "Bowstring".to_string(),
+            inputs: vec![RecipeInput {
+                item_kind: ItemKind::Fruit,
+                quantity: 1,
+            }],
+            outputs: vec![RecipeOutput {
+                item_kind: ItemKind::Bowstring,
+                quantity: 20,
+                material: None,
+                quality: 0,
+            }],
+            work_ticks: 5000,
+            subcomponent_records: vec![],
+        },
+        Recipe {
+            id: "bow".to_string(),
+            display_name: "Bow".to_string(),
+            inputs: vec![RecipeInput {
+                item_kind: ItemKind::Bowstring,
+                quantity: 1,
+            }],
+            outputs: vec![RecipeOutput {
+                item_kind: ItemKind::Bow,
+                quantity: 1,
+                material: None,
+                quality: 0,
+            }],
+            work_ticks: 8000,
+            subcomponent_records: vec![RecipeSubcomponentRecord {
+                input_kind: ItemKind::Bowstring,
+                quantity_per_item: 1,
+            }],
+        },
+        Recipe {
+            id: "arrow".to_string(),
+            display_name: "Arrow".to_string(),
+            inputs: vec![],
+            outputs: vec![RecipeOutput {
+                item_kind: ItemKind::Arrow,
+                quantity: 20,
+                material: None,
+                quality: 0,
+            }],
+            work_ticks: 3000,
+            subcomponent_records: vec![],
+        },
+    ]
+}
+
+fn default_workshop_priority() -> u8 {
+    8
+}
+
+// ---------------------------------------------------------------------------
 // Top-level game config
 // ---------------------------------------------------------------------------
 
@@ -985,6 +1085,14 @@ pub struct GameConfig {
     /// Ground item piles to place when a new game starts.
     #[serde(default)]
     pub initial_ground_piles: Vec<InitialGroundPileSpec>,
+
+    /// Data-driven crafting recipes for the workshop manufacturing system.
+    #[serde(default = "default_recipes")]
+    pub recipes: Vec<Recipe>,
+
+    /// Default logistics priority for newly furnished workshops.
+    #[serde(default = "default_workshop_priority")]
+    pub workshop_default_priority: u8,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -1307,6 +1415,8 @@ impl Default for GameConfig {
                 item_kind: ItemKind::Bread,
                 quantity: 5,
             }],
+            recipes: default_recipes(),
+            workshop_default_priority: default_workshop_priority(),
         }
     }
 }

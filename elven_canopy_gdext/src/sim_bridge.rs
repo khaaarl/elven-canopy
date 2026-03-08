@@ -111,6 +111,8 @@
 //   info panel. `rename_structure(id, name)` — set or clear (empty string)
 //   a structure's custom name. `set_cooking_config(id, enabled, bread_target)`
 //   — configure cooking on a kitchen building.
+//   `set_workshop_config(id, enabled, recipe_ids)` — configure workshop
+//   recipes. `get_recipes()` — returns all available recipe definitions.
 // - **Ground piles:** `get_ground_piles()` — returns a `VarArray` of
 //   `{x, y, z, inventory: [{kind, quantity}]}` dicts.
 //   `get_ground_pile_info(x,y,z)` — returns a single pile's dict (same
@@ -873,7 +875,7 @@ impl SimBridge {
     ///
     /// Each dictionary contains: `id` (short hex), `id_full` (full UUID),
     /// `kind` ("GoTo", "Build", "EatBread", "EatFruit", "Sleep", "Furnish", "Haul", "Cook",
-    /// or "Harvest"),
+    /// "Harvest", "AcquireItem", "Moping", or "Craft"),
     /// `origin` ("PlayerDirected", "Autonomous", or "Automated"),
     /// `state` ("Available" or "In Progress"), `progress`, `total_cost`,
     /// `location_x/y/z`, and `assignees` (array of dictionaries with
@@ -1244,6 +1246,38 @@ impl SimBridge {
         };
         dict.set("cook_status", GString::from(cook_status));
 
+        // Workshop data (for Workshop buildings).
+        dict.set("workshop_enabled", structure.workshop_enabled);
+        let mut recipe_ids_arr = VarArray::new();
+        for rid in &structure.workshop_recipe_ids {
+            recipe_ids_arr.push(&GString::from(rid.as_str()).to_variant());
+        }
+        dict.set("workshop_recipe_ids", recipe_ids_arr);
+        let craft_status = if structure.furnishing
+            == Some(elven_canopy_sim::types::FurnishingType::Workshop)
+            && structure.workshop_enabled
+        {
+            let has_craft_task =
+                sim.db
+                    .task_structure_refs
+                    .by_structure_id(&sid, elven_canopy_sim::tabulosity::QueryOpts::ASC)
+                    .iter()
+                    .any(|r| {
+                        r.role == elven_canopy_sim::db::TaskStructureRole::CraftAt
+                            && sim.db.tasks.get(&r.task_id).is_some_and(|t| {
+                                t.state != elven_canopy_sim::task::TaskState::Complete
+                            })
+                    });
+            if has_craft_task {
+                "Crafting..."
+            } else {
+                "Idle"
+            }
+        } else {
+            ""
+        };
+        dict.set("craft_status", GString::from(craft_status));
+
         dict
     }
 
@@ -1354,6 +1388,9 @@ impl SimBridge {
             let kind = match kind_str {
                 "Bread" => elven_canopy_sim::inventory::ItemKind::Bread,
                 "Fruit" => elven_canopy_sim::inventory::ItemKind::Fruit,
+                "Bow" => elven_canopy_sim::inventory::ItemKind::Bow,
+                "Arrow" => elven_canopy_sim::inventory::ItemKind::Arrow,
+                "Bowstring" => elven_canopy_sim::inventory::ItemKind::Bowstring,
                 other => {
                     godot_error!("SimBridge: unknown item kind in logistics wants: '{other}'");
                     continue;
@@ -1381,6 +1418,59 @@ impl SimBridge {
             cooking_enabled,
             cooking_bread_target: bread_target.max(0) as u32,
         });
+    }
+
+    /// Set the workshop configuration for a workshop building.
+    #[func]
+    fn set_workshop_config(
+        &mut self,
+        structure_id: i64,
+        enabled: bool,
+        recipe_ids: PackedStringArray,
+    ) {
+        let ids: Vec<String> = recipe_ids
+            .as_slice()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        self.apply_or_send(SimAction::SetWorkshopConfig {
+            structure_id: StructureId(structure_id as u64),
+            workshop_enabled: enabled,
+            recipe_ids: ids,
+        });
+    }
+
+    /// Get all available recipes as an array of dictionaries.
+    #[func]
+    fn get_recipes(&self) -> VarArray {
+        let Some(sim) = &self.session.sim else {
+            return VarArray::new();
+        };
+        let mut arr = VarArray::new();
+        for recipe in &sim.config.recipes {
+            let mut d = VarDictionary::new();
+            d.set("id", GString::from(&recipe.id));
+            d.set("display_name", GString::from(&recipe.display_name));
+            d.set("work_ticks", recipe.work_ticks as i64);
+            let mut inputs = VarArray::new();
+            for input in &recipe.inputs {
+                let mut inp = VarDictionary::new();
+                inp.set("item_kind", GString::from(input.item_kind.display_name()));
+                inp.set("quantity", input.quantity as i64);
+                inputs.push(&inp.to_variant());
+            }
+            d.set("inputs", inputs);
+            let mut outputs = VarArray::new();
+            for output in &recipe.outputs {
+                let mut out = VarDictionary::new();
+                out.set("item_kind", GString::from(output.item_kind.display_name()));
+                out.set("quantity", output.quantity as i64);
+                outputs.push(&out.to_variant());
+            }
+            d.set("outputs", outputs);
+            arr.push(&d.to_variant());
+        }
+        arr
     }
 
     /// Return positions for any species as a PackedVector3Array, interpolated

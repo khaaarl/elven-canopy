@@ -6,7 +6,7 @@
 //
 // ## Table layout
 //
-// The database has 17 tables organized in three tiers:
+// The database has 21 tables organized in three tiers:
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures` — the
 // primary simulation entities, keyed by UUID-based or sequential IDs.
@@ -17,11 +17,16 @@
 // player-visible notifications.
 //
 // **Task decomposition tables:** `task_blueprint_refs`, `task_structure_refs`,
-// `task_voxel_refs`, `task_haul_data`, `task_sleep_data`, `task_acquire_data`
-// — replace the `TaskKind` enum's variant-specific data with relational tables.
-// The base `Task` row stores only `kind_tag` (discriminant). All variant-specific
-// data lives exclusively in extension/relationship tables, queried via helper
-// methods on `SimState` (`task_project_id`, `task_structure_ref`, etc.).
+// `task_voxel_refs`, `task_haul_data`, `task_sleep_data`, `task_acquire_data`,
+// `task_craft_data` — replace the `TaskKind` enum's variant-specific data with
+// relational tables. The base `Task` row stores only `kind_tag` (discriminant).
+// All variant-specific data lives exclusively in extension/relationship tables,
+// queried via helper methods on `SimState` (`task_project_id`,
+// `task_structure_ref`, `task_craft_data`, etc.).
+//
+// **Item extension tables:** `item_subcomponents`, `item_enchantments`,
+// `enchantment_effects` — support quality, materials, subcomponent tracking
+// (e.g., bowstring in a bow), and enchantment effects on item stacks.
 //
 // ## FK policies
 //
@@ -41,13 +46,14 @@
 // **Critical constraint: determinism.** All iteration is in deterministic
 // BTreeMap order. No hash-based collections.
 
-use crate::inventory::ItemKind;
+use crate::inventory::{EffectKind, ItemKind, Material};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
-    BuildType, CreatureId, FurnishingType, FurnitureId, GroundPileId, InventoryId, ItemStackId,
-    LogisticsWantId, NavNodeId, NotificationId, ProjectId, Species, StructureId, TaskAcquireDataId,
-    TaskBlueprintRefId, TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId,
-    TaskVoxelRefId, ThoughtId, ThoughtKind, VoxelCoord,
+    BuildType, CreatureId, EnchantmentEffectId, EnchantmentId, FurnishingType, FurnitureId,
+    GroundPileId, InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId, NavNodeId,
+    NotificationId, ProjectId, Species, StructureId, TaskAcquireDataId, TaskBlueprintRefId,
+    TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId,
+    ThoughtId, ThoughtKind, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -77,6 +83,7 @@ pub enum TaskKindTag {
     Harvest,
     AcquireItem,
     Mope,
+    Craft,
 }
 
 impl TaskKindTag {
@@ -94,6 +101,7 @@ impl TaskKindTag {
             Self::Harvest => "Harvest",
             Self::AcquireItem => "AcquireItem",
             Self::Mope => "Moping",
+            Self::Craft => "Craft",
         }
     }
 
@@ -112,6 +120,7 @@ impl TaskKindTag {
             TaskKind::Harvest { .. } => Self::Harvest,
             TaskKind::AcquireItem { .. } => Self::AcquireItem,
             TaskKind::Mope => Self::Mope,
+            TaskKind::Craft { .. } => Self::Craft,
         }
     }
 }
@@ -126,6 +135,7 @@ pub enum TaskStructureRole {
     HaulSourceBuilding,
     SleepAt,
     AcquireSourceBuilding,
+    CraftAt,
 }
 
 /// Role of a task-to-voxel reference. Determines why a task references
@@ -389,6 +399,10 @@ pub struct CompletedStructure {
     pub logistics_priority: Option<u8>,
     pub cooking_enabled: bool,
     pub cooking_bread_target: u32,
+    #[serde(default)]
+    pub workshop_enabled: bool,
+    #[serde(default)]
+    pub workshop_recipe_ids: Vec<String>,
 }
 
 impl CompletedStructure {
@@ -415,6 +429,8 @@ impl CompletedStructure {
             logistics_priority: None,
             cooking_enabled: false,
             cooking_bread_target: 0,
+            workshop_enabled: false,
+            workshop_recipe_ids: Vec::new(),
         }
     }
 
@@ -557,6 +573,13 @@ pub struct ItemStack {
     #[indexed]
     pub kind: ItemKind,
     pub quantity: u32,
+    #[serde(default)]
+    pub material: Option<Material>,
+    #[serde(default)]
+    pub quality: i32,
+    #[serde(default)]
+    #[indexed]
+    pub enchantment_id: Option<EnchantmentId>,
     #[indexed]
     pub owner: Option<CreatureId>,
     #[indexed]
@@ -584,6 +607,51 @@ pub struct LogisticsWantRow {
     pub inventory_id: InventoryId,
     pub item_kind: ItemKind,
     pub target_quantity: u32,
+}
+
+/// A subcomponent record for a crafted item stack. Records what went into
+/// crafting each item in the stack (e.g., a Bow contains 1 Bowstring).
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct ItemSubcomponent {
+    #[primary_key(auto_increment)]
+    pub id: ItemSubcomponentId,
+    #[indexed]
+    pub item_stack_id: ItemStackId,
+    pub component_kind: ItemKind,
+    pub material: Option<Material>,
+    pub quality: i32,
+    pub quantity_per_item: u32,
+}
+
+/// A shared enchantment instance. Multiple item stacks can reference the
+/// same enchantment. Effects are stored in `EnchantmentEffect` rows.
+/// Stubbed for future magic item system.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct ItemEnchantment {
+    #[primary_key(auto_increment)]
+    pub id: EnchantmentId,
+}
+
+/// An individual effect within an enchantment.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct EnchantmentEffect {
+    #[primary_key(auto_increment)]
+    pub id: EnchantmentEffectId,
+    #[indexed]
+    pub enchantment_id: EnchantmentId,
+    pub effect_kind: EffectKind,
+    pub magnitude: i32,
+    pub threshold: Option<i32>,
+}
+
+/// Craft task extension data — stores the recipe ID for a Craft task.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct TaskCraftData {
+    #[primary_key(auto_increment)]
+    pub id: TaskCraftDataId,
+    #[indexed]
+    pub task_id: TaskId,
+    pub recipe_id: String,
 }
 
 /// A placed or planned furniture item within a structure.
@@ -674,6 +742,11 @@ pub struct SimDb {
             fks(task_id = "tasks" on_delete cascade))]
     pub task_acquire_data: TaskAcquireDataTable,
 
+    #[table(singular = "task_craft_data",
+            auto,
+            fks(task_id = "tasks" on_delete cascade))]
+    pub task_craft_data: TaskCraftDataTable,
+
     #[table(singular = "blueprint",
             fks(task_id? = "tasks"))]
     pub blueprints: BlueprintTable,
@@ -688,8 +761,22 @@ pub struct SimDb {
             auto,
             fks(inventory_id = "inventories",
                 owner? = "creatures",
-                reserved_by? = "tasks"))]
+                reserved_by? = "tasks",
+                enchantment_id? = "item_enchantments"))]
     pub item_stacks: ItemStackTable,
+
+    #[table(singular = "item_subcomponent",
+            auto,
+            fks(item_stack_id = "item_stacks" on_delete cascade))]
+    pub item_subcomponents: ItemSubcomponentTable,
+
+    #[table(singular = "item_enchantment", auto)]
+    pub item_enchantments: ItemEnchantmentTable,
+
+    #[table(singular = "enchantment_effect",
+            auto,
+            fks(enchantment_id = "item_enchantments" on_delete cascade))]
+    pub enchantment_effects: EnchantmentEffectTable,
 
     #[table(singular = "ground_pile", auto)]
     pub ground_piles: GroundPileTable,
