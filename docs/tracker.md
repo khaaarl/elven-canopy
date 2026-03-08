@@ -117,7 +117,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-narrative-log        Events and narrative log
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
-[ ] F-pile-gravity         Ground pile gravity and merging
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
@@ -210,6 +209,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-orbital-cam          Orbital camera controller
 [x] F-pathfinding          A* pathfinding over nav graph
 [x] F-pause-menu           In-game pause overlay
+[x] F-pile-gravity         Ground pile gravity and merging
 [x] F-placement-ui         Revamp construction placement UX
 [x] F-recipes              Recipe system for crafting/cooking
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
@@ -1121,7 +1121,7 @@ section).
 **Related:** F-bldg-kitchen, F-bread, F-items
 
 #### F-pile-gravity — Ground pile gravity and merging
-**Status:** Todo · **Phase:** 4
+**Status:** Done · **Phase:** 4
 
 Ground piles that are not physically on a solid surface (e.g., after the
 platform beneath them is deconstructed) should fall until they reach a
