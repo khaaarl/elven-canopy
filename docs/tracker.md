@@ -132,6 +132,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
+[ ] F-tabulosity-safety    Debug-checked FK validation and unsafe-op audit
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
@@ -2005,6 +2006,25 @@ a duplicate value is found. Low complexity, builds on existing index
 infrastructure.
 
 **Related:** F-sim-db-impl
+
+#### F-tabulosity-safety — Debug-checked FK validation and unsafe-op audit
+**Status:** Todo
+
+Audit and harden all validation-bypassing tabulosity operations in `elven_canopy_sim`. Currently there are ~187 call sites in `sim.rs` using `_no_fk`, `insert_auto_no_fk`, `update_no_fk`, `remove_no_fk`, or `modify_unchecked` — all of which skip some form of safety checking. Three workstreams:
+
+**1. Comment audit (convention enforcement)**
+
+Every call site in `elven_canopy_sim` that uses a validation-bypassing method needs a comment explaining WHY it's safe to skip validation at that specific call site. Current breakdown: ~54 `insert_no_fk`/`insert_auto_no_fk`, ~56 `update_no_fk`, ~15 `remove_no_fk`, ~62 `modify_unchecked` — all in `sim.rs`. The comment should state which FK invariant is preserved and why (e.g., "creature_id was just fetched from the creatures table" or "this is a new auto-increment PK with no inbound FKs yet"). Establish this as a codebase convention: any future `_no_fk` or `modify_unchecked` call without a safety comment fails code review.
+
+**2. Debug-checked FK variants in tabulosity**
+
+`modify_unchecked` already has debug-build safety checks (index assertions). Extend this pattern to FK validation: add `insert_unchecked` / `update_unchecked` / `remove_unchecked` / `insert_auto_unchecked` methods (or similar naming) that skip FK validation in release builds but still perform FK checks in debug/test builds via `debug_assert!`. These become the default choice for internal sim code where FK validity is structurally guaranteed but we want the safety net during development. The existing `_no_fk` methods become the "I measured this and need to skip even debug checks" escape hatch — they should be rare and always commented. The generated Database-level `insert`, `update`, `remove` methods (which always validate FKs) remain the safe default for external/untrusted callers.
+
+**3. FK validation performance measurement**
+
+Benchmark the current cost of FK validation to establish whether the `_no_fk` usage is actually justified by performance. Consider an optimization: FK checks on `update` currently re-validate all FK fields, but if the FK field value didn't change between the old and new row, the lookup is redundant. A "diff-aware" FK check would compare before/after FK field values and only do the BTreeMap `contains_key` lookup when the field actually changed. This trades a field comparison (cheap) for a potential BTreeMap lookup (less cheap). May or may not be a net win — needs measurement with realistic SimDb sizes. If FK validation turns out to be negligible, many `_no_fk` sites could be converted to regular validated calls and the whole audit becomes simpler.
+
+**Ordering:** Start with workstream 3 (measurement) — the results determine how aggressive workstreams 1 and 2 need to be. If FK validation is cheap enough, many `_no_fk` calls can just become regular validated calls, dramatically reducing the audit surface. Then do workstream 2 (add debug-checked variants) for the remaining performance-sensitive sites, and finally workstream 1 (comment audit) for whatever still uses raw `_no_fk`.
 
 #### F-tree-gen — Procedural tree generation (trunk+branches)
 **Status:** Done · **Phase:** 1 · **Refs:** §8
