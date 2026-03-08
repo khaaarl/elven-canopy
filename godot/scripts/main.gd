@@ -483,6 +483,11 @@ func _setup_common(bridge: SimBridge) -> void:
 	_structure_info_panel.cooking_config_changed.connect(
 		func(sid: int, enabled: bool, target: int): bridge.set_cooking_config(sid, enabled, target)
 	)
+	_structure_info_panel.workshop_config_changed.connect(
+		func(sid: int, enabled: bool, recipe_configs: Array):
+			bridge.set_workshop_config(sid, enabled, JSON.stringify(recipe_configs))
+	)
+	_structure_info_panel.set_recipes(bridge.get_recipes())
 
 	# Menu button.
 	var menu_btn := Button.new()

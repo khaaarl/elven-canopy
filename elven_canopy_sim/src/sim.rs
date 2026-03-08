@@ -724,9 +724,9 @@ impl SimState {
             SimAction::SetWorkshopConfig {
                 structure_id,
                 workshop_enabled,
-                recipe_ids,
+                recipe_configs,
             } => {
-                self.set_workshop_config(*structure_id, *workshop_enabled, recipe_ids.clone());
+                self.set_workshop_config(*structure_id, *workshop_enabled, recipe_configs.clone());
             }
             SimAction::DebugNotification { message } => {
                 self.add_notification(message.clone());
@@ -2912,12 +2912,28 @@ impl SimState {
             }
 
             let recipe_ids = structure.workshop_recipe_ids.clone();
+            let recipe_targets = structure.workshop_recipe_targets.clone();
             let inv_id = structure.inventory_id;
 
-            // Find first recipe whose inputs are all available (unreserved).
+            // Find first recipe whose inputs are all available (unreserved) and
+            // whose output target has not been reached.
             let mut chosen_recipe: Option<crate::config::Recipe> = None;
             for rid in &recipe_ids {
                 if let Some(recipe) = self.config.recipes.iter().find(|r| &r.id == rid) {
+                    // Check per-recipe output target. 0 or missing = don't craft.
+                    let target = recipe_targets.get(rid).copied().unwrap_or(0);
+                    if target == 0 {
+                        continue;
+                    }
+                    let output_count: u32 = recipe
+                        .outputs
+                        .iter()
+                        .map(|o| self.inv_item_count(inv_id, o.item_kind))
+                        .sum();
+                    if output_count >= target {
+                        continue;
+                    }
+
                     let all_available = recipe.inputs.iter().all(|input| {
                         self.inv_unreserved_item_count(inv_id, input.item_kind) >= input.quantity
                     });
@@ -2965,13 +2981,13 @@ impl SimState {
         }
     }
 
-    /// Set workshop configuration: enabled state and active recipe IDs.
+    /// Set workshop configuration: enabled state and active recipe configs.
     /// Rejects invalid recipe IDs and non-Workshop structures.
     fn set_workshop_config(
         &mut self,
         structure_id: StructureId,
         workshop_enabled: bool,
-        recipe_ids: Vec<String>,
+        recipe_configs: Vec<crate::command::WorkshopRecipeEntry>,
     ) {
         if self
             .db
@@ -2982,22 +2998,31 @@ impl SimState {
             return;
         }
 
-        // Filter to valid recipe IDs only.
-        let valid_ids: Vec<String> = recipe_ids
+        // Filter to valid recipe IDs only, preserving targets.
+        let valid_configs: Vec<crate::command::WorkshopRecipeEntry> = recipe_configs
             .into_iter()
-            .filter(|rid| self.config.recipes.iter().any(|r| r.id == *rid))
+            .filter(|rc| self.config.recipes.iter().any(|r| r.id == rc.recipe_id))
             .collect();
 
         let enabled = workshop_enabled;
-        let ids = valid_ids.clone();
+        let ids: Vec<String> = valid_configs
+            .iter()
+            .map(|rc| rc.recipe_id.clone())
+            .collect();
+        let targets: std::collections::BTreeMap<String, u32> = valid_configs
+            .iter()
+            .map(|rc| (rc.recipe_id.clone(), rc.target))
+            .collect();
+        let ids_clone = ids.clone();
         let _ = self.db.structures.modify_unchecked(&structure_id, |s| {
             s.workshop_enabled = enabled;
-            s.workshop_recipe_ids = ids;
+            s.workshop_recipe_ids = ids_clone;
+            s.workshop_recipe_targets = targets;
         });
 
         // Recompute logistics wants from configured recipes' inputs.
         let inv_id = self.structure_inv(structure_id);
-        let wants = self.compute_recipe_wants(&valid_ids);
+        let wants = self.compute_recipe_wants(&ids);
         self.set_inv_wants(inv_id, &wants);
     }
 
@@ -6003,6 +6028,7 @@ impl SimState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::WorkshopRecipeEntry;
     use crate::db::{CompletedStructure, TaskKindTag};
     use crate::task::{Task, TaskKind, TaskOrigin, TaskState};
     use std::sync::LazyLock;
@@ -7840,6 +7866,7 @@ mod tests {
                 cooking_bread_target: 0,
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
+                workshop_recipe_targets: std::collections::BTreeMap::new(),
             })
             .unwrap();
         let _ = sim
@@ -7963,6 +7990,7 @@ mod tests {
                 cooking_bread_target: 0,
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
+                workshop_recipe_targets: std::collections::BTreeMap::new(),
             })
             .unwrap();
         let _ = sim
@@ -11971,6 +11999,7 @@ mod tests {
             cooking_bread_target: 0,
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
+            workshop_recipe_targets: std::collections::BTreeMap::new(),
         };
         sim.db.structures.insert_no_fk(structure).unwrap();
 
@@ -12017,6 +12046,7 @@ mod tests {
             cooking_bread_target: 0,
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
+            workshop_recipe_targets: std::collections::BTreeMap::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -12053,6 +12083,7 @@ mod tests {
             cooking_bread_target: 0,
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
+            workshop_recipe_targets: std::collections::BTreeMap::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -12115,6 +12146,7 @@ mod tests {
             cooking_bread_target: 0,
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
+            workshop_recipe_targets: std::collections::BTreeMap::new(),
         };
 
         assert_eq!(structure.display_name(), "Dormitory #7");
@@ -12140,6 +12172,7 @@ mod tests {
             cooking_bread_target: 0,
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
+            workshop_recipe_targets: std::collections::BTreeMap::new(),
         };
 
         assert_eq!(structure.display_name(), "Starlight Hall");
@@ -12294,6 +12327,7 @@ mod tests {
             cooking_bread_target: 0,
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
+            workshop_recipe_targets: std::collections::BTreeMap::new(),
         };
         sim.db.structures.insert_no_fk(structure).unwrap();
 
@@ -12565,6 +12599,7 @@ mod tests {
             cooking_bread_target: 0,
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
+            workshop_recipe_targets: std::collections::BTreeMap::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Home, &mut rng);
@@ -12594,6 +12629,7 @@ mod tests {
             cooking_bread_target: 0,
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
+            workshop_recipe_targets: std::collections::BTreeMap::new(),
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::DiningHall, &mut rng);
@@ -12641,6 +12677,7 @@ mod tests {
                 cooking_bread_target: 0,
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
+                workshop_recipe_targets: std::collections::BTreeMap::new(),
             };
             assert_eq!(
                 structure.display_name(),
@@ -13736,6 +13773,7 @@ mod tests {
                 cooking_bread_target: 0,
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
+                workshop_recipe_targets: std::collections::BTreeMap::new(),
             })
             .unwrap();
         let _ = sim
@@ -13881,6 +13919,7 @@ mod tests {
                 cooking_bread_target: 0,
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
+                workshop_recipe_targets: std::collections::BTreeMap::new(),
             })
             .unwrap();
         let _ = sim
@@ -14001,6 +14040,7 @@ mod tests {
                 cooking_bread_target: 0,
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
+                workshop_recipe_targets: std::collections::BTreeMap::new(),
             })
             .unwrap();
         let _ = sim
@@ -14241,6 +14281,7 @@ mod tests {
                 cooking_bread_target: 0,
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
+                workshop_recipe_targets: std::collections::BTreeMap::new(),
             })
             .unwrap();
         sim.set_inv_wants(inv_id, &wants);
@@ -16676,15 +16717,18 @@ mod tests {
             cooking_bread_target: 0,
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
+            workshop_recipe_targets: std::collections::BTreeMap::new(),
         };
         let json = serde_json::to_string(&structure).unwrap();
         // Remove workshop fields to simulate old save.
         let json_old = json
             .replace(r#","workshop_enabled":false"#, "")
-            .replace(r#","workshop_recipe_ids":[]"#, "");
+            .replace(r#","workshop_recipe_ids":[]"#, "")
+            .replace(r#","workshop_recipe_targets":{}"#, "");
         let restored: CompletedStructure = serde_json::from_str(&json_old).unwrap();
         assert!(!restored.workshop_enabled);
         assert!(restored.workshop_recipe_ids.is_empty());
+        assert!(restored.workshop_recipe_targets.is_empty());
     }
 
     #[test]
@@ -16770,7 +16814,10 @@ mod tests {
             action: SimAction::SetWorkshopConfig {
                 structure_id,
                 workshop_enabled: false,
-                recipe_ids: vec!["arrow".to_string()],
+                recipe_configs: vec![WorkshopRecipeEntry {
+                    recipe_id: "arrow".to_string(),
+                    target: 0,
+                }],
             },
         };
         sim.step(&[config_cmd], sim.tick + 1);
@@ -16804,7 +16851,16 @@ mod tests {
             action: SimAction::SetWorkshopConfig {
                 structure_id,
                 workshop_enabled: true,
-                recipe_ids: vec!["arrow".to_string(), "nonexistent".to_string()],
+                recipe_configs: vec![
+                    WorkshopRecipeEntry {
+                        recipe_id: "arrow".to_string(),
+                        target: 0,
+                    },
+                    WorkshopRecipeEntry {
+                        recipe_id: "nonexistent".to_string(),
+                        target: 0,
+                    },
+                ],
             },
         };
         sim.step(&[config_cmd], sim.tick + 1);
@@ -16879,7 +16935,10 @@ mod tests {
             action: SimAction::SetWorkshopConfig {
                 structure_id,
                 workshop_enabled: true,
-                recipe_ids: vec!["arrow".to_string()],
+                recipe_configs: vec![WorkshopRecipeEntry {
+                    recipe_id: "arrow".to_string(),
+                    target: 0,
+                }],
             },
         };
         sim.step(&[config_cmd], sim.tick + 1);
@@ -16959,6 +17018,28 @@ mod tests {
         };
         sim.step(&[food_cmd, rest_cmd], sim.tick + 1);
 
+        // Set all recipes active with target 100 (tests that need different
+        // targets override with their own SetWorkshopConfig).
+        let all_configs: Vec<WorkshopRecipeEntry> = sim
+            .config
+            .recipes
+            .iter()
+            .map(|r| WorkshopRecipeEntry {
+                recipe_id: r.id.clone(),
+                target: 100,
+            })
+            .collect();
+        let config_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetWorkshopConfig {
+                structure_id,
+                workshop_enabled: true,
+                recipe_configs: all_configs,
+            },
+        };
+        sim.step(&[config_cmd], sim.tick + 1);
+
         (structure_id, elf_id)
     }
 
@@ -16994,14 +17075,17 @@ mod tests {
         let mut sim = test_sim(42);
         let (structure_id, _elf_id) = setup_workshop(&mut sim);
 
-        // Set only bow recipe (needs 1 Bowstring). Don't stock any Bowstring.
+        // Set only bow recipe with target > 0 (needs 1 Bowstring). Don't stock any Bowstring.
         let config_cmd = SimCommand {
             player_id: sim.player_id,
             tick: sim.tick + 1,
             action: SimAction::SetWorkshopConfig {
                 structure_id,
                 workshop_enabled: true,
-                recipe_ids: vec!["bow".to_string()],
+                recipe_configs: vec![WorkshopRecipeEntry {
+                    recipe_id: "bow".to_string(),
+                    target: 50,
+                }],
             },
         };
         sim.step(&[config_cmd], sim.tick + 1);
@@ -17090,14 +17174,17 @@ mod tests {
         let inv_id = sim.structure_inv(structure_id);
         sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
 
-        // Disable the workshop.
+        // Disable the workshop (target > 0, but disabled flag prevents crafting).
         let config_cmd = SimCommand {
             player_id: sim.player_id,
             tick: sim.tick + 1,
             action: SimAction::SetWorkshopConfig {
                 structure_id,
                 workshop_enabled: false,
-                recipe_ids: vec!["bowstring".to_string()],
+                recipe_configs: vec![WorkshopRecipeEntry {
+                    recipe_id: "bowstring".to_string(),
+                    target: 50,
+                }],
             },
         };
         sim.step(&[config_cmd], sim.tick + 1);
@@ -17166,7 +17253,10 @@ mod tests {
             action: SimAction::SetWorkshopConfig {
                 structure_id,
                 workshop_enabled: true,
-                recipe_ids: vec!["bow".to_string()],
+                recipe_configs: vec![WorkshopRecipeEntry {
+                    recipe_id: "bow".to_string(),
+                    target: 100,
+                }],
             },
         };
         sim.step(&[config_cmd], sim.tick + 1);
@@ -17267,7 +17357,7 @@ mod tests {
         let mut sim = test_sim(42);
         let (structure_id, elf_id) = setup_workshop(&mut sim);
 
-        // Stock Fruit, configure only bowstring recipe.
+        // Stock Fruit, configure only bowstring recipe with target 100.
         let inv_id = sim.structure_inv(structure_id);
         sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
 
@@ -17277,7 +17367,10 @@ mod tests {
             action: SimAction::SetWorkshopConfig {
                 structure_id,
                 workshop_enabled: true,
-                recipe_ids: vec!["bowstring".to_string()],
+                recipe_configs: vec![WorkshopRecipeEntry {
+                    recipe_id: "bowstring".to_string(),
+                    target: 100,
+                }],
             },
         };
         sim.step(&[config_cmd], sim.tick + 1);
@@ -17316,7 +17409,10 @@ mod tests {
             action: SimAction::SetWorkshopConfig {
                 structure_id,
                 workshop_enabled: true,
-                recipe_ids: vec!["arrow".to_string()],
+                recipe_configs: vec![WorkshopRecipeEntry {
+                    recipe_id: "arrow".to_string(),
+                    target: 100,
+                }],
             },
         };
         sim.step(&[config_cmd], sim.tick + 1);
@@ -17338,6 +17434,175 @@ mod tests {
 
         let inv_id = sim.structure_inv(structure_id);
         assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 20);
+    }
+
+    #[test]
+    fn workshop_monitor_skips_when_target_reached() {
+        let mut sim = test_sim(42);
+        let (structure_id, _creature_id) = setup_workshop(&mut sim);
+
+        // Configure arrow recipe with target 20.
+        let config_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetWorkshopConfig {
+                structure_id,
+                workshop_enabled: true,
+                recipe_configs: vec![WorkshopRecipeEntry {
+                    recipe_id: "arrow".to_string(),
+                    target: 20,
+                }],
+            },
+        };
+        sim.step(&[config_cmd], sim.tick + 1);
+
+        // Add 20 arrows to workshop inventory (meeting target).
+        let inv_id = sim.structure_inv(structure_id);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 20, None, None);
+
+        // Run logistics heartbeat — should NOT create a Craft task.
+        sim.process_workshop_monitor();
+        let craft_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
+            .collect();
+        assert!(
+            craft_tasks.is_empty(),
+            "Should not craft when target is reached"
+        );
+    }
+
+    #[test]
+    fn workshop_monitor_crafts_when_below_target() {
+        let mut sim = test_sim(42);
+        let (structure_id, _creature_id) = setup_workshop(&mut sim);
+
+        // Configure arrow recipe with target 40.
+        let config_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetWorkshopConfig {
+                structure_id,
+                workshop_enabled: true,
+                recipe_configs: vec![WorkshopRecipeEntry {
+                    recipe_id: "arrow".to_string(),
+                    target: 40,
+                }],
+            },
+        };
+        sim.step(&[config_cmd], sim.tick + 1);
+
+        // Add 10 arrows (below target of 40).
+        let inv_id = sim.structure_inv(structure_id);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 10, None, None);
+
+        // Run workshop monitor — should create a Craft task.
+        sim.process_workshop_monitor();
+        let craft_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
+            .collect();
+        assert_eq!(craft_tasks.len(), 1, "Should craft when below target");
+    }
+
+    #[test]
+    fn workshop_monitor_skips_when_target_zero() {
+        let mut sim = test_sim(42);
+        let (structure_id, _creature_id) = setup_workshop(&mut sim);
+
+        // Configure arrow recipe with target 0 (don't craft).
+        let config_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetWorkshopConfig {
+                structure_id,
+                workshop_enabled: true,
+                recipe_configs: vec![WorkshopRecipeEntry {
+                    recipe_id: "arrow".to_string(),
+                    target: 0,
+                }],
+            },
+        };
+        sim.step(&[config_cmd], sim.tick + 1);
+
+        sim.process_workshop_monitor();
+        let craft_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
+            .collect();
+        assert_eq!(craft_tasks.len(), 0, "Should not craft when target is 0");
+    }
+
+    #[test]
+    fn workshop_monitor_skips_when_target_missing() {
+        let mut sim = test_sim(42);
+        let (structure_id, _creature_id) = setup_workshop(&mut sim);
+
+        // Clear all recipe configs so targets are missing (= don't craft).
+        let config_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetWorkshopConfig {
+                structure_id,
+                workshop_enabled: true,
+                recipe_configs: vec![],
+            },
+        };
+        sim.step(&[config_cmd], sim.tick + 1);
+
+        sim.process_workshop_monitor();
+        let craft_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
+            .collect();
+        assert_eq!(
+            craft_tasks.len(),
+            0,
+            "Should not craft when no targets are set"
+        );
+    }
+
+    #[test]
+    fn set_workshop_config_stores_targets() {
+        let mut sim = test_sim(42);
+        let (structure_id, _creature_id) = setup_workshop(&mut sim);
+
+        let config_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetWorkshopConfig {
+                structure_id,
+                workshop_enabled: true,
+                recipe_configs: vec![
+                    WorkshopRecipeEntry {
+                        recipe_id: "bowstring".to_string(),
+                        target: 50,
+                    },
+                    WorkshopRecipeEntry {
+                        recipe_id: "arrow".to_string(),
+                        target: 0,
+                    },
+                ],
+            },
+        };
+        sim.step(&[config_cmd], sim.tick + 1);
+
+        let structure = sim.db.structures.get(&structure_id).unwrap();
+        // Target 50 should be stored.
+        assert_eq!(
+            structure.workshop_recipe_targets.get("bowstring"),
+            Some(&50)
+        );
+        // Target 0 means "don't craft" — stored as 0.
+        assert_eq!(structure.workshop_recipe_targets.get("arrow"), Some(&0));
     }
 
     #[test]

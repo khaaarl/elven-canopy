@@ -1264,6 +1264,27 @@ impl SimBridge {
             recipe_ids_arr.push(&GString::from(rid.as_str()).to_variant());
         }
         dict.set("workshop_recipe_ids", recipe_ids_arr);
+
+        // Per-recipe targets and stock counts.
+        let mut targets_dict = VarDictionary::new();
+        for (rid, target) in &structure.workshop_recipe_targets {
+            targets_dict.set(GString::from(rid.as_str()), *target as i64);
+        }
+        dict.set("workshop_recipe_targets", targets_dict);
+
+        let mut stocks_dict = VarDictionary::new();
+        for recipe in &sim.config.recipes {
+            if structure.workshop_recipe_ids.contains(&recipe.id) {
+                let stock: u32 = recipe
+                    .outputs
+                    .iter()
+                    .map(|o| sim.inv_item_count(structure.inventory_id, o.item_kind))
+                    .sum();
+                stocks_dict.set(GString::from(recipe.id.as_str()), stock as i64);
+            }
+        }
+        dict.set("workshop_recipe_stocks", stocks_dict);
+
         let craft_status = if structure.furnishing
             == Some(elven_canopy_sim::types::FurnishingType::Workshop)
             && structure.workshop_enabled
@@ -1437,17 +1458,31 @@ impl SimBridge {
         &mut self,
         structure_id: i64,
         enabled: bool,
-        recipe_ids: PackedStringArray,
+        recipe_configs_json: GString,
     ) {
-        let ids: Vec<String> = recipe_ids
-            .as_slice()
+        let json_str = recipe_configs_json.to_string();
+        let parsed: Vec<serde_json::Value> = match serde_json::from_str(&json_str) {
+            Ok(v) => v,
+            Err(e) => {
+                godot_error!("SimBridge: failed to parse workshop config JSON: {e}");
+                return;
+            }
+        };
+        let configs: Vec<elven_canopy_sim::command::WorkshopRecipeEntry> = parsed
             .iter()
-            .map(|s| s.to_string())
+            .filter_map(|v| {
+                let id = v.get("id")?.as_str()?.to_string();
+                let target = v.get("target").and_then(|t| t.as_u64()).unwrap_or(0) as u32;
+                Some(elven_canopy_sim::command::WorkshopRecipeEntry {
+                    recipe_id: id,
+                    target,
+                })
+            })
             .collect();
         self.apply_or_send(SimAction::SetWorkshopConfig {
             structure_id: StructureId(structure_id as u64),
             workshop_enabled: enabled,
-            recipe_ids: ids,
+            recipe_configs: configs,
         });
     }
 

@@ -448,6 +448,10 @@ pub struct CompletedStructure {
     pub workshop_enabled: bool,
     #[serde(default)]
     pub workshop_recipe_ids: Vec<String>,
+    /// Per-recipe output targets. Key = recipe ID, value = target quantity.
+    /// A target of 0 or missing entry means "don't craft this recipe."
+    #[serde(default)]
+    pub workshop_recipe_targets: std::collections::BTreeMap<String, u32>,
 }
 
 impl CompletedStructure {
@@ -476,6 +480,7 @@ impl CompletedStructure {
             cooking_bread_target: 0,
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
+            workshop_recipe_targets: std::collections::BTreeMap::new(),
         }
     }
 

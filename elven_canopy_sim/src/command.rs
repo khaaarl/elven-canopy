@@ -172,12 +172,20 @@ pub enum SimAction {
     },
     /// Create a debug notification for testing the notification pipeline.
     DebugNotification { message: String },
-    /// Set workshop configuration (enabled state and active recipe IDs).
+    /// Set workshop configuration (enabled state and active recipe configs).
+    /// Each recipe config carries a recipe ID and an output target (0 = don't craft).
     SetWorkshopConfig {
         structure_id: StructureId,
         workshop_enabled: bool,
-        recipe_ids: Vec<String>,
+        recipe_configs: Vec<WorkshopRecipeEntry>,
     },
+}
+
+/// A recipe configuration entry for workshop commands.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkshopRecipeEntry {
+    pub recipe_id: String,
+    pub target: u32,
 }
 
 #[cfg(test)]

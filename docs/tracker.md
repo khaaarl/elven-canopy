@@ -47,7 +47,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
-[~] F-manufacturing        Item schema expansion + workshop manufacturing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 ```
@@ -193,6 +192,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-logistics            Spatial resource flow (Kanban-style)
 [x] F-main-menu            Main menu UI
+[x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-mood-system          Mood with escalating consequences
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-mp-checksums         Multiplayer state checksums for desync detection
@@ -1020,7 +1020,7 @@ produce more mana, mana enables growth, growth makes elves happier.
 **Related:** F-branch-growth, F-choir-build, F-mass-conserve, F-population, F-tree-info
 
 #### F-manufacturing — Item schema expansion + workshop manufacturing
-**Status:** In Progress
+**Status:** Done
 
 Item schema expansion (quality, materials, subcomponents, enchantments),
 data-driven recipe system, and workshop manufacturing pipeline.
