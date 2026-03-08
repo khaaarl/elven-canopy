@@ -94,7 +94,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-fruit-prod           Basic fruit production and harvesting
-[ ] F-fruit-variety        Food storage, cooking, magical brewing
+[ ] F-fruit-variety     Procedural fruit variety and processing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-keybind-help         Keyboard shortcuts help overlay
@@ -930,15 +930,25 @@ food system (F-fruit-variety).
 
 **Related:** F-branch-growth, F-elf-needs, F-food-chain, F-food-gauge, F-fruit-variety, F-population
 
-#### F-fruit-variety — Food storage, cooking, magical brewing
+#### F-fruit-variety — Procedural fruit variety and processing
 **Status:** Todo · **Phase:** 7 · **Refs:** §13
 
-Advanced food system: multiple fruit types, food quality tiers, complex
-cooking recipes, and magical brewing from rare ingredients. Builds on the
-basic food pipeline (F-food-chain handles single fruit type → bread) by
-adding variety, quality, and magical dimensions.
+Procedural fruit generation system: worldgen creates 20-40+ unique fruit
+species per game from composable parts (flesh, rind, seed, fiber, sap,
+resin) and properties (starchy, sweet, fibrous, luminescent, pigmented,
+etc.). Processing paths emerge from part properties — recipes match on
+properties, not fruit IDs. Coverage constraints guarantee every world has
+enough fruits for food, fiber, dye, alchemy, medicine, and other chains.
+Vaelith names generated from property-derived morphemes. Greenhouses
+cultivate a single chosen species. Some fruits are wild-only.
 
-**Related:** F-bldg-kitchen, F-food-chain, F-fruit-prod
+**Draft:** `docs/drafts/fruit_variety.md`
+
+**Related systems:** F-fruit-prod (production mechanics), F-recipes
+(property-based recipe matching), F-food-chain (logistics pipeline),
+item schema (FruitSpeciesId references).
+
+**Related:** F-bldg-kitchen, F-food-chain, F-fruit-prod, F-recipes
 
 #### F-hauling — Item hauling task type
 **Status:** Done · **Phase:** 3
@@ -1004,7 +1014,7 @@ to bread; workshops use recipes to convert wood to bows. Data-driven
 via GameConfig so recipes can be added/tuned without code changes.
 Avoids hardcoding conversion logic per building type.
 
-**Related:** F-bldg-kitchen, F-bldg-workshop, F-crafting, F-food-chain
+**Related:** F-bldg-kitchen, F-bldg-workshop, F-crafting, F-food-chain, F-fruit-variety
 
 #### F-tree-capacity — Per-tree carrying capacity limits
 **Status:** Todo · **Phase:** 7 · **Refs:** §13
