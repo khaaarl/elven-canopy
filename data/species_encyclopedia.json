@@ -1,0 +1,62 @@
+[
+  {
+    "name": "Elf",
+    "sapient": true,
+    "description": "Graceful, long-lived forest dwellers who form symbiotic bonds with ancient trees. Elves sing to shape living wood into platforms, walkways, and buildings. Their songs channel mana, and their happiness fuels the tree's growth. A content elf village can coax a tree into magnificent forms; a miserable one watches their home slowly wither.",
+    "traits": ["Sapient", "Arboreal", "Singing", "Mana-sensitive"]
+  },
+  {
+    "name": "Goblin",
+    "sapient": true,
+    "description": "Small, cunning creatures that form loose tribal societies, often in caves or dense undergrowth. Goblins are resourceful scavengers who can fashion crude tools from almost anything. They tend toward hostility with elf civilizations, though exceptions exist. Sometimes found serving as minions in larger orc or troll war-bands.",
+    "traits": ["Sapient", "Nocturnal", "Scavenger"]
+  },
+  {
+    "name": "Orc",
+    "sapient": true,
+    "description": "Powerful, martial humanoids who organize into war-bands and raiding parties. Orcs respect strength above all else and maintain rigid hierarchies. Their civilizations are typically aggressive toward neighbors, though a few rare orc settlements have achieved uneasy truces with other species. Often accompanied by goblin and troll auxiliaries.",
+    "traits": ["Sapient", "Martial", "Strong"]
+  },
+  {
+    "name": "Troll",
+    "sapient": true,
+    "description": "Large, slow-witted creatures with remarkable regenerative abilities. Trolls are solitary by nature but sometimes band together under goblin or orc leadership. They are dangerous in combat due to their size and toughness, but rarely organize civilizations of their own. A troll left alone will usually settle near a food source and defend it fiercely.",
+    "traits": ["Sapient", "Regenerating", "Solitary", "Strong"]
+  },
+  {
+    "name": "Capybara",
+    "sapient": false,
+    "description": "Gentle, barrel-shaped rodents that graze peacefully on the forest floor. Capybaras are social animals that form small herds, often seen lounging near water sources. Elves consider them good omens. They pose no threat and provide a calming presence for nearby creatures.",
+    "traits": ["Herbivore", "Social", "Calm"]
+  },
+  {
+    "name": "Boar",
+    "sapient": false,
+    "description": "Stocky, tusked omnivores that root through the forest undergrowth. Boars are territorial and will charge if cornered, but generally avoid settlements unless food is scarce. They play an important ecological role by churning soil and spreading seeds.",
+    "traits": ["Omnivore", "Territorial", "Forager"]
+  },
+  {
+    "name": "Deer",
+    "sapient": false,
+    "description": "Graceful herbivores that move through the forest in small family groups. Deer are skittish and flee from loud noises or sudden movement. They browse on low-hanging leaves and ground vegetation, occasionally venturing onto tree platforms to nibble at fruit.",
+    "traits": ["Herbivore", "Skittish", "Graceful"]
+  },
+  {
+    "name": "Elephant",
+    "sapient": false,
+    "description": "Massive, intelligent herbivores with long memories and complex social bonds. Forest elephants navigate between the great trees, using their trunks to strip bark and reach high foliage. They are gentle unless threatened, but their sheer size makes them a force to be reckoned with. Elves treat them with deep respect.",
+    "traits": ["Herbivore", "Intelligent", "Social", "Massive"]
+  },
+  {
+    "name": "Monkey",
+    "sapient": false,
+    "description": "Agile primates that live in the tree canopy, leaping between branches with acrobatic ease. Monkeys are curious, mischievous, and occasionally steal food from elf kitchens. They travel in troops and communicate with a rich vocabulary of calls. Their presence high in the canopy is a sign of a healthy forest.",
+    "traits": ["Omnivore", "Arboreal", "Agile", "Curious"]
+  },
+  {
+    "name": "Squirrel",
+    "sapient": false,
+    "description": "Tiny, hyperactive rodents that dart along branches and trunk surfaces, hoarding nuts and seeds in hidden caches. Squirrels are everywhere in a healthy forest and serve as important seed dispersers. They are too small to be a threat but too quick to catch.",
+    "traits": ["Herbivore", "Arboreal", "Fast", "Hoarding"]
+  }
+]

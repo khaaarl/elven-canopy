@@ -12,7 +12,12 @@
 ## related fields before transitioning to main.tscn. main.gd checks
 ## `multiplayer_mode` to decide between single-player and multiplayer startup.
 ##
-## See also: new_game_menu.gd, host_game_menu.gd, join_game_menu.gd, main.gd.
+## On startup, creates a temporary SimBridge to trigger the global encyclopedia
+## HTTP server (runs on localhost, persists for the lifetime of the process).
+## The URL is stored in `encyclopedia_url` for UI display.
+##
+## See also: new_game_menu.gd, host_game_menu.gd, join_game_menu.gd, main.gd,
+## encyclopedia_server.rs.
 
 extends Node
 
@@ -45,3 +50,18 @@ var mp_ticks_per_turn: int = 50
 ## Multiplayer join config (join mode).
 var mp_relay_address: String = ""
 var mp_player_name: String = ""
+
+## Encyclopedia server URL (set at startup, persists across scenes).
+var encyclopedia_url: String = ""
+
+
+func _ready() -> void:
+	# Create a temporary SimBridge to trigger the global encyclopedia server
+	# start. The server lives in a Rust static and persists after the bridge
+	# is freed. This runs as soon as the autoload initializes (before the
+	# main menu appears).
+	var bridge := SimBridge.new()
+	encyclopedia_url = bridge.encyclopedia_url()
+	bridge.free()
+	if not encyclopedia_url.is_empty():
+		print("Encyclopedia server: %s" % encyclopedia_url)

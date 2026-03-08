@@ -90,7 +90,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-encyclopedia-know    Encyclopedia civ/fruit knowledge pages
-[ ] F-encyclopedia-srv     Embedded localhost HTTP encyclopedia server
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
@@ -179,6 +178,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-elf-needs            Hunger and rest self-direction
 [x] F-elf-sprite           Billboard elf sprite rendering
 [x] F-emotions-basic       Mood score from thought weights
+[x] F-encyclopedia-srv     Embedded localhost HTTP encyclopedia server
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-food-gauge           Creature food gauge with decay
 [x] F-furnish              Building furnishing framework (dormitories)
@@ -1655,11 +1655,11 @@ through the same read handle as the base encyclopedia server.
 
 **Draft:** `docs/drafts/encyclopedia_civs.md` §Encyclopedia (Web-Based)
 
-**Blocked by:** F-civ-knowledge, F-encyclopedia-srv
+**Blocked by:** F-civ-knowledge
 **Related:** F-civ-knowledge
 
 #### F-encyclopedia-srv — Embedded localhost HTTP encyclopedia server
-**Status:** Todo
+**Status:** Done
 
 Embedded HTTP server on localhost (127.0.0.1, configurable port) serving
 the encyclopedia as HTML pages in the player's web browser. Server runs
@@ -1669,8 +1669,6 @@ browser on click. Server-rendered HTML templates, no JavaScript required.
 Auto-refresh via meta tag. Independent of all sim/worldgen features.
 
 **Draft:** `docs/drafts/encyclopedia_civs.md` §Encyclopedia (Web-Based)
-
-**Blocks:** F-encyclopedia-know
 
 #### F-godot-setup — Godot 4 project setup
 **Status:** Done · **Phase:** 0 · **Refs:** §3

@@ -25,7 +25,7 @@ Loose overview of where things stand. See `docs/tracker.md` for the full project
 - **Phase 0 (Foundations):** Complete.
 - **Phase 1 (A Tree and an Elf):** Complete. Ten species implemented: Elf, Capybara, Boar, Deer, Elephant, Goblin, Monkey, Orc, Squirrel, Troll (all with procedural sprites, data-driven behavior). Goblin/Orc/Troll are hostile-faction placeholders — spawnable via debug UI, wander and climb, no food decay or mood system yet.
 - **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, Rust chunk-based mesh generation with face culling replaces GDScript MultiMesh rendering. Mouse-driven click-drag placement UI with height-slice grid overlay implemented. Hover tooltips for creatures, structures, ground piles, and fruit. No mana economy, no visual smoothing.
-- **Phase 6 (Culture and Language):** Music crate complete with Phase 1 waveform synthesizer (`synth.rs`) and runtime generation API (`generate.rs`). Integrated into game via gdext: construction designation triggers background composition, GDScript `construction_music.gd` plays PCM through `AudioStreamGenerator`. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation.
+- **Phase 6 (Culture and Language):** Music crate complete with Phase 1 waveform synthesizer (`synth.rs`) and runtime generation API (`generate.rs`). Integrated into game via gdext: construction designation triggers background composition, GDScript `construction_music.gd` plays PCM through `AudioStreamGenerator`. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation. Embedded encyclopedia HTTP server (localhost, species bestiary) with in-game book button to open in browser.
 - **Phase 4 (Economy and Ecology):** Kitchen cooking, workshop manufacturing (bow/arrow/bowstring recipes), elf personal item acquisition, creature thoughts, and basic mood scoring implemented. Notification system with sim-side persistence (SimDb table), multiplayer-aware command pipeline, toast UI, and moping notifications; rest not started.
 - **Tabulosity (sim DB):** Typed in-memory relational store complete — derive macros for `Bounded`, `Table`, `Database` with FK validation and serde support (feature-gated). Includes compound indexes (`#[index(...)]`) with prefix queries, filtered/partial indexes, unified `IntoQuery` API, tracked runtime bounds, `on_delete cascade`/`nullify` FK semantics with cycle detection, auto-increment primary keys (`#[primary_key(auto_increment)]`), unique index enforcement (`#[indexed(unique)]`), `modify_unchecked` closure-based in-place mutation with debug-build safety checks, `QueryOpts` for ordering (asc/desc) and offset (skip N) on all query methods, `modify_each_by_*` query-driven batch mutation, and schema versioning (`#[schema_version(N)]`) with missing-tables-default-to-empty on deserialization. **Integrated into `elven_canopy_sim`:** `SimDb` (22 tables) replaces all BTreeMap entity storage — creatures, tasks (with decomposed extension tables), blueprints, structures, inventories, item stacks (with subcomponents and enchantments), ground piles, thoughts, notifications, furniture, music compositions, and logistics wants.
 - **Phases 3, 5, 7–8:** Not started.
@@ -91,6 +91,7 @@ elven-canopy/
 │   └── src/
 │       ├── lib.rs              # ExtensionLibrary entry point
 │       ├── mesh_cache.rs       # Chunk mesh cache with dirty tracking
+│       ├── encyclopedia_server.rs # Embedded localhost HTTP species bestiary
 │       └── sim_bridge.rs       # SimBridge node exposed to Godot
 ├── elven_canopy_music/         # Palestrina-style polyphonic music generator
 │   ├── src/
@@ -140,8 +141,9 @@ elven-canopy/
 │       ├── notification_display.gd  # Toast-style event notifications
 │       ├── creature_info_panel.gd   # Right-side creature info + follow button
 │       └── construction_music.gd    # Construction music playback (PCM via AudioStreamGenerator)
-├── data/                       # Shared data files (lexicon, Markov models)
+├── data/                       # Shared data files (lexicon, Markov models, encyclopedia)
 │   ├── vaelith_lexicon.json    # Vaelith vocabulary (41 entries with syllables + tones)
+│   ├── species_encyclopedia.json # Species bestiary data (name, description, traits)
 │   ├── markov_models.json      # Interval transition tables from Palestrina corpus
 │   └── motif_library.json      # Ranked interval n-gram motifs
 ├── python/                     # Offline tools (not part of game runtime)
@@ -304,6 +306,10 @@ Things that are non-obvious or surprising about this codebase:
 
 **Input precedence:**
 - ESC handling flows: placement_controller (cancel placement) → construction_controller (cancel construction) → selection_controller (deselect) → pause_menu (open/close menu). Each handler calls `set_input_as_handled()` to prevent downstream handlers from firing.
+
+**Keyboard shortcut assignment (CRITICAL):**
+- Before assigning ANY new keyboard shortcut, **thoroughly audit all existing bindings** across every GDScript file. Search for `KEY_` in `godot/scripts/` to find all current bindings. Many keys are already in use (Space, 1-3, B, T, U, I, F12, ESC, Enter, arrow keys, +/=).
+- **Always ask the user** before assigning a shortcut — never pick one unilaterally.
 
 **Dev profile tuning:**
 - `Cargo.toml` sets `opt-level = 1` for the dev profile. This speeds up test execution significantly (sim tests ~4x faster) at a small compile-time cost. The test profile inherits from dev, so both `cargo build` and `cargo test` benefit.

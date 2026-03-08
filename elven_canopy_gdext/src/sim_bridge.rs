@@ -169,6 +169,11 @@ use crate::mesh_cache::MeshCache;
 /// Compile-time version hash. Bump when making breaking protocol changes.
 const SIM_VERSION_HASH: u64 = 1;
 
+/// Global encyclopedia server. Lives in a static so it survives SimBridge
+/// being freed (e.g., when returning to the main menu) and only starts once.
+static ENCYCLOPEDIA: std::sync::Mutex<Option<crate::encyclopedia_server::EncyclopediaServer>> =
+    std::sync::Mutex::new(None);
+
 /// Parse a species name string into a `Species` enum variant.
 fn parse_species(name: &str) -> Option<Species> {
     match name {
@@ -235,6 +240,9 @@ pub struct SimBridge {
 #[godot_api]
 impl INode for SimBridge {
     fn init(base: Base<Node>) -> Self {
+        // Start the global encyclopedia server if not already running.
+        Self::ensure_encyclopedia_started();
+
         Self {
             base,
             session: GameSession::new_singleplayer(),
@@ -2509,6 +2517,7 @@ impl SimBridge {
     /// delegates tick pacing to the `LocalRelay`.
     #[func]
     fn frame_update(&mut self, delta: f64) -> f64 {
+        self.update_encyclopedia();
         if self.net_client.is_some() {
             let turns = self.poll_network();
             if turns > 0 {
@@ -3481,6 +3490,60 @@ impl SimBridge {
             }
         }
         arr
+    }
+
+    // ========================================================================
+    // Encyclopedia server
+    // ========================================================================
+
+    /// Start the global encyclopedia server if not already running.
+    fn ensure_encyclopedia_started() {
+        let mut guard = ENCYCLOPEDIA.lock().unwrap();
+        if guard.is_some() {
+            return;
+        }
+        let res_path = godot::classes::ProjectSettings::singleton()
+            .globalize_path("res://")
+            .to_string();
+        let species_path = format!("{res_path}/../data/species_encyclopedia.json");
+        match crate::encyclopedia_server::load_species_data(&species_path) {
+            Ok(species) => match crate::encyclopedia_server::EncyclopediaServer::start(species) {
+                Some(server) => {
+                    godot_print!("SimBridge: encyclopedia server started at {}", server.url());
+                    *guard = Some(server);
+                }
+                None => {
+                    godot_warn!("SimBridge: failed to bind encyclopedia server");
+                }
+            },
+            Err(e) => {
+                godot_warn!("SimBridge: failed to load species encyclopedia: {e}");
+            }
+        }
+    }
+
+    /// Get the encyclopedia URL (empty string if not running).
+    #[func]
+    fn encyclopedia_url(&self) -> GString {
+        let guard = ENCYCLOPEDIA.lock().unwrap();
+        match &*guard {
+            Some(server) => GString::from(server.url().as_str()),
+            None => GString::new(),
+        }
+    }
+
+    /// Update the encyclopedia with current game state. Called each frame.
+    fn update_encyclopedia(&self) {
+        let guard = ENCYCLOPEDIA.lock().unwrap();
+        if let Some(server) = &*guard {
+            let tick = self.session.current_tick();
+            let game_name = if self.session.sim.is_some() {
+                "Elven Canopy".to_owned()
+            } else {
+                String::new()
+            };
+            server.update_data(tick, &game_name);
+        }
     }
 }
 
