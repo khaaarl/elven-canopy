@@ -75,8 +75,9 @@ Rust. It provides:
 
 Tabulosity was designed for the Elven Canopy simulation, where deterministic
 iteration order is a hard requirement for lockstep multiplayer and replay
-verification. It is not yet integrated into the sim crate -- it currently
-exists as a standalone library with comprehensive tests.
+verification. It is integrated into `elven_canopy_sim` as `SimDb` (16 tables
+replacing all BTreeMap entity storage) and also exists as a standalone library
+with comprehensive tests.
 
 ### Determinism
 
@@ -807,12 +808,25 @@ entity counts grow.
 `db.tasks.join_assignee()` returning an iterator of `(&Task, &Creature)`.
 High complexity due to lifetime management and derive macro codegen.
 
-### Schema Evolution
+### Schema Versioning
 
-**Tracker:** F-tab-schema-evol
+**Tracker:** F-tab-schema-ver
 
-Migration utilities for adding/removing fields across save-file versions.
-Needed for long-lived save games that span schema changes. High complexity.
+Schema versioning fundamentals: version number on Database (included in serialized
+output, checked on deserialization), missing tables deserialize as empty instead of
+erroring, `#[serde(default)]` convention for new fields. These changes make additive
+schema changes work without any migration code.
+
+### Schema Evolution: Custom Migrations
+
+**Tracker:** F-tab-schema-evol · **Draft:** `docs/drafts/schema_migrations.md`
+
+Two tiers of custom migration code for breaking schema changes: (1) typed
+post-deserialize migrations on current Rust structs (for simple transforms), and
+(2) low-level migrations on a format-agnostic SchemaSnapshot (for structural
+changes like table renames, merges, splits). The SchemaSnapshot path is slower and
+only used when a migration requires it. High complexity — defer until closer to
+beta.
 
 ### Other Gaps
 
