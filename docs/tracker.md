@@ -36,8 +36,8 @@ Condensed single-line-per-item view. Grouped by status: in progress first, then
 todo, then done. Every item here MUST have a corresponding entry in [Detailed
 Items](#detailed-items) and vice versa.
 
-**Format:** Each line is `[status] ID` padded to 23 characters, then a short
-title. Example: `[ ] F-example-name       Short title here`. When an item
+**Format:** Each line is `[status] ID` padded to 26 characters, then a short
+title. Example: `[ ] F-example-name         Short title here`. When an item
 changes status, update the marker AND move the line to the correct section.
 
 **Ordering:** Items are sorted alphabetically by ID within each section (In
@@ -48,7 +48,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [~] F-multiplayer          Relay-coordinator multiplayer networking
-[~] F-notifications     Player-visible event notifications
+[~] F-notifications        Player-visible event notifications
 ```
 
 ### Todo
@@ -65,13 +65,13 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
 [ ] F-bldg-storehouse      Storehouse (item storage)
-[ ] F-bldg-transparency Toggle building roof/wall transparency to see inside
+[ ] F-bldg-transparency    Toggle building roof/wall transparency to see inside
 [ ] F-bldg-workshop        Craftself's workshop
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-build-queue-ui       Construction queue/progress UI
-[ ] F-building-door     Player-controlled building door orientation
+[ ] F-building-door        Player-controlled building door orientation
 [ ] F-cascade-fail         Cascading structural failure
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
@@ -97,7 +97,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-variety        Food storage, cooking, magical brewing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-jobs                 Elf job/role specialization
-[ ] F-keybind-help      Keyboard shortcuts help overlay
+[ ] F-keybind-help         Keyboard shortcuts help overlay
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
@@ -105,7 +105,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
-[ ] F-minimap           Minimap with tree silhouette and creature positions
+[ ] F-minimap              Minimap with tree silhouette and creature positions
 [ ] F-modding              Scripting layer for modding support
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
@@ -126,13 +126,13 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
 [ ] F-stairs               Stairs and ramps for vertical movement
-[ ] F-status-bar        Persistent status bar (population, idle count, active tasks)
+[ ] F-status-bar           Persistent status bar (population, idle count, active tasks)
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-joins            Join iterators across tables
-[ ] F-tab-schema-evol   Schema evolution: custom migrations
-[ ] F-tab-schema-ver    Schema versioning fundamentals
+[ ] F-tab-schema-evol      Schema evolution: custom migrations
+[ ] F-tab-schema-ver       Schema versioning fundamentals
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
@@ -152,7 +152,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
-[x] B-tab-serde-tests   Fix tabulosity test compilation under feature unification
+[x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
 [x] F-bldg-kitchen         Kitchen (cooking from ingredients)
@@ -165,7 +165,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crate-structure      Two-crate sim/gdext structure
 [x] F-creature-info        Creature info panel with follow button
-[x] F-creature-tooltip  Hover tooltips for world objects
+[x] F-creature-tooltip     Hover tooltips for world objects
 [x] F-debug-menu           Move spawn/summon into debug menu
 [x] F-elf-acquire          Elf personal item acquisition
 [x] F-elf-names            Elf name generation from conlang rules
@@ -200,7 +200,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-orbital-cam          Orbital camera controller
 [x] F-pathfinding          A* pathfinding over nav graph
 [x] F-pause-menu           In-game pause overlay
-[x] F-placement-ui      Revamp construction placement UX
+[x] F-placement-ui         Revamp construction placement UX
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
 [x] F-save-load            Save/load to JSON with versioning
 [x] F-select-struct        Selectable structures with interaction UI
@@ -211,18 +211,18 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-sim-commands         SimCommand pipeline
 [x] F-sim-db-impl          Tabulosity typed in-memory relational store
 [x] F-sim-speed            Simulation speed controls UI
-[x] F-sim-tab-migrate   Migrate sim entity storage to tabulosity SimDb
+[x] F-sim-tab-migrate      Migrate sim entity storage to tabulosity SimDb
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
 [x] F-struct-basic         Basic structural integrity (flood fill)
 [x] F-struct-names         User-editable structure names
 [x] F-structure-reg        Completed structure registry + UI panel
-[x] F-tab-auto-pk       Auto-generated primary keys
+[x] F-tab-auto-pk          Auto-generated primary keys
 [x] F-tab-cascade-del      Cascade/nullify on delete
 [x] F-tab-compound-idx     Compound indexes with prefix queries
 [x] F-tab-filter-idx       Filtered/partial indexes
-[x] F-tab-modify-unchk  Closure-based row mutation (modify_unchecked)
-[x] F-tab-query-opts    Query options struct for index queries
-[x] F-tab-unique-idx    Unique index enforcement
+[x] F-tab-modify-unchk     Closure-based row mutation (modify_unchecked)
+[x] F-tab-query-opts       Query options struct for index queries
+[x] F-tab-unique-idx       Unique index enforcement
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
 [x] F-thoughts             Creature thoughts (DF-style event reactions)
 [x] F-tree-gen             Procedural tree generation (trunk+branches)

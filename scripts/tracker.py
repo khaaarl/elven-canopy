@@ -46,6 +46,11 @@ SUMMARY_SECTION_RE = re.compile(r"^### (In Progress|Todo|Done)\s*$")
 # Valid ID pattern
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
 
+# Column width for summary lines: "[marker] ID" is padded to this width.
+# Must be >= len("[x] ") + max ID length.  Currently 26 to fit IDs up to 22
+# chars (e.g. "F-large-nav-tolerance").
+SUMMARY_PAD = 26
+
 # Status mappings
 STATUS_TO_MARKER = {"Todo": "[ ]", "In Progress": "[~]", "Done": "[x]"}
 MARKER_TO_STATUS = {v: k for k, v in STATUS_TO_MARKER.items()}
@@ -332,6 +337,37 @@ def rewrite_detail_fields(lines, blocks, blocked_by, related):
     return out
 
 
+def normalize_summary_lines(lines):
+    """Reformat summary lines inside ``` blocks to consistent column alignment."""
+    out = []
+    in_code = False
+
+    for line in lines:
+        if line.strip() == "```" and not in_code:
+            in_code = True
+            out.append(line)
+            continue
+        if line.strip() == "```" and in_code:
+            in_code = False
+            out.append(line)
+            continue
+        if in_code:
+            m = SUMMARY_LINE_RE.match(line)
+            if m:
+                item_id = m.group(1)
+                # Extract marker and title from the raw line
+                marker = line[:3]  # [x], [ ], [~]
+                title = line[m.end():].strip()
+                id_part = f"{marker} {item_id}"
+                padded = id_part.ljust(SUMMARY_PAD)
+                out.append(f"{padded} {title}\n")
+            else:
+                out.append(line)
+        else:
+            out.append(line)
+    return out
+
+
 def sort_summary_section(lines):
     """Sort lines inside ``` blocks within summary sections."""
     out = []
@@ -429,6 +465,7 @@ def run_fix(lines):
     items = collect_items(lines)
     blocks, blocked_by, related = compute_symmetric(items)
     lines = rewrite_detail_fields(lines, blocks, blocked_by, related)
+    lines = normalize_summary_lines(lines)
     lines = sort_summary_section(lines)
     lines = sort_detail_sections(lines)
     return lines
@@ -471,7 +508,7 @@ def cmd_list(args):
         for item in group:
             marker = STATUS_TO_MARKER.get(item.status, "[ ]")
             id_part = f"{marker} {item.id}"
-            padded = id_part.ljust(23)
+            padded = id_part.ljust(SUMMARY_PAD)
             print(f"{padded} {item.title}")
         print()
 
@@ -528,7 +565,7 @@ def cmd_search(args):
     for item in matches:
         marker = STATUS_TO_MARKER.get(item.status, "[ ]")
         id_part = f"{marker} {item.id}"
-        padded = id_part.ljust(23)
+        padded = id_part.ljust(SUMMARY_PAD)
         print(f"{padded} {item.title}")
 
 
@@ -589,7 +626,7 @@ def make_summary_line(item_id, title, status):
     """Create a formatted summary line."""
     marker = STATUS_TO_MARKER[status]
     id_part = f"{marker} {item_id}"
-    padded = id_part.ljust(23)
+    padded = id_part.ljust(SUMMARY_PAD)
     return f"{padded} {title}\n"
 
 
