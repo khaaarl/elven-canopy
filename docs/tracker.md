@@ -64,6 +64,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
 [ ] F-bldg-storehouse      Storehouse (item storage)
+[ ] F-bldg-transparency Toggle building roof/wall transparency to see inside
 [ ] F-bldg-workshop        Craftself's workshop
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
@@ -95,6 +96,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-variety        Food storage, cooking, magical brewing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-jobs                 Elf job/role specialization
+[ ] F-keybind-help      Keyboard shortcuts help overlay
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
@@ -102,6 +104,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
+[ ] F-minimap           Minimap with tree silhouette and creature positions
 [ ] F-modding              Scripting layer for modding support
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
@@ -123,6 +126,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
 [ ] F-stairs               Stairs and ramps for vertical movement
+[ ] F-status-bar        Persistent status bar (population, idle count, active tasks)
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
@@ -573,7 +577,7 @@ already-wood voxels) and a wireframe shader. The sim bridge needs to
 expose per-voxel overlap classification to GDScript. See section 4 of
 `docs/drafts/construction_tree_overlap.md` for rendering design notes.
 
-**Related:** F-blueprint-mode, F-tree-overlap
+**Related:** F-bldg-transparency, F-blueprint-mode, F-tree-overlap
 
 ### Structural Integrity & Fire
 
@@ -1080,6 +1084,7 @@ before any feature that has dramatic irreversible consequences the player must
 know about.
 
 **Blocks:** F-elf-leave
+**Related:** F-status-bar
 
 #### F-personality — Personality axes affecting behavior
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -1375,6 +1380,17 @@ soul-powered constructs (golems, animated defenses).
 Replace placeholder sprites with AI-generated layered art: base body
 templates + composited clothing/hair/face layers for visual variety.
 
+#### F-bldg-transparency — Toggle building roof/wall transparency to see inside
+**Status:** Todo · **Phase:** 2
+
+A toggle (toolbar button or hotkey) that makes building roofs and walls
+nearly fully transparent so the player can see elves and furniture inside
+enclosed structures. Applies to completed Building/Enclosure voxels only —
+platforms, bridges, and tree voxels remain opaque. Rendering-side change
+using material alpha override.
+
+**Related:** F-wireframe-ghost, F-zlevel-vis
+
 #### F-build-queue-ui — Construction queue/progress UI
 **Status:** Todo · **Phase:** 2
 
@@ -1383,7 +1399,7 @@ name/type, progress bar, assigned workers, and option to cancel or reprioritize.
 Currently players can see individual blueprints in the world but have no
 overview of the construction pipeline. Small overlay or sidebar panel.
 
-**Related:** F-construction, F-task-priority
+**Related:** F-construction, F-keybind-help, F-task-priority
 
 #### F-cam-follow — Camera follow mode for creatures
 **Status:** Done · **Phase:** 2 · **Refs:** §23
@@ -1412,7 +1428,7 @@ Floating tooltip on mouse hover over any world object. Covers:
 
 Broadened from creature-only tooltip to cover all hoverable world objects.
 
-**Related:** F-creature-info, F-elf-names, F-selection
+**Related:** F-creature-info, F-elf-names, F-selection, F-status-bar
 
 #### F-debug-menu — Move spawn/summon into debug menu
 **Status:** Done · **Phase:** 2
@@ -1440,6 +1456,15 @@ The debug menu should be easy to hide entirely for non-dev builds later.
 
 Godot 4 project with GDExtension configuration.
 
+#### F-keybind-help — Keyboard shortcuts help overlay
+**Status:** Todo · **Phase:** 2
+
+A help panel (toggled via toolbar button or ? key) showing all keyboard
+shortcuts and mouse controls: camera orbit/zoom/pan, speed controls, ESC
+chain, construction mode keys, etc. Pure GDScript UI — no sim changes.
+
+**Related:** F-build-queue-ui
+
 #### F-lod-sprites — LOD sprites (chibi / detailed)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
 
@@ -1450,6 +1475,16 @@ Deferred until camera zoom range demands it.
 **Status:** Done · **Refs:** §26
 
 Main menu with New Game, Load, and Quit buttons.
+
+#### F-minimap — Minimap with tree silhouette and creature positions
+**Status:** Todo · **Phase:** 2
+
+A small top-down minimap in a screen corner showing the tree silhouette,
+creature positions (colored dots by species), construction sites, and the
+camera's current viewport frustum. Clicking the minimap jumps the camera
+to that position. Pure rendering/UI — reads existing sim data.
+
+**Related:** F-zlevel-vis
 
 #### F-new-game-ui — New game screen with tree presets
 **Status:** Done · **Refs:** §26
@@ -1525,6 +1560,16 @@ controller handles click-to-place with nav node highlighting.
 
 **Related:** F-debug-menu
 
+#### F-status-bar — Persistent status bar (population, idle count, active tasks)
+**Status:** Todo · **Phase:** 2
+
+A persistent bar (top or bottom of screen) showing at-a-glance stats:
+total population, idle elf count, active task count, current sim speed.
+DF-style "7 Elves, 2 Idle" display. Reads existing bridge data each
+frame — no sim changes needed.
+
+**Related:** F-creature-tooltip, F-notifications
+
 #### F-structure-reg — Completed structure registry + UI panel
 **Status:** Done · **Phase:** 2
 
@@ -1573,6 +1618,8 @@ construction near world limits.
 
 How to show lower platforms when upper ones occlude them. Transparency,
 cutaway, or hide-upper-levels toggle. Open design question (§27).
+
+**Related:** F-bldg-transparency, F-minimap
 
 ### Infrastructure & Multiplayer
 
