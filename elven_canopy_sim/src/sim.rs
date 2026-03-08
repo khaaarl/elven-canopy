@@ -1566,6 +1566,9 @@ impl SimState {
                 }
             }
             ScheduledEventKind::LogisticsHeartbeat => {
+                // Periodic gravity sweep: drop any floating piles before
+                // logistics processing sees them.
+                self.apply_pile_gravity();
                 self.process_logistics_heartbeat();
                 let next_tick = self.tick + self.config.logistics_heartbeat_interval_ticks;
                 self.event_queue
@@ -1698,8 +1701,23 @@ impl SimState {
     }
 
     /// Get or create a ground pile at the given position, returning its ID.
-    /// If no pile exists at `pos`, inserts a new empty one.
+    /// If no pile exists at `pos`, inserts a new empty one. If the position
+    /// is floating (no solid voxel below), it is snapped down to the nearest
+    /// surface before creation. If a pile already exists at the snapped
+    /// position, that pile is returned instead of creating a new one.
     fn ensure_ground_pile(&mut self, pos: VoxelCoord) -> GroundPileId {
+        // Snap to surface if the position is floating.
+        let pos = if pos.y > 0
+            && !self
+                .world
+                .get(VoxelCoord::new(pos.x, pos.y - 1, pos.z))
+                .is_solid()
+        {
+            self.find_surface_below(pos.x, pos.y, pos.z)
+        } else {
+            pos
+        };
+
         if let Some(pile) = self
             .db
             .ground_piles
@@ -1778,28 +1796,9 @@ impl SimState {
                 .next();
 
             if let Some(target_pile) = existing {
-                // Merge: move all item stacks from the falling pile's inventory
-                // to the target pile's inventory, then delete the floating pile.
+                // Merge inventories and delete the floating pile.
                 let src_inv = pile.inventory_id;
-                let dst_inv = target_pile.inventory_id;
-                let stacks: Vec<crate::db::ItemStack> = self
-                    .db
-                    .item_stacks
-                    .by_inventory_id(&src_inv, tabulosity::QueryOpts::ASC);
-                for stack in stacks {
-                    self.inv_add_item(
-                        dst_inv,
-                        stack.kind,
-                        stack.quantity,
-                        stack.owner,
-                        stack.reserved_by,
-                        stack.material,
-                        stack.quality,
-                        stack.enchantment_id,
-                    );
-                    let _ = self.db.item_stacks.remove_no_fk(&stack.id);
-                }
-                // Remove the empty source inventory and ground pile.
+                self.inv_merge(src_inv, target_pile.inventory_id);
                 let _ = self.db.ground_piles.remove_no_fk(&pile_id);
                 let _ = self.db.inventories.remove_no_fk(&src_inv);
             } else {
@@ -4112,6 +4111,31 @@ impl SimState {
         reserved_by: Option<TaskId>,
     ) -> u32 {
         self.inv_add_item(inv_id, kind, quantity, owner, reserved_by, None, 0, None)
+    }
+
+    /// Move all item stacks from `src` into `dst`, preserving all item
+    /// properties (kind, material, quality, enchantment, owner, reservation).
+    /// Matching stacks in `dst` are combined; non-matching stacks are added.
+    /// The source inventory's stacks are deleted but the Inventory row itself
+    /// is not removed — the caller decides whether to clean it up.
+    fn inv_merge(&mut self, src: InventoryId, dst: InventoryId) {
+        let stacks: Vec<crate::db::ItemStack> = self
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+        for stack in stacks {
+            self.inv_add_item(
+                dst,
+                stack.kind,
+                stack.quantity,
+                stack.owner,
+                stack.reserved_by,
+                stack.material,
+                stack.quality,
+                stack.enchantment_id,
+            );
+            let _ = self.db.item_stacks.remove_no_fk(&stack.id);
+        }
     }
 
     /// Remove up to `quantity` items of the given kind from an inventory.
@@ -13933,7 +13957,7 @@ mod tests {
     #[test]
     fn ground_piles_in_sim_state() {
         let mut sim = test_sim(42);
-        let pos = VoxelCoord::new(10, 5, 20);
+        let pos = VoxelCoord::new(10, 1, 20);
         {
             let pile_id = sim.ensure_ground_pile(pos);
             let pile = sim.db.ground_piles.get(&pile_id).unwrap();
@@ -13962,8 +13986,8 @@ mod tests {
     #[test]
     fn ground_piles_serialization_roundtrip() {
         let mut sim = test_sim(42);
-        let pos1 = VoxelCoord::new(10, 5, 20);
-        let pos2 = VoxelCoord::new(-3, 1, 7);
+        let pos1 = VoxelCoord::new(10, 1, 20);
+        let pos2 = VoxelCoord::new(3, 1, 7);
         {
             let pile_id = sim.ensure_ground_pile(pos1);
             let pile = sim.db.ground_piles.get(&pile_id).unwrap();
@@ -14020,7 +14044,7 @@ mod tests {
     #[test]
     fn ground_piles_serde_roundtrip() {
         let mut sim = test_sim(42);
-        let pos = VoxelCoord::new(10, 5, 20);
+        let pos = VoxelCoord::new(10, 1, 20);
         {
             let pile_id = sim.ensure_ground_pile(pos);
             let pile = sim.db.ground_piles.get(&pile_id).unwrap();
@@ -14672,14 +14696,14 @@ mod tests {
             "Fruit should be removed from tree"
         );
 
-        // Assert: ground pile created at elf's position with 1 Fruit.
+        // Assert: ground pile created with 1 Fruit. The pile may have been
+        // snapped down to the nearest surface if the elf was up on the tree.
         let pile = sim
             .db
             .ground_piles
-            .by_position(&elf_pos, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
-            .expect("Ground pile should exist at elf position");
+            .iter_all()
+            .find(|p| p.position.x == elf_pos.x && p.position.z == elf_pos.z)
+            .expect("Ground pile should exist in elf's column");
         assert_eq!(
             sim.inv_item_count(pile.inventory_id, inventory::ItemKind::Fruit),
             1,
@@ -17467,6 +17491,89 @@ mod tests {
             .db
             .ground_piles
             .by_position(&landing, tabulosity::QueryOpts::ASC);
+        assert_eq!(piles.len(), 1);
+    }
+
+    #[test]
+    fn inv_merge_combines_inventories() {
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
+
+        // Same kind in both — should combine into one stack.
+        sim.inv_add_simple_item(src, inventory::ItemKind::Bread, 3, None, None);
+        sim.inv_add_simple_item(dst, inventory::ItemKind::Bread, 2, None, None);
+        // Different kind in src — should become a new stack in dst.
+        sim.inv_add_simple_item(src, inventory::ItemKind::Fruit, 1, None, None);
+
+        sim.inv_merge(src, dst);
+
+        // Source should be empty.
+        assert!(sim.inv_items(src).is_empty());
+
+        // Destination should have 2 stacks: Bread(5) and Fruit(1).
+        let stacks = sim.inv_items(dst);
+        assert_eq!(stacks.len(), 2);
+        let bread = stacks
+            .iter()
+            .find(|s| s.kind == inventory::ItemKind::Bread)
+            .unwrap();
+        let fruit = stacks
+            .iter()
+            .find(|s| s.kind == inventory::ItemKind::Fruit)
+            .unwrap();
+        assert_eq!(bread.quantity, 5);
+        assert_eq!(fruit.quantity, 1);
+    }
+
+    #[test]
+    fn ensure_ground_pile_snaps_floating_position_to_surface() {
+        let mut sim = test_sim(42);
+        // Request a pile at y=10 with no solid voxel below (except floor at y=0).
+        let floating_pos = VoxelCoord::new(40, 10, 40);
+        let pile_id = sim.ensure_ground_pile(floating_pos);
+
+        // Pile should have been snapped to y=1 (above ForestFloor).
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        assert_eq!(pile.position, VoxelCoord::new(40, 1, 40));
+    }
+
+    #[test]
+    fn ensure_ground_pile_snaps_to_intermediate_platform() {
+        let mut sim = test_sim(42);
+        // Platform at y=5, request pile at y=10.
+        sim.world
+            .set(VoxelCoord::new(42, 5, 42), VoxelType::GrownPlatform);
+        let pile_id = sim.ensure_ground_pile(VoxelCoord::new(42, 10, 42));
+
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        assert_eq!(pile.position, VoxelCoord::new(42, 6, 42));
+    }
+
+    #[test]
+    fn ensure_ground_pile_merges_when_snapped_to_existing() {
+        let mut sim = test_sim(42);
+        // Create a pile at y=1.
+        let ground_pos = VoxelCoord::new(44, 1, 44);
+        let ground_pile_id = sim.ensure_ground_pile(ground_pos);
+        let ground_inv = sim
+            .db
+            .ground_piles
+            .get(&ground_pile_id)
+            .unwrap()
+            .inventory_id;
+        sim.inv_add_simple_item(ground_inv, inventory::ItemKind::Bread, 5, None, None);
+
+        // Request a pile at y=8 (floating) — should snap to y=1 and return
+        // the existing pile instead of creating a new one.
+        let returned_id = sim.ensure_ground_pile(VoxelCoord::new(44, 8, 44));
+        assert_eq!(returned_id, ground_pile_id);
+
+        // Only one pile at this column.
+        let piles = sim
+            .db
+            .ground_piles
+            .by_position(&ground_pos, tabulosity::QueryOpts::ASC);
         assert_eq!(piles.len(), 1);
     }
 }
