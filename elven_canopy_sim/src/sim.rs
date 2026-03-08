@@ -4062,28 +4062,7 @@ impl SimState {
         material: Option<inventory::Material>,
         quality: i32,
         enchantment_id: Option<crate::types::EnchantmentId>,
-    ) -> u32 {
-        // Try to stack with an existing item_stack.
-        for stack in self
-            .db
-            .item_stacks
-            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
-        {
-            if stack.kind == kind
-                && stack.owner == owner
-                && stack.reserved_by == reserved_by
-                && stack.material == material
-                && stack.quality == quality
-                && stack.enchantment_id == enchantment_id
-            {
-                let new_qty = stack.quantity + quantity;
-                let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
-                    s.quantity = new_qty;
-                });
-                return new_qty;
-            }
-        }
-        // No matching stack — create a new one.
+    ) {
         let _ = self
             .db
             .item_stacks
@@ -4098,7 +4077,7 @@ impl SimState {
                 owner,
                 reserved_by,
             });
-        quantity
+        self.inv_normalize(inv_id);
     }
 
     /// Convenience wrapper for adding items with no material, quality, or enchantment.
@@ -4109,33 +4088,25 @@ impl SimState {
         quantity: u32,
         owner: Option<CreatureId>,
         reserved_by: Option<TaskId>,
-    ) -> u32 {
+    ) {
         self.inv_add_item(inv_id, kind, quantity, owner, reserved_by, None, 0, None)
     }
 
-    /// Move all item stacks from `src` into `dst`, preserving all item
-    /// properties (kind, material, quality, enchantment, owner, reservation).
-    /// Matching stacks in `dst` are combined; non-matching stacks are added.
-    /// The source inventory's stacks are deleted but the Inventory row itself
-    /// is not removed — the caller decides whether to clean it up.
+    /// Move all item stacks from `src` into `dst`, then normalize `dst` to
+    /// consolidate matching stacks. The source inventory's stacks are deleted
+    /// but the Inventory row itself is not removed — the caller decides
+    /// whether to clean it up.
     fn inv_merge(&mut self, src: InventoryId, dst: InventoryId) {
         let stacks: Vec<crate::db::ItemStack> = self
             .db
             .item_stacks
             .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
         for stack in stacks {
-            self.inv_add_item(
-                dst,
-                stack.kind,
-                stack.quantity,
-                stack.owner,
-                stack.reserved_by,
-                stack.material,
-                stack.quality,
-                stack.enchantment_id,
-            );
-            let _ = self.db.item_stacks.remove_no_fk(&stack.id);
+            let mut moved = stack;
+            moved.inventory_id = dst;
+            let _ = self.db.item_stacks.update_no_fk(moved);
         }
+        self.inv_normalize(dst);
     }
 
     /// Remove up to `quantity` items of the given kind from an inventory.
@@ -4308,7 +4279,7 @@ impl SimState {
                 let _ = self.db.item_stacks.update_no_fk(s);
             }
         }
-        self.inv_merge_stacks(inv_id);
+        self.inv_normalize(inv_id);
     }
 
     /// Remove up to `quantity` items reserved by a specific task.
@@ -4409,8 +4380,12 @@ impl SimState {
         reserved
     }
 
-    /// Merge stacks within an inventory that match on `(kind, owner, reserved_by)`.
-    fn inv_merge_stacks(&mut self, inv_id: InventoryId) {
+    /// Consolidate matching stacks within an inventory. Two stacks are
+    /// mergeable when they agree on all properties: kind, material, quality,
+    /// enchantment_id, owner, and reserved_by. This is the single source of
+    /// truth for stack-merging criteria — called by `inv_add_item` and
+    /// `inv_merge`.
+    fn inv_normalize(&mut self, inv_id: InventoryId) {
         let stacks = self
             .db
             .item_stacks
@@ -16424,7 +16399,7 @@ mod tests {
     }
 
     #[test]
-    fn inv_merge_stacks_respects_material_quality() {
+    fn inv_normalize_respects_material_quality() {
         let mut sim = test_sim(42);
         let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
         // Create two stacks with same kind but different quality.
@@ -16448,7 +16423,7 @@ mod tests {
             1,
             None,
         );
-        sim.inv_merge_stacks(inv_id);
+        sim.inv_normalize(inv_id);
         let stacks = sim
             .db
             .item_stacks
