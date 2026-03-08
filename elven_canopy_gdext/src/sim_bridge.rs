@@ -35,6 +35,11 @@
 //   remain as thin wrappers). The `render_tick` parameter (a fractional tick
 //   returned by `frame_update()`) enables smooth interpolation between nav
 //   nodes via `Creature::interpolated_position()`.
+// - **Notifications:** `get_notifications_after(after_id)` polls for new
+//   notifications (returns `VarArray` of dicts with id/tick/message),
+//   `get_max_notification_id()` returns the highest ID (for initializing the
+//   cursor after load), `send_debug_notification(message)` sends a test
+//   notification through the full command pipeline (multiplayer-aware).
 // - **Creature info:** `get_creature_info(species_name, index, render_tick)` —
 //   returns a `VarDictionary` with species, interpolated position (x/y/z),
 //   task status, task_kind, food level, food_max, rest level, rest_max,
@@ -1608,6 +1613,59 @@ impl SimBridge {
         }
         dict.set("inventory", inv_arr);
         dict
+    }
+
+    /// Return all notifications with ID greater than `after_id`.
+    ///
+    /// Returns a `VarArray` of `VarDictionary`, each with `id` (i64),
+    /// `tick` (i64), and `message` (String). Used by `main.gd` to poll
+    /// for new notifications and push them to the toast display.
+    #[func]
+    fn get_notifications_after(&self, after_id: i64) -> VarArray {
+        let Some(sim) = &self.session.sim else {
+            return VarArray::new();
+        };
+        let mut result = VarArray::new();
+        for notif in sim.db.notifications.iter_all() {
+            if (notif.id.0 as i64) <= after_id {
+                continue;
+            }
+            let mut dict = VarDictionary::new();
+            dict.set("id", notif.id.0 as i64);
+            dict.set("tick", notif.tick as i64);
+            dict.set("message", GString::from(&notif.message));
+            result.push(&dict.to_variant());
+        }
+        result
+    }
+
+    /// Return the highest notification ID currently in the sim database.
+    ///
+    /// Used by `main.gd` after loading a save to initialize
+    /// `_last_notification_id` so that historical notifications are not
+    /// replayed as toasts.
+    #[func]
+    fn get_max_notification_id(&self) -> i64 {
+        let Some(sim) = &self.session.sim else {
+            return 0;
+        };
+        sim.db
+            .notifications
+            .iter_all()
+            .map(|n| n.id.0 as i64)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Send a debug notification through the full command pipeline.
+    ///
+    /// The notification goes through `apply_or_send()` so it's
+    /// multiplayer-aware — in MP it's broadcast and applied canonically.
+    #[func]
+    fn send_debug_notification(&mut self, message: GString) {
+        self.apply_or_send(SimAction::DebugNotification {
+            message: message.to_string(),
+        });
     }
 
     /// Check whether a single voxel is a valid build position.

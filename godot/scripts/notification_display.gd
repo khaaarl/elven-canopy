@@ -6,12 +6,14 @@
 ## stack upward (newest at bottom). The display sits on the base CanvasLayer
 ## (layer 1) so toasts render below overlay panels, info panels, and tooltips.
 ##
-## Usage: call push_notification("message") from any script with a reference
-## to this node. Currently triggered only by the debug toolbar's "Test Notif"
-## button; will be wired to sim events as they become available.
+## Usage: main.gd polls the bridge for new notifications each frame via
+## get_notifications_after() and calls push_notification() for each new one.
+## Notifications are created sim-side (persisted in SimDb) and go through
+## the full command pipeline, making them multiplayer-aware.
 ##
 ## See also: action_toolbar.gd for the debug button that triggers test
-## notifications, main.gd for wiring and CanvasLayer setup.
+## notifications, main.gd for wiring and polling, sim_bridge.rs for the
+## bridge methods (get_notifications_after, send_debug_notification).
 
 extends VBoxContainer
 

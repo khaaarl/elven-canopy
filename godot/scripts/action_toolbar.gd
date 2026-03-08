@@ -3,8 +3,9 @@
 ## The main toolbar row contains gameplay buttons: speed controls (pause/play/
 ## fast/very fast), Build, Tasks, Structures, Units, Tree Info, and Debug toggle.
 ## A "Debug" toggle button (or F12) reveals a second row with dev/test tools:
-## creature spawn buttons, Summon Elf, and Test Notif (triggers a test
-## notification toast). When the debug row is hidden, its keyboard shortcuts
+## creature spawn buttons, Summon Elf, and Test Notif (sends a debug
+## notification through the full sim command pipeline via SimBridge).
+## When the debug row is hidden, its keyboard shortcuts
 ## (1–7) are inactive.
 ##
 ## Keyboard shortcuts:
@@ -14,11 +15,12 @@
 ## Emits three signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
 ##   by placement_controller.gd to enter placement mode.
-## - action_requested(action_name: String) — for task actions ("Summon") and
-##   mode toggles ("Build", "Structures"). "Summon" creates a GoTo task at
-##   the clicked location via SimBridge. "Build" toggles construction mode,
-##   handled by construction_controller.gd. "Structures" toggles the
-##   structure list panel.
+## - action_requested(action_name: String) — for task actions ("Summon"),
+##   mode toggles ("Build", "Structures"), and "TestNotification" (debug
+##   notification sent through the sim command pipeline by main.gd).
+##   "Summon" creates a GoTo task at the clicked location via SimBridge.
+##   "Build" toggles construction mode, handled by construction_controller.gd.
+##   "Structures" toggles the structure list panel.
 ## - speed_changed(speed_name: String) — emitted when the user changes sim
 ##   speed via buttons or keyboard. Picked up by main.gd to call
 ##   bridge.set_sim_speed(). Values: "Paused", "Normal", "Fast", "VeryFast".

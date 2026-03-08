@@ -38,6 +38,7 @@
 // - `SetCreatureRest` — directly set a creature's rest value (initial spawning).
 // - `AddCreatureItem` — add items to a creature's inventory.
 // - `AddGroundPileItem` — add items to a ground pile (creating it if needed).
+// - `DebugNotification` — create a debug notification for testing.
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -167,6 +168,8 @@ pub enum SimAction {
         item_kind: ItemKind,
         quantity: u32,
     },
+    /// Create a debug notification for testing the notification pipeline.
+    DebugNotification { message: String },
 }
 
 #[cfg(test)]

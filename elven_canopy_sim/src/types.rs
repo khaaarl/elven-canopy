@@ -296,6 +296,8 @@ auto_pk_id!(/// Auto-increment ID for sleep task extension data.
 TaskSleepDataId);
 auto_pk_id!(/// Auto-increment ID for acquire task extension data.
 TaskAcquireDataId);
+auto_pk_id!(/// Auto-increment ID for player-visible notifications.
+NotificationId);
 
 // ---------------------------------------------------------------------------
 // Nav graph IDs — simple integers, not UUIDs, for compactness.

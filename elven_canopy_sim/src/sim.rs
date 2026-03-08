@@ -702,6 +702,9 @@ impl SimState {
                 let pile = self.db.ground_piles.get(&pile_id).unwrap();
                 self.inv_add_item(pile.inventory_id, *item_kind, *quantity, None, None);
             }
+            SimAction::DebugNotification { message } => {
+                self.add_notification(message.clone());
+            }
         }
     }
 
@@ -3271,7 +3274,16 @@ impl SimState {
         self.insert_task(new_task);
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = Some(task_id);
+            let name = creature.name.clone();
             let _ = self.db.creatures.update_no_fk(creature);
+
+            let tier_label = tier.label();
+            let msg = if name.is_empty() {
+                format!("An elf is moping ({tier_label})")
+            } else {
+                format!("{name} is moping ({tier_label})")
+            };
+            self.add_notification(msg);
         }
     }
 
@@ -3560,6 +3572,18 @@ impl SimState {
             // Remove the oldest (first in ASC order by PK, which is insertion order).
             let _ = self.db.thoughts.remove_no_fk(&thoughts[0].id);
         }
+    }
+
+    /// Add a player-visible notification to the database.
+    pub(crate) fn add_notification(&mut self, message: String) {
+        let _ = self
+            .db
+            .notifications
+            .insert_auto_no_fk(|id| crate::db::Notification {
+                id,
+                tick: self.tick,
+                message,
+            });
     }
 
     /// Remove expired thoughts for a creature.
@@ -15615,5 +15639,136 @@ mod tests {
         let face = sim.auto_ladder_orientation(5, 10, 5, 4);
         // All counts are 0, so first direction (PosX, face 0) wins.
         assert_eq!(face, 0, "No neighbors should default to PosX (East)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Notification tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn debug_notification_command_creates_notification() {
+        let mut sim = test_sim(42);
+        let pid = sim.player_id;
+
+        assert_eq!(sim.db.notifications.iter_all().count(), 0);
+
+        let cmd = SimCommand {
+            player_id: pid,
+            tick: 1,
+            action: SimAction::DebugNotification {
+                message: "hello world".to_string(),
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(sim.db.notifications.iter_all().count(), 1);
+        let notif = sim.db.notifications.iter_all().next().unwrap();
+        assert_eq!(notif.message, "hello world");
+        assert_eq!(notif.tick, 1);
+    }
+
+    #[test]
+    fn notifications_persist_across_serde_roundtrip() {
+        let mut sim = test_sim(42);
+        let pid = sim.player_id;
+
+        let cmd = SimCommand {
+            player_id: pid,
+            tick: 1,
+            action: SimAction::DebugNotification {
+                message: "save me".to_string(),
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.db.notifications.iter_all().count(), 1);
+
+        // Serialize and deserialize.
+        let json = serde_json::to_string(&sim).unwrap();
+        let mut restored: SimState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.db.notifications.iter_all().count(), 1);
+        let notif = restored.db.notifications.iter_all().next().unwrap();
+        assert_eq!(notif.message, "save me");
+
+        // Verify that auto-increment IDs don't collide after deserialization.
+        restored.add_notification("post-load".to_string());
+        let ids: Vec<_> = restored.db.notifications.iter_all().map(|n| n.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(
+            ids[1] > ids[0],
+            "Post-load notification ID ({:?}) should be greater than pre-existing ({:?})",
+            ids[1],
+            ids[0]
+        );
+    }
+
+    #[test]
+    fn moping_creates_notification() {
+        // Set up with guaranteed moping (mean = 1 so it always fires).
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: 1,
+            mope_duration_ticks: 5000,
+            ..Default::default()
+        };
+        let (mut sim, _elf_id) = mope_test_setup(
+            cfg,
+            // Two SleptOnGround thoughts push mood to Unhappy.
+            &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+        );
+
+        assert_eq!(sim.db.notifications.iter_all().count(), 0);
+
+        // Run enough ticks for a heartbeat to fire and trigger moping.
+        let elf_hb = sim.config.species[&Species::Elf].heartbeat_interval_ticks;
+        sim.step(&[], sim.tick + elf_hb + 1);
+
+        // Should have a moping notification.
+        assert!(
+            sim.db.notifications.iter_all().count() > 0,
+            "Expected a moping notification"
+        );
+        let notif = sim.db.notifications.iter_all().next().unwrap();
+        assert!(
+            notif.message.contains("moping"),
+            "Notification should mention moping, got: {}",
+            notif.message
+        );
+        assert!(
+            notif.message.contains("Unhappy"),
+            "Notification should mention mood tier, got: {}",
+            notif.message
+        );
+    }
+
+    #[test]
+    fn moping_notification_unnamed_elf_uses_generic_text() {
+        let cfg = crate::config::MoodConsequencesConfig {
+            mope_mean_ticks_unhappy: 1,
+            mope_duration_ticks: 5000,
+            ..Default::default()
+        };
+        let (mut sim, elf_id) = mope_test_setup(
+            cfg,
+            &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+        );
+
+        // Clear the elf's name to exercise the empty-name branch.
+        let mut elf = sim.db.creatures.get(&elf_id).unwrap();
+        elf.name = String::new();
+        let _ = sim.db.creatures.update_no_fk(elf);
+
+        let elf_hb = sim.config.species[&Species::Elf].heartbeat_interval_ticks;
+        sim.step(&[], sim.tick + elf_hb + 1);
+
+        assert!(
+            sim.db.notifications.iter_all().count() > 0,
+            "Expected a moping notification for unnamed elf"
+        );
+        let notif = sim.db.notifications.iter_all().next().unwrap();
+        assert!(
+            notif.message.starts_with("An elf is moping"),
+            "Unnamed elf notification should use generic text, got: {}",
+            notif.message
+        );
     }
 }

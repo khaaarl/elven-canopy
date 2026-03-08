@@ -1084,17 +1084,22 @@ Toast-style notification system for important sim events.
 **Done so far:**
 - Toast display UI (notification_display.gd): toasts appear in bottom-right,
   stay 4s, fade out over 1s, max 8 visible, mouse-transparent.
-- Debug "Test Notif" button in toolbar debug row for manual testing.
+- Debug "Test Notif" button in toolbar debug row (goes through full sim
+  command pipeline, multiplayer-aware).
+- Sim-side notification table in SimDb (tick, message, auto-increment ID).
+  Notifications persist across saves. Bridge methods:
+  get_notifications_after(id), get_max_notification_id(),
+  send_debug_notification(msg).
+- Moping creates a notification with elf name and mood tier.
+- Load-game initializes notification cursor to max existing ID so
+  historical notifications aren't replayed as toasts.
 
 **Still needed:**
 - Notification history panel: a bell icon button (bottom-right, near where
   toasts appear) that opens a scrollable log of all past notifications.
   Unread indicator (count badge or color) until panel is opened.
-- Sim-side notification table: notifications need to be tracked in SimDb so
-  they persist across saves. Table should store tick, message text, read/unread
-  status. Bridge methods to query notification list and mark as read.
-- Wire sim events to push notifications (construction complete, creature idle,
-  structure collapsed, elf left, etc.).
+- Wire more sim events to push notifications (construction complete,
+  creature idle, structure collapsed, elf left, etc.).
 
 **Blocks:** F-elf-leave
 **Related:** F-status-bar

@@ -6,14 +6,15 @@
 //
 // ## Table layout
 //
-// The database has 16 tables organized in three tiers:
+// The database has 17 tables organized in three tiers:
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures` — the
 // primary simulation entities, keyed by UUID-based or sequential IDs.
 //
-// **Child tables:** `thoughts`, `inventories`, `item_stacks`, `ground_piles`,
-// `logistics_wants`, `furniture` — normalized data that was previously stored
-// as inline `Vec` fields on parent entities.
+// **Child tables:** `thoughts`, `notifications`, `inventories`, `item_stacks`,
+// `ground_piles`, `logistics_wants`, `furniture` — normalized data that was
+// previously stored as inline `Vec` fields on parent entities, plus
+// player-visible notifications.
 //
 // **Task decomposition tables:** `task_blueprint_refs`, `task_structure_refs`,
 // `task_voxel_refs`, `task_haul_data`, `task_sleep_data`, `task_acquire_data`
@@ -44,7 +45,7 @@ use crate::inventory::ItemKind;
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
     BuildType, CreatureId, FurnishingType, FurnitureId, GroundPileId, InventoryId, ItemStackId,
-    LogisticsWantId, NavNodeId, ProjectId, Species, StructureId, TaskAcquireDataId,
+    LogisticsWantId, NavNodeId, NotificationId, ProjectId, Species, StructureId, TaskAcquireDataId,
     TaskBlueprintRefId, TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId,
     TaskVoxelRefId, ThoughtId, ThoughtKind, VoxelCoord,
 };
@@ -206,6 +207,18 @@ pub struct Thought {
     pub creature_id: CreatureId,
     pub kind: ThoughtKind,
     pub tick: u64,
+}
+
+/// A player-visible notification. Persists across saves so the notification
+/// history panel can show past events.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct Notification {
+    #[primary_key(auto_increment)]
+    pub id: NotificationId,
+    /// Sim tick when the notification was created.
+    pub tick: u64,
+    /// Human-readable message text.
+    pub message: String,
 }
 
 /// A task — a unit of work that a creature can be assigned to.
@@ -609,6 +622,7 @@ impl std::fmt::Debug for SimDb {
             .field("item_stacks", &self.item_stacks.len())
             .field("ground_piles", &self.ground_piles.len())
             .field("furniture", &self.furniture.len())
+            .field("notifications", &self.notifications.len())
             .finish()
     }
 }
@@ -689,4 +703,7 @@ pub struct SimDb {
 
     #[table(singular = "furniture", auto, fks(structure_id = "structures"))]
     pub furniture: FurnitureTable,
+
+    #[table(singular = "notification", auto)]
+    pub notifications: NotificationTable,
 }

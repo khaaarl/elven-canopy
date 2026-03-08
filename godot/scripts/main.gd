@@ -91,6 +91,10 @@ var _furniture_renderer: Node3D
 var _pile_renderer: Node3D
 var _tooltip_controller: Node
 var _notification_display: VBoxContainer
+## Highest notification ID seen so far, for polling new notifications.
+## Initialized from the sim after load so historical notifications aren't
+## replayed as toasts.
+var _last_notification_id: int = 0
 var _pause_menu: ColorRect
 var _lobby_overlay: ColorRect
 
@@ -569,7 +573,7 @@ func _setup_common(bridge: SimBridge) -> void:
 						_camera_pivot.stop_follow()
 				_tree_info_panel.toggle()
 			elif action == "TestNotification":
-				_notification_display.push_notification(
+				bridge.send_debug_notification(
 					"Test notification at tick %d" % bridge.current_tick()
 				)
 	)
@@ -617,6 +621,10 @@ func _setup_common(bridge: SimBridge) -> void:
 	move_child(_selector, -1)
 	move_child(_construction_controller, -1)
 	move_child(_placement_controller, -1)
+
+	# Initialize notification cursor to the highest existing ID so that
+	# historical notifications (from a loaded save) aren't replayed as toasts.
+	_last_notification_id = bridge.get_max_notification_id()
 
 
 ## Try to load a save file. Returns true on success.
@@ -753,6 +761,17 @@ func _process(delta: float) -> void:
 		else:
 			# Pile was removed — deselect and hide panel.
 			_selector.deselect()
+
+	# Poll for new notifications and push them to the toast display.
+	if _notification_display:
+		var new_notifs := bridge.get_notifications_after(_last_notification_id)
+		for notif in new_notifs:
+			var nid: int = notif.get("id", 0)
+			var msg: String = notif.get("message", "")
+			if nid > _last_notification_id:
+				_last_notification_id = nid
+			if not msg.is_empty():
+				_notification_display.push_notification(msg)
 
 
 ## Move the camera to look at a world-space position, stopping any active
