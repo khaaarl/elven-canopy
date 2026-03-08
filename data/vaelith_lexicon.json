@@ -163,6 +163,1491 @@
       "name_tags": ["given", "surname"]
     },
     {
+      "root": "vela",
+      "gloss": "fruit",
+      "pos": "noun",
+      "syllables": [{"text": "ve", "tone": "level"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "tórun",
+      "gloss": "seed",
+      "pos": "noun",
+      "syllables": [{"text": "tó", "tone": "rising"}, {"text": "run", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "kesh",
+      "gloss": "rind",
+      "pos": "noun",
+      "syllables": [{"text": "kesh", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "nuri",
+      "gloss": "nectar",
+      "pos": "noun",
+      "syllables": [{"text": "nu", "tone": "level"}, {"text": "ri", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "thiven",
+      "gloss": "sap",
+      "pos": "noun",
+      "syllables": [{"text": "thi", "tone": "level"}, {"text": "ven", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "mòka",
+      "gloss": "pulp",
+      "pos": "noun",
+      "syllables": [{"text": "mò", "tone": "falling"}, {"text": "ka", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "shira",
+      "gloss": "fiber",
+      "pos": "noun",
+      "syllables": [{"text": "shi", "tone": "level"}, {"text": "ra", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "esin",
+      "gloss": "thread",
+      "pos": "noun",
+      "syllables": [{"text": "e", "tone": "level"}, {"text": "sin", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "vòra",
+      "gloss": "cloth",
+      "pos": "noun",
+      "syllables": [{"text": "vò", "tone": "falling"}, {"text": "ra", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "tesh",
+      "gloss": "cord",
+      "pos": "noun",
+      "syllables": [{"text": "tesh", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "kelith",
+      "gloss": "resin",
+      "pos": "noun",
+      "syllables": [{"text": "ke", "tone": "level"}, {"text": "lith", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "naur",
+      "gloss": "oil",
+      "pos": "noun",
+      "syllables": [{"text": "naur", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "tàli",
+      "gloss": "flour",
+      "pos": "noun",
+      "syllables": [{"text": "tà", "tone": "falling"}, {"text": "li", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "lotha",
+      "gloss": "bread",
+      "pos": "noun",
+      "syllables": [{"text": "lo", "tone": "level"}, {"text": "tha", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "wen",
+      "gloss": "wine",
+      "pos": "noun",
+      "syllables": [{"text": "wen", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "métha",
+      "gloss": "mead",
+      "pos": "noun",
+      "syllables": [{"text": "mé", "tone": "rising"}, {"text": "tha", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "shòlu",
+      "gloss": "dye",
+      "pos": "noun",
+      "syllables": [{"text": "shò", "tone": "falling"}, {"text": "lu", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "kirel",
+      "gloss": "poultice",
+      "pos": "noun",
+      "syllables": [{"text": "ki", "tone": "level"}, {"text": "rel", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "wétha",
+      "gloss": "tonic",
+      "pos": "noun",
+      "syllables": [{"text": "wé", "tone": "rising"}, {"text": "tha", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "àlum",
+      "gloss": "incense",
+      "pos": "noun",
+      "syllables": [{"text": "à", "tone": "falling"}, {"text": "lum", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "thóri",
+      "gloss": "essence",
+      "pos": "noun",
+      "syllables": [{"text": "thó", "tone": "rising"}, {"text": "ri", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "mâna",
+      "gloss": "mana",
+      "pos": "noun",
+      "syllables": [{"text": "mâ", "tone": "peaking"}, {"text": "na", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "voin",
+      "gloss": "pod",
+      "pos": "noun",
+      "syllables": [{"text": "voin", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "thúni",
+      "gloss": "berry",
+      "pos": "noun",
+      "syllables": [{"text": "thú", "tone": "rising"}, {"text": "ni", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "kòli",
+      "gloss": "nut",
+      "pos": "noun",
+      "syllables": [{"text": "kò", "tone": "falling"}, {"text": "li", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "ôrun",
+      "gloss": "gourd",
+      "pos": "noun",
+      "syllables": [{"text": "ô", "tone": "peaking"}, {"text": "run", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "lîren",
+      "gloss": "blossom",
+      "pos": "noun",
+      "syllables": [{"text": "lî", "tone": "peaking"}, {"text": "ren", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "vòshi",
+      "gloss": "vine",
+      "pos": "noun",
+      "syllables": [{"text": "vò", "tone": "falling"}, {"text": "shi", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "mireth",
+      "gloss": "cluster",
+      "pos": "noun",
+      "syllables": [{"text": "mi", "tone": "level"}, {"text": "reth", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "shòve",
+      "gloss": "husk",
+      "pos": "noun",
+      "syllables": [{"text": "shò", "tone": "falling"}, {"text": "ve", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "réva",
+      "gloss": "red",
+      "pos": "adjective",
+      "syllables": [{"text": "ré", "tone": "rising"}, {"text": "va", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "thóla",
+      "gloss": "orange",
+      "pos": "adjective",
+      "syllables": [{"text": "thó", "tone": "rising"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "auri",
+      "gloss": "yellow",
+      "pos": "adjective",
+      "syllables": [{"text": "au", "tone": "level"}, {"text": "ri", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "véli",
+      "gloss": "green",
+      "pos": "adjective",
+      "syllables": [{"text": "vé", "tone": "rising"}, {"text": "li", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "nîra",
+      "gloss": "blue",
+      "pos": "adjective",
+      "syllables": [{"text": "nî", "tone": "peaking"}, {"text": "ra", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "mòrith",
+      "gloss": "violet",
+      "pos": "adjective",
+      "syllables": [{"text": "mò", "tone": "falling"}, {"text": "rith", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "vòna",
+      "gloss": "black",
+      "pos": "adjective",
+      "syllables": [{"text": "vò", "tone": "falling"}, {"text": "na", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "eitha",
+      "gloss": "white",
+      "pos": "adjective",
+      "syllables": [{"text": "ei", "tone": "level"}, {"text": "tha", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "shála",
+      "gloss": "pale",
+      "pos": "adjective",
+      "syllables": [{"text": "shá", "tone": "rising"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "kòra",
+      "gloss": "dark",
+      "pos": "adjective",
+      "syllables": [{"text": "kò", "tone": "falling"}, {"text": "ra", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "shîna",
+      "gloss": "golden",
+      "pos": "adjective",
+      "syllables": [{"text": "shî", "tone": "peaking"}, {"text": "na", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "nóva",
+      "gloss": "silver",
+      "pos": "adjective",
+      "syllables": [{"text": "nó", "tone": "rising"}, {"text": "va", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "meli",
+      "gloss": "sweet",
+      "pos": "adjective",
+      "syllables": [{"text": "me", "tone": "level"}, {"text": "li", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "kàvri",
+      "gloss": "bitter",
+      "pos": "adjective",
+      "syllables": [{"text": "kà", "tone": "falling"}, {"text": "vri", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "nòlun",
+      "gloss": "bland",
+      "pos": "adjective",
+      "syllables": [{"text": "nò", "tone": "falling"}, {"text": "lun", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "shévi",
+      "gloss": "sharp",
+      "pos": "adjective",
+      "syllables": [{"text": "shé", "tone": "rising"}, {"text": "vi", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "túma",
+      "gloss": "rich",
+      "pos": "adjective",
+      "syllables": [{"text": "tú", "tone": "rising"}, {"text": "ma", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "vîra",
+      "gloss": "smooth",
+      "pos": "adjective",
+      "syllables": [{"text": "vî", "tone": "peaking"}, {"text": "ra", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "korsha",
+      "gloss": "rough",
+      "pos": "adjective",
+      "syllables": [{"text": "kor", "tone": "level"}, {"text": "sha", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "nàri",
+      "gloss": "spiky",
+      "pos": "adjective",
+      "syllables": [{"text": "nà", "tone": "falling"}, {"text": "ri", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "léna",
+      "gloss": "soft",
+      "pos": "adjective",
+      "syllables": [{"text": "lé", "tone": "rising"}, {"text": "na", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "thòru",
+      "gloss": "hard",
+      "pos": "adjective",
+      "syllables": [{"text": "thò", "tone": "falling"}, {"text": "ru", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "wíri",
+      "gloss": "dry",
+      "pos": "adjective",
+      "syllables": [{"text": "wí", "tone": "rising"}, {"text": "ri", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "nôla",
+      "gloss": "wet",
+      "pos": "adjective",
+      "syllables": [{"text": "nô", "tone": "peaking"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "véna",
+      "gloss": "round",
+      "pos": "adjective",
+      "syllables": [{"text": "vé", "tone": "rising"}, {"text": "na", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "lithe",
+      "gloss": "long",
+      "pos": "adjective",
+      "syllables": [{"text": "li", "tone": "level"}, {"text": "the", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "théri",
+      "gloss": "small",
+      "pos": "adjective",
+      "syllables": [{"text": "thé", "tone": "rising"}, {"text": "ri", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "wóru",
+      "gloss": "thick",
+      "pos": "adjective",
+      "syllables": [{"text": "wó", "tone": "rising"}, {"text": "ru", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "fíla",
+      "gloss": "thin",
+      "pos": "adjective",
+      "syllables": [{"text": "fí", "tone": "rising"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "àshi",
+      "gloss": "warm",
+      "pos": "adjective",
+      "syllables": [{"text": "à", "tone": "falling"}, {"text": "shi", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "kîle",
+      "gloss": "cold",
+      "pos": "adjective",
+      "syllables": [{"text": "kî", "tone": "peaking"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "hóla",
+      "gloss": "fragrant",
+      "pos": "adjective",
+      "syllables": [{"text": "hó", "tone": "rising"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "sîven",
+      "gloss": "sticky",
+      "pos": "adjective",
+      "syllables": [{"text": "sî", "tone": "peaking"}, {"text": "ven", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "kétha",
+      "gloss": "ripe",
+      "pos": "adjective",
+      "syllables": [{"text": "ké", "tone": "rising"}, {"text": "tha", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "fòli",
+      "gloss": "wild",
+      "pos": "adjective",
+      "syllables": [{"text": "fò", "tone": "falling"}, {"text": "li", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "shòva",
+      "gloss": "fertile",
+      "pos": "adjective",
+      "syllables": [{"text": "shò", "tone": "falling"}, {"text": "va", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "kâre",
+      "gloss": "strong",
+      "pos": "adjective",
+      "syllables": [{"text": "kâ", "tone": "peaking"}, {"text": "re", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "thîra",
+      "gloss": "gentle",
+      "pos": "adjective",
+      "syllables": [{"text": "thî", "tone": "peaking"}, {"text": "ra", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "lòva",
+      "gloss": "slow",
+      "pos": "adjective",
+      "syllables": [{"text": "lò", "tone": "falling"}, {"text": "va", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "fíren",
+      "gloss": "swift",
+      "pos": "adjective",
+      "syllables": [{"text": "fí", "tone": "rising"}, {"text": "ren", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "étha",
+      "gloss": "quiet",
+      "pos": "adjective",
+      "syllables": [{"text": "é", "tone": "rising"}, {"text": "tha", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "tóva",
+      "gloss": "heavy",
+      "pos": "adjective",
+      "syllables": [{"text": "tó", "tone": "rising"}, {"text": "va", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "àlir",
+      "gloss": "earth",
+      "pos": "noun",
+      "syllables": [{"text": "à", "tone": "falling"}, {"text": "lir", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "véshi",
+      "gloss": "wind",
+      "pos": "noun",
+      "syllables": [{"text": "vé", "tone": "rising"}, {"text": "shi", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "kòlith",
+      "gloss": "stone",
+      "pos": "noun",
+      "syllables": [{"text": "kò", "tone": "falling"}, {"text": "lith", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "àven",
+      "gloss": "sky",
+      "pos": "noun",
+      "syllables": [{"text": "à", "tone": "falling"}, {"text": "ven", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "réna",
+      "gloss": "rain",
+      "pos": "noun",
+      "syllables": [{"text": "ré", "tone": "rising"}, {"text": "na", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "shórun",
+      "gloss": "thunder",
+      "pos": "noun",
+      "syllables": [{"text": "shó", "tone": "rising"}, {"text": "run", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "wéla",
+      "gloss": "snow",
+      "pos": "noun",
+      "syllables": [{"text": "wé", "tone": "rising"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "fòru",
+      "gloss": "root",
+      "pos": "noun",
+      "syllables": [{"text": "fò", "tone": "falling"}, {"text": "ru", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "nela",
+      "gloss": "branch",
+      "pos": "noun",
+      "syllables": [{"text": "ne", "tone": "level"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "tòrith",
+      "gloss": "bark",
+      "pos": "noun",
+      "syllables": [{"text": "tò", "tone": "falling"}, {"text": "rith", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "wòshi",
+      "gloss": "moss",
+      "pos": "noun",
+      "syllables": [{"text": "wò", "tone": "falling"}, {"text": "shi", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "fîna",
+      "gloss": "thorn",
+      "pos": "noun",
+      "syllables": [{"text": "fî", "tone": "peaking"}, {"text": "na", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "shéla",
+      "gloss": "petal",
+      "pos": "noun",
+      "syllables": [{"text": "shé", "tone": "rising"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "kóven",
+      "gloss": "garden",
+      "pos": "noun",
+      "syllables": [{"text": "kó", "tone": "rising"}, {"text": "ven", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "mîrel",
+      "gloss": "meadow",
+      "pos": "noun",
+      "syllables": [{"text": "mî", "tone": "peaking"}, {"text": "rel", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "nîven",
+      "gloss": "blood",
+      "pos": "noun",
+      "syllables": [{"text": "nî", "tone": "peaking"}, {"text": "ven", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "theli",
+      "gloss": "bone",
+      "pos": "noun",
+      "syllables": [{"text": "the", "tone": "level"}, {"text": "li", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "lóma",
+      "gloss": "hand",
+      "pos": "noun",
+      "syllables": [{"text": "ló", "tone": "rising"}, {"text": "ma", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "thîven",
+      "gloss": "heart",
+      "pos": "noun",
+      "syllables": [{"text": "thî", "tone": "peaking"}, {"text": "ven", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "shíra",
+      "gloss": "voice",
+      "pos": "noun",
+      "syllables": [{"text": "shí", "tone": "rising"}, {"text": "ra", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "érin",
+      "gloss": "eye",
+      "pos": "noun",
+      "syllables": [{"text": "é", "tone": "rising"}, {"text": "rin", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "óreth",
+      "gloss": "home",
+      "pos": "noun",
+      "syllables": [{"text": "ó", "tone": "rising"}, {"text": "reth", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "thíren",
+      "gloss": "path",
+      "pos": "noun",
+      "syllables": [{"text": "thí", "tone": "rising"}, {"text": "ren", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "mòlith",
+      "gloss": "bridge",
+      "pos": "noun",
+      "syllables": [{"text": "mò", "tone": "falling"}, {"text": "lith", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "kérin",
+      "gloss": "hall",
+      "pos": "noun",
+      "syllables": [{"text": "ké", "tone": "rising"}, {"text": "rin", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "nóshi",
+      "gloss": "tower",
+      "pos": "noun",
+      "syllables": [{"text": "nó", "tone": "rising"}, {"text": "shi", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "àrith",
+      "gloss": "gate",
+      "pos": "noun",
+      "syllables": [{"text": "à", "tone": "falling"}, {"text": "rith", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "thòmu",
+      "gloss": "grain",
+      "pos": "noun",
+      "syllables": [{"text": "thò", "tone": "falling"}, {"text": "mu", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "véra",
+      "gloss": "meal",
+      "pos": "noun",
+      "syllables": [{"text": "vé", "tone": "rising"}, {"text": "ra", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "shûri",
+      "gloss": "feast",
+      "pos": "noun",
+      "syllables": [{"text": "shû", "tone": "peaking"}, {"text": "ri", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "físha",
+      "gloss": "honey",
+      "pos": "noun",
+      "syllables": [{"text": "fí", "tone": "rising"}, {"text": "sha", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "tòven",
+      "gloss": "salt",
+      "pos": "noun",
+      "syllables": [{"text": "tò", "tone": "falling"}, {"text": "ven", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "shérin",
+      "gloss": "spice",
+      "pos": "noun",
+      "syllables": [{"text": "shé", "tone": "rising"}, {"text": "rin", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "éli",
+      "gloss": "elf",
+      "pos": "noun",
+      "syllables": [{"text": "é", "tone": "rising"}, {"text": "li", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "thálen",
+      "gloss": "people",
+      "pos": "noun",
+      "syllables": [{"text": "thá", "tone": "rising"}, {"text": "len", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "néshi",
+      "gloss": "child",
+      "pos": "noun",
+      "syllables": [{"text": "né", "tone": "rising"}, {"text": "shi", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "kórin",
+      "gloss": "elder",
+      "pos": "noun",
+      "syllables": [{"text": "kó", "tone": "rising"}, {"text": "rin", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "wîren",
+      "gloss": "friend",
+      "pos": "noun",
+      "syllables": [{"text": "wî", "tone": "peaking"}, {"text": "ren", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "nâshi",
+      "gloss": "night",
+      "pos": "noun",
+      "syllables": [{"text": "nâ", "tone": "peaking"}, {"text": "shi", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "hîra",
+      "gloss": "dawn",
+      "pos": "noun",
+      "syllables": [{"text": "hî", "tone": "peaking"}, {"text": "ra", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "mèli",
+      "gloss": "dusk",
+      "pos": "noun",
+      "syllables": [{"text": "mè", "tone": "falling"}, {"text": "li", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "véren",
+      "gloss": "season",
+      "pos": "noun",
+      "syllables": [{"text": "vé", "tone": "rising"}, {"text": "ren", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "lóren",
+      "gloss": "summer",
+      "pos": "noun",
+      "syllables": [{"text": "ló", "tone": "rising"}, {"text": "ren", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "kîren",
+      "gloss": "winter",
+      "pos": "noun",
+      "syllables": [{"text": "kî", "tone": "peaking"}, {"text": "ren", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "shîre",
+      "gloss": "heal",
+      "pos": "verb",
+      "syllables": [{"text": "shî", "tone": "peaking"}, {"text": "re", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "tóle",
+      "gloss": "press",
+      "pos": "verb",
+      "syllables": [{"text": "tó", "tone": "rising"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "mòle",
+      "gloss": "grind",
+      "pos": "verb",
+      "syllables": [{"text": "mò", "tone": "falling"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "náve",
+      "gloss": "spin",
+      "pos": "verb",
+      "syllables": [{"text": "ná", "tone": "rising"}, {"text": "ve", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "shóke",
+      "gloss": "ferment",
+      "pos": "verb",
+      "syllables": [{"text": "shó", "tone": "rising"}, {"text": "ke", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "kíle",
+      "gloss": "distill",
+      "pos": "verb",
+      "syllables": [{"text": "kí", "tone": "rising"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "thóre",
+      "gloss": "bake",
+      "pos": "verb",
+      "syllables": [{"text": "thó", "tone": "rising"}, {"text": "re", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "fíne",
+      "gloss": "cook",
+      "pos": "verb",
+      "syllables": [{"text": "fí", "tone": "rising"}, {"text": "ne", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "kâve",
+      "gloss": "harvest",
+      "pos": "verb",
+      "syllables": [{"text": "kâ", "tone": "peaking"}, {"text": "ve", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "tóse",
+      "gloss": "plant",
+      "pos": "verb",
+      "syllables": [{"text": "tó", "tone": "rising"}, {"text": "se", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "vîle",
+      "gloss": "ripen",
+      "pos": "verb",
+      "syllables": [{"text": "vî", "tone": "peaking"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "nàve",
+      "gloss": "rot",
+      "pos": "verb",
+      "syllables": [{"text": "nà", "tone": "falling"}, {"text": "ve", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "wóle",
+      "gloss": "dry",
+      "pos": "verb",
+      "syllables": [{"text": "wó", "tone": "rising"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "thèle",
+      "gloss": "burn",
+      "pos": "verb",
+      "syllables": [{"text": "thè", "tone": "falling"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "méle",
+      "gloss": "mix",
+      "pos": "verb",
+      "syllables": [{"text": "mé", "tone": "rising"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "rîse",
+      "gloss": "stir",
+      "pos": "verb",
+      "syllables": [{"text": "rî", "tone": "peaking"}, {"text": "se", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "sóve",
+      "gloss": "pour",
+      "pos": "verb",
+      "syllables": [{"text": "só", "tone": "rising"}, {"text": "ve", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "vàle",
+      "gloss": "taste",
+      "pos": "verb",
+      "syllables": [{"text": "và", "tone": "falling"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "lóve",
+      "gloss": "drink",
+      "pos": "verb",
+      "syllables": [{"text": "ló", "tone": "rising"}, {"text": "ve", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "shéne",
+      "gloss": "eat",
+      "pos": "verb",
+      "syllables": [{"text": "shé", "tone": "rising"}, {"text": "ne", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "fòke",
+      "gloss": "build",
+      "pos": "verb",
+      "syllables": [{"text": "fò", "tone": "falling"}, {"text": "ke", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["surname"]
+    },
+    {
+      "root": "kàle",
+      "gloss": "carve",
+      "pos": "verb",
+      "syllables": [{"text": "kà", "tone": "falling"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "thóve",
+      "gloss": "carry",
+      "pos": "verb",
+      "syllables": [{"text": "thó", "tone": "rising"}, {"text": "ve", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "shîle",
+      "gloss": "walk",
+      "pos": "verb",
+      "syllables": [{"text": "shî", "tone": "peaking"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "méne",
+      "gloss": "rest",
+      "pos": "verb",
+      "syllables": [{"text": "mé", "tone": "rising"}, {"text": "ne", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "ráse",
+      "gloss": "laugh",
+      "pos": "verb",
+      "syllables": [{"text": "rá", "tone": "rising"}, {"text": "se", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "nîle",
+      "gloss": "cry",
+      "pos": "verb",
+      "syllables": [{"text": "nî", "tone": "peaking"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "tîre",
+      "gloss": "listen",
+      "pos": "verb",
+      "syllables": [{"text": "tî", "tone": "peaking"}, {"text": "re", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "wâle",
+      "gloss": "touch",
+      "pos": "verb",
+      "syllables": [{"text": "wâ", "tone": "peaking"}, {"text": "le", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "kéve",
+      "gloss": "give",
+      "pos": "verb",
+      "syllables": [{"text": "ké", "tone": "rising"}, {"text": "ve", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "fîre",
+      "gloss": "make",
+      "pos": "verb",
+      "syllables": [{"text": "fî", "tone": "peaking"}, {"text": "re", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "lâve",
+      "gloss": "gather",
+      "pos": "verb",
+      "syllables": [{"text": "lâ", "tone": "peaking"}, {"text": "ve", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "shàre",
+      "gloss": "tend",
+      "pos": "verb",
+      "syllables": [{"text": "shà", "tone": "falling"}, {"text": "re", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "thóla",
+      "gloss": "shadow",
+      "pos": "noun",
+      "syllables": [{"text": "thó", "tone": "rising"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "shâli",
+      "gloss": "silence",
+      "pos": "noun",
+      "syllables": [{"text": "shâ", "tone": "peaking"}, {"text": "li", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "nóri",
+      "gloss": "joy",
+      "pos": "noun",
+      "syllables": [{"text": "nó", "tone": "rising"}, {"text": "ri", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "mîla",
+      "gloss": "sorrow",
+      "pos": "noun",
+      "syllables": [{"text": "mî", "tone": "peaking"}, {"text": "la", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "thôri",
+      "gloss": "anger",
+      "pos": "noun",
+      "syllables": [{"text": "thô", "tone": "peaking"}, {"text": "ri", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "ésha",
+      "gloss": "peace",
+      "pos": "noun",
+      "syllables": [{"text": "é", "tone": "rising"}, {"text": "sha", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given", "surname"]
+    },
+    {
+      "root": "wári",
+      "gloss": "hope",
+      "pos": "noun",
+      "syllables": [{"text": "wá", "tone": "rising"}, {"text": "ri", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": ["given"]
+    },
+    {
+      "root": "lêna",
+      "gloss": "fear",
+      "pos": "noun",
+      "syllables": [{"text": "lê", "tone": "peaking"}, {"text": "na", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": true,
+      "name_tags": []
+    },
+    {
+      "root": "thi",
+      "gloss": "of",
+      "pos": "particle",
+      "syllables": [{"text": "thi", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": false,
+      "name_tags": []
+    },
+    {
+      "root": "va",
+      "gloss": "with",
+      "pos": "particle",
+      "syllables": [{"text": "va", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": false,
+      "name_tags": []
+    },
+    {
+      "root": "shi",
+      "gloss": "not",
+      "pos": "particle",
+      "syllables": [{"text": "shi", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": false,
+      "name_tags": []
+    },
+    {
+      "root": "ài",
+      "gloss": "all",
+      "pos": "particle",
+      "syllables": [{"text": "ài", "tone": "falling"}],
+      "vowel_class": "front",
+      "stressed_first": false,
+      "name_tags": []
+    },
+    {
+      "root": "wen",
+      "gloss": "each",
+      "pos": "particle",
+      "syllables": [{"text": "wen", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": false,
+      "name_tags": []
+    },
+    {
+      "root": "lo",
+      "gloss": "here",
+      "pos": "particle",
+      "syllables": [{"text": "lo", "tone": "level"}],
+      "vowel_class": "back",
+      "stressed_first": false,
+      "name_tags": []
+    },
+    {
+      "root": "rei",
+      "gloss": "there",
+      "pos": "particle",
+      "syllables": [{"text": "rei", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": false,
+      "name_tags": []
+    },
+    {
+      "root": "kai",
+      "gloss": "yet",
+      "pos": "particle",
+      "syllables": [{"text": "kai", "tone": "level"}],
+      "vowel_class": "front",
+      "stressed_first": false,
+      "name_tags": []
+    },
+    {
       "root": "rase",
       "gloss": "sing",
       "pos": "verb",
