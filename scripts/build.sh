@@ -64,12 +64,19 @@ case "$MODE" in
         echo "Done. Run: cd godot && godot"
         ;;
     test)
-        ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -p tabulosity -p tabulosity_derive"
-        echo "Running all crate tests..."
-        cargo test $ALL_TEST_PACKAGES -- --test-threads=16
+        # Tabulosity tests run in a separate invocation to avoid Cargo feature
+        # unification: elven_canopy_sim depends on tabulosity with features=["serde"],
+        # which would activate the serde feature for tabulosity's own test targets,
+        # breaking test structs that don't derive Serialize/Deserialize.
+        echo "Running tabulosity tests..."
+        cargo test -p tabulosity -p tabulosity_derive -- --test-threads=16
         echo ""
         echo "Running tabulosity serde tests..."
         cargo test -p tabulosity --features serde --test serde -- --test-threads=16
+        echo ""
+        ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests"
+        echo "Running all other crate tests..."
+        cargo test $ALL_TEST_PACKAGES -- --test-threads=16
         echo ""
         echo "All tests passed."
         ;;
@@ -79,21 +86,31 @@ case "$MODE" in
         STAGED_CHANGES="$(git diff --name-only --cached 2>/dev/null || true)"
         UNSTAGED_CHANGES="$(git diff --name-only 2>/dev/null || true)"
         CHANGED_FILES="$(printf '%s\n%s\n%s' "$BRANCH_CHANGES" "$STAGED_CHANGES" "$UNSTAGED_CHANGES" | sort -u)"
-        TEST_PACKAGES=""
+        # Tabulosity tests run separately to avoid Cargo feature unification
+        # (see the 'test' target comment for details).
+        TAB_PACKAGES=""
+        OTHER_PACKAGES=""
         for CRATE_DIR in elven_canopy_prng elven_canopy_lang elven_canopy_sim elven_canopy_protocol elven_canopy_relay elven_canopy_music tabulosity tabulosity_derive; do
             if printf '%s' "$CHANGED_FILES" | grep -q "^${CRATE_DIR}/"; then
-                TEST_PACKAGES="$TEST_PACKAGES -p $CRATE_DIR"
+                if [ "$CRATE_DIR" = "tabulosity" ] || [ "$CRATE_DIR" = "tabulosity_derive" ]; then
+                    TAB_PACKAGES="$TAB_PACKAGES -p $CRATE_DIR"
+                else
+                    OTHER_PACKAGES="$OTHER_PACKAGES -p $CRATE_DIR"
+                fi
             fi
         done
-        # Always include multiplayer_tests (cross-crate correctness).
-        TEST_PACKAGES="$TEST_PACKAGES -p multiplayer_tests"
-        echo "Running tests for:$TEST_PACKAGES"
-        cargo test $TEST_PACKAGES -- --test-threads=16
-        if printf '%s' "$TEST_PACKAGES" | grep -q -- '-p tabulosity'; then
+        if [ -n "$TAB_PACKAGES" ]; then
+            echo "Running tabulosity tests:$TAB_PACKAGES"
+            cargo test $TAB_PACKAGES -- --test-threads=16
             echo ""
             echo "Running tabulosity serde tests..."
             cargo test -p tabulosity --features serde --test serde -- --test-threads=16
+            echo ""
         fi
+        # Always include multiplayer_tests (cross-crate correctness).
+        OTHER_PACKAGES="$OTHER_PACKAGES -p multiplayer_tests"
+        echo "Running tests for:$OTHER_PACKAGES"
+        cargo test $OTHER_PACKAGES -- --test-threads=16
         echo ""
         echo "All tests passed."
         ;;
@@ -157,10 +174,13 @@ case "$MODE" in
             echo "cargo-llvm-cov not found. Install with: cargo install cargo-llvm-cov" >&2
             exit 1
         fi
-        ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests"
-        EXCLUDE_GDEXT="--exclude elven_canopy_gdext"
-        echo "Running tests with coverage instrumentation..."
-        cargo llvm-cov --workspace $EXCLUDE_GDEXT --no-report -- --test-threads=16
+        # Tabulosity runs separately to avoid Cargo feature unification
+        # (elven_canopy_sim activates tabulosity's serde feature).
+        echo "Running tabulosity coverage..."
+        cargo llvm-cov --no-report -p tabulosity -p tabulosity_derive -- --test-threads=16
+        echo ""
+        echo "Running other crate coverage..."
+        cargo llvm-cov --no-report --workspace --exclude elven_canopy_gdext --exclude tabulosity --exclude tabulosity_derive -- --test-threads=16
         echo ""
         echo "Generating HTML report..."
         cargo llvm-cov report --html --output-dir target/llvm-cov

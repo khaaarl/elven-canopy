@@ -152,6 +152,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
+[x] B-tab-serde-tests   Fix tabulosity test compilation under feature unification
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
 [x] F-bldg-kitchen         Kitchen (cooking from ingredients)
@@ -1622,6 +1623,9 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 **Related:** F-bldg-transparency, F-minimap
 
 ### Infrastructure & Multiplayer
+
+#### B-tab-serde-tests — Fix tabulosity test compilation under feature unification
+**Status:** Done
 
 #### F-adventure-mode — Control individual elf (RPG-like)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §26

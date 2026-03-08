@@ -79,11 +79,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run all crate tests
-        run: cargo test -p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -p tabulosity -p tabulosity_derive -- --test-threads=16
+      # Tabulosity tests run separately to avoid Cargo feature unification:
+      # elven_canopy_sim depends on tabulosity with features=["serde"], which
+      # would activate the serde feature for tabulosity's own test targets.
+      - name: Run tabulosity tests
+        run: cargo test -p tabulosity -p tabulosity_derive -- --test-threads=16
 
       - name: Run tabulosity serde tests
         run: cargo test -p tabulosity --features serde --test serde -- --test-threads=16
+
+      - name: Run all other crate tests
+        run: cargo test -p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -- --test-threads=16
 
   coverage:
     runs-on: ubuntu-latest
@@ -95,8 +101,15 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Generate coverage
-        run: cargo llvm-cov --workspace --exclude elven_canopy_gdext --lcov --output-path lcov.info -- --test-threads=16
+      # Tabulosity runs separately to avoid Cargo feature unification (see rust-test job).
+      - name: Generate tabulosity coverage
+        run: cargo llvm-cov --no-report -p tabulosity -p tabulosity_derive -- --test-threads=16
+
+      - name: Generate coverage (other crates)
+        run: cargo llvm-cov --no-report --workspace --exclude elven_canopy_gdext --exclude tabulosity --exclude tabulosity_derive -- --test-threads=16
+
+      - name: Generate coverage report
+        run: cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v5
