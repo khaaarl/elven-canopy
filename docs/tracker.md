@@ -47,7 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
-[~] F-manufacturing     Item schema expansion + workshop manufacturing
+[~] F-manufacturing        Item schema expansion + workshop manufacturing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 ```
@@ -115,6 +115,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-narrative-log        Events and narrative log
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
+[ ] F-pile-gravity         Ground pile gravity and merging
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
@@ -155,7 +156,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
 [x] F-bldg-kitchen         Kitchen (cooking from ingredients)
-[x] F-bldg-workshop     Craftself's workshop
+[x] F-bldg-workshop        Craftself's workshop
 [x] F-bread                Bread items and elf food management
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
@@ -180,7 +181,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
-[x] F-hostile-species   Goblin, Orc, and Troll species
+[x] F-hostile-species      Goblin, Orc, and Troll species
 [x] F-items                Items and inventory system
 [x] F-ladders              Rope/wood ladders as cheap connectors
 [x] F-lang-crate           Shared Vaelith language crate
@@ -1029,6 +1030,14 @@ workshop_enabled, recipe list, craft_status — mirrors kitchen cooking
 section).
 
 **Related:** F-bldg-kitchen, F-bread, F-items
+
+#### F-pile-gravity — Ground pile gravity and merging
+**Status:** Todo · **Phase:** 4
+
+Ground piles that are not physically on a solid surface (e.g., after the
+platform beneath them is deconstructed) should fall until they reach a
+surface. If a falling pile lands on a voxel that already has a ground pile,
+the two piles merge their inventories into one.
 
 #### F-recipes — Recipe system for crafting/cooking
 **Status:** Done · **Phase:** 3
