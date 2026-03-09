@@ -27,14 +27,20 @@
 // - `validate_carve_fast()`: Like `validate_blueprint_fast()` but checks whether
 //   *removing* voxels would compromise remaining structure. Seeds BFS from
 //   neighbors of carved voxels rather than the carved voxels themselves.
+// - `BlueprintOverlay`: Carries voxel-type and face-data overlays from all
+//   `Designated` blueprints. Both fast validators accept one so they see the
+//   cumulative structural effect of all planned builds (B-preview-blueprints).
 //
 // ## Integration points
 //
 // - `worldgen.rs`: `generate_tree()` wraps tree generation in a retry loop
 //   using `validate_tree()`.
 // - `sim.rs`: `designate_build()` and `designate_building()` call
-//   `validate_blueprint()` to gate construction. `designate_carve()` calls
+//   `validate_blueprint_fast()` to gate construction. `designate_carve()` calls
 //   `validate_carve_fast()` to block or warn on structurally dangerous carves.
+//   All designation handlers build a `BlueprintOverlay` via
+//   `SimState::blueprint_overlay()` so that overlap, adjacency, and structural
+//   checks see existing designated blueprints as if already materialized.
 // - `config.rs`: `StructuralConfig` holds all material/face properties and
 //   solver parameters.
 //
@@ -103,6 +109,36 @@ pub enum ValidationTier {
     Warning,
     /// At least one spring exceeds the block threshold, or connectivity failed.
     Blocked,
+}
+
+/// Voxel-type and face-data overlays from existing designated blueprints.
+///
+/// Passed to validation functions so they can see the cumulative effect of
+/// all planned builds, not just the one being validated.
+pub struct BlueprintOverlay {
+    /// Each designated blueprint's voxels mapped to their target voxel type.
+    pub voxels: BTreeMap<VoxelCoord, VoxelType>,
+    /// Face data from building/ladder blueprints (if any).
+    pub faces: BTreeMap<VoxelCoord, FaceData>,
+}
+
+impl BlueprintOverlay {
+    /// An empty overlay (no existing blueprints).
+    pub fn empty() -> Self {
+        Self {
+            voxels: BTreeMap::new(),
+            faces: BTreeMap::new(),
+        }
+    }
+
+    /// Return the effective voxel type at `coord`: overlay if present,
+    /// otherwise the actual world voxel.
+    pub fn effective_type(&self, world: &VoxelWorld, coord: VoxelCoord) -> VoxelType {
+        self.voxels
+            .get(&coord)
+            .copied()
+            .unwrap_or_else(|| world.get(coord))
+    }
 }
 
 /// Full blueprint validation result.
@@ -850,13 +886,17 @@ fn build_network_from_set(
 
 /// Fast blueprint validation using BFS + weight-flow-only analysis.
 ///
+/// **Blueprint-aware:** Accepts a `BlueprintOverlay` so that existing
+/// designated blueprints are treated as their target voxel types during
+/// BFS traversal and stress analysis.
+///
 /// Instead of iterating the full world grid (8.4M voxels), cloning the world,
 /// and running 200 Gauss-Seidel iterations, this function:
 ///
 /// 1. BFS outward from proposed voxels through face-adjacent solid voxels
-///    (treating proposed as their target type). This simultaneously checks
-///    connectivity (did we reach ForestFloor?) and collects the connected
-///    component.
+///    (treating proposed and overlay voxels as their target types). This
+///    simultaneously checks connectivity (did we reach ForestFloor?) and
+///    collects the connected component.
 ///
 /// 2. Builds a network from the visited set only (typically ~5K voxels).
 ///
@@ -865,6 +905,7 @@ fn build_network_from_set(
 ///    cantilever bottleneck stress, which is the primary gameplay concern.
 ///
 /// Cost: ~15K ops vs ~10M+ for the full path (~700x faster).
+#[allow(clippy::too_many_arguments)]
 pub fn validate_blueprint_fast(
     world: &VoxelWorld,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
@@ -872,6 +913,7 @@ pub fn validate_blueprint_fast(
     proposed_type: VoxelType,
     proposed_faces: &BTreeMap<VoxelCoord, FaceData>,
     config: &GameConfig,
+    overlay: &BlueprintOverlay,
 ) -> BlueprintValidation {
     if proposed_voxels.is_empty() {
         return BlueprintValidation {
@@ -885,9 +927,12 @@ pub fn validate_blueprint_fast(
     let proposed_set: BTreeMap<VoxelCoord, ()> = proposed_voxels.iter().map(|&c| (c, ())).collect();
 
     // Helper: what type is this voxel in the hypothetical world?
+    // Priority: proposed voxels > blueprint overlay > actual world.
     let hypo_type = |coord: VoxelCoord| -> VoxelType {
         if proposed_set.contains_key(&coord) {
             proposed_type
+        } else if let Some(&vt) = overlay.voxels.get(&coord) {
+            vt
         } else {
             world.get(coord)
         }
@@ -949,10 +994,13 @@ pub fn validate_blueprint_fast(
         };
     }
 
-    // Merge face data for the network.
+    // Merge face data for the network: world → blueprint overlay → proposed.
     let mut merged_face_data = BTreeMap::new();
     for &coord in visited.keys() {
         if let Some(fd) = face_data.get(&coord) {
+            merged_face_data.insert(coord, fd.clone());
+        }
+        if let Some(fd) = overlay.faces.get(&coord) {
             merged_face_data.insert(coord, fd.clone());
         }
         if let Some(fd) = proposed_faces.get(&coord) {
@@ -1037,6 +1085,10 @@ pub fn validate_blueprint_fast(
 
 /// Fast carve validation using BFS + weight-flow-only analysis.
 ///
+/// **Blueprint-aware:** Accepts a `BlueprintOverlay` so that existing
+/// designated blueprints are treated as their target voxel types during
+/// BFS traversal and stress analysis.
+///
 /// Mirrors `validate_blueprint_fast()` but checks whether *removing* voxels
 /// would compromise the remaining structure. Seeds BFS from the face-adjacent
 /// neighbors of the carved voxels (the surviving structure), not from the
@@ -1046,6 +1098,7 @@ pub fn validate_carve_fast(
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     carved_voxels: &[VoxelCoord],
     config: &GameConfig,
+    overlay: &BlueprintOverlay,
 ) -> BlueprintValidation {
     if carved_voxels.is_empty() {
         return BlueprintValidation {
@@ -1058,10 +1111,13 @@ pub fn validate_carve_fast(
     // Build lookup of carved voxels.
     let carved_set: BTreeMap<VoxelCoord, ()> = carved_voxels.iter().map(|&c| (c, ())).collect();
 
-    // Hypothetical world: carved coords become Air, everything else unchanged.
+    // Hypothetical world: carved coords become Air, everything else uses
+    // blueprint overlay before falling back to actual world.
     let hypo_type = |coord: VoxelCoord| -> VoxelType {
         if carved_set.contains_key(&coord) {
             VoxelType::Air
+        } else if let Some(&vt) = overlay.voxels.get(&coord) {
+            vt
         } else {
             world.get(coord)
         }
@@ -1151,10 +1207,14 @@ pub fn validate_carve_fast(
         };
     }
 
-    // Merge face data for the network (excluding carved voxels).
+    // Merge face data for the network (excluding carved voxels):
+    // world face data → blueprint overlay face data.
     let mut merged_face_data = BTreeMap::new();
     for &coord in visited.keys() {
         if let Some(fd) = face_data.get(&coord) {
+            merged_face_data.insert(coord, fd.clone());
+        }
+        if let Some(fd) = overlay.faces.get(&coord) {
             merged_face_data.insert(coord, fd.clone());
         }
     }
@@ -1829,6 +1889,7 @@ mod tests {
             VoxelType::GrownPlatform,
             &BTreeMap::new(),
             &config,
+            &BlueprintOverlay::empty(),
         );
         let full = validate_blueprint(
             &world,
@@ -1860,6 +1921,7 @@ mod tests {
             VoxelType::GrownPlatform,
             &BTreeMap::new(),
             &config,
+            &BlueprintOverlay::empty(),
         );
         let full = validate_blueprint(
             &world,
@@ -1888,6 +1950,7 @@ mod tests {
             VoxelType::GrownPlatform,
             &BTreeMap::new(),
             &config,
+            &BlueprintOverlay::empty(),
         );
 
         assert_eq!(fast.tier, ValidationTier::Blocked);
@@ -1918,6 +1981,7 @@ mod tests {
             VoxelType::GrownPlatform,
             &BTreeMap::new(),
             &config,
+            &BlueprintOverlay::empty(),
         );
         let full = validate_blueprint(
             &world,
@@ -1971,6 +2035,7 @@ mod tests {
             VoxelType::GrownPlatform,
             &BTreeMap::new(),
             &config,
+            &BlueprintOverlay::empty(),
         );
         let full = validate_blueprint(
             &world,
@@ -2005,7 +2070,13 @@ mod tests {
         let config = GameConfig::default();
 
         let carved = vec![VoxelCoord::new(4, 1, 4)];
-        let result = validate_carve_fast(&world, &BTreeMap::new(), &carved, &config);
+        let result = validate_carve_fast(
+            &world,
+            &BTreeMap::new(),
+            &carved,
+            &config,
+            &BlueprintOverlay::empty(),
+        );
 
         assert_eq!(
             result.tier,
@@ -2023,12 +2094,108 @@ mod tests {
 
         // Carve the top voxel — base remains connected.
         let carved = vec![VoxelCoord::new(4, 5, 4)];
-        let result = validate_carve_fast(&world, &BTreeMap::new(), &carved, &config);
+        let result = validate_carve_fast(
+            &world,
+            &BTreeMap::new(),
+            &carved,
+            &config,
+            &BlueprintOverlay::empty(),
+        );
 
         assert_eq!(
             result.tier,
             ValidationTier::Ok,
             "Carving top of pillar should be Ok, got: {}",
+            result.message
+        );
+    }
+
+    // --- Blueprint overlay tests ---
+
+    #[test]
+    fn fast_overlay_connects_disconnected_platform() {
+        // A floating proposed platform that is NOT connected to ground via
+        // the world alone, but IS connected via a blueprint overlay bridge.
+        let config = GameConfig::default();
+        let world = make_column_world(16, 0..8, 4, 4, 5);
+
+        // Propose a platform at (6, 5, 4) — not adjacent to the column.
+        let proposed = vec![VoxelCoord::new(6, 5, 4)];
+
+        // Without overlay: disconnected → Blocked.
+        let result_no_overlay = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::GrownPlatform,
+            &BTreeMap::new(),
+            &config,
+            &BlueprintOverlay::empty(),
+        );
+        assert_eq!(
+            result_no_overlay.tier,
+            ValidationTier::Blocked,
+            "Without overlay, disconnected platform should be Blocked: {}",
+            result_no_overlay.message
+        );
+
+        // With overlay: bridge voxel at (5, 5, 4) connects column to proposed.
+        let mut voxel_overlay = BTreeMap::new();
+        voxel_overlay.insert(VoxelCoord::new(5, 5, 4), VoxelType::GrownPlatform);
+        let overlay = BlueprintOverlay {
+            voxels: voxel_overlay,
+            faces: BTreeMap::new(),
+        };
+
+        let result_with_overlay = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::GrownPlatform,
+            &BTreeMap::new(),
+            &config,
+            &overlay,
+        );
+        assert_eq!(
+            result_with_overlay.tier,
+            ValidationTier::Ok,
+            "With overlay bridge, platform should be Ok: {}",
+            result_with_overlay.message
+        );
+    }
+
+    #[test]
+    fn carve_overlay_considers_blueprint_support() {
+        // Carving a voxel that supports only blueprint voxels (not real world
+        // voxels) — the blueprint overlay should be considered so the carve
+        // check sees the full hypothetical structure.
+        let config = GameConfig::default();
+        let world = make_column_world(16, 0..8, 4, 4, 5);
+
+        // Blueprint overlay: a platform extending from top of column.
+        let mut voxel_overlay = BTreeMap::new();
+        voxel_overlay.insert(VoxelCoord::new(5, 5, 4), VoxelType::GrownPlatform);
+        let overlay = BlueprintOverlay {
+            voxels: voxel_overlay,
+            faces: BTreeMap::new(),
+        };
+
+        // Carving the top of the column (4,5,4) — with the overlay,
+        // the platform at (5,5,4) depends on it, so the combined structure
+        // changes. But column base (4,1..4,4) still supports everything.
+        // Actually the carved voxel is at (4,5,4) and overlay at (5,5,4).
+        // The remaining column (4,1..4,4) is still connected to ground.
+        // So this should still be Ok — the carved voxel is the tip.
+        let carved = vec![VoxelCoord::new(4, 5, 4)];
+        let result = validate_carve_fast(&world, &BTreeMap::new(), &carved, &config, &overlay);
+        // BFS seeds from face-adjacent neighbors of the carved voxel:
+        // (5,5,4) from the overlay (isolated after carve) and (4,4,4)
+        // from the column (reaches ground). The remaining column is
+        // connected to ground, so the carve is safe.
+        assert_ne!(
+            result.tier,
+            ValidationTier::Blocked,
+            "Carving column tip with overlay platform should not disconnect ground: {}",
             result.message
         );
     }

@@ -707,11 +707,15 @@ impl SimState {
 
     /// Validate and create a blueprint from a `DesignateBuild` command.
     ///
+    /// **Blueprint-aware:** Uses `blueprint_overlay()` to treat designated
+    /// (not yet built) blueprints as their target voxel types for overlap,
+    /// adjacency, and structural checks.
+    ///
     /// Validation (silent no-op on failure, consistent with other commands):
     /// - Voxels must be non-empty.
     /// - All voxels must be in-bounds.
-    /// - All voxels must be Air.
-    /// - At least one voxel must have a solid face neighbor.
+    /// - All voxels must be Air (or overlap-compatible, considering overlay).
+    /// - At least one voxel must have a solid face neighbor (considering overlay).
     fn designate_build(
         &mut self,
         build_type: BuildType,
@@ -732,6 +736,13 @@ impl SimState {
             }
         }
 
+        // Build overlay from existing designated blueprints so we treat
+        // planned builds as already present for overlap, adjacency, and
+        // structural checks.
+        let overlay = self.blueprint_overlay();
+        let effective_type =
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
+
         // Branch validation: overlap-enabled types classify voxels, others
         // require all Air.
         let build_voxels: Vec<VoxelCoord>;
@@ -741,7 +752,7 @@ impl SimState {
             let mut bv = Vec::new();
             let mut ov = Vec::new();
             for &coord in voxels {
-                match self.world.get(coord).classify_for_overlap() {
+                match effective_type(coord).classify_for_overlap() {
                     OverlapClassification::Exterior => {
                         bv.push(coord);
                     }
@@ -767,7 +778,7 @@ impl SimState {
             original_voxels = ov;
         } else {
             for &coord in voxels {
-                if self.world.get(coord) != VoxelType::Air {
+                if effective_type(coord) != VoxelType::Air {
                     self.last_build_message = Some("Build position is not empty.".to_string());
                     return;
                 }
@@ -776,9 +787,17 @@ impl SimState {
             original_voxels = Vec::new();
         }
 
-        let any_adjacent = build_voxels
-            .iter()
-            .any(|&coord| self.world.has_solid_face_neighbor(coord));
+        let any_adjacent = build_voxels.iter().any(|&coord| {
+            self.world.has_solid_face_neighbor(coord)
+                || FaceDirection::ALL.iter().any(|&dir| {
+                    let (dx, dy, dz) = dir.to_offset();
+                    let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+                    overlay
+                        .voxels
+                        .get(&neighbor)
+                        .is_some_and(|vt| vt.is_solid())
+                })
+        });
         if !any_adjacent {
             self.last_build_message =
                 Some("Must build adjacent to an existing structure.".to_string());
@@ -793,6 +812,7 @@ impl SimState {
             build_type.to_voxel_type(),
             &BTreeMap::new(),
             &self.config,
+            &overlay,
         );
         if matches!(validation.tier, structural::ValidationTier::Blocked) {
             self.last_build_message = Some(validation.message);
@@ -848,11 +868,15 @@ impl SimState {
 
     /// Validate and create a blueprint for a building with paper-thin walls.
     ///
+    /// **Blueprint-aware:** Uses `blueprint_overlay()` to treat designated
+    /// (not yet built) blueprints as their target voxel types for foundation
+    /// solidity, interior clearance, and structural checks.
+    ///
     /// Validation (silent no-op on failure):
     /// - width and depth must be >= 3 (minimum building size)
     /// - height must be >= 1
-    /// - All foundation voxels (anchor.y level) must be solid
-    /// - All interior voxels (above foundation) must be Air
+    /// - All foundation voxels (anchor.y level) must be solid (considering overlay)
+    /// - All interior voxels (above foundation) must be Air (considering overlay)
     /// - All interior voxels must be in-bounds
     fn designate_building(
         &mut self,
@@ -870,11 +894,15 @@ impl SimState {
             return;
         }
 
-        // Validate foundation (all must be solid).
+        let overlay = self.blueprint_overlay();
+        let effective_type =
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
+
+        // Validate foundation (all must be solid, considering blueprint overlay).
         for x in anchor.x..anchor.x + width {
             for z in anchor.z..anchor.z + depth {
                 let coord = VoxelCoord::new(x, anchor.y, z);
-                if !self.world.in_bounds(coord) || !self.world.get(coord).is_solid() {
+                if !self.world.in_bounds(coord) || !effective_type(coord).is_solid() {
                     self.last_build_message =
                         Some("Foundation must be on solid ground.".to_string());
                     return;
@@ -882,12 +910,12 @@ impl SimState {
             }
         }
 
-        // Validate interior (all must be Air and in-bounds).
+        // Validate interior (all must be Air, considering blueprint overlay).
         for y in anchor.y + 1..anchor.y + 1 + height {
             for x in anchor.x..anchor.x + width {
                 for z in anchor.z..anchor.z + depth {
                     let coord = VoxelCoord::new(x, y, z);
-                    if !self.world.in_bounds(coord) || self.world.get(coord) != VoxelType::Air {
+                    if !self.world.in_bounds(coord) || effective_type(coord) != VoxelType::Air {
                         self.last_build_message =
                             Some("Building interior must be clear.".to_string());
                         return;
@@ -909,6 +937,7 @@ impl SimState {
             VoxelType::BuildingInterior,
             &face_layout,
             &self.config,
+            &overlay,
         );
         if matches!(validation.tier, structural::ValidationTier::Blocked) {
             self.last_build_message = Some(validation.message);
@@ -964,12 +993,16 @@ impl SimState {
 
     /// Validate and create a blueprint for a ladder (wood or rope).
     ///
+    /// **Blueprint-aware:** Uses `blueprint_overlay()` to treat designated
+    /// (not yet built) blueprints as their target voxel types for overlap,
+    /// anchoring, and structural checks.
+    ///
     /// Validation:
     /// - height >= 1
     /// - orientation must be horizontal (PosX/NegX/PosZ/NegZ)
-    /// - All column voxels must be Air or Convertible (Leaf/Fruit)
-    /// - Wood: at least one voxel's ladder face is adjacent to solid
-    /// - Rope: topmost voxel's ladder face is adjacent to solid
+    /// - All column voxels must be Air or Convertible (considering overlay)
+    /// - Wood: at least one voxel's ladder face is adjacent to solid (considering overlay)
+    /// - Rope: topmost voxel's ladder face is adjacent to solid (considering overlay)
     fn designate_ladder(
         &mut self,
         anchor: VoxelCoord,
@@ -993,6 +1026,11 @@ impl SimState {
             return;
         }
 
+        // Build overlay from existing designated blueprints.
+        let overlay = self.blueprint_overlay();
+        let effective_type =
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
+
         // Classify column voxels using overlap rules (ladders allow tree overlap).
         let build_type = match kind {
             LadderKind::Wood => BuildType::WoodLadder,
@@ -1006,7 +1044,7 @@ impl SimState {
                 self.last_build_message = Some("Ladder extends out of bounds.".to_string());
                 return;
             }
-            match self.world.get(coord).classify_for_overlap() {
+            match effective_type(coord).classify_for_overlap() {
                 OverlapClassification::Exterior => {
                     build_voxels.push(coord);
                 }
@@ -1030,13 +1068,13 @@ impl SimState {
             return;
         }
 
-        // Anchoring validation.
+        // Anchoring validation (considers blueprint overlay).
         match kind {
             LadderKind::Wood => {
                 // At least one voxel's ladder face must be adjacent to solid.
                 let any_anchored = build_voxels.iter().any(|&coord| {
                     let neighbor = VoxelCoord::new(coord.x + odx, coord.y, coord.z + odz);
-                    self.world.get(neighbor).is_solid()
+                    effective_type(neighbor).is_solid()
                 });
                 if !any_anchored {
                     self.last_build_message =
@@ -1047,7 +1085,7 @@ impl SimState {
             LadderKind::Rope => {
                 // Topmost voxel's ladder face must be adjacent to solid.
                 let top = VoxelCoord::new(anchor.x + odx, anchor.y + height - 1, anchor.z + odz);
-                if !self.world.get(top).is_solid() {
+                if !effective_type(top).is_solid() {
                     self.last_build_message =
                         Some("Rope ladder must hang from a solid surface at the top.".to_string());
                     return;
@@ -1108,9 +1146,15 @@ impl SimState {
 
     /// Validate and create a blueprint for carving (removing) solid voxels.
     ///
-    /// Filters the input to only carvable voxels (solid and not ForestFloor).
-    /// Air and ForestFloor voxels are silently skipped. Records original voxel
-    /// types for cancel restoration.
+    /// **Blueprint-aware:** Uses `blueprint_overlay()` to treat designated
+    /// (not yet built) blueprints as their target voxel types for carvability
+    /// checks and structural validation. A voxel that is Air in the real world
+    /// but solid in the overlay (pending build) is considered carvable; a voxel
+    /// that is solid but overlaid as Air (pending carve) is not.
+    ///
+    /// Filters the input to only carvable voxels (solid and not ForestFloor,
+    /// considering overlay). Air and ForestFloor voxels are silently skipped.
+    /// Records original voxel types for cancel restoration.
     fn designate_carve(
         &mut self,
         voxels: &[VoxelCoord],
@@ -1130,14 +1174,19 @@ impl SimState {
             }
         }
 
-        // Filter to only carvable voxels: solid and not ForestFloor.
+        let overlay = self.blueprint_overlay();
+        let effective_type =
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
+
+        // Filter to only carvable voxels: solid and not ForestFloor
+        // (considering blueprint overlay so designated builds are carvable).
         let mut carve_voxels = Vec::new();
         let mut original_voxels = Vec::new();
         for &coord in voxels {
-            let vt = self.world.get(coord);
+            let vt = effective_type(coord);
             if vt.is_solid() && vt != VoxelType::ForestFloor {
                 carve_voxels.push(coord);
-                original_voxels.push((coord, vt));
+                original_voxels.push((coord, self.world.get(coord)));
             }
         }
 
@@ -1145,12 +1194,12 @@ impl SimState {
             self.last_build_message = Some("Nothing to carve.".to_string());
             return;
         }
-
         let validation = structural::validate_carve_fast(
             &self.world,
             &self.face_data,
             &carve_voxels,
             &self.config,
+            &overlay,
         );
         if matches!(validation.tier, structural::ValidationTier::Blocked) {
             self.last_build_message = Some(validation.message);
@@ -5961,6 +6010,11 @@ impl SimState {
     /// `raycast_structure()`, but tracks `last_axis` (the axis most recently
     /// stepped) to compute the entry face on hit.
     ///
+    /// If `overlay` is `Some`, designated (not yet built) blueprints are
+    /// treated as their target voxel types — a designated platform reads as
+    /// solid and can be "hit" by the ray. Pass `None` to raycast against the
+    /// actual world only.
+    ///
     /// Face encoding matches `FaceDirection` ordinals:
     ///   0=PosX, 1=NegX, 2=PosY, 3=NegY, 4=PosZ, 5=NegZ
     /// The face returned is the face of the solid voxel that the ray entered
@@ -5971,6 +6025,7 @@ impl SimState {
         from: [f32; 3],
         dir: [f32; 3],
         max_steps: u32,
+        overlay: Option<&structural::BlueprintOverlay>,
     ) -> Option<(VoxelCoord, u8)> {
         let mut voxel = [
             from[0].floor() as i32,
@@ -6001,7 +6056,11 @@ impl SimState {
         for _ in 0..max_steps {
             let coord = VoxelCoord::new(voxel[0], voxel[1], voxel[2]);
 
-            if !first_step && self.world.get(coord).is_solid() {
+            let vt = match overlay {
+                Some(ov) => ov.effective_type(&self.world, coord),
+                None => self.world.get(coord),
+            };
+            if !first_step && vt.is_solid() {
                 // Compute the face: the ray entered through the face opposite
                 // to the step direction on last_axis.
                 let face = match (last_axis, step[last_axis] > 0) {
@@ -6239,6 +6298,36 @@ impl SimState {
         let count = commands.len();
         self.step(&commands, tick);
         count
+    }
+
+    /// Build a `BlueprintOverlay` from all `Designated` (not yet built)
+    /// blueprints. Each blueprint's voxels are mapped to the voxel type they
+    /// will become when materialized (via `BuildType::to_voxel_type()`).
+    /// Face data from building blueprints is also collected.
+    ///
+    /// Callers that use this overlay treat designated blueprints as if they
+    /// were already materialized — e.g., a designated platform reads as
+    /// `GrownPlatform`, a designated carve reads as `Air`. Used by
+    /// designation validation and preview validation so the player sees the
+    /// cumulative effect of all planned builds.
+    pub fn blueprint_overlay(&self) -> structural::BlueprintOverlay {
+        let mut voxels = BTreeMap::new();
+        let mut faces = BTreeMap::new();
+        for bp in self.db.blueprints.iter_all() {
+            if bp.state != BlueprintState::Designated {
+                continue;
+            }
+            let target_type = bp.build_type.to_voxel_type();
+            for &coord in &bp.voxels {
+                voxels.insert(coord, target_type);
+            }
+            if let Some(ref face_entries) = bp.face_layout {
+                for &(coord, ref fd) in face_entries {
+                    faces.insert(coord, fd.clone());
+                }
+            }
+        }
+        structural::BlueprintOverlay { voxels, faces }
     }
 }
 
@@ -16500,7 +16589,7 @@ mod tests {
         sim.world.set(target, VoxelType::Trunk);
         let from = [5.5, 10.0, 5.5];
         let dir = [0.0, -1.0, 0.0];
-        let result = sim.raycast_solid(from, dir, 100);
+        let result = sim.raycast_solid(from, dir, 100, None);
         assert!(result.is_some(), "Should hit the trunk voxel");
         let (coord, face) = result.unwrap();
         assert_eq!(coord, target);
@@ -16517,21 +16606,21 @@ mod tests {
         // Ray from above → enters through PosY face (index 2).
         let from_above = [5.5, 15.0, 5.5];
         let dir_down = [0.0, -1.0, 0.0];
-        let (coord, face) = sim.raycast_solid(from_above, dir_down, 100).unwrap();
+        let (coord, face) = sim.raycast_solid(from_above, dir_down, 100, None).unwrap();
         assert_eq!(coord, target);
         assert_eq!(face, 2, "Ray from above should enter through PosY face");
 
         // Ray from +X side → enters through PosX face (index 0).
         let from_east = [10.5, 10.5, 5.5];
         let dir_west = [-1.0, 0.0, 0.0];
-        let (coord, face) = sim.raycast_solid(from_east, dir_west, 100).unwrap();
+        let (coord, face) = sim.raycast_solid(from_east, dir_west, 100, None).unwrap();
         assert_eq!(coord, target);
         assert_eq!(face, 0, "Ray from +X should enter through PosX face");
 
         // Ray from +Z side → enters through PosZ face (index 4).
         let from_south = [5.5, 10.5, 10.5];
         let dir_north = [0.0, 0.0, -1.0];
-        let (coord, face) = sim.raycast_solid(from_south, dir_north, 100).unwrap();
+        let (coord, face) = sim.raycast_solid(from_south, dir_north, 100, None).unwrap();
         assert_eq!(coord, target);
         assert_eq!(face, 4, "Ray from +Z should enter through PosZ face");
     }
@@ -16542,7 +16631,7 @@ mod tests {
         // Cast a ray straight up from the top of the world — should hit nothing.
         let from = [5.5, 50.0, 5.5];
         let dir = [0.0, 1.0, 0.0];
-        let result = sim.raycast_solid(from, dir, 100);
+        let result = sim.raycast_solid(from, dir, 100, None);
         assert_eq!(result, None);
     }
 
@@ -16555,14 +16644,14 @@ mod tests {
         // Ray from -X side → enters through NegX face (index 1).
         let from_west = [0.5, 10.5, 5.5];
         let dir_east = [1.0, 0.0, 0.0];
-        let (coord, face) = sim.raycast_solid(from_west, dir_east, 100).unwrap();
+        let (coord, face) = sim.raycast_solid(from_west, dir_east, 100, None).unwrap();
         assert_eq!(coord, target);
         assert_eq!(face, 1, "Ray from -X should enter through NegX face");
 
         // Ray from -Z side → enters through NegZ face (index 5).
         let from_north = [5.5, 10.5, 0.5];
         let dir_south = [0.0, 0.0, 1.0];
-        let (coord, face) = sim.raycast_solid(from_north, dir_south, 100).unwrap();
+        let (coord, face) = sim.raycast_solid(from_north, dir_south, 100, None).unwrap();
         assert_eq!(coord, target);
         assert_eq!(face, 5, "Ray from -Z should enter through NegZ face");
     }
@@ -16577,7 +16666,7 @@ mod tests {
         // the starting voxel and hit the lower one.
         let from = [5.5, 11.5, 5.5];
         let dir = [0.0, -1.0, 0.0];
-        let result = sim.raycast_solid(from, dir, 100);
+        let result = sim.raycast_solid(from, dir, 100, None);
         assert!(result.is_some());
         let (coord, _face) = result.unwrap();
         assert_eq!(
@@ -16585,6 +16674,51 @@ mod tests {
             VoxelCoord::new(5, 10, 5),
             "Should skip starting voxel"
         );
+    }
+
+    #[test]
+    fn raycast_solid_hits_blueprint_with_overlay() {
+        let mut sim = test_sim(42);
+        // Find an air voxel adjacent to trunk (valid for platform placement).
+        let target = find_air_adjacent_to_trunk(&sim);
+
+        // Without overlay, ray passes through (it's air).
+        let from = [
+            target.x as f32 + 0.5,
+            target.y as f32 + 5.0,
+            target.z as f32 + 0.5,
+        ];
+        let dir = [0.0, -1.0, 0.0];
+        let result_no_overlay = sim.raycast_solid(from, dir, 20, None);
+        // Ray might hit something else (e.g., floor below), but not the target.
+        assert!(
+            result_no_overlay.is_none() || result_no_overlay.unwrap().0 != target,
+            "Without overlay, ray should not hit the air voxel as solid"
+        );
+
+        // Designate a platform blueprint at the target.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![target],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // With overlay, ray hits the blueprint voxel.
+        let overlay = sim.blueprint_overlay();
+        let result_with_overlay = sim.raycast_solid(from, dir, 20, Some(&overlay));
+        assert!(
+            result_with_overlay.is_some(),
+            "With overlay, ray should hit the blueprint voxel"
+        );
+        let (coord, face) = result_with_overlay.unwrap();
+        assert_eq!(coord, target);
+        assert_eq!(face, 2, "Should enter through PosY face (from above)");
     }
 
     // -----------------------------------------------------------------------
@@ -18874,6 +19008,424 @@ mod tests {
             restored_task.target_creature,
             Some(target_id),
             "target_creature should survive serde roundtrip"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Blueprint overlay tests (B-preview-blueprints)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn blueprint_overlay_includes_designated_blueprints() {
+        let mut sim = test_sim(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Designate a platform build.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        let overlay = sim.blueprint_overlay();
+        assert_eq!(
+            overlay.voxels.get(&air_coord),
+            Some(&VoxelType::GrownPlatform),
+            "Designated platform blueprint should appear in overlay as GrownPlatform"
+        );
+    }
+
+    #[test]
+    fn blueprint_overlay_excludes_complete_blueprints() {
+        let mut sim = test_sim(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Designate and then manually mark as complete.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Manually flip the blueprint to Complete.
+        let mut bp = sim.db.blueprints.iter_all().next().unwrap().clone();
+        bp.state = BlueprintState::Complete;
+        let _ = sim.db.blueprints.update_no_fk(bp);
+
+        let overlay = sim.blueprint_overlay();
+        assert!(
+            overlay.voxels.is_empty(),
+            "Complete blueprints should not appear in overlay"
+        );
+    }
+
+    #[test]
+    fn blueprint_overlay_maps_carve_to_air() {
+        let mut sim = test_sim(42);
+
+        // Find a solid carvable voxel from the tree's trunk.
+        let tree = &sim.trees[&sim.player_tree_id];
+        let carve_coord = *tree
+            .trunk_voxels
+            .iter()
+            .find(|&&c| {
+                let vt = sim.world.get(c);
+                vt.is_solid() && vt != VoxelType::ForestFloor
+            })
+            .expect("Need a carvable trunk voxel");
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateCarve {
+                voxels: vec![carve_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let overlay = sim.blueprint_overlay();
+        assert_eq!(
+            overlay.voxels.get(&carve_coord),
+            Some(&VoxelType::Air),
+            "Carve blueprint should appear in overlay as Air"
+        );
+    }
+
+    #[test]
+    fn second_platform_blocked_by_existing_blueprint() {
+        // Designating a platform on the same voxel as an existing blueprint
+        // should fail because the overlay makes the voxel appear as
+        // GrownPlatform (Blocked for overlap).
+        let mut sim = test_sim(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // First designation succeeds.
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Second designation on the same voxel should be rejected.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd2], 2);
+        // Still only one blueprint — second was rejected.
+        assert_eq!(
+            sim.db.blueprints.len(),
+            1,
+            "Second platform on same voxel should be rejected"
+        );
+        assert!(
+            sim.last_build_message.is_some(),
+            "Should have a rejection message"
+        );
+    }
+
+    #[test]
+    fn adjacent_platform_sees_blueprint_support() {
+        // Place platforms in a chain extending from the trunk. Designate the
+        // first N-1 as a single blueprint, then designate the last one
+        // separately — it's only adjacent to the blueprint, not to any solid
+        // in the real world, so it exercises the overlay adjacency check.
+        let mut sim = test_sim(42);
+
+        // Search across trunk voxels and all 4 horizontal directions for a
+        // strip of air that eventually leaves all solid face neighbors behind.
+        let directions: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+        let tree = &sim.trees[&sim.player_tree_id];
+        let mut best: Option<(Vec<VoxelCoord>, usize)> = None; // (strip, split_index)
+        'outer: for &trunk_coord in &tree.trunk_voxels {
+            for &(dx, dz) in &directions {
+                let mut strip = Vec::new();
+                for i in 1..=20_i32 {
+                    let c = VoxelCoord::new(
+                        trunk_coord.x + dx * i,
+                        trunk_coord.y,
+                        trunk_coord.z + dz * i,
+                    );
+                    if !sim.world.in_bounds(c) || sim.world.get(c) != VoxelType::Air {
+                        break;
+                    }
+                    strip.push(c);
+                }
+                if strip.len() < 2 {
+                    continue;
+                }
+                if let Some(split) = strip
+                    .iter()
+                    .position(|&c| !sim.world.has_solid_face_neighbor(c))
+                {
+                    if split > 0 {
+                        best = Some((strip, split));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let (strip, split) = best.expect(
+            "Need a trunk voxel with an air strip that transitions from solid-neighbor to open",
+        );
+
+        let first_batch = &strip[..split];
+        let extension = strip[split];
+
+        // Designate the first batch (adjacent to trunk).
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: first_batch.to_vec(),
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Designate the extension. Without the overlay it would fail
+        // adjacency; with the overlay the blueprint batch acts as solid.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![extension],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd2], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            2,
+            "Platform adjacent to blueprint should be accepted via overlay support"
+        );
+    }
+
+    #[test]
+    fn overlapping_carve_designations_rejected() {
+        // A second carve on the same voxels should be rejected because
+        // the overlay maps them to Air (nothing to carve).
+        let mut sim = test_sim(42);
+
+        let tree = &sim.trees[&sim.player_tree_id];
+        let carve_coord = *tree
+            .trunk_voxels
+            .iter()
+            .find(|&&c| {
+                let vt = sim.world.get(c);
+                vt.is_solid() && vt != VoxelType::ForestFloor
+            })
+            .expect("Need a carvable trunk voxel");
+
+        // First carve succeeds.
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateCarve {
+                voxels: vec![carve_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Second carve on same voxel rejected — overlay shows Air.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateCarve {
+                voxels: vec![carve_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd2], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            1,
+            "Second carve on same voxel should be rejected"
+        );
+        assert!(
+            sim.last_build_message.is_some(),
+            "Should have a rejection message"
+        );
+    }
+
+    #[test]
+    fn building_foundation_on_designated_platform() {
+        // A building placed on a designated platform (not yet built) should
+        // see the platform voxels as solid via the overlay.
+        let mut sim = test_sim(42);
+
+        // Find a 3x3 air area adjacent to the trunk at some Y level.
+        // Use the building site finder logic but at y=1 where ForestFloor
+        // provides the foundation, then place a platform to serve as a
+        // higher foundation.
+        let site = find_building_site(&sim);
+        // site is at y=0 (ForestFloor). Interior starts at y=1.
+        // Designate a 3x3 platform at y=1.
+        let mut platform_voxels = Vec::new();
+        for dx in 0..3 {
+            for dz in 0..3 {
+                platform_voxels.push(VoxelCoord::new(site.x + dx, 1, site.z + dz));
+            }
+        }
+
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: platform_voxels,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Verify the overlay makes the platform voxels solid.
+        let overlay = sim.blueprint_overlay();
+        let platform_coord = VoxelCoord::new(site.x, 1, site.z);
+        assert_eq!(
+            overlay.voxels.get(&platform_coord),
+            Some(&VoxelType::GrownPlatform)
+        );
+
+        // Now designate a building with foundation at y=1 (the platform).
+        // Interior at y=2. Clear any non-air voxels at y=2 so the test
+        // always exercises the building-on-blueprint path.
+        let building_anchor = VoxelCoord::new(site.x, 1, site.z);
+        for dx in 0..3 {
+            for dz in 0..3 {
+                let coord = VoxelCoord::new(site.x + dx, 2, site.z + dz);
+                if sim.world.get(coord) != VoxelType::Air {
+                    sim.world.set(coord, VoxelType::Air);
+                }
+            }
+        }
+
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuilding {
+                anchor: building_anchor,
+                width: 3,
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd2], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            2,
+            "Building on designated platform should be accepted: {:?}",
+            sim.last_build_message
+        );
+    }
+
+    #[test]
+    fn ladder_anchored_to_designated_platform() {
+        // A wood ladder placed next to a designated platform should see the
+        // platform as solid for anchoring via the overlay.
+        let mut sim = test_sim(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Designate a platform.
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Find a voxel adjacent to the platform in any horizontal direction
+        // that is Air and has no solid face neighbors in the real world, so
+        // the ladder can only anchor via the blueprint overlay. Clear any
+        // solid neighbors at the ladder voxel if needed to isolate it.
+        let directions: [(i32, i32, FaceDirection); 4] = [
+            (-1, 0, FaceDirection::PosX),
+            (1, 0, FaceDirection::NegX),
+            (0, -1, FaceDirection::PosZ),
+            (0, 1, FaceDirection::NegZ),
+        ];
+        let (ladder_coord, orientation) = directions
+            .iter()
+            .map(|&(dx, dz, dir)| {
+                (
+                    VoxelCoord::new(air_coord.x + dx, air_coord.y, air_coord.z + dz),
+                    dir,
+                )
+            })
+            .find(|&(coord, _)| {
+                sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+            })
+            .expect("Need an air voxel adjacent to the platform for ladder placement");
+
+        // Clear any solid face neighbors so anchoring can only succeed via overlay.
+        for &dir in &FaceDirection::ALL {
+            let (dx, dy, dz) = dir.to_offset();
+            let neighbor = VoxelCoord::new(
+                ladder_coord.x + dx,
+                ladder_coord.y + dy,
+                ladder_coord.z + dz,
+            );
+            if neighbor != air_coord && sim.world.get(neighbor).is_solid() {
+                sim.world.set(neighbor, VoxelType::Air);
+            }
+        }
+        assert!(
+            !sim.world.has_solid_face_neighbor(ladder_coord),
+            "Ladder voxel should have no solid face neighbors in the real world"
+        );
+
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateLadder {
+                anchor: ladder_coord,
+                height: 1,
+                orientation,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd2], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            2,
+            "Wood ladder anchored to designated platform should be accepted: {:?}",
+            sim.last_build_message
         );
     }
 }

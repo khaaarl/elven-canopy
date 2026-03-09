@@ -55,7 +55,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
-[ ] B-preview-blueprints   Preview treats blueprints as complete
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-apprentice           Skill transfer via proximity
@@ -172,6 +171,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
+[x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] F-audio-synth          Waveform synthesis for audio rendering
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
@@ -635,7 +635,7 @@ structures near hilly terrain to fail validation. One-line fix: add
 `|| vt == VoxelType::Dirt` to match the full solver's pinning logic.
 
 #### B-preview-blueprints — Preview treats blueprints as complete
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 Structural preview during placement (`validate_platform_preview`,
 `validate_building_preview`) currently only considers the voxels being placed.

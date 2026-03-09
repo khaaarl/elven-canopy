@@ -15,7 +15,8 @@
 ##
 ## Mouse-to-voxel projection:
 ##   Platform/carve: ray-plane intersection at Y = camera_focus_y + 0.5.
-##   Building/ladder: bridge.raycast_solid() to find solid surfaces.
+##   Building/ladder: bridge.raycast_solid_with_blueprints() to find solid
+##     surfaces (blueprint-aware — designated blueprints are hittable).
 ##
 ## Input handling: hover position updates in _process() (polling mouse),
 ## discrete events (click/release/keys) in _unhandled_input(). ESC exits
@@ -27,7 +28,7 @@
 ## orbital_camera.gd which provides set_vertical_snap()/get_focus_voxel(),
 ## height_grid_renderer.gd for the wireframe grid overlay,
 ## main.gd which wires this controller into the scene,
-## sim_bridge.rs for raycast_solid(), auto_ladder_orientation(),
+## sim_bridge.rs for raycast_solid_with_blueprints(), auto_ladder_orientation(),
 ## designate_build_rect(), designate_building(), designate_ladder(),
 ## validate_*_preview() methods.
 
@@ -534,12 +535,15 @@ func _project_height_slice(y_level: int) -> Variant:
 
 ## Raycast to find the first solid surface. Returns Dictionary with
 ## {voxel: Vector3i, face: int} or null.
+## Blueprint-aware: designated blueprints are treated as their target voxel
+## types, so the player can click on blueprint surfaces (e.g. a designated
+## platform reads as solid).
 func _project_surface() -> Variant:
 	var mouse_pos := get_viewport().get_mouse_position()
 	var ray_origin := _camera.project_ray_origin(mouse_pos)
 	var ray_dir := _camera.project_ray_normal(mouse_pos)
 
-	var result := _bridge.raycast_solid(ray_origin, ray_dir)
+	var result := _bridge.raycast_solid_with_blueprints(ray_origin, ray_dir)
 	if not result.get("hit", false):
 		return null
 	return result

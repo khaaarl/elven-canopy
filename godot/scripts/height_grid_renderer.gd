@@ -5,16 +5,19 @@
 ## near the camera focus are most opaque, fading with distance. Cubes over
 ## solid voxels are dimmed to avoid obscuring the tree.
 ##
+## Blueprint-aware: uses get_voxel_solidity_slice_with_blueprints() so that
+## designated (not yet built) blueprints appear as solid in the grid overlay.
+##
 ## The grid is rebuilt only when the integer Y-level or camera focus (X, Z)
 ## changes — not every frame. Uses ImmediateMesh with line segments.
 ##
 ## Created by main.gd, referenced by construction_controller.gd which
 ## toggles visibility on mode transitions. The bridge provides
-## get_voxel_solidity_slice() for solid/air data.
+## get_voxel_solidity_slice_with_blueprints() for solid/air data.
 ##
 ## See also: construction_controller.gd for visibility control,
 ## orbital_camera.gd for get_focus_voxel(), sim_bridge.rs for
-## get_voxel_solidity_slice().
+## get_voxel_solidity_slice_with_blueprints().
 
 extends Node3D
 
@@ -68,7 +71,7 @@ func _process(_delta: float) -> void:
 
 
 func _rebuild_grid(y: int, cx: int, cz: int) -> void:
-	var solidity := _bridge.get_voxel_solidity_slice(y, cx, cz, GRID_RADIUS)
+	var solidity := _bridge.get_voxel_solidity_slice_with_blueprints(y, cx, cz, GRID_RADIUS)
 	var side: int = 2 * GRID_RADIUS + 1
 	var mesh := ImmediateMesh.new()
 

@@ -122,11 +122,15 @@
 //   the placement controller to decide which nav nodes to show.
 //   `get_all_species_names()` — returns all species names for UI iteration.
 // - **Placement raycasting:** `raycast_solid(origin, dir)` — DDA raycast
-//   returning the first solid voxel and entry face as a Dictionary.
+//   returning the first solid voxel and entry face (actual world only).
+//   `raycast_solid_with_blueprints(origin, dir)` — same but blueprint-aware
+//   (designated blueprints are treated as their target types).
 //   `get_voxel_solidity_slice(y, cx, cz, radius)` — solid/air grid for
-//   height-slice wireframe rendering. `auto_ladder_orientation(x,y,z,h)`
-//   — picks the best facing for a ladder column. `get_world_size()` —
-//   world dimensions for clamping.
+//   height-slice wireframe rendering (actual world only).
+//   `get_voxel_solidity_slice_with_blueprints(y, cx, cz, radius)` — same
+//   but blueprint-aware. `auto_ladder_orientation(x,y,z,h)` — picks the
+//   best facing for a ladder column. `get_world_size()` — world dimensions
+//   for clamping.
 //
 // All array data uses packed Godot types (`PackedInt32Array`,
 // `PackedVector3Array`) for efficient transfer across the GDExtension
@@ -1046,9 +1050,34 @@ impl SimBridge {
 
     /// Cast a ray and return the first solid voxel hit and entry face.
     /// Returns `{hit: true, voxel: Vector3i, face: int}` or `{hit: false}`.
-    /// Used by `construction_controller.gd` for building/ladder placement.
+    /// Raycasts against the **actual world only** — designated blueprints are
+    /// invisible. Use `raycast_solid_with_blueprints()` to also hit blueprint
+    /// voxels.
     #[func]
     fn raycast_solid(&self, origin: Vector3, dir: Vector3) -> VarDictionary {
+        self.raycast_solid_impl(origin, dir, false)
+    }
+
+    /// Cast a ray and return the first solid voxel hit and entry face.
+    /// Returns `{hit: true, voxel: Vector3i, face: int}` or `{hit: false}`.
+    ///
+    /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
+    /// their target voxel types — a designated platform reads as solid and
+    /// can be "hit" by the ray. Used by `construction_controller.gd` for
+    /// building/ladder placement so the player can click on blueprint surfaces.
+    #[func]
+    fn raycast_solid_with_blueprints(&self, origin: Vector3, dir: Vector3) -> VarDictionary {
+        self.raycast_solid_impl(origin, dir, true)
+    }
+
+    /// Shared implementation for `raycast_solid` and
+    /// `raycast_solid_with_blueprints`.
+    fn raycast_solid_impl(
+        &self,
+        origin: Vector3,
+        dir: Vector3,
+        include_blueprints: bool,
+    ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         let Some(sim) = &self.session.sim else {
             dict.set("hit", false);
@@ -1056,7 +1085,12 @@ impl SimBridge {
         };
         let from = [origin.x, origin.y, origin.z];
         let d = [dir.x, dir.y, dir.z];
-        match sim.raycast_solid(from, d, 500) {
+        let overlay = if include_blueprints {
+            Some(sim.blueprint_overlay())
+        } else {
+            None
+        };
+        match sim.raycast_solid(from, d, 500, overlay.as_ref()) {
             Some((coord, face)) => {
                 dict.set("hit", true);
                 dict.set("voxel", Vector3i::new(coord.x, coord.y, coord.z));
@@ -1072,22 +1106,60 @@ impl SimBridge {
     /// Return a square grid of solid/air flags at the given Y-level, centered
     /// on `(cx, cz)` with the given radius. Returns a `PackedByteArray` of
     /// `(2*radius+1)^2` bytes, row-major (X varies fastest). 1=solid, 0=air.
-    /// Used by `height_grid_renderer.gd` for wireframe dimming over solid voxels.
+    /// Checks the **actual world only** — designated blueprints are invisible.
+    /// Use `get_voxel_solidity_slice_with_blueprints()` to include them.
     #[func]
     fn get_voxel_solidity_slice(&self, y: i32, cx: i32, cz: i32, radius: i32) -> PackedByteArray {
+        self.get_voxel_solidity_slice_impl(y, cx, cz, radius, false)
+    }
+
+    /// Return a square grid of solid/air flags at the given Y-level, centered
+    /// on `(cx, cz)` with the given radius. Returns a `PackedByteArray` of
+    /// `(2*radius+1)^2` bytes, row-major (X varies fastest). 1=solid, 0=air.
+    ///
+    /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
+    /// their target voxel types — a designated platform reads as solid (1).
+    /// Used by `height_grid_renderer.gd` during construction mode so the
+    /// grid overlay shows blueprint voxels as solid.
+    #[func]
+    fn get_voxel_solidity_slice_with_blueprints(
+        &self,
+        y: i32,
+        cx: i32,
+        cz: i32,
+        radius: i32,
+    ) -> PackedByteArray {
+        self.get_voxel_solidity_slice_impl(y, cx, cz, radius, true)
+    }
+
+    /// Shared implementation for `get_voxel_solidity_slice` and
+    /// `get_voxel_solidity_slice_with_blueprints`.
+    fn get_voxel_solidity_slice_impl(
+        &self,
+        y: i32,
+        cx: i32,
+        cz: i32,
+        radius: i32,
+        include_blueprints: bool,
+    ) -> PackedByteArray {
         let Some(sim) = &self.session.sim else {
             return PackedByteArray::new();
+        };
+        let overlay = if include_blueprints {
+            Some(sim.blueprint_overlay())
+        } else {
+            None
         };
         let side = (2 * radius + 1) as usize;
         let mut data = Vec::with_capacity(side * side);
         for z in (cz - radius)..=(cz + radius) {
             for x in (cx - radius)..=(cx + radius) {
                 let coord = VoxelCoord::new(x, y, z);
-                data.push(if sim.world.get(coord).is_solid() {
-                    1u8
-                } else {
-                    0u8
-                });
+                let vt = match &overlay {
+                    Some(ov) => ov.effective_type(&sim.world, coord),
+                    None => sim.world.get(coord),
+                };
+                data.push(if vt.is_solid() { 1u8 } else { 0u8 });
             }
         }
         PackedByteArray::from(data.as_slice())
@@ -2133,8 +2205,12 @@ impl SimBridge {
 
     /// Preview-validate a rectangular carve placement.
     ///
-    /// Counts carvable solid voxels (not Air, not ForestFloor) in the region.
-    /// Returns a `VarDictionary` with `"tier"` and `"message"` keys.
+    /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
+    /// their target voxel types for carvability and structural checks.
+    ///
+    /// Counts carvable solid voxels (not Air, not ForestFloor, considering
+    /// overlay) in the region. Returns a `VarDictionary` with `"tier"` and
+    /// `"message"` keys.
     #[func]
     fn validate_carve_preview(
         &self,
@@ -2148,6 +2224,9 @@ impl SimBridge {
         let Some(sim) = &self.session.sim else {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
+        let overlay = sim.blueprint_overlay();
+        let effective_type =
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
         let w = width.max(1);
         let d = depth.max(1);
         let h = height.max(1);
@@ -2164,13 +2243,14 @@ impl SimBridge {
             }
         }
 
-        // Count carvable voxels (solid and not ForestFloor).
+        // Count carvable voxels (solid and not ForestFloor), considering
+        // blueprint overlay so designated builds count as carvable.
         let mut carvable_count = 0;
         for dy in 0..h {
             for dx in 0..w {
                 for dz in 0..d {
                     let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
-                    let vt = sim.world.get(coord);
+                    let vt = effective_type(coord);
                     if vt.is_solid() && vt != VoxelType::ForestFloor {
                         carvable_count += 1;
                     }
@@ -2188,7 +2268,7 @@ impl SimBridge {
             for dx in 0..w {
                 for dz in 0..d {
                     let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
-                    let vt = sim.world.get(coord);
+                    let vt = effective_type(coord);
                     if vt.is_solid() && vt != VoxelType::ForestFloor {
                         carve_coords.push(coord);
                     }
@@ -2196,12 +2276,21 @@ impl SimBridge {
             }
         }
 
-        let validation =
-            structural::validate_carve_fast(&sim.world, &sim.face_data, &carve_coords, &sim.config);
+        let validation = structural::validate_carve_fast(
+            &sim.world,
+            &sim.face_data,
+            &carve_coords,
+            &sim.config,
+            &overlay,
+        );
         Self::preview_result_from_tier(validation.tier, &validation.message)
     }
 
     /// Validate whether a building can be placed at the given anchor.
+    ///
+    /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
+    /// their target voxel types. A designated platform counts as solid
+    /// foundation; a designated carve counts as Air interior.
     ///
     /// Checks that all foundation voxels (at anchor.y) are solid and all
     /// interior voxels (above foundation) are Air and in-bounds.
@@ -2221,21 +2310,24 @@ impl SimBridge {
         if width < 3 || depth < 3 || height < 1 {
             return false;
         }
-        // Check foundation.
+        let overlay = sim.blueprint_overlay();
+        let effective_type =
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
+        // Check foundation (considering blueprint overlay).
         for dx in 0..width {
             for dz in 0..depth {
                 let coord = VoxelCoord::new(x + dx, y, z + dz);
-                if !sim.world.in_bounds(coord) || !sim.world.get(coord).is_solid() {
+                if !sim.world.in_bounds(coord) || !effective_type(coord).is_solid() {
                     return false;
                 }
             }
         }
-        // Check interior.
+        // Check interior (considering blueprint overlay).
         for dy in 1..=height {
             for dx in 0..width {
                 for dz in 0..depth {
                     let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
-                    if !sim.world.in_bounds(coord) || sim.world.get(coord) != VoxelType::Air {
+                    if !sim.world.in_bounds(coord) || effective_type(coord) != VoxelType::Air {
                         return false;
                     }
                 }
@@ -2246,9 +2338,12 @@ impl SimBridge {
 
     /// Preview-validate a rectangular platform placement.
     ///
-    /// Combines basic checks (in-bounds, Air, adjacency) with structural
-    /// analysis via `validate_blueprint_fast()`. Returns a `VarDictionary`
-    /// with keys:
+    /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
+    /// their target voxel types for overlap, adjacency, and structural checks.
+    ///
+    /// Combines basic checks (in-bounds, Air/overlap-compatible, adjacency)
+    /// with structural analysis via `validate_blueprint_fast()`. Returns a
+    /// `VarDictionary` with keys:
     /// - `"tier"`: `"Ok"`, `"Warning"`, or `"Blocked"`
     /// - `"message"`: human-readable explanation (empty for Ok)
     ///
@@ -2265,6 +2360,9 @@ impl SimBridge {
         let Some(sim) = &self.session.sim else {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
+        let overlay = sim.blueprint_overlay();
+        let effective_type =
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
         let w = width.max(1);
         let d = depth.max(1);
         let mut voxels = Vec::with_capacity((w * d) as usize);
@@ -2282,9 +2380,11 @@ impl SimBridge {
         }
 
         // Overlap-aware classification: Platform allows tree overlap.
+        // Uses effective type (world + blueprint overlay) so existing
+        // designated blueprints are treated as already built.
         let mut build_voxels = Vec::new();
         for &coord in &voxels {
-            match sim.world.get(coord).classify_for_overlap() {
+            match effective_type(coord).classify_for_overlap() {
                 OverlapClassification::Exterior | OverlapClassification::Convertible => {
                     build_voxels.push(coord);
                 }
@@ -2304,9 +2404,18 @@ impl SimBridge {
         }
 
         // At least one buildable voxel must be face-adjacent to solid.
-        let any_adjacent = build_voxels
-            .iter()
-            .any(|&coord| sim.world.has_solid_face_neighbor(coord));
+        // Check both actual world and blueprint overlay for adjacency.
+        let any_adjacent = build_voxels.iter().any(|&coord| {
+            sim.world.has_solid_face_neighbor(coord)
+                || FaceDirection::ALL.iter().any(|&dir| {
+                    let (dx, dy, dz) = dir.to_offset();
+                    let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+                    overlay
+                        .voxels
+                        .get(&neighbor)
+                        .is_some_and(|vt| vt.is_solid())
+                })
+        });
         if !any_adjacent {
             return Self::preview_result(
                 "Blocked",
@@ -2322,11 +2431,15 @@ impl SimBridge {
             BuildType::Platform.to_voxel_type(),
             &BTreeMap::new(),
             &sim.config,
+            &overlay,
         );
         Self::preview_result_from_tier(validation.tier, &validation.message)
     }
 
     /// Preview-validate a building placement.
+    ///
+    /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
+    /// their target voxel types for foundation, interior, and structural checks.
     ///
     /// Combines basic checks (size, solid foundation, air interior) with
     /// structural analysis via `validate_blueprint_fast()`. Returns a
@@ -2347,28 +2460,31 @@ impl SimBridge {
         let Some(sim) = &self.session.sim else {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
+        let overlay = sim.blueprint_overlay();
+        let effective_type =
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
 
         if width < 3 || depth < 3 || height < 1 {
             return Self::preview_result("Blocked", "Building too small (min 3x3x1).");
         }
 
-        // Validate foundation (all must be solid).
+        // Validate foundation (all must be solid, considering blueprint overlay).
         let anchor = VoxelCoord::new(x, y, z);
         for dx in 0..width {
             for dz in 0..depth {
                 let coord = VoxelCoord::new(x + dx, y, z + dz);
-                if !sim.world.in_bounds(coord) || !sim.world.get(coord).is_solid() {
+                if !sim.world.in_bounds(coord) || !effective_type(coord).is_solid() {
                     return Self::preview_result("Blocked", "Foundation must be on solid ground.");
                 }
             }
         }
 
-        // Validate interior (all must be Air and in-bounds).
+        // Validate interior (all must be Air, considering blueprint overlay).
         for dy in 1..=height {
             for dx in 0..width {
                 for dz in 0..depth {
                     let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
-                    if !sim.world.in_bounds(coord) || sim.world.get(coord) != VoxelType::Air {
+                    if !sim.world.in_bounds(coord) || effective_type(coord) != VoxelType::Air {
                         return Self::preview_result("Blocked", "Building interior must be clear.");
                     }
                 }
@@ -2387,6 +2503,7 @@ impl SimBridge {
             VoxelType::BuildingInterior,
             &face_layout,
             &sim.config,
+            &overlay,
         );
         Self::preview_result_from_tier(validation.tier, &validation.message)
     }
@@ -2936,6 +3053,9 @@ impl SimBridge {
 
     /// Preview-validate a ladder placement. Returns `{tier, message}`.
     ///
+    /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
+    /// their target voxel types for overlap, anchoring, and structural checks.
+    ///
     /// - tier: "Ok", "Warning", or "Blocked"
     /// - kind: 0=Wood, 1=Rope
     /// - orientation: 0=PosX, 1=NegX, 4=PosZ, 5=NegZ (FaceDirection index)
@@ -2952,6 +3072,9 @@ impl SimBridge {
         let Some(sim) = &self.session.sim else {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
+        let overlay = sim.blueprint_overlay();
+        let effective_type =
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
         if height < 1 {
             return Self::preview_result("Blocked", "Height must be at least 1.");
         }
@@ -2964,14 +3087,14 @@ impl SimBridge {
         };
         let (odx, _, odz) = face_dir.to_offset();
 
-        // Build column and validate.
+        // Build column and validate using effective type (world + blueprint overlay).
         let mut build_voxels = Vec::new();
         for dy in 0..height {
             let coord = VoxelCoord::new(x, y + dy, z);
             if !sim.world.in_bounds(coord) {
                 return Self::preview_result("Blocked", "Ladder extends out of bounds.");
             }
-            match sim.world.get(coord).classify_for_overlap() {
+            match effective_type(coord).classify_for_overlap() {
                 OverlapClassification::Exterior | OverlapClassification::Convertible => {
                     build_voxels.push(coord);
                 }
@@ -2991,12 +3114,12 @@ impl SimBridge {
             );
         }
 
-        // Anchoring check.
+        // Anchoring check (considers blueprint overlay for adjacent solidity).
         if kind == 0 {
             // Wood: any voxel's ladder face adjacent to solid.
             let any_anchored = build_voxels.iter().any(|&coord| {
                 let neighbor = VoxelCoord::new(coord.x + odx, coord.y, coord.z + odz);
-                sim.world.get(neighbor).is_solid()
+                effective_type(neighbor).is_solid()
             });
             if !any_anchored {
                 return Self::preview_result(
@@ -3007,7 +3130,7 @@ impl SimBridge {
         } else {
             // Rope: top voxel's ladder face adjacent to solid.
             let top = VoxelCoord::new(x + odx, y + height - 1, z + odz);
-            if !sim.world.get(top).is_solid() {
+            if !effective_type(top).is_solid() {
                 return Self::preview_result(
                     "Blocked",
                     "Rope ladder must hang from a solid surface at the top.",
@@ -3028,6 +3151,7 @@ impl SimBridge {
             voxel_type,
             &BTreeMap::new(),
             &sim.config,
+            &overlay,
         );
         Self::preview_result_from_tier(validation.tier, &validation.message)
     }
