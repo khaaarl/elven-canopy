@@ -43,6 +43,7 @@
 ## and platform placement, selection_controller.gd for click-to-select,
 ## tooltip_controller.gd for hover tooltips,
 ## notification_display.gd for toast-style notifications,
+## status_bar.gd for the persistent bottom-left status bar,
 ## creature_info_panel.gd for the creature info panel,
 ## structure_info_panel.gd for the structure info panel,
 ## ground_pile_info_panel.gd for the ground pile info panel,
@@ -96,6 +97,7 @@ var _furniture_renderer: Node3D
 var _pile_renderer: Node3D
 var _tooltip_controller: Node
 var _notification_display: VBoxContainer
+var _status_bar: PanelContainer
 var _construction_music: Node
 ## Highest notification ID seen so far, for polling new notifications.
 ## Initialized from the sim after load so historical notifications aren't
@@ -246,6 +248,13 @@ func _setup_common(bridge: SimBridge) -> void:
 	_notification_display = VBoxContainer.new()
 	_notification_display.set_script(notif_script)
 	canvas_layer.add_child(_notification_display)
+
+	# Set up status bar (bottom-left, at-a-glance stats).
+	var status_bar_script = load("res://scripts/status_bar.gd")
+	_status_bar = PanelContainer.new()
+	_status_bar.set_script(status_bar_script)
+	_status_bar.bridge = bridge
+	canvas_layer.add_child(_status_bar)
 
 	# Set up construction music controller.
 	var music_script = load("res://scripts/construction_music.gd")
@@ -598,7 +607,12 @@ func _setup_common(bridge: SimBridge) -> void:
 	)
 
 	# Wire speed controls.
-	toolbar.speed_changed.connect(func(speed_name: String): bridge.set_sim_speed(speed_name))
+	toolbar.speed_changed.connect(
+		func(speed_name: String):
+			bridge.set_sim_speed(speed_name)
+			if _status_bar:
+				_status_bar.set_speed(speed_name)
+	)
 
 	# Wire toolbar actions -> panel toggles.
 	toolbar.action_requested.connect(

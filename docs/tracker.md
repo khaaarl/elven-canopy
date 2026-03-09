@@ -140,7 +140,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-sound-effects        Basic ambient and action sound effects
 [ ] F-spatial-index        Creature spatial index for voxel-level position queries
 [ ] F-stairs               Stairs and ramps for vertical movement
-[ ] F-status-bar           Persistent status bar (population, idle count, active tasks)
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
@@ -239,6 +238,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-sim-speed            Simulation speed controls UI
 [x] F-sim-tab-migrate      Migrate sim entity storage to tabulosity SimDb
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
+[x] F-status-bar           Persistent status bar (population, idle count, active tasks)
 [x] F-struct-basic         Basic structural integrity (flood fill)
 [x] F-struct-names         User-editable structure names
 [x] F-structure-reg        Completed structure registry + UI panel
@@ -819,7 +819,6 @@ Identified during combat design review (docs/drafts/combat_military.md §5).
 This is a prerequisite for combat task kinds but is a separable infrastructure
 change that benefits from independent implementation and testing.
 
-**Blocks:** F-attack-task, F-combat
 **Related:** F-creature-actions, F-task-interruption
 
 #### F-flying-nav — 3D flight navigation system
@@ -1568,7 +1567,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 
 **Draft:** docs/drafts/combat_military.md (§5 "Attack Tasks")
 
-**Blocked by:** F-dynamic-pursuit, F-melee-action, F-preemption
+**Blocked by:** F-melee-action, F-preemption
 **Blocks:** F-attack-move, F-combat
 **Related:** F-attack-move
 
@@ -1578,7 +1577,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-dynamic-pursuit, F-enemy-ai, F-flee, F-hostile-detection, F-hp-death, F-melee-action, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action, F-spatial-index, F-task-interruption
+**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-hp-death, F-melee-action, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action, F-spatial-index, F-task-interruption
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -2034,7 +2033,7 @@ controller handles click-to-place with nav node highlighting.
 **Related:** F-debug-menu
 
 #### F-status-bar — Persistent status bar (population, idle count, active tasks)
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 A persistent bar (top or bottom of screen) showing at-a-glance stats:
 total population, idle elf count, active task count, current sim speed.
