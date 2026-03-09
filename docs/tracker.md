@@ -149,7 +149,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
-[ ] F-task-interruption    Unified task interruption and cleanup
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
@@ -256,6 +255,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-query-opts       Query options struct for index queries
 [x] F-tab-schema-ver       Schema versioning fundamentals
 [x] F-tab-unique-idx       Unique index enforcement
+[x] F-task-interruption    Unified task interruption and cleanup
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
 [x] F-thoughts             Creature thoughts (DF-style event reactions)
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
@@ -991,7 +991,6 @@ Add hp, hp_max, vital_status fields to Creature. VitalStatus enum (Alive, Dead, 
 
 **Draft:** docs/drafts/combat_military.md (§3)
 
-**Blocked by:** F-task-interruption
 **Blocks:** F-combat, F-melee-action, F-shoot-action
 **Related:** F-creature-death
 
@@ -1040,7 +1039,6 @@ PreemptionLevel enum with explicit level() method (NOT derived Ord). 8 levels: I
 
 **Draft:** docs/drafts/combat_military.md (§8)
 
-**Blocked by:** F-task-interruption
 **Blocks:** F-attack-task, F-combat, F-enemy-ai, F-flee
 **Related:** F-creature-actions
 
@@ -1057,7 +1055,7 @@ Ranged attack as a creature ACTION. Requires: LOS to target (voxel ray march / D
 **Blocks:** F-combat
 
 #### F-task-interruption — Unified task interruption and cleanup
-**Status:** Todo
+**Status:** Done
 
 Task cleanup on interruption is currently scattered across five per-kind
 functions (`cleanup_haul_task`, `cleanup_cook_task`, `cleanup_craft_task`,
@@ -1125,7 +1123,6 @@ also needs this function as a prerequisite.
 
 **Draft:** docs/drafts/combat_military.md (sections 3, 7, 8)
 
-**Blocks:** F-combat, F-flee, F-hp-death, F-preemption
 **Related:** F-creature-actions, F-dynamic-pursuit
 
 ### Economy & Logistics
@@ -1584,7 +1581,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-hp-death, F-melee-action, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action, F-spatial-index, F-task-interruption
+**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-hp-death, F-melee-action, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action, F-spatial-index
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1625,7 +1622,7 @@ Creatures with Flee response (civilian military group default, or FleeOnly comba
 
 **Draft:** docs/drafts/combat_military.md (§7)
 
-**Blocked by:** F-hostile-detection, F-preemption, F-task-interruption
+**Blocked by:** F-hostile-detection, F-preemption
 **Blocks:** F-combat
 
 #### F-hostile-detection — Hostile detection and faction logic

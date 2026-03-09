@@ -133,8 +133,13 @@
 // 3. Decision cascade — if task not done, re-enter `execute_task_behavior`
 //    to start the next action; if done, find a new task or wander.
 //
-// **Interruption:** `abort_current_action()` cleans up action state
-// (including Move's MoveAction row) without resolving effects.
+// **Interruption:** `interrupt_task()` is the single entry point for task
+// interruption from any source (nav invalidation, mope preemption, death,
+// flee, player cancel). It calls `abort_current_action()` to clean up
+// action state (including Move's MoveAction row) without resolving effects,
+// dispatches per-kind cleanup (release reservations, drop carried items),
+// and handles task state: resumable tasks (Build, Furnish) return to
+// Available; all others are marked Complete.
 //
 // ### Task kinds and their actions
 //
@@ -2110,10 +2115,8 @@ impl SimState {
                 .and_then(|c| c.current_node);
             match target_node {
                 None => {
-                    // Target creature is gone or has no nav node — abandon
-                    // and complete the pursuit task so it isn't re-claimed.
-                    self.unassign_creature_from_task(creature_id);
-                    self.complete_task(task_id);
+                    // Target creature is gone or has no nav node — abandon.
+                    self.interrupt_task(creature_id, task_id);
                     self.wander(creature_id, current_node);
                     return;
                 }
@@ -2145,17 +2148,7 @@ impl SimState {
         let graph = self.graph_for_species(species);
         if !graph.is_node_alive(current_node) || !graph.is_node_alive(task_location) {
             // Clean up action and task state before abandoning.
-            self.abort_current_action(creature_id);
-            self.cleanup_haul_task(creature_id, task_id);
-            self.cleanup_cook_task(task_id);
-            self.cleanup_craft_task(task_id);
-            self.cleanup_harvest_task(task_id);
-            self.cleanup_acquire_item_task(task_id);
-            if let Some(mut c) = self.db.creatures.get(&creature_id) {
-                c.current_task = None;
-                c.path = None;
-                let _ = self.db.creatures.update_no_fk(c);
-            }
+            self.interrupt_task(creature_id, task_id);
             // Resnap the creature to a live node before wandering.
             let graph = self.graph_for_species(species);
             if let Some(c) = self.db.creatures.get(&creature_id) {
@@ -4001,15 +3994,9 @@ impl SimState {
             return; // Roll failed.
         }
 
-        // If creature has an in-progress task, abort action and abandon it.
+        // If creature has an in-progress task, interrupt it.
         if let Some(old_task_id) = creature.current_task {
-            self.abort_current_action(creature_id);
-            self.cleanup_haul_task(creature_id, old_task_id);
-            self.cleanup_cook_task(old_task_id);
-            self.cleanup_craft_task(old_task_id);
-            self.cleanup_harvest_task(old_task_id);
-            self.cleanup_acquire_item_task(old_task_id);
-            self.unassign_creature_from_task(creature_id);
+            self.interrupt_task(creature_id, old_task_id);
         }
 
         // Determine mope location: assigned home nav node, else current node.
@@ -4318,6 +4305,69 @@ impl SimState {
             creature.path = None;
             let _ = self.db.creatures.update_no_fk(creature);
         }
+    }
+
+    /// Interrupt a creature's current task, performing all necessary cleanup.
+    ///
+    /// This is the single entry point for task interruption from any source
+    /// (nav invalidation, mope preemption, death, flee, player cancel, etc.).
+    /// Dispatches per-kind cleanup based on `TaskKindTag`, then handles task
+    /// state: resumable tasks (Build, Furnish) return to `Available` so
+    /// another creature can claim them; all others are marked `Complete`.
+    /// Clears the creature's action, task assignment, and path.
+    fn interrupt_task(&mut self, creature_id: CreatureId, task_id: TaskId) {
+        self.abort_current_action(creature_id);
+
+        let kind_tag = match self.db.tasks.get(&task_id) {
+            Some(t) => t.kind_tag,
+            None => {
+                // Task already gone — just clear creature fields.
+                if let Some(mut c) = self.db.creatures.get(&creature_id) {
+                    c.current_task = None;
+                    c.path = None;
+                    let _ = self.db.creatures.update_no_fk(c);
+                }
+                return;
+            }
+        };
+
+        // Per-kind cleanup: release reservations, drop carried items, etc.
+        match kind_tag {
+            crate::db::TaskKindTag::Haul => {
+                self.cleanup_haul_task(creature_id, task_id);
+            }
+            crate::db::TaskKindTag::Cook => {
+                self.cleanup_cook_task(task_id);
+            }
+            crate::db::TaskKindTag::Craft => {
+                self.cleanup_craft_task(task_id);
+            }
+            crate::db::TaskKindTag::Harvest => {
+                self.cleanup_harvest_task(task_id);
+            }
+            crate::db::TaskKindTag::AcquireItem => {
+                self.cleanup_acquire_item_task(task_id);
+            }
+            // Resumable tasks: return to Available for another creature.
+            // unassign_creature_from_task handles reverting InProgress → Available.
+            crate::db::TaskKindTag::Build | crate::db::TaskKindTag::Furnish => {}
+            // No-cleanup tasks: mark Complete so they aren't re-claimed.
+            crate::db::TaskKindTag::GoTo
+            | crate::db::TaskKindTag::EatBread
+            | crate::db::TaskKindTag::EatFruit
+            | crate::db::TaskKindTag::Sleep
+            | crate::db::TaskKindTag::Mope => {
+                if let Some(mut t) = self.db.tasks.get(&task_id) {
+                    t.state = task::TaskState::Complete;
+                    let _ = self.db.tasks.update_no_fk(t);
+                }
+            }
+        }
+
+        // Clear creature assignment. For resumable tasks (Build, Furnish),
+        // this reverts the task to Available if no other creatures remain.
+        // For non-resumable tasks, the task is already Complete.
+        self.unassign_creature_from_task(creature_id);
     }
 
     /// Add a thought to a creature via the thoughts table, with dedup and cap.
@@ -20449,5 +20499,247 @@ mod tests {
             "Wood ladder anchored to designated platform should be accepted: {:?}",
             sim.last_build_message
         );
+    }
+
+    // ── interrupt_task tests ──────────────────────────────────────────
+
+    #[test]
+    fn interrupt_goto_completes_task_and_clears_creature() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+
+        let nav_count = sim.nav_graph.node_count();
+        let far_node = NavNodeId((nav_count / 2) as u32);
+        let task_id = TaskId::new(&mut sim.rng);
+        let goto_task = Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::InProgress,
+            location: far_node,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+        };
+        sim.insert_task(goto_task);
+        if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        sim.interrupt_task(elf_id, task_id);
+
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(task.state, TaskState::Complete);
+        let creature = sim.db.creatures.get(&elf_id).unwrap();
+        assert!(creature.current_task.is_none());
+        assert!(creature.path.is_none());
+    }
+
+    #[test]
+    fn interrupt_build_returns_task_to_available() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Designate a build.
+        let cmd_build = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd_build], sim.tick + 2);
+
+        let build_task_id = sim
+            .db
+            .tasks
+            .iter_all()
+            .find(|t| t.kind_tag == TaskKindTag::Build)
+            .unwrap()
+            .id;
+
+        // Assign the elf to the build task.
+        if let Some(mut t) = sim.db.tasks.get(&build_task_id) {
+            t.state = TaskState::InProgress;
+            let _ = sim.db.tasks.update_no_fk(t);
+        }
+        if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+            c.current_task = Some(build_task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        sim.interrupt_task(elf_id, build_task_id);
+
+        // Build is resumable — should return to Available.
+        let task = sim.db.tasks.get(&build_task_id).unwrap();
+        assert_eq!(task.state, TaskState::Available);
+        let creature = sim.db.creatures.get(&elf_id).unwrap();
+        assert!(creature.current_task.is_none());
+    }
+
+    #[test]
+    fn interrupt_craft_clears_reservations() {
+        let mut sim = test_sim(42);
+        let (structure_id, elf_id) = setup_workshop(&mut sim);
+
+        let inv_id = sim.structure_inv(structure_id);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
+
+        sim.process_workshop_monitor();
+        let task_id = sim
+            .db
+            .tasks
+            .iter_all()
+            .find(|t| t.kind_tag == TaskKindTag::Craft)
+            .unwrap()
+            .id;
+
+        // Verify fruit is reserved.
+        let reserved = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|s| s.reserved_by == Some(task_id))
+            .count();
+        assert!(reserved > 0, "Fruit should be reserved before interrupt");
+
+        // Assign elf to the task.
+        if let Some(mut t) = sim.db.tasks.get(&task_id) {
+            t.state = TaskState::InProgress;
+            let _ = sim.db.tasks.update_no_fk(t);
+        }
+        if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        sim.interrupt_task(elf_id, task_id);
+
+        // Reservations should be cleared.
+        let still_reserved = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|s| s.reserved_by == Some(task_id))
+            .count();
+        assert_eq!(still_reserved, 0, "Reservations should be cleared");
+
+        // Task should be Complete (non-resumable).
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(task.state, TaskState::Complete);
+        let creature = sim.db.creatures.get(&elf_id).unwrap();
+        assert!(creature.current_task.is_none());
+    }
+
+    #[test]
+    fn interrupt_sleep_completes_task() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+
+        let current_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+        let task_id = TaskId::new(&mut sim.rng);
+        let sleep_task = Task {
+            id: task_id,
+            kind: TaskKind::Sleep {
+                bed_pos: None,
+                location: task::SleepLocation::Ground,
+            },
+            state: TaskState::InProgress,
+            location: current_node,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+            origin: TaskOrigin::Autonomous,
+            target_creature: None,
+        };
+        sim.insert_task(sleep_task);
+        if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        sim.interrupt_task(elf_id, task_id);
+
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(task.state, TaskState::Complete);
+        let creature = sim.db.creatures.get(&elf_id).unwrap();
+        assert!(creature.current_task.is_none());
+    }
+
+    #[test]
+    fn interrupt_missing_task_clears_creature_fields() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+
+        // Assign creature to a task ID that doesn't exist in the DB.
+        let fake_task_id = TaskId::new(&mut sim.rng);
+        if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+            c.current_task = Some(fake_task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        sim.interrupt_task(elf_id, fake_task_id);
+
+        let creature = sim.db.creatures.get(&elf_id).unwrap();
+        assert!(creature.current_task.is_none());
+        assert!(creature.path.is_none());
+    }
+
+    #[test]
+    fn interrupt_clears_move_action() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+
+        let current_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+
+        // Put the elf in a Move action.
+        let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+        if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+            c.action_kind = ActionKind::Move;
+            c.next_available_tick = Some(sim.tick + 1000);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+        let move_action = crate::db::MoveAction {
+            creature_id: elf_id,
+            move_from: pos,
+            move_to: pos,
+            move_start_tick: sim.tick,
+        };
+        let _ = sim.db.move_actions.insert_no_fk(move_action);
+
+        // Create a GoTo task for context.
+        let task_id = TaskId::new(&mut sim.rng);
+        let goto_task = Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::InProgress,
+            location: current_node,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+        };
+        sim.insert_task(goto_task);
+        if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        sim.interrupt_task(elf_id, task_id);
+
+        // MoveAction should be deleted.
+        assert!(sim.db.move_actions.get(&elf_id).is_none());
+        // Action should be cleared.
+        let creature = sim.db.creatures.get(&elf_id).unwrap();
+        assert_eq!(creature.action_kind, ActionKind::NoAction);
+        assert!(creature.next_available_tick.is_none());
     }
 }
