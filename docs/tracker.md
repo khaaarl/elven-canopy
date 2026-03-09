@@ -997,11 +997,14 @@ Add hp, hp_max, vital_status fields to Creature. VitalStatus enum (Alive, Dead, 
 #### F-melee-action — Melee attack action
 **Status:** Todo
 
-Melee strike as a creature ACTION (not a task). Check cooldown (current_tick - last_melee_tick >= melee_interval_ticks), apply melee_damage (from SpeciesData) to target, emit CreatureDamaged event, trigger death if HP ≤ 0. New fields on Creature: last_melee_tick (u64, #[serde(default)]). New SpeciesData fields: melee_damage, melee_interval_ticks, melee_range_sq.
+Melee strike as a creature ACTION (not a task). Uses the standard ActionKind / next_available_tick mechanism for cooldown — set action_kind = MeleeStrike and next_available_tick = current_tick + melee_interval_ticks, same as every other duration-bearing action (no separate last_melee_tick field). Apply melee_damage (from SpeciesData) to target, emit CreatureDamaged event, trigger death if HP ≤ 0. New ActionKind variant: MeleeStrike. New SpeciesData fields: melee_damage, melee_interval_ticks, melee_range_sq.
 
 **Melee range uses closest-point-of-footprint distance**, NOT nav-edge adjacency or anchor-to-anchor. For multi-voxel creatures, clamp target coords to attacker's footprint bounds and vice versa, then check squared distance ≤ melee_range_sq. Specifically: for a creature at anchor `pos` with footprint `[fx, fy, fz]`, closest point to a target coord is `(clamp(target.x, pos.x, pos.x + fx - 1), ...)`. Squared euclidean distance between closest points of both footprints must be ≤ melee_range_sq.
 
 `melee_range_sq: i64` in SpeciesData (default 2). Covers face-adjacent offsets (dist²=1) and 2D diagonal like (1,1,0) (dist²=2). Intentionally excludes the pure 3D corner diagonal (1,1,1) (dist²=3) — 3D corner adjacency feels like too much reach for melee. Nav edges are for pathfinding, not melee range; this sidesteps the cross-graph problem for multi-voxel creatures entirely.
+
+**Draft:** docs/drafts/combat_military.md (§5 "Melee Attack Action")
+
 
 **Draft:** docs/drafts/combat_military.md (§5 "Melee Attack Action")
 
@@ -1044,9 +1047,12 @@ PreemptionLevel enum with explicit level() method (NOT derived Ord). 8 levels: I
 #### F-shoot-action — Ranged attack action (shooting arrows)
 **Status:** Todo
 
-Ranged attack as a creature ACTION. Requires: LOS to target (voxel ray march / DDA, multi-voxel targets check any occupied voxel), range check (archer_range_sq in SpeciesData), ammo in inventory, shoot cooldown elapsed. On shoot: compute aim velocity via iterative guess-and-simulate (same integer physics as real projectiles, max 5 iterations), consume arrow from inventory, spawn Projectile entity, emit ProjectileLaunched event. Aim skill tiers (novice/skilled/expert) for future. New fields: last_shoot_tick on Creature, shoot_cooldown_ticks in GameConfig, archer_range_sq in SpeciesData. LOS and aim computation are pure algorithms, unit-testable independently.
+Ranged attack as a creature ACTION. Uses the standard ActionKind / next_available_tick mechanism for cooldown — set action_kind = Shoot and next_available_tick = current_tick + shoot_cooldown_ticks (no separate last_shoot_tick field). Requires: LOS to target (voxel ray march / DDA, multi-voxel targets check any occupied voxel), range check (archer_range_sq in SpeciesData), ammo in inventory, cooldown elapsed. On shoot: compute aim velocity via iterative guess-and-simulate (same integer physics as real projectiles, max 5 iterations), consume arrow from inventory, spawn Projectile entity, emit ProjectileLaunched event. Aim skill tiers (novice/skilled/expert) for future. New ActionKind variant: Shoot. New config fields: shoot_cooldown_ticks in GameConfig, archer_range_sq in SpeciesData. LOS and aim computation are pure algorithms, unit-testable independently.
 
 **Requires both arrows AND a bow in inventory.** No bow = no shooting, even with arrows. Bow presence is checked via inventory item_kind. This ties into the WeaponPolicy system (§1 of combat doc), which determines whether a creature should acquire and carry a bow. Creatures without WeaponPolicy allowing bows will never have one and thus never shoot.
+
+**Draft:** docs/drafts/combat_military.md (§5)
+
 
 **Draft:** docs/drafts/combat_military.md (§5)
 

@@ -222,19 +222,17 @@ pub hp: i64,
 pub hp_max: i64,
 #[indexed]
 pub vital_status: VitalStatus,
-#[serde(default)]
-pub last_melee_tick: u64,       // tick of last melee strike (0 = never)
-#[serde(default)]
-pub last_shoot_tick: u64,       // tick of last ranged shot (0 = never)
 
 // In SpeciesData (config)
 pub hp_max: i64,
 ```
 
-Cooldown checks use `current_tick - last_melee_tick >= melee_interval_ticks`
-(and similarly for `last_shoot_tick` / `shoot_cooldown_ticks`). The
-`#[serde(default)]` annotations ensure save compatibility — existing saves
-without these fields deserialize with 0, meaning no cooldown is active.
+Melee and ranged attack cooldowns use the same `ActionKind` /
+`next_available_tick` mechanism as every other action (Build, Eat, Cook,
+etc.). No separate `last_melee_tick` or `last_shoot_tick` fields needed —
+the creature is simply busy for `melee_interval_ticks` or
+`shoot_cooldown_ticks` after attacking, like any other duration-bearing
+action.
 
 ```rust
 pub enum VitalStatus {
@@ -700,10 +698,11 @@ entirely — a troll (large nav graph) attacking an elf (standard nav
 graph) simply compares voxel positions without consulting either graph's
 edge set.
 
-1. Check cooldown — `current_tick - last_melee_tick >= melee_interval_ticks`.
-2. Apply `melee_damage` (from `SpeciesData`) to the target.
-3. Emit `CreatureDamaged` sim event.
-4. If target HP ≤ 0, trigger death (§3).
+1. Check cooldown — creature's `action_kind == NoAction` and `next_available_tick <= current_tick` (same precondition as all other actions).
+2. Set `action_kind = MeleeStrike`, `next_available_tick = current_tick + melee_interval_ticks`.
+3. Apply `melee_damage` (from `SpeciesData`) to the target.
+4. Emit `CreatureDamaged` sim event.
+5. If target HP ≤ 0, trigger death (§3).
 
 ### Ranged Attack Action (Shooting)
 
@@ -717,7 +716,7 @@ determines whether a creature should acquire and carry a bow.
 2. Consume one arrow from inventory.
 3. Spawn a `Projectile` entity.
 4. Emit `ProjectileLaunched` sim event.
-5. Enter cooldown (`shoot_cooldown_ticks`).
+5. Set `action_kind = Shoot`, `next_available_tick = current_tick + shoot_cooldown_ticks`.
 
 ### Task System Integration: Moving Targets
 
