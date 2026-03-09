@@ -64,6 +64,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
+[ ] F-binding-conflicts    Binding conflict detection
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
 [ ] F-bldg-storehouse      Storehouse (item storage)
@@ -80,6 +81,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
 [ ] F-combat               Combat and invader threat system
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
+[ ] F-controls-config-A    ControlsConfig autoload and handler migration
+[ ] F-controls-config-B    Controls persistence and sensitivity settings
+[ ] F-controls-config-C    Controls settings screen with rebinding UI
 [ ] F-crafting             Non-construction jobs and crafting
 [ ] F-creature-actions     Formalize creature action system with next_action_tick
 [ ] F-creature-death       Basic creature death (starvation)
@@ -119,6 +123,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-military-org         Squad management and organization
 [ ] F-minimap              Minimap with tree silhouette and creature positions
 [ ] F-modding              Scripting layer for modding support
+[ ] F-modifier-keybinds    Modifier key combinations in bindings
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
@@ -1818,6 +1823,24 @@ soul-powered constructs (golems, animated defenses).
 Replace placeholder sprites with AI-generated layered art: base body
 templates + composited clothing/hair/face layers for visual variety.
 
+#### F-binding-conflicts — Binding conflict detection
+**Status:** Todo · **Phase:** 2
+
+Full binding conflict detection beyond the basic debug-build assertion
+in F-controls-config-A. Bindings organized by context scopes with
+defined overlap rules (e.g., gameplay + construction can be active
+simultaneously, but gameplay and main_menu cannot).
+
+Same-context conflicts flagged as warnings at startup. Cross-context
+overlaps between non-overlapping scopes are allowed. Visual indicator
+in the settings screen (Phase C) when a player-created conflict exists
+via rebinding.
+
+Depends on F-controls-config-A (bindings must be centralized first).
+
+**Blocked by:** F-controls-config-A
+**Related:** F-controls-config
+
 #### F-bldg-transparency — Toggle building roof/wall transparency to see inside
 **Status:** Todo · **Phase:** 2
 
@@ -1848,35 +1871,93 @@ panel button.
 #### F-controls-config — Centralized controls config with rebinding and persistence
 **Status:** Todo · **Phase:** 2
 
-Centralized input configuration system replacing the current scattered KEY_*
-checks across ~10 GDScript files. A single ControlsConfig resource defines
-all keyboard and mouse bindings with defaults. All input handlers query the
-config instead of hardcoding keycodes. Player customizations saved to a JSON
-file and auto-loaded on startup, overriding defaults.
+Centralized input configuration system replacing scattered KEY_* checks
+across ~15 GDScript files. ControlsConfig autoload owns all bindings as
+data. Player overrides persisted to user://controls.json (delta from
+defaults). Includes invert-X/Y, invert scroll zoom, mouse sensitivity.
 
-Components:
-- ControlsConfig: dictionary of action names → input bindings (key, mouse
-  button, modifiers). Covers keyboard shortcuts AND mouse behavior (e.g.,
-  orbit button, zoom sensitivity, click actions).
-- Default bindings defined in code; player overrides persisted to
-  user://controls.json (Godot user data dir).
-- Controls settings screen: shows all bindings grouped by category, allows
-  rebinding via "press a key" capture, reset-to-defaults per binding or all.
-- All existing _unhandled_input handlers migrated to use config lookups.
-- Replaces F-keybind-help's static help overlay — the controls screen IS
-  the help panel, and it's always accurate since it reads from the config.
+Three sub-features track the phases:
+- F-controls-config-A: Centralize bindings, migrate all handlers
+- F-controls-config-B: Persistence, sensitivity/invert settings
+- F-controls-config-C: Full settings screen with rebinding UI
 
-Benefits:
-- Single source of truth for all input bindings (no drift between code and
-  help text).
-- Compile-time or startup-time detection of binding conflicts.
-- Player-customizable controls.
-- Mouse sensitivity and button assignment configurability.
+When complete, deletes keybind_help.gd and replaces "? Help" toolbar
+button with "Controls" button.
 
-When this ships, delete keybind_help.gd and replace the "? Help" toolbar
-button with a "Controls" button that opens the settings screen.
+**Draft:** docs/drafts/controls_config.md
 
-**Related:** F-keybind-help
+**Related:** F-binding-conflicts, F-controls-config-A, F-controls-config-B, F-controls-config-C, F-keybind-help, F-modifier-keybinds
+
+#### F-controls-config-A — ControlsConfig autoload and handler migration
+**Status:** Todo · **Phase:** 2
+
+Create ControlsConfig autoload with all bindings defined as data.
+Each binding has key, category, label, context, and optional alt_key,
+physical flag, hidden flag. API: is_action(event, name) for event
+callbacks, is_pressed(name) for polling (delegates to InputMap for
+movement actions), get_label_suffix(name) for dynamic button labels.
+
+Migrate every input handler to query ControlsConfig: action_toolbar,
+orbital_camera, construction_controller, selection_controller,
+placement_controller, pause_menu, main_menu, multiplayer_menu,
+save/load dialogs, tree_info_panel, task_panel, units_panel,
+structure_list_panel. Toolbar and construction buttons use
+get_label_suffix() so labels reflect current bindings.
+
+Movement bindings (WASD, arrows) use physical keycodes for non-QWERTY
+layout support. ESC unified as single ui_cancel action across all
+handlers. Debug-build startup assertion checks for duplicate keys
+within overlapping context scopes.
+
+keybind_help.gd keeps hardcoded content (no visible behavior change
+during refactoring — replacement happens in Phase C).
+
+**Draft:** docs/drafts/controls_config.md (Phase A)
+
+**Blocks:** F-binding-conflicts, F-controls-config-B
+**Related:** F-controls-config
+
+#### F-controls-config-B — Controls persistence and sensitivity settings
+**Status:** Todo · **Phase:** 2
+
+Load/save player overrides from user://controls.json (delta from
+defaults, schema-versioned). Add non-keybind settings: invert-X,
+invert-Y, invert scroll zoom, mouse orbit sensitivity, mouse zoom
+sensitivity, key zoom speed. Plumb settings into orbital_camera.gd
+for immediate effect. Save triggered from settings screen (Phase C)
+or a temporary mechanism.
+
+**Draft:** docs/drafts/controls_config.md (Phase B)
+
+**Blocked by:** F-controls-config-A
+**Blocks:** F-controls-config-C
+**Related:** F-controls-config
+
+#### F-controls-config-C — Controls settings screen with rebinding UI
+**Status:** Todo · **Phase:** 2
+
+Full settings screen replacing keybind_help.gd. Categorized list of
+all bindings (excluding hidden) in collapsible sections with defined
+display order. Each row: action name, current binding, Rebind button.
+Alt-key bindings shown and independently rebindable.
+
+"Press a key" capture: fully modal, 5-second timeout with visual
+countdown, visible Cancel button. During capture, if key is already
+bound, shows "Already bound to [Action Name]" warning (binding still
+set — full conflict prevention is F-binding-conflicts).
+
+Per-binding reset-to-default (icon per row). "Reset All to Defaults"
+with confirmation dialog. Non-keybind settings (invert toggles,
+sensitivity sliders) in own section. Menu bindings category last.
+
+? key kept as shortcut for opening the settings screen. Delete
+keybind_help.gd, replace "? Help" toolbar button with "Controls".
+
+**Draft:** docs/drafts/controls_config.md (Phase C)
+
+**Blocked by:** F-controls-config-B
+**Blocks:** F-modifier-keybinds
+**Related:** F-controls-config, F-keybind-help
 
 #### F-creature-info — Creature info panel with follow button
 **Status:** Done · **Refs:** §26
@@ -1960,7 +2041,7 @@ A help panel (toggled via toolbar button or ? key) showing all keyboard
 shortcuts and mouse controls: camera orbit/zoom/pan, speed controls, ESC
 chain, construction mode keys, etc. Pure GDScript UI — no sim changes.
 
-**Related:** F-build-queue-ui, F-controls-config
+**Related:** F-build-queue-ui, F-controls-config, F-controls-config-C
 
 #### F-lod-sprites — LOD sprites (chibi / detailed)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
@@ -1982,6 +2063,19 @@ camera's current viewport frustum. Clicking the minimap jumps the camera
 to that position. Pure rendering/UI — reads existing sim data.
 
 **Related:** F-zlevel-vis
+
+#### F-modifier-keybinds — Modifier key combinations in bindings
+**Status:** Todo · **Phase:** 2
+
+Support modifier key combinations (Ctrl+X, Shift+Click, etc.) in
+ControlsConfig bindings and the rebinding UI. Data model already
+supports modifiers array from F-controls-config-A; this feature
+adds the UI for capturing and displaying modifier combos.
+
+Depends on F-controls-config-C (rebinding UI must exist first).
+
+**Blocked by:** F-controls-config-C
+**Related:** F-controls-config
 
 #### F-new-game-ui — New game screen with tree presets
 **Status:** Done · **Refs:** §26
