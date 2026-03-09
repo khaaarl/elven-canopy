@@ -319,7 +319,7 @@ Things that are non-obvious or surprising about this codebase:
 - **Always ask the user** before assigning a shortcut — never pick one unilaterally.
 
 **Dev profile tuning:**
-- `Cargo.toml` sets `opt-level = 1` for the dev profile. This speeds up test execution significantly (sim tests ~4x faster) at a small compile-time cost. The test profile inherits from dev, so both `cargo build` and `cargo test` benefit.
+- `Cargo.toml` sets `opt-level = 0` for the dev profile (fastest compile times). For machines that run the game with UI, override to `opt-level = 1` via `.cargo/config.toml` (gitignored) for ~4x faster sim execution at a small compile-time cost. The test profile inherits from dev.
 
 ## Branching (CRITICAL — DO THIS FIRST)
 
