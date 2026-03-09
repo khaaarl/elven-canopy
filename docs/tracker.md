@@ -49,6 +49,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
+[~] F-projectiles          Projectile physics system (arrows)
 ```
 
 ### Todo
@@ -129,7 +130,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-population           Natural population growth/immigration
 [ ] F-preemption           Task priority and preemption system
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
-[ ] F-projectiles          Projectile physics system (arrows)
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rts-selection        RTS box selection and multi-creature commands
@@ -1659,7 +1659,7 @@ positions, and alert levels.
 **Blocks:** F-military-campaign
 
 #### F-projectiles — Projectile physics system (arrows)
-**Status:** Todo
+**Status:** In Progress
 
 SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity table in SimDb (no FK constraints, serialized normally). Ballistic trajectory with symplectic Euler integration (velocity updated before position). ProjectileTick batched event — one event per tick while any projectiles are in flight, advances all projectiles. Per-tick: save prev_voxel (initialized to shooter position at spawn), apply gravity to velocity, apply velocity to position, check voxel collision (solid → surface impact, ground pile at prev_voxel), check bounds (out of world → despawn). Speed-dependent damage formula: base_damage * impact_speed_sq / launch_speed_sq (widened to i128 locally, min 1 damage). Arrow durability and recovery. Rendering: projectile_renderer.gd (pool pattern), SimBridge returns stride-6 float array (pos+vel), interpolation via position + velocity * fractional_offset.
 
@@ -1668,6 +1668,10 @@ SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity t
 **Bounds check (step 7) must be performed on i64 sub-voxel coordinates BEFORE converting to VoxelCoord via `as i32`**, to prevent silent truncation. Compare against world extents scaled to sub-voxel units, or right-shift and check against world size as i64 before casting to i32. Out-of-bounds projectiles must be caught before the `as i32` truncation in `to_voxel()`, which could silently wrap extreme i64 values into apparently-valid i32 coordinates.
 
 **ProjectileTick scheduling guard:** Schedule a ProjectileTick event if and only if the projectile table was empty before this spawn (count went from 0 → 1). Prevents duplicate scheduling when multiple archers fire on the same tick. Handler schedules the next ProjectileTick for tick+1 if projectiles remain after processing; stops when the table is empty.
+
+**Done so far:** `projectile.rs` module in `elven_canopy_sim` with pure-math ballistics (no sim integration). Implements: SubVoxelCoord/SubVoxelVec types with `to_voxel()` and `to_voxel_checked()`, `magnitude_sq()` (i128) and `magnitude_sq_i64()` variants, `from_voxel_center()`, render float conversion; `EARTH_GRAVITY_SUB_VOXEL` constant (5267, calibrated for 2m voxels); `ballistic_step()` symplectic Euler integration; `simulate_trajectory()` free-space arc simulation; `compute_aim_velocity()` iterative guess-and-simulate aim solver with `isqrt_i128()`; `compute_impact_damage()` with i64 launch_speed_sq and local i128 widening. 40 unit tests.
+
+**Not yet done (blocked by F-spatial-index or requires sim integration):** Projectile entity and SimDb table, ProjectileTick batched event, per-tick collision (solid voxel + creature hit via spatial index), arrow durability/recovery, ground pile placement at prev_voxel, SimBridge rendering API, projectile_renderer.gd.
 
 **Draft:** docs/drafts/combat_military.md (§4)
 

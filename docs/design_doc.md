@@ -320,7 +320,7 @@ Save versioning: a version number in the save header, with hand-written migratio
 
 ### Voxel Grid
 
-The world is a 3D voxel grid. Each cell is approximately 2m × 2m × 2m. The grid is the simulation truth — pathfinding, collision, construction, and spatial queries all operate on it.
+The world is a 3D voxel grid. Each cell is exactly **2m × 2m × 2m**. This physical scale is used to calibrate gravity, projectile speeds, and any other physics that reference real-world units. The grid is the simulation truth — pathfinding, collision, construction, and spatial queries all operate on it.
 
 Initial prototype world size: 256 × 256 × 128 voxels. This is a fixed allocation for now but code should not assume specific coordinates for specific features (e.g., no hardcoded "home tree is at (128, 128, 0)").
 

@@ -13,6 +13,7 @@
 // - `texture_gen.rs`: Procedural face texture generation (3D Perlin noise atlases).
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
 // - `pathfinding.rs`: A* pathfinding over the nav graph.
+// - `projectile.rs`:  Integer-only ballistic trajectory math (sub-voxel coords, aim solver, damage).
 // - `command.rs`:     SimCommand / SimAction — all sim mutations.
 // - `event.rs`:       EventQueue (priority queue) + narrative SimEvents.
 // - `config.rs`:      GameConfig + TreeProfile — all tunable parameters including nested tree presets.
@@ -50,6 +51,7 @@ pub mod local_relay;
 pub mod mesh_gen;
 pub mod nav;
 pub mod pathfinding;
+pub mod projectile;
 pub use elven_canopy_prng as prng;
 pub use tabulosity;
 pub mod session;
