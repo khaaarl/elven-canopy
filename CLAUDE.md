@@ -142,6 +142,7 @@ elven-canopy/
 │       ├── tooltip_controller.gd    # Hover tooltips for world objects
 │       ├── notification_display.gd  # Toast-style event notifications
 │       ├── status_bar.gd           # Persistent bottom-left status bar (population, idle, tasks, speed)
+│       ├── keybind_help.gd         # Keyboard shortcuts help overlay
 │       ├── creature_info_panel.gd   # Right-side creature info + follow button
 │       └── construction_music.gd    # Construction music playback (PCM via AudioStreamGenerator)
 ├── data/                       # Shared data files (lexicon, Markov models, encyclopedia)
@@ -314,7 +315,7 @@ Things that are non-obvious or surprising about this codebase:
 - ESC handling flows: placement_controller (cancel placement) → construction_controller (cancel construction) → selection_controller (deselect) → pause_menu (open/close menu). Each handler calls `set_input_as_handled()` to prevent downstream handlers from firing.
 
 **Keyboard shortcut assignment (CRITICAL):**
-- Before assigning ANY new keyboard shortcut, **thoroughly audit all existing bindings** across every GDScript file. Search for `KEY_` in `godot/scripts/` to find all current bindings. Many keys are already in use (Space, 1-3, B, T, U, I, F12, ESC, Enter, arrow keys, +/=).
+- Before assigning ANY new keyboard shortcut, **thoroughly audit all existing bindings** across every GDScript file. Search for `KEY_` in `godot/scripts/` to find all current bindings. Many keys are already in use (Space, 1-3, B, T, U, I, F12, ?, ESC, Enter, arrow keys, +/=).
 - **Always ask the user** before assigning a shortcut — never pick one unilaterally.
 
 **Dev profile tuning:**

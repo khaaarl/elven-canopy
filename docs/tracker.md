@@ -79,6 +79,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
 [ ] F-combat               Combat and invader threat system
+[ ] F-controls-config      Centralized controls config with rebinding and persistence
 [ ] F-crafting             Non-construction jobs and crafting
 [ ] F-creature-actions     Formalize creature action system with next_action_tick
 [ ] F-creature-death       Basic creature death (starvation)
@@ -107,7 +108,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hostile-detection    Hostile detection and faction logic
 [ ] F-hp-death             HP, VitalStatus, and creature death handling
 [ ] F-jobs                 Elf job/role specialization
-[ ] F-keybind-help         Keyboard shortcuts help overlay
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
@@ -202,6 +202,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
 [x] F-hostile-species      Goblin, Orc, and Troll species
 [x] F-items                Items and inventory system
+[x] F-keybind-help         Keyboard shortcuts help overlay
 [x] F-ladders              Rope/wood ladders as cheap connectors
 [x] F-lang-crate           Shared Vaelith language crate
 [x] F-large-nav-tolerance  1-voxel height tolerance for large nav
@@ -1844,6 +1845,39 @@ overview of the construction pipeline. Small overlay or sidebar panel.
 Lock camera focal point to a selected creature. Toggled via creature info
 panel button.
 
+#### F-controls-config — Centralized controls config with rebinding and persistence
+**Status:** Todo · **Phase:** 2
+
+Centralized input configuration system replacing the current scattered KEY_*
+checks across ~10 GDScript files. A single ControlsConfig resource defines
+all keyboard and mouse bindings with defaults. All input handlers query the
+config instead of hardcoding keycodes. Player customizations saved to a JSON
+file and auto-loaded on startup, overriding defaults.
+
+Components:
+- ControlsConfig: dictionary of action names → input bindings (key, mouse
+  button, modifiers). Covers keyboard shortcuts AND mouse behavior (e.g.,
+  orbit button, zoom sensitivity, click actions).
+- Default bindings defined in code; player overrides persisted to
+  user://controls.json (Godot user data dir).
+- Controls settings screen: shows all bindings grouped by category, allows
+  rebinding via "press a key" capture, reset-to-defaults per binding or all.
+- All existing _unhandled_input handlers migrated to use config lookups.
+- Replaces F-keybind-help's static help overlay — the controls screen IS
+  the help panel, and it's always accurate since it reads from the config.
+
+Benefits:
+- Single source of truth for all input bindings (no drift between code and
+  help text).
+- Compile-time or startup-time detection of binding conflicts.
+- Player-customizable controls.
+- Mouse sensitivity and button assignment configurability.
+
+When this ships, delete keybind_help.gd and replace the "? Help" toolbar
+button with a "Controls" button that opens the settings screen.
+
+**Related:** F-keybind-help
+
 #### F-creature-info — Creature info panel with follow button
 **Status:** Done · **Refs:** §26
 
@@ -1920,13 +1954,13 @@ Auto-refresh via meta tag. Independent of all sim/worldgen features.
 Godot 4 project with GDExtension configuration.
 
 #### F-keybind-help — Keyboard shortcuts help overlay
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 A help panel (toggled via toolbar button or ? key) showing all keyboard
 shortcuts and mouse controls: camera orbit/zoom/pan, speed controls, ESC
 chain, construction mode keys, etc. Pure GDScript UI — no sim changes.
 
-**Related:** F-build-queue-ui
+**Related:** F-build-queue-ui, F-controls-config
 
 #### F-lod-sprites — LOD sprites (chibi / detailed)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24

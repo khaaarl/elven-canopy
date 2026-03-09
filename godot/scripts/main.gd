@@ -27,10 +27,11 @@
 ##    if active: exit construction mode
 ## 3. selection_controller — deselect creature
 ## 4. tree_info_panel — close tree info (if visible, on CanvasLayer layer 1)
-## 5. units_panel — close units roster (if visible, on CanvasLayer layer 2)
-## 6. structure_list_panel — close structure list (if visible, on CanvasLayer layer 2)
-## 7. task_panel — close task list (if visible, on CanvasLayer layer 2)
-## 8. pause_menu — open/close (on CanvasLayer layer 2, added first)
+## 5. help_panel — close keybind help (if visible, on CanvasLayer layer 2)
+## 6. units_panel — close units roster (if visible, on CanvasLayer layer 2)
+## 7. structure_list_panel — close structure list (if visible, on CanvasLayer layer 2)
+## 8. task_panel — close task list (if visible, on CanvasLayer layer 2)
+## 9. pause_menu — open/close (on CanvasLayer layer 2, added first)
 ##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs and
 ## encyclopedia_server.rs (Rust) for the simulation interface and the embedded
@@ -44,6 +45,7 @@
 ## tooltip_controller.gd for hover tooltips,
 ## notification_display.gd for toast-style notifications,
 ## status_bar.gd for the persistent bottom-left status bar,
+## keybind_help.gd for the keyboard shortcuts help overlay,
 ## creature_info_panel.gd for the creature info panel,
 ## structure_info_panel.gd for the structure info panel,
 ## ground_pile_info_panel.gd for the ground pile info panel,
@@ -83,6 +85,7 @@ var _tree_info_panel: PanelContainer
 var _task_panel: ColorRect
 var _structure_panel: ColorRect
 var _units_panel: ColorRect
+var _help_panel: ColorRect
 var _camera_pivot: Node3D
 var _construction_controller: Node
 var _placement_controller: Node3D
@@ -582,6 +585,16 @@ func _setup_common(bridge: SimBridge) -> void:
 	_units_panel.set_script(units_panel_script)
 	units_panel_layer.add_child(_units_panel)
 
+	# Help panel (keybind overlay, same layer as other overlays).
+	var help_panel_layer := CanvasLayer.new()
+	help_panel_layer.layer = 2
+	add_child(help_panel_layer)
+
+	var help_panel_script = load("res://scripts/keybind_help.gd")
+	_help_panel = ColorRect.new()
+	_help_panel.set_script(help_panel_script)
+	help_panel_layer.add_child(_help_panel)
+
 	# Tree info panel (on its own CanvasLayer, added after units panel
 	# so its ESC handler fires first in reverse tree order).
 	var tree_panel_layer := CanvasLayer.new()
@@ -637,6 +650,8 @@ func _setup_common(bridge: SimBridge) -> void:
 					if _camera_pivot:
 						_camera_pivot.stop_follow()
 				_tree_info_panel.toggle()
+			elif action == "Help":
+				_help_panel.toggle()
 			elif action == "TestNotification":
 				bridge.send_debug_notification(
 					"Test notification at tick %d" % bridge.current_tick()
@@ -738,6 +753,7 @@ func _process(delta: float) -> void:
 			or (_task_panel and _task_panel.visible)
 			or (_structure_panel and _structure_panel.visible)
 			or (_units_panel and _units_panel.visible)
+			or (_help_panel and _help_panel.visible)
 		)
 		_tooltip_controller.set_suppressed(any_overlay)
 

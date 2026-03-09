@@ -10,7 +10,7 @@
 ##
 ## Keyboard shortcuts:
 ## [Space] Toggle pause/resume, [1] Normal, [2] Fast, [3] Very Fast
-## [B] Build, [T] Tasks, [U] Units, [I] Tree Info, [F12] Toggle debug panel
+## [B] Build, [T] Tasks, [U] Units, [I] Tree Info, [?] Help, [F12] Toggle debug panel
 ##
 ## Emits three signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
@@ -133,6 +133,11 @@ func _ready() -> void:
 	tree_info_button.pressed.connect(_on_tree_info_pressed)
 	main_row.add_child(tree_info_button)
 
+	var help_button := Button.new()
+	help_button.text = "? Help"
+	help_button.pressed.connect(_on_help_pressed)
+	main_row.add_child(help_button)
+
 	_debug_button = Button.new()
 	_debug_button.text = "Debug [F12]"
 	_debug_button.pressed.connect(_toggle_debug)
@@ -239,6 +244,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif key.keycode == KEY_F12:
 			_toggle_debug()
 			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_QUESTION:
+			_on_help_pressed()
+			get_viewport().set_input_as_handled()
 
 
 func _set_speed(speed_name: String) -> void:
@@ -314,6 +322,10 @@ func _on_units_pressed() -> void:
 
 func _on_tree_info_pressed() -> void:
 	action_requested.emit("TreeInfo")
+
+
+func _on_help_pressed() -> void:
+	action_requested.emit("Help")
 
 
 func _on_test_notif_pressed() -> void:
