@@ -110,6 +110,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hostile-detection    Hostile detection and faction logic
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
+[ ] F-logistics-filter     Logistics material filter
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
@@ -1208,8 +1209,9 @@ differentiation, deeper integration with food chain and cooking.
 (property-based recipe matching), F-food-chain (logistics pipeline),
 item schema (FruitSpeciesId references).
 
+**Blocked by:** F-logistics-filter
 **Blocks:** F-civ-knowledge
-**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-prod, F-recipes
+**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-prod, F-logistics-filter, F-recipes
 
 #### F-hauling — Item hauling task type
 **Status:** Done · **Phase:** 3
@@ -1255,6 +1257,24 @@ buildings. UI in the structure info panel allows enabling logistics,
 setting priority, and configuring wants.
 
 **Related:** F-bldg-storehouse, F-elf-acquire, F-food-chain, F-hauling, F-items
+
+#### F-logistics-filter — Logistics material filter
+**Status:** Todo · **Phase:** 4
+
+Extend logistics wants with material filtering. Currently wants store only
+ItemKind; this adds a MaterialFilter enum (Any / Specific(Material)) so
+storehouses can request specific fruit species or any material. Dynamic
+two-step UI picker replaces hardcoded item list. Exposes all item kinds
+(not just Bread/Fruit) and all material variants. Single-material
+reservation under Any filter, hauled_material tracking for precise
+in-transit counting, additive overlapping want semantics.
+
+**Draft:** `docs/drafts/logistics_material_filter.md`
+
+**Draft:** `docs/drafts/logistics_material_filter.md`
+
+**Blocks:** F-fruit-variety
+**Related:** F-fruit-variety
 
 #### F-mana-system — Mana generation, storage, and spending
 **Status:** Todo · **Phase:** 2 · **Refs:** §11, §13
