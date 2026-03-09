@@ -738,7 +738,8 @@ impl SimBridge {
             .nth(index as usize);
         match creature {
             Some(c) => {
-                let (x, y, z): (f32, f32, f32) = c.interpolated_position(render_tick);
+                let ma = sim.db.move_actions.get(&c.id);
+                let (x, y, z): (f32, f32, f32) = c.interpolated_position(render_tick, ma.as_ref());
                 let mut dict = VarDictionary::new();
                 dict.set("species", species_name.clone());
                 dict.set("x", x);
@@ -1616,7 +1617,8 @@ impl SimBridge {
         };
         let mut arr = PackedVector3Array::new();
         for creature in sim.db.creatures.iter_all().filter(|c| c.species == species) {
-            let (x, y, z) = creature.interpolated_position(render_tick);
+            let ma = sim.db.move_actions.get(&creature.id);
+            let (x, y, z) = creature.interpolated_position(render_tick, ma.as_ref());
             arr.push(Vector3::new(x, y, z));
         }
         arr

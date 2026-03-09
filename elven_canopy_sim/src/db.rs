@@ -6,13 +6,14 @@
 //
 // ## Table layout
 //
-// The database has 24 tables organized in three tiers:
+// The database has 25 tables organized in three tiers:
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures` — the
 // primary simulation entities, keyed by UUID-based or sequential IDs.
 //
-// **Child tables:** `thoughts`, `notifications`, `inventories`, `item_stacks`,
-// `ground_piles`, `logistics_wants`, `furniture`, `music_compositions` —
+// **Child tables:** `thoughts`, `move_actions`, `notifications`, `inventories`,
+// `item_stacks`, `ground_piles`, `logistics_wants`, `furniture`,
+// `music_compositions` —
 // normalized data that was previously stored as inline `Vec` fields on parent
 // entities, plus player-visible notifications and construction music metadata.
 //
@@ -63,6 +64,47 @@ use tabulosity::{Database, Table};
 use crate::blueprint::BlueprintState;
 use crate::sim::CreaturePath;
 use crate::types::{FaceData, Priority, VoxelType};
+
+// ---------------------------------------------------------------------------
+// Action system
+// ---------------------------------------------------------------------------
+
+/// What a creature is currently doing. Stored inline on the Creature row.
+/// Per-action detail tables (e.g., `MoveAction`) hold additional state for
+/// action kinds that need it.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[repr(u8)]
+pub enum ActionKind {
+    /// Idle — not performing any action.
+    #[default]
+    NoAction = 0,
+    /// Moving one nav edge. Detail in `MoveAction` table.
+    Move = 1,
+    /// Building one voxel (or carving one voxel).
+    Build = 2,
+    /// Placing one furniture item.
+    Furnish = 3,
+    /// Cooking one batch.
+    Cook = 4,
+    /// Crafting one recipe output.
+    Craft = 5,
+    /// One sleep cycle (~1s). Repeated until rest is full.
+    Sleep = 6,
+    /// Eating (bread or fruit).
+    Eat = 7,
+    /// Harvesting a fruit from a tree.
+    Harvest = 8,
+    /// Picking up an unowned item.
+    AcquireItem = 9,
+    /// Haul pickup phase — loading items at source.
+    PickUp = 10,
+    /// Haul dropoff phase — unloading items at destination.
+    DropOff = 11,
+    /// One mope cycle (~1s). Repeated until mope duration fulfilled.
+    Mope = 12,
+}
 
 // ---------------------------------------------------------------------------
 // Task decomposition enums
@@ -206,11 +248,12 @@ pub struct Creature {
     #[indexed]
     pub civ_id: Option<CivId>,
     pub path: Option<CreaturePath>,
-    // Movement interpolation metadata (rendering only).
-    pub move_from: Option<VoxelCoord>,
-    pub move_to: Option<VoxelCoord>,
-    pub move_start_tick: u64,
-    pub move_end_tick: u64,
+    /// What the creature is currently doing. `NoAction` when idle.
+    #[serde(default)]
+    pub action_kind: ActionKind,
+    /// Tick when the current action completes. `None` when idle.
+    #[serde(default)]
+    pub next_available_tick: Option<u64>,
 }
 
 /// A timestamped thought belonging to a creature.
@@ -400,17 +443,44 @@ pub struct Blueprint {
     pub original_voxels: Vec<(VoxelCoord, VoxelType)>,
 }
 
+/// Per-move detail table. Stores render interpolation data for a creature
+/// that is currently traversing a nav edge. At most one row per creature
+/// (PK = CreatureId). Cascade-deleted when the creature is removed.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct MoveAction {
+    #[primary_key]
+    #[indexed]
+    pub creature_id: CreatureId,
+    /// Visual start position for interpolation.
+    pub move_from: VoxelCoord,
+    /// Visual end position for interpolation.
+    pub move_to: VoxelCoord,
+    /// Tick when movement started (for render lerp). The end tick is
+    /// `creature.next_available_tick`.
+    pub move_start_tick: u64,
+}
+
 impl Creature {
     /// Compute an interpolated world position for rendering.
-    pub fn interpolated_position(&self, render_tick: f64) -> (f32, f32, f32) {
-        if let (Some(from), Some(to)) = (self.move_from, self.move_to) {
-            let duration = self.move_end_tick as f64 - self.move_start_tick as f64;
+    ///
+    /// If the creature is currently performing a Move action, lerps between
+    /// `move_from` and `move_to` based on `render_tick`. Otherwise returns
+    /// the creature's current position.
+    pub fn interpolated_position(
+        &self,
+        render_tick: f64,
+        move_action: Option<&MoveAction>,
+    ) -> (f32, f32, f32) {
+        if let (Some(ma), Some(end_tick)) = (move_action, self.next_available_tick)
+            && self.action_kind == ActionKind::Move
+        {
+            let duration = end_tick as f64 - ma.move_start_tick as f64;
             if duration > 0.0 {
                 let t =
-                    ((render_tick - self.move_start_tick as f64) / duration).clamp(0.0, 1.0) as f32;
-                let x = from.x as f32 + (to.x as f32 - from.x as f32) * t;
-                let y = from.y as f32 + (to.y as f32 - from.y as f32) * t;
-                let z = from.z as f32 + (to.z as f32 - from.z as f32) * t;
+                    ((render_tick - ma.move_start_tick as f64) / duration).clamp(0.0, 1.0) as f32;
+                let x = ma.move_from.x as f32 + (ma.move_to.x as f32 - ma.move_from.x as f32) * t;
+                let y = ma.move_from.y as f32 + (ma.move_to.y as f32 - ma.move_from.y as f32) * t;
+                let z = ma.move_from.z as f32 + (ma.move_to.z as f32 - ma.move_from.z as f32) * t;
                 return (x, y, z);
             }
         }
@@ -816,6 +886,10 @@ pub struct SimDb {
                 assigned_home? = "structures",
                 civ_id? = "civilizations" on_delete nullify))]
     pub creatures: CreatureTable,
+
+    #[table(singular = "move_action",
+            fks(creature_id = "creatures" on_delete cascade))]
+    pub move_actions: MoveActionTable,
 
     #[table(singular = "thought",
             auto,

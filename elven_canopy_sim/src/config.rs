@@ -1033,6 +1033,36 @@ pub struct GameConfig {
     #[serde(default = "default_sleep_ticks_ground")]
     pub sleep_ticks_ground: u64,
 
+    /// Duration of one Sleep action in ticks (default 1000 = 1s).
+    /// Sleep task repeats actions until rest is full.
+    #[serde(default = "default_sleep_action_ticks")]
+    pub sleep_action_ticks: u64,
+
+    /// Duration of one Eat action in ticks (default 1500 = 1.5s).
+    /// Covers both bread and fruit eating.
+    #[serde(default = "default_eat_action_ticks")]
+    pub eat_action_ticks: u64,
+
+    /// Duration of one Harvest action in ticks (default 1500 = 1.5s).
+    #[serde(default = "default_harvest_action_ticks")]
+    pub harvest_action_ticks: u64,
+
+    /// Duration of one AcquireItem action in ticks (default 1000 = 1s).
+    #[serde(default = "default_acquire_item_action_ticks")]
+    pub acquire_item_action_ticks: u64,
+
+    /// Duration of one haul PickUp action in ticks (default 1000 = 1s).
+    #[serde(default = "default_haul_pickup_action_ticks")]
+    pub haul_pickup_action_ticks: u64,
+
+    /// Duration of one haul DropOff action in ticks (default 1000 = 1s).
+    #[serde(default = "default_haul_dropoff_action_ticks")]
+    pub haul_dropoff_action_ticks: u64,
+
+    /// Duration of one Mope action in ticks (default 1000 = 1s).
+    #[serde(default = "default_mope_action_ticks")]
+    pub mope_action_ticks: u64,
+
     /// Tree generation parameters — energy-based recursive growth profile.
     pub tree_profile: TreeProfile,
 
@@ -1213,6 +1243,34 @@ fn default_kitchen_default_fruit_want() -> u32 {
 
 fn default_kitchen_default_bread_target() -> u32 {
     50
+}
+
+fn default_sleep_action_ticks() -> u64 {
+    1000
+}
+
+fn default_eat_action_ticks() -> u64 {
+    1500
+}
+
+fn default_harvest_action_ticks() -> u64 {
+    1500
+}
+
+fn default_acquire_item_action_ticks() -> u64 {
+    1000
+}
+
+fn default_haul_pickup_action_ticks() -> u64 {
+    1000
+}
+
+fn default_haul_dropoff_action_ticks() -> u64 {
+    1000
+}
+
+fn default_mope_action_ticks() -> u64 {
+    1000
 }
 
 fn default_cook_work_ticks() -> u64 {
@@ -1470,6 +1528,13 @@ impl Default for GameConfig {
             furnish_work_ticks_per_item: 2000,
             sleep_ticks_bed: 10_000,
             sleep_ticks_ground: 20_000,
+            sleep_action_ticks: 1000,
+            eat_action_ticks: 1500,
+            harvest_action_ticks: 1500,
+            acquire_item_action_ticks: 1000,
+            haul_pickup_action_ticks: 1000,
+            haul_dropoff_action_ticks: 1000,
+            mope_action_ticks: 1000,
             tree_profile: TreeProfile::fantasy_mega(),
             species,
             terrain_max_height: 4,

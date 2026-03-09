@@ -84,7 +84,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
 [ ] F-crafting             Non-construction jobs and crafting
-[ ] F-creature-actions     Formalize creature action system with next_action_tick
 [ ] F-creature-death       Basic creature death (starvation)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
@@ -187,6 +186,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-construction         Platform construction (designate/build/cancel)
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crate-structure      Two-crate sim/gdext structure
+[x] F-creature-actions     Creature action system: typed duration-bearing actions
 [x] F-creature-info        Creature info panel with follow button
 [x] F-creature-tooltip     Hover tooltips for world objects
 [x] F-debug-menu           Move spawn/summon into debug menu
@@ -887,22 +887,23 @@ hunger/satiation state; bread is the concrete item that fills it).
 Capybara species with ground-only movement restriction, own sprite renderer,
 and species-specific speed config.
 
-#### F-creature-actions — Formalize creature action system with next_action_tick
-**Status:** Todo
+#### F-creature-actions — Creature action system: typed duration-bearing actions
+**Status:** Done
 
-Currently, everything a creature does (including moving from one voxel to
-another) is conceptually an "action," but the code uses `move_end_tick` to
-gate action availability. This conflates movement timing with general action
-readiness. This feature adds a proper `next_action_tick: u64` field (or
-equivalent) to each creature, so that combat actions (melee strikes, shooting
-arrows) and other non-movement actions can have their own cooldowns that
-integrate cleanly into the activation chain.
+Formalize creature actions as first-class typed, duration-bearing operations.
+Every creature activity (move, build, eat, sleep, etc.) is an explicit Action
+with a kind, duration, and completion effect. Shared action state (ActionKind +
+next_available_tick) lives inline on the Creature row. MoveAction detail table
+stores render interpolation data (moved from old Creature move_* fields).
 
-This is a foundational refactor that requires human design input before
-implementation begins — the action model, cooldown semantics, and interaction
-with the existing task/event system need to be specified first.
+**Implementation status:** Core action system complete — all 13 ActionKind
+variants implemented (NoAction, Move, Build, Furnish, Cook, Craft, Sleep, Eat,
+Harvest, AcquireItem, PickUp, DropOff, Mope). All do_* functions converted to
+start/resolve action pairs. New config fields for per-action durations.
+Remaining: additional test coverage audit per design doc.
 
-**Blocks:** F-melee-action, F-shoot-action
+**Draft:** docs/drafts/creature_actions.md
+
 **Related:** F-dynamic-pursuit, F-preemption, F-task-interruption
 
 #### F-creature-death — Basic creature death (starvation)
@@ -1005,7 +1006,7 @@ Melee strike as a creature ACTION (not a task). Check cooldown (current_tick - l
 
 **Draft:** docs/drafts/combat_military.md (§5 "Melee Attack Action")
 
-**Blocked by:** F-creature-actions, F-hp-death
+**Blocked by:** F-hp-death
 **Blocks:** F-attack-task, F-combat, F-enemy-ai
 
 #### F-move-interp — Smooth creature movement interpolation
@@ -1052,7 +1053,7 @@ Ranged attack as a creature ACTION. Requires: LOS to target (voxel ray march / D
 
 **Draft:** docs/drafts/combat_military.md (§5)
 
-**Blocked by:** F-creature-actions, F-hp-death, F-projectiles
+**Blocked by:** F-hp-death, F-projectiles
 **Blocks:** F-combat
 
 #### F-task-interruption — Unified task interruption and cleanup

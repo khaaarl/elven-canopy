@@ -17,8 +17,6 @@
 //   action took. See `sim.rs` `process_creature_activation()`.
 // - `CreatureHeartbeat` — periodic non-movement checks (mood, mana, needs).
 //   Does NOT drive movement — that's entirely the activation chain.
-// - `CreatureMovementComplete` — arrival at a nav node during pathfinding.
-//   Used by the task system when walking along an A* path.
 // - `TreeHeartbeat` — periodic tree updates (fruit, mana capacity).
 // - `LogisticsHeartbeat` — periodic scan of buildings with logistics config;
 //   creates `Haul` tasks to fill unmet item wants.
@@ -70,11 +68,6 @@ pub enum ScheduledEventKind {
     /// A creature's activation fires: it does one action (walk 1 edge or work)
     /// and schedules the next activation based on how long the action takes.
     CreatureActivation { creature_id: CreatureId },
-    /// A creature has finished traversing one nav edge and arrives at the next node.
-    CreatureMovementComplete {
-        creature_id: CreatureId,
-        arrived_at: NavNodeId,
-    },
     /// Tree heartbeat (fruit production, mana capacity updates).
     TreeHeartbeat { tree_id: TreeId },
     /// Logistics heartbeat: scan buildings for unmet wants and create haul tasks.
