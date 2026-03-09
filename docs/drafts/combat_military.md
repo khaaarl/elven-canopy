@@ -1,4 +1,4 @@
-# Combat & Military — Design Draft (v6)
+# Combat & Military — Design Draft (v10)
 
 Design draft for the combat and military system. Covers military groupings,
 RTS-style selection and commands, projectile physics, combat actions,
@@ -86,6 +86,13 @@ Each `Creature` gains an `Option<MilitaryGroupId>` field. This is `Some`
 for creatures in a civilization and `None` for wild/unaffiliated creatures.
 At spawn, elves are assigned to their civ's Civilians group. Goblins,
 wildlife, etc. spawned without a civ have `military_group: None`.
+
+**Debug spawning:** Debug-spawned elves (via the debug UI) are
+automatically assigned to the player's civ and the Civilians military
+group. This matches the existing spawn flow where elves are the player's
+species. Non-elf debug spawns (goblins, orcs, trolls, etc.) remain
+civ-less with `military_group: None` — their combat behavior comes from
+`combat_ai` in `SpeciesData`.
 
 ### Future: Equipment Logistics
 
@@ -280,6 +287,14 @@ On death:
   - **Non-resumable tasks** (personal: EatBread, EatFruit, Sleep, Mope,
     AcquireItem, AttackTarget, AttackMove): cancel outright, clear
     reservations.
+  - **Cook, Craft:** non-resumable — cancel, clear input item reservations.
+  - **Harvest:** non-resumable — cancel (no reservations to clear).
+
+  The above list must be exhaustive over all `TaskKindTag` variants. The
+  unified task interruption system (tracked separately) will provide a
+  single entry point for task cancellation with per-kind cleanup — the
+  death handler calls that system rather than maintaining its own per-kind
+  list.
 - Remove from creature spatial index.
 - Drop all remaining inventory items as a ground pile at death location.
   Because task-specific cleanup already ran (e.g., haul dropped its carried
@@ -345,7 +360,7 @@ pub struct Projectile {
     pub item_kind: ItemKind,       // Arrow (future: javelin, etc.)
     pub durability: i32,           // remaining durability
     pub base_damage: i64,          // damage at reference speed
-    pub launch_speed_sq: i128,     // speed² at launch, for damage scaling
+    pub launch_speed_sq: i64,      // speed² at launch, for damage scaling
 }
 ```
 
@@ -423,13 +438,17 @@ impl SubVoxelCoord {
 The sim is event-driven (priority queue), not fixed-timestep. Projectiles
 integrate into this model via a **batched tick event:**
 
-- When the first projectile is spawned, schedule a `ProjectileTick` event
-  for the next tick.
+- When a projectile is spawned, schedule a `ProjectileTick` event for the
+  next tick **if and only if** the projectile table was empty before this
+  spawn (count was 0, now 1). This prevents duplicate scheduling when
+  multiple archers fire on the same tick — the second spawn sees a
+  non-empty table and does not schedule a redundant event.
 - The `ProjectileTick` handler advances **all** active projectiles in one
-  batch, then schedules the next `ProjectileTick` for tick + 1.
-- When the last projectile resolves (impact or despawn), no further
-  `ProjectileTick` is scheduled. The event stops firing when no arrows
-  are in flight.
+  batch. After processing, if projectiles remain in the table, it
+  schedules the next `ProjectileTick` for tick + 1.
+- When the last projectile resolves (impact or despawn), the handler sees
+  an empty table and does not schedule a follow-up event. The event stops
+  firing when no arrows are in flight.
 
 This avoids flooding the event queue (1 event per tick regardless of arrow
 count) and avoids modifying the core tick loop. Cost: one priority queue
@@ -463,7 +482,14 @@ sim entity. The update is simple and cheap per projectile:
    hit, the projectile resolves immediately — it is not checked against
    further voxels on subsequent ticks.
 7. **Bounds check:** If position is outside world extents, despawn silently
-   (no ground pile — arrow is lost).
+   (no ground pile — arrow is lost). **Important:** The bounds check must
+   be performed on the `i64` sub-voxel coordinates BEFORE converting to
+   `VoxelCoord`. Compare against world extents scaled to sub-voxel units
+   (i.e., `world_size << SUB_VOXEL_SHIFT`), or equivalently, right-shift
+   and check against world size as `i64` before casting to `i32`. This
+   ensures out-of-bounds projectiles are caught before the `as i32`
+   truncation in `to_voxel()`, which could silently wrap extreme `i64`
+   values into apparently-valid `i32` coordinates.
 8. If none of the above, continue to next tick.
 
 At 1000 ticks/second with an arrow speed of ~50 voxels/second, an arrow
@@ -491,6 +517,14 @@ The spatial index is **derived state**, stored on `SimState` (not in
 `SimDb`), marked `#[serde(skip)]`. It is rebuilt from creature positions
 on load, the same pattern used for the nav graph. The rebuild function
 iterates all `Alive` creatures and registers each in its occupied voxels.
+
+**Ordering constraint:** The spatial index rebuild must run **after** the
+`species_table` is populated (since footprint data comes from
+`SpeciesData` in the config). The `species_table` is `#[serde(skip)]`
+and rebuilt from config after deserialization. If the spatial index
+rebuild runs before `species_table` is populated, the footprint lookup
+for large creatures will fail. Same ordering constraint as the nav graph
+rebuild — both depend on config-derived data being available.
 
 **Note on determinism:** When an arrow enters a voxel containing multiple
 creatures, the candidates are sorted by `CreatureId` before the PRNG selects
@@ -533,14 +567,18 @@ velocity at impact) and `launch_speed_sq` is stored on the projectile at
 spawn time. **All intermediate calculations use `i128`** — velocity
 components are `i64` at 2^30 scale, so squaring produces values up to ~2^60,
 and the sum of three squared components could reach ~3×2^60. This fits in
-`i128` with room to spare. Cast to `i128` before squaring:
+`i128` with room to spare. Cast to `i128` before squaring. Note:
+`launch_speed_sq` is stored as `i64` on the Projectile struct (the max
+value ~3×2^60 fits within `i64::MAX` ≈ 9.2×10^18) to avoid serde
+compatibility issues with `i128`. The widening to `i128` happens only in
+this local calculation:
 
 ```rust
 let vx = self.velocity.x as i128;
 let vy = self.velocity.y as i128;
 let vz = self.velocity.z as i128;
 let impact_speed_sq: i128 = vx * vx + vy * vy + vz * vz;
-let damage = (self.base_damage as i128 * impact_speed_sq / self.launch_speed_sq)
+let damage = (self.base_damage as i128 * impact_speed_sq / self.launch_speed_sq as i128)
     .max(1) as i64;  // minimum 1 damage to avoid ghost hits
 ```
 
@@ -639,8 +677,28 @@ See tracker item `F-creature-actions` for the formalization of this system.
 
 ### Melee Attack Action
 
-When a creature is adjacent to a hostile target (has a nav edge to the
-target's node), it can perform a melee strike:
+When a creature is adjacent to a hostile target, it can perform a melee
+strike. **Melee adjacency uses euclidean voxel distance, not nav edge
+existence.** The distance check uses the **closest points of each
+creature's footprint**, not anchor-to-anchor distance. For a creature at
+anchor `pos` with footprint `[fx, fy, fz]`, the closest point to a
+target coordinate is `(clamp(target.x, pos.x, pos.x + fx - 1),
+clamp(target.y, pos.y, pos.y + fy - 1), clamp(target.z, pos.z,
+pos.z + fz - 1))`. The squared euclidean distance from the closest point
+of the attacker's footprint to the closest point of the target's
+footprint must be ≤ `melee_range_sq` (default 2 for 1-voxel reach,
+accommodating diagonal adjacency). This handles large creatures correctly
+— a 2x2x2 troll adjacent to an elf measures distance from the troll's
+nearest occupied voxel, not from its anchor corner. Note: squared
+distance 2 covers face-adjacent offsets (dist² = 1) and 2D diagonals
+like (1,1,0) (dist² = 2), but excludes the pure 3D corner diagonal
+(1,1,1) (dist² = 3). This is intentional — 3D corner adjacency feels
+like too much reach for melee. If melee feels too restrictive in
+practice, increase `melee_range_sq` to 3. Nav edges are for pathfinding,
+not melee range checking. This sidesteps the cross-graph problem
+entirely — a troll (large nav graph) attacking an elf (standard nav
+graph) simply compares voxel positions without consulting either graph's
+edge set.
 
 1. Check cooldown — `current_tick - last_melee_tick >= melee_interval_ticks`.
 2. Apply `melee_damage` (from `SpeciesData`) to the target.
@@ -649,8 +707,11 @@ target's node), it can perform a melee strike:
 
 ### Ranged Attack Action (Shooting)
 
-When a creature has arrows in inventory, has LOS and range to a target
-(see §5.1, §5.2), and shooting cooldown has elapsed:
+When a creature has arrows in inventory **and** a bow equipped/carried
+(checked via inventory `item_kind`), has LOS and range to a target (see
+§5.1, §5.2), and shooting cooldown has elapsed. No bow = no shooting,
+even with arrows — this ties into the `WeaponPolicy` system (§1), which
+determines whether a creature should acquire and carry a bow.
 
 1. Compute aim velocity via iterative guess-and-simulate (§5.2).
 2. Consume one arrow from inventory.
@@ -726,6 +787,21 @@ actions. When in ranged-but-not-melee range with LOS and ammo, perform
 shooting actions. On each activation, poll target's `vital_status` — if
 `Dead` or row missing (future cleanup), task completes.
 
+**Failed pathfinding:** If pathfinding fails (target unreachable), the
+creature retries pathfinding on the next activation. After N consecutive
+failures (configurable, e.g., `attack_path_retry_limit = 3`), the task
+is cancelled — the target is deemed unreachable. The creature returns to
+normal behavior (idle/wander). It may re-detect the target on a
+subsequent activation and create a new AttackTarget task if the target
+has moved to a reachable location.
+
+**Immediate claiming:** Autonomous combat tasks (created by hostile
+detection) are immediately claimed by the detecting creature in the same
+activation — they are NOT left in `Available` state. The creature creates
+the task and claims it atomically. This prevents a race where a different
+idle creature could claim the task via `find_available_task` before the
+detecting creature does.
+
 **`TaskKindTag::AttackMove`** — move to a location, fighting en route
 (defined in §2 above).
 
@@ -774,8 +850,9 @@ ballistic equation analytically:
    (or to the target's predicted future position, for skilled/expert tiers).
    Estimate initial velocity magnitude from config `arrow_base_speed`.
    Apply a first-order gravity compensation: aim above the target by an
-   amount proportional to `distance² * gravity / (2 * speed²)`, computed
-   in integer arithmetic.
+   amount proportional to `distance * gravity / (2 * speed²)`, computed
+   in integer arithmetic (approximate — the iterative solver corrects
+   any error).
 
 2. **Simulate:** Run the exact same per-tick projectile update loop (§4)
    without creature collision, just tracking the trajectory. Check if the
@@ -879,6 +956,17 @@ This replaces the `HostileResponse` for non-civ creatures. Civilization
 members use their military group's `HostileResponse` instead; `combat_ai`
 is ignored for civ creatures.
 
+**Dual-system clarification:** `combat_ai` on `SpeciesData` serves as the
+fallback behavior for creatures without a civ. When NPC civs gain creature
+instances, those creatures use their military group's `hostile_response`
+instead. If a civ is deleted (`civ_id` nullified via FK cascade, which
+also nullifies `military_group`), the creature falls back to `combat_ai`.
+This dual-system is intentional — species-level defaults for the
+unaffiliated case, civ-level overrides for organized creatures. The
+`combat_ai` value must therefore be set correctly for every species, even
+those that are "always" in a civ, because civ deletion is a possible
+(if rare) runtime event.
+
 ### Initial Behavior (Goblin, Orc, Troll)
 
 Simple aggression AI. These species have `combat_ai: AggressiveMelee`:
@@ -948,14 +1036,17 @@ hasn't encountered civA's aggression yet). The check is:
 
 Wildlife (`combat_ai: Passive`) is never hostile unless player-commanded.
 
-**Auto-escalation:** When a non-civ aggressive creature attacks a civ
-creature, the civ's relationship with that species' typical faction should
-auto-escalate to `CivOpinion::Hostile` if not already. For example, when
-goblins attack elves, the elf civilization's opinion of goblin-affiliated
-civs jumps to Hostile. This ensures that civs react appropriately to
-unprovoked aggression even if the diplomatic state hasn't been manually
-set. The escalation is one-directional — the attacking faction's opinion
-is unchanged (they were already aggressive).
+**Auto-escalation:** When a civ creature attacks another civ's creature,
+the victim's civ auto-escalates its opinion of the attacker's civ to
+`CivOpinion::Hostile` if not already. This ensures civs react
+appropriately to unprovoked aggression even if the diplomatic state hasn't
+been manually set. The escalation is one-directional — the attacking civ's
+opinion is unchanged (they were already aggressive). Auto-escalation only
+applies when the attacker **has** a `civ_id` — non-civ attackers
+(debug-spawned goblins, unaffiliated wildlife) do not trigger diplomatic
+escalation because there is no civ to escalate against. This mechanism is
+for future civ-vs-civ raids; unaffiliated hostiles are threats by species
+nature, not diplomatic actors.
 
 **Transition from species-level `Faction` enum:** The v3 design proposed a
 simple `Faction` enum on `SpeciesData`. With civilizations, faction is
@@ -986,17 +1077,35 @@ to an adjacent hostile for up to 3 seconds.
 Detection range is per-species configurable (`hostile_detection_range_sq`
 in `SpeciesData`, integer, in voxels²).
 
+**Height and detection range:** Squared euclidean distance includes the Y
+component, so ground-level goblins with `hostile_detection_range_sq=225`
+(15 voxels) cannot detect canopy elves at y=40 — the Y distance alone
+(39² = 1521) far exceeds the detection range. This is intentional:
+goblins must climb into the tree to threaten canopy elves, which creates
+natural tactical gameplay — the tree itself is a defensive structure. If
+this proves too limiting (e.g., goblins never find the elves and just
+wander uselessly), a future option is separate horizontal/vertical range
+weights or a detection trigger when goblins enter the nav graph's
+trunk-climb edges.
+
 For civ creatures, "hostile" is determined by checking the civ relationship
 of nearby creatures (see §6). For non-civ aggressive creatures, all
 civ creatures (and non-allied non-civ creatures) are potential targets.
 
 **Performance note:** Detection on activation means every creature scans
-for hostiles every ~500 ticks (elf walk speed). The scan is a spatial
-index range query (cheap) followed by a hostility check (comparing civ
-opinions). For N creatures, worst case is N² checks per activation cycle,
-but the squared-distance filter prunes most candidates. With 30 elves and
-20 goblins at 500-tick activations, this is ~100 scans/sec — each checking
-a handful of spatial index lookups. This is acceptable.
+for hostiles every ~500 ticks (elf walk speed). The scan iterates all
+creatures in the spatial index and filters by squared euclidean distance
+— this is O(n) where n is total alive creatures, not a spatial range
+query. The `BTreeMap<VoxelCoord, Vec<CreatureId>>` spatial index is
+ordered lexicographically by `(x, y, z)`, which does not support
+efficient 3D bounding-box queries. Each scan must check all entries and
+compute squared distance for each. With 30 elves and 20 goblins at
+500-tick activations, this is ~100 scans/sec, each touching ~50 entries
+— ~5,000 distance checks/sec. At expected creature counts (50-100), this
+is still cheap in absolute terms. The O(n²) scaling per activation cycle
+is real but manageable at these counts. If creature counts grow
+significantly (200+), a spatial hash grid or octree would provide actual
+range queries, but this is not needed for the initial pass.
 
 When a creature detects a hostile:
 
@@ -1020,10 +1129,31 @@ combat AI):
    is computed to the threat's **anchor voxel** (not the closest occupied
    voxel) — the anchor is sufficient because the distance difference is at
    most 1-2 voxels, and the greedy heuristic is approximate anyway. Ties
-   are broken by `NavNodeId` for determinism. Prefer nodes in the direction
-   of friendly soldiers if any are nearby. This is a cheap local heuristic,
-   not a full A* search.
+   are broken by `NavNodeId` for determinism. This is a cheap local
+   heuristic, not a full A* search.
+
+   **Future enhancement:** Add a secondary preference to flee toward
+   friendly soldiers (military group with `HostileResponse::Fight`, same
+   civ, alive, within some range). This would require defining "in the
+   direction of" (e.g., positive dot product of flee-direction with
+   soldier-direction) and a detection range for nearby soldiers. Deferred
+   — the pure greedy retreat is sufficient for the initial pass.
 4. Once the hostile is outside detection range, resume normal behavior.
+
+**Flee persistence:** Flee does not require an explicit "fleeing" state
+field on the creature. The detection check on every activation (§7) IS
+the persistence mechanism. On each activation, if a hostile is within
+detection range and the creature's response is Flee, the creature
+performs a flee step (greedy retreat) instead of normal behavior. When
+the hostile leaves detection range, the creature naturally resumes
+normal behavior on its next activation. **Tradeoff:** the creature
+stops fleeing the instant the threat leaves detection range, even if
+the threat is still chasing from just outside range. This is acceptable
+for the initial pass — the creature "loses sight" of the threat and
+calms down. If this proves too exploitable (hostiles can herd
+creatures by bobbing in and out of range), a future option is a
+`flee_cooldown_ticks` that keeps the creature fleeing for N ticks
+after last detection.
 
 **Dead ends:** Greedy retreat can trap creatures in dead ends (e.g., the
 end of a branch with no other exit). This is acceptable — it mirrors
@@ -1102,9 +1232,13 @@ resolves the level:
 |----------------|------------------|-------------------|
 | (no task)      | —                | Idle (0)          |
 | Haul           | Autonomous       | Autonomous (1)    |
+| Haul           | Automated        | Autonomous (1)    |
 | Cook           | Autonomous       | Autonomous (1)    |
+| Cook           | Automated        | Autonomous (1)    |
 | Craft          | Autonomous       | Autonomous (1)    |
+| Craft          | Automated        | Autonomous (1)    |
 | Harvest        | Autonomous       | Autonomous (1)    |
+| Harvest        | Automated        | Autonomous (1)    |
 | GoTo           | PlayerDirected   | PlayerDirected (2)|
 | Build          | PlayerDirected   | PlayerDirected (2)|
 | Furnish        | PlayerDirected   | PlayerDirected (2)|
@@ -1119,21 +1253,60 @@ resolves the level:
 | AttackMove     | PlayerDirected   | PlayerCombat (6)  |
 | (flee action)  | —                | Flee (7)          |
 
+`TaskOrigin::Automated` (used by logistics heartbeat, kitchen monitor,
+workshop monitor for Haul/Cook/Craft/Harvest tasks) maps to the same
+preemption levels as `Autonomous`. The two origins are semantically
+different (Automated = created by a management system, Autonomous =
+created by the creature's own heartbeat), but they have identical
+preemption priority — both represent background work that should yield
+to higher-priority needs.
+
 `AcquireItem` is Survival (3), not Autonomous (1), because it represents
 personal self-care (acquiring food, equipment the creature needs). This
-matches its behavioral role alongside eating and sleeping.
+matches its behavioral role alongside eating and sleeping. **Note:** For
+the initial pass, all AcquireItem tasks are Survival(3) regardless of
+item type. Future refinement: distinguish food acquisition (Survival)
+from equipment acquisition (Autonomous). This requires checking the
+want's `item_kind` in the preemption function, which adds complexity.
+Defer to when military equipment wants are implemented.
+
+**Mapping function structure:** The `preemption_level()` function uses
+`TaskKindTag` as the primary discriminator. `TaskOrigin` only matters for
+combat tasks (`AttackTarget`, `AttackMove`) — all other task kinds map to
+a fixed level regardless of origin (with `Autonomous` and `Automated`
+treated identically). Combinations not listed in the table (e.g.,
+`PlayerDirected` `EatBread`) do not currently occur in the codebase. If
+new combinations arise, they should be added to the table explicitly.
+**The function should use an exhaustive match (no wildcard) so that new
+`TaskKindTag` or `TaskOrigin` variants cause compile errors**, forcing
+the developer to assign the correct preemption level.
 
 Flee is not a task — it's an action-level behavior (see §7). It gets the
 highest preemption level because it must interrupt anything.
 
-**Note on mope:** Mood is above Survival. This means a moping elf cannot be
-interrupted by hunger or tiredness — they will finish moping before eating.
-This is intentional: moping represents a mood crisis that overrides routine
-needs. However, moping IS interrupted by combat (Flee, PlayerCombat,
-AutonomousCombat all outrank it). The existing `mope_can_interrupt_task`
-config field is superseded by this system — moping always preempts
-Survival and below, and is always preempted by combat and above. The
-config field should be deprecated.
+**Note on mope:** Mood is above Survival in the numeric ordering. This
+means a moping elf cannot be interrupted by hunger or tiredness — they
+will finish moping before eating. This is intentional: moping represents
+a mood crisis that overrides routine needs. However, moping IS
+interrupted by combat (Flee, PlayerCombat, AutonomousCombat all outrank
+it). The existing `mope_can_interrupt_task` config field is superseded by
+this system — moping always preempts Autonomous and PlayerDirected tasks,
+and is always preempted by combat and above. The config field should be
+deprecated.
+
+**Hardcoded exception — Mood never preempts Survival.** Despite
+Mood(4) > Survival(3) in the numeric ordering, the preemption check has
+an explicit exception: mope cannot interrupt eating, sleeping, or item
+acquisition tasks. The existing code (`sim.rs`) explicitly prevents mope
+from interrupting autonomous self-care tasks to avoid a death spiral — a
+chronically unhappy elf could otherwise mope-interrupt eating, become
+hungrier, get more unhappy, mope more, and starve. The preemption system
+preserves this protection. The preemption check is "can preempt if
+current level < new level", with the additional rule: **Mood never
+preempts Survival**. This is a hardcoded exception in the preemption
+function, not a level ordering change — Mood(4) remains above Survival(3)
+so that Survival cannot preempt Mood either (a moping elf finishes moping
+before eating, but cannot START moping over eating).
 
 **Note on mope frequency:** The existing mope system rolls a probability
 check on heartbeat (~3000-tick intervals), with config values
@@ -1166,6 +1339,36 @@ This avoids the need for a task stack or `Suspended` state. The cost is
 that a creature that was 80% done building something might lose that task
 to another creature after fleeing — but this is acceptable and realistic
 (another elf finishes the job while you were busy fleeing).
+
+### PlayerDirected Override of AutonomousCombat
+
+The standard preemption rule is "can preempt if new level > current
+level." There is one special-case override: **any PlayerDirected command
+(GoTo, Build, Furnish, etc.) can preempt AutonomousCombat**, even though
+PlayerDirected(2) < AutonomousCombat(5) in the numeric ordering. The
+rationale is that the player is the ultimate authority — if they tell a
+soldier to stop fighting and go build a platform, the soldier obeys.
+
+This override applies **only** to AutonomousCombat, not to PlayerCombat.
+PlayerCombat(6) means the player explicitly told the creature to attack —
+another PlayerDirected command at a different level does not override it.
+A new PlayerDirected command replaces PlayerCombat through normal
+same-level replacement (the player issued a new order, overriding the
+previous one).
+
+**Same-level replacement defined:** When a new task has the same
+preemption level as the creature's current task, the new task does NOT
+preempt — the creature finishes what it's doing. The exceptions are
+explicit player commands: a new PlayerDirected command replaces an
+existing PlayerDirected task (the player changed their mind), and a new
+PlayerCombat command replaces an existing PlayerCombat task (retargeting).
+This is normal task reassignment, not preemption — the old task is
+abandoned because the player issued a superseding order of the same kind.
+
+Implementation: in the preemption check function, after the standard
+level comparison, add: if the current level is `AutonomousCombat` and the
+new task's origin is `PlayerDirected`, allow preemption regardless of the
+new task's numeric level.
 
 ### Implementation Note
 
@@ -1205,6 +1408,7 @@ New fields needed in `GameConfig` / `SpeciesData`:
 pub hp_max: i64,                        // max hit points
 pub melee_damage: i64,                  // damage per melee hit
 pub melee_interval_ticks: u64,          // ticks between melee attacks
+pub melee_range_sq: i64,               // squared euclidean distance for melee reach
 pub hostile_detection_range_sq: i64,    // squared euclidean voxels for detection
 pub archer_range_sq: i64,              // squared max shooting range
 pub archer_retreat_range_sq: i64,      // squared distance to trigger kiting (future)
@@ -1252,6 +1456,7 @@ These are starting points for tuning, not final balance:
 | `hostile_detection_range_sq` (goblin) | 225 | 15-voxel radius |
 | `melee_interval_ticks` (goblin) | 1500 | 1.5 sec between strikes |
 | `melee_interval_ticks` (troll) | 3000 | 3 sec (slow but heavy) |
+| `melee_range_sq` | 2 | 1-voxel reach, covers face-adjacent + 2D diagonal |
 | `melee_damage` (goblin) | 15 | |
 | `melee_damage` (orc) | 25 | |
 | `melee_damage` (troll) | 50 | |

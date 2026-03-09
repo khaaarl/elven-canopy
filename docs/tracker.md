@@ -992,7 +992,11 @@ Add hp, hp_max, vital_status fields to Creature. VitalStatus enum (Alive, Dead, 
 #### F-melee-action — Melee attack action
 **Status:** Todo
 
-Melee strike as a creature ACTION (not a task). When adjacent to a hostile target (has nav edge to target's node), check cooldown (current_tick - last_melee_tick >= melee_interval_ticks), apply melee_damage (from SpeciesData) to target, emit CreatureDamaged event, trigger death if HP ≤ 0. New fields on Creature: last_melee_tick (u64, #[serde(default)]). New SpeciesData fields: melee_damage, melee_interval_ticks. Small and self-contained.
+Melee strike as a creature ACTION (not a task). Check cooldown (current_tick - last_melee_tick >= melee_interval_ticks), apply melee_damage (from SpeciesData) to target, emit CreatureDamaged event, trigger death if HP ≤ 0. New fields on Creature: last_melee_tick (u64, #[serde(default)]). New SpeciesData fields: melee_damage, melee_interval_ticks, melee_range_sq.
+
+**Melee range uses closest-point-of-footprint distance**, NOT nav-edge adjacency or anchor-to-anchor. For multi-voxel creatures, clamp target coords to attacker's footprint bounds and vice versa, then check squared distance ≤ melee_range_sq. Specifically: for a creature at anchor `pos` with footprint `[fx, fy, fz]`, closest point to a target coord is `(clamp(target.x, pos.x, pos.x + fx - 1), ...)`. Squared euclidean distance between closest points of both footprints must be ≤ melee_range_sq.
+
+`melee_range_sq: i64` in SpeciesData (default 2). Covers face-adjacent offsets (dist²=1) and 2D diagonal like (1,1,0) (dist²=2). Intentionally excludes the pure 3D corner diagonal (1,1,1) (dist²=3) — 3D corner adjacency feels like too much reach for melee. Nav edges are for pathfinding, not melee range; this sidesteps the cross-graph problem for multi-voxel creatures entirely.
 
 **Draft:** docs/drafts/combat_military.md (§5 "Melee Attack Action")
 
@@ -1019,7 +1023,14 @@ limited by tree carrying capacity and available food/shelter.
 #### F-preemption — Task priority and preemption system
 **Status:** Todo
 
-PreemptionLevel enum with explicit level() method (NOT derived Ord). 8 levels: Idle(0), Autonomous(1), PlayerDirected(2), Survival(3), Mood(4), AutonomousCombat(5), PlayerCombat(6), Flee(7). Computed from (TaskKindTag, TaskOrigin) → PreemptionLevel via a mapping function — NOT stored on Task. Must handle all three TaskOrigin variants (PlayerDirected, Autonomous, Automated). On each creature activation, check if a higher-priority action is available; if so, interrupt current task via F-task-interruption. Testable without combat: verify mope preempts idle tasks, player GoTo preempts autonomous hauling. Note: mope initiation stays heartbeat-driven (probability roll calibrated for ~3000-tick intervals); preemption CHECK runs on activation. Supersedes existing mope_can_interrupt_task config field. Design question: existing code protects eating/sleeping from mope interruption (death-spiral prevention) — need to decide if Mood(4) > Survival(3) is correct or if they should be equal.
+PreemptionLevel enum with explicit level() method (NOT derived Ord). 8 levels: Idle(0), Autonomous(1), PlayerDirected(2), Survival(3), Mood(4), AutonomousCombat(5), PlayerCombat(6), Flee(7). Computed from (TaskKindTag, TaskOrigin) → PreemptionLevel via a mapping function — NOT stored on Task. Must handle all three TaskOrigin variants (PlayerDirected, Autonomous, Automated). On each creature activation, check if a higher-priority action is available; if so, interrupt current task via F-task-interruption. Testable without combat: verify mope preempts idle tasks, player GoTo preempts autonomous hauling. Note: mope initiation stays heartbeat-driven (probability roll calibrated for ~3000-tick intervals); preemption CHECK runs on activation. Supersedes existing mope_can_interrupt_task config field.
+
+**Preemption rules and exceptions:**
+- Standard rule: can preempt if new level > current level.
+- PlayerDirected commands explicitly override AutonomousCombat (special case — player is ultimate authority). A PlayerDirected GoTo/Build/Furnish can preempt AutonomousCombat(5) even though PlayerDirected(2) < AutonomousCombat(5) numerically. Does NOT override PlayerCombat.
+- Mope-Survival hardcoded exception: Mood never preempts Survival. Prevents death spiral where unhappy elf mope-interrupts eating, gets hungrier, mopes more, starves. Mood(4) stays above Survival(3) so Survival also cannot preempt Mood (moping elf finishes moping before eating, but cannot START moping over eating).
+- Same-level replacement: same level does NOT preempt by default. Exceptions: PlayerDirected replaces PlayerDirected, PlayerCombat replaces PlayerCombat (player changed their mind — normal task reassignment, not preemption).
+- Exhaustive match required in the preemption_level() function (no wildcard). New TaskKindTag or TaskOrigin variants must cause compile errors, forcing the developer to assign the correct preemption level.
 
 **Draft:** docs/drafts/combat_military.md (§8)
 
@@ -1031,6 +1042,8 @@ PreemptionLevel enum with explicit level() method (NOT derived Ord). 8 levels: I
 **Status:** Todo
 
 Ranged attack as a creature ACTION. Requires: LOS to target (voxel ray march / DDA, multi-voxel targets check any occupied voxel), range check (archer_range_sq in SpeciesData), ammo in inventory, shoot cooldown elapsed. On shoot: compute aim velocity via iterative guess-and-simulate (same integer physics as real projectiles, max 5 iterations), consume arrow from inventory, spawn Projectile entity, emit ProjectileLaunched event. Aim skill tiers (novice/skilled/expert) for future. New fields: last_shoot_tick on Creature, shoot_cooldown_ticks in GameConfig, archer_range_sq in SpeciesData. LOS and aim computation are pure algorithms, unit-testable independently.
+
+**Requires both arrows AND a bow in inventory.** No bow = no shooting, even with arrows. Bow presence is checked via inventory item_kind. This ties into the WeaponPolicy system (§1 of combat doc), which determines whether a creature should acquire and carry a bow. Creatures without WeaponPolicy allowing bows will never have one and thus never shoot.
 
 **Draft:** docs/drafts/combat_military.md (§5)
 
@@ -1549,7 +1562,9 @@ TaskKindTag::AttackMove — hotkey A + click on ground. Extension table TaskAtta
 #### F-attack-task — AttackCreature task (player-directed target pursuit)
 **Status:** Todo
 
-TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates task with TaskOrigin::PlayerDirected, PreemptionLevel::PlayerCombat(6). Extension table TaskAttackTargetData with target: CreatureId (plain ID, not FK). Behavior: pathfind toward target via dynamic pursuit, when adjacent perform melee actions, when in range with LOS perform shoot actions. Poll target vital_status each activation — if Dead or row missing, task completes. Works with melee-only initially; ranged is additive.
+TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates task with TaskOrigin::PlayerDirected, PreemptionLevel::PlayerCombat(6). Extension table TaskAttackTargetData with target: CreatureId (plain ID, not FK). Behavior: pathfind toward target via dynamic pursuit, when adjacent perform melee actions, when in range with LOS perform shoot actions. Poll target vital_status each activation — if Dead or row missing, task completes. Works with melee-only initially; ranged is additive. Autonomous combat tasks (created by hostile detection) are immediately claimed by the detecting creature — NOT left in Available state.
+
+**Failed pathfinding:** If pathfinding fails (target unreachable), retry on the next activation. After N consecutive failures (configurable, e.g., attack_path_retry_limit = 3), cancel the task. Creature returns to normal behavior (idle/wander) and may re-detect the target on a subsequent activation if the target has moved to a reachable location.
 
 **Draft:** docs/drafts/combat_military.md (§5 "Attack Tasks")
 
@@ -1596,7 +1611,11 @@ Simple aggression AI for non-civ hostile creatures. On activation: if already en
 #### F-flee — Flee behavior for civilians
 **Status:** Todo
 
-Creatures with Flee response (civilian military group default, or FleeOnly combat_ai) detect hostile within range, preempt current task, and perform greedy retreat. At each activation, pick nav neighbor maximizing squared euclidean distance from threat (anchor voxel for multi-voxel threats). Ties broken by NavNodeId. Continue fleeing while hostile is in detection range. Design question: persistence mechanism — flee is not a task, so how does creature remember it's fleeing between activations? Options: (a) fleeing_from field on Creature, (b) re-detect on every activation (stops fleeing the moment threat leaves range). Dead-end trapping is acceptable (mirrors panic behavior, motivates escape route construction). Future: cornered behavior, bounded A* instead of greedy.
+Creatures with Flee response (civilian military group default, or FleeOnly combat_ai) detect hostile within range, preempt current task, and perform greedy retreat. At each activation, pick nav neighbor maximizing squared euclidean distance from threat (anchor voxel for multi-voxel threats). Ties broken by NavNodeId. Continue fleeing while hostile is in detection range. Dead-end trapping is acceptable (mirrors panic behavior, motivates escape route construction). Future: cornered behavior, bounded A* instead of greedy.
+
+**Persistence via detection-on-activation:** No explicit "fleeing" state field on Creature needed. The detection check on every activation IS the persistence mechanism. On each activation, if a hostile is within detection range and the creature's response is Flee, the creature performs a flee step (greedy retreat). When the hostile leaves detection range, the creature naturally resumes normal behavior on its next activation. Tradeoff: creature stops fleeing the instant threat leaves detection range — acceptable for initial pass.
+
+**"Prefer friendly soldiers" clause deferred:** Future enhancement to flee toward friendly soldiers (military group with HostileResponse::Fight, same civ, alive, within some range) is deferred to future work. Initial pass is pure greedy retreat with NavNodeId tie-breaking for determinism.
 
 **Draft:** docs/drafts/combat_military.md (§7)
 
@@ -1643,7 +1662,13 @@ positions, and alert levels.
 #### F-projectiles — Projectile physics system (arrows)
 **Status:** Todo
 
-SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity table in SimDb (no FK constraints, serialized normally). Ballistic trajectory with symplectic Euler integration (velocity updated before position). ProjectileTick batched event — one event per tick while any projectiles are in flight, advances all projectiles. Per-tick: save prev_voxel (initialized to shooter position at spawn), apply gravity to velocity, apply velocity to position, check voxel collision (solid → surface impact, ground pile at prev_voxel), check bounds (out of world → despawn). Speed-dependent damage formula: base_damage * impact_speed_sq / launch_speed_sq (all i128, min 1 damage). Arrow durability and recovery. Rendering: projectile_renderer.gd (pool pattern), SimBridge returns stride-6 float array (pos+vel), interpolation via position + velocity * fractional_offset.
+SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity table in SimDb (no FK constraints, serialized normally). Ballistic trajectory with symplectic Euler integration (velocity updated before position). ProjectileTick batched event — one event per tick while any projectiles are in flight, advances all projectiles. Per-tick: save prev_voxel (initialized to shooter position at spawn), apply gravity to velocity, apply velocity to position, check voxel collision (solid → surface impact, ground pile at prev_voxel), check bounds (out of world → despawn). Speed-dependent damage formula: base_damage * impact_speed_sq / launch_speed_sq (widened to i128 locally, min 1 damage). Arrow durability and recovery. Rendering: projectile_renderer.gd (pool pattern), SimBridge returns stride-6 float array (pos+vel), interpolation via position + velocity * fractional_offset.
+
+**launch_speed_sq stored as i64** (not i128) on the Projectile struct — max value ~3×2^60 fits within i64::MAX. Widening to i128 happens only in the local damage calculation to avoid serde compatibility issues with i128.
+
+**Bounds check (step 7) must be performed on i64 sub-voxel coordinates BEFORE converting to VoxelCoord via `as i32`**, to prevent silent truncation. Compare against world extents scaled to sub-voxel units, or right-shift and check against world size as i64 before casting to i32. Out-of-bounds projectiles must be caught before the `as i32` truncation in `to_voxel()`, which could silently wrap extreme i64 values into apparently-valid i32 coordinates.
+
+**ProjectileTick scheduling guard:** Schedule a ProjectileTick event if and only if the projectile table was empty before this spawn (count went from 0 → 1). Prevents duplicate scheduling when multiple archers fire on the same tick. Handler schedules the next ProjectileTick for tick+1 if projectiles remain after processing; stops when the table is empty.
 
 **Draft:** docs/drafts/combat_military.md (§4)
 
@@ -1655,6 +1680,8 @@ SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity t
 **Status:** Todo
 
 BTreeMap<VoxelCoord, Vec<CreatureId>> on SimState, #[serde(skip)], rebuilt on load from Alive creatures. Maintained at every position mutation point (wander, walk_toward_task, handle_creature_movement_complete, resnap_creatures, spawn, death). Centralized update_creature_position() helper. Multi-voxel creatures (trolls 2x2x2) register at all occupied voxels. Used by projectile hit detection and hostile detection scanning. Note: BTreeMap with VoxelCoord lexicographic ordering does NOT support efficient 3D range queries — detection scans are O(n) over all creatures with a squared-distance filter, not range queries.
+
+**Rebuild ordering:** The spatial index rebuild must run AFTER species_table is populated (footprint data comes from SpeciesData in config). The species_table is #[serde(skip)] and rebuilt from config after deserialization. If the spatial index rebuild runs before species_table is populated, the footprint lookup for large creatures will fail. Same ordering constraint as the nav graph rebuild — both depend on config-derived data being available.
 
 **Draft:** docs/drafts/combat_military.md (§4 "Creature Spatial Index")
 
