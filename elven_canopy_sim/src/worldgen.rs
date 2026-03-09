@@ -8,19 +8,28 @@
 //   1. **Tree generation** — produces the player's home tree geometry (existing
 //      logic extracted from `sim.rs`).
 //   2. **Fruit generation** — placeholder, will be implemented by F-fruit-variety.
-//   3. **Civilization generation** — placeholder, will be implemented by F-civilizations.
-//   4. **Knowledge distribution** — placeholder, will be implemented by F-civ-knowledge.
+//   3. **Civilization generation** — creates the player's elf civ (CivId(0),
+//      player-controlled) and AI civs from a weighted species distribution.
+//      Elf civs get Vaelith names; others get placeholder phonetic names from
+//      per-species syllable tables. Each civ gets a species-biased culture tag
+//      and optional minority species.
+//   4. **Diplomacy generation** — for each ordered civ pair, rolls per-direction
+//      awareness (base 50%, species/hostility bonuses, player cap), then assigns
+//      an opinion from the species-affinity default table with ~30% random
+//      perturbation.
+//   5. **Knowledge distribution** — placeholder, will be implemented by F-civ-knowledge.
 //
 // After all generators complete, the runtime PRNG is derived from the worldgen
 // PRNG's state, ensuring the worldgen sequence doesn't affect runtime randomness
 // order and that the entire pipeline is deterministic from the world seed.
 //
 // The `WorldgenResult` struct carries all outputs back to `SimState::with_config()`,
-// which uses them to populate the sim's initial state.
+// which uses them to populate the sim's initial state. This includes the `SimDb`
+// (pre-populated with civilization and relationship rows) and the player's civ ID.
 //
 // **WorldgenConfig** is a subsection of `GameConfig` that groups configuration
-// for worldgen generators (currently empty, will hold `FruitConfig` and
-// `CivConfig` when those features land). The existing tree profile config
+// for worldgen generators (currently holds `CivConfig`; will also hold
+// `FruitConfig` when F-fruit-variety lands). The existing tree profile config
 // stays at the top level of `GameConfig`.
 //
 // **Critical constraint: determinism.** All generators use the worldgen PRNG
@@ -30,24 +39,28 @@
 
 use std::collections::BTreeMap;
 
-use crate::config::GameConfig;
+use crate::config::{CivConfig, GameConfig};
+use crate::db::{CivRelationship, Civilization, SimDb};
 use crate::nav::{self, NavGraph};
 use crate::sim::Tree;
 use crate::structural;
 use crate::tree_gen;
-use crate::types::{PlayerId, TreeId, VoxelCoord, VoxelType};
+use crate::types::{
+    CivId, CivOpinion, CivSpecies, CultureTag, PlayerId, TreeId, VoxelCoord, VoxelType,
+};
 use crate::world::VoxelWorld;
 use elven_canopy_prng::GameRng;
 
 /// Configuration for worldgen generators. Subsection of `GameConfig`.
 ///
-/// Currently empty — serves as the extension point for `FruitConfig` (F-fruit-variety)
-/// and `CivConfig` (F-civilizations). The existing tree profile config stays at the
-/// top level of `GameConfig` since tree generation predates this framework.
+/// The existing tree profile config stays at the top level of `GameConfig`
+/// since tree generation predates this framework.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct WorldgenConfig {
     // Future: pub fruit: FruitConfig,
-    // Future: pub civs: CivConfig,
+    /// Civilization generation configuration.
+    #[serde(default)]
+    pub civs: crate::config::CivConfig,
 }
 
 /// Output of the worldgen pipeline, consumed by `SimState::with_config()` to
@@ -70,6 +83,12 @@ pub struct WorldgenResult {
 
     /// The player's ID (generated during worldgen for deterministic ordering).
     pub player_id: PlayerId,
+
+    /// The SimDb, populated by worldgen generators (civilizations, etc.).
+    pub db: SimDb,
+
+    /// The player-controlled civilization's ID (always CivId(0)).
+    pub player_civ_id: CivId,
 }
 
 /// Run the full worldgen pipeline: generate the world from a seed and config.
@@ -95,13 +114,18 @@ pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
     // Will be implemented by F-fruit-variety. The generator will populate
     // a FruitSpecies table in SimDb using wg_rng.
 
-    // --- Generator 3: Civilizations (placeholder) ---
-    // Will be implemented by F-civilizations. The generator will create
-    // Civilization rows and assign civ membership.
+    // --- Generator 3: Civilizations ---
+    let mut db = SimDb::new();
+    let lexicon = elven_canopy_lang::default_lexicon();
+    let player_civ_id =
+        generate_civilizations(&mut wg_rng, &config.worldgen.civs, &mut db, &lexicon);
 
-    // --- Generator 4: Knowledge distribution (placeholder) ---
+    // --- Generator 4: Diplomacy ---
+    generate_diplomacy(&mut wg_rng, &config.worldgen.civs, &mut db);
+
+    // --- Generator 5: Knowledge distribution (placeholder) ---
     // Will be implemented by F-civ-knowledge. The generator will populate
-    // CivFruitKnowledge and CivRelationship tables.
+    // CivFruitKnowledge tables.
 
     // Build nav graphs from the completed voxel world.
     let nav_graph = nav::build_nav_graph(&world, &BTreeMap::new());
@@ -121,6 +145,8 @@ pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
         nav_graph,
         large_nav_graph,
         player_id,
+        db,
+        player_civ_id,
     }
 }
 
@@ -185,6 +211,351 @@ fn generate_tree(
     };
 
     (world, home_tree)
+}
+
+// ---------------------------------------------------------------------------
+// Civilization generator
+// ---------------------------------------------------------------------------
+
+/// Generate civilizations according to config. The player's elf civ is always
+/// created first as `CivId(0)` with `player_controlled = true`. Remaining civs
+/// are drawn from the weighted species distribution.
+///
+/// Returns the player's `CivId`.
+fn generate_civilizations(
+    rng: &mut GameRng,
+    config: &CivConfig,
+    db: &mut SimDb,
+    lexicon: &elven_canopy_lang::Lexicon,
+) -> CivId {
+    let player_civ_id = CivId(0);
+
+    // Player's elf civ is always first.
+    let player_name = {
+        let vname = elven_canopy_lang::names::generate_name(lexicon, rng);
+        // Use the surname as the civilization name (like a clan/house name).
+        vname.surname
+    };
+
+    let player_civ = Civilization {
+        id: player_civ_id,
+        name: player_name,
+        primary_species: CivSpecies::Elf,
+        minority_species: Vec::new(),
+        culture_tag: CultureTag::Woodland,
+        player_controlled: true,
+    };
+    db.civilizations.insert_no_fk(player_civ).unwrap();
+
+    // Build the cumulative weight table for species selection.
+    let total_weight: u64 = config.species_weights.values().map(|&w| w as u64).sum();
+    if total_weight == 0 {
+        return player_civ_id;
+    }
+
+    // Generate remaining civs.
+    for i in 1..config.civ_count {
+        let civ_id = CivId(i);
+        let species = pick_weighted_species(rng, &config.species_weights, total_weight);
+        let name = generate_civ_name(rng, species, lexicon);
+        let culture_tag = pick_culture_tag(rng, species);
+        let minority_species = pick_minority_species(rng, species);
+
+        let civ = Civilization {
+            id: civ_id,
+            name,
+            primary_species: species,
+            minority_species,
+            culture_tag,
+            player_controlled: false,
+        };
+        db.civilizations.insert_no_fk(civ).unwrap();
+    }
+
+    player_civ_id
+}
+
+/// Pick a species from the weighted distribution.
+fn pick_weighted_species(
+    rng: &mut GameRng,
+    weights: &BTreeMap<CivSpecies, u16>,
+    total_weight: u64,
+) -> CivSpecies {
+    let roll = rng.next_u64() % total_weight;
+    let mut cumulative = 0u64;
+    for (&species, &weight) in weights {
+        cumulative += weight as u64;
+        if roll < cumulative {
+            return species;
+        }
+    }
+    // Fallback (should not happen with valid weights).
+    CivSpecies::Human
+}
+
+/// Generate a name for a civilization. Elf civs get Vaelith names; others get
+/// placeholder phonetic names from per-species syllable tables.
+fn generate_civ_name(
+    rng: &mut GameRng,
+    species: CivSpecies,
+    lexicon: &elven_canopy_lang::Lexicon,
+) -> String {
+    if species == CivSpecies::Elf {
+        let vname = elven_canopy_lang::names::generate_name(lexicon, rng);
+        return vname.surname;
+    }
+
+    // Placeholder phonetic names: 2-3 syllables from per-species tables.
+    let (consonants, vowels) = match species {
+        CivSpecies::Elf => unreachable!(),
+        CivSpecies::Human => (
+            &["Br", "Th", "St", "M", "L", "R", "W", "N"][..],
+            &["a", "e", "i", "o", "u"][..],
+        ),
+        CivSpecies::Dwarf => (
+            &["Kh", "Gr", "Dr", "Th", "B", "Z", "N", "D"][..],
+            &["a", "o", "u", "i"][..],
+        ),
+        CivSpecies::Goblin => (
+            &["Gr", "Sk", "Z", "Kr", "Sn", "Gl", "N"][..],
+            &["a", "i", "u", "e"][..],
+        ),
+        CivSpecies::Orc => (
+            &["Gr", "Kr", "Th", "B", "M", "Gor", "Ur"][..],
+            &["a", "o", "u"][..],
+        ),
+        CivSpecies::Troll => (
+            &["Tr", "Gr", "Kr", "Br", "Th", "Sk"][..],
+            &["o", "u", "a"][..],
+        ),
+    };
+
+    let syllable_count = 2 + (rng.next_u64() % 2) as usize; // 2-3 syllables
+    let mut name = String::new();
+    for _ in 0..syllable_count {
+        let c = consonants[rng.next_u64() as usize % consonants.len()];
+        let v = vowels[rng.next_u64() as usize % vowels.len()];
+        name.push_str(c);
+        name.push_str(v);
+    }
+
+    // Capitalize first letter (already done since consonants are capitalized).
+    // Lowercase the rest after the first character.
+    let mut result = String::with_capacity(name.len());
+    for (i, ch) in name.chars().enumerate() {
+        if i == 0 {
+            result.extend(ch.to_uppercase());
+        } else {
+            result.extend(ch.to_lowercase());
+        }
+    }
+    result
+}
+
+/// Pick a culture tag with species-biased weights.
+fn pick_culture_tag(rng: &mut GameRng, species: CivSpecies) -> CultureTag {
+    // (tag, weight) pairs per species. Higher weight = more likely.
+    let weights: &[(CultureTag, u16)] = match species {
+        CivSpecies::Elf => &[
+            (CultureTag::Woodland, 40),
+            (CultureTag::Coastal, 25),
+            (CultureTag::Mountain, 10),
+            (CultureTag::Nomadic, 15),
+            (CultureTag::Subterranean, 5),
+            (CultureTag::Martial, 5),
+        ],
+        CivSpecies::Human => &[
+            (CultureTag::Woodland, 15),
+            (CultureTag::Coastal, 20),
+            (CultureTag::Mountain, 15),
+            (CultureTag::Nomadic, 20),
+            (CultureTag::Subterranean, 10),
+            (CultureTag::Martial, 20),
+        ],
+        CivSpecies::Dwarf => &[
+            (CultureTag::Mountain, 40),
+            (CultureTag::Subterranean, 35),
+            (CultureTag::Woodland, 5),
+            (CultureTag::Coastal, 5),
+            (CultureTag::Nomadic, 5),
+            (CultureTag::Martial, 10),
+        ],
+        CivSpecies::Goblin => &[
+            (CultureTag::Subterranean, 35),
+            (CultureTag::Martial, 30),
+            (CultureTag::Mountain, 15),
+            (CultureTag::Woodland, 10),
+            (CultureTag::Nomadic, 10),
+            (CultureTag::Coastal, 0),
+        ],
+        CivSpecies::Orc => &[
+            (CultureTag::Martial, 40),
+            (CultureTag::Nomadic, 25),
+            (CultureTag::Mountain, 15),
+            (CultureTag::Subterranean, 10),
+            (CultureTag::Woodland, 5),
+            (CultureTag::Coastal, 5),
+        ],
+        CivSpecies::Troll => &[
+            (CultureTag::Mountain, 30),
+            (CultureTag::Subterranean, 25),
+            (CultureTag::Woodland, 20),
+            (CultureTag::Nomadic, 15),
+            (CultureTag::Martial, 10),
+            (CultureTag::Coastal, 0),
+        ],
+    };
+
+    let total: u64 = weights.iter().map(|(_, w)| *w as u64).sum();
+    let roll = rng.next_u64() % total;
+    let mut cumulative = 0u64;
+    for &(tag, w) in weights {
+        cumulative += w as u64;
+        if roll < cumulative {
+            return tag;
+        }
+    }
+    CultureTag::Woodland // fallback
+}
+
+/// Pick minority species for a civilization based on its primary species.
+fn pick_minority_species(rng: &mut GameRng, primary: CivSpecies) -> Vec<CivSpecies> {
+    let mut minorities = Vec::new();
+
+    match primary {
+        CivSpecies::Goblin => {
+            // 40% chance of Troll minority.
+            if rng.next_u64() % 100 < 40 {
+                minorities.push(CivSpecies::Troll);
+            }
+        }
+        CivSpecies::Orc => {
+            // 30% chance of Goblin minority, 20% chance of Troll minority.
+            if rng.next_u64() % 100 < 30 {
+                minorities.push(CivSpecies::Goblin);
+            }
+            if rng.next_u64() % 100 < 20 {
+                minorities.push(CivSpecies::Troll);
+            }
+        }
+        _ => {
+            // Elf, Human, Dwarf, Troll civs are typically mono-species.
+            // Consume one PRNG draw for determinism.
+            let _ = rng.next_u64();
+        }
+    }
+
+    minorities.sort();
+    minorities
+}
+
+// ---------------------------------------------------------------------------
+// Diplomacy generator
+// ---------------------------------------------------------------------------
+
+/// Generate asymmetric diplomacy relationships between all civilization pairs.
+///
+/// For each ordered pair (i, j), independently rolls awareness per direction.
+/// For aware pairs, assigns initial opinion from a species-affinity default
+/// table, then applies random perturbation (~30% chance of shifting one step).
+fn generate_diplomacy(rng: &mut GameRng, config: &CivConfig, db: &mut SimDb) {
+    let civ_ids: Vec<(CivId, CivSpecies)> = db
+        .civilizations
+        .iter_all()
+        .map(|c| (c.id, c.primary_species))
+        .collect();
+
+    let civ_count = civ_ids.len();
+
+    for i in 0..civ_count {
+        for j in 0..civ_count {
+            if i == j {
+                continue;
+            }
+
+            let (civ_a, species_a) = civ_ids[i];
+            let (civ_b, species_b) = civ_ids[j];
+
+            // Roll awareness: base 50%, same-species +25%, hostile species +15%
+            let mut awareness_pct = 50u64;
+            if species_a == species_b {
+                awareness_pct += 25;
+            }
+            let default_opinion = species_default_opinion(species_a, species_b);
+            if default_opinion == CivOpinion::Hostile {
+                awareness_pct += 15;
+            } else if default_opinion == CivOpinion::Friendly {
+                awareness_pct += 10;
+            }
+            // Cap at 95% to keep some mystery.
+            awareness_pct = awareness_pct.min(95);
+
+            // Limit starting known civs for the player's civ.
+            let player_aware_count = db
+                .civ_relationships
+                .by_from_civ(&CivId(0), tabulosity::QueryOpts::ASC)
+                .len();
+
+            // If this is the player's civ looking outward, respect the cap.
+            if civ_a == CivId(0) && player_aware_count >= config.player_starting_known_civs as usize
+            {
+                let _ = rng.next_u64(); // consume for determinism
+                continue;
+            }
+
+            let roll = rng.next_u64() % 100;
+            if roll >= awareness_pct {
+                continue;
+            }
+
+            // Aware — assign opinion with perturbation.
+            let mut opinion = default_opinion;
+
+            // ~30% chance of one-step perturbation in either direction.
+            let perturb_roll = rng.next_u64() % 100;
+            if perturb_roll < 15 {
+                opinion = opinion.shift_friendlier();
+            } else if perturb_roll < 30 {
+                opinion = opinion.shift_hostile();
+            }
+
+            db.civ_relationships
+                .insert_auto_no_fk(|id| CivRelationship {
+                    id,
+                    from_civ: civ_a,
+                    to_civ: civ_b,
+                    opinion,
+                })
+                .unwrap();
+        }
+    }
+}
+
+/// Default diplomatic opinion based on species pairing.
+fn species_default_opinion(from: CivSpecies, to: CivSpecies) -> CivOpinion {
+    use CivSpecies::*;
+    match (from, to) {
+        // Same species — generally positive.
+        (a, b) if a == b => CivOpinion::Friendly,
+        // Elf relations.
+        (Elf, Human) | (Human, Elf) => CivOpinion::Neutral,
+        (Elf, Dwarf) | (Dwarf, Elf) => CivOpinion::Neutral,
+        // Dwarf-Human.
+        (Dwarf, Human) | (Human, Dwarf) => CivOpinion::Neutral,
+        // Goblin is suspicious/hostile to most.
+        (Goblin, Orc) | (Orc, Goblin) => CivOpinion::Suspicious,
+        (Goblin, Troll) | (Troll, Goblin) => CivOpinion::Neutral,
+        (Goblin, _) => CivOpinion::Hostile,
+        (_, Goblin) => CivOpinion::Suspicious,
+        // Orc is hostile to most.
+        (Orc, Troll) | (Troll, Orc) => CivOpinion::Suspicious,
+        (Orc, _) => CivOpinion::Hostile,
+        (_, Orc) => CivOpinion::Hostile,
+        // Troll is suspicious of others.
+        (Troll, _) | (_, Troll) => CivOpinion::Suspicious,
+        // Human-to-human or other fallback.
+        _ => CivOpinion::Neutral,
+    }
 }
 
 #[cfg(test)]
@@ -286,5 +657,162 @@ mod tests {
         // Just verify it round-trips through serde.
         let json = serde_json::to_string(&wc).unwrap();
         let _: WorldgenConfig = serde_json::from_str(&json).unwrap();
+    }
+
+    // -------------------------------------------------------------------
+    // Civilization worldgen tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn worldgen_creates_player_civ() {
+        let config = test_config();
+        let result = run_worldgen(42, &config);
+
+        // Player civ is always CivId(0) and player-controlled.
+        let player_civ = result.db.civilizations.get(&CivId(0)).unwrap();
+        assert!(player_civ.player_controlled);
+        assert_eq!(player_civ.primary_species, CivSpecies::Elf);
+        assert_eq!(result.player_civ_id, CivId(0));
+    }
+
+    #[test]
+    fn worldgen_creates_correct_civ_count() {
+        let mut config = test_config();
+        config.worldgen.civs.civ_count = 5;
+        let result = run_worldgen(42, &config);
+
+        let civs: Vec<_> = result.db.civilizations.iter_all().collect();
+        assert_eq!(civs.len(), 5);
+
+        // CivId(0) is the player civ; CivId(1)..CivId(4) are AI civs.
+        for i in 0..5 {
+            assert!(result.db.civilizations.get(&CivId(i as u16)).is_some());
+        }
+    }
+
+    #[test]
+    fn worldgen_ai_civs_are_not_player_controlled() {
+        let mut config = test_config();
+        config.worldgen.civs.civ_count = 3;
+        let result = run_worldgen(42, &config);
+
+        for civ in result.db.civilizations.iter_all() {
+            if civ.id == CivId(0) {
+                assert!(civ.player_controlled);
+            } else {
+                assert!(!civ.player_controlled);
+            }
+        }
+    }
+
+    #[test]
+    fn worldgen_diplomacy_creates_relationships() {
+        let mut config = test_config();
+        config.worldgen.civs.civ_count = 4;
+        let result = run_worldgen(42, &config);
+
+        // With 4 civs, there should be some relationships (but not necessarily all,
+        // since awareness is probabilistic).
+        let rels: Vec<_> = result.db.civ_relationships.iter_all().collect();
+        assert!(
+            !rels.is_empty(),
+            "4 civs should produce at least some diplomatic relationships"
+        );
+    }
+
+    #[test]
+    fn worldgen_player_known_civs_capped() {
+        let mut config = test_config();
+        config.worldgen.civs.civ_count = 20;
+        config.worldgen.civs.player_starting_known_civs = 3;
+        let result = run_worldgen(42, &config);
+
+        // Player civ should know at most 3 other civs.
+        let player_rels = result
+            .db
+            .civ_relationships
+            .by_from_civ(&CivId(0), tabulosity::QueryOpts::ASC);
+        assert!(
+            player_rels.len() <= 3,
+            "Player should know at most 3 civs, got {}",
+            player_rels.len()
+        );
+    }
+
+    #[test]
+    fn worldgen_civ_determinism() {
+        // Same seed + config must produce identical civilizations.
+        let mut config = test_config();
+        config.worldgen.civs.civ_count = 8;
+        let r1 = run_worldgen(42, &config);
+        let r2 = run_worldgen(42, &config);
+
+        let civs1: Vec<_> = r1.db.civilizations.iter_all().collect();
+        let civs2: Vec<_> = r2.db.civilizations.iter_all().collect();
+        assert_eq!(civs1.len(), civs2.len());
+        for (c1, c2) in civs1.iter().zip(civs2.iter()) {
+            assert_eq!(c1.id, c2.id);
+            assert_eq!(c1.name, c2.name);
+            assert_eq!(c1.primary_species, c2.primary_species);
+            assert_eq!(c1.culture_tag, c2.culture_tag);
+            assert_eq!(c1.player_controlled, c2.player_controlled);
+        }
+
+        // Relationships must also match.
+        let rels1: Vec<_> = r1.db.civ_relationships.iter_all().collect();
+        let rels2: Vec<_> = r2.db.civ_relationships.iter_all().collect();
+        assert_eq!(rels1.len(), rels2.len());
+        for (r1, r2) in rels1.iter().zip(rels2.iter()) {
+            assert_eq!(r1.from_civ, r2.from_civ);
+            assert_eq!(r1.to_civ, r2.to_civ);
+            assert_eq!(r1.opinion, r2.opinion);
+        }
+    }
+
+    #[test]
+    fn worldgen_different_seeds_produce_different_civs() {
+        let mut config = test_config();
+        config.worldgen.civs.civ_count = 10;
+        let r1 = run_worldgen(1, &config);
+        let r2 = run_worldgen(2, &config);
+
+        // Names should differ with different seeds.
+        let names1: Vec<_> = r1
+            .db
+            .civilizations
+            .iter_all()
+            .map(|c| c.name.clone())
+            .collect();
+        let names2: Vec<_> = r2
+            .db
+            .civilizations
+            .iter_all()
+            .map(|c| c.name.clone())
+            .collect();
+        assert_ne!(names1, names2);
+    }
+
+    #[test]
+    fn worldgen_all_civs_have_names() {
+        let mut config = test_config();
+        config.worldgen.civs.civ_count = 10;
+        let result = run_worldgen(42, &config);
+
+        for civ in result.db.civilizations.iter_all() {
+            assert!(!civ.name.is_empty(), "CivId({}) has empty name", civ.id.0);
+        }
+    }
+
+    #[test]
+    fn species_default_opinion_is_symmetric_for_same_species() {
+        // Same species → Friendly for all.
+        for &species in CivSpecies::ALL.iter() {
+            assert_eq!(
+                species_default_opinion(species, species),
+                CivOpinion::Friendly,
+                "Same-species opinion for {:?} should be Friendly",
+                species
+            );
+        }
     }
 }

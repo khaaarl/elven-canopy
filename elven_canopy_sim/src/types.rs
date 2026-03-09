@@ -308,6 +308,26 @@ auto_pk_id!(/// Auto-increment ID for craft task extension data.
 TaskCraftDataId);
 auto_pk_id!(/// Auto-increment ID for music compositions.
 CompositionId);
+auto_pk_id!(/// Auto-increment ID for directed civ relationship records.
+CivRelationshipId);
+
+// ---------------------------------------------------------------------------
+// Civilization IDs — sequential u16, assigned by worldgen in batch.
+// ---------------------------------------------------------------------------
+
+/// Civilization identifier. Assigned sequentially by worldgen (0, 1, 2, ...).
+/// Not auto-increment — civs are batch-created during worldgen and not
+/// created at runtime in the initial implementation.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Bounded,
+)]
+pub struct CivId(pub u16);
+
+impl fmt::Display for CivId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CivId({})", self.0)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Nav graph IDs — simple integers, not UUIDs, for compactness.
@@ -339,6 +359,116 @@ pub enum Species {
     Orc,
     Squirrel,
     Troll,
+}
+
+/// Species that can form civilizations. Separate from the sim-active `Species`
+/// enum — `Species` tracks creature types with instances, rendering, and
+/// pathfinding, while `CivSpecies` tracks sapient species that form organized
+/// societies. They overlap at `Elf` but serve different purposes. See
+/// `docs/drafts/encyclopedia_civs.md` §Species Enums for the convergence plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum CivSpecies {
+    Elf,
+    Human,
+    Dwarf,
+    Goblin,
+    Orc,
+    Troll,
+}
+
+impl CivSpecies {
+    /// All variants in declaration order, for iteration.
+    pub const ALL: [CivSpecies; 6] = [
+        CivSpecies::Elf,
+        CivSpecies::Human,
+        CivSpecies::Dwarf,
+        CivSpecies::Goblin,
+        CivSpecies::Orc,
+        CivSpecies::Troll,
+    ];
+
+    /// Human-readable display string.
+    pub fn display_str(self) -> &'static str {
+        match self {
+            CivSpecies::Elf => "Elf",
+            CivSpecies::Human => "Human",
+            CivSpecies::Dwarf => "Dwarf",
+            CivSpecies::Goblin => "Goblin",
+            CivSpecies::Orc => "Orc",
+            CivSpecies::Troll => "Troll",
+        }
+    }
+}
+
+/// Diplomatic opinion one civilization holds of another. Ordered from most
+/// positive to most negative for easy comparison.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum CivOpinion {
+    Friendly,
+    Neutral,
+    Suspicious,
+    Hostile,
+}
+
+impl CivOpinion {
+    /// Human-readable display string.
+    pub fn display_str(self) -> &'static str {
+        match self {
+            CivOpinion::Friendly => "Friendly",
+            CivOpinion::Neutral => "Neutral",
+            CivOpinion::Suspicious => "Suspicious",
+            CivOpinion::Hostile => "Hostile",
+        }
+    }
+
+    /// Shift one step toward friendlier (Hostile→Suspicious→Neutral→Friendly).
+    /// Returns self if already Friendly.
+    pub fn shift_friendlier(self) -> Self {
+        match self {
+            CivOpinion::Friendly => CivOpinion::Friendly,
+            CivOpinion::Neutral => CivOpinion::Friendly,
+            CivOpinion::Suspicious => CivOpinion::Neutral,
+            CivOpinion::Hostile => CivOpinion::Suspicious,
+        }
+    }
+
+    /// Shift one step toward hostility (Friendly→Neutral→Suspicious→Hostile).
+    /// Returns self if already Hostile.
+    pub fn shift_hostile(self) -> Self {
+        match self {
+            CivOpinion::Friendly => CivOpinion::Neutral,
+            CivOpinion::Neutral => CivOpinion::Suspicious,
+            CivOpinion::Suspicious => CivOpinion::Hostile,
+            CivOpinion::Hostile => CivOpinion::Hostile,
+        }
+    }
+}
+
+/// Cultural flavor tag for a civilization. Assigned during worldgen with
+/// species-biased random selection. Not mechanically significant in the
+/// initial implementation — purely for flavor and encyclopedia display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum CultureTag {
+    Woodland,
+    Mountain,
+    Coastal,
+    Subterranean,
+    Nomadic,
+    Martial,
+}
+
+impl CultureTag {
+    /// Human-readable display string.
+    pub fn display_str(self) -> &'static str {
+        match self {
+            CultureTag::Woodland => "Woodland",
+            CultureTag::Mountain => "Mountain",
+            CultureTag::Coastal => "Coastal",
+            CultureTag::Subterranean => "Subterranean",
+            CultureTag::Nomadic => "Nomadic",
+            CultureTag::Martial => "Martial",
+        }
+    }
 }
 
 /// Priority level for build projects and tasks.

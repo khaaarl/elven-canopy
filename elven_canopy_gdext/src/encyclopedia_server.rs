@@ -42,14 +42,28 @@ pub struct SpeciesEntry {
     pub traits: Vec<String>,
 }
 
+/// A known civilization entry for the encyclopedia.
+#[derive(Clone, Debug)]
+pub struct KnownCivEntry {
+    pub civ_id: u16,
+    pub name: String,
+    pub primary_species: String,
+    pub culture_tag: String,
+    pub our_opinion: String,
+    pub their_opinion: Option<String>,
+}
+
 /// Shared data snapshot read by the HTTP server thread. Updated by the main
-/// thread. Currently only contains static species data; future versions will
-/// add civ/fruit knowledge gated by the player's civilization.
+/// thread via `update_data()`.
 #[derive(Default)]
 pub struct EncyclopediaData {
     pub species: Vec<SpeciesEntry>,
     pub game_name: String,
     pub current_tick: u64,
+    /// Known civilizations (from the player civ's perspective).
+    pub civilizations: Vec<KnownCivEntry>,
+    /// Name of the player's own civilization.
+    pub player_civ_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -122,10 +136,18 @@ impl EncyclopediaServer {
 
     /// Update the shared data snapshot. Called from the main thread during
     /// `frame_update()`.
-    pub fn update_data(&self, tick: u64, game_name: &str) {
+    pub fn update_data(
+        &self,
+        tick: u64,
+        game_name: &str,
+        civilizations: Vec<KnownCivEntry>,
+        player_civ_name: String,
+    ) {
         if let Ok(mut data) = self.data.write() {
             data.current_tick = tick;
             data.game_name = game_name.to_owned();
+            data.civilizations = civilizations;
+            data.player_civ_name = player_civ_name;
         }
     }
 
@@ -196,6 +218,17 @@ fn handle_request(
             match data.species.iter().find(|s| s.name == decoded) {
                 Some(entry) => (200, "text/html", render_species_detail(entry, &data)),
                 None => (404, "text/html", render_not_found(&data)),
+            }
+        }
+        "/civilizations" => (200, "text/html", render_civilizations_list(&data)),
+        p if p.starts_with("/civilizations/") => {
+            let id_str = &p["/civilizations/".len()..];
+            match id_str.parse::<u16>() {
+                Ok(id) => match data.civilizations.iter().find(|c| c.civ_id == id) {
+                    Some(entry) => (200, "text/html", render_civilizations_detail(entry, &data)),
+                    None => (404, "text/html", render_not_found(&data)),
+                },
+                Err(_) => (404, "text/html", render_not_found(&data)),
             }
         }
         "/style.css" => (200, "text/css", render_css()),
@@ -269,7 +302,7 @@ fn html_page(title: &str, body: &str, data: &EncyclopediaData) -> String {
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<nav><a href="/">Home</a> · <a href="/species">Species</a></nav>
+<nav><a href="/">Home</a> · <a href="/species">Species</a> · <a href="/civilizations">Civilizations</a></nav>
 <main>
 <h1>{title}</h1>
 {body}
@@ -284,13 +317,24 @@ fn html_page(title: &str, body: &str, data: &EncyclopediaData) -> String {
 }
 
 fn render_index(data: &EncyclopediaData) -> String {
-    let body = r#"<p>Welcome to the Elven Canopy Encyclopedia — a living reference
-for all knowledge held by your civilization.</p>
+    let civ_info = if !data.player_civ_name.is_empty() {
+        format!(
+            "<p>Knowledge held by the <strong>{}</strong> civilization.</p>",
+            html_escape(&data.player_civ_name),
+        )
+    } else {
+        "<p>Welcome to the Elven Canopy Encyclopedia.</p>".to_owned()
+    };
+
+    let body = format!(
+        r#"{civ_info}
 <h2>Sections</h2>
 <ul>
 <li><a href="/species">Species Bestiary</a> — all known creature types</li>
-</ul>"#;
-    html_page("Encyclopedia", body, data)
+<li><a href="/civilizations">Civilizations</a> — known civilizations and diplomacy</li>
+</ul>"#,
+    );
+    html_page("Encyclopedia", &body, data)
 }
 
 fn render_species_list(data: &EncyclopediaData) -> String {
@@ -344,6 +388,75 @@ fn render_species_detail(entry: &SpeciesEntry, data: &EncyclopediaData) -> Strin
     );
 
     html_page(&entry.name, &body, data)
+}
+
+fn render_civilizations_list(data: &EncyclopediaData) -> String {
+    let mut body = String::new();
+
+    if data.civilizations.is_empty() {
+        body.push_str("<p>No other civilizations are known.</p>");
+    } else {
+        body.push_str("<p>Civilizations your people know of.</p>");
+        body.push_str(
+            "<table class=\"civ-table\"><thead><tr>\
+             <th>Name</th><th>Species</th><th>Culture</th>\
+             <th>Our Opinion</th><th>Their Opinion</th>\
+             </tr></thead><tbody>",
+        );
+        for civ in &data.civilizations {
+            let their = civ.their_opinion.as_deref().unwrap_or("Unknown");
+            body.push_str(&format!(
+                "<tr><td><a href=\"/civilizations/{}\">{}</a></td>\
+                 <td>{}</td><td>{}</td>\
+                 <td class=\"opinion-{}\">{}</td>\
+                 <td class=\"opinion-{}\">{}</td></tr>",
+                civ.civ_id,
+                html_escape(&civ.name),
+                html_escape(&civ.primary_species),
+                html_escape(&civ.culture_tag),
+                opinion_css_class(&civ.our_opinion),
+                html_escape(&civ.our_opinion),
+                opinion_css_class(their),
+                html_escape(their),
+            ));
+        }
+        body.push_str("</tbody></table>");
+    }
+
+    html_page("Known Civilizations", &body, data)
+}
+
+fn render_civilizations_detail(entry: &KnownCivEntry, data: &EncyclopediaData) -> String {
+    let their = entry.their_opinion.as_deref().unwrap_or("Unknown");
+
+    let body = format!(
+        r#"<dl>
+<dt>Species</dt><dd>{species}</dd>
+<dt>Culture</dt><dd>{culture}</dd>
+<dt>Our Opinion</dt><dd class="opinion-{our_class}">{our_opinion}</dd>
+<dt>Their Opinion</dt><dd class="opinion-{their_class}">{their_opinion}</dd>
+</dl>
+<p><a href="/civilizations">&larr; Back to civilizations</a></p>"#,
+        species = html_escape(&entry.primary_species),
+        culture = html_escape(&entry.culture_tag),
+        our_class = opinion_css_class(&entry.our_opinion),
+        our_opinion = html_escape(&entry.our_opinion),
+        their_class = opinion_css_class(their),
+        their_opinion = html_escape(their),
+    );
+
+    html_page(&entry.name, &body, data)
+}
+
+/// Map opinion text to a CSS class name for color coding.
+fn opinion_css_class(opinion: &str) -> &str {
+    match opinion {
+        "Friendly" => "friendly",
+        "Neutral" => "neutral",
+        "Suspicious" => "suspicious",
+        "Hostile" => "hostile",
+        _ => "unknown",
+    }
 }
 
 fn render_not_found(data: &EncyclopediaData) -> String {
@@ -431,6 +544,36 @@ li { margin-bottom: 0.25rem; }
     font-size: 0.85rem;
     color: var(--accent);
 }
+
+table.civ-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+}
+
+table.civ-table th, table.civ-table td {
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+}
+
+table.civ-table th {
+    color: var(--accent);
+    font-weight: normal;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+dl { margin: 1rem 0; }
+dt { color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem; }
+dd { margin-left: 0; font-size: 1rem; }
+
+.opinion-friendly { color: #7ec8a0; }
+.opinion-neutral { color: var(--text); }
+.opinion-suspicious { color: #e6b84e; }
+.opinion-hostile { color: #e05252; }
+.opinion-unknown { color: var(--muted); font-style: italic; }
 
 footer {
     margin-top: 2rem;

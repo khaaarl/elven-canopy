@@ -32,7 +32,7 @@
 use crate::inventory::{ItemKind, Material};
 use crate::nav::EdgeType;
 use crate::species::SpeciesData;
-use crate::types::{FaceType, MoodTier, Species, ThoughtKind, VoxelCoord, VoxelType};
+use crate::types::{CivSpecies, FaceType, MoodTier, Species, ThoughtKind, VoxelCoord, VoxelType};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -895,6 +895,57 @@ fn default_recipes() -> Vec<Recipe> {
 
 fn default_workshop_priority() -> u8 {
     8
+}
+
+// ---------------------------------------------------------------------------
+// Civilization config
+// ---------------------------------------------------------------------------
+
+/// Configuration for the civilization worldgen generator.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CivConfig {
+    /// Number of civilizations to generate (including the player's elf civ).
+    #[serde(default = "default_civ_count")]
+    pub civ_count: u16,
+
+    /// Weighted species distribution for NPC civs. The player's elf civ is
+    /// always created first outside this distribution. Weights are relative —
+    /// a species with weight 25 is 5x more likely than one with weight 5.
+    #[serde(default = "default_species_weights")]
+    pub species_weights: BTreeMap<CivSpecies, u16>,
+
+    /// How many other civs the player's civ starts aware of.
+    #[serde(default = "default_player_starting_known_civs")]
+    pub player_starting_known_civs: u16,
+}
+
+fn default_civ_count() -> u16 {
+    10
+}
+
+fn default_species_weights() -> BTreeMap<CivSpecies, u16> {
+    let mut w = BTreeMap::new();
+    w.insert(CivSpecies::Elf, 25);
+    w.insert(CivSpecies::Human, 25);
+    w.insert(CivSpecies::Dwarf, 20);
+    w.insert(CivSpecies::Goblin, 15);
+    w.insert(CivSpecies::Orc, 10);
+    w.insert(CivSpecies::Troll, 5);
+    w
+}
+
+fn default_player_starting_known_civs() -> u16 {
+    5
+}
+
+impl Default for CivConfig {
+    fn default() -> Self {
+        Self {
+            civ_count: default_civ_count(),
+            species_weights: default_species_weights(),
+            player_starting_known_civs: default_player_starting_known_civs(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -41,6 +41,10 @@
 // - `DebugNotification` — create a debug notification for testing.
 // - `SetWorkshopConfig` — enable/disable a workshop and set which recipe IDs
 //   it should produce. Recomputes logistics wants from recipe inputs.
+// - `DiscoverCiv` — a civ becomes aware of another civ, creating a
+//   CivRelationship row. No-op if already aware.
+// - `SetCivOpinion` — update a civ's opinion of another civ. No-op if
+//   unaware (no CivRelationship row exists).
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -178,6 +182,20 @@ pub enum SimAction {
         structure_id: StructureId,
         workshop_enabled: bool,
         recipe_configs: Vec<WorkshopRecipeEntry>,
+    },
+    /// A civ becomes aware of another civ. Creates a CivRelationship row with
+    /// the specified initial opinion. No-op if the relationship already exists.
+    DiscoverCiv {
+        civ_id: CivId,
+        discovered_civ: CivId,
+        initial_opinion: CivOpinion,
+    },
+    /// Update a civ's opinion of another civ. No-op if unaware (no
+    /// CivRelationship row exists).
+    SetCivOpinion {
+        civ_id: CivId,
+        target_civ: CivId,
+        opinion: CivOpinion,
     },
 }
 

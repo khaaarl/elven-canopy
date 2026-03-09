@@ -77,7 +77,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
-[ ] F-civilizations        Procedural civilization generation and diplomacy
 [ ] F-combat               Combat and invader threat system
 [ ] F-crafting             Non-construction jobs and crafting
 [ ] F-creature-actions     Formalize creature action system with next_action_tick
@@ -181,6 +180,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-cam-follow           Camera follow mode for creatures
 [x] F-capybara             Capybara species
 [x] F-carve-holes          Remove material (doors, storage hollows)
+[x] F-civilizations        Procedural civilization generation and diplomacy
 [x] F-construction         Platform construction (designate/build/cancel)
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crate-structure      Two-crate sim/gdext structure
@@ -1629,7 +1629,7 @@ Activation-driven hostile scanning. On each creature activation, scan for hostil
 
 **Draft:** docs/drafts/combat_military.md (§6, §7)
 
-**Blocked by:** F-civilizations, F-spatial-index
+**Blocked by:** F-spatial-index
 **Blocks:** F-attack-move, F-combat, F-enemy-ai, F-flee
 
 #### F-military-campaign — Send elves on world expeditions
@@ -1647,7 +1647,6 @@ MilitaryGroup table in SimDb with civ_id FK (cascade on civ delete). Auto-increm
 
 **Draft:** docs/drafts/combat_military.md (§1)
 
-**Blocked by:** F-civilizations
 **Blocks:** F-combat
 
 #### F-military-org — Squad management and organization
@@ -1703,12 +1702,12 @@ increasing (no forgetting).
 
 **Draft:** `docs/drafts/encyclopedia_civs.md` §Knowledge System
 
-**Blocked by:** F-civilizations, F-fruit-variety
+**Blocked by:** F-fruit-variety
 **Blocks:** F-encyclopedia-know
 **Related:** F-encyclopedia-know, F-fruit-variety
 
 #### F-civilizations — Procedural civilization generation and diplomacy
-**Status:** Todo
+**Status:** Done
 
 Procedural civilization generation during worldgen: ~10 civs with
 CivSpecies (Elf/Human/Dwarf/Goblin/Orc/Troll), culture tags, asymmetric
@@ -1719,7 +1718,6 @@ for non-elf civs, Vaelith names for elf civs.
 
 **Draft:** `docs/drafts/encyclopedia_civs.md` §Civilizations
 
-**Blocks:** F-civ-knowledge, F-hostile-detection, F-military-groups
 **Related:** F-fruit-variety
 
 #### F-cultural-drift — Inter-tree cultural divergence

@@ -6,7 +6,7 @@
 //
 // ## Table layout
 //
-// The database has 22 tables organized in three tiers:
+// The database has 24 tables organized in three tiers:
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures` — the
 // primary simulation entities, keyed by UUID-based or sequential IDs.
@@ -49,11 +49,12 @@
 use crate::inventory::{EffectKind, ItemKind, Material};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
-    BuildType, CompositionId, CreatureId, EnchantmentEffectId, EnchantmentId, FurnishingType,
-    FurnitureId, GroundPileId, InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId,
-    NavNodeId, NotificationId, ProjectId, Species, StructureId, TaskAcquireDataId,
-    TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId,
-    TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VoxelCoord,
+    BuildType, CivId, CivOpinion, CivRelationshipId, CivSpecies, CompositionId, CreatureId,
+    CultureTag, EnchantmentEffectId, EnchantmentId, FurnishingType, FurnitureId, GroundPileId,
+    InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId, NavNodeId, NotificationId,
+    ProjectId, Species, StructureId, TaskAcquireDataId, TaskBlueprintRefId, TaskCraftDataId,
+    TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId,
+    ThoughtKind, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -200,6 +201,10 @@ pub struct Creature {
     pub assigned_home: Option<StructureId>,
     #[indexed]
     pub inventory_id: InventoryId,
+    /// Civilization this creature belongs to (None = wild/unaffiliated).
+    #[serde(default)]
+    #[indexed]
+    pub civ_id: Option<CivId>,
     pub path: Option<CreaturePath>,
     // Movement interpolation metadata (rendering only).
     pub move_from: Option<VoxelCoord>,
@@ -716,6 +721,46 @@ pub struct Furniture {
 }
 
 // ---------------------------------------------------------------------------
+// Civilization tables
+// ---------------------------------------------------------------------------
+
+/// A procedurally generated civilization. Created during worldgen.
+///
+/// Primary key is `CivId(u16)`, assigned sequentially by the worldgen
+/// generator (not auto-increment). The player's elf civ is always `CivId(0)`.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct Civilization {
+    #[primary_key]
+    pub id: CivId,
+    pub name: String,
+    pub primary_species: CivSpecies,
+    /// Secondary species present in this civ (usually 0-1).
+    /// Kept sorted by CivSpecies Ord for deterministic iteration.
+    pub minority_species: Vec<CivSpecies>,
+    pub culture_tag: CultureTag,
+    /// Whether this civ is controlled by player(s) vs AI.
+    /// Currently exactly one civ has this set to true.
+    pub player_controlled: bool,
+}
+
+/// Directed relationship: `from_civ`'s opinion of `to_civ`.
+/// Absence of a row means unaware. Awareness is asymmetric — Civ A can know
+/// about Civ B while B has never heard of A.
+///
+/// Invariant: at most one row per (from_civ, to_civ) pair. Enforced by
+/// lookup-before-insert in the worldgen and command processing code.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct CivRelationship {
+    #[primary_key(auto_increment)]
+    pub id: CivRelationshipId,
+    #[indexed]
+    pub from_civ: CivId,
+    #[indexed]
+    pub to_civ: CivId,
+    pub opinion: CivOpinion,
+}
+
+// ---------------------------------------------------------------------------
 // Database
 // ---------------------------------------------------------------------------
 
@@ -731,6 +776,8 @@ impl Clone for SimDb {
 impl std::fmt::Debug for SimDb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SimDb")
+            .field("civilizations", &self.civilizations.len())
+            .field("civ_relationships", &self.civ_relationships.len())
             .field("creatures", &self.creatures.len())
             .field("thoughts", &self.thoughts.len())
             .field("tasks", &self.tasks.len())
@@ -748,9 +795,19 @@ impl std::fmt::Debug for SimDb {
 
 #[derive(Database)]
 pub struct SimDb {
+    #[table(singular = "civilization")]
+    pub civilizations: CivilizationTable,
+
+    #[table(singular = "civ_relationship",
+            auto,
+            fks(from_civ = "civilizations" on_delete cascade,
+                to_civ = "civilizations" on_delete cascade))]
+    pub civ_relationships: CivRelationshipTable,
+
     #[table(singular = "creature",
             fks(current_task? = "tasks",
-                assigned_home? = "structures"))]
+                assigned_home? = "structures",
+                civ_id? = "civilizations" on_delete nullify))]
     pub creatures: CreatureTable,
 
     #[table(singular = "thought",

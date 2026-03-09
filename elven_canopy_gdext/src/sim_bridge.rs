@@ -3529,12 +3529,31 @@ impl SimBridge {
         let guard = ENCYCLOPEDIA.lock().unwrap();
         if let Some(server) = &*guard {
             let tick = self.session.current_tick();
-            let game_name = if self.session.sim.is_some() {
-                "Elven Canopy".to_owned()
+            let (game_name, civs, player_civ_name) = if let Some(sim) = &self.session.sim {
+                let known = sim
+                    .get_known_civs()
+                    .into_iter()
+                    .map(|(civ, our_opinion, their_opinion)| {
+                        crate::encyclopedia_server::KnownCivEntry {
+                            civ_id: civ.id.0,
+                            name: civ.name.clone(),
+                            primary_species: civ.primary_species.display_str().to_owned(),
+                            culture_tag: civ.culture_tag.display_str().to_owned(),
+                            our_opinion: our_opinion.display_str().to_owned(),
+                            their_opinion: their_opinion.map(|o| o.display_str().to_owned()),
+                        }
+                    })
+                    .collect();
+                let pcn = sim
+                    .player_civ_id
+                    .and_then(|id| sim.db.civilizations.get(&id))
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                ("Elven Canopy".to_owned(), known, pcn)
             } else {
-                String::new()
+                (String::new(), Vec::new(), String::new())
             };
-            server.update_data(tick, &game_name);
+            server.update_data(tick, &game_name, civs, player_civ_name);
         }
     }
 }
