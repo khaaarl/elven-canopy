@@ -108,7 +108,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-hostile-detection    Hostile detection and faction logic
-[ ] F-hp-ui                HP bars in creature UI
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -205,6 +204,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
 [x] F-hostile-species      Goblin, Orc, and Troll species
 [x] F-hp-death             HP, VitalStatus, and creature death handling
+[x] F-hp-ui                HP bars in creature UI
 [x] F-items                Items and inventory system
 [x] F-keybind-help         Keyboard shortcuts help overlay
 [x] F-ladders              Rope/wood ladders as cheap connectors
@@ -1653,7 +1653,7 @@ Activation-driven hostile scanning. On each creature activation, scan for hostil
 **Blocks:** F-attack-move, F-combat, F-enemy-ai, F-flee
 
 #### F-hp-ui — HP bars in creature UI
-**Status:** Todo
+**Status:** Done
 
 Display creature HP in the game UI. Two elements:
 

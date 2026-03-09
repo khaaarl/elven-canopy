@@ -7,7 +7,8 @@
 ## main.gd. Call set_render_tick() each frame before _process runs.
 ##
 ## Each capybara gets a unique texture from SpriteFactory using the sprite
-## index as a seed (varying body color and accessory).
+## index as a seed (varying body color and accessory). Each sprite has an
+## overhead HP bar (see hp_bar.gd) shown only when HP is below maximum.
 ##
 ## Positions are offset by (+0.5, +0.32, +0.5) from the interpolated
 ## coordinate. The Y offset places the sprite center half its height above
@@ -15,20 +16,26 @@
 ## (~1.3m given 2m voxels).
 ##
 ## See also: sprite_factory.gd for capybara texture generation (40x32),
-## elf_renderer.gd for the equivalent elf renderer, sim_bridge.rs for the
-## Rust-side position data, main.gd which creates this node and calls
-## setup() and set_render_tick().
+## hp_bar.gd for overhead HP bar rendering, elf_renderer.gd for the
+## equivalent elf renderer, sim_bridge.rs for the Rust-side position data,
+## main.gd which creates this node and calls setup() and set_render_tick().
 
 extends Node3D
 
+const HpBar = preload("res://scripts/hp_bar.gd")
+const Y_OFFSET := 0.32
+const HP_BAR_GAP := 0.06
+
 var _bridge: SimBridge
 var _capybara_sprites: Array[Sprite3D] = []
+var _hp_bars: Array[Sprite3D] = []
 var _render_tick: float = 0.0
 
 
 ## Call after SimBridge is initialized.
 func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
+	HpBar.ensure_cache()
 
 
 ## Set the fractional render tick for smooth movement interpolation.
@@ -42,6 +49,7 @@ func _process(_delta: float) -> void:
 		return
 
 	var positions := _bridge.get_capybara_positions(_render_tick)
+	var hp_ratios := _bridge.get_creature_hp_ratios("Capybara")
 	var count := positions.size()
 
 	# Add sprites if we have more capybaras than sprites.
@@ -56,13 +64,24 @@ func _process(_delta: float) -> void:
 		sprite.no_depth_test = false
 		add_child(sprite)
 		_capybara_sprites.append(sprite)
+		var bar: Sprite3D = HpBar.create_bar_sprite()
+		add_child(bar)
+		_hp_bars.append(bar)
 
-	# Update positions and hide excess sprites.
+	# Update positions, HP bars, and hide excess sprites.
 	for i in _capybara_sprites.size():
 		if i < count:
 			_capybara_sprites[i].visible = true
 			var pos := positions[i]
 			# Nav node pos is the air voxel; feet at pos.y, center at +half sprite height.
-			_capybara_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + 0.32, pos.z + 0.5)
+			_capybara_sprites[i].global_position = Vector3(
+				pos.x + 0.5, pos.y + Y_OFFSET, pos.z + 0.5
+			)
+			var ratio: float = hp_ratios[i] if i < hp_ratios.size() else 1.0
+			HpBar.update_bar(_hp_bars[i], ratio)
+			_hp_bars[i].global_position = Vector3(
+				pos.x + 0.5, pos.y + Y_OFFSET * 2.0 + HP_BAR_GAP, pos.z + 0.5
+			)
 		else:
 			_capybara_sprites[i].visible = false
+			_hp_bars[i].visible = false

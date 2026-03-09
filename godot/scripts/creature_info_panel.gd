@@ -6,8 +6,9 @@
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Shows species, name (Vaelith name for elves, fallback "Species #N" for
-## unnamed creatures), position, task kind with a "Zoom" button to jump to
-## the task's target location (when available), a food gauge, a rest gauge
+## unnamed creatures), an HP bar (current/max as "87 / 100" inside a reddish
+## progress bar), position, task kind with a "Zoom" button to jump to the
+## task's target location (when available), a food gauge, a rest gauge
 ## (both as progress bar + percentage), a mood label showing the derived
 ## mood tier and numeric score, a "Recent Thoughts" section listing the
 ## creature's accumulated thoughts (most recent first), and an inventory
@@ -32,6 +33,8 @@ var _position_label: Label
 var _task_row: HBoxContainer
 var _task_label: Label
 var _task_zoom_btn: Button
+var _hp_bar: ProgressBar
+var _hp_label: Label
 var _food_bar: ProgressBar
 var _food_label: Label
 var _rest_bar: ProgressBar
@@ -87,6 +90,33 @@ func _ready() -> void:
 	# Name (Vaelith name for elves, fallback "Species #N" for unnamed creatures).
 	_name_label = Label.new()
 	vbox.add_child(_name_label)
+
+	# HP gauge.
+	var hp_row := HBoxContainer.new()
+	hp_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(hp_row)
+
+	var hp_title := Label.new()
+	hp_title.text = "HP:"
+	hp_row.add_child(hp_title)
+
+	_hp_bar = ProgressBar.new()
+	_hp_bar.min_value = 0.0
+	_hp_bar.max_value = 100.0
+	_hp_bar.value = 100.0
+	_hp_bar.show_percentage = false
+	_hp_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_hp_bar.custom_minimum_size.y = 20
+	var hp_style := StyleBoxFlat.new()
+	hp_style.bg_color = Color(0.6, 0.15, 0.1)
+	_hp_bar.add_theme_stylebox_override("fill", hp_style)
+	hp_row.add_child(_hp_bar)
+
+	_hp_label = Label.new()
+	_hp_label.text = "0 / 0"
+	_hp_label.custom_minimum_size.x = 70
+	_hp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	hp_row.add_child(_hp_label)
 
 	# Position.
 	_position_label = Label.new()
@@ -211,6 +241,7 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 			_name_label.text = "Name: %s" % creature_name
 		else:
 			_name_label.text = "Name: %s (%s)" % [creature_name, meaning]
+	_update_hp(info)
 	_update_position(info)
 	_update_task(info)
 	_update_food(info)
@@ -224,6 +255,7 @@ func show_creature(species: String, index: int, info: Dictionary) -> void:
 
 
 func update_info(info: Dictionary) -> void:
+	_update_hp(info)
 	_update_position(info)
 	_update_task(info)
 	_update_food(info)
@@ -244,6 +276,16 @@ func hide_panel() -> void:
 func set_follow_state(following: bool) -> void:
 	_is_following = following
 	_follow_button.text = "Unfollow" if following else "Follow"
+
+
+func _update_hp(info: Dictionary) -> void:
+	var hp: int = info.get("hp", 0)
+	var hp_max: int = info.get("hp_max", 1)
+	if hp_max <= 0:
+		hp_max = 1
+	var pct: float = 100.0 * float(hp) / float(hp_max)
+	_hp_bar.value = pct
+	_hp_label.text = "%d / %d" % [hp, hp_max]
 
 
 func _update_food(info: Dictionary) -> void:

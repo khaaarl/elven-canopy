@@ -9,7 +9,8 @@
 ## Uses a pool pattern: sprites are created on demand (never destroyed), and
 ## excess sprites are hidden when the elf count drops. Each sprite's texture
 ## is generated once by SpriteFactory using the sprite's index as a
-## deterministic seed, giving every elf a unique appearance.
+## deterministic seed, giving every elf a unique appearance. Each sprite has
+## an overhead HP bar (see hp_bar.gd) shown only when HP is below maximum.
 ##
 ## Sprites use BILLBOARD_ENABLED so they always face the camera. Positions
 ## are offset by (+0.5, +0.48, +0.5) from the interpolated coordinate — the
@@ -18,20 +19,26 @@
 ## 48px sprite is 0.96 world units tall (~1.9m given 2m voxels).
 ##
 ## See also: sprite_factory.gd for chibi elf texture generation (48x48),
-## capybara_renderer.gd for the equivalent capybara renderer, sim_bridge.rs
-## for the Rust-side position data, main.gd which creates this node and
-## calls setup() and set_render_tick().
+## hp_bar.gd for overhead HP bar rendering, capybara_renderer.gd for the
+## equivalent capybara renderer, sim_bridge.rs for the Rust-side position
+## data, main.gd which creates this node and calls setup() and set_render_tick().
 
 extends Node3D
 
+const HpBar = preload("res://scripts/hp_bar.gd")
+const Y_OFFSET := 0.48
+const HP_BAR_GAP := 0.06
+
 var _bridge: SimBridge
 var _elf_sprites: Array[Sprite3D] = []
+var _hp_bars: Array[Sprite3D] = []
 var _render_tick: float = 0.0
 
 
 ## Call after SimBridge is initialized.
 func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
+	HpBar.ensure_cache()
 
 
 ## Set the fractional render tick for smooth movement interpolation.
@@ -45,6 +52,7 @@ func _process(_delta: float) -> void:
 		return
 
 	var positions := _bridge.get_elf_positions(_render_tick)
+	var hp_ratios := _bridge.get_creature_hp_ratios("Elf")
 	var elf_count := positions.size()
 
 	# Add sprites if we have more elves than sprites.
@@ -59,13 +67,22 @@ func _process(_delta: float) -> void:
 		sprite.no_depth_test = false
 		add_child(sprite)
 		_elf_sprites.append(sprite)
+		var bar: Sprite3D = HpBar.create_bar_sprite()
+		add_child(bar)
+		_hp_bars.append(bar)
 
-	# Hide excess sprites.
+	# Update positions, HP bars, and hide excess sprites.
 	for i in _elf_sprites.size():
 		if i < elf_count:
 			_elf_sprites[i].visible = true
 			var pos := positions[i]
 			# Nav node pos is the air voxel; feet at pos.y, center at +half sprite height.
-			_elf_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + 0.48, pos.z + 0.5)
+			_elf_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + Y_OFFSET, pos.z + 0.5)
+			var ratio: float = hp_ratios[i] if i < hp_ratios.size() else 1.0
+			HpBar.update_bar(_hp_bars[i], ratio)
+			_hp_bars[i].global_position = Vector3(
+				pos.x + 0.5, pos.y + Y_OFFSET * 2.0 + HP_BAR_GAP, pos.z + 0.5
+			)
 		else:
 			_elf_sprites[i].visible = false
+			_hp_bars[i].visible = false

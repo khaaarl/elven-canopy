@@ -1665,6 +1665,34 @@ impl SimBridge {
         arr
     }
 
+    /// Return HP ratios (hp / hp_max, clamped 0.0–1.0) for all alive creatures
+    /// of the named species, in the same order as `get_creature_positions()`.
+    /// Used by GDScript renderers to display overhead HP bars.
+    #[func]
+    fn get_creature_hp_ratios(&self, species_name: GString) -> PackedFloat32Array {
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return PackedFloat32Array::new();
+        };
+        let Some(sim) = &self.session.sim else {
+            return PackedFloat32Array::new();
+        };
+        let mut arr = PackedFloat32Array::new();
+        for creature in sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
+        {
+            let ratio = if creature.hp_max > 0 {
+                creature.hp as f32 / creature.hp_max as f32
+            } else {
+                1.0
+            };
+            arr.push(ratio.clamp(0.0, 1.0));
+        }
+        arr
+    }
+
     /// Return the number of creatures of the named species.
     /// Generic replacement for `elf_count()` / `capybara_count()`.
     #[func]
