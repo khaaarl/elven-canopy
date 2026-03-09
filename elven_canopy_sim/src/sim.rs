@@ -336,6 +336,16 @@ pub struct SimState {
     /// which structure the player clicked on.
     #[serde(skip)]
     pub structure_voxels: BTreeMap<VoxelCoord, StructureId>,
+
+    /// Spatial index mapping voxel coordinates to the creatures occupying them.
+    /// Multi-voxel creatures (footprint > `[1,1,1]`) are registered at every
+    /// voxel they occupy (anchor + footprint offsets). Transient — rebuilt from
+    /// alive creatures in `rebuild_transient_state()`. Used by projectile hit
+    /// detection and hostile detection scanning. `BTreeMap` with lexicographic
+    /// `VoxelCoord` ordering does NOT support efficient 3D range queries —
+    /// detection scans use O(n) iteration with distance filtering.
+    #[serde(skip)]
+    pub spatial_index: BTreeMap<VoxelCoord, Vec<CreatureId>>,
 }
 
 /// A tree entity — the primary world structure.
@@ -440,6 +450,7 @@ impl SimState {
             lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
             structure_voxels: BTreeMap::new(),
+            spatial_index: BTreeMap::new(),
         };
 
         // The world rebuild above produces thousands of set() calls that
@@ -1647,6 +1658,10 @@ impl SimState {
 
         self.db.creatures.insert_no_fk(creature).unwrap();
 
+        // Register in spatial index.
+        let footprint = self.species_table[&species].footprint;
+        Self::register_creature_in_index(&mut self.spatial_index, creature_id, node_pos, footprint);
+
         // Set default logistics wants for this creature.
         if !default_wants.is_empty() {
             self.set_inv_wants(inv_id, &default_wants);
@@ -1946,6 +1961,7 @@ impl SimState {
                 c.position = new_pos;
                 c.path = None;
             });
+            self.update_creature_spatial_index(creature_id, species, pos, new_pos);
             // Action was aborted — skip resolve, schedule a fresh activation
             // so the creature can find a new task or wander.
             self.event_queue.schedule(
@@ -2152,13 +2168,14 @@ impl SimState {
             // Resnap the creature to a live node before wandering.
             let graph = self.graph_for_species(species);
             if let Some(c) = self.db.creatures.get(&creature_id) {
-                let pos = c.position;
-                if let Some(new_node) = graph.find_nearest_node(pos) {
+                let old_pos = c.position;
+                if let Some(new_node) = graph.find_nearest_node(old_pos) {
                     let new_pos = graph.node(new_node).position;
                     let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
                         c.current_node = Some(new_node);
                         c.position = new_pos;
                     });
+                    self.update_creature_spatial_index(creature_id, species, old_pos, new_pos);
                     self.wander(creature_id, new_node);
                 }
             }
@@ -4260,6 +4277,8 @@ impl SimState {
                 }
             });
 
+        self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
+
         // Insert MoveAction for render interpolation.
         let move_action = MoveAction {
             creature_id,
@@ -5496,6 +5515,8 @@ impl SimState {
                 creature.next_available_tick = Some(tick + delay);
             });
 
+        self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
+
         // Insert MoveAction for render interpolation.
         let move_action = MoveAction {
             creature_id,
@@ -6130,9 +6151,9 @@ impl SimState {
             .iter_all()
             .map(|c| (c.id, c.species, c.position))
             .collect();
-        for (cid, species, pos) in creature_info {
+        for (cid, species, old_pos) in creature_info {
             let graph = self.graph_for_species(species);
-            let new_node = graph.find_nearest_node(pos);
+            let new_node = graph.find_nearest_node(old_pos);
             let new_pos = new_node.map(|nid| graph.node(nid).position);
             let _ = self.db.creatures.modify_unchecked(&cid, |creature| {
                 creature.current_node = new_node;
@@ -6141,6 +6162,9 @@ impl SimState {
                     creature.position = p;
                 }
             });
+            if let Some(p) = new_pos {
+                self.update_creature_spatial_index(cid, species, old_pos, p);
+            }
         }
     }
 
@@ -6158,9 +6182,9 @@ impl SimState {
             .filter(|c| matches!(c.current_node, Some(nid) if removed.contains(&nid)))
             .map(|c| (c.id, c.species, c.position))
             .collect();
-        for (cid, species, pos) in to_resnap {
+        for (cid, species, old_pos) in to_resnap {
             let graph = self.graph_for_species(species);
-            let new_node = graph.find_nearest_node(pos);
+            let new_node = graph.find_nearest_node(old_pos);
             let new_pos = new_node.map(|nid| graph.node(nid).position);
             let _ = self.db.creatures.modify_unchecked(&cid, |creature| {
                 creature.current_node = new_node;
@@ -6169,6 +6193,9 @@ impl SimState {
                     creature.position = p;
                 }
             });
+            if let Some(p) = new_pos {
+                self.update_creature_spatial_index(cid, species, old_pos, p);
+            }
         }
     }
 
@@ -6452,8 +6479,9 @@ impl SimState {
     ///
     /// Restores: `world` (voxel grid from stored tree voxels + config),
     /// `nav_graph` (from rebuilt world geometry), `species_table` (from config),
-    /// `lexicon` (from embedded JSON), `structure_voxels` (from completed
-    /// blueprints + structures).
+    /// `spatial_index` (from creatures + species footprints — must run after
+    /// `species_table`), `lexicon` (from embedded JSON), `structure_voxels`
+    /// (from completed blueprints + structures).
     pub fn rebuild_transient_state(&mut self) {
         self.world = Self::rebuild_world(
             &self.config,
@@ -6470,6 +6498,10 @@ impl SimState {
         self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
         self.lexicon = Some(elven_canopy_lang::default_lexicon());
+
+        // Rebuild spatial_index from all living creatures. Must run after
+        // species_table is populated (footprint data comes from SpeciesData).
+        self.rebuild_spatial_index();
 
         // Rebuild structure_voxels from completed blueprints.
         self.structure_voxels.clear();
@@ -6488,6 +6520,103 @@ impl SimState {
                     }
                 }
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Spatial index
+    // -----------------------------------------------------------------------
+
+    /// Rebuild the spatial index from scratch using all creatures in the DB.
+    /// Must be called after `species_table` is populated (footprint lookups
+    /// depend on `SpeciesData`).
+    fn rebuild_spatial_index(&mut self) {
+        self.spatial_index.clear();
+        let entries: Vec<(CreatureId, Species, VoxelCoord)> = self
+            .db
+            .creatures
+            .iter_all()
+            .map(|c| (c.id, c.species, c.position))
+            .collect();
+        for (cid, species, pos) in entries {
+            let footprint = self.species_table[&species].footprint;
+            Self::register_creature_in_index(&mut self.spatial_index, cid, pos, footprint);
+        }
+    }
+
+    /// Register a creature in the spatial index at all voxels covered by its
+    /// footprint. The anchor position is the min-corner; the footprint
+    /// `[fx, fy, fz]` extends in the positive direction. Entries are kept
+    /// sorted by `CreatureId` for deterministic PRNG selection.
+    fn register_creature_in_index(
+        index: &mut BTreeMap<VoxelCoord, Vec<CreatureId>>,
+        creature_id: CreatureId,
+        anchor: VoxelCoord,
+        footprint: [u8; 3],
+    ) {
+        for dx in 0..footprint[0] as i32 {
+            for dy in 0..footprint[1] as i32 {
+                for dz in 0..footprint[2] as i32 {
+                    let voxel = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
+                    let vec = index.entry(voxel).or_default();
+                    let pos = vec.binary_search(&creature_id).unwrap_or_else(|p| p);
+                    vec.insert(pos, creature_id);
+                }
+            }
+        }
+    }
+
+    /// Remove a creature from the spatial index at all voxels covered by its
+    /// footprint at the given anchor position.
+    fn deregister_creature_from_index(
+        index: &mut BTreeMap<VoxelCoord, Vec<CreatureId>>,
+        creature_id: CreatureId,
+        anchor: VoxelCoord,
+        footprint: [u8; 3],
+    ) {
+        for dx in 0..footprint[0] as i32 {
+            for dy in 0..footprint[1] as i32 {
+                for dz in 0..footprint[2] as i32 {
+                    let voxel = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
+                    if let Some(vec) = index.get_mut(&voxel) {
+                        vec.retain(|&id| id != creature_id);
+                        if vec.is_empty() {
+                            index.remove(&voxel);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Update the spatial index when a creature moves from `old_pos` to
+    /// `new_pos`. Deregisters from old voxels, registers at new voxels.
+    fn update_creature_spatial_index(
+        &mut self,
+        creature_id: CreatureId,
+        species: Species,
+        old_pos: VoxelCoord,
+        new_pos: VoxelCoord,
+    ) {
+        if old_pos == new_pos {
+            return;
+        }
+        let footprint = self.species_table[&species].footprint;
+        Self::deregister_creature_from_index(
+            &mut self.spatial_index,
+            creature_id,
+            old_pos,
+            footprint,
+        );
+        Self::register_creature_in_index(&mut self.spatial_index, creature_id, new_pos, footprint);
+    }
+
+    /// Query all creatures at a given voxel coordinate. Returns a sorted slice
+    /// for deterministic iteration (sorted by `CreatureId` for PRNG selection).
+    pub fn creatures_at_voxel(&self, coord: VoxelCoord) -> &[CreatureId] {
+        match self.spatial_index.get(&coord) {
+            Some(vec) => vec,
+            None => &[],
         }
     }
 
@@ -20741,5 +20870,210 @@ mod tests {
         let creature = sim.db.creatures.get(&elf_id).unwrap();
         assert_eq!(creature.action_kind, ActionKind::NoAction);
         assert!(creature.next_available_tick.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Spatial index tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn spatial_index_empty_before_spawn() {
+        let sim = test_sim(42);
+        assert!(
+            sim.spatial_index.is_empty(),
+            "Spatial index should be empty before any creatures are spawned"
+        );
+    }
+
+    #[test]
+    fn spatial_index_populated_after_spawn() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        let pos = elf.position;
+
+        // Elf has a [1,1,1] footprint — should be registered at exactly one voxel.
+        let at_pos = sim.creatures_at_voxel(pos);
+        assert!(
+            at_pos.contains(&elf_id),
+            "Elf should be in spatial index at its position"
+        );
+        assert_eq!(at_pos.len(), 1, "Only one creature at this voxel");
+    }
+
+    #[test]
+    fn spatial_index_tracks_movement() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        let initial_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+
+        // Run enough ticks for the elf to move at least once.
+        sim.step(&[], sim.tick + 50_000);
+        let new_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+
+        if new_pos != initial_pos {
+            assert!(
+                !sim.creatures_at_voxel(initial_pos).contains(&elf_id),
+                "Elf should not be at old position after moving"
+            );
+            assert!(
+                sim.creatures_at_voxel(new_pos).contains(&elf_id),
+                "Elf should be at new position after moving"
+            );
+        } else {
+            assert!(sim.creatures_at_voxel(initial_pos).contains(&elf_id));
+        }
+    }
+
+    #[test]
+    fn spatial_index_multiple_creatures_same_voxel() {
+        let mut sim = test_sim(42);
+        let elf1 = spawn_elf(&mut sim);
+        let elf2 = spawn_elf(&mut sim);
+
+        // Force both elves to the same position so the test always exercises
+        // multi-occupancy (spawn may place them at different nav nodes).
+        let pos1 = sim.db.creatures.get(&elf1).unwrap().position;
+        let pos2 = sim.db.creatures.get(&elf2).unwrap().position;
+        if pos1 != pos2 {
+            let species = sim.db.creatures.get(&elf2).unwrap().species;
+            let footprint = sim.species_table[&species].footprint;
+            SimState::deregister_creature_from_index(&mut sim.spatial_index, elf2, pos2, footprint);
+            let _ = sim.db.creatures.modify_unchecked(&elf2, |c| {
+                c.position = pos1;
+            });
+            SimState::register_creature_in_index(&mut sim.spatial_index, elf2, pos1, footprint);
+        }
+
+        let at_pos = sim.creatures_at_voxel(pos1);
+        assert!(at_pos.contains(&elf1));
+        assert!(at_pos.contains(&elf2));
+        assert_eq!(at_pos.len(), 2);
+        // Verify sorted for determinism.
+        assert!(
+            at_pos[0] <= at_pos[1],
+            "Spatial index entries should be sorted by CreatureId"
+        );
+    }
+
+    #[test]
+    fn spatial_index_query_empty_voxel() {
+        let sim = test_sim(42);
+        let empty = sim.creatures_at_voxel(VoxelCoord::new(999, 999, 999));
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn spatial_index_survives_save_load_roundtrip() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+        assert!(sim.creatures_at_voxel(pos).contains(&elf_id));
+
+        // Roundtrip through JSON (spatial_index is #[serde(skip)]).
+        let json = sim.to_json().unwrap();
+        let sim2 = SimState::from_json(&json).unwrap();
+
+        let elf2 = sim2.db.creatures.get(&elf_id).unwrap();
+        assert!(
+            sim2.creatures_at_voxel(elf2.position).contains(&elf_id),
+            "Spatial index should be rebuilt after deserialization"
+        );
+    }
+
+    #[test]
+    fn spatial_index_consistent_after_many_ticks() {
+        let mut sim = test_sim(42);
+        let elf1 = spawn_elf(&mut sim);
+        let elf2 = spawn_elf(&mut sim);
+        let elf3 = spawn_elf(&mut sim);
+
+        sim.step(&[], sim.tick + 100_000);
+
+        // Every creature must be in the index at its current position.
+        for &elf_id in &[elf1, elf2, elf3] {
+            let elf = sim.db.creatures.get(&elf_id).unwrap();
+            assert!(
+                sim.creatures_at_voxel(elf.position).contains(&elf_id),
+                "Creature {:?} should be at its position {:?}",
+                elf_id,
+                elf.position,
+            );
+        }
+
+        // Total entries should match total footprint voxels.
+        let total_entries: usize = sim.spatial_index.values().map(|v| v.len()).sum();
+        let expected: usize = sim
+            .db
+            .creatures
+            .iter_all()
+            .map(|c| {
+                let fp = sim.species_table[&c.species].footprint;
+                fp[0] as usize * fp[1] as usize * fp[2] as usize
+            })
+            .sum();
+        assert_eq!(
+            total_entries, expected,
+            "Spatial index entry count should match total footprint voxels"
+        );
+    }
+
+    #[test]
+    fn spatial_index_multi_voxel_footprint() {
+        let mut index = BTreeMap::<VoxelCoord, Vec<CreatureId>>::new();
+        let mut rng = GameRng::new(999);
+        let cid = CreatureId::new(&mut rng);
+        let anchor = VoxelCoord::new(5, 1, 5);
+        let footprint = [2, 2, 2];
+
+        SimState::register_creature_in_index(&mut index, cid, anchor, footprint);
+
+        // Should be registered at 8 voxels (2x2x2).
+        let mut registered_count = 0;
+        for dx in 0..2 {
+            for dy in 0..2 {
+                for dz in 0..2 {
+                    let v = VoxelCoord::new(5 + dx, 1 + dy, 5 + dz);
+                    assert!(
+                        index.get(&v).unwrap().contains(&cid),
+                        "Creature should be at ({}, {}, {})",
+                        5 + dx,
+                        1 + dy,
+                        5 + dz,
+                    );
+                    registered_count += 1;
+                }
+            }
+        }
+        assert_eq!(registered_count, 8);
+
+        SimState::deregister_creature_from_index(&mut index, cid, anchor, footprint);
+        assert!(index.is_empty(), "Index should be empty after deregister");
+    }
+
+    #[test]
+    fn spatial_index_sorted_entries() {
+        let mut index = BTreeMap::<VoxelCoord, Vec<CreatureId>>::new();
+        let pos = VoxelCoord::new(5, 1, 5);
+        let fp = [1, 1, 1];
+
+        let mut rng = GameRng::new(12345);
+        let mut ids = [
+            CreatureId::new(&mut rng),
+            CreatureId::new(&mut rng),
+            CreatureId::new(&mut rng),
+        ];
+        ids.sort();
+
+        // Register in reverse order.
+        SimState::register_creature_in_index(&mut index, ids[2], pos, fp);
+        SimState::register_creature_in_index(&mut index, ids[0], pos, fp);
+        SimState::register_creature_in_index(&mut index, ids[1], pos, fp);
+
+        let entries = &index[&pos];
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0], ids[0]);
+        assert_eq!(entries[1], ids[1]);
+        assert_eq!(entries[2], ids[2]);
     }
 }

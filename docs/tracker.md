@@ -141,7 +141,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
-[ ] F-spatial-index        Creature spatial index for voxel-level position queries
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
@@ -242,6 +241,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-sim-db-impl          Tabulosity typed in-memory relational store
 [x] F-sim-speed            Simulation speed controls UI
 [x] F-sim-tab-migrate      Migrate sim entity storage to tabulosity SimDb
+[x] F-spatial-index        Creature spatial index for voxel-level position queries
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
 [x] F-status-bar           Persistent status bar (population, idle count, active tasks)
 [x] F-struct-basic         Basic structural integrity (flood fill)
@@ -1581,7 +1581,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-hp-death, F-melee-action, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action, F-spatial-index
+**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-hp-death, F-melee-action, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action, F-spatial-index, F-task-interruption
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1632,7 +1632,6 @@ Activation-driven hostile scanning. On each creature activation, scan for hostil
 
 **Draft:** docs/drafts/combat_military.md (§6, §7)
 
-**Blocked by:** F-spatial-index
 **Blocks:** F-attack-move, F-combat, F-enemy-ai, F-flee
 
 #### F-military-campaign — Send elves on world expeditions
@@ -1678,12 +1677,11 @@ SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity t
 
 **Draft:** docs/drafts/combat_military.md (§4)
 
-**Blocked by:** F-spatial-index
 **Blocks:** F-combat, F-shoot-action
 **Related:** F-spatial-index
 
 #### F-spatial-index — Creature spatial index for voxel-level position queries
-**Status:** Todo
+**Status:** Done
 
 BTreeMap<VoxelCoord, Vec<CreatureId>> on SimState, #[serde(skip)], rebuilt on load from Alive creatures. Maintained at every position mutation point (wander, walk_toward_task, handle_creature_movement_complete, resnap_creatures, spawn, death). Centralized update_creature_position() helper. Multi-voxel creatures (trolls 2x2x2) register at all occupied voxels. Used by projectile hit detection and hostile detection scanning. Note: BTreeMap with VoxelCoord lexicographic ordering does NOT support efficient 3D range queries — detection scans are O(n) over all creatures with a squared-distance filter, not range queries.
 
@@ -1691,7 +1689,6 @@ BTreeMap<VoxelCoord, Vec<CreatureId>> on SimState, #[serde(skip)], rebuilt on lo
 
 **Draft:** docs/drafts/combat_military.md (§4 "Creature Spatial Index")
 
-**Blocks:** F-combat, F-hostile-detection, F-projectiles
 **Related:** F-projectiles
 
 ### World Expansion & Ecology
