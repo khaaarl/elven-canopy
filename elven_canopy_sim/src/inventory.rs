@@ -36,6 +36,9 @@ impl ItemKind {
 }
 
 /// Material variant for items. Optional — many items have `material: None`.
+///
+/// Wood types are used for crafted items. `FruitSpecies` identifies which
+/// procedurally generated fruit species an item came from (see `fruit.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Material {
     Oak,
@@ -43,6 +46,8 @@ pub enum Material {
     Willow,
     Ash,
     Yew,
+    /// A procedurally generated fruit species, identified by worldgen ID.
+    FruitSpecies(crate::fruit::FruitSpeciesId),
 }
 
 impl Material {
@@ -54,6 +59,7 @@ impl Material {
             Material::Willow => "Willow",
             Material::Ash => "Ash",
             Material::Yew => "Yew",
+            Material::FruitSpecies(_) => "Fruit",
         }
     }
 }

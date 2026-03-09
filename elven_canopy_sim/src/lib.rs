@@ -16,7 +16,8 @@
 // - `projectile.rs`:  Integer-only ballistic trajectory math (sub-voxel coords, aim solver, damage).
 // - `command.rs`:     SimCommand / SimAction — all sim mutations.
 // - `event.rs`:       EventQueue (priority queue) + narrative SimEvents.
-// - `config.rs`:      GameConfig + TreeProfile — all tunable parameters including nested tree presets.
+// - `fruit.rs`:       Procedural fruit species: types, generation, coverage, Vaelith naming.
+// - `config.rs`:      GameConfig + TreeProfile + FruitConfig — all tunable parameters.
 // - `species.rs`:     SpeciesData — data-driven creature behavior (DF-style).
 // - `db.rs`:          SimDb — tabulosity relational store for all entities (creatures, tasks, structures, etc.).
 // - `task.rs`:        Task creation DTOs (`Task`, `TaskKind`) — decomposed into DB tables by `insert_task()`.
@@ -46,6 +47,7 @@ pub mod command;
 pub mod config;
 pub mod db;
 pub mod event;
+pub mod fruit;
 pub mod inventory;
 pub mod local_relay;
 pub mod mesh_gen;

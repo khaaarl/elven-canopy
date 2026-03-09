@@ -8,7 +8,7 @@
 ## - Creatures: "Elf: Vaelindra — Eating" or "Capybara — Idle"
 ## - Structures: "Kitchen: Hearthglow" or "Platform #42"
 ## - Ground piles: "Apple x3, Wood x2" (up to 3 stacks, then "and N more...")
-## - Fruit: "Fruit"
+## - Fruit: "Thúni Réva (red berry)" or "Fruit" if no species tracked
 ##
 ## The tooltip is suppressed during placement mode, construction mode, and
 ## when UI overlays are open (pause menu, task panel, etc.). Tooltip text is
@@ -195,6 +195,9 @@ func _find_hover_target() -> Dictionary:
 	var fruit_data := _bridge.get_fruit_voxels()
 	var fruit_best_dist_sq := SNAP_THRESHOLD_SQ
 	var fruit_hit := false
+	var fruit_x := 0
+	var fruit_y := 0
+	var fruit_z := 0
 	var i := 0
 	while i + 2 < fruit_data.size():
 		var fx: int = fruit_data[i]
@@ -205,10 +208,13 @@ func _find_hover_target() -> Dictionary:
 		if fdist_sq < fruit_best_dist_sq:
 			fruit_best_dist_sq = fdist_sq
 			fruit_hit = true
+			fruit_x = fx
+			fruit_y = fy
+			fruit_z = fz
 		i += 3
 
 	if fruit_hit:
-		return {"type": "fruit"}
+		return {"type": "fruit", "x": fruit_x, "y": fruit_y, "z": fruit_z}
 
 	return {}
 
@@ -223,7 +229,7 @@ func _update_tooltip_text(target: Dictionary) -> void:
 		"pile":
 			text = _pile_tooltip(target["x"], target["y"], target["z"])
 		"fruit":
-			text = "Fruit"
+			text = _fruit_tooltip(target["x"], target["y"], target["z"])
 	_tooltip_label.text = text
 
 
@@ -260,6 +266,13 @@ func _structure_tooltip(structure_id: int) -> String:
 		var build_type: String = info.get("build_type", "Structure")
 		return "%s: %s" % [build_type, name_str]
 	return name_str
+
+
+func _fruit_tooltip(x: int, y: int, z: int) -> String:
+	var name := _bridge.get_fruit_species_name(x, y, z)
+	if name.is_empty():
+		return "Fruit"
+	return name
 
 
 func _pile_tooltip(x: int, y: int, z: int) -> String:

@@ -58,7 +58,7 @@ extends PanelContainer
 signal zoom_requested(x: float, y: float, z: float)
 signal panel_closed
 signal rename_requested(structure_id: int, new_name: String)
-signal furnish_requested(structure_id: int, furnishing_type: String)
+signal furnish_requested(structure_id: int, furnishing_type: String, species_id: int)
 signal assign_elf_requested(structure_id: int, creature_id_str: String)
 signal unassign_elf_requested(structure_id: int, creature_id_str: String)
 signal logistics_priority_changed(structure_id: int, priority: int)
@@ -106,6 +106,9 @@ var _cached_recipes: Array = []
 var _recipe_widgets: Array = []
 ## Whether recipe rows have been built for the current details panel session.
 var _recipe_rows_built: bool = false
+var _greenhouse_picker_scroll: ScrollContainer
+var _greenhouse_picker_vbox: VBoxContainer
+var _cached_cultivable_fruits: Array = []
 var _zoom_button: Button
 var _anchor_x: float = 0.0
 var _anchor_y: float = 0.0
@@ -196,6 +199,7 @@ func _ready() -> void:
 		["Concert Hall", "ConcertHall"],
 		["Dining Hall", "DiningHall"],
 		["Dormitory", "Dormitory"],
+		["Greenhouse", "Greenhouse"],
 		["Home", "Home"],
 		["Kitchen", "Kitchen"],
 		["Storehouse", "Storehouse"],
@@ -207,6 +211,16 @@ func _ready() -> void:
 		var type_id: String = entry[1]
 		btn.pressed.connect(_on_furnishing_type_pressed.bind(type_id))
 		_furnish_picker.add_child(btn)
+
+	# Greenhouse species picker (hidden; shown when "Greenhouse" is selected).
+	_greenhouse_picker_scroll = ScrollContainer.new()
+	_greenhouse_picker_scroll.custom_minimum_size.y = 150
+	_greenhouse_picker_scroll.visible = false
+	vbox.add_child(_greenhouse_picker_scroll)
+
+	_greenhouse_picker_vbox = VBoxContainer.new()
+	_greenhouse_picker_vbox.add_theme_constant_override("separation", 2)
+	_greenhouse_picker_scroll.add_child(_greenhouse_picker_vbox)
 
 	# Home assignment section (visible for fully-furnished homes).
 	_assign_section = VBoxContainer.new()
@@ -475,9 +489,14 @@ func set_recipes(recipes: Array) -> void:
 	_cached_recipes = recipes
 
 
+func set_cultivable_fruits(fruits: Array) -> void:
+	_cached_cultivable_fruits = fruits
+
+
 func show_structure(info: Dictionary) -> void:
 	_editing_name = false
 	_furnish_picker.visible = false
+	_greenhouse_picker_scroll.visible = false
 	_elf_picker_scroll.visible = false
 	_logistics_item_picker.visible = false
 	_crafting_details_panel.visible = false
@@ -582,6 +601,7 @@ func _update_info(info: Dictionary) -> void:
 		_furnish_label.visible = false
 		_furnish_button.visible = false
 		_furnish_picker.visible = false
+		_greenhouse_picker_scroll.visible = false
 
 	# Home assignment section — visible for fully-furnished homes.
 	var assigned_elf_id: String = info.get("assigned_elf_id", "")
@@ -1070,12 +1090,48 @@ func _on_zoom_pressed() -> void:
 
 func _on_furnish_pressed() -> void:
 	_furnish_picker.visible = not _furnish_picker.visible
+	_greenhouse_picker_scroll.visible = false
 
 
 func _on_furnishing_type_pressed(type_id: String) -> void:
 	_furnish_picker.visible = false
+	if _current_structure_id < 0:
+		return
+	if type_id == "Greenhouse":
+		_show_greenhouse_species_picker()
+	else:
+		furnish_requested.emit(_current_structure_id, type_id, -1)
+
+
+func _show_greenhouse_species_picker() -> void:
+	# Populate the species picker from cached cultivable fruits.
+	for child in _greenhouse_picker_vbox.get_children():
+		child.queue_free()
+
+	if _cached_cultivable_fruits.is_empty():
+		var lbl := Label.new()
+		lbl.text = "No cultivable fruit species available."
+		lbl.add_theme_font_size_override("font_size", 12)
+		_greenhouse_picker_vbox.add_child(lbl)
+	else:
+		var header := Label.new()
+		header.text = "Select fruit species:"
+		header.add_theme_font_size_override("font_size", 12)
+		_greenhouse_picker_vbox.add_child(header)
+		for fruit in _cached_cultivable_fruits:
+			var btn := Button.new()
+			btn.text = fruit["name"]
+			var fid: int = fruit["id"]
+			btn.pressed.connect(_on_greenhouse_species_selected.bind(fid))
+			_greenhouse_picker_vbox.add_child(btn)
+
+	_greenhouse_picker_scroll.visible = true
+
+
+func _on_greenhouse_species_selected(species_id: int) -> void:
+	_greenhouse_picker_scroll.visible = false
 	if _current_structure_id >= 0:
-		furnish_requested.emit(_current_structure_id, type_id)
+		furnish_requested.emit(_current_structure_id, "Greenhouse", species_id)
 
 
 func _on_assign_button_pressed() -> void:

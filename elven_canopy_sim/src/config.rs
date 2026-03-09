@@ -897,6 +897,10 @@ fn default_workshop_priority() -> u8 {
     8
 }
 
+fn default_greenhouse_base_production_ticks() -> u64 {
+    60_000
+}
+
 // ---------------------------------------------------------------------------
 // Civilization config
 // ---------------------------------------------------------------------------
@@ -944,6 +948,70 @@ impl Default for CivConfig {
             civ_count: default_civ_count(),
             species_weights: default_species_weights(),
             player_starting_known_civs: default_player_starting_known_civs(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fruit variety — worldgen config for procedural fruit species
+// ---------------------------------------------------------------------------
+
+/// Configuration for procedural fruit species generation during worldgen.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FruitConfig {
+    /// Minimum number of fruit species to generate per world.
+    pub min_species_per_world: u16,
+    /// Maximum number of fruit species to generate per world.
+    pub max_species_per_world: u16,
+    /// Maximum number of separable parts per fruit (clamped to 4 internally).
+    pub max_parts_per_fruit: u16,
+    /// Rarity weights: `[common, uncommon, rare]`. Used for weighted random
+    /// selection — higher values mean more likely.
+    pub rarity_weights: [u32; 3],
+    /// Per-coverage-category minimums. If a category isn't listed, its minimum
+    /// is 0 (no guarantee). Keys are `CoverageCategory` variants.
+    pub coverage_minimums: std::collections::BTreeMap<String, u16>,
+}
+
+impl FruitConfig {
+    /// Look up the coverage minimum for a category, defaulting to 0.
+    pub fn coverage_minimum(&self, cat: crate::fruit::CoverageCategory) -> u16 {
+        let key = coverage_category_key(cat);
+        self.coverage_minimums.get(&key).copied().unwrap_or(0)
+    }
+}
+
+fn coverage_category_key(cat: crate::fruit::CoverageCategory) -> String {
+    format!("{:?}", cat)
+}
+
+impl Default for FruitConfig {
+    fn default() -> Self {
+        let mut minimums = std::collections::BTreeMap::new();
+        // Gameplay-critical coverage categories and their minimum counts.
+        minimums.insert("Starchy".into(), 3);
+        minimums.insert("Sweet".into(), 3);
+        minimums.insert("FibrousCoarse".into(), 2);
+        minimums.insert("FibrousFine".into(), 2);
+        minimums.insert("PigmentRed".into(), 1);
+        minimums.insert("PigmentYellow".into(), 1);
+        minimums.insert("PigmentBlue".into(), 1);
+        minimums.insert("PigmentBlack".into(), 1);
+        minimums.insert("PigmentWhite".into(), 1);
+        minimums.insert("Fermentable".into(), 2);
+        minimums.insert("Medicinal".into(), 1);
+        minimums.insert("Aromatic".into(), 1);
+        minimums.insert("Luminescent".into(), 1);
+        minimums.insert("Psychoactive".into(), 1);
+        minimums.insert("Stimulant".into(), 1);
+        minimums.insert("ManaResonant".into(), 1);
+
+        FruitConfig {
+            min_species_per_world: 20,
+            max_species_per_world: 40,
+            max_parts_per_fruit: 4,
+            rarity_weights: [60, 30, 10],
+            coverage_minimums: minimums,
         }
     }
 }
@@ -1174,6 +1242,13 @@ pub struct GameConfig {
     /// Default logistics priority for newly furnished workshops.
     #[serde(default = "default_workshop_priority")]
     pub workshop_default_priority: u8,
+
+    /// Greenhouse base production interval in ticks for a single interior
+    /// tile. Actual interval = base / max(1, interior_area). E.g., 60000
+    /// means a 1-tile greenhouse produces one fruit per 60 sim-seconds; a
+    /// 4-tile greenhouse produces one per 15 sim-seconds.
+    #[serde(default = "default_greenhouse_base_production_ticks")]
+    pub greenhouse_base_production_ticks: u64,
 
     /// Worldgen generator configuration. Groups config for generators that run
     /// during world creation (fruit variety, civilizations, knowledge). The
@@ -1615,6 +1690,7 @@ impl Default for GameConfig {
             }],
             recipes: default_recipes(),
             workshop_default_priority: default_workshop_priority(),
+            greenhouse_base_production_ticks: default_greenhouse_base_production_ticks(),
             worldgen: crate::worldgen::WorldgenConfig::default(),
         }
     }

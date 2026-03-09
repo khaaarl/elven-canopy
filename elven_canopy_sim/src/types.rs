@@ -332,6 +332,23 @@ impl fmt::Display for CivId {
 }
 
 // ---------------------------------------------------------------------------
+// Fruit species IDs — sequential u16, assigned by worldgen in batch.
+// ---------------------------------------------------------------------------
+
+/// Fruit species identifier. Assigned sequentially by worldgen (0, 1, 2, ...).
+/// Not auto-increment — species are batch-created during worldgen.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Bounded,
+)]
+pub struct FruitSpeciesId(pub u16);
+
+impl fmt::Display for FruitSpeciesId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "FruitSpeciesId({})", self.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Nav graph IDs — simple integers, not UUIDs, for compactness.
 // ---------------------------------------------------------------------------
 
@@ -500,6 +517,7 @@ pub enum FurnishingType {
     ConcertHall,
     DiningHall,
     Dormitory,
+    Greenhouse,
     Home,
     Kitchen,
     Storehouse,
@@ -513,6 +531,7 @@ impl FurnishingType {
             FurnishingType::ConcertHall => FurnitureKind::Bench,
             FurnishingType::DiningHall => FurnitureKind::Table,
             FurnishingType::Dormitory | FurnishingType::Home => FurnitureKind::Bed,
+            FurnishingType::Greenhouse => FurnitureKind::Planter,
             FurnishingType::Kitchen => FurnitureKind::Counter,
             FurnishingType::Storehouse => FurnitureKind::Shelf,
             FurnishingType::Workshop => FurnitureKind::Workbench,
@@ -525,6 +544,7 @@ impl FurnishingType {
             FurnishingType::ConcertHall => "Concert Hall",
             FurnishingType::DiningHall => "Dining Hall",
             FurnishingType::Dormitory => "Dormitory",
+            FurnishingType::Greenhouse => "Greenhouse",
             FurnishingType::Home => "Home",
             FurnishingType::Kitchen => "Kitchen",
             FurnishingType::Storehouse => "Storehouse",
@@ -546,6 +566,7 @@ pub enum FurnitureKind {
     Shelf = 3,
     Table = 4,
     Workbench = 5,
+    Planter = 6,
 }
 
 impl FurnitureKind {
@@ -559,6 +580,7 @@ impl FurnitureKind {
             FurnitureKind::Shelf => "shelves",
             FurnitureKind::Table => "tables",
             FurnitureKind::Workbench => "workbenches",
+            FurnitureKind::Planter => "planters",
         }
     }
 }

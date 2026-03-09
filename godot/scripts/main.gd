@@ -479,8 +479,8 @@ func _setup_common(bridge: SimBridge) -> void:
 		func(structure_id: int, new_name: String): bridge.rename_structure(structure_id, new_name)
 	)
 	_structure_info_panel.furnish_requested.connect(
-		func(structure_id: int, furnishing_type: String):
-			bridge.furnish_structure(structure_id, furnishing_type)
+		func(structure_id: int, furnishing_type: String, species_id: int):
+			bridge.furnish_structure(structure_id, furnishing_type, species_id)
 	)
 	_structure_info_panel.assign_elf_requested.connect(
 		func(structure_id: int, creature_id_str: String):
@@ -503,6 +503,7 @@ func _setup_common(bridge: SimBridge) -> void:
 			bridge.set_workshop_config(sid, enabled, JSON.stringify(recipe_configs))
 	)
 	_structure_info_panel.set_recipes(bridge.get_recipes())
+	_structure_info_panel.set_cultivable_fruits(bridge.get_cultivable_fruit_species())
 
 	# Menu button.
 	var menu_btn := Button.new()

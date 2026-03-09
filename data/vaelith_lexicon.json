@@ -115,7 +115,7 @@
       "syllables": [{"text": "ně", "tone": "dipping"}, {"text": "ma", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "hâli",
@@ -169,7 +169,7 @@
       "syllables": [{"text": "ve", "tone": "level"}, {"text": "la", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given", "surname"]
+      "name_tags": ["given", "surname", "botanical"]
     },
     {
       "root": "tórun",
@@ -178,7 +178,7 @@
       "syllables": [{"text": "tó", "tone": "rising"}, {"text": "run", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["surname"]
+      "name_tags": ["surname", "botanical"]
     },
     {
       "root": "kesh",
@@ -187,7 +187,7 @@
       "syllables": [{"text": "kesh", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "nuri",
@@ -196,7 +196,7 @@
       "syllables": [{"text": "nu", "tone": "level"}, {"text": "ri", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "thiven",
@@ -205,7 +205,7 @@
       "syllables": [{"text": "thi", "tone": "level"}, {"text": "ven", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["surname"]
+      "name_tags": ["surname", "botanical"]
     },
     {
       "root": "mòka",
@@ -214,7 +214,7 @@
       "syllables": [{"text": "mò", "tone": "falling"}, {"text": "ka", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "shira",
@@ -223,7 +223,7 @@
       "syllables": [{"text": "shi", "tone": "level"}, {"text": "ra", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["surname"]
+      "name_tags": ["surname", "botanical"]
     },
     {
       "root": "esin",
@@ -259,7 +259,7 @@
       "syllables": [{"text": "ke", "tone": "level"}, {"text": "lith", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["surname"]
+      "name_tags": ["surname", "botanical"]
     },
     {
       "root": "naur",
@@ -358,7 +358,7 @@
       "syllables": [{"text": "mâ", "tone": "peaking"}, {"text": "na", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given", "surname"]
+      "name_tags": ["given", "surname", "botanical"]
     },
     {
       "root": "voin",
@@ -367,7 +367,7 @@
       "syllables": [{"text": "voin", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "thúni",
@@ -376,7 +376,7 @@
       "syllables": [{"text": "thú", "tone": "rising"}, {"text": "ni", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "kòli",
@@ -385,7 +385,7 @@
       "syllables": [{"text": "kò", "tone": "falling"}, {"text": "li", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "ôrun",
@@ -394,7 +394,7 @@
       "syllables": [{"text": "ô", "tone": "peaking"}, {"text": "run", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "lîren",
@@ -403,7 +403,7 @@
       "syllables": [{"text": "lî", "tone": "peaking"}, {"text": "ren", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given", "surname"]
+      "name_tags": ["given", "surname", "botanical"]
     },
     {
       "root": "vòshi",
@@ -421,7 +421,7 @@
       "syllables": [{"text": "mi", "tone": "level"}, {"text": "reth", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "shòve",
@@ -430,7 +430,7 @@
       "syllables": [{"text": "shò", "tone": "falling"}, {"text": "ve", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "réva",
@@ -439,7 +439,7 @@
       "syllables": [{"text": "ré", "tone": "rising"}, {"text": "va", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given", "surname"]
+      "name_tags": ["given", "surname", "botanical"]
     },
     {
       "root": "thóla",
@@ -448,7 +448,7 @@
       "syllables": [{"text": "thó", "tone": "rising"}, {"text": "la", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "auri",
@@ -457,7 +457,7 @@
       "syllables": [{"text": "au", "tone": "level"}, {"text": "ri", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given", "surname"]
+      "name_tags": ["given", "surname", "botanical"]
     },
     {
       "root": "véli",
@@ -466,7 +466,7 @@
       "syllables": [{"text": "vé", "tone": "rising"}, {"text": "li", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given", "surname"]
+      "name_tags": ["given", "surname", "botanical"]
     },
     {
       "root": "nîra",
@@ -475,7 +475,7 @@
       "syllables": [{"text": "nî", "tone": "peaking"}, {"text": "ra", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given", "surname"]
+      "name_tags": ["given", "surname", "botanical"]
     },
     {
       "root": "mòrith",
@@ -484,7 +484,7 @@
       "syllables": [{"text": "mò", "tone": "falling"}, {"text": "rith", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "vòna",
@@ -493,7 +493,7 @@
       "syllables": [{"text": "vò", "tone": "falling"}, {"text": "na", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["surname"]
+      "name_tags": ["surname", "botanical"]
     },
     {
       "root": "eitha",
@@ -502,7 +502,7 @@
       "syllables": [{"text": "ei", "tone": "level"}, {"text": "tha", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given", "surname"]
+      "name_tags": ["given", "surname", "botanical"]
     },
     {
       "root": "shála",
@@ -511,7 +511,7 @@
       "syllables": [{"text": "shá", "tone": "rising"}, {"text": "la", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "kòra",
@@ -520,7 +520,7 @@
       "syllables": [{"text": "kò", "tone": "falling"}, {"text": "ra", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["surname"]
+      "name_tags": ["surname", "botanical"]
     },
     {
       "root": "shîna",
@@ -529,7 +529,7 @@
       "syllables": [{"text": "shî", "tone": "peaking"}, {"text": "na", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given", "surname"]
+      "name_tags": ["given", "surname", "botanical"]
     },
     {
       "root": "nóva",
@@ -547,7 +547,7 @@
       "syllables": [{"text": "me", "tone": "level"}, {"text": "li", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "kàvri",
@@ -556,7 +556,7 @@
       "syllables": [{"text": "kà", "tone": "falling"}, {"text": "vri", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "nòlun",
@@ -565,7 +565,7 @@
       "syllables": [{"text": "nò", "tone": "falling"}, {"text": "lun", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "shévi",
@@ -574,7 +574,7 @@
       "syllables": [{"text": "shé", "tone": "rising"}, {"text": "vi", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "túma",
@@ -583,7 +583,7 @@
       "syllables": [{"text": "tú", "tone": "rising"}, {"text": "ma", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["surname"]
+      "name_tags": ["surname", "botanical"]
     },
     {
       "root": "vîra",
@@ -592,7 +592,7 @@
       "syllables": [{"text": "vî", "tone": "peaking"}, {"text": "ra", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "korsha",
@@ -601,7 +601,7 @@
       "syllables": [{"text": "kor", "tone": "level"}, {"text": "sha", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "nàri",
@@ -610,7 +610,7 @@
       "syllables": [{"text": "nà", "tone": "falling"}, {"text": "ri", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "léna",
@@ -619,7 +619,7 @@
       "syllables": [{"text": "lé", "tone": "rising"}, {"text": "na", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "thòru",
@@ -628,7 +628,7 @@
       "syllables": [{"text": "thò", "tone": "falling"}, {"text": "ru", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["surname"]
+      "name_tags": ["surname", "botanical"]
     },
     {
       "root": "wíri",
@@ -637,7 +637,7 @@
       "syllables": [{"text": "wí", "tone": "rising"}, {"text": "ri", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "nôla",
@@ -718,7 +718,7 @@
       "syllables": [{"text": "hó", "tone": "rising"}, {"text": "la", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "sîven",
@@ -727,7 +727,7 @@
       "syllables": [{"text": "sî", "tone": "peaking"}, {"text": "ven", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "kétha",
@@ -736,7 +736,7 @@
       "syllables": [{"text": "ké", "tone": "rising"}, {"text": "tha", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "fòli",
@@ -745,7 +745,7 @@
       "syllables": [{"text": "fò", "tone": "falling"}, {"text": "li", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": ["surname"]
+      "name_tags": ["surname", "botanical"]
     },
     {
       "root": "shòva",
@@ -1060,7 +1060,7 @@
       "syllables": [{"text": "thò", "tone": "falling"}, {"text": "mu", "tone": "level"}],
       "vowel_class": "back",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "véra",
@@ -1087,7 +1087,7 @@
       "syllables": [{"text": "fí", "tone": "rising"}, {"text": "sha", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "tòven",
@@ -1105,7 +1105,7 @@
       "syllables": [{"text": "shé", "tone": "rising"}, {"text": "rin", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": []
+      "name_tags": ["botanical"]
     },
     {
       "root": "éli",
@@ -1213,7 +1213,7 @@
       "syllables": [{"text": "shî", "tone": "peaking"}, {"text": "re", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given"]
+      "name_tags": ["given", "botanical"]
     },
     {
       "root": "tóle",
@@ -1663,7 +1663,7 @@
       "syllables": [{"text": "shi", "tone": "level"}, {"text": "ne", "tone": "level"}],
       "vowel_class": "front",
       "stressed_first": true,
-      "name_tags": ["given", "surname"]
+      "name_tags": ["given", "surname", "botanical"]
     },
     {
       "root": "kóse",

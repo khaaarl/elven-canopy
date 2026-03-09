@@ -7,7 +7,9 @@
 //
 //   1. **Tree generation** — produces the player's home tree geometry (existing
 //      logic extracted from `sim.rs`).
-//   2. **Fruit generation** — placeholder, will be implemented by F-fruit-variety.
+//   2. **Fruit generation** — creates 20-40+ unique fruit species with
+//      composable parts, properties, coverage constraints, and Vaelith names
+//      (see `fruit.rs`).
 //   3. **Civilization generation** — creates the player's elf civ (CivId(0),
 //      player-controlled) and AI civs from a weighted species distribution.
 //      Elf civs get Vaelith names; others get placeholder phonetic names from
@@ -28,9 +30,8 @@
 // (pre-populated with civilization and relationship rows) and the player's civ ID.
 //
 // **WorldgenConfig** is a subsection of `GameConfig` that groups configuration
-// for worldgen generators (currently holds `CivConfig`; will also hold
-// `FruitConfig` when F-fruit-variety lands). The existing tree profile config
-// stays at the top level of `GameConfig`.
+// for worldgen generators (holds `FruitConfig` and `CivConfig`). The existing
+// tree profile config stays at the top level of `GameConfig`.
 //
 // **Critical constraint: determinism.** All generators use the worldgen PRNG
 // exclusively. No HashMap, no system time, no OS entropy. Use BTreeMap for
@@ -39,7 +40,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::config::{CivConfig, GameConfig};
+use crate::config::{CivConfig, FruitConfig, GameConfig};
 use crate::db::{CivRelationship, Civilization, SimDb};
 use crate::nav::{self, NavGraph};
 use crate::sim::Tree;
@@ -57,7 +58,9 @@ use elven_canopy_prng::GameRng;
 /// since tree generation predates this framework.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct WorldgenConfig {
-    // Future: pub fruit: FruitConfig,
+    /// Fruit species generation configuration.
+    #[serde(default)]
+    pub fruit: FruitConfig,
     /// Civilization generation configuration.
     #[serde(default)]
     pub civs: crate::config::CivConfig,
@@ -110,13 +113,38 @@ pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
     // --- Generator 1: Tree ---
     let (world, home_tree) = generate_tree(&mut wg_rng, config, player_id, player_tree_id);
 
-    // --- Generator 2: Fruits (placeholder) ---
-    // Will be implemented by F-fruit-variety. The generator will populate
-    // a FruitSpecies table in SimDb using wg_rng.
+    // Load lexicon once — used by fruit naming and civ naming.
+    let lexicon = elven_canopy_lang::default_lexicon();
+
+    // --- Generator 2: Fruits ---
+    let fruit_species =
+        crate::fruit::generate_fruit_species(&mut wg_rng, &config.worldgen.fruit, &lexicon);
+
+    // Assign a fruit species to the home tree. Pick a random common species
+    // so the player's starting tree always produces an accessible fruit.
+    let mut home_tree = home_tree;
+    if !fruit_species.is_empty() {
+        let common_species: Vec<_> = fruit_species
+            .iter()
+            .filter(|f| f.rarity == crate::fruit::Rarity::Common)
+            .collect();
+        let chosen = if common_species.is_empty() {
+            &fruit_species[0]
+        } else {
+            let idx = wg_rng.next_u64() as usize % common_species.len();
+            common_species[idx]
+        };
+        home_tree.fruit_species_id = Some(chosen.id);
+    }
 
     // --- Generator 3: Civilizations ---
     let mut db = SimDb::new();
-    let lexicon = elven_canopy_lang::default_lexicon();
+
+    // Insert fruit species into SimDb.
+    for fruit in &fruit_species {
+        let _ = db.fruit_species.insert_no_fk(fruit.clone());
+    }
+
     let player_civ_id =
         generate_civilizations(&mut wg_rng, &config.worldgen.civs, &mut db, &lexicon);
 
@@ -208,6 +236,7 @@ fn generate_tree(
         root_voxels: tree_result.root_voxels,
         dirt_voxels: tree_result.dirt_voxels,
         fruit_positions: Vec::new(),
+        fruit_species_id: None,
     };
 
     (world, home_tree)

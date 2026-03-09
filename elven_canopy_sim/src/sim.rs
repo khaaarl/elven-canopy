@@ -362,6 +362,18 @@ pub struct SimState {
     /// detection scans use O(n) iteration with distance filtering.
     #[serde(skip)]
     pub spatial_index: BTreeMap<VoxelCoord, Vec<CreatureId>>,
+
+    /// Persisted list of (coord, species_id) pairs for fruit voxels. On load,
+    /// `rebuild_transient_state()` rebuilds `fruit_voxel_species` from this.
+    #[serde(default)]
+    pub fruit_voxel_species_list: Vec<(VoxelCoord, crate::fruit::FruitSpeciesId)>,
+
+    /// Maps each fruit voxel to the species of the fruit occupying it.
+    /// Transient — rebuilt from `fruit_voxel_species_list` after deserialization.
+    /// Maintained by `attempt_fruit_spawn` (insert) and fruit removal in
+    /// `do_eat_fruit` / `do_harvest` (remove).
+    #[serde(skip)]
+    pub fruit_voxel_species: BTreeMap<VoxelCoord, crate::fruit::FruitSpeciesId>,
 }
 
 /// A tree entity — the primary world structure.
@@ -388,6 +400,11 @@ pub struct Tree {
     pub dirt_voxels: Vec<VoxelCoord>,
     /// Positions of fruit hanging below leaf voxels.
     pub fruit_positions: Vec<VoxelCoord>,
+    /// The fruit species this tree produces. Assigned during worldgen from the
+    /// world's procedurally generated fruit species roster. `None` for
+    /// pre-fruit-variety saves (defaults to first species if available).
+    #[serde(default)]
+    pub fruit_species_id: Option<crate::fruit::FruitSpeciesId>,
 }
 
 /// A creature's current path through the nav graph.
@@ -467,6 +484,8 @@ impl SimState {
             last_build_message: None,
             structure_voxels: BTreeMap::new(),
             spatial_index: BTreeMap::new(),
+            fruit_voxel_species_list: Vec::new(),
+            fruit_voxel_species: BTreeMap::new(),
         };
 
         // The world rebuild above produces thousands of set() calls that
@@ -602,8 +621,9 @@ impl SimState {
             SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type,
+                greenhouse_species,
             } => {
-                self.furnish_structure(*structure_id, *furnishing_type);
+                self.furnish_structure(*structure_id, *furnishing_type, *greenhouse_species);
             }
             SimAction::AssignHome {
                 creature_id,
@@ -2468,6 +2488,29 @@ impl SimState {
         Some((fruit_pos, nearest_node))
     }
 
+    /// Look up the fruit species at a voxel position.
+    ///
+    /// Returns the full `FruitSpecies` record, or `None` if the voxel has no
+    /// tracked species (pre-fruit-variety fruit or empty).
+    pub fn fruit_species_at(&self, pos: VoxelCoord) -> Option<crate::fruit::FruitSpecies> {
+        let species_id = self.fruit_voxel_species.get(&pos)?;
+        self.db.fruit_species.get(species_id)
+    }
+
+    /// Return a human-readable display name for an item stack. For fruit with
+    /// a known species, returns e.g. "Shinethúni Fruit" or "Révatórun Pod".
+    /// For all other items, returns the basic `ItemKind::display_name()`.
+    pub fn item_display_name(&self, stack: &crate::db::ItemStack) -> String {
+        if stack.kind == inventory::ItemKind::Fruit
+            && let Some(inventory::Material::FruitSpecies(id)) = stack.material
+            && let Some(species) = self.db.fruit_species.get(&id)
+        {
+            let noun = species.appearance.shape.item_noun();
+            return format!("{} {}", species.vaelith_name, noun);
+        }
+        stack.kind.display_name().to_owned()
+    }
+
     /// Resolve a completed Eat action for fruit: restore food, remove fruit
     /// from world, generate thought, complete task. Always returns true.
     fn resolve_eat_fruit_action(
@@ -2489,10 +2532,13 @@ impl SimState {
                 });
         }
 
-        // Remove fruit from world and tree's fruit_positions list.
+        // Remove fruit from world, tree's fruit_positions, and species map.
         if self.world.get(fruit_pos) == VoxelType::Fruit {
             self.world.set(fruit_pos, VoxelType::Air);
         }
+        self.fruit_voxel_species.remove(&fruit_pos);
+        self.fruit_voxel_species_list
+            .retain(|(pos, _)| *pos != fruit_pos);
         for tree in self.trees.values_mut() {
             tree.fruit_positions.retain(|&p| p != fruit_pos);
         }
@@ -2516,23 +2562,32 @@ impl SimState {
         let fruit_exists = self.world.get(fruit_pos) == VoxelType::Fruit;
 
         if fruit_exists {
+            // Look up species before removing from the map.
+            let species_id = self.fruit_voxel_species.remove(&fruit_pos);
+            self.fruit_voxel_species_list
+                .retain(|(pos, _)| *pos != fruit_pos);
+            let material = species_id.map(inventory::Material::FruitSpecies);
+
             // Remove fruit from world and tree's fruit_positions list.
             self.world.set(fruit_pos, VoxelType::Air);
             for tree in self.trees.values_mut() {
                 tree.fruit_positions.retain(|&p| p != fruit_pos);
             }
 
-            // Create ground pile at creature's position.
+            // Create ground pile at creature's position with species material.
             if let Some(creature) = self.db.creatures.get(&creature_id) {
                 let pile_pos = creature.position;
                 let pile_id = self.ensure_ground_pile(pile_pos);
                 let pile = self.db.ground_piles.get(&pile_id).unwrap();
-                self.inv_add_simple_item(
+                self.inv_add_item(
                     pile.inventory_id,
                     inventory::ItemKind::Fruit,
                     1,
-                    None,
-                    None,
+                    None,     // owner
+                    None,     // reserved_by
+                    material, // fruit species
+                    0,        // quality
+                    None,     // enchantment
                 );
             }
         }
@@ -3741,6 +3796,7 @@ impl SimState {
 
         self.process_kitchen_monitor();
         self.process_workshop_monitor();
+        self.process_greenhouse_monitor();
     }
 
     /// Scan kitchens and create Cook tasks when conditions are met.
@@ -3857,6 +3913,65 @@ impl SimState {
                 }
             })
             .sum()
+    }
+
+    /// Scan greenhouses and produce fruit when production interval has elapsed.
+    /// Called at the end of each logistics heartbeat.
+    fn process_greenhouse_monitor(&mut self) {
+        let base_ticks = self.config.greenhouse_base_production_ticks;
+        if base_ticks == 0 {
+            return;
+        }
+
+        // Collect (id, species, production_interval, last_tick) to avoid borrow.
+        let greenhouses: Vec<(StructureId, FruitSpeciesId, u64, u64)> = self
+            .db
+            .structures
+            .iter_all()
+            .filter_map(|s| {
+                if s.furnishing == Some(FurnishingType::Greenhouse) && s.greenhouse_enabled {
+                    let species_id = s.greenhouse_species?;
+                    let area = s.floor_interior_positions().len().max(1) as u64;
+                    let interval = base_ticks / area;
+                    Some((
+                        s.id,
+                        species_id,
+                        interval,
+                        s.greenhouse_last_production_tick,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let tick = self.tick;
+        for (sid, species_id, interval, last_tick) in greenhouses {
+            if interval == 0 || tick < last_tick + interval {
+                continue;
+            }
+
+            // Produce fruit into the structure's inventory.
+            let inv_id = match self.db.structures.get(&sid) {
+                Some(s) => s.inventory_id,
+                None => continue,
+            };
+            self.inv_add_item(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                1,
+                None,
+                None,
+                Some(inventory::Material::FruitSpecies(species_id)),
+                0,
+                None,
+            );
+
+            // Update last production tick.
+            let _ = self.db.structures.modify_unchecked(&sid, |s| {
+                s.greenhouse_last_production_tick = tick;
+            });
+        }
     }
 
     /// Find a source for hauling `needed` items of the given kind.
@@ -5776,10 +5891,14 @@ impl SimState {
             return false;
         }
 
-        // Place the fruit.
+        // Place the fruit and record its species.
         self.world.set(fruit_pos, VoxelType::Fruit);
         let tree = self.trees.get_mut(&tree_id).unwrap();
         tree.fruit_positions.push(fruit_pos);
+        if let Some(species_id) = tree.fruit_species_id {
+            self.fruit_voxel_species.insert(fruit_pos, species_id);
+            self.fruit_voxel_species_list.push((fruit_pos, species_id));
+        }
         true
     }
 
@@ -6121,7 +6240,12 @@ impl SimState {
     /// building with no existing furnishing, computes furniture positions,
     /// sets the furnishing type, auto-renames if no custom name, and creates
     /// a Furnish task for an elf to work on.
-    fn furnish_structure(&mut self, structure_id: StructureId, furnishing_type: FurnishingType) {
+    fn furnish_structure(
+        &mut self,
+        structure_id: StructureId,
+        furnishing_type: FurnishingType,
+        greenhouse_species: Option<FruitSpeciesId>,
+    ) {
         // Validate: structure exists, is a Building, and has no furnishing yet.
         let structure = match self.db.structures.get(&structure_id) {
             Some(s) => s,
@@ -6132,6 +6256,21 @@ impl SimState {
         }
         if structure.furnishing.is_some() {
             return;
+        }
+
+        // Greenhouse-specific validation: species must exist and be cultivable.
+        if furnishing_type == FurnishingType::Greenhouse {
+            let species_id = match greenhouse_species {
+                Some(id) => id,
+                None => return, // Greenhouse requires a species.
+            };
+            let species = match self.db.fruit_species.get(&species_id) {
+                Some(s) => s,
+                None => return, // Species must exist.
+            };
+            if !species.greenhouse_cultivable {
+                return; // Species must be cultivable.
+            }
         }
 
         // Compute furniture positions based on furnishing type.
@@ -6192,6 +6331,12 @@ impl SimState {
                 structure.logistics_priority = Some(self.config.workshop_default_priority);
 
                 self.compute_recipe_wants(&all_recipe_ids)
+            }
+            FurnishingType::Greenhouse => {
+                structure.greenhouse_species = greenhouse_species;
+                structure.greenhouse_enabled = true;
+                structure.greenhouse_last_production_tick = self.tick;
+                Vec::new()
             }
             _ => Vec::new(),
         };
@@ -6706,6 +6851,9 @@ impl SimState {
         // Rebuild spatial_index from all living creatures. Must run after
         // species_table is populated (footprint data comes from SpeciesData).
         self.rebuild_spatial_index();
+
+        // Rebuild fruit_voxel_species from persisted list.
+        self.fruit_voxel_species = self.fruit_voxel_species_list.iter().cloned().collect();
 
         // Rebuild structure_voxels from completed blueprints.
         self.structure_voxels.clear();
@@ -7461,6 +7609,13 @@ mod tests {
 
     /// Helper: spawn an elf and return its CreatureId.
     fn spawn_elf(sim: &mut SimState) -> CreatureId {
+        let existing: std::collections::BTreeSet<CreatureId> = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == Species::Elf)
+            .map(|c| c.id)
+            .collect();
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let cmd = SimCommand {
             player_id: sim.player_id,
@@ -7474,7 +7629,7 @@ mod tests {
         sim.db
             .creatures
             .iter_all()
-            .find(|c| c.species == Species::Elf)
+            .find(|c| c.species == Species::Elf && !existing.contains(&c.id))
             .unwrap()
             .id
     }
@@ -7853,6 +8008,185 @@ mod tests {
         let tree_a = &sim_a.trees[&sim_a.player_tree_id];
         let tree_b = &sim_b.trees[&sim_b.player_tree_id];
         assert_eq!(tree_a.fruit_positions, tree_b.fruit_positions);
+    }
+
+    #[test]
+    fn tree_has_fruit_species_assigned() {
+        let sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        assert!(
+            tree.fruit_species_id.is_some(),
+            "Home tree should have a fruit species assigned during worldgen"
+        );
+        // The assigned species should exist in the world's species roster.
+        let species_id = tree.fruit_species_id.unwrap();
+        assert!(
+            sim.db.fruit_species.get(&species_id).is_some(),
+            "Tree's fruit species {:?} should be in the SimDb fruit_species table",
+            species_id
+        );
+    }
+
+    #[test]
+    fn fruit_voxels_have_species_tracked() {
+        let sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        // Every fruit voxel should have a species entry in the map.
+        for &fruit_pos in &tree.fruit_positions {
+            assert!(
+                sim.fruit_voxel_species.contains_key(&fruit_pos),
+                "Fruit at {} should have a species tracked in fruit_voxel_species",
+                fruit_pos
+            );
+        }
+        // The tracked species should match the tree's assigned species.
+        if let Some(tree_species) = tree.fruit_species_id {
+            for &fruit_pos in &tree.fruit_positions {
+                let voxel_species = sim.fruit_voxel_species[&fruit_pos];
+                assert_eq!(
+                    voxel_species, tree_species,
+                    "Fruit voxel species should match tree species"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fruit_species_at_returns_species() {
+        let sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        if let Some(first_fruit) = tree.fruit_positions.first() {
+            let species = sim.fruit_species_at(*first_fruit);
+            assert!(
+                species.is_some(),
+                "fruit_species_at should return a species"
+            );
+            let species = species.unwrap();
+            assert!(
+                !species.vaelith_name.is_empty(),
+                "Fruit species should have a Vaelith name"
+            );
+            assert!(
+                !species.english_gloss.is_empty(),
+                "Fruit species should have an English gloss"
+            );
+        }
+    }
+
+    #[test]
+    fn fruit_voxel_species_roundtrip() {
+        let sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        assert!(!tree.fruit_positions.is_empty(), "need fruit for this test");
+
+        let json = sim.to_json().unwrap();
+        let loaded = SimState::from_json(&json).unwrap();
+        let loaded_tree = &loaded.trees[&loaded.player_tree_id];
+
+        // Fruit voxel species map should survive roundtrip.
+        assert_eq!(
+            sim.fruit_voxel_species.len(),
+            loaded.fruit_voxel_species.len(),
+            "fruit_voxel_species count should survive roundtrip"
+        );
+        for (&pos, &species_id) in &sim.fruit_voxel_species {
+            assert_eq!(
+                loaded.fruit_voxel_species.get(&pos),
+                Some(&species_id),
+                "fruit_voxel_species entry at {} should survive roundtrip",
+                pos
+            );
+        }
+        // Tree's fruit species should survive too.
+        assert_eq!(
+            loaded_tree.fruit_species_id, tree.fruit_species_id,
+            "Tree fruit_species_id should survive roundtrip"
+        );
+    }
+
+    #[test]
+    fn harvest_fruit_carries_species_material() {
+        let mut sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        let fruit_pos = tree.fruit_positions[0];
+        let tree_species = tree.fruit_species_id.unwrap();
+
+        // Spawn an elf near the fruit.
+        let elf_nav = sim.nav_graph.find_nearest_node(fruit_pos).unwrap();
+        let elf_pos = sim.nav_graph.node(elf_nav).position;
+        let mut events = Vec::new();
+        let elf_id = sim
+            .spawn_creature(Species::Elf, elf_pos, &mut events)
+            .unwrap();
+        sim.config.elf_starting_bread = 100; // Prevent hunger.
+
+        // Manually call do_harvest to test the material flow.
+        let task_id = TaskId::new(&mut sim.rng);
+        let task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::Harvest { fruit_pos },
+            state: task::TaskState::InProgress,
+            location: elf_nav,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: None,
+            origin: task::TaskOrigin::Automated,
+            target_creature: None,
+        };
+        sim.insert_task(task);
+        sim.resolve_harvest_action(elf_id, task_id, fruit_pos);
+
+        // The fruit should be gone from world and species map.
+        assert_eq!(sim.world.get(fruit_pos), VoxelType::Air);
+        assert!(!sim.fruit_voxel_species.contains_key(&fruit_pos));
+
+        // Find the ground pile and check the item has fruit species material.
+        let pile_stacks: Vec<_> = sim
+            .db
+            .item_stacks
+            .iter_all()
+            .filter(|s| {
+                s.kind == inventory::ItemKind::Fruit
+                    && s.material == Some(inventory::Material::FruitSpecies(tree_species))
+            })
+            .collect();
+        assert!(
+            !pile_stacks.is_empty(),
+            "Harvested fruit should have Material::FruitSpecies({:?})",
+            tree_species
+        );
+    }
+
+    #[test]
+    fn fruit_heartbeat_tracks_species() {
+        // Fruit grown via heartbeat should also be tracked in species map.
+        let mut config = test_config();
+        config.fruit_initial_attempts = 0;
+        config.fruit_production_base_rate = 1.0;
+        config.fruit_max_per_tree = 100;
+        let mut sim = SimState::with_config(42, config);
+
+        assert!(
+            sim.fruit_voxel_species.is_empty(),
+            "Should start with no species entries"
+        );
+
+        // Step past heartbeats to grow fruit.
+        sim.step(&[], 50000);
+
+        let tree = &sim.trees[&sim.player_tree_id];
+        assert!(
+            !tree.fruit_positions.is_empty(),
+            "Should have grown some fruit"
+        );
+        // Every fruit should have species tracked.
+        for &pos in &tree.fruit_positions {
+            assert!(
+                sim.fruit_voxel_species.contains_key(&pos),
+                "Heartbeat-grown fruit at {} should have species tracked",
+                pos
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -8754,6 +9088,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                greenhouse_species: None,
+                greenhouse_enabled: false,
+                greenhouse_last_production_tick: 0,
             })
             .unwrap();
         let _ = sim
@@ -8878,6 +9215,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                greenhouse_species: None,
+                greenhouse_enabled: false,
+                greenhouse_last_production_tick: 0,
             })
             .unwrap();
         let _ = sim
@@ -12909,6 +13249,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
         };
         sim.db.structures.insert_no_fk(structure).unwrap();
 
@@ -12956,6 +13299,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -12993,6 +13339,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -13056,6 +13405,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
         };
 
         assert_eq!(structure.display_name(), "Dormitory #7");
@@ -13082,6 +13434,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
         };
 
         assert_eq!(structure.display_name(), "Starlight Hall");
@@ -13099,6 +13454,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Dormitory,
+                greenhouse_species: None,
             },
         };
         sim.step(&[cmd], sim.tick + 1);
@@ -13158,6 +13514,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Dormitory,
+                greenhouse_species: None,
             },
         };
         sim.step(&[cmd], sim.tick + 1);
@@ -13197,6 +13554,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Dormitory,
+                greenhouse_species: None,
             },
         };
         sim.step(&[furnish_cmd], sim.tick + 1);
@@ -13237,6 +13595,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
         };
         sim.db.structures.insert_no_fk(structure).unwrap();
 
@@ -13246,6 +13607,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id: id,
                 furnishing_type: FurnishingType::Dormitory,
+                greenhouse_species: None,
             },
         };
         sim.step(&[cmd], sim.tick + 1);
@@ -13273,6 +13635,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Dormitory,
+                greenhouse_species: None,
             },
         };
         sim.step(&[cmd], sim.tick + 1);
@@ -13292,6 +13655,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Dormitory,
+                greenhouse_species: None,
             },
         };
         sim.step(&[cmd2], sim.tick + 1);
@@ -13320,6 +13684,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Dormitory,
+                greenhouse_species: None,
             },
         };
         sim.step(&[cmd], sim.tick + 1);
@@ -13380,6 +13745,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Dormitory,
+                greenhouse_species: None,
             },
         };
         sim.step(&[cmd], sim.tick + 1);
@@ -13459,6 +13825,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Dormitory,
+                greenhouse_species: None,
             },
         };
         sim.step(&[cmd], sim.tick + 1);
@@ -13509,6 +13876,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::Home, &mut rng);
@@ -13539,6 +13909,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
         };
 
         let items = structure.compute_furniture_positions(FurnishingType::DiningHall, &mut rng);
@@ -13587,6 +13960,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                greenhouse_species: None,
+                greenhouse_enabled: false,
+                greenhouse_last_production_tick: 0,
             };
             assert_eq!(
                 structure.display_name(),
@@ -13609,6 +13985,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Workshop,
+                greenhouse_species: None,
             },
         };
         sim.step(&[cmd], sim.tick + 1);
@@ -13627,6 +14004,258 @@ mod tests {
             structure.display_name(),
             format!("Workshop #{}", structure_id.0)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Greenhouse tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: get the first cultivable fruit species from the DB.
+    fn first_cultivable_species(sim: &SimState) -> Option<FruitSpeciesId> {
+        sim.db
+            .fruit_species
+            .iter_all()
+            .find(|f| f.greenhouse_cultivable)
+            .map(|f| f.id)
+    }
+
+    /// Helper: get a non-cultivable fruit species from the DB.
+    fn first_non_cultivable_species(sim: &SimState) -> Option<FruitSpeciesId> {
+        sim.db
+            .fruit_species
+            .iter_all()
+            .find(|f| !f.greenhouse_cultivable)
+            .map(|f| f.id)
+    }
+
+    #[test]
+    fn furnish_greenhouse_sets_species_and_creates_task() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        let species_id = first_cultivable_species(&sim)
+            .expect("worldgen should produce at least one cultivable fruit");
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Greenhouse,
+                greenhouse_species: Some(species_id),
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let structure = sim.db.structures.get(&structure_id).unwrap();
+        assert_eq!(structure.furnishing, Some(FurnishingType::Greenhouse));
+        assert_eq!(structure.greenhouse_species, Some(species_id));
+        assert!(structure.greenhouse_enabled);
+        assert_eq!(structure.greenhouse_last_production_tick, sim.tick);
+
+        // Should have created a Furnish task.
+        let furnish_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == crate::db::TaskKindTag::Furnish)
+            .collect();
+        assert_eq!(furnish_tasks.len(), 1);
+    }
+
+    #[test]
+    fn furnish_greenhouse_rejects_non_cultivable_species() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        let species_id = first_non_cultivable_species(&sim);
+        // If all species happen to be cultivable in this seed, skip.
+        if let Some(species_id) = species_id {
+            let cmd = SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::FurnishStructure {
+                    structure_id,
+                    furnishing_type: FurnishingType::Greenhouse,
+                    greenhouse_species: Some(species_id),
+                },
+            };
+            sim.step(&[cmd], sim.tick + 1);
+
+            let structure = sim.db.structures.get(&structure_id).unwrap();
+            assert_eq!(
+                structure.furnishing, None,
+                "Non-cultivable species should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn furnish_greenhouse_rejects_missing_species() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        // No greenhouse_species provided.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Greenhouse,
+                greenhouse_species: None,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let structure = sim.db.structures.get(&structure_id).unwrap();
+        assert_eq!(
+            structure.furnishing, None,
+            "Greenhouse without species should be rejected"
+        );
+    }
+
+    #[test]
+    fn furnish_greenhouse_rejects_unknown_species() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        let bogus_id = FruitSpeciesId(9999);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Greenhouse,
+                greenhouse_species: Some(bogus_id),
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let structure = sim.db.structures.get(&structure_id).unwrap();
+        assert_eq!(
+            structure.furnishing, None,
+            "Unknown species should be rejected"
+        );
+    }
+
+    #[test]
+    fn greenhouse_produces_fruit_after_interval() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        let species_id = first_cultivable_species(&sim).expect("need a cultivable species");
+
+        // Set a short production interval for testing.
+        sim.config.greenhouse_base_production_ticks = 1000;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Greenhouse,
+                greenhouse_species: Some(species_id),
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+        let furnish_tick = sim.tick;
+
+        // The building has 3x3 = 9 interior tiles (floor_interior_positions).
+        // Production interval = base / area = 1000 / 9 = 111 ticks.
+        let structure = sim.db.structures.get(&structure_id).unwrap();
+        let area = structure.floor_interior_positions().len() as u64;
+        let interval = sim.config.greenhouse_base_production_ticks / area;
+
+        // Advance past one interval + logistics heartbeat.
+        let logistics_interval = sim.config.logistics_heartbeat_interval_ticks;
+        let target_tick = furnish_tick + interval + logistics_interval;
+        sim.step(&[], target_tick);
+
+        // Check that fruit was produced in the greenhouse's inventory.
+        let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+        let fruit_count: u32 = sim
+            .db
+            .item_stacks
+            .iter_all()
+            .filter(|s| {
+                s.inventory_id == inv_id
+                    && s.kind == inventory::ItemKind::Fruit
+                    && s.material == Some(inventory::Material::FruitSpecies(species_id))
+            })
+            .map(|s| s.quantity)
+            .sum();
+        assert!(
+            fruit_count >= 1,
+            "Greenhouse should have produced at least 1 fruit, got {fruit_count}"
+        );
+    }
+
+    #[test]
+    fn greenhouse_display_name() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        let species_id = first_cultivable_species(&sim).expect("need a cultivable species");
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Greenhouse,
+                greenhouse_species: Some(species_id),
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let structure = sim.db.structures.get(&structure_id).unwrap();
+        let name = structure.display_name();
+        assert!(
+            name.starts_with("Greenhouse #"),
+            "Expected 'Greenhouse #N', got '{name}'"
+        );
+    }
+
+    #[test]
+    fn greenhouse_serde_roundtrip() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+
+        let species_id = first_cultivable_species(&sim).expect("need a cultivable species");
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Greenhouse,
+                greenhouse_species: Some(species_id),
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        // Roundtrip through JSON.
+        let json = serde_json::to_string(&sim).unwrap();
+        let sim2: SimState = serde_json::from_str(&json).unwrap();
+
+        let structure = sim2.db.structures.get(&structure_id).unwrap();
+        assert_eq!(structure.furnishing, Some(FurnishingType::Greenhouse));
+        assert_eq!(structure.greenhouse_species, Some(species_id));
+        assert!(structure.greenhouse_enabled);
     }
 
     // -----------------------------------------------------------------------
@@ -14683,6 +15312,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                greenhouse_species: None,
+                greenhouse_enabled: false,
+                greenhouse_last_production_tick: 0,
             })
             .unwrap();
         let _ = sim
@@ -14829,6 +15461,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                greenhouse_species: None,
+                greenhouse_enabled: false,
+                greenhouse_last_production_tick: 0,
             })
             .unwrap();
         let _ = sim
@@ -14950,6 +15585,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                greenhouse_species: None,
+                greenhouse_enabled: false,
+                greenhouse_last_production_tick: 0,
             })
             .unwrap();
         let _ = sim
@@ -15191,6 +15829,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                greenhouse_species: None,
+                greenhouse_enabled: false,
+                greenhouse_last_production_tick: 0,
             })
             .unwrap();
         sim.set_inv_wants(inv_id, &wants);
@@ -17451,6 +18092,7 @@ mod tests {
             Material::Willow,
             Material::Ash,
             Material::Yew,
+            Material::FruitSpecies(crate::fruit::FruitSpeciesId(42)),
         ] {
             let json = serde_json::to_string(&mat).unwrap();
             let restored: Material = serde_json::from_str(&json).unwrap();
@@ -17680,6 +18322,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
         };
         let json = serde_json::to_string(&structure).unwrap();
         // Remove workshop fields to simulate old save.
@@ -17723,6 +18368,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Workshop,
+                greenhouse_species: None,
             },
         };
         sim.step(&[cmd], sim.tick + 1);
@@ -17765,6 +18411,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Workshop,
+                greenhouse_species: None,
             },
         };
         sim.step(&[furnish_cmd], sim.tick + 1);
@@ -17802,6 +18449,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Workshop,
+                greenhouse_species: None,
             },
         };
         sim.step(&[furnish_cmd], sim.tick + 1);
@@ -17886,6 +18534,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Kitchen,
+                greenhouse_species: None,
             },
         };
         sim.step(&[furnish_cmd], sim.tick + 1);
@@ -17924,6 +18573,7 @@ mod tests {
             action: SimAction::FurnishStructure {
                 structure_id,
                 furnishing_type: FurnishingType::Workshop,
+                greenhouse_species: None,
             },
         };
         sim.step(&[furnish_cmd], sim.tick + 1);

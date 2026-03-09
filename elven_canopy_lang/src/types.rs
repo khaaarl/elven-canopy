@@ -11,7 +11,7 @@
 // - `Syllable` — a rendered syllable with text, tone, and stress
 // - `SyllableDef` — a syllable as stored in JSON (text + tone, no stress)
 // - `PartOfSpeech` — noun, verb, adjective, particle
-// - `NameTag` — which name positions a word fits (given, surname)
+// - `NameTag` — which name positions a word fits (given, surname, botanical)
 // - `LexEntry` — a JSON-loadable lexical entry with owned Strings
 // - `Word` — a complete word (root + optional suffixes) with syllable breakdown
 //
@@ -93,6 +93,7 @@ pub enum PartOfSpeech {
 pub enum NameTag {
     Given,
     Surname,
+    Botanical,
 }
 
 /// A JSON-loadable lexical entry.
@@ -214,6 +215,14 @@ mod tests {
         assert_eq!(json, "\"given\"");
         let parsed: NameTag = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, NameTag::Given);
+    }
+
+    #[test]
+    fn test_name_tag_botanical_serde() {
+        let json = serde_json::to_string(&NameTag::Botanical).unwrap();
+        assert_eq!(json, "\"botanical\"");
+        let parsed: NameTag = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, NameTag::Botanical);
     }
 
     #[test]

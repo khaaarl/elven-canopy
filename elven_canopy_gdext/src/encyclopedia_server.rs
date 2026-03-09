@@ -1,16 +1,16 @@
 // Encyclopedia HTTP server — embedded localhost web server for game information.
 //
 // Serves HTML pages in the player's default browser, providing a species
-// bestiary and (future) knowledge-gated civilization/fruit information. The
-// server runs on a background thread with read-only access to a shared data
-// snapshot, updated periodically from the main thread.
+// bestiary, procedurally generated fruit species catalog, and civilization
+// diplomacy overview. The server runs on a background thread with read-only
+// access to a shared data snapshot, updated periodically from the main thread.
 //
 // Architecture:
 // - `EncyclopediaServer` manages the lifecycle: start, stop, URL reporting.
 // - The server thread holds an `Arc<RwLock<EncyclopediaData>>` snapshot.
 // - The main thread calls `update_data()` during `frame_update()` to push
-//   fresh snapshots (species data is static; future civ/fruit data will
-//   refresh each frame).
+//   fresh snapshots (species data is static; civ and fruit data refresh
+//   each frame).
 // - `tiny_http` handles HTTP on `127.0.0.1:PORT` (localhost only).
 // - Pages are server-rendered HTML with no JavaScript dependencies.
 //
@@ -53,6 +53,32 @@ pub struct KnownCivEntry {
     pub their_opinion: Option<String>,
 }
 
+/// A fruit species entry for the encyclopedia.
+#[derive(Clone, Debug)]
+pub struct FruitEntry {
+    pub id: u16,
+    pub vaelith_name: String,
+    pub english_gloss: String,
+    pub habitat: String,
+    pub rarity: String,
+    pub shape: String,
+    pub color_hex: String,
+    pub glows: bool,
+    pub size_percent: u16,
+    pub greenhouse_cultivable: bool,
+    /// Each part: (type_name, properties, pigment, yield_percent)
+    pub parts: Vec<FruitPartEntry>,
+}
+
+/// A single part within a fruit species entry.
+#[derive(Clone, Debug)]
+pub struct FruitPartEntry {
+    pub part_type: String,
+    pub properties: Vec<String>,
+    pub pigment: Option<String>,
+    pub yield_percent: u8,
+}
+
 /// Shared data snapshot read by the HTTP server thread. Updated by the main
 /// thread via `update_data()`.
 #[derive(Default)]
@@ -64,6 +90,8 @@ pub struct EncyclopediaData {
     pub civilizations: Vec<KnownCivEntry>,
     /// Name of the player's own civilization.
     pub player_civ_name: String,
+    /// All fruit species in the world (not knowledge-gated).
+    pub fruits: Vec<FruitEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -142,12 +170,14 @@ impl EncyclopediaServer {
         game_name: &str,
         civilizations: Vec<KnownCivEntry>,
         player_civ_name: String,
+        fruits: Vec<FruitEntry>,
     ) {
         if let Ok(mut data) = self.data.write() {
             data.current_tick = tick;
             data.game_name = game_name.to_owned();
             data.civilizations = civilizations;
             data.player_civ_name = player_civ_name;
+            data.fruits = fruits;
         }
     }
 
@@ -218,6 +248,17 @@ fn handle_request(
             match data.species.iter().find(|s| s.name == decoded) {
                 Some(entry) => (200, "text/html", render_species_detail(entry, &data)),
                 None => (404, "text/html", render_not_found(&data)),
+            }
+        }
+        "/fruits" => (200, "text/html", render_fruits_list(&data)),
+        p if p.starts_with("/fruits/") => {
+            let id_str = &p["/fruits/".len()..];
+            match id_str.parse::<u16>() {
+                Ok(id) => match data.fruits.iter().find(|f| f.id == id) {
+                    Some(entry) => (200, "text/html", render_fruit_detail(entry, &data)),
+                    None => (404, "text/html", render_not_found(&data)),
+                },
+                Err(_) => (404, "text/html", render_not_found(&data)),
             }
         }
         "/civilizations" => (200, "text/html", render_civilizations_list(&data)),
@@ -302,7 +343,7 @@ fn html_page(title: &str, body: &str, data: &EncyclopediaData) -> String {
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<nav><a href="/">Home</a> · <a href="/species">Species</a> · <a href="/civilizations">Civilizations</a></nav>
+<nav><a href="/">Home</a> · <a href="/species">Species</a> · <a href="/fruits">Fruits</a> · <a href="/civilizations">Civilizations</a></nav>
 <main>
 <h1>{title}</h1>
 {body}
@@ -331,6 +372,7 @@ fn render_index(data: &EncyclopediaData) -> String {
 <h2>Sections</h2>
 <ul>
 <li><a href="/species">Species Bestiary</a> — all known creature types</li>
+<li><a href="/fruits">Fruits</a> — procedurally generated fruit species</li>
 <li><a href="/civilizations">Civilizations</a> — known civilizations and diplomacy</li>
 </ul>"#,
     );
@@ -446,6 +488,124 @@ fn render_civilizations_detail(entry: &KnownCivEntry, data: &EncyclopediaData) -
     );
 
     html_page(&entry.name, &body, data)
+}
+
+fn render_fruits_list(data: &EncyclopediaData) -> String {
+    let mut body = String::new();
+
+    if data.fruits.is_empty() {
+        body.push_str("<p>No fruit species have been generated in this world yet.</p>");
+    } else {
+        body.push_str(&format!(
+            "<p>{} fruit species grow in this world.</p>",
+            data.fruits.len(),
+        ));
+
+        // Group by rarity.
+        for rarity in &["Common", "Uncommon", "Rare"] {
+            let fruits: Vec<_> = data.fruits.iter().filter(|f| f.rarity == *rarity).collect();
+            if fruits.is_empty() {
+                continue;
+            }
+            body.push_str(&format!("<h2>{rarity}</h2>"));
+            body.push_str("<table class=\"fruit-table\"><thead><tr>");
+            body.push_str(
+                "<th>Name</th><th>Gloss</th><th>Habitat</th>\
+                 <th>Shape</th><th>Color</th></tr></thead><tbody>",
+            );
+            for f in &fruits {
+                let color_swatch = format!(
+                    "<span class=\"color-swatch\" style=\"background:{};\"></span>",
+                    html_escape(&f.color_hex),
+                );
+                let glow = if f.glows { " &#x2728;" } else { "" };
+                body.push_str(&format!(
+                    "<tr><td><a href=\"/fruits/{}\">{}</a></td>\
+                     <td>{}</td><td>{}</td><td>{}</td>\
+                     <td>{}{}</td></tr>",
+                    f.id,
+                    html_escape(&f.vaelith_name),
+                    html_escape(&f.english_gloss),
+                    html_escape(&f.habitat),
+                    html_escape(&f.shape),
+                    color_swatch,
+                    glow,
+                ));
+            }
+            body.push_str("</tbody></table>");
+        }
+    }
+
+    html_page("Fruit Species", &body, data)
+}
+
+fn render_fruit_detail(entry: &FruitEntry, data: &EncyclopediaData) -> String {
+    let color_swatch = format!(
+        "<span class=\"color-swatch-lg\" style=\"background:{};\"></span>",
+        html_escape(&entry.color_hex),
+    );
+    let glow_text = if entry.glows { "Yes" } else { "No" };
+    let greenhouse_text = if entry.greenhouse_cultivable {
+        "Yes"
+    } else {
+        "No"
+    };
+
+    let mut body = format!(
+        r#"<p class="species-kind">{rarity} · {habitat}</p>
+<p class="fruit-gloss">{gloss}</p>
+<dl>
+<dt>Shape</dt><dd>{shape}</dd>
+<dt>Color</dt><dd>{swatch}</dd>
+<dt>Size</dt><dd>{size}%</dd>
+<dt>Glows</dt><dd>{glow}</dd>
+<dt>Greenhouse Cultivable</dt><dd>{greenhouse}</dd>
+</dl>"#,
+        rarity = html_escape(&entry.rarity),
+        habitat = html_escape(&entry.habitat),
+        gloss = html_escape(&entry.english_gloss),
+        shape = html_escape(&entry.shape),
+        swatch = color_swatch,
+        size = entry.size_percent,
+        glow = glow_text,
+        greenhouse = greenhouse_text,
+    );
+
+    // Parts table.
+    body.push_str("<h2>Parts</h2>");
+    body.push_str(
+        "<table class=\"fruit-table\"><thead><tr>\
+         <th>Part</th><th>Yield</th><th>Properties</th><th>Pigment</th>\
+         </tr></thead><tbody>",
+    );
+    for part in &entry.parts {
+        let props = if part.properties.is_empty() {
+            "—".to_owned()
+        } else {
+            part.properties
+                .iter()
+                .map(|p| format!("<span class=\"trait\">{}</span>", html_escape(p)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let pigment = part
+            .pigment
+            .as_deref()
+            .map(html_escape)
+            .unwrap_or_else(|| "—".to_owned());
+        body.push_str(&format!(
+            "<tr><td>{}</td><td>{}%</td><td>{}</td><td>{}</td></tr>",
+            html_escape(&part.part_type),
+            part.yield_percent,
+            props,
+            pigment,
+        ));
+    }
+    body.push_str("</tbody></table>");
+
+    body.push_str("<p><a href=\"/fruits\">&larr; Back to fruit species</a></p>");
+
+    html_page(&entry.vaelith_name, &body, data)
 }
 
 /// Map opinion text to a CSS class name for color coding.
@@ -568,6 +728,51 @@ table.civ-table th {
 dl { margin: 1rem 0; }
 dt { color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem; }
 dd { margin-left: 0; font-size: 1rem; }
+
+table.fruit-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+}
+
+table.fruit-table th, table.fruit-table td {
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+}
+
+table.fruit-table th {
+    color: var(--accent);
+    font-weight: normal;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.color-swatch {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    border-radius: 0.15rem;
+    vertical-align: middle;
+    border: 1px solid var(--border);
+}
+
+.color-swatch-lg {
+    display: inline-block;
+    width: 1.5em;
+    height: 1.5em;
+    border-radius: 0.2rem;
+    vertical-align: middle;
+    border: 1px solid var(--border);
+}
+
+.fruit-gloss {
+    font-style: italic;
+    font-size: 1.1rem;
+    color: var(--accent);
+    margin-bottom: 1rem;
+}
 
 .opinion-friendly { color: #7ec8a0; }
 .opinion-neutral { color: var(--text); }

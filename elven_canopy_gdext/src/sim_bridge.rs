@@ -161,9 +161,9 @@ use elven_canopy_sim::session::{
 use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
-    BuildType, CreatureId, FaceDirection, FurnishingType, FurnitureKind, LadderKind,
-    OverlapClassification, Priority, SimUuid, Species, StructureId, VitalStatus, VoxelCoord,
-    VoxelType,
+    BuildType, CreatureId, FaceDirection, FruitSpeciesId, FurnishingType, FurnitureKind,
+    LadderKind, OverlapClassification, Priority, SimUuid, Species, StructureId, VitalStatus,
+    VoxelCoord, VoxelType,
 };
 use godot::prelude::*;
 
@@ -457,6 +457,24 @@ impl SimBridge {
             arr.push(v.z);
         }
         arr
+    }
+
+    /// Return the name of the fruit species at a voxel position, or empty
+    /// string if no fruit species is tracked there. Returns the Vaelith name
+    /// with the English gloss in parentheses: "Thúni Réva (red berry)".
+    #[func]
+    fn get_fruit_species_name(&self, x: i32, y: i32, z: i32) -> GString {
+        let Some(sim) = &self.session.sim else {
+            return GString::new();
+        };
+        let pos = VoxelCoord::new(x, y, z);
+        match sim.fruit_species_at(pos) {
+            Some(species) => {
+                let s = format!("{} ({})", species.vaelith_name, species.english_gloss);
+                GString::from(s.as_str())
+            }
+            None => GString::new(),
+        }
     }
 
     /// Return stats about the player's home tree as a dictionary.
@@ -811,7 +829,10 @@ impl SimBridge {
                 let mut inv_arr = VarArray::new();
                 for stack in sim.inv_items(c.inventory_id) {
                     let mut item_dict = VarDictionary::new();
-                    item_dict.set("kind", GString::from(stack.kind.display_name()));
+                    item_dict.set(
+                        "kind",
+                        GString::from(sim.item_display_name(&stack).as_str()),
+                    );
                     item_dict.set("quantity", stack.quantity as i64);
                     inv_arr.push(&item_dict.to_variant());
                 }
@@ -1292,7 +1313,10 @@ impl SimBridge {
         let mut inv_arr = VarArray::new();
         for stack in sim.inv_items(structure.inventory_id) {
             let mut item_dict = VarDictionary::new();
-            item_dict.set("kind", GString::from(stack.kind.display_name()));
+            item_dict.set(
+                "kind",
+                GString::from(sim.item_display_name(&stack).as_str()),
+            );
             item_dict.set("quantity", stack.quantity as i64);
             inv_arr.push(&item_dict.to_variant());
         }
@@ -1801,7 +1825,10 @@ impl SimBridge {
             let mut inv_arr = VarArray::new();
             for stack in sim.inv_items(pile.inventory_id) {
                 let mut item_dict = VarDictionary::new();
-                item_dict.set("kind", GString::from(stack.kind.display_name()));
+                item_dict.set(
+                    "kind",
+                    GString::from(sim.item_display_name(&stack).as_str()),
+                );
                 item_dict.set("quantity", stack.quantity as i64);
                 inv_arr.push(&item_dict.to_variant());
             }
@@ -1842,7 +1869,10 @@ impl SimBridge {
         let mut inv_arr = VarArray::new();
         for stack in sim.inv_items(pile.inventory_id) {
             let mut item_dict = VarDictionary::new();
-            item_dict.set("kind", GString::from(stack.kind.display_name()));
+            item_dict.set(
+                "kind",
+                GString::from(sim.item_display_name(&stack).as_str()),
+            );
             item_dict.set("quantity", stack.quantity as i64);
             inv_arr.push(&item_dict.to_variant());
         }
@@ -3620,25 +3650,61 @@ impl SimBridge {
         }
     }
 
+    /// Return all cultivable fruit species as an array of dictionaries with
+    /// keys: id (int), name (String), gloss (String). Used by the structure
+    /// info panel to populate the greenhouse species picker.
+    #[func]
+    fn get_cultivable_fruit_species(&self) -> VarArray {
+        let Some(sim) = &self.session.sim else {
+            return VarArray::new();
+        };
+        let mut arr = VarArray::new();
+        for f in sim.db.fruit_species.iter_all() {
+            if !f.greenhouse_cultivable {
+                continue;
+            }
+            let mut dict = VarDictionary::new();
+            dict.set("id", f.id.0 as i32);
+            let name_str = format!("{} ({})", f.vaelith_name, f.english_gloss);
+            dict.set("name", GString::from(name_str.as_str()));
+            arr.push(&dict.to_variant());
+        }
+        arr
+    }
+
     /// Begin furnishing a completed building. `furnishing_type` is a string
     /// matching one of the `FurnishingType` variants ("Dormitory", "Home",
-    /// "DiningHall", "Kitchen", "Workshop", "Storehouse", "ConcertHall").
+    /// "DiningHall", "Kitchen", "Workshop", "Storehouse", "ConcertHall",
+    /// "Greenhouse"). For Greenhouse, `greenhouse_species_id` must be the
+    /// ID of a cultivable fruit species (pass -1 for non-greenhouse types).
     /// Ignored if the structure is not a building or already furnished.
     #[func]
-    fn furnish_structure(&mut self, structure_id: i64, furnishing_type: GString) {
+    fn furnish_structure(
+        &mut self,
+        structure_id: i64,
+        furnishing_type: GString,
+        greenhouse_species_id: i32,
+    ) {
         let ft = match furnishing_type.to_string().as_str() {
             "ConcertHall" => FurnishingType::ConcertHall,
             "DiningHall" => FurnishingType::DiningHall,
             "Dormitory" => FurnishingType::Dormitory,
+            "Greenhouse" => FurnishingType::Greenhouse,
             "Home" => FurnishingType::Home,
             "Kitchen" => FurnishingType::Kitchen,
             "Storehouse" => FurnishingType::Storehouse,
             "Workshop" => FurnishingType::Workshop,
             _ => return,
         };
+        let greenhouse_species = if ft == FurnishingType::Greenhouse && greenhouse_species_id >= 0 {
+            Some(FruitSpeciesId(greenhouse_species_id as u16))
+        } else {
+            None
+        };
         self.apply_or_send(SimAction::FurnishStructure {
             structure_id: StructureId(structure_id as u64),
             furnishing_type: ft,
+            greenhouse_species,
         });
     }
 
@@ -3710,7 +3776,7 @@ impl SimBridge {
         let guard = ENCYCLOPEDIA.lock().unwrap();
         if let Some(server) = &*guard {
             let tick = self.session.current_tick();
-            let (game_name, civs, player_civ_name) = if let Some(sim) = &self.session.sim {
+            let (game_name, civs, player_civ_name, fruits) = if let Some(sim) = &self.session.sim {
                 let known = sim
                     .get_known_civs()
                     .into_iter()
@@ -3730,11 +3796,86 @@ impl SimBridge {
                     .and_then(|id| sim.db.civilizations.get(&id))
                     .map(|c| c.name.clone())
                     .unwrap_or_default();
-                ("Elven Canopy".to_owned(), known, pcn)
+                let fruit_entries = sim
+                    .db
+                    .fruit_species
+                    .iter_all()
+                    .map(Self::fruit_to_entry)
+                    .collect();
+                ("Elven Canopy".to_owned(), known, pcn, fruit_entries)
             } else {
-                (String::new(), Vec::new(), String::new())
+                (String::new(), Vec::new(), String::new(), Vec::new())
             };
-            server.update_data(tick, &game_name, civs, player_civ_name);
+            server.update_data(tick, &game_name, civs, player_civ_name, fruits);
+        }
+    }
+
+    /// Convert a sim `FruitSpecies` to an encyclopedia `FruitEntry`.
+    fn fruit_to_entry(
+        f: &elven_canopy_sim::fruit::FruitSpecies,
+    ) -> crate::encyclopedia_server::FruitEntry {
+        use elven_canopy_sim::fruit::*;
+
+        let habitat = match f.habitat {
+            GrowthHabitat::Branch => "Branch",
+            GrowthHabitat::Trunk => "Trunk",
+            GrowthHabitat::GroundBush => "Ground Bush",
+        };
+        let rarity = match f.rarity {
+            Rarity::Common => "Common",
+            Rarity::Uncommon => "Uncommon",
+            Rarity::Rare => "Rare",
+        };
+        let shape = match f.appearance.shape {
+            FruitShape::Round => "Round",
+            FruitShape::Oblong => "Oblong",
+            FruitShape::Clustered => "Clustered",
+            FruitShape::Pod => "Pod",
+            FruitShape::Nut => "Nut",
+            FruitShape::Gourd => "Gourd",
+        };
+        let c = &f.appearance.exterior_color;
+        let color_hex = format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+
+        let parts = f
+            .parts
+            .iter()
+            .map(|p| {
+                let pt = match p.part_type {
+                    PartType::Flesh => "Flesh",
+                    PartType::Rind => "Rind",
+                    PartType::Seed => "Seed",
+                    PartType::Fiber => "Fiber",
+                    PartType::Sap => "Sap",
+                    PartType::Resin => "Resin",
+                };
+                let props: Vec<String> = p
+                    .properties
+                    .iter()
+                    .map(|prop| format!("{prop:?}"))
+                    .collect();
+                let pigment = p.pigment.map(|d| format!("{d:?}"));
+                crate::encyclopedia_server::FruitPartEntry {
+                    part_type: pt.to_owned(),
+                    properties: props,
+                    pigment,
+                    yield_percent: p.yield_percent,
+                }
+            })
+            .collect();
+
+        crate::encyclopedia_server::FruitEntry {
+            id: f.id.0,
+            vaelith_name: f.vaelith_name.clone(),
+            english_gloss: f.english_gloss.clone(),
+            habitat: habitat.to_owned(),
+            rarity: rarity.to_owned(),
+            shape: shape.to_owned(),
+            color_hex,
+            glows: f.appearance.glows,
+            size_percent: f.appearance.size_percent,
+            greenhouse_cultivable: f.greenhouse_cultivable,
+            parts,
         }
     }
 }

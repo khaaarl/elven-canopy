@@ -135,9 +135,12 @@ pub enum SimAction {
         name: Option<String>,
     },
     /// Begin furnishing a completed building with the given type (e.g. Dormitory).
+    /// For `Greenhouse`, `greenhouse_species` must be set to a cultivable fruit.
     FurnishStructure {
         structure_id: StructureId,
         furnishing_type: FurnishingType,
+        /// Required for Greenhouse; ignored for other types.
+        greenhouse_species: Option<FruitSpeciesId>,
     },
     /// Assign a creature to a home structure, or unassign (`structure_id: None`).
     /// Only valid for Elf creatures and Home-furnished buildings.

@@ -1,12 +1,13 @@
 ## Renders furniture items inside buildings using MultiMesh instances.
 ##
-## Each furniture kind (Bed, Bench, Counter, Shelf, Table, Workbench) gets its
-## own MultiMeshInstance3D with a distinct box size and color. The data comes
-## from bridge.get_furniture_positions() which returns flat (x, y, z, kind)
+## Each furniture kind (Bed, Bench, Counter, Shelf, Table, Workbench, Planter)
+## gets its own MultiMeshInstance3D with a distinct box size and color. The data
+## comes from bridge.get_furniture_positions() which returns flat (x, y, z, kind)
 ## quads. All instances are rebuilt each time refresh() is called.
 ##
 ## Furniture kind discriminants (from FurnitureKind in types.rs):
-##   0 = Bed, 1 = Bench, 2 = Counter, 3 = Shelf, 4 = Table, 5 = Workbench
+##   0 = Bed, 1 = Bench, 2 = Counter, 3 = Shelf, 4 = Table, 5 = Workbench,
+##   6 = Planter
 ##
 ## See also: building_renderer.gd for the MultiMesh pattern,
 ## sim_bridge.rs for get_furniture_positions(),
@@ -16,8 +17,8 @@
 extends Node3D
 
 ## Per-kind mesh sizes (Vector3) and colors (Color), indexed by kind int.
-## 0=Bed, 1=Bench, 2=Counter, 3=Shelf, 4=Table, 5=Workbench
-const KIND_COUNT := 6
+## 0=Bed, 1=Bench, 2=Counter, 3=Shelf, 4=Table, 5=Workbench, 6=Planter
+const KIND_COUNT := 7
 
 var _bridge: SimBridge
 var _instances: Array = []
@@ -28,6 +29,7 @@ var _sizes: Array = [
 	Vector3(0.3, 0.60, 0.8),  # Shelf
 	Vector3(0.7, 0.30, 0.7),  # Table
 	Vector3(0.8, 0.35, 0.5),  # Workbench
+	Vector3(0.7, 0.20, 0.7),  # Planter
 ]
 var _colors: Array = [
 	Color(0.55, 0.35, 0.18),  # Bed: warm brown (#8C5A2F approx)
@@ -36,6 +38,7 @@ var _colors: Array = [
 	Color(0.72, 0.56, 0.38),  # Shelf: pale (#B89060)
 	Color(0.36, 0.23, 0.10),  # Table: dark oak (#5C3A1A)
 	Color(0.48, 0.23, 0.16),  # Workbench: reddish (#7A3B2A)
+	Color(0.30, 0.50, 0.22),  # Planter: earthy green (#4C8038)
 ]
 
 

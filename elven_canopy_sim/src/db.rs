@@ -6,7 +6,7 @@
 //
 // ## Table layout
 //
-// The database has 25 tables organized in three tiers:
+// The database has 26 tables organized in three tiers:
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures` — the
 // primary simulation entities, keyed by UUID-based or sequential IDs.
@@ -50,6 +50,7 @@
 // **Critical constraint: determinism.** All iteration is in deterministic
 // BTreeMap order. No hash-based collections.
 
+use crate::fruit::{FruitSpecies, FruitSpeciesTable};
 use crate::inventory::{EffectKind, ItemKind, Material};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
@@ -549,6 +550,16 @@ pub struct CompletedStructure {
     /// A target of 0 or missing entry means "don't craft this recipe."
     #[serde(default)]
     pub workshop_recipe_targets: std::collections::BTreeMap<String, u32>,
+    /// For greenhouses: the fruit species being cultivated.
+    #[serde(default)]
+    pub greenhouse_species: Option<crate::fruit::FruitSpeciesId>,
+    /// Whether this greenhouse is actively producing fruit.
+    #[serde(default)]
+    pub greenhouse_enabled: bool,
+    /// Tick at which the greenhouse last produced a fruit. Used to pace
+    /// production without a dedicated scheduled event.
+    #[serde(default)]
+    pub greenhouse_last_production_tick: u64,
 }
 
 impl CompletedStructure {
@@ -578,6 +589,9 @@ impl CompletedStructure {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
         }
     }
 
@@ -658,6 +672,7 @@ impl CompletedStructure {
             }
             crate::types::FurnishingType::Kitchen | crate::types::FurnishingType::Storehouse => 3,
             crate::types::FurnishingType::DiningHall | crate::types::FurnishingType::Workshop => 4,
+            crate::types::FurnishingType::Greenhouse => 2,
             crate::types::FurnishingType::Home => unreachable!(),
         };
 
@@ -869,6 +884,7 @@ impl std::fmt::Debug for SimDb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SimDb")
             .field("civilizations", &self.civilizations.len())
+            .field("fruit_species", &self.fruit_species.len())
             .field("civ_relationships", &self.civ_relationships.len())
             .field("creatures", &self.creatures.len())
             .field("thoughts", &self.thoughts.len())
@@ -889,6 +905,9 @@ impl std::fmt::Debug for SimDb {
 pub struct SimDb {
     #[table(singular = "civilization")]
     pub civilizations: CivilizationTable,
+
+    #[table(singular = "fruit_species")]
+    pub fruit_species: FruitSpeciesTable,
 
     #[table(singular = "civ_relationship",
             auto,

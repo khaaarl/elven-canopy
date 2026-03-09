@@ -47,6 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
+[~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 [~] F-projectiles          Projectile physics system (arrows)
@@ -105,7 +106,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-fruit-prod           Basic fruit production and harvesting
-[ ] F-fruit-variety        Procedural fruit variety and processing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-hostile-detection    Hostile detection and faction logic
 [ ] F-hp-ui                HP bars in creature UI
@@ -1174,7 +1174,7 @@ food system (F-fruit-variety).
 **Related:** F-branch-growth, F-elf-needs, F-food-chain, F-food-gauge, F-fruit-variety, F-population
 
 #### F-fruit-variety — Procedural fruit variety and processing
-**Status:** Todo · **Phase:** 7 · **Refs:** §13
+**Status:** In Progress · **Phase:** 7 · **Refs:** §13
 
 Procedural fruit generation system: worldgen creates 20-40+ unique fruit
 species per game from composable parts (flesh, rind, seed, fiber, sap,
@@ -1184,6 +1184,19 @@ properties, not fruit IDs. Coverage constraints guarantee every world has
 enough fruits for food, fiber, dye, alchemy, medicine, and other chains.
 Vaelith names generated from property-derived morphemes. Greenhouses
 cultivate a single chosen species. Some fruits are wild-only.
+
+**Done so far:** Fruit species types and procedural generation with
+coverage-biased algorithm. FruitSpecies tabulosity table in SimDb.
+Worldgen integration (species generation + voxel-to-species mapping).
+Encyclopedia server with /fruits list and detail pages. Greenhouse
+furnishing type with species picker UI, autonomous production during
+logistics heartbeat. Fruit-specific item display names in all inventory
+UI (Vaelith name + shape noun, e.g. "Shinethúni Fruit x3"). Material
+enum with FruitSpecies variant and serde support.
+
+**Still TODO:** Property-based recipe matching, fruit processing paths,
+wild-only species restrictions, fruit part rendering/visual
+differentiation, deeper integration with food chain and cooking.
 
 **Draft:** `docs/drafts/fruit_variety.md`
 
