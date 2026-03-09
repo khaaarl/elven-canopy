@@ -18,6 +18,8 @@
 //   (not UUIDs) since nav nodes are rebuilt from world geometry and never
 //   persisted across sessions.
 // - **Simulation enums:** `Species`, `Priority`, `BuildType`.
+// - **Vital status:** `VitalStatus` (Alive/Dead), `DeathCause` (Debug/Damage).
+//   Dead creatures remain in the DB; all live-creature queries filter by status.
 // - **Thought system:** `ThoughtKind` — event-driven creature thoughts with
 //   per-kind dedup and expiry. `Thought` — a timestamped thought instance.
 // - **Voxel types:** `VoxelType` — the material at each grid cell (`Air`,
@@ -559,6 +561,37 @@ impl FurnitureKind {
             FurnitureKind::Workbench => "workbenches",
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Vital status and death
+// ---------------------------------------------------------------------------
+
+/// Whether a creature is alive or dead. Dead creatures remain in the database
+/// (row NOT deleted) to support future states (ghost, spirit absorbed into
+/// tree, undead) and to preserve history for UI/narrative. The `Dead` variant
+/// terminates heartbeat/activation chains and excludes the creature from
+/// rendering, task assignment, and all active simulation queries.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum VitalStatus {
+    #[default]
+    Alive,
+    Dead,
+    // Future: Ghost, SpiritInTree, Undead, etc.
+}
+
+/// Why a creature died. Stored in the `CreatureDied` event for narrative
+/// display and future gameplay effects (e.g., different funeral rites for
+/// starvation vs. combat death).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeathCause {
+    /// Killed by debug command.
+    Debug,
+    /// HP reduced to zero by damage.
+    Damage,
+    // Future: Starvation, Fire, Falling, etc.
 }
 
 // ---------------------------------------------------------------------------

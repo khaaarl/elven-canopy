@@ -31,6 +31,8 @@
 // - `bread_restore_pct` — percentage of `food_max` restored when eating
 //   bread from inventory (default 30). Lower than fruit since bread is
 //   convenient (no travel) but less nutritious.
+// - `hp_max` — maximum (and starting) hit points. Creature dies when HP
+//   reaches 0. Per-species values set in `config.rs`.
 // - `rest_max` — maximum (and starting) rest level. Same scale as `food_max`.
 // - `rest_decay_per_tick` — rest subtracted per sim tick, batch-applied at
 //   heartbeat. Set to 0 for species that don't need sleep.
@@ -116,6 +118,10 @@ pub struct SpeciesData {
     #[serde(default)]
     pub rope_ladder_tpv: Option<u64>,
 
+    /// Maximum (and starting) hit points. Creature dies when HP reaches 0.
+    #[serde(default = "default_hp_max")]
+    pub hp_max: i64,
+
     /// Maximum rest level (also the starting value). Same scale as `food_max`.
     /// 0 = species never gets tired (rest system is inert).
     #[serde(default = "default_rest_max")]
@@ -160,6 +166,10 @@ fn default_food_max() -> i64 {
 
 fn default_food_decay_per_tick() -> i64 {
     3_333_333_333
+}
+
+fn default_hp_max() -> i64 {
+    100
 }
 
 fn default_rest_max() -> i64 {

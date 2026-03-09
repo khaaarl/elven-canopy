@@ -162,7 +162,8 @@ use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
     BuildType, CreatureId, FaceDirection, FurnishingType, FurnitureKind, LadderKind,
-    OverlapClassification, Priority, SimUuid, Species, StructureId, VoxelCoord, VoxelType,
+    OverlapClassification, Priority, SimUuid, Species, StructureId, VitalStatus, VoxelCoord,
+    VoxelType,
 };
 use godot::prelude::*;
 
@@ -193,6 +194,11 @@ fn parse_species(name: &str) -> Option<Species> {
         "Troll" => Some(Species::Troll),
         _ => None,
     }
+}
+
+/// Parse a UUID string into a `CreatureId`.
+fn parse_creature_id(uuid_str: &str) -> Option<CreatureId> {
+    SimUuid::from_str(uuid_str).map(CreatureId)
 }
 
 /// Convert a `Species` enum variant to its display string.
@@ -734,13 +740,14 @@ impl SimBridge {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.species == species)
+            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
             .nth(index as usize);
         match creature {
             Some(c) => {
                 let ma = sim.db.move_actions.get(&c.id);
                 let (x, y, z): (f32, f32, f32) = c.interpolated_position(render_tick, ma.as_ref());
                 let mut dict = VarDictionary::new();
+                dict.set("id", GString::from(c.id.0.to_string().as_str()));
                 dict.set("species", species_name.clone());
                 dict.set("x", x);
                 dict.set("y", y);
@@ -761,6 +768,8 @@ impl SimBridge {
                     dict.set("task_location_y", task_pos.y);
                     dict.set("task_location_z", task_pos.z);
                 }
+                dict.set("hp", c.hp);
+                dict.set("hp_max", c.hp_max);
                 dict.set("food", c.food);
                 let food_max = sim.species_table[&species].food_max;
                 dict.set("food_max", food_max);
@@ -848,9 +857,12 @@ impl SimBridge {
         ];
 
         for &sp in &species_list {
-            for (idx, creature) in
-                (0_i32..).zip(sim.db.creatures.iter_all().filter(|c| c.species == sp))
-            {
+            for (idx, creature) in (0_i32..).zip(
+                sim.db
+                    .creatures
+                    .iter_all()
+                    .filter(|c| c.species == sp && c.vital_status == VitalStatus::Alive),
+            ) {
                 let task_kind = creature
                     .current_task
                     .as_ref()
@@ -1425,7 +1437,7 @@ impl SimBridge {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.species == Species::Elf)
+            .filter(|c| c.species == Species::Elf && c.vital_status == VitalStatus::Alive)
             .enumerate()
         {
             let mut dict = VarDictionary::new();
@@ -1616,7 +1628,12 @@ impl SimBridge {
             return PackedVector3Array::new();
         };
         let mut arr = PackedVector3Array::new();
-        for creature in sim.db.creatures.iter_all().filter(|c| c.species == species) {
+        for creature in sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
+        {
             let ma = sim.db.move_actions.get(&creature.id);
             let (x, y, z) = creature.interpolated_position(render_tick, ma.as_ref());
             arr.push(Vector3::new(x, y, z));
@@ -1883,6 +1900,44 @@ impl SimBridge {
     fn send_debug_notification(&mut self, message: GString) {
         self.apply_or_send(SimAction::DebugNotification {
             message: message.to_string(),
+        });
+    }
+
+    // -------------------------------------------------------------------
+    // HP / damage / death
+    // -------------------------------------------------------------------
+
+    /// Kill a creature immediately (debug/testing). Triggers full death
+    /// handling: task interruption, inventory drop, event emission, etc.
+    #[func]
+    fn debug_kill_creature(&mut self, creature_uuid: GString) {
+        let Some(creature_id) = parse_creature_id(&creature_uuid.to_string()) else {
+            return;
+        };
+        self.apply_or_send(SimAction::DebugKillCreature { creature_id });
+    }
+
+    /// Deal damage to a creature. If HP reaches 0, the creature dies.
+    #[func]
+    fn damage_creature(&mut self, creature_uuid: GString, amount: i64) {
+        let Some(creature_id) = parse_creature_id(&creature_uuid.to_string()) else {
+            return;
+        };
+        self.apply_or_send(SimAction::DamageCreature {
+            creature_id,
+            amount,
+        });
+    }
+
+    /// Heal a creature (no effect on dead creatures).
+    #[func]
+    fn heal_creature(&mut self, creature_uuid: GString, amount: i64) {
+        let Some(creature_id) = parse_creature_id(&creature_uuid.to_string()) else {
+            return;
+        };
+        self.apply_or_send(SimAction::HealCreature {
+            creature_id,
+            amount,
         });
     }
 

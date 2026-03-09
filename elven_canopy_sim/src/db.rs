@@ -10,6 +10,9 @@
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures` — the
 // primary simulation entities, keyed by UUID-based or sequential IDs.
+// `Creature` includes `hp`/`hp_max` (hit points) and `vital_status`
+// (`Alive`/`Dead`, `#[indexed]` for efficient filtering). Dead creatures
+// remain in the DB; all live-creature queries filter by vital_status.
 //
 // **Child tables:** `thoughts`, `move_actions`, `notifications`, `inventories`,
 // `item_stacks`, `ground_piles`, `logistics_wants`, `furniture`,
@@ -55,7 +58,7 @@ use crate::types::{
     InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId, NavNodeId, NotificationId,
     ProjectId, Species, StructureId, TaskAcquireDataId, TaskBlueprintRefId, TaskCraftDataId,
     TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId,
-    ThoughtKind, VoxelCoord,
+    ThoughtKind, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -254,6 +257,18 @@ pub struct Creature {
     /// Tick when the current action completes. `None` when idle.
     #[serde(default)]
     pub next_available_tick: Option<u64>,
+    /// Current hit points. Reaches 0 → creature dies.
+    #[serde(default)]
+    pub hp: i64,
+    /// Maximum hit points (set from `SpeciesData::hp_max` at spawn).
+    #[serde(default)]
+    pub hp_max: i64,
+    /// Whether this creature is alive, dead, or in a future supernatural state.
+    /// Dead creatures remain in the table but are excluded from all active
+    /// simulation queries (rendering, task assignment, heartbeat, etc.).
+    #[serde(default)]
+    #[indexed]
+    pub vital_status: VitalStatus,
 }
 
 /// A timestamped thought belonging to a creature.

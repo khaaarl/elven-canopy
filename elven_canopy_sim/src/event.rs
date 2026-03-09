@@ -26,10 +26,15 @@
 // breaks ties within the same tick deterministically — events scheduled first
 // fire first.
 //
+// Activation and heartbeat events check `vital_status` before processing
+// and do not reschedule for dead creatures, effectively terminating their
+// event chains.
+//
 // ## `SimEvent` — player-visible narrative events (output)
 //
 // Emitted by the sim as output for the UI event log. Not queued — produced
 // synchronously during event processing and collected by the caller.
+// Includes `CreatureDied` (with cause: Debug or Damage).
 //
 // See also: `sim.rs` for the tick loop that processes scheduled events,
 // `types.rs` for entity IDs and the `Species` enum, `task.rs` for the task
@@ -176,6 +181,13 @@ pub enum SimEventKind {
     BuildCompleted { project_id: ProjectId },
     /// A build project has been cancelled.
     BuildCancelled { project_id: ProjectId },
+    /// A creature has died.
+    CreatureDied {
+        creature_id: CreatureId,
+        species: Species,
+        position: VoxelCoord,
+        cause: DeathCause,
+    },
 }
 
 #[cfg(test)]

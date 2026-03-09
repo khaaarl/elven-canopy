@@ -108,7 +108,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-variety        Procedural fruit variety and processing
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-hostile-detection    Hostile detection and faction logic
-[ ] F-hp-death             HP, VitalStatus, and creature death handling
+[ ] F-hp-ui                HP bars in creature UI
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -204,6 +204,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
 [x] F-hostile-species      Goblin, Orc, and Troll species
+[x] F-hp-death             HP, VitalStatus, and creature death handling
 [x] F-items                Items and inventory system
 [x] F-keybind-help         Keyboard shortcuts help overlay
 [x] F-ladders              Rope/wood ladders as cheap connectors
@@ -909,11 +910,11 @@ Remaining: additional test coverage audit per design doc.
 #### F-creature-death — Basic creature death (starvation)
 **Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
 
-When a creature's food gauge reaches zero, it dies and is removed from the
-simulation. Basic death mechanic without the spiritual dimension (soul
-passage, resurrection) covered by F-soul-mech. Needs: death event, creature
-removal, corpse cleanup, UI notification. A prerequisite for food scarcity
-having real consequences.
+When a creature's food gauge reaches zero, it dies (vital_status → Dead,
+creature row kept in DB). Basic death mechanic without the spiritual
+dimension (soul passage, resurrection) covered by F-soul-mech. Needs:
+starvation trigger at food=0, death via F-hp-death handler, UI notification.
+A prerequisite for food scarcity having real consequences.
 
 Superseded by F-hp-death which covers the general death system including
 combat death. F-creature-death covers the starvation trigger specifically.
@@ -985,14 +986,13 @@ panel and as overhead bar.
 **Status:** Done
 
 #### F-hp-death — HP, VitalStatus, and creature death handling
-**Status:** Todo
+**Status:** Done
 
 Add hp, hp_max, vital_status fields to Creature. VitalStatus enum (Alive, Dead, future: Ghost, SpiritInTree, Undead). hp_max in SpeciesData. Death transition: vital_status → Dead, creature row NOT deleted (supports future states). On death: call unified task interruption (F-task-interruption), drop inventory as ground pile, clear assigned_home, remove from spatial index, emit CreatureDied event, terminate activation/heartbeat chains (no rescheduling). All existing queries that iterate creatures must filter by vital_status == Alive (rendering, task assignment, logistics, heartbeat processing). #[indexed] on vital_status for efficient filtering. #[serde(default)] on new fields for save compat. Supersedes F-creature-death (which only covered starvation — this is the general death system). Debug "kill creature" command for testing.
 
 **Draft:** docs/drafts/combat_military.md (§3)
 
-**Blocks:** F-combat, F-melee-action, F-shoot-action
-**Related:** F-creature-death
+**Related:** F-creature-death, F-hp-ui
 
 #### F-melee-action — Melee attack action
 **Status:** Todo
@@ -1005,7 +1005,6 @@ Melee strike as a creature ACTION (not a task). Check cooldown (current_tick - l
 
 **Draft:** docs/drafts/combat_military.md (§5 "Melee Attack Action")
 
-**Blocked by:** F-hp-death
 **Blocks:** F-attack-task, F-combat, F-enemy-ai
 
 #### F-move-interp — Smooth creature movement interpolation
@@ -1051,7 +1050,7 @@ Ranged attack as a creature ACTION. Requires: LOS to target (voxel ray march / D
 
 **Draft:** docs/drafts/combat_military.md (§5)
 
-**Blocked by:** F-hp-death, F-projectiles
+**Blocked by:** F-projectiles
 **Blocks:** F-combat
 
 #### F-task-interruption — Unified task interruption and cleanup
@@ -1581,7 +1580,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-hp-death, F-melee-action, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action, F-spatial-index, F-task-interruption
+**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-melee-action, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1633,6 +1632,23 @@ Activation-driven hostile scanning. On each creature activation, scan for hostil
 **Draft:** docs/drafts/combat_military.md (§6, §7)
 
 **Blocks:** F-attack-move, F-combat, F-enemy-ai, F-flee
+
+#### F-hp-ui — HP bars in creature UI
+**Status:** Todo
+
+Display creature HP in the game UI. Two elements:
+
+1. **Creature info panel health bar:** A reddish horizontal bar in the
+   right-side creature info panel showing current/max HP as numbers within
+   the bar (e.g. "87 / 100"). Uses the hp and hp_max fields already exposed
+   by SimBridge's creature info dict.
+
+2. **Overhead health bar on sprites:** When a creature's HP is below max,
+   render a thin health bar hovering above its billboard sprite. No numbers,
+   just a proportional fill bar. Hidden when HP is full (no visual clutter
+   in peacetime). Needs hp/hp_max data piped to the sprite renderers.
+
+**Related:** F-hp-death
 
 #### F-military-campaign — Send elves on world expeditions
 **Status:** Todo · **Phase:** 8+ · **Refs:** §26

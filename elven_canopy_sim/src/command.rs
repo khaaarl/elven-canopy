@@ -45,6 +45,9 @@
 //   CivRelationship row. No-op if already aware.
 // - `SetCivOpinion` — update a civ's opinion of another civ. No-op if
 //   unaware (no CivRelationship row exists).
+// - `DebugKillCreature` — kill a creature immediately (debug/testing).
+// - `DamageCreature` — reduce a creature's HP. Death at 0 HP.
+// - `HealCreature` — restore a creature's HP (clamped to hp_max, no-op on dead).
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -196,6 +199,21 @@ pub enum SimAction {
         civ_id: CivId,
         target_civ: CivId,
         opinion: CivOpinion,
+    },
+    /// Kill a creature immediately (debug/testing). Triggers full death
+    /// handling: task interruption, inventory drop, event emission, etc.
+    DebugKillCreature { creature_id: CreatureId },
+    /// Deal damage to a creature. Positive `amount` reduces HP. If HP reaches
+    /// 0 the creature dies via the standard death handler.
+    DamageCreature {
+        creature_id: CreatureId,
+        amount: i64,
+    },
+    /// Heal a creature. Positive `amount` restores HP up to `hp_max`.
+    /// No effect on dead creatures.
+    HealCreature {
+        creature_id: CreatureId,
+        amount: i64,
     },
 }
 
