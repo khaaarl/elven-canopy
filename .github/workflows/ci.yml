@@ -1,11 +1,12 @@
 # CI workflow: Formatting, linting, tests, and coverage for Rust and GDScript.
 #
-# Five independent jobs:
+# Six independent jobs:
 # - rust-lint: cargo fmt --check + cargo clippy (no Godot needed, fast)
 # - gdext-build: compile-check elven_canopy_gdext (Godot binding crate)
 # - rust-test: unit tests + multiplayer integration tests (high thread count)
 # - coverage: code coverage via cargo-llvm-cov, uploaded to Codecov
 # - gdscript: gdformat --check + gdlint
+# - gdscript-parse-check: build gdext + launch Godot to check all scripts load
 #
 # Triggers on pushes and pull requests that touch relevant files.
 
@@ -134,3 +135,36 @@ jobs:
 
       - name: Run GDScript linter
         run: gdlint godot/scripts/*.gd
+
+  gdscript-parse-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build gdext
+        run: cargo build -p elven_canopy_gdext
+
+      - name: Install Godot
+        run: |
+          wget -q https://github.com/godotengine/godot-builds/releases/download/4.6.1-stable/Godot_v4.6.1-stable_linux.x86_64.zip
+          unzip -q Godot_v4.6.1-stable_linux.x86_64.zip
+          sudo mv Godot_v4.6.1-stable_linux.x86_64 /usr/local/bin/godot
+          chmod +x /usr/local/bin/godot
+
+      - name: Ensure godot/target symlink
+        run: ln -sf ../target godot/target
+
+      - name: Import Godot project
+        run: godot --path godot --headless --import --quit 2>/dev/null || true
+
+      - name: Check GDScript parse validity
+        run: |
+          OUTPUT="$(xvfb-run godot --path godot --quit 2>&1)" || true
+          if printf '%s' "$OUTPUT" | grep -q "SCRIPT ERROR"; then
+            echo "$OUTPUT" >&2
+            echo "GDScript parse check failed!" >&2
+            exit 1
+          fi
+          echo "GDScript parse check passed."

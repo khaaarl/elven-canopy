@@ -7,6 +7,10 @@
 ## Keyboard hotkeys: N = New Game, L = Load Game (if saves exist), Q = Quit.
 ## Hotkeys are suppressed while the load dialog is open (_dialog_open flag).
 ##
+## On startup, _preload_all_scripts() eagerly loads every .gd file in
+## res://scripts/ to surface parse errors immediately (e.g. duplicate variable
+## declarations) rather than deferring them to when a panel is first opened.
+##
 ## All UI elements are built programmatically in _ready(), consistent with
 ## the project's existing UI style (see action_toolbar.gd).
 ##
@@ -21,6 +25,8 @@ var _dialog_open: bool = false
 
 
 func _ready() -> void:
+	_preload_all_scripts()
+
 	# Full-rect dark background.
 	var bg := ColorRect.new()
 	bg.color = Color(0.12, 0.14, 0.10, 1.0)
@@ -76,6 +82,22 @@ func _ready() -> void:
 	quit_btn.custom_minimum_size = Vector2(200, 50)
 	quit_btn.pressed.connect(func(): get_tree().quit())
 	vbox.add_child(quit_btn)
+
+
+func _preload_all_scripts() -> void:
+	var dir := DirAccess.open("res://scripts/")
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var file_name := dir.get_next()
+	while file_name != "":
+		if file_name.ends_with(".gd"):
+			var path := "res://scripts/" + file_name
+			var script = load(path)
+			if script == null:
+				push_error("Failed to load script: " + path)
+		file_name = dir.get_next()
+	dir.list_dir_end()
 
 
 func _has_save_files() -> bool:

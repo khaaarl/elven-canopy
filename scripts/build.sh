@@ -24,6 +24,21 @@ cd "$REPO_ROOT"
 
 MODE="${1:-debug}"
 
+# --- Find the Godot binary ----------------------------------------------------
+# Snap installs as godot-4, some systems use godot4, others just godot.
+
+find_godot() {
+    for CMD in godot-4 godot4 godot; do
+        if command -v "$CMD" &>/dev/null; then
+            echo "$CMD"
+            return
+        fi
+    done
+    echo ""
+}
+
+GODOT="$(find_godot)"
+
 # --- Ensure the godot/target symlink exists -----------------------------------
 
 LINK="godot/target"
@@ -46,8 +61,33 @@ fi
 ensure_godot_imported() {
     if [ ! -d "$REPO_ROOT/godot/.godot" ]; then
         echo "First run: importing Godot project..."
-        godot --path "$REPO_ROOT/godot" --headless --import --quit &>/dev/null || true
+        "$GODOT" --path "$REPO_ROOT/godot" --headless --import --quit &>/dev/null || true
     fi
+}
+
+# --- GDScript parse check -----------------------------------------------------
+# Launches Godot to the main menu (which eagerly loads all scripts via
+# _preload_all_scripts in main_menu.gd), then immediately quits. Uses
+# xvfb-run to provide a virtual display so GDExtension loads properly.
+# Grep the output for SCRIPT ERROR to detect parse failures.
+
+godot_script_check() {
+    if [ -z "$GODOT" ]; then
+        echo "Error: Godot not found (tried godot-4, godot4, godot)" >&2
+        exit 1
+    fi
+    echo "Building elven_canopy_gdext for GDScript check..."
+    cargo build -p elven_canopy_gdext
+    ensure_godot_imported
+    echo "Checking GDScript parse validity..."
+    OUTPUT="$(xvfb-run "$GODOT" --path "$REPO_ROOT/godot" --quit 2>&1)" || true
+    if printf '%s' "$OUTPUT" | grep -q "SCRIPT ERROR"; then
+        echo "$OUTPUT" >&2
+        echo "" >&2
+        echo "GDScript parse check failed!" >&2
+        exit 1
+    fi
+    echo "GDScript parse check passed."
 }
 
 # --- Build --------------------------------------------------------------------
@@ -77,6 +117,8 @@ case "$MODE" in
         ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests"
         echo "Running all other crate tests..."
         cargo test $ALL_TEST_PACKAGES -- --test-threads=16
+        echo ""
+        godot_script_check
         echo ""
         echo "All tests passed."
         ;;
@@ -112,6 +154,10 @@ case "$MODE" in
         echo "Running tests for:$OTHER_PACKAGES"
         cargo test $OTHER_PACKAGES -- --test-threads=16
         echo ""
+        if printf '%s' "$CHANGED_FILES" | grep -q '\.gd$'; then
+            godot_script_check
+            echo ""
+        fi
         echo "All tests passed."
         ;;
     run)
@@ -119,7 +165,7 @@ case "$MODE" in
         cargo build -p elven_canopy_gdext
         ensure_godot_imported
         echo "Launching Elven Canopy..."
-        RUST_BACKTRACE=1 godot --path "$REPO_ROOT/godot"
+        RUST_BACKTRACE=1 "$GODOT" --path "$REPO_ROOT/godot"
         ;;
     run-branch)
         BRANCH_NAME="${2:-}"
@@ -167,7 +213,7 @@ case "$MODE" in
         cargo build -p elven_canopy_gdext
         ensure_godot_imported
         echo "Launching Elven Canopy..."
-        RUST_BACKTRACE=1 godot --path "$REPO_ROOT/godot"
+        RUST_BACKTRACE=1 "$GODOT" --path "$REPO_ROOT/godot"
         ;;
     coverage)
         if ! command -v cargo-llvm-cov &>/dev/null; then

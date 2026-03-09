@@ -743,7 +743,6 @@ func _update_crafting(info: Dictionary, furnishing: String) -> void:
 
 	_crafting_details_enabled_check.set_pressed_no_signal(workshop_enabled)
 
-	var recipe_targets: Dictionary = info.get("workshop_recipe_targets", {})
 	var recipe_stocks: Dictionary = info.get("workshop_recipe_stocks", {})
 
 	# Build recipe rows once; update in-place on subsequent frames.

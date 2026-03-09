@@ -15,6 +15,7 @@ target
 
 # Godot
 .godot
+*.uid
 builds
 
 # Python
