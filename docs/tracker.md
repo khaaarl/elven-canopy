@@ -47,6 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
+[~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
@@ -96,7 +97,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-encyclopedia-know    Encyclopedia civ/fruit knowledge pages
 [ ] F-encyclopedia-srv     Embedded localhost HTTP encyclopedia server
-[ ] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
@@ -1638,9 +1638,13 @@ Weapon types with different ranges, damage, and crafting requirements.
 **Related:** F-bldg-workshop
 
 #### F-enemy-ai — Hostile creature AI (goblin/orc/troll behavior)
-**Status:** Todo
+**Status:** In Progress
 
-Simple aggression AI for non-civ hostile creatures. On activation: if already engaged (has AttackTarget task with living target), continue pursuit. Otherwise scan for hostiles via F-hostile-detection, select closest by squared euclidean distance, pathfind toward it. When adjacent, perform melee attack action. When no targets found, wander. Two-phase proximity: squared distance filter (cheap) then pathfind to nearest candidates. This is the first "it all comes together" milestone — debug-spawn a goblin and watch it chase and attack an elf.
+Simple aggression AI for non-civ hostile creatures. This is the first "it all comes together" milestone — debug-spawn a goblin and watch it chase and attack an elf.
+
+**Done so far:** Simplified hostile AI via the wander path (no tasks, no formal detection/preemption). `Species::is_hostile()` gates behavior for Goblin/Orc/Troll. On each activation with no task, `hostile_pursue()` collects living elf nav nodes, runs Dijkstra to find the nearest reachable elf, A* to get a path, and moves one edge toward it. When in melee range, auto-calls `try_melee_strike()`. On cooldown, waits in place and re-activates when cooldown expires. Falls back to random wander if no elf reachable. Events threaded through the activation chain so combat events (CreatureDamaged, CreatureDied) are properly emitted. Refactored `wander()` into `hostile_pursue()`, `random_wander()`, and shared `move_one_step()`.
+
+**Not yet done:** Formal hostile detection system (F-hostile-detection) with configurable detection range, CombatAI enum on SpeciesData, and faction-based hostility. Task-driven attack (F-attack-task) with AttackTarget task kind and dynamic pursuit. Preemption system (F-preemption) so combat can interrupt lower-priority tasks. Two-phase proximity optimization (squared distance filter before pathfinding). Target selection by closest distance rather than first-by-ID. Path caching to avoid Dijkstra+A* on every activation.
 
 **Draft:** docs/drafts/combat_military.md (§6 "Initial Behavior")
 

@@ -1468,7 +1468,7 @@ impl SimState {
     }
 
     /// Process a single scheduled event.
-    fn process_event(&mut self, kind: ScheduledEventKind, _events: &mut Vec<SimEvent>) {
+    fn process_event(&mut self, kind: ScheduledEventKind, events: &mut Vec<SimEvent>) {
         match kind {
             ScheduledEventKind::CreatureHeartbeat { creature_id } => {
                 // Dead creatures: do not process heartbeat or reschedule.
@@ -1671,7 +1671,7 @@ impl SimState {
                 }
             }
             ScheduledEventKind::CreatureActivation { creature_id } => {
-                self.process_creature_activation(creature_id);
+                self.process_creature_activation(creature_id, events);
             }
             ScheduledEventKind::TreeHeartbeat { tree_id } => {
                 if self.trees.contains_key(&tree_id) {
@@ -2048,7 +2048,7 @@ impl SimState {
     /// 1. Resolve the completed action's effects (e.g., delete MoveAction row).
     /// 2. Clear action state.
     /// 3. Decision cascade: continue task, find new task, or wander.
-    fn process_creature_activation(&mut self, creature_id: CreatureId) {
+    fn process_creature_activation(&mut self, creature_id: CreatureId, events: &mut Vec<SimEvent>) {
         let (mut current_node, species, action_kind) = {
             let creature = match self.db.creatures.get(&creature_id) {
                 Some(c) if c.vital_status == VitalStatus::Alive => c,
@@ -2128,7 +2128,7 @@ impl SimState {
                     .get(&creature_id)
                     .and_then(|c| c.current_task);
                 if let Some(task_id) = task_id {
-                    self.execute_task_behavior(creature_id, task_id, current_node);
+                    self.execute_task_behavior(creature_id, task_id, current_node, events);
                     return;
                 }
             }
@@ -2164,7 +2164,7 @@ impl SimState {
                     .get(&creature_id)
                     .and_then(|c| c.current_task);
                 if let Some(task_id) = task_id {
-                    self.execute_task_behavior(creature_id, task_id, current_node);
+                    self.execute_task_behavior(creature_id, task_id, current_node, events);
                     return;
                 }
             }
@@ -2180,15 +2180,15 @@ impl SimState {
 
         if let Some(task_id) = current_task {
             // --- Has task: run task behavior ---
-            self.execute_task_behavior(creature_id, task_id, current_node);
+            self.execute_task_behavior(creature_id, task_id, current_node, events);
         } else {
             // --- No task: try to claim one, or wander ---
             if let Some(task_id) = self.find_available_task(creature_id) {
                 self.claim_task(creature_id, task_id);
                 // Run task behavior immediately on the same activation.
-                self.execute_task_behavior(creature_id, task_id, current_node);
+                self.execute_task_behavior(creature_id, task_id, current_node, events);
             } else {
-                self.wander(creature_id, current_node);
+                self.wander(creature_id, current_node, events);
             }
         }
     }
@@ -2228,6 +2228,7 @@ impl SimState {
         creature_id: CreatureId,
         task_id: TaskId,
         current_node: NavNodeId,
+        events: &mut Vec<SimEvent>,
     ) {
         let (mut task_location, target_creature) = match self.db.tasks.get(&task_id) {
             Some(t) => (t.location, t.target_creature),
@@ -2239,7 +2240,7 @@ impl SimState {
                     c.path = None;
                     let _ = self.db.creatures.update_no_fk(c);
                 }
-                self.wander(creature_id, current_node);
+                self.wander(creature_id, current_node, events);
                 return;
             }
         };
@@ -2255,7 +2256,7 @@ impl SimState {
                 None => {
                     // Target creature is gone or has no nav node — abandon.
                     self.interrupt_task(creature_id, task_id);
-                    self.wander(creature_id, current_node);
+                    self.wander(creature_id, current_node, events);
                     return;
                 }
                 Some(target_nav) => {
@@ -2298,7 +2299,7 @@ impl SimState {
                         c.position = new_pos;
                     });
                     self.update_creature_spatial_index(creature_id, species, old_pos, new_pos);
-                    self.wander(creature_id, new_node);
+                    self.wander(creature_id, new_node, events);
                 }
             }
             return;
@@ -2309,7 +2310,7 @@ impl SimState {
             self.execute_task_at_location(creature_id, task_id);
         } else {
             // Not at location — walk one edge toward it.
-            self.walk_toward_task(creature_id, task_location, current_node);
+            self.walk_toward_task(creature_id, task_location, current_node, events);
         }
     }
 
@@ -4380,6 +4381,7 @@ impl SimState {
         creature_id: CreatureId,
         task_location: NavNodeId,
         current_node: NavNodeId,
+        events: &mut Vec<SimEvent>,
     ) {
         let creature = match self.db.creatures.get(&creature_id) {
             Some(c) => c,
@@ -4438,7 +4440,7 @@ impl SimState {
                 _ => {
                     // Can't reach task — unassign and wander.
                     self.unassign_creature_from_task(creature_id);
-                    self.wander(creature_id, current_node);
+                    self.wander(creature_id, current_node, events);
                     return;
                 }
             };
@@ -5883,48 +5885,152 @@ impl SimState {
     }
 
     /// Wander: pick a random adjacent nav node and move there.
-    fn wander(&mut self, creature_id: CreatureId, current_node: NavNodeId) {
+    fn wander(
+        &mut self,
+        creature_id: CreatureId,
+        current_node: NavNodeId,
+        events: &mut Vec<SimEvent>,
+    ) {
         let creature = match self.db.creatures.get(&creature_id) {
             Some(c) => c,
             None => return,
         };
         let species = creature.species;
 
-        // Collect eligible edges before mutably borrowing self (for rng).
-        let eligible_edges: Vec<usize> = {
-            let species_data = &self.species_table[&species];
-            let graph = self.graph_for_species(species);
-            let edge_indices = graph.neighbors(current_node);
-            if edge_indices.is_empty() {
-                self.event_queue.schedule(
-                    self.tick + 1000,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
-                return;
-            }
-            if let Some(ref allowed) = species_data.allowed_edge_types {
-                edge_indices
-                    .iter()
-                    .copied()
-                    .filter(|&idx| allowed.contains(&graph.edge(idx).edge_type))
-                    .collect()
-            } else {
-                edge_indices.to_vec()
-            }
-        };
-
-        if eligible_edges.is_empty() {
-            self.event_queue.schedule(
-                self.tick + 1000,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
+        // Hostile creatures pursue the nearest reachable elf instead of
+        // wandering randomly. If no elf is reachable, fall through to
+        // random wander.
+        if species.is_hostile() && self.hostile_pursue(creature_id, current_node, species, events) {
             return;
         }
 
-        // Pick a random eligible edge.
-        let chosen_idx = self.rng.range_u64(0, eligible_edges.len() as u64) as usize;
-        let edge_idx = eligible_edges[chosen_idx];
+        self.random_wander(creature_id, current_node, species);
+    }
 
+    /// Hostile AI: if an elf is in melee range, strike it. Otherwise find the
+    /// nearest reachable elf via Dijkstra and take one step toward it.
+    /// Returns `true` if an action was taken (strike or move), `false` if no
+    /// elf is reachable (caller should fall back to random wander).
+    fn hostile_pursue(
+        &mut self,
+        creature_id: CreatureId,
+        current_node: NavNodeId,
+        species: Species,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        // Collect IDs and nav nodes of all living elves.
+        let live_elves: Vec<(CreatureId, NavNodeId)> = self
+            .db
+            .creatures
+            .by_species(&Species::Elf, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .filter(|c| c.vital_status == VitalStatus::Alive)
+            .filter_map(|c| c.current_node.map(|n| (c.id, n)))
+            .collect();
+
+        if live_elves.is_empty() {
+            return false;
+        }
+
+        // Check if any elf is in melee range — if so, strike instead of moving.
+        let attacker_pos = match self.db.creatures.get(&creature_id) {
+            Some(c) => c.position,
+            None => return false,
+        };
+        let attacker_footprint = self.species_table[&species].footprint;
+        let melee_range_sq = self.species_table[&species].melee_range_sq;
+
+        // Find the closest elf that's in melee range (by footprint distance).
+        let melee_target = live_elves.iter().find(|&&(elf_id, _)| {
+            let elf = match self.db.creatures.get(&elf_id) {
+                Some(c) => c,
+                None => return false,
+            };
+            let elf_footprint = self.species_table[&elf.species].footprint;
+            in_melee_range(
+                attacker_pos,
+                attacker_footprint,
+                elf.position,
+                elf_footprint,
+                melee_range_sq,
+            )
+        });
+
+        if let Some(&(elf_id, _)) = melee_target {
+            if self.try_melee_strike(creature_id, elf_id, events) {
+                return true;
+            }
+            // Strike failed (cooldown). Wait here instead of wandering away —
+            // schedule re-activation for when the cooldown expires.
+            if let Some(next_tick) = self
+                .db
+                .creatures
+                .get(&creature_id)
+                .and_then(|c| c.next_available_tick)
+            {
+                self.event_queue.schedule(
+                    next_tick,
+                    ScheduledEventKind::CreatureActivation { creature_id },
+                );
+            } else {
+                // No cooldown tracked — retry shortly.
+                self.event_queue.schedule(
+                    self.tick + 100,
+                    ScheduledEventKind::CreatureActivation { creature_id },
+                );
+            }
+            return true;
+        }
+
+        // No elf in melee range — pathfind toward nearest.
+        let elf_nodes: Vec<NavNodeId> = live_elves.iter().map(|&(_, n)| n).collect();
+
+        let species_data = &self.species_table[&species];
+        let graph = self.graph_for_species(species);
+
+        let nearest = crate::pathfinding::dijkstra_nearest(
+            graph,
+            current_node,
+            &elf_nodes,
+            species_data.walk_ticks_per_voxel,
+            species_data.climb_ticks_per_voxel,
+            species_data.wood_ladder_tpv,
+            species_data.rope_ladder_tpv,
+            species_data.allowed_edge_types.as_deref(),
+        );
+
+        let target_node = match nearest {
+            Some(n) if n == current_node => return false,
+            Some(n) => n,
+            None => return false,
+        };
+
+        // A* to get the path, then take the first step.
+        let path = crate::pathfinding::astar(
+            graph,
+            current_node,
+            target_node,
+            species_data.walk_ticks_per_voxel,
+            species_data.climb_ticks_per_voxel,
+            species_data.wood_ladder_tpv,
+            species_data.rope_ladder_tpv,
+        );
+
+        let path = match path {
+            Some(p) if p.edge_indices.is_empty() => return false,
+            Some(p) => p,
+            None => return false,
+        };
+
+        let first_edge_idx = path.edge_indices[0];
+        self.move_one_step(creature_id, species, first_edge_idx);
+        true
+    }
+
+    /// Move a creature one step along the given nav graph edge: update position,
+    /// spatial index, action state, render interpolation, and schedule the next
+    /// activation. Shared by random wander and hostile pursuit.
+    fn move_one_step(&mut self, creature_id: CreatureId, species: Species, edge_idx: usize) {
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
         let edge = graph.edge(edge_idx);
@@ -5978,6 +6084,51 @@ impl SimState {
             self.tick + delay,
             ScheduledEventKind::CreatureActivation { creature_id },
         );
+    }
+
+    /// Random wander: pick a random eligible edge and move one step.
+    fn random_wander(
+        &mut self,
+        creature_id: CreatureId,
+        current_node: NavNodeId,
+        species: Species,
+    ) {
+        // Collect eligible edges before mutably borrowing self (for rng).
+        let eligible_edges: Vec<usize> = {
+            let species_data = &self.species_table[&species];
+            let graph = self.graph_for_species(species);
+            let edge_indices = graph.neighbors(current_node);
+            if edge_indices.is_empty() {
+                self.event_queue.schedule(
+                    self.tick + 1000,
+                    ScheduledEventKind::CreatureActivation { creature_id },
+                );
+                return;
+            }
+            if let Some(ref allowed) = species_data.allowed_edge_types {
+                edge_indices
+                    .iter()
+                    .copied()
+                    .filter(|&idx| allowed.contains(&graph.edge(idx).edge_type))
+                    .collect()
+            } else {
+                edge_indices.to_vec()
+            }
+        };
+
+        if eligible_edges.is_empty() {
+            self.event_queue.schedule(
+                self.tick + 1000,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return;
+        }
+
+        // Pick a random eligible edge.
+        let chosen_idx = self.rng.range_u64(0, eligible_edges.len() as u64) as usize;
+        let edge_idx = eligible_edges[chosen_idx];
+
+        self.move_one_step(creature_id, species, edge_idx);
     }
 
     /// Attempt to spawn one fruit on the given tree. Rolls the RNG for spawn
@@ -23195,8 +23346,9 @@ mod tests {
 
     #[test]
     fn test_melee_strike_cooldown_expires() {
-        // After the cooldown elapses, the creature should become idle and can
-        // strike again.
+        // After the cooldown elapses, the creature can strike again. With
+        // hostile AI, a goblin adjacent to an elf will automatically re-strike
+        // once the cooldown resolves.
         let mut sim = test_sim(42);
         let goblin = spawn_species(&mut sim, Species::Goblin);
         let elf = spawn_elf(&mut sim);
@@ -23208,7 +23360,8 @@ mod tests {
         let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
         let interval = sim.species_table[&Species::Goblin].melee_interval_ticks;
 
-        // First strike.
+        // First strike via command.
+        let elf_hp_initial = sim.db.creatures.get(&elf).unwrap().hp;
         let tick = sim.tick;
         sim.step(
             &[SimCommand {
@@ -23225,37 +23378,29 @@ mod tests {
             sim.db.creatures.get(&goblin).unwrap().action_kind,
             ActionKind::MeleeStrike,
         );
-
-        // Advance past cooldown so the activation fires and resolves MeleeStrike.
-        // After resolution, the creature enters the decision cascade and may
-        // wander (Move), so we just verify it's no longer in MeleeStrike.
-        sim.step(&[], sim.tick + interval + 1);
-        assert_ne!(
-            sim.db.creatures.get(&goblin).unwrap().action_kind,
-            ActionKind::MeleeStrike,
-        );
-
-        // Force goblin back to the same position (it may have wandered).
-        force_position(&mut sim, goblin, goblin_pos);
-        force_idle(&mut sim, goblin);
-
-        // Second strike should succeed.
-        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
-        let tick2 = sim.tick;
-        sim.step(
-            &[SimCommand {
-                player_id: sim.player_id,
-                tick: tick2 + 1,
-                action: SimAction::DebugMeleeAttack {
-                    attacker_id: goblin,
-                    target_id: elf,
-                },
-            }],
-            tick2 + 1,
-        );
         assert_eq!(
             sim.db.creatures.get(&elf).unwrap().hp,
-            elf_hp_before - goblin_damage,
+            elf_hp_initial - goblin_damage,
+        );
+
+        // Advance past cooldown. The goblin's MeleeStrike resolves, and the
+        // hostile AI will auto-strike the elf again (still adjacent). There
+        // may also be a pre-existing activation from spawn, so the elf may
+        // take more than one additional hit. Verify at least 2 total strikes.
+        sim.step(&[], sim.tick + interval + 1);
+        let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+        let total_damage = elf_hp_initial - elf_hp_after;
+        assert!(
+            total_damage >= 2 * goblin_damage,
+            "Should have at least 2 strikes: total damage {total_damage}, \
+             expected >= {} (2 × {goblin_damage})",
+            2 * goblin_damage,
+        );
+        // Damage should be an exact multiple of goblin_damage.
+        assert_eq!(
+            total_damage % goblin_damage,
+            0,
+            "Total damage {total_damage} should be a multiple of {goblin_damage}",
         );
     }
 
@@ -23301,5 +23446,221 @@ mod tests {
             tick2 + 1,
         );
         assert_eq!(sim.db.creatures.get(&elf).unwrap().hp, elf_hp_before);
+    }
+
+    // -----------------------------------------------------------------------
+    // Hostile AI tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn species_is_hostile() {
+        assert!(Species::Goblin.is_hostile());
+        assert!(Species::Orc.is_hostile());
+        assert!(Species::Troll.is_hostile());
+        assert!(!Species::Elf.is_hostile());
+        assert!(!Species::Capybara.is_hostile());
+        assert!(!Species::Deer.is_hostile());
+        assert!(!Species::Boar.is_hostile());
+        assert!(!Species::Monkey.is_hostile());
+        assert!(!Species::Squirrel.is_hostile());
+        assert!(!Species::Elephant.is_hostile());
+    }
+
+    #[test]
+    fn hostile_creature_pursues_and_attacks_elf() {
+        let mut sim = test_sim(99);
+        let elf_id = spawn_species(&mut sim, Species::Elf);
+        let goblin_id = spawn_species(&mut sim, Species::Goblin);
+
+        let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+        let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position;
+
+        assert_ne!(
+            elf_pos, goblin_start,
+            "Elf and goblin spawned at same position — adjust test seed"
+        );
+
+        let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+        sim.step(&[], sim.tick + 10_000);
+
+        let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
+        let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position;
+        let elf_current_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+        let new_dist = goblin_pos.manhattan_distance(elf_current_pos);
+        let initial_dist = goblin_start.manhattan_distance(elf_pos);
+
+        // The goblin should have either moved closer to the elf's current
+        // position, or dealt damage (meaning it reached and attacked).
+        let moved_closer = new_dist < initial_dist;
+        let dealt_damage = elf_hp_after < elf_hp_before;
+        assert!(
+            moved_closer || dealt_damage,
+            "Goblin should pursue or attack elf: initial dist={initial_dist}, \
+             new dist={new_dist}, elf hp {elf_hp_before} -> {elf_hp_after}"
+        );
+    }
+
+    #[test]
+    fn hostile_creature_wanders_without_elves() {
+        let mut sim = test_sim(99);
+        let goblin_id = spawn_species(&mut sim, Species::Goblin);
+        let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position;
+
+        sim.step(&[], sim.tick + 10_000);
+
+        let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position;
+        assert_ne!(
+            goblin_start, goblin_pos,
+            "Goblin should wander even without elves to pursue"
+        );
+    }
+
+    #[test]
+    fn hostile_creature_attacks_adjacent_elf() {
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        // Place goblin adjacent to elf.
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        // Schedule an activation so the goblin enters the decision cascade.
+        let tick = sim.tick;
+        sim.event_queue.schedule(
+            tick + 1,
+            ScheduledEventKind::CreatureActivation {
+                creature_id: goblin,
+            },
+        );
+
+        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+        // Run one activation cycle — the goblin should melee the elf.
+        sim.step(&[], tick + 2);
+
+        let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+        let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+        assert_eq!(
+            elf_hp_after,
+            elf_hp_before - goblin_damage,
+            "Adjacent hostile should automatically melee-strike the elf"
+        );
+    }
+
+    #[test]
+    fn hostile_creature_wanders_after_killing_elf() {
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        // Place goblin adjacent to elf.
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        // Kill the elf.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugKillCreature { creature_id: elf },
+            }],
+            tick + 1,
+        );
+        assert_eq!(
+            sim.db.creatures.get(&elf).unwrap().vital_status,
+            VitalStatus::Dead,
+        );
+
+        // With no living elves, the goblin should fall back to random wander.
+        sim.step(&[], sim.tick + 10_000);
+        let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
+        assert_ne!(
+            goblin_final, goblin_pos,
+            "Goblin should wander after elf is dead"
+        );
+    }
+
+    #[test]
+    fn hostile_waits_on_cooldown_near_elf() {
+        // When a hostile is in melee range but on cooldown, it should not
+        // wander away — it should wait and re-strike when the cooldown expires.
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        // First strike via command puts goblin on cooldown.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+        assert_eq!(
+            sim.db.creatures.get(&goblin).unwrap().action_kind,
+            ActionKind::MeleeStrike,
+        );
+
+        // Advance past cooldown. Goblin should stay near elf and strike again,
+        // NOT wander away.
+        let interval = sim.species_table[&Species::Goblin].melee_interval_ticks;
+        sim.step(&[], sim.tick + interval + 100);
+
+        let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
+        let dist = goblin_final.manhattan_distance(elf_pos);
+        // Should still be within melee range (manhattan dist ≤ 2 for range_sq=2).
+        assert!(
+            dist <= 2,
+            "Goblin should stay near elf on cooldown, not wander away (dist={dist})"
+        );
+    }
+
+    #[test]
+    fn all_hostile_species_pursue_elves() {
+        for &hostile_species in &[Species::Goblin, Species::Orc, Species::Troll] {
+            let mut sim = test_sim(99);
+            let elf_id = spawn_species(&mut sim, Species::Elf);
+            let hostile_id = spawn_species(&mut sim, hostile_species);
+
+            let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+            let hostile_start = sim.db.creatures.get(&hostile_id).unwrap().position;
+
+            assert_ne!(
+                elf_pos, hostile_start,
+                "{hostile_species:?} and elf spawned at same position — adjust test seed"
+            );
+
+            let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+            let initial_dist = hostile_start.manhattan_distance(elf_pos);
+
+            sim.step(&[], sim.tick + 10_000);
+
+            let hostile_pos = sim.db.creatures.get(&hostile_id).unwrap().position;
+            let elf_current_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+            let new_dist = hostile_pos.manhattan_distance(elf_current_pos);
+            let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+            let moved_closer = new_dist < initial_dist;
+            let dealt_damage = elf_hp_after < elf_hp_before;
+            assert!(
+                moved_closer || dealt_damage,
+                "{hostile_species:?} should pursue or attack elf: initial dist={initial_dist}, \
+                 new dist={new_dist}, elf hp {elf_hp_before} -> {elf_hp_after}"
+            );
+        }
     }
 }

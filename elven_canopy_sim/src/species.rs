@@ -1,9 +1,10 @@
 // Species data — Dwarf Fortress-style data-driven creature configuration.
 //
-// All behavioral differences between creature species (elves, capybaras, etc.)
+// Most behavioral differences between creature species (elves, capybaras, etc.)
 // are expressed as data in `SpeciesData`, keyed by `Species` in the game config.
 // The sim code uses a single `Creature` type and reads species-specific values
-// from the species table at runtime — no code branching per species.
+// from the species table at runtime. The one exception is `Species::is_hostile()`
+// (in `types.rs`), which gates hostile AI pursuit behavior in `sim.rs`.
 //
 // Current parameters:
 // - `walk_ticks_per_voxel` — ticks to traverse 1.0 units of euclidean distance
