@@ -77,6 +77,9 @@
       "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 100,
+      "melee_damage": 10,
+      "melee_interval_ticks": 1000,
+      "melee_range_sq": 2,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 3333333333,
       "food_hunger_threshold_pct": 50,
@@ -114,7 +117,10 @@
       "rest_max": 1000000000000000,
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
-      "rest_per_sleep_tick": 60000000000
+      "rest_per_sleep_tick": 60000000000,
+      "melee_damage": 0,
+      "melee_interval_ticks": 1000,
+      "melee_range_sq": 2
     },
     "Boar": {
       "walk_ticks_per_voxel": 600,
@@ -138,7 +144,10 @@
       "rest_max": 1000000000000000,
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
-      "rest_per_sleep_tick": 60000000000
+      "rest_per_sleep_tick": 60000000000,
+      "melee_damage": 0,
+      "melee_interval_ticks": 1000,
+      "melee_range_sq": 2
     },
     "Deer": {
       "walk_ticks_per_voxel": 400,
@@ -162,7 +171,10 @@
       "rest_max": 1000000000000000,
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
-      "rest_per_sleep_tick": 60000000000
+      "rest_per_sleep_tick": 60000000000,
+      "melee_damage": 0,
+      "melee_interval_ticks": 1000,
+      "melee_range_sq": 2
     },
     "Elephant": {
       "walk_ticks_per_voxel": 700,
@@ -186,7 +198,10 @@
       "rest_max": 1000000000000000,
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
-      "rest_per_sleep_tick": 60000000000
+      "rest_per_sleep_tick": 60000000000,
+      "melee_damage": 0,
+      "melee_interval_ticks": 1000,
+      "melee_range_sq": 2
     },
     "Goblin": {
       "walk_ticks_per_voxel": 450,
@@ -195,6 +210,9 @@
       "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 80,
+      "melee_damage": 15,
+      "melee_interval_ticks": 1000,
+      "melee_range_sq": 2,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 0,
       "food_hunger_threshold_pct": 50,
@@ -217,6 +235,9 @@
       "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 40,
+      "melee_damage": 0,
+      "melee_interval_ticks": 1000,
+      "melee_range_sq": 2,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 3333333333,
       "food_hunger_threshold_pct": 50,
@@ -239,6 +260,9 @@
       "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 150,
+      "melee_damage": 25,
+      "melee_interval_ticks": 1200,
+      "melee_range_sq": 2,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 0,
       "food_hunger_threshold_pct": 50,
@@ -261,6 +285,9 @@
       "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 20,
+      "melee_damage": 0,
+      "melee_interval_ticks": 1000,
+      "melee_range_sq": 2,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 3333333333,
       "food_hunger_threshold_pct": 50,
@@ -283,6 +310,9 @@
       "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 400,
+      "melee_damage": 50,
+      "melee_interval_ticks": 1500,
+      "melee_range_sq": 2,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 0,
       "food_hunger_threshold_pct": 50,

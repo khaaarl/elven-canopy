@@ -166,6 +166,10 @@
 //     Single-action: consumes inputs, produces outputs.
 //   Mope — ActionKind::Mope, duration `mope_action_ticks`.
 //     Multi-action: progress incremented by `mope_action_ticks` per action.
+//   MeleeStrike — ActionKind::MeleeStrike, duration `melee_interval_ticks`.
+//     Not task-driven. Triggered by `DebugMeleeAttack` command (or future
+//     AttackCreature task AI). Deals flat damage on start; action duration
+//     is the cooldown before the next strike. Creature becomes idle on resolve.
 //
 // ### Task assignment details
 //
@@ -420,6 +424,52 @@ pub struct CreaturePath {
 pub struct StepResult {
     /// Narrative events emitted during this step, for the UI / event log.
     pub events: Vec<SimEvent>,
+}
+
+/// Check whether two creatures' footprints are within melee range.
+///
+/// Computes the closest-point squared euclidean distance between two
+/// axis-aligned bounding boxes (attacker and target footprints) and
+/// compares against `melee_range_sq`. Pure function — no sim state needed.
+pub fn in_melee_range(
+    attacker_pos: VoxelCoord,
+    attacker_footprint: [u8; 3],
+    target_pos: VoxelCoord,
+    target_footprint: [u8; 3],
+    melee_range_sq: i64,
+) -> bool {
+    // For each axis, compute the gap between the two footprint intervals.
+    // If they overlap, gap = 0. Otherwise gap = distance between closest edges.
+    let gap = |a_min: i32, a_size: u8, b_min: i32, b_size: u8| -> i64 {
+        let a_max = a_min + a_size as i32 - 1;
+        let b_max = b_min + b_size as i32 - 1;
+        if a_max < b_min {
+            (b_min - a_max) as i64
+        } else if b_max < a_min {
+            (a_min - b_max) as i64
+        } else {
+            0
+        }
+    };
+    let dx = gap(
+        attacker_pos.x,
+        attacker_footprint[0],
+        target_pos.x,
+        target_footprint[0],
+    );
+    let dy = gap(
+        attacker_pos.y,
+        attacker_footprint[1],
+        target_pos.y,
+        target_footprint[1],
+    );
+    let dz = gap(
+        attacker_pos.z,
+        attacker_footprint[2],
+        target_pos.z,
+        target_footprint[2],
+    );
+    dx * dx + dy * dy + dz * dz <= melee_range_sq
 }
 
 impl SimState {
@@ -731,6 +781,12 @@ impl SimState {
                 amount,
             } => {
                 self.apply_heal(*creature_id, *amount);
+            }
+            SimAction::DebugMeleeAttack {
+                attacker_id,
+                target_id,
+            } => {
+                self.try_melee_strike(*attacker_id, *target_id, events);
             }
         }
     }
@@ -2094,6 +2150,7 @@ impl SimState {
                 | ActionKind::PickUp
                 | ActionKind::DropOff
                 | ActionKind::Mope
+                | ActionKind::MeleeStrike
         ) {
             let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
                 c.action_kind = ActionKind::NoAction;
@@ -2412,6 +2469,10 @@ impl SimState {
                     None => return false,
                 };
                 self.resolve_acquire_item_action(creature_id, tid)
+            }
+            ActionKind::MeleeStrike => {
+                // MeleeStrike is not task-driven; creature becomes idle.
+                false
             }
             _ => false,
         }
@@ -4697,6 +4758,81 @@ impl SimState {
             }
             c.hp = (c.hp + amount).min(c.hp_max);
         });
+    }
+
+    /// Attempt a melee strike from attacker against target.
+    ///
+    /// Validates: both alive, attacker has melee_damage > 0, attacker is idle
+    /// (NoAction + next_available_tick elapsed), target in melee range.
+    /// On success: starts MeleeStrike action, applies damage, emits
+    /// CreatureDamaged event. Returns true if the strike was executed.
+    fn try_melee_strike(
+        &mut self,
+        attacker_id: CreatureId,
+        target_id: CreatureId,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        // 1. Both creatures must exist and be alive.
+        let attacker = match self.db.creatures.get(&attacker_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return false,
+        };
+        let target = match self.db.creatures.get(&target_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return false,
+        };
+
+        // 2. Attacker species must have melee_damage > 0.
+        let species_data = &self.species_table[&attacker.species];
+        if species_data.melee_damage <= 0 {
+            return false;
+        }
+
+        // 3. Attacker must be idle.
+        if attacker.action_kind != ActionKind::NoAction {
+            return false;
+        }
+        if let Some(next_tick) = attacker.next_available_tick
+            && next_tick > self.tick
+        {
+            return false;
+        }
+
+        // 4. Target must be in melee range.
+        let attacker_footprint = species_data.footprint;
+        let target_footprint = self.species_table[&target.species].footprint;
+        if !in_melee_range(
+            attacker.position,
+            attacker_footprint,
+            target.position,
+            target_footprint,
+            species_data.melee_range_sq,
+        ) {
+            return false;
+        }
+
+        let damage = species_data.melee_damage;
+        let duration = species_data.melee_interval_ticks;
+
+        // Start the action (sets action_kind + next_available_tick, schedules activation).
+        self.start_simple_action(attacker_id, ActionKind::MeleeStrike, duration);
+
+        // Apply damage (handles death if HP reaches 0).
+        self.apply_damage(target_id, damage, events);
+
+        // Emit CreatureDamaged event.
+        let remaining_hp = self.db.creatures.get(&target_id).map(|c| c.hp).unwrap_or(0);
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::CreatureDamaged {
+                attacker_id,
+                target_id,
+                damage,
+                remaining_hp,
+            },
+        });
+
+        true
     }
 
     /// Add a thought to a creature via the thoughts table, with dedup and cap.
@@ -22680,5 +22816,490 @@ mod tests {
             tick3 + 1,
         );
         assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_after_damage);
+    }
+
+    // -----------------------------------------------------------------------
+    // Melee attack tests
+    // -----------------------------------------------------------------------
+
+    /// Spawn a creature of the given species near the tree and return its ID.
+    fn spawn_species(sim: &mut SimState, species: Species) -> CreatureId {
+        let existing: std::collections::BTreeSet<CreatureId> = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == species)
+            .map(|c| c.id)
+            .collect();
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+        sim.db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == species && !existing.contains(&c.id))
+            .unwrap()
+            .id
+    }
+
+    /// Force a creature to a specific position, updating the spatial index.
+    fn force_position(sim: &mut SimState, creature_id: CreatureId, new_pos: VoxelCoord) {
+        let creature = sim.db.creatures.get(&creature_id).unwrap();
+        let old_pos = creature.position;
+        let species = creature.species;
+        let footprint = sim.species_table[&species].footprint;
+        SimState::deregister_creature_from_index(
+            &mut sim.spatial_index,
+            creature_id,
+            old_pos,
+            footprint,
+        );
+        let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
+            c.position = new_pos;
+        });
+        SimState::register_creature_in_index(
+            &mut sim.spatial_index,
+            creature_id,
+            new_pos,
+            footprint,
+        );
+    }
+
+    /// Make a creature idle (NoAction, no next_available_tick, no task).
+    fn force_idle(sim: &mut SimState, creature_id: CreatureId) {
+        let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
+            c.action_kind = ActionKind::NoAction;
+            c.next_available_tick = None;
+            c.current_task = None;
+            c.path = None;
+        });
+    }
+
+    // -- in_melee_range pure-function tests --
+
+    #[test]
+    fn test_in_melee_range_adjacent() {
+        // Face-adjacent 1x1 creatures: dist² = 1, within default range_sq = 2.
+        assert!(in_melee_range(
+            VoxelCoord::new(5, 1, 5),
+            [1, 1, 1],
+            VoxelCoord::new(6, 1, 5),
+            [1, 1, 1],
+            2,
+        ));
+    }
+
+    #[test]
+    fn test_in_melee_range_diagonal() {
+        // 2D diagonal: dist² = 1² + 1² = 2, within default range.
+        assert!(in_melee_range(
+            VoxelCoord::new(5, 1, 5),
+            [1, 1, 1],
+            VoxelCoord::new(6, 1, 6),
+            [1, 1, 1],
+            2,
+        ));
+    }
+
+    #[test]
+    fn test_in_melee_range_too_far() {
+        // 2 voxels apart on X: dist² = 2² = 4, exceeds range_sq = 2.
+        assert!(!in_melee_range(
+            VoxelCoord::new(5, 1, 5),
+            [1, 1, 1],
+            VoxelCoord::new(7, 1, 5),
+            [1, 1, 1],
+            2,
+        ));
+    }
+
+    #[test]
+    fn test_in_melee_range_3d_corner() {
+        // 3D diagonal: dist² = 1 + 1 + 1 = 3, exceeds range_sq = 2.
+        assert!(!in_melee_range(
+            VoxelCoord::new(5, 1, 5),
+            [1, 1, 1],
+            VoxelCoord::new(6, 2, 6),
+            [1, 1, 1],
+            2,
+        ));
+    }
+
+    #[test]
+    fn test_in_melee_range_large_footprint() {
+        // 2x2x2 attacker at (4,1,5), target at (6,1,5).
+        // Attacker occupies x=4..5, target at x=6. Gap on x = 6-5 = 1, dist² = 1.
+        assert!(in_melee_range(
+            VoxelCoord::new(4, 1, 5),
+            [2, 2, 2],
+            VoxelCoord::new(6, 1, 5),
+            [1, 1, 1],
+            2,
+        ));
+    }
+
+    // -- try_melee_strike integration tests --
+
+    #[test]
+    fn test_melee_strike_deals_damage() {
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        // Place goblin adjacent (x+1).
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+        let tick = sim.tick;
+        let events = sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+
+        // HP reduced.
+        let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+        assert_eq!(elf_hp_after, elf_hp_before - goblin_damage);
+
+        // CreatureDamaged event emitted.
+        assert!(events.events.iter().any(|e| matches!(
+            &e.kind,
+            SimEventKind::CreatureDamaged {
+                attacker_id,
+                target_id,
+                damage,
+                ..
+            } if *attacker_id == goblin && *target_id == elf && *damage == goblin_damage
+        )));
+    }
+
+    #[test]
+    fn test_melee_strike_kills_target() {
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        // Set elf HP to just below goblin damage so one strike kills.
+        let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+        let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+            c.hp = goblin_damage; // exactly equal → dies
+        });
+
+        let tick = sim.tick;
+        let events = sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+
+        assert_eq!(
+            sim.db.creatures.get(&elf).unwrap().vital_status,
+            VitalStatus::Dead
+        );
+        assert!(events.events.iter().any(|e| matches!(
+            &e.kind,
+            SimEventKind::CreatureDied { creature_id, .. } if *creature_id == elf
+        )));
+    }
+
+    #[test]
+    fn test_melee_strike_out_of_range() {
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        // Place goblin 3 voxels away — out of range.
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+
+        // HP unchanged.
+        assert_eq!(sim.db.creatures.get(&elf).unwrap().hp, elf_hp_before);
+    }
+
+    #[test]
+    fn test_melee_strike_cooldown() {
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+        // First strike succeeds.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+        assert_eq!(
+            sim.db.creatures.get(&elf).unwrap().hp,
+            elf_hp_before - goblin_damage,
+        );
+
+        // Goblin is now in MeleeStrike action — second strike should fail.
+        assert_eq!(
+            sim.db.creatures.get(&goblin).unwrap().action_kind,
+            ActionKind::MeleeStrike,
+        );
+        let elf_hp_mid = sim.db.creatures.get(&elf).unwrap().hp;
+        let tick2 = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick2 + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick2 + 1,
+        );
+        // HP unchanged — attack was rejected due to cooldown.
+        assert_eq!(sim.db.creatures.get(&elf).unwrap().hp, elf_hp_mid);
+    }
+
+    #[test]
+    fn test_melee_strike_dead_target() {
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        // Kill the elf first.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugKillCreature { creature_id: elf },
+            }],
+            tick + 1,
+        );
+        assert_eq!(
+            sim.db.creatures.get(&elf).unwrap().vital_status,
+            VitalStatus::Dead
+        );
+
+        // Melee attack on dead target should be a no-op.
+        let tick2 = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick2 + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick2 + 1,
+        );
+        // Goblin should still be idle (attack didn't fire).
+        assert_eq!(
+            sim.db.creatures.get(&goblin).unwrap().action_kind,
+            ActionKind::NoAction,
+        );
+    }
+
+    #[test]
+    fn test_melee_strike_zero_damage_species() {
+        let mut sim = test_sim(42);
+        // Capybara has melee_damage = 0 — cannot melee.
+        let capybara = spawn_species(&mut sim, Species::Capybara);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        // Put capybara adjacent to elf.
+        let capy_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, capybara, capy_pos);
+        force_idle(&mut sim, capybara);
+
+        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: capybara,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+        assert_eq!(sim.db.creatures.get(&elf).unwrap().hp, elf_hp_before);
+    }
+
+    #[test]
+    fn test_melee_strike_serde_roundtrip() {
+        // Verify ActionKind::MeleeStrike survives serde roundtrip.
+        let action = ActionKind::MeleeStrike;
+        let json = serde_json::to_string(&action).unwrap();
+        let restored: ActionKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, ActionKind::MeleeStrike);
+    }
+
+    #[test]
+    fn test_melee_strike_cooldown_expires() {
+        // After the cooldown elapses, the creature should become idle and can
+        // strike again.
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+        let interval = sim.species_table[&Species::Goblin].melee_interval_ticks;
+
+        // First strike.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+        assert_eq!(
+            sim.db.creatures.get(&goblin).unwrap().action_kind,
+            ActionKind::MeleeStrike,
+        );
+
+        // Advance past cooldown so the activation fires and resolves MeleeStrike.
+        // After resolution, the creature enters the decision cascade and may
+        // wander (Move), so we just verify it's no longer in MeleeStrike.
+        sim.step(&[], sim.tick + interval + 1);
+        assert_ne!(
+            sim.db.creatures.get(&goblin).unwrap().action_kind,
+            ActionKind::MeleeStrike,
+        );
+
+        // Force goblin back to the same position (it may have wandered).
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        // Second strike should succeed.
+        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+        let tick2 = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick2 + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick2 + 1,
+        );
+        assert_eq!(
+            sim.db.creatures.get(&elf).unwrap().hp,
+            elf_hp_before - goblin_damage,
+        );
+    }
+
+    #[test]
+    fn test_melee_strike_dead_attacker() {
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        // Kill the goblin.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugKillCreature {
+                    creature_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+        assert_eq!(
+            sim.db.creatures.get(&goblin).unwrap().vital_status,
+            VitalStatus::Dead,
+        );
+
+        // Dead goblin trying to melee should be a no-op.
+        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+        let tick2 = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick2 + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick2 + 1,
+        );
+        assert_eq!(sim.db.creatures.get(&elf).unwrap().hp, elf_hp_before);
     }
 }

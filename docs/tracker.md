@@ -114,7 +114,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
 [ ] F-mass-conserve        Wood mass tracking and conservation
-[ ] F-melee-action         Melee attack action
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-groups      Military group data model and configuration
 [ ] F-military-org         Squad management and organization
@@ -214,6 +213,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-logistics            Spatial resource flow (Kanban-style)
 [x] F-main-menu            Main menu UI
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
+[x] F-melee-action         Melee attack action
 [x] F-mood-system          Mood with escalating consequences
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-mp-checksums         Multiplayer state checksums for desync detection
@@ -995,7 +995,7 @@ Add hp, hp_max, vital_status fields to Creature. VitalStatus enum (Alive, Dead, 
 **Related:** F-creature-death, F-hp-ui
 
 #### F-melee-action — Melee attack action
-**Status:** Todo
+**Status:** Done
 
 Melee strike as a creature ACTION (not a task). Uses the standard ActionKind / next_available_tick mechanism for cooldown — set action_kind = MeleeStrike and next_available_tick = current_tick + melee_interval_ticks, same as every other duration-bearing action (no separate last_melee_tick field). Apply melee_damage (from SpeciesData) to target, emit CreatureDamaged event, trigger death if HP ≤ 0. New ActionKind variant: MeleeStrike. New SpeciesData fields: melee_damage, melee_interval_ticks, melee_range_sq.
 
@@ -1007,8 +1007,6 @@ Melee strike as a creature ACTION (not a task). Uses the standard ActionKind / n
 
 
 **Draft:** docs/drafts/combat_military.md (§5 "Melee Attack Action")
-
-**Blocks:** F-attack-task, F-combat, F-enemy-ai
 
 #### F-move-interp — Smooth creature movement interpolation
 **Status:** Done · **Refs:** §10
@@ -1589,7 +1587,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 
 **Draft:** docs/drafts/combat_military.md (§5 "Attack Tasks")
 
-**Blocked by:** F-melee-action, F-preemption
+**Blocked by:** F-preemption
 **Blocks:** F-attack-move, F-combat
 **Related:** F-attack-move
 
@@ -1599,7 +1597,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-melee-action, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action
+**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1626,7 +1624,7 @@ Simple aggression AI for non-civ hostile creatures. On activation: if already en
 
 **Draft:** docs/drafts/combat_military.md (§6 "Initial Behavior")
 
-**Blocked by:** F-hostile-detection, F-melee-action, F-preemption
+**Blocked by:** F-hostile-detection, F-preemption
 **Blocks:** F-combat
 
 #### F-flee — Flee behavior for civilians

@@ -1384,6 +1384,9 @@ impl Default for GameConfig {
                 rest_decay_per_tick: 3_333_333_333,
                 rest_tired_threshold_pct: 50,
                 rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 10,
+                melee_interval_ticks: 1000,
+                melee_range_sq: 2,
             },
         );
         species.insert(
@@ -1407,6 +1410,9 @@ impl Default for GameConfig {
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
                 rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 0,
+                melee_interval_ticks: 1000,
+                melee_range_sq: 2,
             },
         );
         species.insert(
@@ -1430,6 +1436,9 @@ impl Default for GameConfig {
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
                 rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 0,
+                melee_interval_ticks: 1000,
+                melee_range_sq: 2,
             },
         );
         species.insert(
@@ -1453,6 +1462,9 @@ impl Default for GameConfig {
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
                 rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 0,
+                melee_interval_ticks: 1000,
+                melee_range_sq: 2,
             },
         );
         species.insert(
@@ -1476,6 +1488,9 @@ impl Default for GameConfig {
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
                 rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 0,
+                melee_interval_ticks: 1000,
+                melee_range_sq: 2,
             },
         );
         species.insert(
@@ -1499,6 +1514,9 @@ impl Default for GameConfig {
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
                 rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 15,
+                melee_interval_ticks: 1000,
+                melee_range_sq: 2,
             },
         );
         species.insert(
@@ -1522,6 +1540,9 @@ impl Default for GameConfig {
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
                 rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 0,
+                melee_interval_ticks: 1000,
+                melee_range_sq: 2,
             },
         );
         species.insert(
@@ -1545,6 +1566,9 @@ impl Default for GameConfig {
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
                 rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 25,
+                melee_interval_ticks: 1200,
+                melee_range_sq: 2,
             },
         );
         species.insert(
@@ -1568,6 +1592,9 @@ impl Default for GameConfig {
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
                 rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 0,
+                melee_interval_ticks: 1000,
+                melee_range_sq: 2,
             },
         );
         species.insert(
@@ -1591,6 +1618,9 @@ impl Default for GameConfig {
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
                 rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 50,
+                melee_interval_ticks: 1500,
+                melee_range_sq: 2,
             },
         );
 

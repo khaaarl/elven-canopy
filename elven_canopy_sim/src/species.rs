@@ -33,6 +33,9 @@
 //   convenient (no travel) but less nutritious.
 // - `hp_max` — maximum (and starting) hit points. Creature dies when HP
 //   reaches 0. Per-species values set in `config.rs`.
+// - `melee_damage` — flat damage per melee strike. 0 = species cannot melee.
+// - `melee_interval_ticks` — action duration / cooldown between strikes.
+// - `melee_range_sq` — max squared distance between closest footprint points.
 // - `rest_max` — maximum (and starting) rest level. Same scale as `food_max`.
 // - `rest_decay_per_tick` — rest subtracted per sim tick, batch-applied at
 //   heartbeat. Set to 0 for species that don't need sleep.
@@ -122,6 +125,20 @@ pub struct SpeciesData {
     #[serde(default = "default_hp_max")]
     pub hp_max: i64,
 
+    /// Flat damage dealt per melee strike. 0 means the species cannot melee.
+    #[serde(default)]
+    pub melee_damage: i64,
+
+    /// Action duration / cooldown for a melee strike in ticks.
+    /// At 1000 ticks/sec, 1000 = 1 second between strikes.
+    #[serde(default = "default_melee_interval_ticks")]
+    pub melee_interval_ticks: u64,
+
+    /// Maximum squared distance between closest footprint points for melee.
+    /// Default 2 allows face-adjacent and 2D-diagonal but not 3D-corner.
+    #[serde(default = "default_melee_range_sq")]
+    pub melee_range_sq: i64,
+
     /// Maximum rest level (also the starting value). Same scale as `food_max`.
     /// 0 = species never gets tired (rest system is inert).
     #[serde(default = "default_rest_max")]
@@ -170,6 +187,14 @@ fn default_food_decay_per_tick() -> i64 {
 
 fn default_hp_max() -> i64 {
     100
+}
+
+fn default_melee_interval_ticks() -> u64 {
+    1000
+}
+
+fn default_melee_range_sq() -> i64 {
+    2
 }
 
 fn default_rest_max() -> i64 {

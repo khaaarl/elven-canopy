@@ -108,6 +108,8 @@ pub enum ActionKind {
     DropOff = 11,
     /// One mope cycle (~1s). Repeated until mope duration fulfilled.
     Mope = 12,
+    /// A melee strike against an adjacent creature.
+    MeleeStrike = 13,
 }
 
 // ---------------------------------------------------------------------------

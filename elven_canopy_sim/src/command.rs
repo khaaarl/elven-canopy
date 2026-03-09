@@ -218,6 +218,12 @@ pub enum SimAction {
         creature_id: CreatureId,
         amount: i64,
     },
+    /// Order a melee attack: attacker strikes target (debug/testing).
+    /// Calls `try_melee_strike` which validates range, cooldown, etc.
+    DebugMeleeAttack {
+        attacker_id: CreatureId,
+        target_id: CreatureId,
+    },
 }
 
 /// A recipe configuration entry for workshop commands.

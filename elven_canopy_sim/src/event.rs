@@ -34,7 +34,8 @@
 //
 // Emitted by the sim as output for the UI event log. Not queued — produced
 // synchronously during event processing and collected by the caller.
-// Includes `CreatureDied` (with cause: Debug or Damage).
+// Includes `CreatureDied` (with cause: Debug or Damage) and
+// `CreatureDamaged` (melee strike hit).
 //
 // See also: `sim.rs` for the tick loop that processes scheduled events,
 // `types.rs` for entity IDs and the `Species` enum, `task.rs` for the task
@@ -187,6 +188,13 @@ pub enum SimEventKind {
         species: Species,
         position: VoxelCoord,
         cause: DeathCause,
+    },
+    /// A creature took melee damage from another creature.
+    CreatureDamaged {
+        attacker_id: CreatureId,
+        target_id: CreatureId,
+        damage: i64,
+        remaining_hp: i64,
     },
 }
 
