@@ -129,7 +129,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
-[ ] F-preemption           Task priority and preemption system
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
@@ -231,6 +230,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-pause-menu           In-game pause overlay
 [x] F-pile-gravity         Ground pile gravity and merging
 [x] F-placement-ui         Revamp construction placement UX
+[x] F-preemption           Task priority and preemption system
 [x] F-recipes              Recipe system for crafting/cooking
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
 [x] F-save-load            Save/load to JSON with versioning
@@ -1027,20 +1027,22 @@ limited by tree carrying capacity and available food/shelter.
 **Related:** F-fruit-prod, F-mana-system, F-tree-capacity
 
 #### F-preemption — Task priority and preemption system
-**Status:** Todo
+**Status:** Done
 
-PreemptionLevel enum with explicit level() method (NOT derived Ord). 8 levels: Idle(0), Autonomous(1), PlayerDirected(2), Survival(3), Mood(4), AutonomousCombat(5), PlayerCombat(6), Flee(7). Computed from (TaskKindTag, TaskOrigin) → PreemptionLevel via a mapping function — NOT stored on Task. Must handle all three TaskOrigin variants (PlayerDirected, Autonomous, Automated). On each creature activation, check if a higher-priority action is available; if so, interrupt current task via F-task-interruption. Testable without combat: verify mope preempts idle tasks, player GoTo preempts autonomous hauling. Note: mope initiation stays heartbeat-driven (probability roll calibrated for ~3000-tick intervals); preemption CHECK runs on activation. Supersedes existing mope_can_interrupt_task config field.
+PreemptionLevel enum with explicit level() method (NOT derived Ord). 8 levels: Idle(0), Autonomous(1), PlayerDirected(2), Survival(3), Mood(4), AutonomousCombat(5), PlayerCombat(6), Flee(7). Computed from (TaskKindTag, TaskOrigin) → PreemptionLevel via preemption_level() — NOT stored on Task. Exhaustive match on both enums (no wildcard) so new variants cause compile errors. check_mope() refactored to use can_preempt() instead of ad-hoc mope_can_interrupt_task config flag.
 
-**Preemption rules and exceptions:**
+**Preemption rules:**
 - Standard rule: can preempt if new level > current level.
-- PlayerDirected commands explicitly override AutonomousCombat (special case — player is ultimate authority). A PlayerDirected GoTo/Build/Furnish can preempt AutonomousCombat(5) even though PlayerDirected(2) < AutonomousCombat(5) numerically. Does NOT override PlayerCombat.
-- Mope-Survival hardcoded exception: Mood never preempts Survival. Prevents death spiral where unhappy elf mope-interrupts eating, gets hungrier, mopes more, starves. Mood(4) stays above Survival(3) so Survival also cannot preempt Mood (moping elf finishes moping before eating, but cannot START moping over eating).
-- Same-level replacement: same level does NOT preempt by default. Exceptions: PlayerDirected replaces PlayerDirected, PlayerCombat replaces PlayerCombat (player changed their mind — normal task reassignment, not preemption).
-- Exhaustive match required in the preemption_level() function (no wildcard). New TaskKindTag or TaskOrigin variants must cause compile errors, forcing the developer to assign the correct preemption level.
+- PlayerDirected commands explicitly override AutonomousCombat (player is ultimate authority). Does NOT override PlayerCombat.
+- Mope-Survival hardcoded exception: Mood never preempts Survival. Prevents death spiral.
+- Same-level replacement: same level does NOT preempt by default. Exceptions: PlayerDirected replaces PlayerDirected, PlayerCombat replaces PlayerCombat.
+
+**Config deprecation:** mope_can_interrupt_task field retained for serde backward compatibility but is no longer consulted by check_mope(). The preemption system fully supersedes it.
+
+**Test coverage:** 22 unit tests in preemption.rs (level ordering, all mapping paths, all can_preempt rules/exceptions, serde roundtrip) + updated integration tests in sim.rs (mope preempts Build regardless of config flag, mope doesn't preempt Sleep/Mope).
 
 **Draft:** docs/drafts/combat_military.md (§8)
 
-**Blocks:** F-attack-task, F-combat, F-enemy-ai, F-flee
 **Related:** F-creature-actions
 
 #### F-shoot-action — Ranged attack action (shooting arrows)
@@ -1607,7 +1609,6 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 
 **Draft:** docs/drafts/combat_military.md (§5 "Attack Tasks")
 
-**Blocked by:** F-preemption
 **Blocks:** F-attack-move, F-combat
 **Related:** F-attack-move
 
@@ -1617,7 +1618,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action
+**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-military-groups, F-projectiles, F-rts-selection, F-shoot-action
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1648,7 +1649,7 @@ Simple aggression AI for non-civ hostile creatures. This is the first "it all co
 
 **Draft:** docs/drafts/combat_military.md (§6 "Initial Behavior")
 
-**Blocked by:** F-hostile-detection, F-preemption
+**Blocked by:** F-hostile-detection
 **Blocks:** F-combat
 
 #### F-flee — Flee behavior for civilians
@@ -1662,7 +1663,7 @@ Creatures with Flee response (civilian military group default, or FleeOnly comba
 
 **Draft:** docs/drafts/combat_military.md (§7)
 
-**Blocked by:** F-hostile-detection, F-preemption
+**Blocked by:** F-hostile-detection
 **Blocks:** F-combat
 
 #### F-hostile-detection — Hostile detection and faction logic

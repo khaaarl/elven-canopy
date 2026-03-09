@@ -444,7 +444,9 @@ pub struct MoodConsequencesConfig {
     pub mope_mean_ticks_miserable: u64,
     /// Mean ticks between mope events at Devastated tier. 0 = never.
     pub mope_mean_ticks_devastated: u64,
-    /// Whether Miserable+ elves can abandon in-progress tasks to mope.
+    /// **Deprecated:** Superseded by the preemption system (`preemption.rs`).
+    /// Retained for serde backward compatibility with old saves. No longer
+    /// consulted by `check_mope()`.
     pub mope_can_interrupt_task: bool,
     /// Duration of mope idle in ticks.
     pub mope_duration_ticks: u64,

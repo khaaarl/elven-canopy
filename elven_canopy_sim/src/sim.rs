@@ -235,6 +235,7 @@ use crate::event::{EventQueue, ScheduledEventKind, SimEvent, SimEventKind};
 use crate::inventory;
 use crate::nav::{self, NavGraph};
 use crate::pathfinding;
+use crate::preemption;
 use crate::prng::GameRng;
 use crate::species::SpeciesData;
 use crate::structural;
@@ -4205,22 +4206,23 @@ impl SimState {
             return; // This tier never mopes.
         }
 
-        let is_idle = creature.current_task.is_none();
-        let can_interrupt = self.config.mood_consequences.mope_can_interrupt_task
-            && matches!(tier, MoodTier::Miserable | MoodTier::Devastated);
-
-        // Never interrupt autonomous tasks (sleep, eat, other mopes, item
-        // acquisition). These are self-care behaviors that shouldn't be
-        // disrupted — interrupting sleep could create a death spiral.
-        if !is_idle {
-            if !can_interrupt {
-                return;
-            }
-            let has_autonomous_task = creature
-                .current_task
-                .and_then(|tid| self.db.tasks.get(&tid))
-                .is_some_and(|t| t.origin == task::TaskOrigin::Autonomous);
-            if has_autonomous_task {
+        // Preemption check: can mope interrupt the current task?
+        // Uses the formal preemption system instead of ad-hoc checks.
+        // Mope is Mood(4), which preempts Idle(0), Autonomous(1), and
+        // PlayerDirected(2) but NOT Survival(3) (hardcoded exception
+        // prevents starvation spiral).
+        if let Some(task_id) = creature.current_task
+            && let Some(current_task) = self.db.tasks.get(&task_id)
+        {
+            let current_level =
+                preemption::preemption_level(current_task.kind_tag, current_task.origin);
+            let current_origin = current_task.origin;
+            if !preemption::can_preempt(
+                current_level,
+                current_origin,
+                preemption::PreemptionLevel::Mood,
+                task::TaskOrigin::Autonomous,
+            ) {
                 return;
             }
         }
@@ -17882,15 +17884,16 @@ mod tests {
     }
 
     #[test]
-    fn mope_can_interrupt_false_prevents_interruption() {
-        // With mope_can_interrupt_task = false, a Devastated elf with a player-directed
-        // task should not have it interrupted by mope. We use a long-running Build task
-        // so the elf stays busy for the entire test window.
+    fn mope_always_preempts_player_directed_build() {
+        // With the preemption system, Mood(4) always preempts PlayerDirected(2)
+        // regardless of the mope_can_interrupt_task config field (which is
+        // now superseded). Verify that even with mope_can_interrupt_task=false,
+        // a Devastated elf's Build task is still interrupted.
         let cfg = crate::config::MoodConsequencesConfig {
             mope_mean_ticks_unhappy: 3000,
             mope_mean_ticks_miserable: 3000,
             mope_mean_ticks_devastated: 3000, // P ≈ 1.0
-            mope_can_interrupt_task: false,
+            mope_can_interrupt_task: false,   // Superseded — should have no effect.
             mope_duration_ticks: 100,
         };
         let (mut sim, elf_id) = mope_test_setup(
@@ -17902,8 +17905,7 @@ mod tests {
             ],
         );
 
-        // Assign a long-running Build task at the elf's current node so it
-        // stays in-progress for the entire test window.
+        // Assign a long-running Build task at the elf's current node.
         let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
         let task_id = TaskId::new(&mut sim.rng);
         let project_id = crate::types::ProjectId::new(&mut sim.rng);
@@ -17928,12 +17930,14 @@ mod tests {
         let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
         sim.step(&[], sim.tick + interval * 10);
 
-        // The elf should still have the Build task — mope never interrupted it.
+        // The elf should have been interrupted — its current task should differ
+        // from the original Build task (either moping or idle after mope).
         let current_task = sim.db.creatures.get(&elf_id).and_then(|c| c.current_task);
-        assert_eq!(
+        assert_ne!(
             current_task,
             Some(task_id),
-            "With mope_can_interrupt_task=false, busy elf should keep its Build task"
+            "Mope (Mood) should always preempt Build (PlayerDirected), \
+             regardless of deprecated mope_can_interrupt_task config"
         );
     }
 

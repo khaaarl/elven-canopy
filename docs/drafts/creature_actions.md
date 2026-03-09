@@ -234,8 +234,8 @@ Several systems can invalidate a creature's current action mid-execution:
 2. **Blueprint cancellation** (player cancels a build project). The task
    disappears. Detected at activation time: task no longer exists → skip
    effect, fall through.
-3. **Mope interruption** (`mope_can_interrupt_task`). The heartbeat abandons
-   the creature's current task to start a Mope task.
+3. **Mope interruption** (preemption system). The heartbeat uses `can_preempt()`
+   to check if Mood(4) can preempt the current task, then abandons it to mope.
 4. **Creature removal** (death, despawn). Cascade-delete on MoveAction FK
    handles cleanup automatically.
 
