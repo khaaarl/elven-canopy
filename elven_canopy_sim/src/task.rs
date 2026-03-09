@@ -25,6 +25,11 @@
 // If `Some(Species::Elf)`, only elves will pick it up. If `None`, any idle
 // creature of any species can claim it.
 //
+// `target_creature` optionally makes the task track a moving creature
+// (e.g., pursuit in combat). When set, `execute_task_behavior()` updates
+// `location` to the target's current nav node each activation and
+// invalidates the cached path when the target moves.
+//
 // ## Task kinds and behavior scripts
 //
 // Each `TaskKind` defines a per-activation behavior script, dispatched via
@@ -105,7 +110,7 @@
 // the sim PRNG.
 
 use crate::inventory::ItemKind;
-use crate::types::{NavNodeId, ProjectId, Species, StructureId, TaskId, VoxelCoord};
+use crate::types::{CreatureId, NavNodeId, ProjectId, Species, StructureId, TaskId, VoxelCoord};
 use serde::{Deserialize, Serialize};
 
 /// Where a haul task picks up items from.
@@ -257,6 +262,11 @@ pub struct Task {
     /// Where this task originated (player command, autonomous decision, etc.).
     #[serde(default)]
     pub origin: TaskOrigin,
+    /// If set, this task tracks a moving creature (e.g., pursuit/combat).
+    /// The task's `location` is automatically updated to the target's current
+    /// nav node, and the path is invalidated when the target moves.
+    #[serde(default)]
+    pub target_creature: Option<CreatureId>,
 }
 
 #[cfg(test)]
@@ -281,6 +291,7 @@ mod tests {
             total_cost: 5000.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -313,6 +324,7 @@ mod tests {
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
+            target_creature: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -344,6 +356,7 @@ mod tests {
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::Autonomous,
+            target_creature: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -374,6 +387,7 @@ mod tests {
             total_cost: 10000.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
+            target_creature: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -435,6 +449,7 @@ mod tests {
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Automated,
+            target_creature: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -479,6 +494,7 @@ mod tests {
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::Automated,
+            target_creature: None,
         };
 
         let json2 = serde_json::to_string(&task2).unwrap();
@@ -512,6 +528,7 @@ mod tests {
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
+            target_creature: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -549,6 +566,7 @@ mod tests {
             total_cost: 10000.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
+            target_creature: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -581,6 +599,7 @@ mod tests {
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
 
         let mut registry: BTreeMap<TaskId, Task> = BTreeMap::new();

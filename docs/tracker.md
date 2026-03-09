@@ -86,7 +86,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
-[ ] F-dynamic-pursuit      Dynamic repathfinding for moving-target tasks
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
@@ -187,6 +186,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-creature-info        Creature info panel with follow button
 [x] F-creature-tooltip     Hover tooltips for world objects
 [x] F-debug-menu           Move spawn/summon into debug menu
+[x] F-dynamic-pursuit      Dynamic repathfinding for moving-target tasks
 [x] F-elf-acquire          Elf personal item acquisition
 [x] F-elf-names            Elf name generation from conlang rules
 [x] F-elf-needs            Hunger and rest self-direction
@@ -761,7 +761,7 @@ data passing to Godot), `tree_renderer.gd` (per-chunk material creation).
 ### Navigation & Pathfinding
 
 #### F-dynamic-pursuit — Dynamic repathfinding for moving-target tasks
-**Status:** Todo
+**Status:** Done
 
 The current task system assumes every task has a static `location: NavNodeId`.
 When a creature claims a task, `walk_toward_task()` computes an A* path once

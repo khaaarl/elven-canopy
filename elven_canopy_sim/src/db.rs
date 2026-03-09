@@ -299,6 +299,13 @@ pub struct Task {
     #[indexed]
     pub required_species: Option<Species>,
     pub origin: TaskOrigin,
+    /// If set, this task tracks a moving creature (pursuit/combat).
+    /// Updated each activation to the target's current nav node.
+    /// FK to creatures with restrict-on-delete; the sim must clear this
+    /// before removing the target creature.
+    #[indexed]
+    #[serde(default)]
+    pub target_creature: Option<CreatureId>,
 }
 
 /// Task-to-blueprint reference (Build tasks only).
@@ -815,7 +822,8 @@ pub struct SimDb {
             fks(creature_id = "creatures" on_delete cascade))]
     pub thoughts: ThoughtTable,
 
-    #[table(singular = "task")]
+    #[table(singular = "task",
+            fks(target_creature? = "creatures"))]
     pub tasks: TaskTable,
 
     #[table(singular = "task_blueprint_ref",

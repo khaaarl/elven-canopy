@@ -822,6 +822,7 @@ impl SimState {
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         self.insert_task(build_task);
 
@@ -937,6 +938,7 @@ impl SimState {
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         self.insert_task(build_task);
 
@@ -1072,6 +1074,7 @@ impl SimState {
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         self.insert_task(build_task);
 
@@ -1177,6 +1180,7 @@ impl SimState {
             total_cost: total_cost as f32,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         self.insert_task(build_task);
 
@@ -1327,6 +1331,7 @@ impl SimState {
             total_cost: 0.0,
             required_species,
             origin: task::TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         self.insert_task(new_task);
     }
@@ -1420,6 +1425,7 @@ impl SimState {
                             total_cost: 0.0,
                             required_species: None,
                             origin: task::TaskOrigin::Autonomous,
+                            target_creature: None,
                         };
                         self.insert_task(new_task);
                         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -1445,6 +1451,7 @@ impl SimState {
                         total_cost: 0.0,
                         required_species: None,
                         origin: task::TaskOrigin::Autonomous,
+                        target_creature: None,
                     };
                     self.insert_task(new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -1498,6 +1505,7 @@ impl SimState {
                         total_cost: sleep_ticks as f32,
                         required_species: None,
                         origin: task::TaskOrigin::Autonomous,
+                        target_creature: None,
                     };
                     self.insert_task(new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -1969,8 +1977,8 @@ impl SimState {
         task_id: TaskId,
         current_node: NavNodeId,
     ) {
-        let task_location = match self.db.tasks.get(&task_id) {
-            Some(t) => t.location,
+        let (mut task_location, target_creature) = match self.db.tasks.get(&task_id) {
+            Some(t) => (t.location, t.target_creature),
             None => {
                 // Task was removed — unassign and wander.
                 if let Some(mut c) = self.db.creatures.get(&creature_id) {
@@ -1982,6 +1990,37 @@ impl SimState {
                 return;
             }
         };
+
+        // --- Dynamic pursuit: track moving target creature ---
+        if let Some(target_id) = target_creature {
+            let target_node = self
+                .db
+                .creatures
+                .get(&target_id)
+                .and_then(|c| c.current_node);
+            match target_node {
+                None => {
+                    // Target creature is gone or has no nav node — abandon
+                    // and complete the pursuit task so it isn't re-claimed.
+                    self.unassign_creature_from_task(creature_id);
+                    self.complete_task(task_id);
+                    self.wander(creature_id, current_node);
+                    return;
+                }
+                Some(target_nav) => {
+                    if target_nav != task_location {
+                        // Target moved — update task location and invalidate path.
+                        task_location = target_nav;
+                        let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+                            t.location = target_nav;
+                        });
+                        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                            c.path = None;
+                        });
+                    }
+                }
+            }
+        }
 
         // Check that both current_node and task_location are still alive in
         // the nav graph. They can become dead slots after incremental updates
@@ -3056,6 +3095,7 @@ impl SimState {
                 total_cost: work_ticks as f32,
                 required_species: Some(Species::Elf),
                 origin: task::TaskOrigin::Automated,
+                target_creature: None,
             };
             self.insert_task(new_task);
         }
@@ -3253,6 +3293,7 @@ impl SimState {
                 total_cost: 0.0,
                 required_species: Some(Species::Elf),
                 origin: task::TaskOrigin::Automated,
+                target_creature: None,
             };
             self.insert_task(new_task);
         }
@@ -3345,6 +3386,7 @@ impl SimState {
                         total_cost: 0.0,
                         required_species: Some(Species::Elf),
                         origin: task::TaskOrigin::Automated,
+                        target_creature: None,
                     };
                     self.insert_task(new_task);
                     tasks_created += 1;
@@ -3439,6 +3481,7 @@ impl SimState {
                 total_cost: cook_work_ticks as f32,
                 required_species: Some(Species::Elf),
                 origin: task::TaskOrigin::Automated,
+                target_creature: None,
             };
             self.insert_task(new_task);
         }
@@ -3704,6 +3747,7 @@ impl SimState {
             total_cost: duration as f32,
             required_species: None,
             origin: task::TaskOrigin::Autonomous,
+            target_creature: None,
         };
         self.insert_task(new_task);
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -3803,6 +3847,7 @@ impl SimState {
                 total_cost: 0.0,
                 required_species: None,
                 origin: task::TaskOrigin::Autonomous,
+                target_creature: None,
             };
             self.insert_task(new_task);
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -5017,6 +5062,7 @@ impl SimState {
             total_cost: task.total_cost,
             required_species: task.required_species,
             origin: task.origin,
+            target_creature: task.target_creature,
         };
         self.db.tasks.insert_no_fk(db_task).unwrap();
     }
@@ -5663,6 +5709,7 @@ impl SimState {
             total_cost,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         self.insert_task(new_task);
     }
@@ -6776,6 +6823,7 @@ mod tests {
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         sim.insert_task(task);
         task_id
@@ -7858,6 +7906,7 @@ mod tests {
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         sim.insert_task(goto_task);
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
@@ -10397,6 +10446,7 @@ mod tests {
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::Autonomous,
+            target_creature: None,
         };
         sim.insert_task(eat_task);
         {
@@ -10551,6 +10601,7 @@ mod tests {
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         sim.insert_task(goto_task);
         {
@@ -10762,6 +10813,7 @@ mod tests {
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::Autonomous,
+            target_creature: None,
         };
         sim.insert_task(eat_task);
         {
@@ -10956,6 +11008,7 @@ mod tests {
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::Autonomous,
+            target_creature: None,
         };
         sim.insert_task(eat_task);
         {
@@ -11345,6 +11398,7 @@ mod tests {
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
         });
         {
             let mut c = sim.db.creatures.get(&elf_id).unwrap();
@@ -14701,6 +14755,7 @@ mod tests {
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Automated,
+            target_creature: None,
         };
         sim.insert_task(existing_haul);
 
@@ -14953,6 +15008,7 @@ mod tests {
             total_cost: sim.config.cook_work_ticks as f32,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::Automated,
+            target_creature: None,
         };
         sim.insert_task(cook_task);
 
@@ -15023,6 +15079,7 @@ mod tests {
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Automated,
+            target_creature: None,
         };
         sim.insert_task(harvest_task);
         {
@@ -15313,6 +15370,7 @@ mod tests {
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Automated,
+            target_creature: None,
         };
         sim.insert_task(haul_task);
 
@@ -15634,6 +15692,7 @@ mod tests {
             total_cost: 0.0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
+            target_creature: None,
         };
         sim.insert_task(acquire_task);
         {
@@ -16031,6 +16090,7 @@ mod tests {
             total_cost: 0.0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         sim.insert_task(goto_task);
         {
@@ -16150,6 +16210,7 @@ mod tests {
             total_cost: 1_000_000.0,
             required_species: None,
             origin: TaskOrigin::Autonomous,
+            target_creature: None,
         };
         sim.insert_task(sleep_task);
         {
@@ -16255,6 +16316,7 @@ mod tests {
             total_cost: 1_000_000.0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
         };
         sim.insert_task(build_task);
         {
@@ -17806,6 +17868,7 @@ mod tests {
             total_cost: 5000.0,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::Automated,
+            target_creature: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -18496,5 +18559,321 @@ mod tests {
         assert_eq!(CivOpinion::Neutral.shift_hostile(), CivOpinion::Suspicious);
         assert_eq!(CivOpinion::Suspicious.shift_hostile(), CivOpinion::Hostile);
         assert_eq!(CivOpinion::Hostile.shift_hostile(), CivOpinion::Hostile);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pursuit (dynamic repathfinding) tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: spawn a second elf and return its CreatureId.
+    fn spawn_second_elf(sim: &mut SimState) -> CreatureId {
+        // Collect existing elf IDs before spawning.
+        let existing: std::collections::BTreeSet<CreatureId> = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == Species::Elf)
+            .map(|c| c.id)
+            .collect();
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+        // Return the newly spawned elf (not in the existing set).
+        sim.db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == Species::Elf && !existing.contains(&c.id))
+            .next()
+            .unwrap()
+            .id
+    }
+
+    /// Helper: insert a pursuit task targeting `target_id` at `location`,
+    /// and directly assign `pursuer_id` to it.
+    fn insert_pursuit_task(
+        sim: &mut SimState,
+        location: NavNodeId,
+        target_id: CreatureId,
+        pursuer_id: CreatureId,
+    ) -> TaskId {
+        let task_id = TaskId::new(&mut sim.rng);
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::InProgress,
+            location,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: Some(target_id),
+        };
+        sim.insert_task(task);
+        // Directly assign the pursuer to this task.
+        let mut pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
+        pursuer.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(pursuer);
+        task_id
+    }
+
+    #[test]
+    fn pursuit_task_repaths_when_target_moves() {
+        let mut sim = test_sim(42);
+        let pursuer_id = spawn_elf(&mut sim);
+        let target_id = spawn_second_elf(&mut sim);
+
+        // Get target's initial node.
+        let target_node = sim
+            .db
+            .creatures
+            .get(&target_id)
+            .unwrap()
+            .current_node
+            .unwrap();
+
+        // Pick a different alive node to move the target to (use a neighbor).
+        let new_target_node = {
+            let graph = sim.graph_for_species(Species::Elf);
+            let edges = graph.neighbors(target_node);
+            graph.edge(edges[0]).to
+        };
+        assert_ne!(target_node, new_target_node);
+
+        // Create pursuit task at target's current node, assigned to pursuer.
+        let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
+        assert_eq!(sim.db.tasks.get(&task_id).unwrap().location, target_node);
+
+        // Manually move the target to the new node (simulates target movement).
+        let new_pos = sim.nav_graph.node(new_target_node).position;
+        let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
+            c.current_node = Some(new_target_node);
+            c.position = new_pos;
+        });
+
+        // Step so the pursuer's activation fires and updates the task location.
+        sim.step(&[], sim.tick + 10000);
+
+        // The pursuit task's location should have changed from the initial
+        // value, proving the repath logic fired. We don't assert the exact
+        // node because the target may have moved further during the step
+        // (heartbeat-driven tasks, wandering after the GoTo completes, etc.).
+        if let Some(task) = sim.db.tasks.get(&task_id) {
+            assert_ne!(
+                task.location, target_node,
+                "Pursuit task location should have updated when target moved"
+            );
+        }
+        // If the task was completed (pursuer caught the target), that also
+        // proves the repath worked — the pursuer followed the target.
+    }
+
+    #[test]
+    fn pursuit_task_completes_when_adjacent() {
+        let mut sim = test_sim(42);
+        let pursuer_id = spawn_elf(&mut sim);
+        let target_id = spawn_second_elf(&mut sim);
+
+        // Read the pursuer's current node (may have wandered during spawns).
+        let pursuer_node = sim
+            .db
+            .creatures
+            .get(&pursuer_id)
+            .unwrap()
+            .current_node
+            .unwrap();
+
+        // Place both creatures at the same node and prevent them from wandering.
+        let node_pos = sim.nav_graph.node(pursuer_node).position;
+        let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
+            c.current_node = Some(pursuer_node);
+            c.position = node_pos;
+        });
+        let _ = sim.db.creatures.modify_unchecked(&pursuer_id, |c| {
+            c.current_node = Some(pursuer_node);
+            c.position = node_pos;
+            c.path = None;
+        });
+
+        // Give the target a Sleep task so it stays still.
+        let sleep_task_id = TaskId::new(&mut sim.rng);
+        let sleep_task = Task {
+            id: sleep_task_id,
+            kind: TaskKind::Sleep {
+                bed_pos: None,
+                location: task::SleepLocation::Ground,
+            },
+            state: TaskState::InProgress,
+            location: pursuer_node,
+            progress: 0.0,
+            total_cost: 999999.0, // very long sleep
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+            target_creature: None,
+        };
+        sim.insert_task(sleep_task);
+        let mut target = sim.db.creatures.get(&target_id).unwrap();
+        target.current_task = Some(sleep_task_id);
+        let _ = sim.db.creatures.update_no_fk(target);
+
+        // Create pursuit task at the shared node.
+        let task_id = insert_pursuit_task(&mut sim, pursuer_node, target_id, pursuer_id);
+
+        // Step — pursuer should complete the GoTo since it's at the target's node.
+        sim.step(&[], sim.tick + 10000);
+
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(
+            task.state,
+            TaskState::Complete,
+            "Pursuit task should complete when pursuer is at target's node"
+        );
+        let pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
+        assert_eq!(
+            pursuer.current_task, None,
+            "Pursuer should be unassigned after task completion"
+        );
+    }
+
+    #[test]
+    fn pursuit_task_abandons_when_target_gone() {
+        let mut sim = test_sim(42);
+        let pursuer_id = spawn_elf(&mut sim);
+        let target_id = spawn_second_elf(&mut sim);
+
+        // Let both creatures settle (complete initial movement).
+        sim.step(&[], sim.tick + 10000);
+
+        let target_node = sim
+            .db
+            .creatures
+            .get(&target_id)
+            .unwrap()
+            .current_node
+            .unwrap();
+
+        // Assign pursuit task — clear any existing task first.
+        let mut pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
+        pursuer.current_task = None;
+        pursuer.path = None;
+        let _ = sim.db.creatures.update_no_fk(pursuer);
+
+        let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
+
+        // Simulate target becoming unreachable by clearing its current_node.
+        // This triggers the `target_node == None` branch in pursuit logic,
+        // causing the pursuer to abandon the task.
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&target_id, |c| c.current_node = None);
+
+        // Step — pursuer should notice target has no nav node and unassign.
+        sim.step(&[], sim.tick + 500000);
+
+        let pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
+        // The pursuer should have abandoned the pursuit task.
+        assert_ne!(
+            pursuer.current_task,
+            Some(task_id),
+            "Pursuer should have abandoned the pursuit task when target has no nav node"
+        );
+
+        // The pursuit task should be completed (not left Available for re-claim).
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(
+            task.state,
+            TaskState::Complete,
+            "Abandoned pursuit task should be completed"
+        );
+    }
+
+    #[test]
+    fn pursuit_task_abandons_when_target_unreachable() {
+        let mut sim = test_sim(42);
+        let pursuer_id = spawn_elf(&mut sim);
+        let target_id = spawn_second_elf(&mut sim);
+
+        // Place target at a non-existent nav node (simulates disconnected region).
+        let bogus_node = NavNodeId(999999);
+        let _task_id = insert_pursuit_task(&mut sim, bogus_node, target_id, pursuer_id);
+        // Also set target's current_node to the bogus node.
+        let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
+            c.current_node = Some(bogus_node);
+        });
+
+        // Step so pursuer's activation fires and hits the dead-node check.
+        sim.step(&[], sim.tick + 50000);
+
+        // Pursuer should have abandoned the pursuit task (may have claimed
+        // another task from heartbeat, but not the pursuit task).
+        let pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
+        assert_ne!(
+            pursuer.current_task,
+            Some(_task_id),
+            "Pursuer should have abandoned the pursuit task for unreachable target"
+        );
+    }
+
+    #[test]
+    fn non_pursuit_tasks_unaffected() {
+        // Verify existing GoTo tasks (without target_creature) still work.
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+
+        // Insert a regular GoTo task (no target_creature).
+        let task_id = insert_goto_task(&mut sim, elf_node);
+
+        // Verify target_creature is None.
+        let db_task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(db_task.target_creature, None);
+
+        // Step — should complete normally.
+        sim.step(&[], sim.tick + 10000);
+
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(
+            task.state,
+            TaskState::Complete,
+            "Non-pursuit GoTo task should complete normally"
+        );
+    }
+
+    #[test]
+    fn pursuit_task_serde_roundtrip() {
+        let mut sim = test_sim(42);
+        let pursuer_id = spawn_elf(&mut sim);
+        let target_id = spawn_second_elf(&mut sim);
+        let target_node = sim
+            .db
+            .creatures
+            .get(&target_id)
+            .unwrap()
+            .current_node
+            .unwrap();
+
+        let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
+
+        // Verify the task has target_creature set.
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(task.target_creature, Some(target_id));
+
+        // Serialize the entire sim state via save/load.
+        let json = serde_json::to_string(&sim.db).unwrap();
+        let restored: crate::db::SimDb = serde_json::from_str(&json).unwrap();
+
+        let restored_task = restored.tasks.get(&task_id).unwrap();
+        assert_eq!(
+            restored_task.target_creature,
+            Some(target_id),
+            "target_creature should survive serde roundtrip"
+        );
     }
 }
