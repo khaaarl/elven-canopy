@@ -121,32 +121,32 @@ impl Default for StructuralConfig {
             VoxelType::GrownPlatform,
             MaterialProperties {
                 density: 0.6,
-                stiffness: 20.0,
-                strength: 8.0,
+                stiffness: 60.0,
+                strength: 24.0,
             },
         );
         materials.insert(
             VoxelType::GrownWall,
             MaterialProperties {
                 density: 0.6,
-                stiffness: 20.0,
-                strength: 8.0,
+                stiffness: 60.0,
+                strength: 24.0,
             },
         );
         materials.insert(
             VoxelType::GrownStairs,
             MaterialProperties {
                 density: 0.5,
-                stiffness: 15.0,
-                strength: 6.0,
+                stiffness: 45.0,
+                strength: 18.0,
             },
         );
         materials.insert(
             VoxelType::Bridge,
             MaterialProperties {
                 density: 0.5,
-                stiffness: 15.0,
-                strength: 6.0,
+                stiffness: 45.0,
+                strength: 18.0,
             },
         );
         materials.insert(

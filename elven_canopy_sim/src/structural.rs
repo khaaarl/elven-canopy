@@ -1403,11 +1403,11 @@ mod tests {
 
     #[test]
     fn long_cantilever_fails() {
-        // A 35-voxel GrownPlatform arm exceeds the junction spring's capacity:
-        // weight = 35 * 0.6 = 21.0, strength = min(Trunk=10000, GrownPlatform=8) = 8.
-        // Stress = 21/8 = 2.625 → fails.
-        let mut world = make_column_world(48, 0..10, 5, 5, 10);
-        add_horizontal_arm(&mut world, 10, 5, 6, 40, VoxelType::GrownPlatform);
+        // A 105-voxel GrownPlatform arm exceeds the junction spring's capacity:
+        // weight = 105 * 0.6 = 63.0, strength = min(Trunk=10000, GrownPlatform=24) = 24.
+        // Stress = 63/24 = 2.625 → fails.
+        let mut world = make_column_world(128, 0..10, 5, 5, 10);
+        add_horizontal_arm(&mut world, 10, 5, 6, 110, VoxelType::GrownPlatform);
 
         let config = GameConfig::default();
         let mut network = build_network(&world, &BTreeMap::new(), &config);
@@ -1622,16 +1622,16 @@ mod tests {
     #[test]
     fn extreme_cantilever_blueprint_blocked() {
         // block_stress_ratio is 1.0, so junction stress >= 1.0 triggers block.
-        // strength = min(Trunk=10000, GrownPlatform=8) = 8.
-        // Total = 38 arm voxels. Weight = 38 * 0.6 = 22.8.
-        // Stress = 22.8/8 = 2.85 > block_stress_ratio (1.0).
+        // strength = min(Trunk=10000, GrownPlatform=24) = 24.
+        // Total = 114 arm voxels. Weight = 114 * 0.6 = 68.4.
+        // Stress = 68.4/24 = 2.85 > block_stress_ratio (1.0).
         let config = GameConfig::default();
 
-        let mut world = make_column_world(48, 0..10, 5, 5, 10);
-        add_horizontal_arm(&mut world, 10, 5, 6, 38, VoxelType::GrownPlatform);
+        let mut world = make_column_world(128, 0..10, 5, 5, 10);
+        add_horizontal_arm(&mut world, 10, 5, 6, 114, VoxelType::GrownPlatform);
 
-        // Propose extending the 33-voxel arm by 5 more.
-        let proposed: Vec<VoxelCoord> = (39..=43).map(|x| VoxelCoord::new(x, 10, 5)).collect();
+        // Propose extending the arm by 5 more.
+        let proposed: Vec<VoxelCoord> = (115..=119).map(|x| VoxelCoord::new(x, 10, 5)).collect();
         let validation = validate_blueprint(
             &world,
             &BTreeMap::new(),
@@ -1906,13 +1906,13 @@ mod tests {
 
     #[test]
     fn fast_long_cantilever_blocked() {
-        // A 33-voxel GrownPlatform arm plus 5 proposed extension should be blocked.
+        // A 114-voxel GrownPlatform arm plus 5 proposed extension should be blocked.
         let config = GameConfig::default();
 
-        let mut world = make_column_world(48, 0..10, 5, 5, 10);
-        add_horizontal_arm(&mut world, 10, 5, 6, 38, VoxelType::GrownPlatform);
+        let mut world = make_column_world(128, 0..10, 5, 5, 10);
+        add_horizontal_arm(&mut world, 10, 5, 6, 114, VoxelType::GrownPlatform);
 
-        let proposed: Vec<VoxelCoord> = (39..=43).map(|x| VoxelCoord::new(x, 10, 5)).collect();
+        let proposed: Vec<VoxelCoord> = (115..=119).map(|x| VoxelCoord::new(x, 10, 5)).collect();
 
         let fast = validate_blueprint_fast(
             &world,
