@@ -101,6 +101,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elfcyclopedia-srv    Embedded localhost HTTP elfcyclopedia server
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-engagement-style     Unified engagement style (species + military group combat tactics)
+[ ] F-equipment-sprites    Dynamic sprite customization for equipment
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
@@ -1152,7 +1153,7 @@ also needs this function as a prerequisite.
 
 Creatures can wear clothing items in defined body slots (e.g., head, torso, legs, feet). Clothing is crafted at workshops, stored in inventories, and equipped by creatures. Many details TBD: slot system design (fixed slots vs. layering), how clothing affects mood/comfort/thoughts, crafting recipes and material requirements, visual representation (sprite overlays? color tinting?), clothing durability and wear, species-specific clothing (elf vs. other species body plans), and whether clothing provides any mechanical benefits beyond mood. This is the base wearable-item infrastructure that armor builds on.
 
-**Blocks:** F-armor
+**Blocks:** F-armor, F-equipment-sprites
 
 #### F-crafting — Non-construction jobs and crafting
 **Status:** Todo · **Phase:** 8+ · **Refs:** §11
@@ -2215,6 +2216,22 @@ Auto-refresh via meta tag. Independent of all sim/worldgen features.
 
 **Draft:** `docs/drafts/elfcyclopedia_civs.md` §Elfcyclopedia (Web-Based)
 
+#### F-equipment-sprites — Dynamic sprite customization for equipment
+**Status:** Todo
+
+Creature sprites dynamically reflect equipped items — weapons, tools,
+clothing, and armor are drawn as overlays on the base procedural sprite.
+When a creature equips or unequips an item, its sprite is regenerated
+with the appropriate layers composited on top. Each equipment type gets
+a small drawing function that paints onto the sprite image at species-
+specific anchor points (hand position, head, torso). Results are cached
+keyed on (creature_seed, equipped_item_set) to avoid redundant
+regeneration. Requires sprite generation in Rust (F-rust-sprites) so
+overlays can be composited efficiently, and the clothing/equipment
+system (F-clothing) to provide the item data.
+
+**Blocked by:** F-clothing, F-rust-sprites
+
 #### F-fruit-sprite-ui — Fruit sprites in inventory/logistics/selection UI
 **Status:** Todo
 
@@ -2353,6 +2370,7 @@ speed vs compile times. Whether the existing sprite_factory.gd drawing
 helpers (circle, ellipse, rect) are easy to port. Scope: all 10 creature
 species + fruit, ~1500 lines of GDScript drawing code.
 
+**Blocks:** F-equipment-sprites
 **Related:** F-fruit-sprites
 
 #### F-select-struct — Selectable structures with interaction UI
