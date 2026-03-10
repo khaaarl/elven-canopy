@@ -117,8 +117,14 @@ pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
     let lexicon = elven_canopy_lang::default_lexicon();
 
     // --- Generator 2: Fruits ---
-    let fruit_species =
-        crate::fruit::generate_fruit_species(&mut wg_rng, &config.worldgen.fruit, &lexicon);
+    let mut fruit_species =
+        crate::fruit::generate_fruit_species(&mut wg_rng, &config.worldgen.fruit);
+    crate::fruit::assign_fruit_names(
+        &mut fruit_species,
+        &mut wg_rng,
+        &config.worldgen.fruit,
+        &lexicon,
+    );
 
     // Assign a fruit species to the home tree. Pick a random common species
     // so the player's starting tree always produces an accessible fruit.

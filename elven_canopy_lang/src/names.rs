@@ -4,7 +4,8 @@
 // `NameTag` (given vs surname). The generator takes `&mut GameRng` for
 // deterministic output, matching the sim's determinism constraint.
 //
-// Used by `elven_canopy_sim` to name creatures at spawn time. Each name
+// Used by `elven_canopy_sim` to name creatures at spawn time and by
+// `fruit.rs` for world-naming fallback (genitive name parts). Each name
 // carries both the Vaelith text and an English meaning gloss (e.g.,
 // "star-tree" for "Thíraleth").
 //
@@ -41,23 +42,33 @@ pub fn generate_name(lexicon: &Lexicon, rng: &mut GameRng) -> VaelithName {
     let given_pool = lexicon.by_name_tag(NameTag::Given);
     let surname_pool = lexicon.by_name_tag(NameTag::Surname);
 
-    let given = generate_name_part(&given_pool, rng);
-    let surname = generate_name_part(&surname_pool, rng);
+    let (given_name, given_meaning, _) = generate_name_part(&given_pool, rng);
+    let (surname_name, surname_meaning, _) = generate_name_part(&surname_pool, rng);
 
     VaelithName {
-        full_name: format!("{} {}", given.0, surname.0),
-        given: given.0,
-        surname: surname.0,
-        given_meaning: given.1,
-        surname_meaning: surname.1,
+        full_name: format!("{} {}", given_name, surname_name),
+        given: given_name,
+        surname: surname_name,
+        given_meaning,
+        surname_meaning,
     }
 }
 
 /// Generate one name part (given or surname) from a pool of entries.
-/// Returns (name_text, meaning).
-fn generate_name_part(pool: &[&LexEntry], rng: &mut GameRng) -> (String, String) {
+/// Returns (name_text, meaning, vowel_class_of_last_root).
+///
+/// The vowel class is needed by `fruit.rs` for applying genitive case
+/// suffixes with correct vowel harmony.
+pub fn generate_name_part(
+    pool: &[&LexEntry],
+    rng: &mut GameRng,
+) -> (String, String, crate::types::VowelClass) {
     if pool.is_empty() {
-        return ("Unnamed".to_string(), "unknown".to_string());
+        return (
+            "Unnamed".to_string(),
+            "unknown".to_string(),
+            crate::types::VowelClass::Front,
+        );
     }
 
     // ~70% two roots, ~30% one root
@@ -80,13 +91,13 @@ fn generate_name_part(pool: &[&LexEntry], rng: &mut GameRng) -> (String, String)
         let combined = format!("{}{}", entry1.root, entry2.root);
         let name = capitalize(&combined);
         let meaning = format!("{}-{}", entry1.gloss, entry2.gloss);
-        (name, meaning)
+        (name, meaning, entry2.vowel_class)
     } else {
         let idx = rng.range_usize(0, pool.len());
         let entry = pool[idx];
         let name = capitalize(&entry.root);
         let meaning = entry.gloss.clone();
-        (name, meaning)
+        (name, meaning, entry.vowel_class)
     }
 }
 

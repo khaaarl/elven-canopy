@@ -105,7 +105,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-flying-nav           3D flight navigation system
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
-[ ] F-fruit-naming         Fruit naming overhaul
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprites        Procedural fruit sprites
 [ ] F-fruit-yields         Fruit yield model overhaul
@@ -197,6 +196,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-encyclopedia-srv     Embedded localhost HTTP encyclopedia server
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-food-gauge           Creature food gauge with decay
+[x] F-fruit-naming         Fruit naming overhaul
 [x] F-furnish              Building furnishing framework (dormitories)
 [x] F-game-session         Game session autoload singleton
 [x] F-gdext-bridge         gdext compilation and Rust bridge
@@ -1213,7 +1213,7 @@ differentiation, deeper integration with food chain and cooking.
 (property-based recipe matching), F-food-chain (logistics pipeline),
 item schema (FruitSpeciesId references).
 
-**Blocked by:** F-fruit-naming, F-fruit-sprites, F-logistics-filter
+**Blocked by:** F-fruit-sprites, F-logistics-filter
 **Blocks:** F-civ-knowledge
 **Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-naming, F-fruit-prod, F-fruit-sprites, F-fruit-yields, F-logistics-filter, F-recipes
 
@@ -1792,7 +1792,7 @@ social norms over time.
 **Blocked by:** F-multi-tree, F-personality
 
 #### F-fruit-naming — Fruit naming overhaul
-**Status:** Todo · **Phase:** 7
+**Status:** Done · **Phase:** 7
 
 Overhaul fruit naming to eliminate collisions and produce meaningful,
 varied names. Temperature-weighted root assignment from an expanded
@@ -1801,7 +1801,6 @@ locations) for less distinctive fruits. Zero number suffixes.
 
 **Draft:** `docs/drafts/fruit_naming.md`
 
-**Blocks:** F-fruit-variety
 **Related:** F-fruit-variety, F-fruit-yields
 
 #### F-fruit-yields — Fruit yield model overhaul

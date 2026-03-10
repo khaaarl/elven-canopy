@@ -985,6 +985,12 @@ pub struct FruitConfig {
     /// Per-coverage-category minimums. If a category isn't listed, its minimum
     /// is 0 (no guarantee). Keys are `CoverageCategory` variants.
     pub coverage_minimums: std::collections::BTreeMap<String, u16>,
+    /// Temperature exponent for affinity-based fruit naming. Higher values
+    /// make the naming algorithm more deterministic (strongly prefer the
+    /// highest-scoring root); lower values allow more variety. Property
+    /// roots use `2 * naming_temperature`, shape roots use `naming_temperature`.
+    #[serde(default = "default_naming_temperature")]
+    pub naming_temperature: u32,
 }
 
 impl FruitConfig {
@@ -997,6 +1003,10 @@ impl FruitConfig {
 
 fn coverage_category_key(cat: crate::fruit::CoverageCategory) -> String {
     format!("{:?}", cat)
+}
+
+fn default_naming_temperature() -> u32 {
+    2
 }
 
 impl Default for FruitConfig {
@@ -1026,6 +1036,7 @@ impl Default for FruitConfig {
             max_parts_per_fruit: 4,
             rarity_weights: [60, 30, 10],
             coverage_minimums: minimums,
+            naming_temperature: default_naming_temperature(),
         }
     }
 }

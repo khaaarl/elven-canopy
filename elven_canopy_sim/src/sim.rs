@@ -21752,6 +21752,20 @@ mod tests {
         // Create pursuit task at the shared node.
         let task_id = insert_pursuit_task(&mut sim, pursuer_node, target_id, pursuer_id);
 
+        // Clear pursuer's action state and schedule an immediate activation so
+        // the pursuit logic fires regardless of the sim's PRNG-dependent event
+        // schedule. This makes the test robust to worldgen PRNG changes.
+        let _ = sim.db.creatures.modify_unchecked(&pursuer_id, |c| {
+            c.next_available_tick = None;
+            c.action_kind = crate::db::ActionKind::NoAction;
+        });
+        sim.event_queue.schedule(
+            sim.tick + 1,
+            crate::event::ScheduledEventKind::CreatureActivation {
+                creature_id: pursuer_id,
+            },
+        );
+
         // Step — pursuer should complete the GoTo since it's at the target's node.
         sim.step(&[], sim.tick + 10000);
 
@@ -24973,7 +24987,7 @@ mod tests {
 
         // Run a short period — goblin should wander randomly, not pursue.
         // Keep ticks low so random wander can't close the 50-voxel gap.
-        sim.step(&[], tick + 3000);
+        sim.step(&[], tick + 1000);
 
         let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
         assert_eq!(

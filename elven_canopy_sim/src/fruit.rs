@@ -12,9 +12,13 @@
 //   2. **Bonus phase** — once all coverage minimums are met, generate
 //      additional random fruits for variety.
 //
-// Names are generated via the lang crate's `NameTag::Botanical` morphemes,
-// selecting 1-2 roots based on the fruit's most notable properties. Each
-// fruit gets a Vaelith name (primary) and an English gloss (secondary).
+// Naming uses a temperature-weighted affinity scoring algorithm (see
+// `assign_fruit_names`). A static affinity table maps each botanical root
+// to trait dimensions (property, pigment, shape, habitat) with u8 weights.
+// For each fruit, roots are sampled with probability proportional to
+// score^temperature, producing names that reflect the fruit's most notable
+// characteristics. Fruits that don't score well against any roots fall back
+// to world-naming via `names.rs` with genitive case.
 //
 // See also: `worldgen.rs` for the generator entry point, `config.rs` for
 // `FruitConfig`, `db.rs` for the `FruitSpecies` tabulosity table,
@@ -23,7 +27,7 @@
 // **Critical constraint: determinism.** All generation uses the worldgen PRNG.
 // No HashMap, no float (all integer math), no system entropy.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use elven_canopy_prng::GameRng;
 use serde::{Deserialize, Serialize};
@@ -486,11 +490,8 @@ impl CoverageTracker {
 ///
 /// Returns a vector of `FruitSpecies`, each with a unique ID (0, 1, 2, ...).
 /// Guarantees coverage minimums are met before generating bonus fruits.
-pub fn generate_fruit_species(
-    rng: &mut GameRng,
-    config: &FruitConfig,
-    lexicon: &elven_canopy_lang::Lexicon,
-) -> Vec<FruitSpecies> {
+/// Names are left empty — call `assign_fruit_names` as a post-generation pass.
+pub fn generate_fruit_species(rng: &mut GameRng, config: &FruitConfig) -> Vec<FruitSpecies> {
     let total_count = config.min_species_per_world
         + (rng.next_u64()
             % (config.max_species_per_world - config.min_species_per_world + 1) as u64)
@@ -498,7 +499,6 @@ pub fn generate_fruit_species(
 
     let mut tracker = CoverageTracker::new(config);
     let mut fruits = Vec::new();
-    let mut used_names: BTreeSet<String> = BTreeSet::new();
 
     for i in 0..total_count {
         let id = FruitSpeciesId(i);
@@ -514,14 +514,10 @@ pub fn generate_fruit_species(
         // Derive appearance from parts.
         let appearance = derive_appearance(&parts, rng);
 
-        // Generate name from properties.
-        let (vaelith_name, english_gloss) =
-            generate_fruit_name(rng, lexicon, &parts, &mut used_names);
-
         let fruit = FruitSpecies {
             id,
-            vaelith_name,
-            english_gloss,
+            vaelith_name: String::new(),
+            english_gloss: String::new(),
             parts,
             habitat,
             rarity,
@@ -943,222 +939,683 @@ fn dye_to_rgb(color: DyeColor) -> FruitColor {
 }
 
 // ---------------------------------------------------------------------------
-// Naming
+// Affinity-based naming
 // ---------------------------------------------------------------------------
 
-/// Property-to-gloss mapping for selecting botanical morphemes.
-/// Each property maps to one or more English glosses that the name generator
-/// searches for in the lexicon's Botanical-tagged entries.
-fn property_glosses(prop: PartProperty) -> &'static [&'static str] {
-    match prop {
-        PartProperty::Starchy => &["grain"],
-        PartProperty::Sweet => &["sweet", "honey", "nectar"],
-        PartProperty::Oily => &["rich"],
-        PartProperty::Bland => &["bland"],
-        PartProperty::Bitter => &["bitter"],
-        PartProperty::FibrousCoarse => &["rough", "cord"],
-        PartProperty::FibrousFine => &["fiber", "thread"],
-        PartProperty::Tough => &["hard"],
-        PartProperty::Fermentable => &["ripe"],
-        PartProperty::Aromatic => &["fragrant", "incense"],
-        PartProperty::Luminescent => &["glow", "light"],
-        PartProperty::Psychoactive => &["dream"],
-        PartProperty::Medicinal => &["heal"],
-        PartProperty::ManaResonant => &["mana", "essence"],
-        PartProperty::Stimulant => &["spice", "sharp"],
-        PartProperty::Adhesive => &["sticky", "resin"],
+/// Habitat/character affinities for roots like "deep," "wild," "ancient."
+/// Some variants are reserved for future habitat-to-naming mappings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum HabitatTrait {
+    HighCanopy,
+    LowTrunk,
+    Wild,
+    Ancient,
+}
+
+/// Trait dimensions for root-fruit affinity scoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AffinityTrait {
+    Property(PartProperty),
+    Pigment(DyeColor),
+    Shape(FruitShape),
+    Habitat(HabitatTrait),
+}
+
+/// Affinity between a botanical root (by gloss) and fruit traits.
+struct RootAffinity {
+    gloss: &'static str,
+    affinities: &'static [(AffinityTrait, u8)],
+}
+
+/// A botanical root joined with its lexicon entry and affinity data.
+struct JoinedRoot<'a> {
+    entry: &'a elven_canopy_lang::LexEntry,
+    affinities: &'static [(AffinityTrait, u8)],
+    is_shape_root: bool,
+}
+
+/// Static affinity table mapping all 48 botanical glosses to their trait
+/// affinities. Weights are on a 1-8 scale.
+static ROOT_AFFINITIES: &[RootAffinity] = &[
+    // Shape roots
+    RootAffinity {
+        gloss: "berry",
+        affinities: &[
+            (AffinityTrait::Shape(FruitShape::Clustered), 6),
+            (AffinityTrait::Shape(FruitShape::Round), 3),
+        ],
+    },
+    RootAffinity {
+        gloss: "pod",
+        affinities: &[(AffinityTrait::Shape(FruitShape::Pod), 8)],
+    },
+    RootAffinity {
+        gloss: "nut",
+        affinities: &[(AffinityTrait::Shape(FruitShape::Nut), 8)],
+    },
+    RootAffinity {
+        gloss: "gourd",
+        affinities: &[(AffinityTrait::Shape(FruitShape::Gourd), 8)],
+    },
+    RootAffinity {
+        gloss: "cluster",
+        affinities: &[(AffinityTrait::Shape(FruitShape::Clustered), 8)],
+    },
+    RootAffinity {
+        gloss: "husk",
+        affinities: &[
+            (AffinityTrait::Shape(FruitShape::Pod), 5),
+            (AffinityTrait::Shape(FruitShape::Nut), 3),
+        ],
+    },
+    RootAffinity {
+        gloss: "blossom",
+        affinities: &[
+            (AffinityTrait::Shape(FruitShape::Round), 4),
+            (AffinityTrait::Property(PartProperty::Aromatic), 3),
+        ],
+    },
+    RootAffinity {
+        gloss: "seed",
+        affinities: &[
+            (AffinityTrait::Shape(FruitShape::Nut), 4),
+            (AffinityTrait::Shape(FruitShape::Pod), 3),
+        ],
+    },
+    // Pigment roots
+    RootAffinity {
+        gloss: "red",
+        affinities: &[(AffinityTrait::Pigment(DyeColor::Red), 8)],
+    },
+    RootAffinity {
+        gloss: "orange",
+        affinities: &[
+            (AffinityTrait::Pigment(DyeColor::Red), 4),
+            (AffinityTrait::Pigment(DyeColor::Yellow), 4),
+        ],
+    },
+    RootAffinity {
+        gloss: "yellow",
+        affinities: &[(AffinityTrait::Pigment(DyeColor::Yellow), 8)],
+    },
+    RootAffinity {
+        gloss: "golden",
+        affinities: &[
+            (AffinityTrait::Pigment(DyeColor::Yellow), 6),
+            (AffinityTrait::Property(PartProperty::ManaResonant), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "green",
+        affinities: &[
+            (AffinityTrait::Pigment(DyeColor::Red), 2),
+            (AffinityTrait::Pigment(DyeColor::Yellow), 2),
+            (AffinityTrait::Pigment(DyeColor::Blue), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "blue",
+        affinities: &[(AffinityTrait::Pigment(DyeColor::Blue), 8)],
+    },
+    RootAffinity {
+        gloss: "violet",
+        affinities: &[
+            (AffinityTrait::Pigment(DyeColor::Red), 3),
+            (AffinityTrait::Pigment(DyeColor::Blue), 5),
+        ],
+    },
+    RootAffinity {
+        gloss: "black",
+        affinities: &[(AffinityTrait::Pigment(DyeColor::Black), 8)],
+    },
+    RootAffinity {
+        gloss: "white",
+        affinities: &[(AffinityTrait::Pigment(DyeColor::White), 8)],
+    },
+    RootAffinity {
+        gloss: "pale",
+        affinities: &[
+            (AffinityTrait::Pigment(DyeColor::White), 5),
+            (AffinityTrait::Property(PartProperty::Bland), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "dark",
+        affinities: &[
+            (AffinityTrait::Pigment(DyeColor::Black), 6),
+            (AffinityTrait::Habitat(HabitatTrait::LowTrunk), 2),
+        ],
+    },
+    // Property roots
+    RootAffinity {
+        gloss: "dream",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Psychoactive), 8),
+            (AffinityTrait::Property(PartProperty::ManaResonant), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "fruit",
+        affinities: &[
+            (AffinityTrait::Shape(FruitShape::Round), 2),
+            (AffinityTrait::Shape(FruitShape::Oblong), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "nectar",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Sweet), 6),
+            (AffinityTrait::Property(PartProperty::Aromatic), 3),
+        ],
+    },
+    RootAffinity {
+        gloss: "sap",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Adhesive), 4),
+            (AffinityTrait::Property(PartProperty::Medicinal), 3),
+        ],
+    },
+    RootAffinity {
+        gloss: "pulp",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Sweet), 3),
+            (AffinityTrait::Property(PartProperty::Starchy), 3),
+        ],
+    },
+    RootAffinity {
+        gloss: "fiber",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::FibrousFine), 8),
+            (AffinityTrait::Property(PartProperty::FibrousCoarse), 4),
+        ],
+    },
+    RootAffinity {
+        gloss: "resin",
+        affinities: &[(AffinityTrait::Property(PartProperty::Adhesive), 8)],
+    },
+    RootAffinity {
+        gloss: "mana",
+        affinities: &[(AffinityTrait::Property(PartProperty::ManaResonant), 8)],
+    },
+    RootAffinity {
+        gloss: "sweet",
+        affinities: &[(AffinityTrait::Property(PartProperty::Sweet), 8)],
+    },
+    RootAffinity {
+        gloss: "bitter",
+        affinities: &[(AffinityTrait::Property(PartProperty::Bitter), 8)],
+    },
+    RootAffinity {
+        gloss: "bland",
+        affinities: &[(AffinityTrait::Property(PartProperty::Bland), 8)],
+    },
+    RootAffinity {
+        gloss: "sharp",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Stimulant), 6),
+            (AffinityTrait::Property(PartProperty::Bitter), 3),
+        ],
+    },
+    RootAffinity {
+        gloss: "rich",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Oily), 7),
+            (AffinityTrait::Property(PartProperty::Sweet), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "smooth",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Oily), 3),
+            (AffinityTrait::Property(PartProperty::FibrousFine), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "rough",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::FibrousCoarse), 7),
+            (AffinityTrait::Property(PartProperty::Tough), 3),
+        ],
+    },
+    RootAffinity {
+        gloss: "spiky",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Tough), 5),
+            (AffinityTrait::Shape(FruitShape::Clustered), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "soft",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Sweet), 2),
+            (AffinityTrait::Property(PartProperty::Bland), 3),
+        ],
+    },
+    RootAffinity {
+        gloss: "hard",
+        affinities: &[(AffinityTrait::Property(PartProperty::Tough), 8)],
+    },
+    RootAffinity {
+        gloss: "dry",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::FibrousCoarse), 3),
+            (AffinityTrait::Property(PartProperty::Bland), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "fragrant",
+        affinities: &[(AffinityTrait::Property(PartProperty::Aromatic), 8)],
+    },
+    RootAffinity {
+        gloss: "sticky",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Adhesive), 7),
+            (AffinityTrait::Property(PartProperty::Fermentable), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "ripe",
+        affinities: &[(AffinityTrait::Property(PartProperty::Fermentable), 8)],
+    },
+    RootAffinity {
+        gloss: "wild",
+        affinities: &[(AffinityTrait::Habitat(HabitatTrait::Wild), 8)],
+    },
+    RootAffinity {
+        gloss: "grain",
+        affinities: &[(AffinityTrait::Property(PartProperty::Starchy), 8)],
+    },
+    RootAffinity {
+        gloss: "honey",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Sweet), 7),
+            (AffinityTrait::Property(PartProperty::Aromatic), 2),
+        ],
+    },
+    RootAffinity {
+        gloss: "spice",
+        affinities: &[(AffinityTrait::Property(PartProperty::Stimulant), 8)],
+    },
+    RootAffinity {
+        gloss: "heal",
+        affinities: &[(AffinityTrait::Property(PartProperty::Medicinal), 8)],
+    },
+    RootAffinity {
+        gloss: "glow",
+        affinities: &[(AffinityTrait::Property(PartProperty::Luminescent), 8)],
+    },
+    RootAffinity {
+        gloss: "rind",
+        affinities: &[
+            (AffinityTrait::Property(PartProperty::Tough), 3),
+            (AffinityTrait::Shape(FruitShape::Gourd), 2),
+        ],
+    },
+];
+
+/// Check if a root is a shape root (highest-weight affinity is Shape).
+fn is_shape_root(affinities: &[(AffinityTrait, u8)]) -> bool {
+    affinities
+        .iter()
+        .max_by_key(|(_, w)| w)
+        .map(|(t, _)| matches!(t, AffinityTrait::Shape(_)))
+        .unwrap_or(false)
+}
+
+/// Compute trait intensity for a fruit. Properties/pigments use yield_percent sums.
+/// Shapes and habitats use binary 0/1.
+fn fruit_trait_intensity(fruit: &FruitSpecies, trait_: AffinityTrait) -> u32 {
+    match trait_ {
+        AffinityTrait::Property(prop) => fruit
+            .parts
+            .iter()
+            .filter(|p| p.properties.contains(&prop))
+            .map(|p| p.yield_percent as u32)
+            .sum(),
+        AffinityTrait::Pigment(color) => fruit
+            .parts
+            .iter()
+            .filter(|p| p.pigment == Some(color))
+            .map(|p| p.yield_percent as u32)
+            .sum(),
+        AffinityTrait::Shape(shape) => {
+            if fruit.appearance.shape == shape {
+                1
+            } else {
+                0
+            }
+        }
+        AffinityTrait::Habitat(_) => {
+            // Habitat traits could map to GrowthHabitat in the future.
+            // For now, all habitats return 0 — habitat roots are only
+            // reachable via world-naming.
+            0
+        }
     }
 }
 
-/// Gloss values for pigment colors.
-fn pigment_glosses(color: DyeColor) -> &'static [&'static str] {
-    match color {
-        DyeColor::Red => &["red"],
-        DyeColor::Yellow => &["yellow", "golden"],
-        DyeColor::Blue => &["blue"],
-        DyeColor::Black => &["black", "dark"],
-        DyeColor::White => &["white", "pale"],
-        DyeColor::Orange => &["orange"],
-        DyeColor::Green => &["green"],
-        DyeColor::Violet => &["violet"],
-    }
+/// Score a (fruit, root) pair: sum of affinity_weight * intensity.
+fn score_fruit_root(fruit: &FruitSpecies, affinities: &[(AffinityTrait, u8)]) -> u32 {
+    affinities
+        .iter()
+        .map(|&(trait_, weight)| weight as u32 * fruit_trait_intensity(fruit, trait_))
+        .sum()
 }
 
-/// Generate a Vaelith name and English gloss for a fruit species.
+/// Assign names to all fruit species using temperature-weighted affinity scoring.
 ///
-/// Strategy: pick 1-2 morphemes from the Botanical pool. The first morpheme
-/// describes the most notable property; the second describes the shape/form.
-/// Uses rejection sampling to guarantee uniqueness within the world.
-fn generate_fruit_name(
+/// Must be called after all fruit species are generated (post-generation pass).
+/// Uses the botanical pool from the lexicon and the static affinity table.
+///
+/// **Algorithm overview:**
+/// 1. Join botanical roots with affinities, precompute all (fruit, root) scores.
+/// 2. Iteratively assign roots to fruits over 10 passes with temperature-scaled
+///    weighted sampling. A fruit is name-ready when it has >= 1 property root
+///    and >= 1 shape root, or >= 2 property roots, with a unique root combination.
+/// 3. Compose Vaelith names from assigned roots: property root(s) first, shape
+///    root last.
+/// 4. Fruits that fail affinity naming fall back to world-naming (genitive case
+///    name from the Given pool + a shape noun).
+/// 5. Uniqueness enforcement: string-level collisions demote the lower-scoring
+///    fruit to world-naming.
+pub fn assign_fruit_names(
+    fruits: &mut [FruitSpecies],
     rng: &mut GameRng,
+    config: &FruitConfig,
     lexicon: &elven_canopy_lang::Lexicon,
-    parts: &[FruitPart],
-    used_names: &mut BTreeSet<String>,
-) -> (String, String) {
+) {
+    if fruits.is_empty() {
+        return;
+    }
+
     let botanical_pool = lexicon.by_name_tag(elven_canopy_lang::NameTag::Botanical);
     if botanical_pool.is_empty() {
-        // Fallback if no botanical entries (shouldn't happen with proper lexicon).
-        let name = format!("vela-{}", used_names.len());
-        used_names.insert(name.clone());
-        return (name, "unknown-fruit".to_string());
+        // Fallback if no botanical entries.
+        for (i, fruit) in fruits.iter_mut().enumerate() {
+            fruit.vaelith_name = format!("Vela{}", i);
+            fruit.english_gloss = "fruit".to_string();
+        }
+        return;
     }
 
-    // Collect the "most notable" property — prefer rare/interesting ones.
-    let notable_prop = pick_notable_property(parts, rng);
-    let notable_pigment = parts.iter().find_map(|p| p.pigment);
+    // Build gloss -> RootAffinity lookup.
+    let affinity_map: BTreeMap<&str, &RootAffinity> =
+        ROOT_AFFINITIES.iter().map(|ra| (ra.gloss, ra)).collect();
 
-    // Build candidate gloss lists for the descriptor morpheme.
-    let descriptor_glosses: Vec<&str> = if let Some(prop) = notable_prop {
-        property_glosses(prop).to_vec()
-    } else if let Some(color) = notable_pigment {
-        pigment_glosses(color).to_vec()
-    } else {
-        vec!["wild", "fruit"]
-    };
-
-    // Shape/form morpheme glosses.
-    let form_glosses: Vec<&str> = {
-        // Determine shape from parts (same logic as appearance derivation).
-        let has_fiber = parts.iter().any(|p| {
-            p.properties.contains(&PartProperty::FibrousCoarse)
-                || p.properties.contains(&PartProperty::FibrousFine)
-        });
-        let has_tough_rind = parts
-            .iter()
-            .any(|p| p.part_type == PartType::Rind && p.properties.contains(&PartProperty::Tough));
-        if has_fiber {
-            vec!["pod", "husk"]
-        } else if has_tough_rind {
-            vec!["nut", "seed"]
-        } else if parts.len() >= 3 {
-            vec!["gourd", "fruit"]
-        } else {
-            vec!["berry", "fruit", "cluster"]
-        }
-    };
-
-    // Try to find matching lexicon entries.
-    let descriptor_entry = find_entry_by_glosses(&botanical_pool, &descriptor_glosses, rng);
-    let form_entry = find_entry_by_glosses(&botanical_pool, &form_glosses, rng);
-
-    // Rejection-sample for uniqueness (max 50 attempts, then fall through).
-    for _attempt in 0..50 {
-        let (name, gloss) = compose_name(rng, descriptor_entry, form_entry, &botanical_pool);
-
-        if !used_names.contains(&name) {
-            used_names.insert(name.clone());
-            return (name, gloss);
-        }
-    }
-
-    // Exhausted retries — append a disambiguator.
-    let (base_name, base_gloss) = compose_name(rng, descriptor_entry, form_entry, &botanical_pool);
-    let name = format!("{}{}", base_name, used_names.len());
-    used_names.insert(name.clone());
-    (name, base_gloss)
-}
-
-/// Find a lexicon entry whose gloss matches one of the candidates.
-fn find_entry_by_glosses<'a>(
-    pool: &[&'a elven_canopy_lang::LexEntry],
-    glosses: &[&str],
-    rng: &mut GameRng,
-) -> Option<&'a elven_canopy_lang::LexEntry> {
-    let matches: Vec<&&elven_canopy_lang::LexEntry> = pool
+    // Phase 1: Join botanical roots with affinities.
+    let joined_roots: Vec<JoinedRoot> = botanical_pool
         .iter()
-        .filter(|e| glosses.contains(&e.gloss.as_str()))
+        .map(|entry| {
+            let affinities = affinity_map
+                .get(entry.gloss.as_str())
+                .map(|ra| ra.affinities)
+                .unwrap_or(&[]);
+            JoinedRoot {
+                entry,
+                affinities,
+                is_shape_root: is_shape_root(affinities),
+            }
+        })
         .collect();
-    if matches.is_empty() {
-        return None;
-    }
-    let idx = rng.next_u64() as usize % matches.len();
-    Some(matches[idx])
-}
 
-/// Compose a Vaelith name from descriptor and form morphemes.
-fn compose_name(
-    rng: &mut GameRng,
-    descriptor: Option<&elven_canopy_lang::LexEntry>,
-    form: Option<&elven_canopy_lang::LexEntry>,
-    fallback_pool: &[&elven_canopy_lang::LexEntry],
-) -> (String, String) {
-    match (descriptor, form) {
-        (Some(d), Some(f)) if d.root != f.root => {
-            let name = capitalize(&format!("{}{}", d.root, f.root));
-            let gloss = format!("{}-{}", d.gloss, f.gloss);
-            (name, gloss)
-        }
-        (Some(d), _) => {
-            // Single morpheme or same entry — pick a random second.
-            if fallback_pool.len() >= 2 {
-                let idx = rng.next_u64() as usize % fallback_pool.len();
-                let f = fallback_pool[idx];
-                if f.root != d.root {
-                    let name = capitalize(&format!("{}{}", d.root, f.root));
-                    let gloss = format!("{}-{}", d.gloss, f.gloss);
-                    return (name, gloss);
+    let fruit_count = fruits.len();
+    let root_count = joined_roots.len();
+
+    // Precompute scores: scores[fruit_idx][root_idx].
+    let scores: Vec<Vec<u32>> = fruits
+        .iter()
+        .map(|fruit| {
+            joined_roots
+                .iter()
+                .map(|root| score_fruit_root(fruit, root.affinities))
+                .collect()
+        })
+        .collect();
+
+    // Phase 2: Iterative root assignment (10 passes, fruit-first).
+    let mut assigned_roots: Vec<Vec<usize>> = vec![Vec::new(); fruit_count];
+    let mut name_ready: Vec<bool> = vec![false; fruit_count];
+    // Track unique root combinations (sorted sets) to prevent duplicates.
+    let mut used_combos: BTreeSet<Vec<usize>> = BTreeSet::new();
+
+    for _pass in 0..10 {
+        for fi in 0..fruit_count {
+            if name_ready[fi] {
+                continue;
+            }
+
+            // Compute temperature-scaled weights for each root.
+            let mut weights: Vec<u64> = Vec::with_capacity(root_count);
+            let mut total_weight: u64 = 0;
+            for ri in 0..root_count {
+                let score = scores[fi][ri] as u64;
+                let temp = if joined_roots[ri].is_shape_root {
+                    config.naming_temperature
+                } else {
+                    config.naming_temperature * 2
+                };
+                let weight = score.saturating_pow(temp);
+                weights.push(weight);
+                total_weight = total_weight.saturating_add(weight);
+            }
+
+            if total_weight == 0 {
+                continue;
+            }
+
+            // Weighted sample using cumulative sums.
+            let roll = rng.range_u64(0, total_weight);
+            let mut cumulative = 0u64;
+            let mut chosen_ri = 0;
+            for (ri, &w) in weights.iter().enumerate() {
+                cumulative = cumulative.saturating_add(w);
+                if roll < cumulative {
+                    chosen_ri = ri;
+                    break;
                 }
             }
-            (capitalize(&d.root), d.gloss.clone())
+
+            assigned_roots[fi].push(chosen_ri);
         }
-        (None, Some(f)) => (capitalize(&f.root), f.gloss.clone()),
-        (None, None) => {
-            // Fallback: random from pool.
-            if !fallback_pool.is_empty() {
-                let idx = rng.next_u64() as usize % fallback_pool.len();
-                let entry = fallback_pool[idx];
-                (capitalize(&entry.root), entry.gloss.clone())
-            } else {
-                ("Vela".to_string(), "fruit".to_string())
+
+        // Check name-readiness after each pass.
+        for fi in 0..fruit_count {
+            if name_ready[fi] {
+                continue;
             }
+            let roots = &assigned_roots[fi];
+            let property_count = roots
+                .iter()
+                .filter(|&&ri| !joined_roots[ri].is_shape_root)
+                .count();
+            let shape_count = roots
+                .iter()
+                .filter(|&&ri| joined_roots[ri].is_shape_root)
+                .count();
+
+            let structurally_ready =
+                (property_count >= 1 && shape_count >= 1) || (property_count >= 2);
+
+            if structurally_ready {
+                let mut sorted_combo: Vec<usize> = roots.clone();
+                sorted_combo.sort();
+                sorted_combo.dedup();
+                if !used_combos.contains(&sorted_combo) {
+                    used_combos.insert(sorted_combo);
+                    name_ready[fi] = true;
+                }
+            }
+        }
+    }
+
+    // Phase 3: Name composition.
+    let given_pool = lexicon.by_name_tag(elven_canopy_lang::NameTag::Given);
+
+    // Track display names for uniqueness enforcement.
+    let mut display_names: BTreeMap<String, usize> = BTreeMap::new();
+    // Track which fruits are world-named.
+    let mut world_named: Vec<bool> = vec![false; fruit_count];
+
+    for fi in 0..fruit_count {
+        if name_ready[fi] {
+            // Affinity-named: property root(s) first, shape root last.
+            let roots = &assigned_roots[fi];
+            let mut property_indices: Vec<usize> = roots
+                .iter()
+                .copied()
+                .filter(|&ri| !joined_roots[ri].is_shape_root)
+                .collect();
+            let mut shape_indices: Vec<usize> = roots
+                .iter()
+                .copied()
+                .filter(|&ri| joined_roots[ri].is_shape_root)
+                .collect();
+
+            // Dedup each group (keep first occurrence order).
+            dedup_preserve_order(&mut property_indices);
+            dedup_preserve_order(&mut shape_indices);
+
+            // Compose: property roots first, then one shape root.
+            let mut name_parts: Vec<usize> = Vec::new();
+            for &ri in &property_indices {
+                name_parts.push(ri);
+            }
+            if let Some(&sri) = shape_indices.first() {
+                name_parts.push(sri);
+            }
+
+            // If we ended up with only shape roots (no property roots), use them as-is.
+            if name_parts.is_empty() {
+                for &ri in &shape_indices {
+                    name_parts.push(ri);
+                }
+            }
+
+            // Build Vaelith name (concatenated roots, capitalized).
+            let vaelith: String = name_parts
+                .iter()
+                .map(|&ri| joined_roots[ri].entry.root.as_str())
+                .collect();
+            let vaelith_name = capitalize(&vaelith);
+
+            // Build English gloss: "gloss1-gloss2" format.
+            let english_gloss: String = name_parts
+                .iter()
+                .map(|&ri| joined_roots[ri].entry.gloss.as_str())
+                .collect::<Vec<_>>()
+                .join("-");
+
+            // Build display name: "{Vaelith} {ShapeNoun}"
+            let shape_noun = if let Some(&sri) = shape_indices.first() {
+                shape_noun_from_gloss(joined_roots[sri].entry.gloss.as_str())
+            } else {
+                fruits[fi].appearance.shape.item_noun()
+            };
+            let display_name = format!("{} {}", vaelith_name, shape_noun);
+
+            fruits[fi].vaelith_name = display_name.clone();
+            fruits[fi].english_gloss = english_gloss;
+
+            if let Some(&prev_fi) = display_names.get(&display_name) {
+                // Collision — demote the lower-scoring fruit to world-naming.
+                let score_a: u32 = assigned_roots[prev_fi]
+                    .iter()
+                    .map(|&ri| scores[prev_fi][ri])
+                    .sum();
+                let score_b: u32 = assigned_roots[fi].iter().map(|&ri| scores[fi][ri]).sum();
+                if score_b < score_a {
+                    // Demote current fruit.
+                    world_named[fi] = true;
+                } else {
+                    // Demote previous fruit.
+                    world_named[prev_fi] = true;
+                    display_names.insert(display_name, fi);
+                }
+            } else {
+                display_names.insert(display_name, fi);
+            }
+        } else {
+            world_named[fi] = true;
+        }
+    }
+
+    // Phase 3b: World-naming for fruits that failed affinity naming or were demoted.
+    let mut used_world_names: BTreeSet<String> = BTreeSet::new();
+    // Collect existing display names for collision checking.
+    for fi in 0..fruit_count {
+        if !world_named[fi] {
+            used_world_names.insert(fruits[fi].vaelith_name.clone());
+        }
+    }
+
+    for fi in 0..fruit_count {
+        if !world_named[fi] {
+            continue;
+        }
+
+        // Pick a shape root from the botanical pool for the noun.
+        let shape_root_indices: Vec<usize> = (0..root_count)
+            .filter(|&ri| joined_roots[ri].is_shape_root)
+            .collect();
+        let shape_noun = if !shape_root_indices.is_empty() {
+            let sri = shape_root_indices[rng.range_usize(0, shape_root_indices.len())];
+            shape_noun_from_gloss(joined_roots[sri].entry.gloss.as_str())
+        } else {
+            fruits[fi].appearance.shape.item_noun()
+        };
+
+        // Generate a world-name using the Given pool with genitive case.
+        for _attempt in 0..50 {
+            let (name_text, _meaning, vowel_class) =
+                elven_canopy_lang::names::generate_name_part(&given_pool, rng);
+
+            // Apply genitive case suffix: -li (front) / -lu (back).
+            let genitive_suffix = match vowel_class {
+                elven_canopy_lang::VowelClass::Front => "li",
+                elven_canopy_lang::VowelClass::Back => "lu",
+            };
+            let genitive_name = format!("{}{}", name_text, genitive_suffix);
+            let display_name = format!("{} {}", genitive_name, shape_noun);
+
+            if !used_world_names.contains(&display_name) {
+                used_world_names.insert(display_name.clone());
+                fruits[fi].vaelith_name = display_name;
+                fruits[fi].english_gloss = format!("world-{}", shape_noun.to_lowercase());
+                break;
+            }
+        }
+
+        // If all 50 attempts failed, use index-based fallback.
+        if fruits[fi].vaelith_name.is_empty() {
+            let fallback = format!("Vela{} {}", fi, shape_noun);
+            fruits[fi].vaelith_name = fallback.clone();
+            fruits[fi].english_gloss = "fruit".to_string();
+            used_world_names.insert(fallback);
         }
     }
 }
 
-/// Pick the most "notable" property from a fruit's parts.
-/// Prefers rare/interesting properties over common food ones.
-fn pick_notable_property(parts: &[FruitPart], rng: &mut GameRng) -> Option<PartProperty> {
-    // Priority tiers (higher = more notable for naming).
-    let priority = |p: &PartProperty| -> u8 {
-        match p {
-            PartProperty::ManaResonant => 10,
-            PartProperty::Luminescent => 9,
-            PartProperty::Psychoactive => 8,
-            PartProperty::Medicinal => 7,
-            PartProperty::Stimulant => 6,
-            PartProperty::Aromatic => 5,
-            PartProperty::Fermentable => 4,
-            PartProperty::FibrousFine => 3,
-            PartProperty::FibrousCoarse => 3,
-            PartProperty::Starchy => 2,
-            PartProperty::Sweet => 2,
-            PartProperty::Oily => 1,
-            PartProperty::Bitter => 1,
-            PartProperty::Bland => 0,
-            PartProperty::Tough => 0,
-            PartProperty::Adhesive => 4,
-        }
-    };
-
-    let mut all_props: Vec<PartProperty> = parts
-        .iter()
-        .flat_map(|p| p.properties.iter().copied())
-        .collect();
-    all_props.sort_by_key(|p| std::cmp::Reverse(priority(p)));
-    all_props.dedup();
-
-    if all_props.is_empty() {
-        return None;
+/// Map a botanical gloss to a display noun for fruit names.
+fn shape_noun_from_gloss(gloss: &str) -> &'static str {
+    match gloss {
+        "berry" => "Berry",
+        "pod" => "Pod",
+        "nut" => "Nut",
+        "gourd" => "Gourd",
+        "cluster" => "Cluster",
+        "husk" => "Husk",
+        "blossom" => "Blossom",
+        "seed" => "Seed",
+        "fruit" => "Fruit",
+        _ => "Fruit",
     }
+}
 
-    // Pick from the top tier (all props with the same highest priority).
-    let top_priority = priority(&all_props[0]);
-    let top_tier: Vec<_> = all_props
-        .iter()
-        .filter(|p| priority(p) == top_priority)
-        .collect();
-    let idx = rng.next_u64() as usize % top_tier.len();
-    Some(*top_tier[idx])
+/// Deduplicate a vector while preserving first-occurrence order.
+fn dedup_preserve_order(v: &mut Vec<usize>) {
+    let mut seen = BTreeSet::new();
+    v.retain(|x| seen.insert(*x));
 }
 
 /// Capitalize the first character of a string.
@@ -1179,6 +1636,14 @@ mod tests {
 
     fn test_config() -> FruitConfig {
         FruitConfig::default()
+    }
+
+    /// Helper: generate fruit species and assign names (the two-step API).
+    fn generate_and_name(rng: &mut GameRng, config: &FruitConfig) -> Vec<FruitSpecies> {
+        let lexicon = elven_canopy_lang::default_lexicon();
+        let mut fruits = generate_fruit_species(rng, config);
+        assign_fruit_names(&mut fruits, rng, config, &lexicon);
+        fruits
     }
 
     // --- Exclusion rules ---
@@ -1272,12 +1737,11 @@ mod tests {
     #[test]
     fn generation_is_deterministic() {
         let config = test_config();
-        let lexicon = elven_canopy_lang::default_lexicon();
         let mut rng1 = GameRng::new(42);
         let mut rng2 = GameRng::new(42);
 
-        let fruits1 = generate_fruit_species(&mut rng1, &config, &lexicon);
-        let fruits2 = generate_fruit_species(&mut rng2, &config, &lexicon);
+        let fruits1 = generate_and_name(&mut rng1, &config);
+        let fruits2 = generate_and_name(&mut rng2, &config);
 
         assert_eq!(fruits1.len(), fruits2.len());
         for (f1, f2) in fruits1.iter().zip(fruits2.iter()) {
@@ -1294,12 +1758,11 @@ mod tests {
     #[test]
     fn different_seeds_produce_different_fruits() {
         let config = test_config();
-        let lexicon = elven_canopy_lang::default_lexicon();
         let mut rng1 = GameRng::new(1);
         let mut rng2 = GameRng::new(2);
 
-        let fruits1 = generate_fruit_species(&mut rng1, &config, &lexicon);
-        let fruits2 = generate_fruit_species(&mut rng2, &config, &lexicon);
+        let fruits1 = generate_and_name(&mut rng1, &config);
+        let fruits2 = generate_and_name(&mut rng2, &config);
 
         // Names should differ.
         let names1: Vec<_> = fruits1.iter().map(|f| &f.vaelith_name).collect();
@@ -1310,11 +1773,10 @@ mod tests {
     #[test]
     fn generation_respects_species_count_range() {
         let config = test_config();
-        let lexicon = elven_canopy_lang::default_lexicon();
 
         for seed in 0..20 {
             let mut rng = GameRng::new(seed);
-            let fruits = generate_fruit_species(&mut rng, &config, &lexicon);
+            let fruits = generate_fruit_species(&mut rng, &config);
             assert!(
                 fruits.len() >= config.min_species_per_world as usize,
                 "Seed {}: got {} fruits, min {}",
@@ -1335,11 +1797,10 @@ mod tests {
     #[test]
     fn all_fruit_names_unique() {
         let config = test_config();
-        let lexicon = elven_canopy_lang::default_lexicon();
 
         for seed in 0..10 {
             let mut rng = GameRng::new(seed);
-            let fruits = generate_fruit_species(&mut rng, &config, &lexicon);
+            let fruits = generate_and_name(&mut rng, &config);
             let mut names = BTreeSet::new();
             for f in &fruits {
                 assert!(
@@ -1355,9 +1816,8 @@ mod tests {
     #[test]
     fn all_parts_sum_to_100() {
         let config = test_config();
-        let lexicon = elven_canopy_lang::default_lexicon();
         let mut rng = GameRng::new(42);
-        let fruits = generate_fruit_species(&mut rng, &config, &lexicon);
+        let fruits = generate_and_name(&mut rng, &config);
 
         for fruit in &fruits {
             let sum: u16 = fruit.parts.iter().map(|p| p.yield_percent as u16).sum();
@@ -1372,9 +1832,8 @@ mod tests {
     #[test]
     fn no_within_part_exclusion_violations() {
         let config = test_config();
-        let lexicon = elven_canopy_lang::default_lexicon();
         let mut rng = GameRng::new(42);
-        let fruits = generate_fruit_species(&mut rng, &config, &lexicon);
+        let fruits = generate_and_name(&mut rng, &config);
 
         for fruit in &fruits {
             for part in &fruit.parts {
@@ -1409,11 +1868,10 @@ mod tests {
     #[test]
     fn coverage_satisfied_across_seeds() {
         let config = test_config();
-        let lexicon = elven_canopy_lang::default_lexicon();
 
         for seed in 0..10 {
             let mut rng = GameRng::new(seed);
-            let fruits = generate_fruit_species(&mut rng, &config, &lexicon);
+            let fruits = generate_fruit_species(&mut rng, &config);
 
             let mut tracker = CoverageTracker::new(&config);
             for fruit in &fruits {
@@ -1432,9 +1890,8 @@ mod tests {
     #[test]
     fn sequential_ids() {
         let config = test_config();
-        let lexicon = elven_canopy_lang::default_lexicon();
         let mut rng = GameRng::new(42);
-        let fruits = generate_fruit_species(&mut rng, &config, &lexicon);
+        let fruits = generate_fruit_species(&mut rng, &config);
 
         for (i, fruit) in fruits.iter().enumerate() {
             assert_eq!(fruit.id, FruitSpeciesId(i as u16));
@@ -1444,9 +1901,8 @@ mod tests {
     #[test]
     fn serde_roundtrip_fruit_species() {
         let config = test_config();
-        let lexicon = elven_canopy_lang::default_lexicon();
         let mut rng = GameRng::new(42);
-        let fruits = generate_fruit_species(&mut rng, &config, &lexicon);
+        let fruits = generate_and_name(&mut rng, &config);
 
         for fruit in &fruits {
             let json = serde_json::to_string(fruit).unwrap();
@@ -1541,5 +1997,243 @@ mod tests {
         assert!(fruit.has_pigment());
         assert_eq!(fruit.all_pigments(), vec![DyeColor::Red]);
         assert_eq!(fruit.all_properties().len(), 2);
+    }
+
+    // --- Affinity naming tests ---
+
+    #[test]
+    fn zero_collisions_across_100_seeds() {
+        let config = test_config();
+        for seed in 0..100 {
+            let mut rng = GameRng::new(seed);
+            let fruits = generate_and_name(&mut rng, &config);
+            let mut names = BTreeSet::new();
+            for f in &fruits {
+                assert!(
+                    !f.vaelith_name.is_empty(),
+                    "Seed {}: fruit {:?} has empty name",
+                    seed,
+                    f.id
+                );
+                assert!(
+                    names.insert(&f.vaelith_name),
+                    "Seed {}: duplicate name '{}'",
+                    seed,
+                    f.vaelith_name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn naming_determinism() {
+        let config = test_config();
+        for seed in [0, 42, 999] {
+            let mut rng1 = GameRng::new(seed);
+            let mut rng2 = GameRng::new(seed);
+            let fruits1 = generate_and_name(&mut rng1, &config);
+            let fruits2 = generate_and_name(&mut rng2, &config);
+            assert_eq!(fruits1.len(), fruits2.len());
+            for (f1, f2) in fruits1.iter().zip(fruits2.iter()) {
+                assert_eq!(f1.vaelith_name, f2.vaelith_name);
+                assert_eq!(f1.english_gloss, f2.english_gloss);
+            }
+        }
+    }
+
+    #[test]
+    fn naming_variety_across_seeds() {
+        let config = test_config();
+        let mut all_names = BTreeSet::new();
+        for seed in 0..20 {
+            let mut rng = GameRng::new(seed);
+            let fruits = generate_and_name(&mut rng, &config);
+            for f in &fruits {
+                all_names.insert(f.vaelith_name.clone());
+            }
+        }
+        // 20 seeds * ~20-40 fruits each = 400-800 fruits; should have >100 unique names.
+        assert!(
+            all_names.len() > 100,
+            "Expected >100 unique names across 20 seeds, got {}",
+            all_names.len()
+        );
+    }
+
+    #[test]
+    fn world_name_genitive_case_correctness() {
+        // Try multiple seeds to ensure we find at least one world-named fruit,
+        // then verify all world-named fruits use correct genitive suffixes.
+        let config = test_config();
+        let mut total_world_named = 0;
+
+        for seed in 0..20 {
+            let mut rng = GameRng::new(seed);
+            let fruits = generate_and_name(&mut rng, &config);
+
+            for f in &fruits {
+                if f.english_gloss.starts_with("world-") {
+                    total_world_named += 1;
+                    // The Vaelith name should have "Name Noun" format.
+                    let parts: Vec<&str> = f.vaelith_name.splitn(2, ' ').collect();
+                    assert_eq!(
+                        parts.len(),
+                        2,
+                        "World-named fruit should have 'Name Noun' format, got '{}'",
+                        f.vaelith_name
+                    );
+                    let name_part = parts[0];
+                    assert!(
+                        name_part.ends_with("li") || name_part.ends_with("lu"),
+                        "World-named fruit name '{}' should end with genitive suffix (li/lu)",
+                        name_part
+                    );
+                }
+            }
+        }
+
+        assert!(
+            total_world_named > 0,
+            "Expected at least one world-named fruit across 20 seeds"
+        );
+    }
+
+    #[test]
+    fn property_intensity_scoring() {
+        // A fruit with 70% Starchy flesh should score high for "grain" root.
+        let fruit = FruitSpecies {
+            id: FruitSpeciesId(0),
+            vaelith_name: String::new(),
+            english_gloss: String::new(),
+            parts: vec![FruitPart {
+                part_type: PartType::Flesh,
+                properties: [PartProperty::Starchy].into_iter().collect(),
+                pigment: None,
+                yield_percent: 70,
+            }],
+            habitat: GrowthHabitat::Branch,
+            rarity: Rarity::Common,
+            greenhouse_cultivable: true,
+            appearance: FruitAppearance {
+                exterior_color: FruitColor {
+                    r: 200,
+                    g: 170,
+                    b: 120,
+                },
+                shape: FruitShape::Round,
+                size_percent: 100,
+                glows: false,
+            },
+        };
+
+        // "grain" has Starchy affinity weight 8.
+        let grain_affinities: &[(AffinityTrait, u8)] =
+            &[(AffinityTrait::Property(PartProperty::Starchy), 8)];
+        let score = score_fruit_root(&fruit, grain_affinities);
+        // 8 * 70 = 560
+        assert_eq!(score, 560);
+
+        // "glow" has Luminescent affinity weight 8; this fruit has no Luminescent.
+        let glow_affinities: &[(AffinityTrait, u8)] =
+            &[(AffinityTrait::Property(PartProperty::Luminescent), 8)];
+        let score = score_fruit_root(&fruit, glow_affinities);
+        assert_eq!(score, 0);
+    }
+
+    #[test]
+    fn bland_fruit_fallthrough_to_world_naming() {
+        // A fruit with only Bland property should struggle to get affinity-named,
+        // because "bland" root has low weights and the fruit has low intensity.
+        let config = test_config();
+        let lexicon = elven_canopy_lang::default_lexicon();
+
+        let mut fruits = vec![FruitSpecies {
+            id: FruitSpeciesId(0),
+            vaelith_name: String::new(),
+            english_gloss: String::new(),
+            parts: vec![FruitPart {
+                part_type: PartType::Flesh,
+                properties: [PartProperty::Bland].into_iter().collect(),
+                pigment: None,
+                yield_percent: 100,
+            }],
+            habitat: GrowthHabitat::Branch,
+            rarity: Rarity::Common,
+            greenhouse_cultivable: true,
+            appearance: FruitAppearance {
+                exterior_color: FruitColor {
+                    r: 140,
+                    g: 160,
+                    b: 100,
+                },
+                shape: FruitShape::Round,
+                size_percent: 80,
+                glows: false,
+            },
+        }];
+
+        let mut rng = GameRng::new(42);
+        assign_fruit_names(&mut fruits, &mut rng, &config, &lexicon);
+
+        assert!(
+            !fruits[0].vaelith_name.is_empty(),
+            "Bland fruit should still get a name"
+        );
+    }
+
+    #[test]
+    fn shape_root_sharing() {
+        // Multiple fruits with the same shape can share shape roots if their
+        // property roots differ. Generate many fruits and check that shape root
+        // reuse happens.
+        let config = test_config();
+        let mut rng = GameRng::new(42);
+        let fruits = generate_and_name(&mut rng, &config);
+
+        // Extract the last word (shape noun) from each affinity-named fruit.
+        let shape_nouns: Vec<&str> = fruits
+            .iter()
+            .filter(|f| !f.english_gloss.starts_with("world-"))
+            .filter_map(|f| f.vaelith_name.split(' ').last())
+            .collect();
+
+        if shape_nouns.len() > 5 {
+            // Count occurrences of each shape noun.
+            let mut noun_counts = BTreeMap::new();
+            for noun in &shape_nouns {
+                *noun_counts.entry(*noun).or_insert(0u32) += 1;
+            }
+            // At least one shape noun should appear more than once.
+            let max_count = noun_counts.values().max().unwrap_or(&0);
+            assert!(
+                *max_count > 1,
+                "Expected at least one shape noun reused across fruits, got counts: {:?}",
+                noun_counts
+            );
+        }
+    }
+
+    #[test]
+    fn is_shape_root_classification() {
+        // Berry: Shape(Clustered) 6, Shape(Round) 3 — highest is Shape, so shape root.
+        assert!(is_shape_root(&[
+            (AffinityTrait::Shape(FruitShape::Clustered), 6),
+            (AffinityTrait::Shape(FruitShape::Round), 3),
+        ]));
+
+        // Dream: Property(Psychoactive) 8, Property(ManaResonant) 2 — not shape root.
+        assert!(!is_shape_root(&[
+            (AffinityTrait::Property(PartProperty::Psychoactive), 8),
+            (AffinityTrait::Property(PartProperty::ManaResonant), 2),
+        ]));
+
+        // Empty affinities — not a shape root.
+        assert!(!is_shape_root(&[]));
+
+        // Blossom: Shape(Round) 4, Property(Aromatic) 3 — highest is Shape, so shape root.
+        assert!(is_shape_root(&[
+            (AffinityTrait::Shape(FruitShape::Round), 4),
+            (AffinityTrait::Property(PartProperty::Aromatic), 3),
+        ]));
     }
 }
