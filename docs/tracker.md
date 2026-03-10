@@ -105,7 +105,10 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-flying-nav           3D flight navigation system
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
+[ ] F-fruit-naming         Fruit naming overhaul
 [ ] F-fruit-prod           Basic fruit production and harvesting
+[ ] F-fruit-sprites        Procedural fruit sprites
+[ ] F-fruit-yields         Fruit yield model overhaul
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-hostile-detection    Hostile detection and faction logic
 [ ] F-jobs                 Elf job/role specialization
@@ -1212,9 +1215,9 @@ differentiation, deeper integration with food chain and cooking.
 (property-based recipe matching), F-food-chain (logistics pipeline),
 item schema (FruitSpeciesId references).
 
-**Blocked by:** F-logistics-filter
+**Blocked by:** F-fruit-naming, F-fruit-sprites, F-logistics-filter
 **Blocks:** F-civ-knowledge
-**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-prod, F-logistics-filter, F-recipes
+**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-naming, F-fruit-prod, F-fruit-sprites, F-fruit-yields, F-logistics-filter, F-recipes
 
 #### F-hauling — Item hauling task type
 **Status:** Done · **Phase:** 3
@@ -1794,6 +1797,34 @@ social norms over time.
 
 **Blocked by:** F-multi-tree, F-personality
 
+#### F-fruit-naming — Fruit naming overhaul
+**Status:** Todo · **Phase:** 7
+
+Overhaul fruit naming to eliminate collisions and produce meaningful,
+varied names. Temperature-weighted root assignment from an expanded
+polysemous lexicon pool, with world-naming fallback (historical figures,
+locations) for less distinctive fruits. Zero number suffixes.
+
+**Draft:** `docs/drafts/fruit_naming.md`
+
+**Blocks:** F-fruit-variety
+**Related:** F-fruit-variety, F-fruit-yields
+
+#### F-fruit-yields — Fruit yield model overhaul
+**Status:** Todo · **Phase:** 7
+
+Reexamine fruit yield representation. Currently `FruitPart.yield_percent`
+(u8, percentage of fruit mass) is floating-point-flavored and doesn't
+directly map to gameplay. Consider replacing with integer conversion
+ratios — e.g., "how many fruits needed to produce 1 unit of target
+material" (1 bread, 1 dye, etc.). This gives a natural intensity signal
+(lower count = more productive) that's inherently integer, easy to
+reason about in recipes, and useful for naming weights. Broader than
+just naming — affects recipe costs, processing paths, and economy
+balance.
+
+**Related:** F-fruit-naming, F-fruit-variety
+
 #### F-hilly-terrain — Hilly forest floor with dirt voxels
 **Status:** Done · **Phase:** 2
 
@@ -2085,6 +2116,18 @@ browser on click. Server-rendered HTML templates, no JavaScript required.
 Auto-refresh via meta tag. Independent of all sim/worldgen features.
 
 **Draft:** `docs/drafts/encyclopedia_civs.md` §Encyclopedia (Web-Based)
+
+#### F-fruit-sprites — Procedural fruit sprites
+**Status:** Todo · **Phase:** 7
+
+Procedural billboarded sprites for fruit species, generated from species
+appearance data (shape, colors, size). Used on fruit voxels in the world
+(replacing plain colored blocks) and as icons in inventory/logistics UI.
+Each species gets a unique sprite derived from its FruitAppearance struct.
+Follows the existing sprite_factory.gd pattern used for creature sprites.
+
+**Blocks:** F-fruit-variety
+**Related:** F-fruit-variety
 
 #### F-godot-setup — Godot 4 project setup
 **Status:** Done · **Phase:** 0 · **Refs:** §3
