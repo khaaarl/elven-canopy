@@ -141,6 +141,10 @@ case "$MODE" in
                 fi
             fi
         done
+        HAS_RUST_CHANGES=""
+        if printf '%s' "$CHANGED_FILES" | grep -q '\.rs$\|Cargo\.toml$'; then
+            HAS_RUST_CHANGES="1"
+        fi
         if [ -n "$TAB_PACKAGES" ]; then
             echo "Running tabulosity tests:$TAB_PACKAGES"
             cargo test $TAB_PACKAGES -- --test-threads=16
@@ -149,11 +153,20 @@ case "$MODE" in
             cargo test -p tabulosity --features serde --test serde -- --test-threads=16
             echo ""
         fi
-        # Always include multiplayer_tests (cross-crate correctness).
-        OTHER_PACKAGES="$OTHER_PACKAGES -p multiplayer_tests"
-        echo "Running tests for:$OTHER_PACKAGES"
-        cargo test $OTHER_PACKAGES -- --test-threads=16
-        echo ""
+        if [ -n "$OTHER_PACKAGES" ]; then
+            # Include multiplayer_tests alongside changed crates for cross-crate coverage.
+            OTHER_PACKAGES="$OTHER_PACKAGES -p multiplayer_tests"
+            echo "Running tests for:$OTHER_PACKAGES"
+            cargo test $OTHER_PACKAGES -- --test-threads=16
+            echo ""
+        elif [ -n "$HAS_RUST_CHANGES" ]; then
+            # Only Cargo.toml or non-crate .rs files changed — still run multiplayer tests.
+            echo "Running multiplayer tests..."
+            cargo test -p multiplayer_tests -- --test-threads=16
+            echo ""
+        else
+            echo "No Rust changes detected, skipping Rust tests."
+        fi
         if printf '%s' "$CHANGED_FILES" | grep -q '\.gd$'; then
             godot_script_check
             echo ""
