@@ -25,6 +25,14 @@ pub enum ItemKind {
     Bow,
     Arrow,
     Bowstring,
+    // Extracted fruit components (produced by hulling/separating whole fruit).
+    // Each corresponds to a `PartType` variant in `fruit.rs`.
+    Pulp,
+    Husk,
+    Seed,
+    FruitFiber,
+    FruitSap,
+    FruitResin,
 }
 
 impl ItemKind {
@@ -36,6 +44,12 @@ impl ItemKind {
             ItemKind::Bow => "Bow",
             ItemKind::Arrow => "Arrow",
             ItemKind::Bowstring => "Bowstring",
+            ItemKind::Pulp => "Pulp",
+            ItemKind::Husk => "Husk",
+            ItemKind::Seed => "Seed",
+            ItemKind::FruitFiber => "Fiber",
+            ItemKind::FruitSap => "Sap",
+            ItemKind::FruitResin => "Resin",
         }
     }
 }

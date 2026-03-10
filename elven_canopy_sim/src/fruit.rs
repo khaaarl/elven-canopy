@@ -59,6 +59,19 @@ impl PartType {
         PartType::Sap,
         PartType::Resin,
     ];
+
+    /// The `ItemKind` produced when this part type is extracted from a fruit.
+    pub fn extracted_item_kind(self) -> crate::inventory::ItemKind {
+        use crate::inventory::ItemKind;
+        match self {
+            PartType::Flesh => ItemKind::Pulp,
+            PartType::Rind => ItemKind::Husk,
+            PartType::Seed => ItemKind::Seed,
+            PartType::Fiber => ItemKind::FruitFiber,
+            PartType::Sap => ItemKind::FruitSap,
+            PartType::Resin => ItemKind::FruitResin,
+        }
+    }
 }
 
 /// A property flag on a fruit part. Determines processing paths.

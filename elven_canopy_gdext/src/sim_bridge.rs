@@ -1904,6 +1904,12 @@ impl SimBridge {
                 "Bow" => elven_canopy_sim::inventory::ItemKind::Bow,
                 "Arrow" => elven_canopy_sim::inventory::ItemKind::Arrow,
                 "Bowstring" => elven_canopy_sim::inventory::ItemKind::Bowstring,
+                "Pulp" => elven_canopy_sim::inventory::ItemKind::Pulp,
+                "Husk" => elven_canopy_sim::inventory::ItemKind::Husk,
+                "Seed" => elven_canopy_sim::inventory::ItemKind::Seed,
+                "Fiber" => elven_canopy_sim::inventory::ItemKind::FruitFiber,
+                "Sap" => elven_canopy_sim::inventory::ItemKind::FruitSap,
+                "Resin" => elven_canopy_sim::inventory::ItemKind::FruitResin,
                 other => {
                     godot_error!("SimBridge: unknown item kind in logistics wants: '{other}'");
                     continue;
@@ -1937,6 +1943,12 @@ impl SimBridge {
             ItemKind::Bow,
             ItemKind::Arrow,
             ItemKind::Bowstring,
+            ItemKind::Pulp,
+            ItemKind::Husk,
+            ItemKind::Seed,
+            ItemKind::FruitFiber,
+            ItemKind::FruitSap,
+            ItemKind::FruitResin,
         ] {
             let mut d = VarDictionary::new();
             d.set("kind", GString::from(kind.display_name()));
@@ -1964,6 +1976,12 @@ impl SimBridge {
             "Bow" => ItemKind::Bow,
             "Arrow" => ItemKind::Arrow,
             "Bowstring" => ItemKind::Bowstring,
+            "Pulp" => ItemKind::Pulp,
+            "Husk" => ItemKind::Husk,
+            "Seed" => ItemKind::Seed,
+            "Fiber" => ItemKind::FruitFiber,
+            "Sap" => ItemKind::FruitSap,
+            "Resin" => ItemKind::FruitResin,
             _ => return arr,
         };
 
@@ -2013,6 +2031,24 @@ impl SimBridge {
             }
             ItemKind::Bread => {
                 // No material variants for bread — only "Any" (already added above).
+            }
+            ItemKind::Pulp
+            | ItemKind::Husk
+            | ItemKind::Seed
+            | ItemKind::FruitFiber
+            | ItemKind::FruitSap
+            | ItemKind::FruitResin => {
+                // Extracted components: add per-species filters.
+                for species in sim.db.fruit_species.iter_all() {
+                    let mat = Material::FruitSpecies(species.id);
+                    let label = sim.material_item_display_name(kind, mat);
+                    let filter_str =
+                        Self::serialize_material_filter(MaterialFilter::Specific(mat)).to_string();
+                    let mut d = VarDictionary::new();
+                    d.set("filter", GString::from(&filter_str));
+                    d.set("label", GString::from(label.as_str()));
+                    arr.push(&d.to_variant());
+                }
             }
         }
 

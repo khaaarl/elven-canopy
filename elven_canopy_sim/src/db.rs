@@ -115,6 +115,8 @@ pub enum ActionKind {
     MeleeStrike = 13,
     /// Shooting a ranged projectile at a target creature.
     Shoot = 14,
+    /// Extracting components from a whole fruit (hulling/pressing/etc.).
+    Extract = 15,
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +141,7 @@ pub enum TaskKindTag {
     Mope,
     Craft,
     AttackTarget,
+    ExtractFruit,
 }
 
 impl TaskKindTag {
@@ -158,6 +161,7 @@ impl TaskKindTag {
             Self::Mope => "Moping",
             Self::Craft => "Craft",
             Self::AttackTarget => "Attack",
+            Self::ExtractFruit => "Extract",
         }
     }
 
@@ -178,6 +182,7 @@ impl TaskKindTag {
             TaskKind::Mope => Self::Mope,
             TaskKind::Craft { .. } => Self::Craft,
             TaskKind::AttackTarget { .. } => Self::AttackTarget,
+            TaskKind::ExtractFruit { .. } => Self::ExtractFruit,
         }
     }
 }
@@ -193,6 +198,7 @@ pub enum TaskStructureRole {
     SleepAt,
     AcquireSourceBuilding,
     CraftAt,
+    ExtractAt,
 }
 
 /// Role of a task-to-voxel reference. Determines why a task references
@@ -576,6 +582,17 @@ pub struct CompletedStructure {
     /// A target of 0 or missing entry means "don't craft this recipe."
     #[serde(default)]
     pub workshop_recipe_targets: std::collections::BTreeMap<String, u32>,
+    /// Whether this kitchen has fruit extraction enabled.
+    #[serde(default)]
+    pub extraction_enabled: bool,
+    /// Which fruit species to extract (None = extraction disabled).
+    #[serde(default)]
+    pub extraction_species: Option<crate::fruit::FruitSpeciesId>,
+    /// Per-component target quantities for extraction. Key = ItemKind of
+    /// the component (Pulp, Husk, etc.), value = target quantity. The
+    /// extraction monitor creates tasks until all targets are met.
+    #[serde(default)]
+    pub extraction_targets: std::collections::BTreeMap<crate::inventory::ItemKind, u32>,
     /// For greenhouses: the fruit species being cultivated.
     #[serde(default)]
     pub greenhouse_species: Option<crate::fruit::FruitSpeciesId>,
@@ -612,6 +629,9 @@ impl CompletedStructure {
             logistics_priority: None,
             cooking_enabled: false,
             cooking_bread_target: 0,
+            extraction_enabled: false,
+            extraction_species: None,
+            extraction_targets: std::collections::BTreeMap::new(),
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),

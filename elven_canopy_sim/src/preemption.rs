@@ -73,13 +73,15 @@ impl PreemptionLevel {
 pub fn preemption_level(kind: TaskKindTag, origin: TaskOrigin) -> PreemptionLevel {
     match kind {
         // Background work — Autonomous(1) regardless of origin.
-        TaskKindTag::Haul | TaskKindTag::Cook | TaskKindTag::Craft | TaskKindTag::Harvest => {
-            match origin {
-                TaskOrigin::PlayerDirected | TaskOrigin::Autonomous | TaskOrigin::Automated => {
-                    PreemptionLevel::Autonomous
-                }
+        TaskKindTag::Haul
+        | TaskKindTag::Cook
+        | TaskKindTag::Craft
+        | TaskKindTag::Harvest
+        | TaskKindTag::ExtractFruit => match origin {
+            TaskOrigin::PlayerDirected | TaskOrigin::Autonomous | TaskOrigin::Automated => {
+                PreemptionLevel::Autonomous
             }
-        }
+        },
 
         // Player-directed non-combat — PlayerDirected(2).
         TaskKindTag::GoTo | TaskKindTag::Build | TaskKindTag::Furnish => match origin {

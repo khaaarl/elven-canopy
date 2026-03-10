@@ -225,6 +225,12 @@ pub enum TaskKind {
     /// fails repeatedly (configurable `attack_path_retry_limit`), the task is
     /// cancelled.
     AttackTarget { target: CreatureId },
+    /// Extract components from a whole fruit at a kitchen. An elf walks to
+    /// the kitchen, works for `extract_work_ticks`, then consumes 1 whole
+    /// fruit and produces component item stacks based on the fruit species'
+    /// parts and `component_units`. The source fruit's species determines
+    /// which components are produced.
+    ExtractFruit { structure_id: StructureId },
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.

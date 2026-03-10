@@ -1255,6 +1255,10 @@ pub struct GameConfig {
     #[serde(default = "default_cook_bread_output")]
     pub cook_bread_output: u32,
 
+    /// Ticks of work to complete one extraction cycle (3000 = 3 sim-seconds).
+    #[serde(default = "default_extract_work_ticks")]
+    pub extract_work_ticks: u64,
+
     /// Creatures to spawn when a new game starts. Each spec describes a group
     /// of one species with optional per-creature food/rest/bread overrides.
     #[serde(default)]
@@ -1410,6 +1414,10 @@ fn default_cook_fruit_input() -> u32 {
 
 fn default_cook_bread_output() -> u32 {
     10
+}
+
+fn default_extract_work_ticks() -> u64 {
+    3000
 }
 
 impl Default for GameConfig {
@@ -1743,6 +1751,7 @@ impl Default for GameConfig {
             cook_work_ticks: 5000,
             cook_fruit_input: 1,
             cook_bread_output: 10,
+            extract_work_ticks: 3000,
             initial_creatures: vec![
                 InitialCreatureSpec {
                     species: Species::Elf,

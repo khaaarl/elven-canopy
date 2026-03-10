@@ -2206,6 +2206,7 @@ impl SimState {
             ActionKind::Furnish
                 | ActionKind::Cook
                 | ActionKind::Craft
+                | ActionKind::Extract
                 | ActionKind::Sleep
                 | ActionKind::Eat
                 | ActionKind::Harvest
@@ -2559,6 +2560,10 @@ impl SimState {
                 self.execute_attack_target_at_location(creature_id, task_id, events);
                 return;
             }
+            crate::db::TaskKindTag::ExtractFruit => {
+                self.start_extract_action(creature_id, task_id);
+                return;
+            }
         }
 
         // Schedule next activation (creature is now idle, will wander or pick
@@ -2641,6 +2646,7 @@ impl SimState {
                 };
                 self.resolve_acquire_item_action(creature_id, tid)
             }
+            ActionKind::Extract => self.resolve_extract_action(creature_id),
             ActionKind::MeleeStrike | ActionKind::Shoot => {
                 // MeleeStrike/Shoot are not task-driven; creature becomes idle.
                 false
@@ -3532,6 +3538,117 @@ impl SimState {
     fn cleanup_cook_task(&mut self, task_id: TaskId) {
         let structure_id =
             match self.task_structure_ref(task_id, crate::db::TaskStructureRole::CookAt) {
+                Some(s) => s,
+                None => return,
+            };
+        self.inv_clear_reservations(self.structure_inv(structure_id), task_id);
+        if let Some(mut t) = self.db.tasks.get(&task_id) {
+            t.state = task::TaskState::Complete;
+            let _ = self.db.tasks.update_no_fk(t);
+        }
+    }
+
+    /// Start an Extract action: set action kind and schedule next activation
+    /// after `extract_work_ticks`. Extraction is a single-action task that
+    /// hulls one reserved fruit into its component items.
+    fn start_extract_action(&mut self, creature_id: CreatureId, task_id: TaskId) {
+        let _ = task_id; // Used only for symmetry with other start_*_action signatures.
+        let duration = self.config.extract_work_ticks;
+        let tick = self.tick;
+        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            c.action_kind = ActionKind::Extract;
+            c.next_available_tick = Some(tick + duration);
+        });
+        self.event_queue.schedule(
+            self.tick + duration,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
+    }
+
+    /// Resolve a completed Extract action: consume one reserved fruit from the
+    /// kitchen's inventory, look up its species' parts, and produce component
+    /// item stacks (Pulp, Husk, Seed, etc.) with the appropriate material.
+    /// Always returns true (single-action task).
+    fn resolve_extract_action(&mut self, creature_id: CreatureId) -> bool {
+        let task_id = match self
+            .db
+            .creatures
+            .get(&creature_id)
+            .and_then(|c| c.current_task)
+        {
+            Some(t) => t,
+            None => return false,
+        };
+        let structure_id =
+            match self.task_structure_ref(task_id, crate::db::TaskStructureRole::ExtractAt) {
+                Some(s) => s,
+                None => return false,
+            };
+
+        let inv_id = self.structure_inv(structure_id);
+
+        // Find the species of the fruit we'll consume. We need to know which
+        // species to look up parts for. Use the extraction_species from the
+        // structure, falling back to the first reserved fruit's material.
+        let species_id = self
+            .db
+            .structures
+            .get(&structure_id)
+            .and_then(|s| s.extraction_species);
+
+        let species_id = match species_id {
+            Some(id) => id,
+            None => {
+                // No species configured — complete without producing anything.
+                self.complete_task(task_id);
+                return true;
+            }
+        };
+
+        // Look up the fruit species to get its parts.
+        let species = match self.db.fruit_species.get(&species_id) {
+            Some(s) => s.clone(),
+            None => {
+                self.complete_task(task_id);
+                return true;
+            }
+        };
+
+        // Consume one reserved fruit of the correct species.
+        let removed =
+            self.inv_remove_reserved_items(inv_id, inventory::ItemKind::Fruit, 1, task_id);
+        if removed < 1 {
+            // No fruit available — clear reservations and complete.
+            self.inv_clear_reservations(inv_id, task_id);
+            self.complete_task(task_id);
+            return true;
+        }
+
+        // Produce component items for each part of the fruit.
+        let material = Some(inventory::Material::FruitSpecies(species_id));
+        for part in &species.parts {
+            let item_kind = part.part_type.extracted_item_kind();
+            let quantity = part.component_units as u32;
+            if quantity > 0 {
+                self.inv_add_item(
+                    inv_id, item_kind, quantity, None, // owner
+                    None, // reserved_by
+                    material, 0,    // quality
+                    None, // enchantment
+                );
+            }
+        }
+
+        self.complete_task(task_id);
+        true
+    }
+
+    /// Clean up an ExtractFruit task on interruption: release reserved fruit
+    /// in the kitchen's inventory and mark the task Complete so the extraction
+    /// monitor can create a fresh task on the next heartbeat.
+    fn cleanup_extract_task(&mut self, task_id: TaskId) {
+        let structure_id =
+            match self.task_structure_ref(task_id, crate::db::TaskStructureRole::ExtractAt) {
                 Some(s) => s,
                 None => return,
             };
@@ -4623,6 +4740,7 @@ impl SimState {
         }
 
         self.process_kitchen_monitor();
+        self.process_extraction_monitor();
         self.process_workshop_monitor();
         self.process_greenhouse_monitor();
     }
@@ -4714,6 +4832,110 @@ impl SimState {
                 location,
                 progress: 0.0,
                 total_cost: 1.0, // Single action per cook batch.
+                required_species: Some(Species::Elf),
+                origin: task::TaskOrigin::Automated,
+                target_creature: None,
+            };
+            self.insert_task(new_task);
+        }
+    }
+
+    /// Scan kitchens with extraction enabled and create ExtractFruit tasks
+    /// when there are unreserved fruits of the configured species and at least
+    /// one extraction target is not yet met. Called each logistics heartbeat.
+    fn process_extraction_monitor(&mut self) {
+        // Collect kitchen IDs with extraction enabled.
+        let kitchen_ids: Vec<StructureId> = self
+            .db
+            .structures
+            .iter_all()
+            .filter_map(|s| {
+                if s.furnishing == Some(FurnishingType::Kitchen)
+                    && s.extraction_enabled
+                    && s.extraction_species.is_some()
+                {
+                    Some(s.id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for sid in kitchen_ids {
+            let structure = match self.db.structures.get(&sid) {
+                Some(s) => s,
+                None => continue,
+            };
+            let species_id = match structure.extraction_species {
+                Some(id) => id,
+                None => continue,
+            };
+            let inv_id = structure.inventory_id;
+            let targets = structure.extraction_targets.clone();
+
+            // Check if all targets are met.
+            let material_filter =
+                inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id));
+            let all_met = targets.iter().all(|(item_kind, &target)| {
+                if target == 0 {
+                    return true;
+                }
+                let current = self.inv_unreserved_item_count(inv_id, *item_kind, material_filter);
+                current >= target
+            });
+            if all_met {
+                continue;
+            }
+
+            // Check if there's already an active (non-Complete) ExtractFruit task for this kitchen.
+            let has_active_extract = self
+                .db
+                .task_structure_refs
+                .by_structure_id(&sid, tabulosity::QueryOpts::ASC)
+                .iter()
+                .any(|r| {
+                    r.role == crate::db::TaskStructureRole::ExtractAt
+                        && self
+                            .db
+                            .tasks
+                            .get(&r.task_id)
+                            .is_some_and(|t| t.state != task::TaskState::Complete)
+                });
+            if has_active_extract {
+                continue;
+            }
+
+            // Check for unreserved fruit of the correct species.
+            let fruit_count =
+                self.inv_unreserved_item_count(inv_id, inventory::ItemKind::Fruit, material_filter);
+            if fruit_count < 1 {
+                continue;
+            }
+
+            // Find nav node inside the kitchen.
+            let interior_pos = self.db.structures.get(&sid).unwrap().anchor;
+            let location = match self.nav_graph.find_nearest_node(interior_pos) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Create ExtractFruit task with reserved fruit.
+            let task_id = TaskId::new(&mut self.rng);
+            self.inv_reserve_items(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                material_filter,
+                1,
+                task_id,
+            );
+
+            let new_task = task::Task {
+                id: task_id,
+                kind: task::TaskKind::ExtractFruit { structure_id: sid },
+                state: task::TaskState::Available,
+                location,
+                progress: 0.0,
+                total_cost: 1.0,
                 required_species: Some(Species::Elf),
                 origin: task::TaskOrigin::Automated,
                 target_creature: None,
@@ -5390,6 +5612,9 @@ impl SimState {
             }
             crate::db::TaskKindTag::Harvest => {
                 self.cleanup_harvest_task(task_id);
+            }
+            crate::db::TaskKindTag::ExtractFruit => {
+                self.cleanup_extract_task(task_id);
             }
             crate::db::TaskKindTag::AcquireItem => {
                 self.cleanup_acquire_item_task(task_id);
@@ -7340,6 +7565,16 @@ impl SimState {
                         task_id,
                         target: *target,
                         path_failures: 0,
+                    }
+                });
+            }
+            task::TaskKind::ExtractFruit { structure_id } => {
+                let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                    crate::db::TaskStructureRef {
+                        id,
+                        task_id,
+                        structure_id: *structure_id,
+                        role: crate::db::TaskStructureRole::ExtractAt,
                     }
                 });
             }
@@ -11147,6 +11382,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                extraction_enabled: false,
+                extraction_species: None,
+                extraction_targets: std::collections::BTreeMap::new(),
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -11274,6 +11512,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                extraction_enabled: false,
+                extraction_species: None,
+                extraction_targets: std::collections::BTreeMap::new(),
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -15309,6 +15550,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            extraction_enabled: false,
+            extraction_species: None,
+            extraction_targets: std::collections::BTreeMap::new(),
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -15359,6 +15603,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            extraction_enabled: false,
+            extraction_species: None,
+            extraction_targets: std::collections::BTreeMap::new(),
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -15399,6 +15646,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            extraction_enabled: false,
+            extraction_species: None,
+            extraction_targets: std::collections::BTreeMap::new(),
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -15465,6 +15715,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            extraction_enabled: false,
+            extraction_species: None,
+            extraction_targets: std::collections::BTreeMap::new(),
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -15494,6 +15747,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            extraction_enabled: false,
+            extraction_species: None,
+            extraction_targets: std::collections::BTreeMap::new(),
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -15655,6 +15911,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            extraction_enabled: false,
+            extraction_species: None,
+            extraction_targets: std::collections::BTreeMap::new(),
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -15936,6 +16195,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            extraction_enabled: false,
+            extraction_species: None,
+            extraction_targets: std::collections::BTreeMap::new(),
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -15969,6 +16231,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            extraction_enabled: false,
+            extraction_species: None,
+            extraction_targets: std::collections::BTreeMap::new(),
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -16020,6 +16285,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                extraction_enabled: false,
+                extraction_species: None,
+                extraction_targets: std::collections::BTreeMap::new(),
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -17372,6 +17640,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                extraction_enabled: false,
+                extraction_species: None,
+                extraction_targets: std::collections::BTreeMap::new(),
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -17529,6 +17800,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                extraction_enabled: false,
+                extraction_species: None,
+                extraction_targets: std::collections::BTreeMap::new(),
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -17653,6 +17927,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                extraction_enabled: false,
+                extraction_species: None,
+                extraction_targets: std::collections::BTreeMap::new(),
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -17910,6 +18187,9 @@ mod tests {
                 workshop_enabled: false,
                 workshop_recipe_ids: Vec::new(),
                 workshop_recipe_targets: std::collections::BTreeMap::new(),
+                extraction_enabled: false,
+                extraction_species: None,
+                extraction_targets: std::collections::BTreeMap::new(),
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -20461,6 +20741,9 @@ mod tests {
             workshop_enabled: false,
             workshop_recipe_ids: Vec::new(),
             workshop_recipe_targets: std::collections::BTreeMap::new(),
+            extraction_enabled: false,
+            extraction_species: None,
+            extraction_targets: std::collections::BTreeMap::new(),
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -29095,6 +29378,424 @@ mod tests {
             sim.resolve_hostile_response(goblin_id),
             None,
             "Non-civ creature should return None"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fruit extraction
+    // -----------------------------------------------------------------------
+
+    /// Helper: insert a test fruit species into the SimDb with known parts.
+    fn insert_test_fruit_species(sim: &mut SimState) -> crate::fruit::FruitSpeciesId {
+        use crate::fruit::*;
+        // Use a fixed ID that won't collide with worldgen-assigned species.
+        let id = FruitSpeciesId(999);
+        let species = FruitSpecies {
+            id,
+            vaelith_name: "Testaleth".to_string(),
+            english_gloss: "test-fruit".to_string(),
+            parts: vec![
+                FruitPart {
+                    part_type: PartType::Flesh,
+                    properties: std::collections::BTreeSet::from([PartProperty::Starchy]),
+                    pigment: None,
+                    component_units: 30,
+                },
+                FruitPart {
+                    part_type: PartType::Rind,
+                    properties: std::collections::BTreeSet::from([PartProperty::FibrousCoarse]),
+                    pigment: None,
+                    component_units: 20,
+                },
+                FruitPart {
+                    part_type: PartType::Seed,
+                    properties: std::collections::BTreeSet::from([PartProperty::Oily]),
+                    pigment: None,
+                    component_units: 10,
+                },
+            ],
+            habitat: GrowthHabitat::Branch,
+            rarity: Rarity::Common,
+            greenhouse_cultivable: false,
+            appearance: FruitAppearance {
+                exterior_color: FruitColor {
+                    r: 200,
+                    g: 100,
+                    b: 50,
+                },
+                shape: FruitShape::Round,
+                size_percent: 100,
+                glows: false,
+            },
+        };
+        sim.db.fruit_species.insert_no_fk(species).unwrap();
+        id
+    }
+
+    /// Helper: set up a kitchen with extraction enabled for a given species.
+    fn setup_extraction_kitchen(
+        sim: &mut SimState,
+        species_id: crate::fruit::FruitSpeciesId,
+    ) -> StructureId {
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+        let sid = insert_completed_building(sim, anchor);
+        {
+            let mut s = sim.db.structures.get(&sid).unwrap();
+            s.furnishing = Some(FurnishingType::Kitchen);
+            s.extraction_enabled = true;
+            s.extraction_species = Some(species_id);
+            s.extraction_targets = std::collections::BTreeMap::from([
+                (inventory::ItemKind::Pulp, 100),
+                (inventory::ItemKind::Husk, 50),
+            ]);
+            s.logistics_priority = Some(8);
+            let _ = sim.db.structures.update_no_fk(s);
+        }
+        sid
+    }
+
+    #[test]
+    fn extraction_monitor_creates_extract_task() {
+        let mut sim = test_sim(42);
+
+        let species_id = insert_test_fruit_species(&mut sim);
+        let sid = setup_extraction_kitchen(&mut sim, species_id);
+
+        // Add 1 fruit of this species to the kitchen inventory.
+        let inv_id = sim.structure_inv(sid);
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            1,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        sim.process_logistics_heartbeat();
+
+        // Verify an ExtractFruit task was created.
+        let extract_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::ExtractFruit)
+            .collect();
+        assert_eq!(extract_tasks.len(), 1, "Should create 1 ExtractFruit task");
+        assert_eq!(extract_tasks[0].state, task::TaskState::Available);
+        assert_eq!(extract_tasks[0].required_species, Some(Species::Elf));
+
+        // Verify fruit is reserved.
+        let unreserved = sim.inv_unreserved_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+        );
+        assert_eq!(unreserved, 0, "Fruit should be reserved for extract task");
+    }
+
+    #[test]
+    fn extract_task_produces_component_items() {
+        let mut sim = test_sim(42);
+
+        let species_id = insert_test_fruit_species(&mut sim);
+        let sid = setup_extraction_kitchen(&mut sim, species_id);
+        let inv_id = sim.structure_inv(sid);
+
+        // Find a nav node inside the kitchen.
+        let interior_pos = sim.db.structures.get(&sid).unwrap().anchor;
+        let kitchen_nav = sim.nav_graph.find_nearest_node(interior_pos).unwrap();
+
+        // Spawn an elf and place it directly at the kitchen location.
+        let mut events = Vec::new();
+        let elf_id = sim
+            .spawn_creature(Species::Elf, interior_pos, &mut events)
+            .unwrap();
+        let elf_pos = sim.nav_graph.node(kitchen_nav).position;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.current_node = Some(kitchen_nav);
+            c.position = elf_pos;
+        });
+
+        // Create an InProgress ExtractFruit task and assign it to the elf.
+        let task_id = TaskId::new(&mut sim.rng);
+        let extract_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::ExtractFruit { structure_id: sid },
+            state: task::TaskState::InProgress,
+            location: kitchen_nav,
+            progress: 0.0,
+            total_cost: sim.config.extract_work_ticks as f32,
+            required_species: Some(Species::Elf),
+            origin: task::TaskOrigin::Automated,
+            target_creature: None,
+        };
+        sim.insert_task(extract_task);
+        {
+            let mut elf = sim.db.creatures.get(&elf_id).unwrap();
+            elf.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(elf);
+        }
+
+        // Add 1 fruit reserved by this task (of the correct species).
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            1,
+            None,
+            Some(task_id),
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        // Directly call start_extract_action → then resolve after the duration.
+        sim.start_extract_action(elf_id, task_id);
+
+        // Advance past the extract work duration.
+        sim.step(&[], sim.tick + sim.config.extract_work_ticks + 100);
+
+        // Verify: fruit consumed, component items produced.
+        let fruit_total = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+        );
+        assert_eq!(fruit_total, 0, "Fruit should be consumed (total count)");
+
+        // Flesh part → 30 Pulp with FruitSpecies material.
+        let pulp_count = sim.inv_unreserved_item_count(
+            inv_id,
+            inventory::ItemKind::Pulp,
+            inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+        );
+        assert_eq!(pulp_count, 30, "Should produce 30 Pulp from Flesh part");
+
+        // Rind part → 20 Husk.
+        let husk_count = sim.inv_unreserved_item_count(
+            inv_id,
+            inventory::ItemKind::Husk,
+            inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+        );
+        assert_eq!(husk_count, 20, "Should produce 20 Husk from Rind part");
+
+        // Seed part → 10 Seed.
+        let seed_count = sim.inv_unreserved_item_count(
+            inv_id,
+            inventory::ItemKind::Seed,
+            inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+        );
+        assert_eq!(seed_count, 10, "Should produce 10 Seed from Seed part");
+
+        // Verify task is complete.
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(task.state, task::TaskState::Complete);
+    }
+
+    #[test]
+    fn extraction_monitor_skips_when_targets_met() {
+        let mut sim = test_sim(42);
+
+        let species_id = insert_test_fruit_species(&mut sim);
+        let sid = setup_extraction_kitchen(&mut sim, species_id);
+        let inv_id = sim.structure_inv(sid);
+
+        // Add fruit to the kitchen.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            1,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        // Pre-fill the kitchen with enough components to meet all targets.
+        // Targets: Pulp >= 100, Husk >= 50.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Pulp,
+            100,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Husk,
+            50,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        sim.process_logistics_heartbeat();
+
+        // No ExtractFruit task should be created.
+        let extract_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::ExtractFruit)
+            .collect();
+        assert_eq!(
+            extract_tasks.len(),
+            0,
+            "Should NOT create extract task when all targets are met"
+        );
+    }
+
+    #[test]
+    fn extraction_cleanup_releases_reservations() {
+        let mut sim = test_sim(42);
+
+        let species_id = insert_test_fruit_species(&mut sim);
+        let sid = setup_extraction_kitchen(&mut sim, species_id);
+        let inv_id = sim.structure_inv(sid);
+
+        let interior_pos = sim.db.structures.get(&sid).unwrap().anchor;
+        let kitchen_nav = sim.nav_graph.find_nearest_node(interior_pos).unwrap();
+
+        // Create an ExtractFruit task.
+        let task_id = TaskId::new(&mut sim.rng);
+        let extract_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::ExtractFruit { structure_id: sid },
+            state: task::TaskState::InProgress,
+            location: kitchen_nav,
+            progress: 0.0,
+            total_cost: 1.0,
+            required_species: Some(Species::Elf),
+            origin: task::TaskOrigin::Automated,
+            target_creature: None,
+        };
+        sim.insert_task(extract_task);
+
+        // Add 1 fruit reserved by this task.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            1,
+            None,
+            Some(task_id),
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        // Verify fruit is reserved.
+        let unreserved_before = sim.inv_unreserved_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+        );
+        assert_eq!(
+            unreserved_before, 0,
+            "Fruit should be reserved before cleanup"
+        );
+
+        // Clean up the task (simulating interruption).
+        sim.cleanup_extract_task(task_id);
+
+        // Verify reservation is released.
+        let unreserved_after = sim.inv_unreserved_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+        );
+        assert_eq!(
+            unreserved_after, 1,
+            "Fruit should be unreserved after cleanup"
+        );
+
+        // Verify task is Complete.
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(task.state, task::TaskState::Complete);
+    }
+
+    #[test]
+    fn extract_fruit_serde_roundtrip() {
+        // ActionKind::Extract roundtrip.
+        let action = ActionKind::Extract;
+        let json = serde_json::to_string(&action).unwrap();
+        let restored: ActionKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(action, restored);
+
+        // TaskKindTag::ExtractFruit roundtrip.
+        let tag = TaskKindTag::ExtractFruit;
+        let json = serde_json::to_string(&tag).unwrap();
+        let restored: TaskKindTag = serde_json::from_str(&json).unwrap();
+        assert_eq!(tag, restored);
+
+        // New ItemKind variants roundtrip.
+        for kind in [
+            inventory::ItemKind::Pulp,
+            inventory::ItemKind::Husk,
+            inventory::ItemKind::Seed,
+            inventory::ItemKind::FruitFiber,
+            inventory::ItemKind::FruitSap,
+            inventory::ItemKind::FruitResin,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            let restored: inventory::ItemKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind, restored, "ItemKind::{kind:?} serde roundtrip");
+        }
+    }
+
+    #[test]
+    fn extraction_monitor_does_not_duplicate_active_task() {
+        let mut sim = test_sim(42);
+
+        let species_id = insert_test_fruit_species(&mut sim);
+        let sid = setup_extraction_kitchen(&mut sim, species_id);
+        let inv_id = sim.structure_inv(sid);
+
+        // Add 2 fruits of this species.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            2,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        // First heartbeat creates a task.
+        sim.process_logistics_heartbeat();
+        let count_1 = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| {
+                t.kind_tag == TaskKindTag::ExtractFruit && t.state != task::TaskState::Complete
+            })
+            .count();
+        assert_eq!(count_1, 1, "First heartbeat should create 1 task");
+
+        // Second heartbeat should NOT create another (one is already active).
+        sim.process_logistics_heartbeat();
+        let count_2 = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| {
+                t.kind_tag == TaskKindTag::ExtractFruit && t.state != task::TaskState::Complete
+            })
+            .count();
+        assert_eq!(
+            count_2, 1,
+            "Second heartbeat should NOT create a duplicate task"
         );
     }
 }
