@@ -538,8 +538,10 @@ def cmd_search(args):
     items = collect_items(lines)
 
     flags = re.IGNORECASE if args.case_insensitive else 0
+    # Normalize BRE-style escaped pipes to ERE-style alternation.
+    raw = args.pattern.replace(r"\|", "|")
     try:
-        pattern = re.compile(args.pattern, flags)
+        pattern = re.compile(raw, flags)
     except re.error as e:
         print(f"Error: invalid regex: {e}", file=sys.stderr)
         sys.exit(1)
