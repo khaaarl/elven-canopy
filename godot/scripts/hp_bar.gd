@@ -49,6 +49,7 @@ static func create_bar_sprite() -> Sprite3D:
 	bar.pixel_size = PIXEL_SIZE
 	bar.transparent = true
 	bar.no_depth_test = false
+	bar.render_priority = 1
 	bar.visible = false
 	# Start with full HP texture (invisible anyway).
 	if _cache.size() > 0:

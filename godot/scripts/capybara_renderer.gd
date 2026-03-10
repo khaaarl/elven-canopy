@@ -62,6 +62,7 @@ func _process(_delta: float) -> void:
 		sprite.pixel_size = 0.02  # 40px * 0.02 = 0.80 world units wide
 		sprite.transparent = true
 		sprite.no_depth_test = false
+		sprite.render_priority = 1
 		add_child(sprite)
 		_capybara_sprites.append(sprite)
 		var bar: Sprite3D = HpBar.create_bar_sprite()

@@ -48,6 +48,7 @@
 ## keybind_help.gd for the keyboard shortcuts help overlay,
 ## creature_info_panel.gd for the creature info panel,
 ## group_info_panel.gd for the multi-creature selection panel,
+## selection_highlight.gd for faction-colored selection rings,
 ## structure_info_panel.gd for the structure info panel,
 ## ground_pile_info_panel.gd for the ground pile info panel,
 ## tree_info_panel.gd for the tree stats panel, task_panel.gd for
@@ -101,6 +102,7 @@ var _ladder_renderer: Node3D
 var _furniture_renderer: Node3D
 var _pile_renderer: Node3D
 var _projectile_renderer: Node3D
+var _selection_highlight: Node3D
 var _tooltip_controller: Node
 var _notification_display: VBoxContainer
 var _status_bar: PanelContainer
@@ -239,6 +241,13 @@ func _setup_common(bridge: SimBridge) -> void:
 		add_child(r)
 		r.setup(bridge, entry[0], entry[1])
 		_extra_renderers.append(r)
+
+	# Set up selection highlight renderer (rings at selected creatures' feet).
+	var highlight_script = load("res://scripts/selection_highlight.gd")
+	_selection_highlight = Node3D.new()
+	_selection_highlight.set_script(highlight_script)
+	add_child(_selection_highlight)
+	_selection_highlight.setup(bridge)
 
 	# Set up action toolbar UI (rendered on top of 3D via CanvasLayer).
 	var canvas_layer := CanvasLayer.new()
@@ -883,6 +892,11 @@ func _process(delta: float) -> void:
 			if info.is_empty():
 				_selector.remove_creature_id(cid)
 		_group_panel.update_group(_selector.get_selected_creature_ids())
+
+	# Update selection highlight rings under selected creatures.
+	if _selection_highlight:
+		_selection_highlight.set_render_tick(render_tick)
+		_selection_highlight.update_highlights(_selector.get_selected_creature_ids())
 
 	# Refresh structure info panel while a structure is selected.
 	if (
