@@ -62,6 +62,11 @@
 //
 // The activation loop (`process_creature_activation`) runs this logic:
 //
+//   0. **Flee check** (F-flee): before the decision cascade, if the creature
+//      should flee (civ creatures, or `FleeOnly` combat_ai) and detects a
+//      hostile within `hostile_detection_range_sq`, interrupt any current task
+//      and perform a greedy retreat step (pick the nav neighbor that maximizes
+//      squared distance from the nearest threat). Ties broken by `NavNodeId`.
 //   1. If the creature has no task (`current_task == None`), check for an
 //      available task to claim. If none found, **wander**: pick a random
 //      adjacent nav node, move there, and schedule the next activation at
@@ -2204,6 +2209,17 @@ impl SimState {
                     return;
                 }
             }
+        }
+
+        // --- Flee check (F-flee) ---
+        // Before the decision cascade, check if this creature should flee from
+        // a nearby hostile. Civ creatures flee by default (no military groups
+        // yet). Non-civ creatures with CombatAI::FleeOnly also flee. If a flee
+        // step is taken, skip the normal decision cascade entirely.
+        if self.should_flee(creature_id, species)
+            && self.flee_step(creature_id, current_node, species)
+        {
+            return;
         }
 
         // --- Step 2: Decision cascade ---
@@ -6880,6 +6896,160 @@ impl SimState {
         self.db.tasks.insert_no_fk(db_task).unwrap();
     }
 
+    /// Determine whether a creature should flee from nearby hostiles.
+    ///
+    /// Two categories of creatures flee:
+    /// - **Civ creatures** (elves): flee by default. When military groups are
+    ///   implemented, this will be gated by the group's `hostile_response`.
+    /// - **Non-civ creatures with `CombatAI::FleeOnly`**: data-driven flee
+    ///   behavior (e.g., prey animals).
+    ///
+    /// Aggressive creatures (`AggressiveMelee`/`AggressiveRanged`) never flee —
+    /// they pursue via `hostile_pursue()`.
+    fn should_flee(&self, creature_id: CreatureId, species: Species) -> bool {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return false,
+        };
+        let species_data = &self.species_table[&species];
+
+        // Need a detection range to detect threats.
+        if species_data.hostile_detection_range_sq == 0 {
+            return false;
+        }
+
+        // If the creature has a player-directed combat task, it should fight,
+        // not flee. The player explicitly ordered this creature to attack.
+        if let Some(task_id) = creature.current_task {
+            if let Some(task) = self.db.tasks.get(&task_id) {
+                let level = preemption::preemption_level(task.kind_tag, task.origin);
+                if level == preemption::PreemptionLevel::PlayerCombat {
+                    return false;
+                }
+            }
+        }
+
+        let combat_ai = species_data.combat_ai;
+        use crate::species::CombatAI;
+
+        if creature.civ_id.is_some() {
+            // Civ creatures flee by default (future: check military group
+            // hostile_response). Aggressive combat_ai overrides for civ
+            // creatures that are configured to fight.
+            !matches!(
+                combat_ai,
+                CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+            )
+        } else {
+            // Non-civ creatures: only FleeOnly flees.
+            matches!(combat_ai, CombatAI::FleeOnly)
+        }
+    }
+
+    /// Perform one greedy retreat step away from the nearest detected threat.
+    ///
+    /// On each activation, if the creature detects a hostile within its detection
+    /// range, it picks the nav neighbor that maximizes squared euclidean distance
+    /// from the nearest threat's anchor position. Ties are broken by `NavNodeId`
+    /// for determinism. If the creature has a current task, it is interrupted
+    /// first.
+    ///
+    /// Returns `true` if a flee step was taken (or the creature is cornered and
+    /// waiting), `false` if no threats are detected (caller should proceed with
+    /// normal behavior).
+    fn flee_step(
+        &mut self,
+        creature_id: CreatureId,
+        current_node: NavNodeId,
+        species: Species,
+    ) -> bool {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return false,
+        };
+        let pos = creature.position;
+        let civ_id = creature.civ_id;
+        let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
+
+        // Detect threats (hostile creatures within range).
+        let threats =
+            self.detect_hostile_targets(creature_id, species, pos, civ_id, detection_range_sq);
+
+        if threats.is_empty() {
+            return false;
+        }
+
+        // Interrupt current task if any.
+        let current_task = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .and_then(|c| c.current_task);
+        if let Some(task_id) = current_task {
+            self.interrupt_task(creature_id, task_id);
+        }
+
+        // Nearest threat anchor position (threats are sorted by distance).
+        let nearest_threat_pos = match self.db.creatures.get(&threats[0].0) {
+            Some(c) => c.position,
+            None => return false,
+        };
+
+        // Greedy retreat: pick the nav neighbor maximizing distance from the
+        // nearest threat. Ties broken by NavNodeId for determinism.
+        let species_data = &self.species_table[&species];
+        let graph = self.graph_for_species(species);
+        let edge_indices = graph.neighbors(current_node);
+
+        if edge_indices.is_empty() {
+            // No neighbors (isolated node). Wait and retry.
+            self.event_queue.schedule(
+                self.tick + 1000,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return true;
+        }
+
+        // Filter to eligible edges (respecting allowed_edge_types).
+        let eligible_edges: Vec<usize> = if let Some(ref allowed) = species_data.allowed_edge_types
+        {
+            edge_indices
+                .iter()
+                .copied()
+                .filter(|&idx| allowed.contains(&graph.edge(idx).edge_type))
+                .collect()
+        } else {
+            edge_indices.to_vec()
+        };
+
+        if eligible_edges.is_empty() {
+            // Cornered — no eligible edges. Wait and retry.
+            self.event_queue.schedule(
+                self.tick + 1000,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return true;
+        }
+
+        // Pick the edge whose destination maximizes squared distance from threat.
+        // Ties broken by NavNodeId (higher = preferred for determinism).
+        let best_edge_idx = eligible_edges
+            .iter()
+            .copied()
+            .max_by_key(|&idx| {
+                let dest_pos = graph.node(graph.edge(idx).to).position;
+                let dx = dest_pos.x as i64 - nearest_threat_pos.x as i64;
+                let dy = dest_pos.y as i64 - nearest_threat_pos.y as i64;
+                let dz = dest_pos.z as i64 - nearest_threat_pos.z as i64;
+                let dist_sq = dx * dx + dy * dy + dz * dz;
+                (dist_sq, graph.edge(idx).to)
+            })
+            .unwrap();
+
+        self.move_one_step(creature_id, species, best_edge_idx);
+        true
+    }
+
     /// Wander: pick a random adjacent nav node and move there.
     fn wander(
         &mut self,
@@ -7134,7 +7304,7 @@ impl SimState {
 
     /// Move a creature one step along the given nav graph edge: update position,
     /// spatial index, action state, render interpolation, and schedule the next
-    /// activation. Shared by random wander and hostile pursuit.
+    /// activation. Shared by random wander, hostile pursuit, and flee.
     fn move_one_step(&mut self, creature_id: CreatureId, species: Species, edge_idx: usize) {
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
@@ -24950,11 +25120,12 @@ mod tests {
         assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 9);
 
         // Advance past the cooldown. The activation system clears the Shoot
-        // action, but the elf may start wandering. Force idle again to isolate
-        // the second-shot test.
+        // action, but the elf may flee or wander. Force idle and restore
+        // position to isolate the second-shot test.
         let cooldown = sim.config.shoot_cooldown_ticks;
         sim.step(&[], sim.tick + cooldown + 1);
         force_idle(&mut sim, elf);
+        force_position(&mut sim, elf, elf_pos);
 
         // Second shot should succeed now that cooldown has expired.
         let tick2 = sim.tick;
@@ -25084,14 +25255,12 @@ mod tests {
             sim.species_table[&Species::Elephant].combat_ai,
             CombatAI::Passive
         );
-        // Detection ranges are set for aggressive species, zero for passive.
+        // Detection ranges are set for aggressive and flee-capable species.
         assert!(sim.species_table[&Species::Goblin].hostile_detection_range_sq > 0);
         assert!(sim.species_table[&Species::Orc].hostile_detection_range_sq > 0);
         assert!(sim.species_table[&Species::Troll].hostile_detection_range_sq > 0);
-        assert_eq!(
-            sim.species_table[&Species::Elf].hostile_detection_range_sq,
-            0
-        );
+        // Elves have detection range for flee behavior (F-flee).
+        assert!(sim.species_table[&Species::Elf].hostile_detection_range_sq > 0);
         assert_eq!(
             sim.species_table[&Species::Capybara].hostile_detection_range_sq,
             0
@@ -26237,6 +26406,302 @@ mod tests {
                 TaskOrigin::Autonomous
             ),
             preemption::PreemptionLevel::AutonomousCombat,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Flee behavior tests (F-flee)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn elf_flees_from_adjacent_goblin() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place goblin adjacent to elf.
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        // Force the elf idle and schedule an activation.
+        force_idle(&mut sim, elf);
+        let tick = sim.tick;
+        sim.event_queue.schedule(
+            tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: elf },
+        );
+
+        // Run one activation — elf should move away from the goblin.
+        sim.step(&[], tick + 2);
+        let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+        // The elf should have moved (not stayed in place).
+        assert_ne!(elf_pos, elf_new_pos, "Elf should flee from adjacent goblin");
+
+        // The elf should be farther from the goblin than before.
+        let old_dist_sq = (elf_pos.x as i64 - goblin_pos.x as i64).pow(2)
+            + (elf_pos.y as i64 - goblin_pos.y as i64).pow(2)
+            + (elf_pos.z as i64 - goblin_pos.z as i64).pow(2);
+        let new_dist_sq = (elf_new_pos.x as i64 - goblin_pos.x as i64).pow(2)
+            + (elf_new_pos.y as i64 - goblin_pos.y as i64).pow(2)
+            + (elf_new_pos.z as i64 - goblin_pos.z as i64).pow(2);
+        assert!(
+            new_dist_sq >= old_dist_sq,
+            "Elf should move away from goblin: old_dist_sq={old_dist_sq}, new_dist_sq={new_dist_sq}"
+        );
+    }
+
+    #[test]
+    fn elf_does_not_flee_when_goblin_out_of_range() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place goblin far away (50 voxels — beyond 15-voxel detection radius).
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 50, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        // Run a short period — elf should wander normally, not flee.
+        // Keep ticks low so random wander can't close the 50-voxel gap.
+        sim.step(&[], sim.tick + 5000);
+
+        // Elf should have wandered (moved from starting pos) but NOT
+        // systematically moved away from goblin. We just verify it didn't
+        // stay put (wander still works).
+        let elf_final = sim.db.creatures.get(&elf).unwrap().position;
+        // Wander is random, so we can't assert direction — just verify the
+        // elf moved (was not frozen by a broken flee check).
+        assert_ne!(
+            elf_pos, elf_final,
+            "Elf should still wander when goblin is out of range"
+        );
+    }
+
+    #[test]
+    fn flee_interrupts_current_task() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+        // Give the elf a GoTo task to somewhere.
+        let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+        let graph = sim.graph_for_species(Species::Elf);
+        let neighbors = graph.neighbors(elf_node);
+        assert!(!neighbors.is_empty(), "Need at least one neighbor node");
+        let goto_node = graph.edge(neighbors[0]).to;
+
+        let task_id = insert_goto_task(&mut sim, goto_node);
+        // Force-assign the task to the elf.
+        if let Some(mut t) = sim.db.tasks.get(&task_id) {
+            t.state = TaskState::InProgress;
+            let _ = sim.db.tasks.update_no_fk(t);
+        }
+        if let Some(mut c) = sim.db.creatures.get(&elf) {
+            c.current_task = Some(task_id);
+            c.action_kind = ActionKind::NoAction;
+            c.next_available_tick = None;
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        // Place goblin adjacent to elf — within detection range.
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+
+        // Schedule elf activation.
+        let tick = sim.tick;
+        sim.event_queue.schedule(
+            tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: elf },
+        );
+
+        sim.step(&[], tick + 2);
+
+        // Elf should have lost its task (interrupted by flee).
+        let elf_creature = sim.db.creatures.get(&elf).unwrap();
+        assert_eq!(
+            elf_creature.current_task, None,
+            "Flee should interrupt the elf's current task"
+        );
+
+        // Elf should have moved away from goblin.
+        let elf_new_pos = elf_creature.position;
+        assert_ne!(elf_pos, elf_new_pos, "Elf should have moved while fleeing");
+    }
+
+    #[test]
+    fn elf_resumes_normal_behavior_after_threat_leaves() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place goblin adjacent to elf.
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+
+        // Verify the elf would flee (flee_step finds a threat and returns true).
+        assert!(
+            sim.flee_step(elf, elf_node, Species::Elf),
+            "Elf should flee from nearby goblin"
+        );
+
+        // Undo the flee step so we can test threat removal cleanly.
+        force_position(&mut sim, elf, elf_pos);
+        force_idle(&mut sim, elf);
+
+        // Now kill the goblin — threat removed.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugKillCreature {
+                    creature_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+
+        // flee_step should return false (no living threats detected).
+        force_position(&mut sim, elf, elf_pos);
+        force_idle(&mut sim, elf);
+        let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+        assert!(
+            !sim.flee_step(elf, elf_node, Species::Elf),
+            "Elf should not flee from a dead goblin"
+        );
+    }
+
+    #[test]
+    fn goblin_does_not_flee_from_elf() {
+        // Goblins are AggressiveMelee — they should pursue, not flee.
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        assert!(
+            !sim.should_flee(goblin, Species::Goblin),
+            "Aggressive creatures should not flee"
+        );
+    }
+
+    #[test]
+    fn flee_only_species_flees() {
+        // Create a sim where deer have FleeOnly combat_ai and a detection range.
+        use crate::species::CombatAI;
+        let mut sim = test_sim(42);
+        sim.species_table.get_mut(&Species::Deer).unwrap().combat_ai = CombatAI::FleeOnly;
+        sim.species_table
+            .get_mut(&Species::Deer)
+            .unwrap()
+            .hostile_detection_range_sq = 225;
+
+        let deer = spawn_species(&mut sim, Species::Deer);
+        let deer_pos = sim.db.creatures.get(&deer).unwrap().position;
+
+        // Spawn a goblin adjacent to the deer.
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let goblin_pos = VoxelCoord::new(deer_pos.x + 1, deer_pos.y, deer_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, goblin);
+        force_idle(&mut sim, deer);
+
+        // Deer should want to flee.
+        assert!(
+            sim.should_flee(deer, Species::Deer),
+            "FleeOnly species should flee from hostiles"
+        );
+
+        // Schedule deer activation and run.
+        let tick = sim.tick;
+        sim.event_queue.schedule(
+            tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: deer },
+        );
+        sim.step(&[], tick + 2);
+
+        let deer_new_pos = sim.db.creatures.get(&deer).unwrap().position;
+        assert_ne!(
+            deer_pos, deer_new_pos,
+            "FleeOnly deer should flee from adjacent goblin"
+        );
+    }
+
+    #[test]
+    fn passive_species_does_not_flee() {
+        // Capybara is Passive with detection_range 0 — should not flee.
+        let mut sim = test_sim(42);
+        let capybara = spawn_species(&mut sim, Species::Capybara);
+        assert!(
+            !sim.should_flee(capybara, Species::Capybara),
+            "Passive species with no detection range should not flee"
+        );
+    }
+
+    #[test]
+    fn flee_step_returns_true_when_threat_detected() {
+        // Verify flee_step directly returns true when a threat is in range
+        // and the creature has neighbors to flee to.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+
+        // Place goblin adjacent.
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+
+        assert!(
+            sim.flee_step(elf, elf_node, Species::Elf),
+            "Flee step should return true when threat is in range"
+        );
+    }
+
+    #[test]
+    fn flee_from_multiple_threats_uses_nearest() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+        // Spawn two goblins at different distances.
+        let goblin_near = spawn_species(&mut sim, Species::Goblin);
+        let goblin_far = spawn_species(&mut sim, Species::Goblin);
+        let near_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        let far_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin_near, near_pos);
+        force_position(&mut sim, goblin_far, far_pos);
+        force_idle(&mut sim, elf);
+
+        // Schedule activation and run.
+        let tick = sim.tick;
+        sim.event_queue.schedule(
+            tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: elf },
+        );
+        sim.step(&[], tick + 2);
+
+        let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position;
+        assert_ne!(elf_pos, elf_new_pos, "Elf should have fled");
+
+        // Elf should have moved away from the nearest goblin (at x+1).
+        // The new position should be farther from goblin_near than before.
+        let old_dist = (elf_pos.x as i64 - near_pos.x as i64).pow(2)
+            + (elf_pos.y as i64 - near_pos.y as i64).pow(2)
+            + (elf_pos.z as i64 - near_pos.z as i64).pow(2);
+        let new_dist = (elf_new_pos.x as i64 - near_pos.x as i64).pow(2)
+            + (elf_new_pos.y as i64 - near_pos.y as i64).pow(2)
+            + (elf_new_pos.z as i64 - near_pos.z as i64).pow(2);
+        assert!(
+            new_dist >= old_dist,
+            "Elf should flee away from nearest goblin: old={old_dist}, new={new_dist}"
         );
     }
 }

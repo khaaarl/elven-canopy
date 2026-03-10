@@ -45,13 +45,16 @@
 // - `rest_per_sleep_tick` — rest restored per sim tick of sleeping, applied
 //   at each sleep task activation.
 // - `combat_ai` — `CombatAI` enum controlling combat behavior: `Passive`
-//   (default, no combat), `FleeOnly` (future), `AggressiveMelee` (pursue
-//   and melee), `AggressiveRanged` (future). Replaces the hardcoded
-//   `Species::is_hostile()` discriminator with a data-driven approach.
+//   (default, no combat), `FleeOnly` (flee from hostiles), `AggressiveMelee`
+//   (pursue and melee), `AggressiveRanged` (ranged + melee fallback). Replaces
+//   the hardcoded `Species::is_hostile()` discriminator with a data-driven
+//   approach.
 // - `hostile_detection_range_sq` — maximum squared 3D euclidean distance at
 //   which a creature can detect hostiles. 0 = no detection (passive species).
 //   E.g. 225 = 15-voxel radius, 400 = 20-voxel radius. Height is included,
-//   so ground-level goblins cannot detect canopy elves directly.
+//   so ground-level goblins cannot detect canopy elves directly. Elves have
+//   a detection range (225) for flee behavior — they detect approaching
+//   hostiles and run away. See `sim.rs` `should_flee()` / `flee_step()`.
 //
 // See also: `config.rs` where the species table lives as part of `GameConfig`,
 // `sim.rs` for the unified `Creature` type and activation chain that consumes
@@ -73,7 +76,7 @@ use serde::{Deserialize, Serialize};
 pub enum CombatAI {
     /// No combat behavior. Will not attack or flee. (Wildlife default.)
     Passive,
-    /// Flee from hostiles within detection range. (Prey animals, future.)
+    /// Flee from hostiles within detection range. (Prey animals.)
     FleeOnly,
     /// Attack hostiles within detection range using melee.
     AggressiveMelee,

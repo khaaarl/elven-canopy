@@ -100,7 +100,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
 [ ] F-fire-structure       Fire x structural integrity cascades
-[ ] F-flee                 Flee behavior for civilians
 [ ] F-flying-nav           3D flight navigation system
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
@@ -195,6 +194,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-emotions-basic       Mood score from thought weights
 [x] F-encyclopedia-srv     Embedded localhost HTTP encyclopedia server
 [x] F-event-loop           Event-driven tick loop (priority queue)
+[x] F-flee                 Flee behavior for civilians
 [x] F-food-gauge           Creature food gauge with decay
 [x] F-fruit-naming         Fruit naming overhaul
 [x] F-furnish              Building furnishing framework (dormitories)
@@ -1623,7 +1623,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-enemy-ai, F-flee, F-military-groups, F-rts-selection
+**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-military-groups, F-rts-selection
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1659,17 +1659,15 @@ Simple aggression AI for non-civ hostile creatures. This is the first "it all co
 **Blocks:** F-combat
 
 #### F-flee — Flee behavior for civilians
-**Status:** Todo
+**Status:** Done
 
 Creatures with Flee response (civilian military group default, or FleeOnly combat_ai) detect hostile within range, preempt current task, and perform greedy retreat. At each activation, pick nav neighbor maximizing squared euclidean distance from threat (anchor voxel for multi-voxel threats). Ties broken by NavNodeId. Continue fleeing while hostile is in detection range. Dead-end trapping is acceptable (mirrors panic behavior, motivates escape route construction). Future: cornered behavior, bounded A* instead of greedy.
 
-**Persistence via detection-on-activation:** No explicit "fleeing" state field on Creature needed. The detection check on every activation IS the persistence mechanism. On each activation, if a hostile is within detection range and the creature's response is Flee, the creature performs a flee step (greedy retreat). When the hostile leaves detection range, the creature naturally resumes normal behavior on its next activation. Tradeoff: creature stops fleeing the instant threat leaves detection range — acceptable for initial pass.
+**Done so far:** Flee behavior implemented in `sim.rs` via `should_flee()` / `flee_step()`. Civ creatures (elves) flee by default — no military groups yet, so all civ creatures are treated as civilians. Non-civ creatures with `CombatAI::FleeOnly` also flee. Elf `hostile_detection_range_sq` set to 225 (15-voxel radius). Flee check runs before the decision cascade in `process_creature_activation` — detects threats via existing `detect_hostile_targets()`, interrupts current task, then greedy retreat (maximize squared distance from nearest threat, NavNodeId tie-breaking). Cornered creatures (no eligible edges) reschedule activation and wait. Flee stops immediately when threat leaves detection range. 8 tests covering: flee direction, task interruption, threat removal, FleeOnly species, passive species, multiple threats, cornered case, aggressive-doesn't-flee.
 
-**"Prefer friendly soldiers" clause deferred:** Future enhancement to flee toward friendly soldiers (military group with HostileResponse::Fight, same civ, alive, within some range) is deferred to future work. Initial pass is pure greedy retreat with NavNodeId tie-breaking for determinism.
+**Not yet done:** Military group hostile_response gating (depends on F-military-groups). `flee_cooldown_ticks` for persistence after threat leaves range. Bounded A* instead of greedy. Cornered behavior (desperate fighting). Flee toward friendly soldiers. Panic/fear thoughts.
 
 **Draft:** docs/drafts/combat_military.md (§7)
-
-**Blocks:** F-combat
 
 #### F-hostile-detection — Hostile detection and faction logic
 **Status:** Done

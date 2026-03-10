@@ -1439,7 +1439,7 @@ impl Default for GameConfig {
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
                 combat_ai: CombatAI::Passive,
-                hostile_detection_range_sq: 0,
+                hostile_detection_range_sq: 225, // 15-voxel detection radius (flee)
             },
         );
         species.insert(
