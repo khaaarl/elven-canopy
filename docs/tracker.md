@@ -83,6 +83,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
 [ ] F-clothing             Wearable clothing system
 [ ] F-combat               Combat and invader threat system
+[ ] F-component-recipes    Component-based crafting recipes (bread, thread, bowstring)
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
@@ -108,6 +109,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-flying-nav           3D flight navigation system
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
+[ ] F-fruit-extraction     Fruit extraction (hulling/separation into components)
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
@@ -350,7 +352,7 @@ via logistics and cook it into bread. Cooking is controlled via the
 structure info panel (enable/disable, bread target). **Draft:**
 `docs/drafts/kitchen_cooking.md`
 
-**Related:** F-bldg-dining, F-bread, F-elf-acquire, F-elf-assign, F-food-chain, F-fruit-variety, F-jobs, F-manufacturing, F-recipes
+**Related:** F-bldg-dining, F-bread, F-component-recipes, F-elf-acquire, F-elf-assign, F-food-chain, F-fruit-extraction, F-fruit-variety, F-jobs, F-manufacturing, F-recipes
 
 #### F-bldg-storehouse — Storehouse (item storage)
 **Status:** Todo · **Phase:** 4
@@ -366,7 +368,7 @@ and are accessible to elves for retrieval.
 Workshop where craftself elves create tools and equipment (bows, spears,
 and other gear).
 
-**Related:** F-crafting, F-elf-assign, F-elf-weapons, F-jobs, F-recipes
+**Related:** F-component-recipes, F-crafting, F-elf-assign, F-elf-weapons, F-jobs, F-recipes
 
 #### F-blueprint-mode — Layer-based blueprint selection UI
 **Status:** Todo · **Phase:** 2 · **Refs:** §12
@@ -1173,6 +1175,34 @@ Creatures can wear clothing items in defined body slots (e.g., head, torso, legs
 
 **Blocks:** F-armor, F-equipment-sprites
 
+#### F-component-recipes — Component-based crafting recipes (bread, thread, bowstring)
+**Status:** Todo · **Phase:** 7
+
+Property-based crafting recipes that consume extracted fruit components
+(from F-fruit-extraction) to produce useful items. Recipes match on
+part properties, not fruit species IDs — "10 units of any starch-bearing
+component → 1 loaf of that-species bread" works for any fruit with a
+starchy part. Same-species constraint: a single recipe invocation uses
+components from one fruit species only.
+
+Initial recipe set:
+- Starchy component → mill → flour → bake → bread (food)
+- FibrousFine component → spin → thread (crafting material)
+- Thread → bowstring (replaces or supplements current workshop recipe)
+- FibrousCoarse component → twist → cord → rope/bowstring
+
+Each recipe specifies: input component property requirement, input unit
+cost, output ItemKind, output count. Data-driven via GameConfig so
+recipes can be tuned without code changes. Kitchen and workshop
+buildings each support a subset of recipes based on their type.
+
+Later expansions (not in initial scope): dye pressing from pigmented
+parts, fermentation, medicinal brewing, luminous oil distillation,
+mana essence refinement.
+
+**Blocked by:** F-fruit-extraction
+**Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-recipes
+
 #### F-crafting — Non-construction jobs and crafting
 **Status:** Todo · **Phase:** 8+ · **Refs:** §11
 
@@ -1206,7 +1236,38 @@ the general F-logistics system, scoped to food only. Needs a draft
 design doc before implementation to work out pickup/delivery task
 creation, building input/output slots, and elf decision-making.
 
-**Related:** F-bldg-dining, F-bldg-kitchen, F-bldg-storehouse, F-bread, F-fruit-prod, F-fruit-variety, F-hauling, F-logistics, F-recipes
+**Related:** F-bldg-dining, F-bldg-kitchen, F-bldg-storehouse, F-bread, F-fruit-extraction, F-fruit-prod, F-fruit-variety, F-hauling, F-logistics, F-recipes
+
+#### F-fruit-extraction — Fruit extraction (hulling/separation into components)
+**Status:** Todo · **Phase:** 7
+
+Fruit extraction: the first processing step that converts a whole fruit
+into its constituent component item stacks. A kitchen (or specialized
+facility) takes one whole fruit and produces N separate inventory items
+— one per part — each carrying the source species as material. For
+example, hulling a Shinethúni fruit (37 pulp + 52 fiber + 15 seed)
+produces "37 Shinethúni Pulp", "52 Shinethúni Fiber", and "15
+Shinethúni Seed".
+
+Scope:
+- New ItemKind variants per part type (Pulp, Husk, Seed, Fiber, Sap,
+  Resin) with Material::FruitSpecies tracking source species
+- Extraction task at kitchens: consumes 1 whole fruit, produces all
+  component stacks based on the fruit species' parts and component_units
+- Separation verb varies by fruit composition (hull, press, husk,
+  crack, etc.) — cosmetic initially, could become mechanically distinct
+  later with specialized facilities
+- Multi-output task UI: each output has a target quantity field (e.g.,
+  "at least 100 Pulp, at least 0 Husk"), task repeats until all
+  targets are satisfied
+- Same-species constraint: all outputs carry the source fruit's species
+  as material, maintaining clean lineage for downstream recipes
+
+Does NOT include downstream transformation recipes (bread, thread, etc.)
+— those belong in F-component-recipes.
+
+**Blocks:** F-component-recipes
+**Related:** F-bldg-kitchen, F-food-chain, F-fruit-variety
 
 #### F-fruit-prod — Basic fruit production and harvesting
 **Status:** Todo · **Phase:** 2 · **Refs:** §13
@@ -1252,7 +1313,7 @@ differentiation, deeper integration with food chain and cooking.
 item schema (FruitSpeciesId references).
 
 **Blocks:** F-civ-knowledge
-**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-naming, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-logistics-filter, F-recipes
+**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-logistics-filter, F-recipes
 
 #### F-hauling — Item hauling task type
 **Status:** Done · **Phase:** 3
@@ -1360,7 +1421,7 @@ to bread; workshops use recipes to convert wood to bows. Data-driven
 via GameConfig so recipes can be added/tuned without code changes.
 Avoids hardcoding conversion logic per building type.
 
-**Related:** F-bldg-kitchen, F-bldg-workshop, F-crafting, F-food-chain, F-fruit-variety
+**Related:** F-bldg-kitchen, F-bldg-workshop, F-component-recipes, F-crafting, F-food-chain, F-fruit-variety
 
 #### F-task-assign-opt — Event-driven bidirectional task assignment
 **Status:** Todo · **Phase:** 4
