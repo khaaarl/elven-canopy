@@ -5,7 +5,7 @@
 ## Sits on the CanvasLayer alongside the spawn toolbar.
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
-## Shows species, name (Vaelith name for elves, fallback "Species #N" for
+## Shows species, name (Vaelith name for elves, fallback species name for
 ## unnamed creatures), an HP bar (current/max as "87 / 100" inside a reddish
 ## progress bar), position, task kind with a "Zoom" button to jump to the
 ## task's target location (when available), a food gauge, a rest gauge
@@ -45,8 +45,7 @@ var _thoughts_header: Label
 var _inventory_label: Label
 var _follow_button: Button
 var _is_following: bool = false
-var _selected_species: String = ""
-var _selected_index: int = -1
+var _selected_creature_id: String = ""
 
 
 func _ready() -> void:
@@ -228,13 +227,13 @@ func _ready() -> void:
 	visible = false
 
 
-func show_creature(species: String, index: int, info: Dictionary) -> void:
-	_selected_species = species
-	_selected_index = index
+func show_creature(creature_id: String, info: Dictionary) -> void:
+	_selected_creature_id = creature_id
+	var species: String = info.get("species", "")
 	_species_label.text = "Species: %s" % species
 	var creature_name: String = info.get("name", "")
 	if creature_name.is_empty():
-		_name_label.text = "Name: %s #%d" % [species, index + 1]
+		_name_label.text = "Name: %s" % species
 	else:
 		var meaning: String = info.get("name_meaning", "")
 		if meaning.is_empty():

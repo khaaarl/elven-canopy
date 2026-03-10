@@ -30,11 +30,12 @@
 //   for one chunk. `get_fruit_voxels()` — flat `PackedInt32Array` of (x,y,z,species_id)
 //   quads for fruit billboard sprite rendering (fruit is not part of chunk mesh).
 // - **Creature positions:** `get_creature_positions(species_name, render_tick)`
-//   — generic `PackedVector3Array` for billboard sprite placement, replacing
-//   the per-species `get_elf_positions()` / `get_capybara_positions()` (which
-//   remain as thin wrappers). The `render_tick` parameter (a fractional tick
-//   returned by `frame_update()`) enables smooth interpolation between nav
-//   nodes via `Creature::interpolated_position()`.
+//   — `PackedVector3Array` for billboard sprite placement (used by renderers).
+//   `get_creature_positions_with_ids(species_name, render_tick)` — paired
+//   `ids` (VarArray of GString UUIDs), `positions` (PackedVector3Array), and
+//   `is_player_civ` (VarArray of bools) for selection hit-testing that resolves
+//   to stable creature IDs. Used by `selection_controller.gd` and
+//   `tooltip_controller.gd`.
 // - **Projectile data:** `get_projectile_positions(render_tick)` returns
 //   interpolated positions (PackedVector3Array), `get_projectile_velocities()`
 //   returns velocity vectors for orienting arrow meshes along flight direction.
@@ -43,21 +44,22 @@
 //   `get_max_notification_id()` returns the highest ID (for initializing the
 //   cursor after load), `send_debug_notification(message)` sends a test
 //   notification through the full command pipeline (multiplayer-aware).
-// - **Creature info:** `get_creature_info(species_name, index, render_tick)` —
-//   returns a `VarDictionary` with species, interpolated position (x/y/z),
-//   task status, task_kind, food level, food_max, rest level, rest_max,
-//   name (Vaelith name for elves, empty for other species), name_meaning
-//   (English gloss), and inventory (array of {kind, quantity} dicts). Used
-//   by the creature info panel for display and follow-mode tracking.
+// - **Creature info:** `get_creature_info_by_id(creature_id, render_tick)` —
+//   returns a `VarDictionary` with species, species_index, interpolated
+//   position (x/y/z), task status, task_kind, food level, food_max, rest
+//   level, rest_max, name, name_meaning, inventory, thoughts, mood. Primary
+//   API for creature info — uses direct CreatureId lookup.
+//   `get_creature_info(species_name, index, render_tick)` — legacy API with
+//   same dict format but fragile species+index addressing.
 // - **Creature summary:** `get_all_creatures_summary()` — returns a `VarArray`
 //   of `VarDictionary`, one per creature, sorted (elves first by name, then
-//   other species by species+index). Each dict: species, index, name,
-//   name_meaning, has_task, task_kind. Used by `units_panel.gd`.
+//   other species by species+index). Each dict: creature_id, species, index,
+//   name, name_meaning, has_task, task_kind. Used by `units_panel.gd`.
 // - **Task list:** `get_active_tasks()` — returns a `VarArray` of
 //   `VarDictionary`, one per non-complete task. Each dict includes short/full
 //   ID, kind, state, origin (PlayerDirected/Autonomous/Automated),
 //   progress/total_cost, location coordinates, and an assignees array with
-//   creature species, index, and name. Used by `task_panel.gd`.
+//   creature_id, species, and name. Used by `task_panel.gd`.
 // - **Nav nodes:** `get_all_nav_nodes()`, `get_ground_nav_nodes()` — for
 //   debug visualization. `get_visible_nav_nodes(cam_pos)`,
 //   `get_visible_ground_nav_nodes(cam_pos)` — filtered by voxel-based
@@ -222,6 +224,98 @@ fn species_name(species: Species) -> &'static str {
         Species::Squirrel => "Squirrel",
         Species::Troll => "Troll",
     }
+}
+
+/// Build a `VarDictionary` with full creature info for the GDScript info panel.
+///
+/// Shared by `get_creature_info()` (legacy species+index lookup) and
+/// `get_creature_info_by_id()` (stable CreatureId lookup). Both resolve
+/// the creature reference, then delegate here for dict construction.
+fn build_creature_info_dict(
+    sim: &elven_canopy_sim::sim::SimState,
+    c: &elven_canopy_sim::db::Creature,
+    render_tick: f64,
+) -> VarDictionary {
+    let species = c.species;
+    // Compute the species-filtered index for sprite seed consistency
+    // with renderers and units_panel.
+    let species_index = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|cr| cr.species == species && cr.vital_status == VitalStatus::Alive)
+        .position(|cr| cr.id == c.id)
+        .unwrap_or(0);
+    let ma = sim.db.move_actions.get(&c.id);
+    let (x, y, z): (f32, f32, f32) = c.interpolated_position(render_tick, ma.as_ref());
+    let mut dict = VarDictionary::new();
+    dict.set("id", GString::from(c.id.0.to_string().as_str()));
+    dict.set("species", GString::from(species_name(species)));
+    dict.set("species_index", species_index as i32);
+    dict.set("x", x);
+    dict.set("y", y);
+    dict.set("z", z);
+    dict.set("has_task", c.current_task.is_some());
+    let task_kind_str = c
+        .current_task
+        .as_ref()
+        .and_then(|tid| sim.db.tasks.get(tid).map(|t| t.kind_tag.display_name()))
+        .unwrap_or("");
+    dict.set("task_kind", GString::from(task_kind_str));
+    if let Some(tid) = &c.current_task
+        && let Some(task) = sim.db.tasks.get(tid)
+    {
+        let task_pos = sim.nav_graph.node(task.location).position;
+        dict.set("task_location_x", task_pos.x);
+        dict.set("task_location_y", task_pos.y);
+        dict.set("task_location_z", task_pos.z);
+    }
+    dict.set("hp", c.hp);
+    dict.set("hp_max", c.hp_max);
+    dict.set("food", c.food);
+    let food_max = sim.species_table[&species].food_max;
+    dict.set("food_max", food_max);
+    dict.set("rest", c.rest);
+    let rest_max = sim.species_table[&species].rest_max;
+    dict.set("rest_max", rest_max);
+    dict.set("name", GString::from(c.name.as_str()));
+    dict.set("name_meaning", GString::from(c.name_meaning.as_str()));
+    let assigned_home = match c.assigned_home {
+        Some(sid) => sid.0 as i64,
+        None => -1,
+    };
+    dict.set("assigned_home", assigned_home);
+    let mut thoughts_arr = VarArray::new();
+    let creature_thoughts = sim
+        .db
+        .thoughts
+        .by_creature_id(&c.id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+    for thought in creature_thoughts.iter().rev() {
+        let mut td = VarDictionary::new();
+        td.set("text", GString::from(thought.kind.description()));
+        td.set("tick", thought.tick as i64);
+        thoughts_arr.push(&td.to_variant());
+    }
+    dict.set("thoughts", thoughts_arr);
+    let mood_score: i32 = creature_thoughts
+        .iter()
+        .map(|t| sim.config.mood.mood_weight(&t.kind))
+        .sum();
+    let mood_tier = sim.config.mood.tier(mood_score);
+    dict.set("mood_score", mood_score);
+    dict.set("mood_tier", GString::from(mood_tier.label()));
+    let mut inv_arr = VarArray::new();
+    for stack in sim.inv_items(c.inventory_id) {
+        let mut item_dict = VarDictionary::new();
+        item_dict.set(
+            "kind",
+            GString::from(sim.item_display_name(&stack).as_str()),
+        );
+        item_dict.set("quantity", stack.quantity as i64);
+        inv_arr.push(&item_dict.to_variant());
+    }
+    dict.set("inventory", inv_arr);
+    dict
 }
 
 /// Godot node that owns and drives the simulation.
@@ -906,6 +1000,58 @@ impl SimBridge {
         }
     }
 
+    /// Check if two creatures (identified by UUID strings) are hostile to each
+    /// other. Returns true if the attacker would consider the target a valid
+    /// hostile target. UUID-based variant of `is_hostile()` for use with the
+    /// stable-ID selection system.
+    #[func]
+    fn is_hostile_by_id(&self, attacker_uuid: GString, target_uuid: GString) -> bool {
+        let Some(sim) = &self.session.sim else {
+            return false;
+        };
+        let Some(a_id) = parse_creature_id(&attacker_uuid.to_string()) else {
+            return false;
+        };
+        let Some(t_id) = parse_creature_id(&target_uuid.to_string()) else {
+            return false;
+        };
+        if a_id == t_id {
+            return false;
+        }
+        let Some(a) = sim.db.creatures.get(&a_id) else {
+            return false;
+        };
+        let Some(t) = sim.db.creatures.get(&t_id) else {
+            return false;
+        };
+        if a.vital_status != VitalStatus::Alive || t.vital_status != VitalStatus::Alive {
+            return false;
+        }
+        // Same logic as detect_hostile_targets hostility check.
+        if a.civ_id.is_none() {
+            // Non-civ aggressive: targets civ creatures of different species.
+            t.civ_id.is_some() && t.species != a.species
+        } else if let (Some(my_civ), Some(their_civ)) = (a.civ_id, t.civ_id) {
+            if my_civ == their_civ {
+                false
+            } else {
+                use elven_canopy_sim::types::CivOpinion;
+                sim.db
+                    .civ_relationships
+                    .by_from_civ(&my_civ, elven_canopy_sim::tabulosity::QueryOpts::ASC)
+                    .into_iter()
+                    .any(|r| r.to_civ == their_civ && r.opinion == CivOpinion::Hostile)
+            }
+        } else {
+            // Attacker has civ, target doesn't — check if target's species has aggressive AI.
+            use elven_canopy_sim::species::CombatAI;
+            matches!(
+                sim.species_table[&t.species].combat_ai,
+                CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+            )
+        }
+    }
+
     /// Return info about the creature at the given species-filtered index.
     ///
     /// The index corresponds to the creature's position in the iteration
@@ -938,84 +1084,7 @@ impl SimBridge {
             .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
             .nth(index as usize);
         match creature {
-            Some(c) => {
-                let ma = sim.db.move_actions.get(&c.id);
-                let (x, y, z): (f32, f32, f32) = c.interpolated_position(render_tick, ma.as_ref());
-                let mut dict = VarDictionary::new();
-                dict.set("id", GString::from(c.id.0.to_string().as_str()));
-                dict.set("species", species_name.clone());
-                dict.set("x", x);
-                dict.set("y", y);
-                dict.set("z", z);
-                dict.set("has_task", c.current_task.is_some());
-                let task_kind_str = c
-                    .current_task
-                    .as_ref()
-                    .and_then(|tid| sim.db.tasks.get(tid).map(|t| t.kind_tag.display_name()))
-                    .unwrap_or("");
-                dict.set("task_kind", GString::from(task_kind_str));
-                // Task location — resolve NavNodeId to VoxelCoord when a task exists.
-                if let Some(tid) = &c.current_task
-                    && let Some(task) = sim.db.tasks.get(tid)
-                {
-                    let task_pos = sim.nav_graph.node(task.location).position;
-                    dict.set("task_location_x", task_pos.x);
-                    dict.set("task_location_y", task_pos.y);
-                    dict.set("task_location_z", task_pos.z);
-                }
-                dict.set("hp", c.hp);
-                dict.set("hp_max", c.hp_max);
-                dict.set("food", c.food);
-                let food_max = sim.species_table[&species].food_max;
-                dict.set("food_max", food_max);
-                dict.set("rest", c.rest);
-                let rest_max = sim.species_table[&species].rest_max;
-                dict.set("rest_max", rest_max);
-                dict.set("name", GString::from(c.name.as_str()));
-                dict.set("name_meaning", GString::from(c.name_meaning.as_str()));
-                let assigned_home = match c.assigned_home {
-                    Some(sid) => sid.0 as i64,
-                    None => -1,
-                };
-                dict.set("assigned_home", assigned_home);
-                // Thoughts: array of dicts with "text" and "tick", most recent first.
-                let mut thoughts_arr = VarArray::new();
-                let creature_thoughts = sim
-                    .db
-                    .thoughts
-                    .by_creature_id(&c.id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
-                for thought in creature_thoughts.iter().rev() {
-                    let mut td = VarDictionary::new();
-                    td.set("text", GString::from(thought.kind.description()));
-                    td.set("tick", thought.tick as i64);
-                    thoughts_arr.push(&td.to_variant());
-                }
-                dict.set("thoughts", thoughts_arr);
-
-                // Mood.
-                let mood_score: i32 = creature_thoughts
-                    .iter()
-                    .map(|t| sim.config.mood.mood_weight(&t.kind))
-                    .sum();
-                let mood_tier = sim.config.mood.tier(mood_score);
-                dict.set("mood_score", mood_score);
-                let tier_label: &str = mood_tier.label();
-                dict.set("mood_tier", GString::from(tier_label));
-
-                // Inventory.
-                let mut inv_arr = VarArray::new();
-                for stack in sim.inv_items(c.inventory_id) {
-                    let mut item_dict = VarDictionary::new();
-                    item_dict.set(
-                        "kind",
-                        GString::from(sim.item_display_name(&stack).as_str()),
-                    );
-                    item_dict.set("quantity", stack.quantity as i64);
-                    inv_arr.push(&item_dict.to_variant());
-                }
-                dict.set("inventory", inv_arr);
-                dict
-            }
+            Some(c) => build_creature_info_dict(sim, c, render_tick),
             None => VarDictionary::new(),
         }
     }
@@ -1039,9 +1108,9 @@ impl SimBridge {
             return VarArray::new();
         };
 
-        // Collect (species, index, name, name_meaning, has_task, task_kind)
-        // tuples per species.
-        let mut entries: Vec<(&'static str, i32, &str, &str, bool, &str)> = Vec::new();
+        // Collect (creature_id, species, index, name, name_meaning, has_task,
+        // task_kind) tuples per species.
+        let mut entries: Vec<(String, &'static str, i32, &str, &str, bool, &str)> = Vec::new();
 
         // Count per species to compute species-filtered indices.
         let species_list = [
@@ -1068,6 +1137,7 @@ impl SimBridge {
                     .unwrap_or("");
 
                 entries.push((
+                    creature.id.0.to_string(),
                     species_name(sp),
                     idx,
                     creature.name.as_str(),
@@ -1081,19 +1151,20 @@ impl SimBridge {
         // Sort: elves first (alphabetically by name), then other species
         // (alphabetically by species name, then by index).
         entries.sort_by(|a, b| {
-            let a_is_elf = a.0 == "Elf";
-            let b_is_elf = b.0 == "Elf";
+            let a_is_elf = a.1 == "Elf";
+            let b_is_elf = b.1 == "Elf";
             match (a_is_elf, b_is_elf) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
-                (true, true) => a.2.cmp(b.2), // both elves: sort by name
-                (false, false) => a.0.cmp(b.0).then(a.1.cmp(&b.1)),
+                (true, true) => a.3.cmp(b.3), // both elves: sort by name
+                (false, false) => a.1.cmp(b.1).then(a.2.cmp(&b.2)),
             }
         });
 
         let mut result = VarArray::new();
-        for (sp, idx, name, meaning, has_task, task_kind) in &entries {
+        for (cid, sp, idx, name, meaning, has_task, task_kind) in &entries {
             let mut dict = VarDictionary::new();
+            dict.set("creature_id", GString::from(cid.as_str()));
             dict.set("species", GString::from(*sp));
             dict.set("index", *idx);
             dict.set("name", GString::from(*name));
@@ -1178,22 +1249,11 @@ impl SimBridge {
                 let cid_full = creature.id.0.to_string();
                 let cid_short: String = cid_full.chars().take(8).collect();
                 a.set("id_short", GString::from(&cid_short));
+                a.set("creature_id", GString::from(cid_full.as_str()));
                 a.set("name", GString::from(creature.name.as_str()));
 
                 let sp = species_name(creature.species);
                 a.set("species", GString::from(sp));
-
-                // Compute the species-filtered index: count how many
-                // creatures of the same species come before this one in
-                // iteration order.
-                let index = sim
-                    .db
-                    .creatures
-                    .iter_all()
-                    .filter(|c| c.species == creature.species)
-                    .position(|c| c.id == creature.id)
-                    .unwrap_or(0);
-                a.set("index", index as i32);
 
                 assignees_arr.push(&a.to_variant());
             }
@@ -2103,6 +2163,78 @@ impl SimBridge {
             arr.push(Vector3::new(vx, vy, vz));
         }
         arr
+    }
+
+    /// Return creature positions and their stable IDs for a given species.
+    ///
+    /// Returns a `VarDictionary` with two parallel arrays:
+    /// - `"ids"`: `VarArray` of `GString` creature IDs (UUID strings)
+    /// - `"positions"`: `PackedVector3Array` of interpolated positions
+    ///
+    /// Used by `selection_controller.gd` for hit-testing that resolves to
+    /// stable creature IDs (not ephemeral per-species indices).
+    #[func]
+    fn get_creature_positions_with_ids(
+        &self,
+        species_name: GString,
+        render_tick: f64,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let mut ids = VarArray::new();
+        let mut positions = PackedVector3Array::new();
+        let mut is_player_civ = VarArray::new();
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            dict.set("ids", ids);
+            dict.set("positions", positions);
+            dict.set("is_player_civ", is_player_civ);
+            return dict;
+        };
+        let Some(sim) = &self.session.sim else {
+            dict.set("ids", ids);
+            dict.set("positions", positions);
+            dict.set("is_player_civ", is_player_civ);
+            return dict;
+        };
+        let player_civ = sim.player_civ_id;
+        for creature in sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
+        {
+            let ma = sim.db.move_actions.get(&creature.id);
+            let (x, y, z) = creature.interpolated_position(render_tick, ma.as_ref());
+            ids.push(&GString::from(creature.id.0.to_string().as_str()).to_variant());
+            positions.push(Vector3::new(x, y, z));
+            let belongs = player_civ.is_some() && creature.civ_id == player_civ;
+            is_player_civ.push(&belongs.to_variant());
+        }
+        dict.set("ids", ids);
+        dict.set("positions", positions);
+        dict.set("is_player_civ", is_player_civ);
+        dict
+    }
+
+    /// Look up a creature by its stable ID (UUID string) and return its info.
+    ///
+    /// Returns the same dictionary format as `get_creature_info()` but uses
+    /// a direct ID lookup instead of fragile per-species index addressing.
+    /// Returns an empty dictionary if the ID is invalid or the creature is dead.
+    #[func]
+    fn get_creature_info_by_id(&self, creature_id: GString, render_tick: f64) -> VarDictionary {
+        let Some(sim) = &self.session.sim else {
+            return VarDictionary::new();
+        };
+        let Some(cid) = parse_creature_id(&creature_id.to_string()) else {
+            return VarDictionary::new();
+        };
+        let Some(c) = sim.db.creatures.get(&cid) else {
+            return VarDictionary::new();
+        };
+        if c.vital_status != VitalStatus::Alive {
+            return VarDictionary::new();
+        }
+        build_creature_info_dict(sim, &c, render_tick)
     }
 
     /// Return the number of creatures of the named species.

@@ -51,6 +51,8 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
+[~] F-projectiles          Projectile physics system (arrows)
+[~] F-rts-selection        RTS box selection and multi-creature commands
 ```
 
 ### Todo
@@ -134,7 +136,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
-[ ] F-rts-selection        RTS box selection and multi-creature commands
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
 [ ] F-rust-sprites         Investigate moving sprite generation to Rust
 [ ] F-seasons              Seasonal visual and gameplay effects
@@ -2237,9 +2238,13 @@ Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 ESC-triggered pause menu with Resume, Save, Load, and Quit options.
 
 #### F-rts-selection — RTS box selection and multi-creature commands
-**Status:** Todo
+**Status:** In Progress
 
 Godot-side UI work. Box selection (click-drag rectangle) in selection_controller.gd. Multi-creature selection state (client-local, not sim state). Group info panel (portraits/icons, count by species). Right-click context commands: ground → GoTo, hostile creature → AttackCreature. Attack-move hotkey (A + click). All commands dispatch SimAction variants for each selected creature. Selection state not saved, not synced in multiplayer.
+
+**Done so far:** Stable creature ID addressing — replaced fragile (species, index) with CreatureId UUID strings throughout the full pipeline (SimBridge, selection_controller, creature_info_panel, main.gd, tooltip_controller, units_panel, task_panel). New SimBridge APIs: `get_creature_positions_with_ids()`, `get_creature_info_by_id()`, `is_hostile_by_id()`. Box selection with click-drag rectangle overlay (CanvasLayer ColorRect, screen-space projection). Multi-creature selection state (Array of creature IDs). Shift+click/drag for additive selection toggle. Group info panel: scrollable list of selected creatures with sprites, names, species, and activity; clicking a row selects just that creature; mutual exclusion with single-creature info panel. Box select filters to player-civ creatures (RTS convention). Dead creature pruning from selection (single and multi). Right-click context commands: attack hostile, move-to friendly/ground (ported from main's species/index API to UUID-based, works for multi-select).
+
+**Not yet done:** Attack-move hotkey. Visual highlight on selected creature sprites. Selection count indicator.
 
 **Draft:** docs/drafts/combat_military.md (§2)
 

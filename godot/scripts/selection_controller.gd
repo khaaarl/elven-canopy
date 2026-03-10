@@ -1,22 +1,23 @@
-## Handles click-to-select and right-click commands for creatures, structures,
-## and ground piles.
+## Handles click-to-select, box-select, and right-click commands for creatures,
+## structures, and ground piles.
 ##
-## On left-click (when not in placement mode), casts a ray from the camera
-## through the mouse position and finds the closest creature sprite using
-## perpendicular distance. If no creature is within snap threshold, falls
-## back to a voxel raycast via bridge.raycast_structure() to check for
-## structure hits, then checks ground pile positions. Uses the interpolated
-## render_tick positions (via set_render_tick(), called by main.gd each frame)
-## so click targets match the smooth visual positions.
+## Supports single-click selection (ray-cast to closest creature sprite),
+## click-and-drag box selection (2D rectangle selecting all creatures whose
+## screen-space positions fall inside), and Shift modifier for additive
+## selection. Creatures are identified by stable CreatureId strings (UUID),
+## not ephemeral per-species indices.
 ##
 ## On right-click (when a creature is selected), issues context-sensitive
 ## commands: attack if the target is hostile, move-to if it's a friendly
-## creature or ground location. Uses bridge.get_creature_uuid(),
-## bridge.is_hostile(), bridge.attack_creature(), and bridge.directed_goto().
+## creature or ground location. Uses bridge.is_hostile_by_id(),
+## bridge.attack_creature(), and bridge.directed_goto() with UUID strings.
 ##
-## Selection state: tracks either a creature (species name + index), a
-## structure (structure_id), or a ground pile (Vector3i position). Selecting
-## one kind deselects any other. ESC deselects whichever is active.
+## Selection state: tracks a set of selected creature IDs (stable UUIDs), or
+## a single structure_id, or a single ground pile position. Selecting creatures
+## deselects structures/piles and vice versa. ESC deselects all.
+##
+## Box selection draws a translucent rectangle overlay via a CanvasLayer
+## ColorRect during the drag.
 ##
 ## Uses a data-driven SPECIES_Y_OFFSETS dict so adding new species doesn't
 ## require code changes here — just add the entry.
@@ -33,7 +34,10 @@
 
 extends Node3D
 
-signal creature_selected(species: String, index: int)
+## Emitted when one or more creatures are selected. The ids array contains
+## stable CreatureId strings (UUIDs). For single-click, the array has one
+## element. For box-select, it may have many.
+signal creatures_selected(ids: Array)
 signal creature_deselected
 signal structure_selected(structure_id: int)
 signal structure_deselected
@@ -44,6 +48,9 @@ signal pile_deselected
 ## creature sprite center for it to count as a click hit. Tighter than
 ## placement_controller's 5.0 since sprites are small.
 const SNAP_THRESHOLD := 1.5
+
+## Minimum drag distance (pixels) before a click becomes a box-select drag.
+const DRAG_THRESHOLD := 5.0
 
 ## Y offsets per species — must match the renderers.
 const SPECIES_Y_OFFSETS = {
@@ -65,15 +72,27 @@ var _placement_controller: Node3D
 var _construction_controller: Node
 var _render_tick: float = 0.0
 
-var _selected_species: String = ""
-var _selected_index: int = -1
+## Currently selected creature IDs (stable UUID strings). Empty = no selection.
+var _selected_creature_ids: Array = []
 var _selected_structure_id: int = -1
 var _selected_pile_pos: Vector3i = Vector3i(-1, -1, -1)
+
+## Box selection drag state.
+var _drag_active: bool = false
+var _drag_start: Vector2 = Vector2.ZERO
+var _box_rect: ColorRect = null
+var _box_layer: CanvasLayer = null
+
+## When true, ignore the next mouse-button release. Set by select_creature_by_id()
+## to prevent programmatic selections (e.g., from group panel clicks) from being
+## immediately undone by the release event falling through to _try_select().
+var _ignore_next_release: bool = false
 
 
 func setup(bridge: SimBridge, camera: Camera3D) -> void:
 	_bridge = bridge
 	_camera = camera
+	_setup_box_overlay()
 
 
 ## Set the fractional render tick for smooth movement interpolation.
@@ -90,12 +109,21 @@ func set_construction_controller(controller: Node) -> void:
 	_construction_controller = controller
 
 
-func get_selected_species() -> String:
-	return _selected_species
+## Return the single selected creature ID, or "" if none or multiple selected.
+func get_selected_creature_id() -> String:
+	if _selected_creature_ids.size() == 1:
+		return _selected_creature_ids[0]
+	return ""
 
 
-func get_selected_index() -> int:
-	return _selected_index
+## Return all selected creature IDs.
+func get_selected_creature_ids() -> Array:
+	return _selected_creature_ids
+
+
+## Return true if any creatures are selected.
+func has_creature_selection() -> bool:
+	return not _selected_creature_ids.is_empty()
 
 
 func get_selected_structure_id() -> int:
@@ -106,14 +134,25 @@ func get_selected_pile_pos() -> Vector3i:
 	return _selected_pile_pos
 
 
-## Programmatically select a creature by species and index, as if the player
-## clicked on it. Used by the task panel to trigger the full selection flow.
-func select_creature(species: String, index: int) -> void:
+## Remove a creature ID from the selection (e.g., when it dies).
+## Emits appropriate signals if the selection changes.
+func remove_creature_id(creature_id: String) -> void:
+	var idx := _selected_creature_ids.find(creature_id)
+	if idx >= 0:
+		_selected_creature_ids.remove_at(idx)
+		if _selected_creature_ids.is_empty():
+			creature_deselected.emit()
+		else:
+			creatures_selected.emit(_selected_creature_ids)
+
+
+## Programmatically select a creature by its stable ID.
+func select_creature_by_id(creature_id: String) -> void:
 	_deselect_structure_only()
 	_deselect_pile_only()
-	_selected_species = species
-	_selected_index = index
-	creature_selected.emit(species, index)
+	_selected_creature_ids = [creature_id]
+	creatures_selected.emit(_selected_creature_ids)
+	_ignore_next_release = true
 
 
 ## Programmatically select a structure by ID. Used by the structure list
@@ -126,9 +165,8 @@ func select_structure(id: int) -> void:
 
 
 func deselect() -> void:
-	if _selected_index >= 0:
-		_selected_species = ""
-		_selected_index = -1
+	if not _selected_creature_ids.is_empty():
+		_selected_creature_ids = []
 		creature_deselected.emit()
 	if _selected_structure_id >= 0:
 		_selected_structure_id = -1
@@ -147,10 +185,32 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			_try_select(mb.position)
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			if mb.pressed:
+				_drag_start = mb.position
+				_drag_active = false
+			else:
+				# Mouse released — either complete a box-select or do a click.
+				if _ignore_next_release:
+					_ignore_next_release = false
+					return
+				if _drag_active:
+					_finish_box_select(mb.position, mb.shift_pressed)
+					_drag_active = false
+					_box_rect.visible = false
+					get_viewport().set_input_as_handled()
+				else:
+					_try_select(mb.position, mb.shift_pressed)
 		elif mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
 			_try_right_click_command(mb.position)
+
+	if event is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		var mm := event as InputEventMouseMotion
+		var dist := mm.position.distance_to(_drag_start)
+		if dist >= DRAG_THRESHOLD:
+			if not _drag_active:
+				_drag_active = true
+			_update_box_rect(mm.position)
 
 	if event is InputEventKey:
 		var key := event as InputEventKey
@@ -158,7 +218,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			key.pressed
 			and key.keycode == KEY_ESCAPE
 			and (
-				_selected_index >= 0
+				not _selected_creature_ids.is_empty()
 				or _selected_structure_id >= 0
 				or _selected_pile_pos != Vector3i(-1, -1, -1)
 			)
@@ -167,17 +227,18 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 
 
-func _try_select(mouse_pos: Vector2) -> void:
+func _try_select(mouse_pos: Vector2, shift: bool) -> void:
 	var ray_origin := _camera.project_ray_origin(mouse_pos)
 	var ray_dir := _camera.project_ray_normal(mouse_pos)
 
 	# First, try to select a creature (closest sprite within snap threshold).
 	var best_dist_sq := SNAP_THRESHOLD * SNAP_THRESHOLD
-	var best_species := ""
-	var best_index := -1
+	var best_id := ""
 
 	for species_name in SPECIES_Y_OFFSETS:
-		var positions := _bridge.get_creature_positions(species_name, _render_tick)
+		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
+		var ids: Array = data.get("ids", [])
+		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
 		var y_off: float = SPECIES_Y_OFFSETS[species_name]
 		for i in positions.size():
 			var pos := positions[i]
@@ -185,15 +246,26 @@ func _try_select(mouse_pos: Vector2) -> void:
 			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
 			if dist_sq < best_dist_sq:
 				best_dist_sq = dist_sq
-				best_species = species_name
-				best_index = i
+				best_id = ids[i]
 
-	if best_index >= 0:
+	if best_id != "":
 		_deselect_structure_only()
 		_deselect_pile_only()
-		_selected_species = best_species
-		_selected_index = best_index
-		creature_selected.emit(best_species, best_index)
+		if shift:
+			# Toggle: add if not present, remove if already selected.
+			var idx := _selected_creature_ids.find(best_id)
+			if idx >= 0:
+				_selected_creature_ids.remove_at(idx)
+				if _selected_creature_ids.is_empty():
+					creature_deselected.emit()
+				else:
+					creatures_selected.emit(_selected_creature_ids)
+			else:
+				_selected_creature_ids.append(best_id)
+				creatures_selected.emit(_selected_creature_ids)
+		else:
+			_selected_creature_ids = [best_id]
+			creatures_selected.emit(_selected_creature_ids)
 		get_viewport().set_input_as_handled()
 		return
 
@@ -230,21 +302,67 @@ func _try_select(mouse_pos: Vector2) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
-	# Clicked on nothing — deselect whatever was active.
-	if (
-		_selected_index >= 0
-		or _selected_structure_id >= 0
-		or _selected_pile_pos != Vector3i(-1, -1, -1)
-	):
-		deselect()
+	# Clicked on nothing — deselect whatever was active (unless Shift held).
+	if not shift:
+		if (
+			not _selected_creature_ids.is_empty()
+			or _selected_structure_id >= 0
+			or _selected_pile_pos != Vector3i(-1, -1, -1)
+		):
+			deselect()
+
+
+## Complete a box-select drag. Projects all creature world positions to screen
+## space and selects those inside the rectangle. Prefers player-civ creatures:
+## if the box contains any, only those are selected (RTS convention).
+func _finish_box_select(end_pos: Vector2, shift: bool) -> void:
+	var rect := _make_screen_rect(_drag_start, end_pos)
+	var player_ids: Array = []
+	var all_ids: Array = []
+
+	for species_name in SPECIES_Y_OFFSETS:
+		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
+		var ids: Array = data.get("ids", [])
+		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
+		var civ_flags: Array = data.get("is_player_civ", [])
+		var y_off: float = SPECIES_Y_OFFSETS[species_name]
+		for i in positions.size():
+			var pos := positions[i]
+			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+			if not _camera.is_position_behind(world_pos):
+				var screen_pos := _camera.unproject_position(world_pos)
+				if rect.has_point(screen_pos):
+					all_ids.append(ids[i])
+					if i < civ_flags.size() and civ_flags[i]:
+						player_ids.append(ids[i])
+
+	# Prefer player-civ creatures; fall back to all if none are player-owned.
+	var new_ids: Array = player_ids if not player_ids.is_empty() else all_ids
+
+	if new_ids.is_empty():
+		if not shift:
+			deselect()
+		return
+
+	_deselect_structure_only()
+	_deselect_pile_only()
+
+	if shift:
+		# Additive: merge new IDs into existing selection (no duplicates).
+		for cid in new_ids:
+			if _selected_creature_ids.find(cid) < 0:
+				_selected_creature_ids.append(cid)
+	else:
+		_selected_creature_ids = new_ids
+
+	creatures_selected.emit(_selected_creature_ids)
 
 
 ## Clear creature selection without touching structure/pile state. Emits
 ## creature_deselected so main.gd can hide the creature info panel.
 func _deselect_creature_only() -> void:
-	if _selected_index >= 0:
-		_selected_species = ""
-		_selected_index = -1
+	if not _selected_creature_ids.is_empty():
+		_selected_creature_ids = []
 		creature_deselected.emit()
 
 
@@ -274,27 +392,26 @@ func _point_to_ray_dist_sq(point: Vector3, ray_origin: Vector3, ray_dir: Vector3
 
 
 ## Right-click command: if a creature is selected, right-clicking on the world
-## issues a context-sensitive command (attack hostile, move to ground).
+## issues a context-sensitive command (attack hostile, move to ground). Uses
+## UUID-based creature IDs from the stable selection system. When multiple
+## creatures are selected, commands are issued to all of them.
 func _try_right_click_command(mouse_pos: Vector2) -> void:
-	# Only works when a creature is selected.
-	if _selected_index < 0 or _selected_species == "":
+	# Only works when creatures are selected.
+	if _selected_creature_ids.is_empty():
 		return
 
 	var ray_origin := _camera.project_ray_origin(mouse_pos)
 	var ray_dir := _camera.project_ray_normal(mouse_pos)
 
-	# Get the selected creature's UUID.
-	var attacker_uuid: String = _bridge.get_creature_uuid(_selected_species, _selected_index)
-	if attacker_uuid == "":
-		return
-
 	# Check if we clicked on a creature (potential attack target).
 	var best_dist_sq := SNAP_THRESHOLD * SNAP_THRESHOLD
-	var target_species := ""
-	var target_index := -1
+	var target_id := ""
+	var target_pos := Vector3.ZERO
 
 	for species_name in SPECIES_Y_OFFSETS:
-		var positions := _bridge.get_creature_positions(species_name, _render_tick)
+		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
+		var ids: Array = data.get("ids", [])
+		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
 		var y_off: float = SPECIES_Y_OFFSETS[species_name]
 		for i in positions.size():
 			var pos := positions[i]
@@ -302,24 +419,23 @@ func _try_right_click_command(mouse_pos: Vector2) -> void:
 			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
 			if dist_sq < best_dist_sq:
 				best_dist_sq = dist_sq
-				target_species = species_name
-				target_index = i
+				target_id = ids[i]
+				target_pos = pos
 
-	# If we clicked on a creature, check hostility.
-	if target_index >= 0:
-		var target_uuid: String = _bridge.get_creature_uuid(target_species, target_index)
-		if target_uuid != "" and target_uuid != attacker_uuid:
-			if _bridge.is_hostile(_selected_species, _selected_index, target_species, target_index):
-				_bridge.attack_creature(attacker_uuid, target_uuid)
-				get_viewport().set_input_as_handled()
-				return
-			# Friendly creature — move to their location.
-			var positions := _bridge.get_creature_positions(target_species, _render_tick)
-			if target_index < positions.size():
-				var p := positions[target_index]
-				_bridge.directed_goto(attacker_uuid, int(p.x), int(p.y), int(p.z))
-				get_viewport().set_input_as_handled()
-				return
+	# If we clicked on a creature, issue commands to each selected creature.
+	if target_id != "":
+		for attacker_uuid in _selected_creature_ids:
+			if attacker_uuid == target_id:
+				continue
+			if _bridge.is_hostile_by_id(attacker_uuid, target_id):
+				_bridge.attack_creature(attacker_uuid, target_id)
+			else:
+				# Friendly creature — move to their location.
+				_bridge.directed_goto(
+					attacker_uuid, int(target_pos.x), int(target_pos.y), int(target_pos.z)
+				)
+		get_viewport().set_input_as_handled()
+		return
 
 	# No creature clicked — snap to nearest nav node and issue directed goto.
 	var cam_pos := _camera.global_position
@@ -341,7 +457,36 @@ func _try_right_click_command(mouse_pos: Vector2) -> void:
 			nav_found = true
 
 	if nav_found:
-		_bridge.directed_goto(
-			attacker_uuid, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z)
-		)
+		for attacker_uuid in _selected_creature_ids:
+			_bridge.directed_goto(
+				attacker_uuid, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z)
+			)
 		get_viewport().set_input_as_handled()
+
+
+## Create the CanvasLayer + ColorRect used for the box selection overlay.
+func _setup_box_overlay() -> void:
+	_box_layer = CanvasLayer.new()
+	_box_layer.layer = 100
+	add_child(_box_layer)
+
+	_box_rect = ColorRect.new()
+	_box_rect.color = Color(0.3, 0.6, 1.0, 0.2)
+	_box_rect.visible = false
+	_box_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_box_layer.add_child(_box_rect)
+
+
+## Update the box selection rectangle to span from _drag_start to current_pos.
+func _update_box_rect(current_pos: Vector2) -> void:
+	var rect := _make_screen_rect(_drag_start, current_pos)
+	_box_rect.position = rect.position
+	_box_rect.size = rect.size
+	_box_rect.visible = true
+
+
+## Build a Rect2 from two corner points, handling any drag direction.
+func _make_screen_rect(a: Vector2, b: Vector2) -> Rect2:
+	var top_left := Vector2(minf(a.x, b.x), minf(a.y, b.y))
+	var bottom_right := Vector2(maxf(a.x, b.x), maxf(a.y, b.y))
+	return Rect2(top_left, bottom_right - top_left)

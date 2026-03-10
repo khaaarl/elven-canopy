@@ -50,8 +50,9 @@ const ACTIVITY_NAMES = {
 	"Haul": "Hauling",
 	"Cook": "Cooking",
 	"Harvest": "Harvesting",
-	"AcquireItem": "Acquiring Item",
+	"AcquireItem": "Fetching",
 	"Moping": "Moping",
+	"Craft": "Crafting",
 }
 
 var _bridge: SimBridge
@@ -151,11 +152,12 @@ func _find_hover_target() -> Dictionary:
 
 	# 1. Creatures (closest sprite within snap threshold).
 	var best_dist_sq := SNAP_THRESHOLD_SQ
-	var best_species := ""
-	var best_index := -1
+	var best_creature_id := ""
 
 	for species_name in SPECIES_Y_OFFSETS:
-		var positions := _bridge.get_creature_positions(species_name, _render_tick)
+		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
+		var ids: Array = data.get("ids", [])
+		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
 		var y_off: float = SPECIES_Y_OFFSETS[species_name]
 		for i in positions.size():
 			var pos := positions[i]
@@ -163,11 +165,10 @@ func _find_hover_target() -> Dictionary:
 			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
 			if dist_sq < best_dist_sq:
 				best_dist_sq = dist_sq
-				best_species = species_name
-				best_index = i
+				best_creature_id = ids[i]
 
-	if best_index >= 0:
-		return {"type": "creature", "species": best_species, "index": best_index}
+	if best_creature_id != "":
+		return {"type": "creature", "creature_id": best_creature_id}
 
 	# 2. Structures (voxel raycast via bridge).
 	var sid := _bridge.raycast_structure(ray_origin, ray_dir)
@@ -224,7 +225,7 @@ func _update_tooltip_text(target: Dictionary) -> void:
 	var text := ""
 	match target.get("type", ""):
 		"creature":
-			text = _creature_tooltip(target["species"], target["index"])
+			text = _creature_tooltip(target["creature_id"])
 		"structure":
 			text = _structure_tooltip(target["id"])
 		"pile":
@@ -234,11 +235,12 @@ func _update_tooltip_text(target: Dictionary) -> void:
 	_tooltip_label.text = text
 
 
-func _creature_tooltip(species: String, index: int) -> String:
-	var info := _bridge.get_creature_info(species, index, _render_tick)
+func _creature_tooltip(creature_id: String) -> String:
+	var info := _bridge.get_creature_info_by_id(creature_id, _render_tick)
 	if info.is_empty():
-		return species
+		return "Creature"
 
+	var species: String = info.get("species", "Creature")
 	var name_str: String = info.get("name", "")
 	var has_task: bool = info.get("has_task", false)
 	var task_kind: String = info.get("task_kind", "")

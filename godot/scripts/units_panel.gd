@@ -11,14 +11,14 @@
 ## Data flow: main.gd calls update_creatures(data) each frame while the panel
 ## is visible, passing the result of bridge.get_all_creatures_summary(). The
 ## panel uses a reconciliation pattern — it maintains a dictionary mapping
-## "Species:Index" keys to row nodes, creating/updating/removing rows as
-## creatures appear and disappear.
+## creature_id (UUID string) keys to row nodes, creating/updating/removing
+## rows as creatures appear and disappear.
 ##
-## Sprites are cached in a dictionary keyed by "Species:Index" and generated
+## Sprites are cached in a dictionary keyed by creature_id and generated
 ## via SpriteFactory on first encounter.
 ##
 ## Signals:
-## - creature_clicked(species, index) — select and show info for a creature
+## - creature_clicked(creature_id) — select and show info for a creature
 ## - panel_closed — emitted when the panel is hidden (ESC or close button)
 ##
 ## ESC handling: when visible, consumes ESC in _unhandled_input and closes.
@@ -32,7 +32,7 @@
 
 extends ColorRect
 
-signal creature_clicked(species: String, index: int)
+signal creature_clicked(creature_id: String)
 signal panel_closed
 
 ## Map task_kind strings to human-readable activity labels.
@@ -40,9 +40,16 @@ const ACTIVITY_LABELS = {
 	"": "Idle",
 	"GoTo": "Walking",
 	"Build": "Building",
+	"EatBread": "Eating",
 	"EatFruit": "Eating",
-	"Furnish": "Furnishing",
 	"Sleep": "Sleeping",
+	"Furnish": "Furnishing",
+	"Haul": "Hauling",
+	"Cook": "Cooking",
+	"Harvest": "Harvesting",
+	"AcquireItem": "Fetching",
+	"Moping": "Moping",
+	"Craft": "Crafting",
 }
 
 ## Map species names to plural section titles.
@@ -56,9 +63,9 @@ const SECTION_TITLES = {
 	"Squirrel": "Squirrels",
 }
 
-## Maps creature key ("Species:Index") -> HBoxContainer row node.
+## Maps creature_id (UUID string) -> HBoxContainer row node.
 var _creature_rows: Dictionary = {}
-## Cached sprite textures keyed by "Species:Index".
+## Cached sprite textures keyed by creature_id.
 var _sprite_cache: Dictionary = {}
 ## Section containers keyed by species name.
 var _sections: Dictionary = {}
@@ -182,8 +189,7 @@ func update_creatures(data: Array) -> void:
 	for i in data.size():
 		var entry: Dictionary = data[i]
 		var sp: String = entry.get("species", "")
-		var idx: int = entry.get("index", 0)
-		var creature_key := "%s:%d" % [sp, idx]
+		var creature_key: String = entry.get("creature_id", "")
 		seen_keys[creature_key] = true
 
 		if _creature_rows.has(creature_key):
@@ -224,7 +230,7 @@ func update_creatures(data: Array) -> void:
 func _create_row(entry: Dictionary) -> HBoxContainer:
 	var sp: String = entry.get("species", "")
 	var idx: int = entry.get("index", 0)
-	var creature_key := "%s:%d" % [sp, idx]
+	var cid: String = entry.get("creature_id", "")
 
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
@@ -235,7 +241,7 @@ func _create_row(entry: Dictionary) -> HBoxContainer:
 	tex_rect.name = "Sprite"
 	tex_rect.custom_minimum_size = Vector2(32, 32)
 	tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	tex_rect.texture = _get_sprite(sp, idx)
+	tex_rect.texture = _get_sprite(cid, sp, idx)
 	row.add_child(tex_rect)
 
 	# Name label.
@@ -260,7 +266,7 @@ func _create_row(entry: Dictionary) -> HBoxContainer:
 	click_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
 	click_btn.custom_minimum_size = Vector2(40, 32)
 	click_btn.text = ">"
-	click_btn.pressed.connect(func(): creature_clicked.emit(sp, idx))
+	click_btn.pressed.connect(func(): creature_clicked.emit(cid))
 	row.add_child(click_btn)
 
 	_update_row(row, entry)
@@ -289,11 +295,10 @@ func _update_row(row: HBoxContainer, entry: Dictionary) -> void:
 		activity_label.text = ACTIVITY_LABELS.get(task_kind, "Idle")
 
 
-func _get_sprite(species: String, index: int) -> ImageTexture:
-	var key := "%s:%d" % [species, index]
-	if _sprite_cache.has(key):
-		return _sprite_cache[key]
+func _get_sprite(creature_id: String, species: String, index: int) -> ImageTexture:
+	if _sprite_cache.has(creature_id):
+		return _sprite_cache[creature_id]
 	var params := SpriteFactory.species_params_from_seed(species, index)
 	var tex := SpriteFactory.create_species_sprite(species, params)
-	_sprite_cache[key] = tex
+	_sprite_cache[creature_id] = tex
 	return tex

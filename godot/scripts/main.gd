@@ -47,6 +47,7 @@
 ## status_bar.gd for the persistent bottom-left status bar,
 ## keybind_help.gd for the keyboard shortcuts help overlay,
 ## creature_info_panel.gd for the creature info panel,
+## group_info_panel.gd for the multi-creature selection panel,
 ## structure_info_panel.gd for the structure info panel,
 ## ground_pile_info_panel.gd for the ground pile info panel,
 ## tree_info_panel.gd for the tree stats panel, task_panel.gd for
@@ -79,6 +80,7 @@ const SPECIES_Y_OFFSETS = {
 
 var _selector: Node3D
 var _panel: PanelContainer
+var _group_panel: PanelContainer
 var _structure_info_panel: PanelContainer
 var _pile_info_panel: PanelContainer
 var _tree_info_panel: PanelContainer
@@ -302,6 +304,8 @@ func _setup_common(bridge: SimBridge) -> void:
 				_selector.deselect()
 			if _panel:
 				_panel.hide_panel()
+			if _group_panel and _group_panel.visible:
+				_group_panel.hide_panel()
 			if _structure_info_panel and _structure_info_panel.visible:
 				_structure_info_panel.hide_panel()
 			if _pile_info_panel and _pile_info_panel.visible:
@@ -369,11 +373,18 @@ func _setup_common(bridge: SimBridge) -> void:
 	info_panel_layer.layer = 3
 	add_child(info_panel_layer)
 
-	# Set up creature info panel.
+	# Set up creature info panel (single creature).
 	var panel_script = load("res://scripts/creature_info_panel.gd")
 	_panel = PanelContainer.new()
 	_panel.set_script(panel_script)
 	info_panel_layer.add_child(_panel)
+
+	# Set up group info panel (multi-creature selection).
+	var group_panel_script = load("res://scripts/group_info_panel.gd")
+	_group_panel = PanelContainer.new()
+	_group_panel.set_script(group_panel_script)
+	info_panel_layer.add_child(_group_panel)
+	_group_panel.setup(bridge)
 
 	# Set up structure info panel.
 	var struct_panel_script = load("res://scripts/structure_info_panel.gd")
@@ -412,8 +423,8 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	# Wire creature selection -> creature info panel.
 	_camera_pivot = $CameraPivot
-	_selector.creature_selected.connect(
-		func(species: String, index: int):
+	_selector.creatures_selected.connect(
+		func(ids: Array):
 			# Mutual exclusion: hide tree info, structure info, and pile panels.
 			if _tree_info_panel and _tree_info_panel.visible:
 				_tree_info_panel.hide_panel()
@@ -421,14 +432,25 @@ func _setup_common(bridge: SimBridge) -> void:
 				_structure_info_panel.hide_panel()
 			if _pile_info_panel and _pile_info_panel.visible:
 				_pile_info_panel.hide_panel()
-			var tick := float(bridge.current_tick())
-			var info := bridge.get_creature_info(species, index, tick)
-			if not info.is_empty():
-				_panel.show_creature(species, index, info)
+			if ids.size() == 1:
+				# Single selection — show detailed creature info panel.
+				if _group_panel and _group_panel.visible:
+					_group_panel.hide_panel()
+				var tick := float(bridge.current_tick())
+				var info := bridge.get_creature_info_by_id(ids[0], tick)
+				if not info.is_empty():
+					_panel.show_creature(ids[0], info)
+			elif ids.size() > 1:
+				# Multi selection — show group overview panel.
+				if _panel and _panel.visible:
+					_panel.hide_panel()
+				_group_panel.show_group(ids)
 	)
 	_selector.creature_deselected.connect(
 		func():
 			_panel.hide_panel()
+			if _group_panel:
+				_group_panel.hide_panel()
 			_camera_pivot.stop_follow()
 	)
 
@@ -634,7 +656,7 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	# Wire units panel creature click -> select creature (panel stays open).
 	_units_panel.creature_clicked.connect(
-		func(species: String, index: int): _selector.select_creature(species, index)
+		func(creature_id: String): _selector.select_creature_by_id(creature_id)
 	)
 
 	# Wire speed controls.
@@ -677,11 +699,11 @@ func _setup_common(bridge: SimBridge) -> void:
 	)
 
 	_task_panel.zoom_to_creature.connect(
-		func(species: String, index: int):
+		func(creature_id: String):
 			_task_panel.hide_panel()
-			_selector.select_creature(species, index)
+			_selector.select_creature_by_id(creature_id)
 			var tick := float(bridge.current_tick())
-			var pos = _get_creature_world_pos(bridge, tick, species, index)
+			var pos = _get_creature_world_pos_by_id(bridge, tick, creature_id)
 			if pos != null:
 				_camera_pivot.start_follow(pos)
 	)
@@ -692,14 +714,24 @@ func _setup_common(bridge: SimBridge) -> void:
 			_look_at_position(Vector3(x + 0.5, y, z + 0.5))
 	)
 
+	# Wire group panel signals.
+	_group_panel.creature_clicked.connect(
+		func(creature_id: String): _selector.select_creature_by_id(creature_id)
+	)
+	_group_panel.panel_closed.connect(
+		func():
+			_selector.deselect()
+			_camera_pivot.stop_follow()
+	)
+
 	_panel.follow_requested.connect(
 		func():
-			var tick := float(bridge.current_tick())
-			var pos = _get_creature_world_pos(
-				bridge, tick, _selector.get_selected_species(), _selector.get_selected_index()
-			)
-			if pos != null:
-				_camera_pivot.start_follow(pos)
+			var cid: String = _selector.get_selected_creature_id()
+			if cid != "":
+				var tick := float(bridge.current_tick())
+				var pos = _get_creature_world_pos_by_id(bridge, tick, cid)
+				if pos != null:
+					_camera_pivot.start_follow(pos)
 	)
 	_panel.unfollow_requested.connect(func(): _camera_pivot.stop_follow())
 	_panel.zoom_to_task_location.connect(
@@ -796,11 +828,14 @@ func _process(delta: float) -> void:
 
 	# Update follow target each frame so the camera tracks creature movement.
 	if _camera_pivot and _camera_pivot.is_following():
-		var pos = _get_creature_world_pos(
-			bridge, render_tick, _selector.get_selected_species(), _selector.get_selected_index()
-		)
-		if pos != null:
-			_camera_pivot.update_follow_target(pos)
+		var cid: String = _selector.get_selected_creature_id()
+		if cid != "":
+			var pos = _get_creature_world_pos_by_id(bridge, render_tick, cid)
+			if pos != null:
+				_camera_pivot.update_follow_target(pos)
+			else:
+				_camera_pivot.stop_follow()
+				_panel.set_follow_state(false)
 		else:
 			_camera_pivot.stop_follow()
 			_panel.set_follow_state(false)
@@ -830,12 +865,24 @@ func _process(delta: float) -> void:
 		_tree_info_panel.update_info(tree_data)
 
 	# Refresh creature info panel while a creature is selected.
-	if _panel and _panel.visible and _selector.get_selected_index() >= 0:
-		var info := bridge.get_creature_info(
-			_selector.get_selected_species(), _selector.get_selected_index(), render_tick
-		)
-		if not info.is_empty():
+	var selected_cid: String = _selector.get_selected_creature_id()
+	if _panel and _panel.visible and selected_cid != "":
+		var info := bridge.get_creature_info_by_id(selected_cid, render_tick)
+		if info.is_empty():
+			_selector.deselect()
+		else:
 			_panel.update_info(info)
+
+	# Refresh group info panel while multiple creatures are selected.
+	# Prune dead creatures from the selection first.
+	if _group_panel and _group_panel.visible:
+		_group_panel.set_render_tick(render_tick)
+		var group_ids: Array = _selector.get_selected_creature_ids()
+		for cid in group_ids.duplicate():
+			var info := bridge.get_creature_info_by_id(cid, render_tick)
+			if info.is_empty():
+				_selector.remove_creature_id(cid)
+		_group_panel.update_group(_selector.get_selected_creature_ids())
 
 	# Refresh structure info panel while a structure is selected.
 	if (
@@ -892,17 +939,20 @@ func _look_at_position(pos: Vector3) -> void:
 	_camera_pivot.position = pos
 
 
-## Get the world-space position of a creature sprite, matching the offsets
-## used by the species renderers. Uses render_tick for smooth interpolation.
-func _get_creature_world_pos(
-	bridge: SimBridge, render_tick: float, species: String, index: int
+## Get the world-space position of a creature sprite by its stable ID.
+## Uses get_creature_info_by_id for the position and applies species Y offset.
+func _get_creature_world_pos_by_id(
+	bridge: SimBridge, render_tick: float, creature_id: String
 ) -> Variant:
+	var info := bridge.get_creature_info_by_id(creature_id, render_tick)
+	if info.is_empty():
+		return null
+	var species: String = info.get("species", "")
 	var y_off: float = SPECIES_Y_OFFSETS.get(species, 0.4)
-	var positions := bridge.get_creature_positions(species, render_tick)
-	if index >= 0 and index < positions.size():
-		var p := positions[index]
-		return Vector3(p.x + 0.5, p.y + y_off, p.z + 0.5)
-	return null
+	var x: float = info.get("x", 0.0)
+	var y: float = info.get("y", 0.0)
+	var z: float = info.get("z", 0.0)
+	return Vector3(x + 0.5, y + y_off, z + 0.5)
 
 
 ## Toggle visibility of the elfcyclopedia URL next to the book button.

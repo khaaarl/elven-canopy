@@ -20,7 +20,7 @@
 ## origin field from sim_bridge.rs.
 ##
 ## Signals:
-## - zoom_to_creature(species, index) — zoom camera to an assigned creature
+## - zoom_to_creature(creature_id) — zoom camera to an assigned creature
 ## - zoom_to_location(x, y, z) — zoom camera to the task's work site
 ## - panel_closed — emitted when the panel is hidden (ESC or close button)
 ##
@@ -30,11 +30,11 @@
 ##
 ## See also: main.gd (creates and wires this panel), sim_bridge.rs for
 ## get_active_tasks(), action_toolbar.gd for the "Tasks [T]" button,
-## selection_controller.gd for select_creature() used by zoom-to-assignee.
+## selection_controller.gd for select_creature_by_id() used by zoom-to-assignee.
 
 extends ColorRect
 
-signal zoom_to_creature(species: String, index: int)
+signal zoom_to_creature(creature_id: String)
 signal zoom_to_location(x: float, y: float, z: float)
 signal panel_closed
 
@@ -324,7 +324,7 @@ func _update_card(card: PanelContainer, task: Dictionary) -> void:
 			for j in assignees.size():
 				var a: Dictionary = assignees[j]
 				var sp: String = a.get("species", "?")
-				var idx: int = a.get("index", 0)
+				var cid: String = a.get("creature_id", "")
 				var id_short: String = a.get("id_short", "?")
 				var creature_name: String = a.get("name", "")
 				var btn := Button.new()
@@ -332,7 +332,7 @@ func _update_card(card: PanelContainer, task: Dictionary) -> void:
 					btn.text = creature_name
 				else:
 					btn.text = "%s %s" % [sp, id_short]
-				btn.pressed.connect(func(): zoom_to_creature.emit(sp, idx))
+				btn.pressed.connect(func(): zoom_to_creature.emit(cid))
 				assignee_row.add_child(btn)
 
 
