@@ -315,7 +315,7 @@ through lore/knowledge systems.
 
 Fruit names are generated via the lang crate's phonotactic system. Each
 fruit gets a Vaelith name (primary, shown in all UI) and an English gloss
-(secondary, shown in parentheses on tooltips and encyclopedias).
+(secondary, shown in parentheses on tooltips and the elfcyclopedia).
 
 ### Name Generation Strategy
 
@@ -373,7 +373,7 @@ name and the English gloss.
 
 - Inventory slots: `thalori` (Vaelith name only, with icon)
 - Tooltips: `thalori (glow-berry)` — Vaelith name + English gloss
-- Encyclopedia/research UI: full description with properties, processing
+- Elfcyclopedia/research UI: full description with properties, processing
   paths, habitat, rarity
 - Recipe UI: Vaelith names with property icons
 

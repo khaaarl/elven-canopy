@@ -177,9 +177,9 @@ use crate::mesh_cache::MeshCache;
 /// Compile-time version hash. Bump when making breaking protocol changes.
 const SIM_VERSION_HASH: u64 = 1;
 
-/// Global encyclopedia server. Lives in a static so it survives SimBridge
+/// Global elfcyclopedia server. Lives in a static so it survives SimBridge
 /// being freed (e.g., when returning to the main menu) and only starts once.
-static ENCYCLOPEDIA: std::sync::Mutex<Option<crate::encyclopedia_server::EncyclopediaServer>> =
+static ELFCYCLOPEDIA: std::sync::Mutex<Option<crate::elfcyclopedia_server::ElfcyclopediaServer>> =
     std::sync::Mutex::new(None);
 
 /// Parse a species name string into a `Species` enum variant.
@@ -253,8 +253,8 @@ pub struct SimBridge {
 #[godot_api]
 impl INode for SimBridge {
     fn init(base: Base<Node>) -> Self {
-        // Start the global encyclopedia server if not already running.
-        Self::ensure_encyclopedia_started();
+        // Start the global elfcyclopedia server if not already running.
+        Self::ensure_elfcyclopedia_started();
 
         Self {
             base,
@@ -2901,7 +2901,7 @@ impl SimBridge {
     /// delegates tick pacing to the `LocalRelay`.
     #[func]
     fn frame_update(&mut self, delta: f64) -> f64 {
-        self.update_encyclopedia();
+        self.update_elfcyclopedia();
         if self.net_client.is_some() {
             let turns = self.poll_network();
             if turns > 0 {
@@ -3920,40 +3920,43 @@ impl SimBridge {
     }
 
     // ========================================================================
-    // Encyclopedia server
+    // Elfcyclopedia server
     // ========================================================================
 
-    /// Start the global encyclopedia server if not already running.
-    fn ensure_encyclopedia_started() {
-        let mut guard = ENCYCLOPEDIA.lock().unwrap();
+    /// Start the global elfcyclopedia server if not already running.
+    fn ensure_elfcyclopedia_started() {
+        let mut guard = ELFCYCLOPEDIA.lock().unwrap();
         if guard.is_some() {
             return;
         }
-        let species = crate::encyclopedia_server::load_species_data();
-        match crate::encyclopedia_server::EncyclopediaServer::start(species) {
+        let species = crate::elfcyclopedia_server::load_species_data();
+        match crate::elfcyclopedia_server::ElfcyclopediaServer::start(species) {
             Some(server) => {
-                godot_print!("SimBridge: encyclopedia server started at {}", server.url());
+                godot_print!(
+                    "SimBridge: elfcyclopedia server started at {}",
+                    server.url()
+                );
                 *guard = Some(server);
             }
             None => {
-                godot_warn!("SimBridge: failed to bind encyclopedia server");
+                godot_warn!("SimBridge: failed to bind elfcyclopedia server");
             }
         }
     }
 
-    /// Get the encyclopedia URL (empty string if not running).
+    /// Get the elfcyclopedia URL (empty string if not running).
     #[func]
-    fn encyclopedia_url(&self) -> GString {
-        let guard = ENCYCLOPEDIA.lock().unwrap();
+    fn elfcyclopedia_url(&self) -> GString {
+        let guard = ELFCYCLOPEDIA.lock().unwrap();
         match &*guard {
             Some(server) => GString::from(server.url().as_str()),
             None => GString::new(),
         }
     }
 
-    /// Update the encyclopedia with current game state. Called each frame.
-    fn update_encyclopedia(&self) {
-        let guard = ENCYCLOPEDIA.lock().unwrap();
+    /// Update the elfcyclopedia with current game state. Called each frame.
+    fn update_elfcyclopedia(&self) {
+        let guard = ELFCYCLOPEDIA.lock().unwrap();
         if let Some(server) = &*guard {
             let tick = self.session.current_tick();
             let (game_name, civs, player_civ_name, fruits) = if let Some(sim) = &self.session.sim {
@@ -3961,7 +3964,7 @@ impl SimBridge {
                     .get_known_civs()
                     .into_iter()
                     .map(|(civ, our_opinion, their_opinion)| {
-                        crate::encyclopedia_server::KnownCivEntry {
+                        crate::elfcyclopedia_server::KnownCivEntry {
                             civ_id: civ.id.0,
                             name: civ.name.clone(),
                             primary_species: civ.primary_species.display_str().to_owned(),
@@ -3990,10 +3993,10 @@ impl SimBridge {
         }
     }
 
-    /// Convert a sim `FruitSpecies` to an encyclopedia `FruitEntry`.
+    /// Convert a sim `FruitSpecies` to an elfcyclopedia `FruitEntry`.
     fn fruit_to_entry(
         f: &elven_canopy_sim::fruit::FruitSpecies,
-    ) -> crate::encyclopedia_server::FruitEntry {
+    ) -> crate::elfcyclopedia_server::FruitEntry {
         use elven_canopy_sim::fruit::*;
 
         let habitat = match f.habitat {
@@ -4035,7 +4038,7 @@ impl SimBridge {
                     .map(|prop| format!("{prop:?}"))
                     .collect();
                 let pigment = p.pigment.map(|d| format!("{d:?}"));
-                crate::encyclopedia_server::FruitPartEntry {
+                crate::elfcyclopedia_server::FruitPartEntry {
                     part_type: pt.to_owned(),
                     properties: props,
                     pigment,
@@ -4044,7 +4047,7 @@ impl SimBridge {
             })
             .collect();
 
-        crate::encyclopedia_server::FruitEntry {
+        crate::elfcyclopedia_server::FruitEntry {
             id: f.id.0,
             vaelith_name: f.vaelith_name.clone(),
             english_gloss: f.english_gloss.clone(),

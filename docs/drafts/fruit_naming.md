@@ -202,7 +202,7 @@ After all names are composed:
 
 **`FruitSpecies` struct:** `vaelith_name` and `english_name` fields remain, just populated by the new algorithm instead of the old one.
 
-**Encyclopedia / display:** No changes needed — they already read `vaelith_name` and `english_name` from the species.
+**Elfcyclopedia / display:** No changes needed — they already read `vaelith_name` and `english_name` from the species.
 
 **Save/load compatibility:** Names are persisted in save files on `FruitSpecies` and never regenerated at load time. Existing saves keep their old names; only new worlds use the new algorithm.
 

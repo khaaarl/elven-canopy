@@ -34,8 +34,8 @@
 ## 9. pause_menu — open/close (on CanvasLayer layer 2, added first)
 ##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs and
-## encyclopedia_server.rs (Rust) for the simulation interface and the embedded
-## localhost encyclopedia HTTP server (started at launch, URL shown via a small
+## elfcyclopedia_server.rs (Rust) for the simulation interface and the embedded
+## localhost elfcyclopedia HTTP server (started at launch, URL shown via a small
 ## book button next to the Menu button), tree_renderer.gd / elf_renderer.gd /
 ## capybara_renderer.gd / blueprint_renderer.gd / ladder_renderer.gd /
 ## furniture_renderer.gd / ground_pile_renderer.gd / projectile_renderer.gd for rendering,
@@ -109,7 +109,7 @@ var _construction_music: Node
 var _last_notification_id: int = 0
 var _pause_menu: ColorRect
 var _lobby_overlay: ColorRect
-var _encyclopedia_url_label: RichTextLabel
+var _elfcyclopedia_url_label: RichTextLabel
 
 
 func _ready() -> void:
@@ -522,13 +522,13 @@ func _setup_common(bridge: SimBridge) -> void:
 	menu_btn.position = Vector2(-90, 10)
 	canvas_layer.add_child(menu_btn)
 
-	# Book button toggles a clickable encyclopedia URL. Server was started at
+	# Book button toggles a clickable elfcyclopedia URL. Server was started at
 	# Godot launch by game_session.gd; the URL is read from GameSession.
-	var enc_url := GameSession.encyclopedia_url
+	var enc_url := GameSession.elfcyclopedia_url
 	if not enc_url.is_empty():
 		var book_btn := Button.new()
 		book_btn.text = "B"
-		book_btn.tooltip_text = "Encyclopedia"
+		book_btn.tooltip_text = "Elfcyclopedia"
 		book_btn.custom_minimum_size = Vector2(28, 28)
 		book_btn.focus_mode = Control.FOCUS_NONE
 		book_btn.add_theme_font_size_override("font_size", 16)
@@ -536,20 +536,20 @@ func _setup_common(bridge: SimBridge) -> void:
 		book_btn.position = Vector2(-120, 10)
 		canvas_layer.add_child(book_btn)
 
-		_encyclopedia_url_label = RichTextLabel.new()
-		_encyclopedia_url_label.bbcode_enabled = true
-		_encyclopedia_url_label.text = "[url]%s[/url]" % enc_url
-		_encyclopedia_url_label.fit_content = true
-		_encyclopedia_url_label.scroll_active = false
-		_encyclopedia_url_label.custom_minimum_size = Vector2(200, 24)
-		_encyclopedia_url_label.add_theme_font_size_override("normal_font_size", 13)
-		_encyclopedia_url_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-		_encyclopedia_url_label.position = Vector2(-320, 12)
-		_encyclopedia_url_label.visible = false
-		_encyclopedia_url_label.meta_clicked.connect(func(_meta: Variant): OS.shell_open(enc_url))
-		canvas_layer.add_child(_encyclopedia_url_label)
+		_elfcyclopedia_url_label = RichTextLabel.new()
+		_elfcyclopedia_url_label.bbcode_enabled = true
+		_elfcyclopedia_url_label.text = "[url]%s[/url]" % enc_url
+		_elfcyclopedia_url_label.fit_content = true
+		_elfcyclopedia_url_label.scroll_active = false
+		_elfcyclopedia_url_label.custom_minimum_size = Vector2(200, 24)
+		_elfcyclopedia_url_label.add_theme_font_size_override("normal_font_size", 13)
+		_elfcyclopedia_url_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+		_elfcyclopedia_url_label.position = Vector2(-320, 12)
+		_elfcyclopedia_url_label.visible = false
+		_elfcyclopedia_url_label.meta_clicked.connect(func(_meta: Variant): OS.shell_open(enc_url))
+		canvas_layer.add_child(_elfcyclopedia_url_label)
 
-		book_btn.pressed.connect(_toggle_encyclopedia_url)
+		book_btn.pressed.connect(_toggle_elfcyclopedia_url)
 
 	# Pause menu overlay.
 	var pause_layer := CanvasLayer.new()
@@ -897,7 +897,7 @@ func _get_creature_world_pos(
 	return null
 
 
-## Toggle visibility of the encyclopedia URL next to the book button.
-func _toggle_encyclopedia_url() -> void:
-	if _encyclopedia_url_label:
-		_encyclopedia_url_label.visible = not _encyclopedia_url_label.visible
+## Toggle visibility of the elfcyclopedia URL next to the book button.
+func _toggle_elfcyclopedia_url() -> void:
+	if _elfcyclopedia_url_label:
+		_elfcyclopedia_url_label.visible = not _elfcyclopedia_url_label.visible

@@ -388,7 +388,7 @@ pub enum Species {
 /// enum — `Species` tracks creature types with instances, rendering, and
 /// pathfinding, while `CivSpecies` tracks sapient species that form organized
 /// societies. They overlap at `Elf` but serve different purposes. See
-/// `docs/drafts/encyclopedia_civs.md` §Species Enums for the convergence plan.
+/// `docs/drafts/elfcyclopedia_civs.md` §Species Enums for the convergence plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CivSpecies {
     Elf,
@@ -469,7 +469,7 @@ impl CivOpinion {
 
 /// Cultural flavor tag for a civilization. Assigned during worldgen with
 /// species-biased random selection. Not mechanically significant in the
-/// initial implementation — purely for flavor and encyclopedia display.
+/// initial implementation — purely for flavor and elfcyclopedia display.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CultureTag {
     Woodland,

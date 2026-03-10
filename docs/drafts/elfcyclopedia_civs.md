@@ -1,8 +1,8 @@
-# Encyclopedia, Civilizations, and Knowledge Systems — Draft (v4)
+# Elfcyclopedia, Civilizations, and Knowledge Systems — Draft (v4)
 
 Design draft for interconnected systems: a worldgen framework, procedural
 civilization generation, a tiered knowledge model, and a web-based
-encyclopedia that surfaces only what the player's civilization knows.
+elfcyclopedia that surfaces only what the player's civilization knows.
 These systems build on the procedural fruit variety system (see
 `fruit_variety.md`) and lay groundwork for future tech trees, magic
 discovery, and DF-style legends.
@@ -16,8 +16,8 @@ F-worldgen-framework ──┬──► F-fruit-variety ──┐
                        │                      ├──► F-civ-knowledge ───┐
                        └──► F-civilizations ──┘                      │
                                                                      │
-F-encyclopedia-srv ─────────────────────────────────────┐            │
-  (independent, no sim deps)                            ├──► F-encyclopedia-know
+F-elfcyclopedia-srv ─────────────────────────────────────┐            │
+  (independent, no sim deps)                            ├──► F-elfcyclopedia-know
                                                         └────────────┘
 ```
 
@@ -30,12 +30,12 @@ F-encyclopedia-srv ────────────────────�
 - **F-civ-knowledge** — Knowledge tables, tier system, fruit knowledge
   distribution, discovery commands. Depends on both F-fruit-variety and
   F-civilizations.
-- **F-encyclopedia-srv** — Embedded localhost HTTP server, species
+- **F-elfcyclopedia-srv** — Embedded localhost HTTP server, species
   bestiary, in-game browser button. No sim dependencies beyond config.
   Can be implemented independently of all other items.
-- **F-encyclopedia-know** — Adds Civilizations and Fruits tabs to
-  the encyclopedia, gated by civ knowledge. Depends on F-civ-knowledge
-  and F-encyclopedia-srv.
+- **F-elfcyclopedia-know** — Adds Civilizations and Fruits tabs to
+  the elfcyclopedia, gated by civ knowledge. Depends on F-civ-knowledge
+  and F-elfcyclopedia-srv.
 
 ---
 
@@ -49,11 +49,11 @@ knowledge of the world's fruits. The player controls one civilization
 (configurable via `CivConfig::player_starting_known_civs`) and a subset
 of the world's fruits at varying detail levels.
 
-An in-game Encyclopedia provides a unified view of everything the
+An in-game Elfcyclopedia provides a unified view of everything the
 player's civilization knows — species lore (constant), known
 civilizations (discovered), and known fruits (tiered detail). As the
 game progresses, trade, exploration, and contact events expand what the
-encyclopedia shows.
+elfcyclopedia shows.
 
 ---
 
@@ -196,9 +196,9 @@ resolved at load time:
   shows "these civs need player assignments" and players pick before
   the game starts. The assignment mechanism is deferred.
 
-The encyclopedia queries use `civ_id` directly (not player_id). The
+The elfcyclopedia queries use `civ_id` directly (not player_id). The
 indirection is: session knows which civ you are → you query the
-encyclopedia with that civ_id. The sim never needs to know about players
+elfcyclopedia with that civ_id. The sim never needs to know about players
 for knowledge purposes.
 
 ---
@@ -294,7 +294,7 @@ data model supports:
 - **Diplomacy events:** Formal contact can result in knowledge exchange.
 
 Each of these would create `SimCommand` variants that update the
-knowledge tables. The encyclopedia automatically reflects changes on
+knowledge tables. The elfcyclopedia automatically reflects changes on
 the next query.
 
 **Initial implementation note:** Until trade/exploration/combat systems
@@ -312,20 +312,20 @@ generalizes to any knowledge domain:
 - **CivTechKnowledge** — tier: Rumor → Understanding → Adoption
 - **CivCreatureKnowledge** — tier: Legend → Sighting → Studied
 
-Each domain gets its own table and tier enum. The encyclopedia adds a
+Each domain gets its own table and tier enum. The elfcyclopedia adds a
 tab per domain. No polymorphic "knowledge" table needed — each domain
 has distinct semantics and tier meanings.
 
 ---
 
-## Encyclopedia (Web-Based)
+## Elfcyclopedia (Web-Based)
 
 ### Overview
 
-The encyclopedia is a **web-based UI** served by an embedded localhost
+The elfcyclopedia is a **web-based UI** served by an embedded localhost
 HTTP server. The running game listens on a configurable port
 (`127.0.0.1` only — no external access). The player opens the
-encyclopedia in their default web browser via an in-game toolbar button
+elfcyclopedia in their default web browser via an in-game toolbar button
 that shows the URL. This approach offers several advantages over an
 in-game Godot panel:
 
@@ -336,16 +336,16 @@ in-game Godot panel:
 - Accessible for modders/wiki-builders.
 - Trivially shareable in co-op (same URL format, different ports).
 
-The encyclopedia is split into two implementation phases:
+The elfcyclopedia is split into two implementation phases:
 
-**F-encyclopedia-srv (Phase 1 — no sim dependencies):**
+**F-elfcyclopedia-srv (Phase 1 — no sim dependencies):**
 - Embedded HTTP server plumbing (port config, auto-fallback, thread
   management).
 - Species bestiary tab — constant data from JSON, always available.
 - In-game toolbar button showing URL, click to open browser.
 - General game info pages (controls, mechanics summaries).
 
-**F-encyclopedia-know (Phase 2 — depends on F-civ-knowledge):**
+**F-elfcyclopedia-know (Phase 2 — depends on F-civ-knowledge):**
 - Civilizations tab — known civs with opinions.
 - Fruits tab — tier-gated detail.
 - Any future knowledge-domain tabs (spells, tech, etc.).
@@ -379,24 +379,24 @@ queries sim state but never mutates it. This preserves determinism
 
 **Godot side (minimal):**
 
-- Toolbar button labeled "Encyclopedia" showing the URL/port.
+- Toolbar button labeled "Elfcyclopedia" showing the URL/port.
 - Clicking the button calls `OS.shell_open(url)` to open the default
   browser.
 - No in-game panel, no ESC chain changes, no input precedence impact.
 
 ### Pages
 
-**Species Bestiary (F-encyclopedia-srv):**
+**Species Bestiary (F-elfcyclopedia-srv):**
 - URL: `/species` (list) and `/species/{name}` (detail).
 - Always fully visible — universal lore, not gated by knowledge.
 - Includes all creature types: both sapient species (Elf, Human, Dwarf,
   Goblin, Orc, Troll) and wild animals (Capybara, Boar, etc.).
 - Shows: name, description, behavioral traits, whether sapient/wild.
-- Data source: `data/species_encyclopedia.json` loaded at server
+- Data source: `data/species_elfcyclopedia.json` loaded at server
   startup. Not world-specific. Contains constant flavor text,
   behavioral summaries, and tags per species.
 
-**Civilizations (F-encyclopedia-know):**
+**Civilizations (F-elfcyclopedia-know):**
 - URL: `/civilizations` (list) and `/civilizations/{id}` (detail).
 - Only civs your civilization is aware of (has a `CivRelationship` row
   where `from_civ` is your civ).
@@ -405,7 +405,7 @@ queries sim state but never mutates it. This preserves determinism
 - Possible future: detail scales with relationship depth.
 - Data source: `CivRelationship` table filtered by player civ.
 
-**Fruits (F-encyclopedia-know):**
+**Fruits (F-elfcyclopedia-know):**
 - URL: `/fruits` (list) and `/fruits/{id}` (detail).
 - Only fruits your civ has at least Awareness of.
 - Detail scales with knowledge tier:
@@ -433,14 +433,14 @@ The HTTP server calls query methods on `SimState` (via its read handle):
 /// Get the player-controlled civ.
 fn get_player_civ() -> Option<CivId>;
 
-/// Encyclopedia: constant species data (from JSON, cached at startup).
-fn get_encyclopedia_species() -> Vec<SpeciesEntry>;
+/// Elfcyclopedia: constant species data (from JSON, cached at startup).
+fn get_elfcyclopedia_species() -> Vec<SpeciesEntry>;
 
-/// Encyclopedia: known civilizations (with opinions).
-fn get_encyclopedia_civs(civ_id: CivId) -> Vec<KnownCivEntry>;
+/// Elfcyclopedia: known civilizations (with opinions).
+fn get_elfcyclopedia_civs(civ_id: CivId) -> Vec<KnownCivEntry>;
 
-/// Encyclopedia: known fruits (tier-gated detail).
-fn get_encyclopedia_fruits(civ_id: CivId) -> Vec<KnownFruitEntry>;
+/// Elfcyclopedia: known fruits (tier-gated detail).
+fn get_elfcyclopedia_fruits(civ_id: CivId) -> Vec<KnownFruitEntry>;
 
 /// Specific fruit detail for drill-down page.
 fn get_fruit_detail(civ_id: CivId, fruit_id: FruitSpeciesId)
@@ -502,7 +502,7 @@ the civ doesn't know.
 ### Multiplayer
 
 In co-op (multiple players, same civ), each player's game instance runs
-its own encyclopedia server. All show the same data (same civ_id). In
+its own elfcyclopedia server. All show the same data (same civ_id). In
 competitive MP (different civs), each sees only their own civ's
 knowledge. No special handling needed — the server always queries for
 the local session's player-controlled civ.
@@ -844,11 +844,11 @@ command is the sim-side state change.
 
 ## Resolved Design Decisions
 
-- **Web-based encyclopedia:** The encyclopedia is served as HTML via an
+- **Web-based elfcyclopedia:** The elfcyclopedia is served as HTML via an
   embedded localhost HTTP server, not as an in-game Godot panel. This
   gives rich layout, second-monitor support, fast iteration, and
   modder accessibility. The in-game UI is just a toolbar button that
-  opens the browser. See "Encyclopedia (Web-Based)" section.
+  opens the browser. See "Elfcyclopedia (Web-Based)" section.
 
 - **Player ownership model:** `player_controlled: bool` on `Civilization`
   (persisted in save) + ephemeral `GameSession` player→civ assignment
@@ -856,7 +856,7 @@ command is the sim-side state change.
   See "Player Ownership" section for details.
 
 - **Show opponent opinion:** Yes, show both directions in the
-  encyclopedia for transparency. The player sees "You: Friendly / Them:
+  elfcyclopedia for transparency. The player sees "You: Friendly / Them:
   Suspicious". This is simpler to implement and more informative. If
   espionage mechanics are added later, the "their opinion" field could
   be hidden/inaccurate based on intelligence level, but that's future
@@ -879,15 +879,15 @@ command is the sim-side state change.
   like refugee groups forming a new settlement or civ splitting.
 
 - **NPC civs have no creatures in the sim (initially):** NPC
-  civilizations are abstract entities — they exist in the encyclopedia
+  civilizations are abstract entities — they exist in the elfcyclopedia
   and diplomacy tables but have no creature instances in the world.
   When trade/combat systems arrive, NPC civ creatures (traders, raiders)
   will be spawned as needed with appropriate `civ_id` assignments.
 
-- **Two-phase encyclopedia implementation:** F-encyclopedia-srv
+- **Two-phase elfcyclopedia implementation:** F-elfcyclopedia-srv
   ships the HTTP plumbing and species bestiary with zero sim
-  dependencies. F-encyclopedia-know adds civ/fruit tabs later,
-  once the knowledge system exists. This lets the encyclopedia
+  dependencies. F-elfcyclopedia-know adds civ/fruit tabs later,
+  once the knowledge system exists. This lets the elfcyclopedia
   infrastructure be built and tested independently.
 
 ## Deferred Design Decisions
@@ -908,15 +908,15 @@ command is the sim-side state change.
   automatically share fruit knowledge? At what rate? This depends on
   the trade/diplomacy systems that don't exist yet.
 
-- **Encyclopedia visual design:** HTML template styling, CSS, page
+- **Elfcyclopedia visual design:** HTML template styling, CSS, page
   transitions are all TBD. The initial implementation can be plain
   unstyled HTML, refined later. The web approach makes iterating on
   visuals trivial (edit CSS, refresh browser).
 
 - **Species entry content:** What exactly goes in each species'
-  encyclopedia entry? Flavor text, stats, behavioral notes? Needs
+  elfcyclopedia entry? Flavor text, stats, behavioral notes? Needs
   writing work that's independent of the systems design. Will be a
-  JSON data file (`data/species_encyclopedia.json`).
+  JSON data file (`data/species_elfcyclopedia.json`).
 
 - **Co-op command conflicts:** When multiple players share a civ, who
   can issue `SetCivOpinion` commands? Currently last-writer-wins (the

@@ -19,7 +19,7 @@
 // - `mesh_cache.rs`:  Chunk mesh cache — caches `ChunkMesh` data per 16x16x16
 //                     chunk and tracks dirty chunks for incremental updates.
 //                     Used by `sim_bridge.rs` to serve chunk ArrayMesh data.
-// - `encyclopedia_server.rs`: Embedded localhost HTTP server serving a species
+// - `elfcyclopedia_server.rs`: Embedded localhost HTTP server serving a species
 //                     bestiary. Runs on a background thread with read-only
 //                     access to a shared data snapshot. Owned by SimBridge.
 //
@@ -30,7 +30,7 @@
 // `elven_canopy_protocol` for wire message types,
 // `elven_canopy_relay` for the relay server and client.
 
-mod encyclopedia_server;
+mod elfcyclopedia_server;
 mod mesh_cache;
 mod sim_bridge;
 

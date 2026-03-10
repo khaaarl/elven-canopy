@@ -5906,7 +5906,7 @@ impl SimState {
             });
     }
 
-    /// Get the player-controlled civ's known civilizations for the encyclopedia.
+    /// Get the player-controlled civ's known civilizations for the elfcyclopedia.
     /// Returns a list of (civ, our_opinion, their_opinion) tuples.
     pub fn get_known_civs(&self) -> Vec<(crate::db::Civilization, CivOpinion, Option<CivOpinion>)> {
         let player_civ_id = match self.player_civ_id {
@@ -6920,12 +6920,12 @@ impl SimState {
 
         // If the creature has a player-directed combat task, it should fight,
         // not flee. The player explicitly ordered this creature to attack.
-        if let Some(task_id) = creature.current_task {
-            if let Some(task) = self.db.tasks.get(&task_id) {
-                let level = preemption::preemption_level(task.kind_tag, task.origin);
-                if level == preemption::PreemptionLevel::PlayerCombat {
-                    return false;
-                }
+        if let Some(task_id) = creature.current_task
+            && let Some(task) = self.db.tasks.get(&task_id)
+        {
+            let level = preemption::preemption_level(task.kind_tag, task.origin);
+            if level == preemption::PreemptionLevel::PlayerCombat {
+                return false;
             }
         }
 

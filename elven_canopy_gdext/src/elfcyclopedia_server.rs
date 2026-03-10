@@ -1,4 +1,4 @@
-// Encyclopedia HTTP server — embedded localhost web server for game information.
+// Elfcyclopedia HTTP server — embedded localhost web server for game information.
 //
 // Serves HTML pages in the player's default browser, providing a species
 // bestiary, procedurally generated fruit species catalog, and civilization
@@ -6,8 +6,8 @@
 // access to a shared data snapshot, updated periodically from the main thread.
 //
 // Architecture:
-// - `EncyclopediaServer` manages the lifecycle: start, stop, URL reporting.
-// - The server thread holds an `Arc<RwLock<EncyclopediaData>>` snapshot.
+// - `ElfcyclopediaServer` manages the lifecycle: start, stop, URL reporting.
+// - The server thread holds an `Arc<RwLock<ElfcyclopediaData>>` snapshot.
 // - The main thread calls `update_data()` during `frame_update()` to push
 //   fresh snapshots (species data is static; civ and fruit data refresh
 //   each frame).
@@ -20,9 +20,9 @@
 // Species data is embedded at compile time via `include_str!` (same pattern
 // as `elven_canopy_lang`'s lexicon), so there are no runtime file path issues.
 //
-// See also: `sim_bridge.rs` which manages the global `EncyclopediaServer`
+// See also: `sim_bridge.rs` which manages the global `ElfcyclopediaServer`
 // static and calls `update_data()`. The design doc is at
-// `docs/drafts/encyclopedia_civs.md` §Encyclopedia (Web-Based).
+// `docs/drafts/elfcyclopedia_civs.md` §Elfcyclopedia (Web-Based).
 
 use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,7 +33,7 @@ use std::thread;
 // Data types
 // ---------------------------------------------------------------------------
 
-/// Static species entry loaded from `data/species_encyclopedia.json`.
+/// Static species entry loaded from `data/species_elfcyclopedia.json`.
 #[derive(Clone, Debug, Deserialize)]
 pub struct SpeciesEntry {
     pub name: String,
@@ -42,7 +42,7 @@ pub struct SpeciesEntry {
     pub traits: Vec<String>,
 }
 
-/// A known civilization entry for the encyclopedia.
+/// A known civilization entry for the elfcyclopedia.
 #[derive(Clone, Debug)]
 pub struct KnownCivEntry {
     pub civ_id: u16,
@@ -53,7 +53,7 @@ pub struct KnownCivEntry {
     pub their_opinion: Option<String>,
 }
 
-/// A fruit species entry for the encyclopedia.
+/// A fruit species entry for the elfcyclopedia.
 #[derive(Clone, Debug)]
 pub struct FruitEntry {
     pub id: u16,
@@ -82,7 +82,7 @@ pub struct FruitPartEntry {
 /// Shared data snapshot read by the HTTP server thread. Updated by the main
 /// thread via `update_data()`.
 #[derive(Default)]
-pub struct EncyclopediaData {
+pub struct ElfcyclopediaData {
     pub species: Vec<SpeciesEntry>,
     pub game_name: String,
     pub current_tick: u64,
@@ -98,12 +98,12 @@ pub struct EncyclopediaData {
 // Server
 // ---------------------------------------------------------------------------
 
-/// Manages the encyclopedia HTTP server lifecycle.
-pub struct EncyclopediaServer {
+/// Manages the elfcyclopedia HTTP server lifecycle.
+pub struct ElfcyclopediaServer {
     /// The port the server is actually listening on (after fallback).
     port: u16,
     /// Shared data snapshot, readable by the HTTP thread.
-    data: Arc<RwLock<EncyclopediaData>>,
+    data: Arc<RwLock<ElfcyclopediaData>>,
     /// Signal to tell the server thread to shut down.
     shutdown: Arc<AtomicBool>,
     /// Handle to the server thread (for join on stop).
@@ -113,12 +113,12 @@ pub struct EncyclopediaServer {
 const DEFAULT_PORT: u16 = 7777;
 const MAX_PORT_ATTEMPTS: u16 = 20;
 
-impl EncyclopediaServer {
-    /// Create and start the encyclopedia server. Tries `DEFAULT_PORT` first,
+impl ElfcyclopediaServer {
+    /// Create and start the elfcyclopedia server. Tries `DEFAULT_PORT` first,
     /// then increments up to `MAX_PORT_ATTEMPTS` times if the port is taken.
     /// Returns `None` if no port could be bound.
     pub fn start(species: Vec<SpeciesEntry>) -> Option<Self> {
-        let data = Arc::new(RwLock::new(EncyclopediaData {
+        let data = Arc::new(RwLock::new(ElfcyclopediaData {
             species,
             ..Default::default()
         }));
@@ -157,7 +157,7 @@ impl EncyclopediaServer {
         })
     }
 
-    /// The URL the encyclopedia is accessible at.
+    /// The URL the elfcyclopedia is accessible at.
     pub fn url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
@@ -192,7 +192,7 @@ impl EncyclopediaServer {
     }
 }
 
-impl Drop for EncyclopediaServer {
+impl Drop for ElfcyclopediaServer {
     fn drop(&mut self) {
         self.stop();
     }
@@ -205,7 +205,7 @@ impl Drop for EncyclopediaServer {
 /// Main loop for the HTTP server thread. Processes requests until shutdown.
 fn run_server(
     server: tiny_http::Server,
-    data: Arc<RwLock<EncyclopediaData>>,
+    data: Arc<RwLock<ElfcyclopediaData>>,
     shutdown: Arc<AtomicBool>,
 ) {
     // Use a short recv timeout so we can check the shutdown flag periodically.
@@ -231,7 +231,7 @@ fn run_server(
 /// Route a request to the appropriate handler and return an HTTP response.
 fn handle_request(
     request: &tiny_http::Request,
-    data: &Arc<RwLock<EncyclopediaData>>,
+    data: &Arc<RwLock<ElfcyclopediaData>>,
 ) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     let path = request.url().to_owned();
     let data = match data.read() {
@@ -318,7 +318,7 @@ fn percent_decode(input: &str) -> String {
 // HTML rendering
 // ---------------------------------------------------------------------------
 
-fn html_page(title: &str, body: &str, data: &EncyclopediaData) -> String {
+fn html_page(title: &str, body: &str, data: &ElfcyclopediaData) -> String {
     let tick_info = if data.current_tick > 0 {
         let secs = data.current_tick / 1000;
         let mins = secs / 60;
@@ -339,7 +339,7 @@ fn html_page(title: &str, body: &str, data: &EncyclopediaData) -> String {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} — Elven Canopy Encyclopedia</title>
+<title>{title} — Elven Canopy Elfcyclopedia</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -357,14 +357,14 @@ fn html_page(title: &str, body: &str, data: &EncyclopediaData) -> String {
     )
 }
 
-fn render_index(data: &EncyclopediaData) -> String {
+fn render_index(data: &ElfcyclopediaData) -> String {
     let civ_info = if !data.player_civ_name.is_empty() {
         format!(
             "<p>Knowledge held by the <strong>{}</strong> civilization.</p>",
             html_escape(&data.player_civ_name),
         )
     } else {
-        "<p>Welcome to the Elven Canopy Encyclopedia.</p>".to_owned()
+        "<p>Welcome to the Elven Canopy Elfcyclopedia.</p>".to_owned()
     };
 
     let body = format!(
@@ -376,10 +376,10 @@ fn render_index(data: &EncyclopediaData) -> String {
 <li><a href="/civilizations">Civilizations</a> — known civilizations and diplomacy</li>
 </ul>"#,
     );
-    html_page("Encyclopedia", &body, data)
+    html_page("Elfcyclopedia", &body, data)
 }
 
-fn render_species_list(data: &EncyclopediaData) -> String {
+fn render_species_list(data: &ElfcyclopediaData) -> String {
     let mut body = String::from("<p>All known species in the world.</p>");
 
     // Sapient species first, then animals.
@@ -410,7 +410,7 @@ fn render_species_list(data: &EncyclopediaData) -> String {
     html_page("Species Bestiary", &body, data)
 }
 
-fn render_species_detail(entry: &SpeciesEntry, data: &EncyclopediaData) -> String {
+fn render_species_detail(entry: &SpeciesEntry, data: &ElfcyclopediaData) -> String {
     let kind = if entry.sapient { "Sapient" } else { "Wildlife" };
     let traits_html: Vec<String> = entry
         .traits
@@ -432,7 +432,7 @@ fn render_species_detail(entry: &SpeciesEntry, data: &EncyclopediaData) -> Strin
     html_page(&entry.name, &body, data)
 }
 
-fn render_civilizations_list(data: &EncyclopediaData) -> String {
+fn render_civilizations_list(data: &ElfcyclopediaData) -> String {
     let mut body = String::new();
 
     if data.civilizations.is_empty() {
@@ -468,7 +468,7 @@ fn render_civilizations_list(data: &EncyclopediaData) -> String {
     html_page("Known Civilizations", &body, data)
 }
 
-fn render_civilizations_detail(entry: &KnownCivEntry, data: &EncyclopediaData) -> String {
+fn render_civilizations_detail(entry: &KnownCivEntry, data: &ElfcyclopediaData) -> String {
     let their = entry.their_opinion.as_deref().unwrap_or("Unknown");
 
     let body = format!(
@@ -490,7 +490,7 @@ fn render_civilizations_detail(entry: &KnownCivEntry, data: &EncyclopediaData) -
     html_page(&entry.name, &body, data)
 }
 
-fn render_fruits_list(data: &EncyclopediaData) -> String {
+fn render_fruits_list(data: &ElfcyclopediaData) -> String {
     let mut body = String::new();
 
     if data.fruits.is_empty() {
@@ -539,7 +539,7 @@ fn render_fruits_list(data: &EncyclopediaData) -> String {
     html_page("Fruit Species", &body, data)
 }
 
-fn render_fruit_detail(entry: &FruitEntry, data: &EncyclopediaData) -> String {
+fn render_fruit_detail(entry: &FruitEntry, data: &ElfcyclopediaData) -> String {
     let color_swatch = format!(
         "<span class=\"color-swatch-lg\" style=\"background:{};\"></span>",
         html_escape(&entry.color_hex),
@@ -619,7 +619,7 @@ fn opinion_css_class(opinion: &str) -> &str {
     }
 }
 
-fn render_not_found(data: &EncyclopediaData) -> String {
+fn render_not_found(data: &ElfcyclopediaData) -> String {
     html_page(
         "Not Found",
         "<p>The page you requested does not exist.</p><p><a href=\"/\">&larr; Home</a></p>",
@@ -804,8 +804,8 @@ fn html_escape(s: &str) -> String {
 // Loading
 // ---------------------------------------------------------------------------
 
-/// Load species data embedded at compile time from `data/species_encyclopedia.json`.
+/// Load species data embedded at compile time from `data/species_elfcyclopedia.json`.
 pub fn load_species_data() -> Vec<SpeciesEntry> {
-    let json = include_str!("../../data/species_encyclopedia.json");
-    serde_json::from_str(json).expect("embedded species_encyclopedia.json is malformed")
+    let json = include_str!("../../data/species_elfcyclopedia.json");
+    serde_json::from_str(json).expect("embedded species_elfcyclopedia.json is malformed")
 }

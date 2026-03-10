@@ -6,14 +6,14 @@ HP/damage, and hostile creature AI. This is a phased design — the first
 implementation pass focuses on core mechanics; advanced features are noted
 for future work.
 
-**Depends on:** `encyclopedia_civs.md` (civilizations, `CivId`, creature
+**Depends on:** `elfcyclopedia_civs.md` (civilizations, `CivId`, creature
 `civ_id` field). Military groups are per-civilization, not global.
 
 ---
 
 ## 1. Military Groups
 
-Military groups belong to **civilizations** (see `encyclopedia_civs.md`).
+Military groups belong to **civilizations** (see `elfcyclopedia_civs.md`).
 Every creature that belongs to a civilization is assigned to exactly one of
 that civ's military groups. Creatures without a civilization (wildlife,
 unaffiliated hostiles) do **not** have military groups — their combat

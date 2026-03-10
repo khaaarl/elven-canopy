@@ -94,8 +94,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-emotions             Multi-dimensional emotional state
-[ ] F-encyclopedia-know    Encyclopedia civ/fruit knowledge pages
-[ ] F-encyclopedia-srv     Embedded localhost HTTP encyclopedia server
+[ ] F-elfcyclopedia-know    Elfcyclopedia civ/fruit knowledge pages
+[ ] F-elfcyclopedia-srv     Embedded localhost HTTP elfcyclopedia server
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
@@ -192,7 +192,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-elf-needs            Hunger and rest self-direction
 [x] F-elf-sprite           Billboard elf sprite rendering
 [x] F-emotions-basic       Mood score from thought weights
-[x] F-encyclopedia-srv     Embedded localhost HTTP encyclopedia server
+[x] F-elfcyclopedia-srv     Embedded localhost HTTP elfcyclopedia server
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-flee                 Flee behavior for civilians
 [x] F-food-gauge           Creature food gauge with decay
@@ -1197,7 +1197,7 @@ cultivate a single chosen species. Some fruits are wild-only.
 **Done so far:** Fruit species types and procedural generation with
 coverage-biased algorithm. FruitSpecies tabulosity table in SimDb.
 Worldgen integration (species generation + voxel-to-species mapping).
-Encyclopedia server with /fruits list and detail pages. Greenhouse
+Elfcyclopedia server with /fruits list and detail pages. Greenhouse
 furnishing type with species picker UI, autonomous production during
 logistics heartbeat. Fruit-specific item display names in all inventory
 UI (Vaelith name + shape noun, e.g. "Shinethúni Fruit x3"). Material
@@ -1761,11 +1761,11 @@ DiscoverCiv, SetCivOpinion, and LearnFruit SimAction commands (initially
 exercised only by worldgen and debug). Knowledge is monotonically
 increasing (no forgetting).
 
-**Draft:** `docs/drafts/encyclopedia_civs.md` §Knowledge System
+**Draft:** `docs/drafts/elfcyclopedia_civs.md` §Knowledge System
 
 **Blocked by:** F-fruit-variety
-**Blocks:** F-encyclopedia-know
-**Related:** F-encyclopedia-know, F-fruit-variety
+**Blocks:** F-elfcyclopedia-know
+**Related:** F-elfcyclopedia-know, F-fruit-variety
 
 #### F-civilizations — Procedural civilization generation and diplomacy
 **Status:** Done
@@ -1777,7 +1777,7 @@ directed opinion pairs, player_controlled flag, Creature.civ_id column.
 Session-side player→civ assignment (not persisted). Placeholder naming
 for non-elf civs, Vaelith names for elf civs.
 
-**Draft:** `docs/drafts/encyclopedia_civs.md` §Civilizations
+**Draft:** `docs/drafts/elfcyclopedia_civs.md` §Civilizations
 
 **Related:** F-fruit-variety
 
@@ -1874,7 +1874,7 @@ PRNG seeded from world seed. WorldgenConfig subsection of GameConfig
 grouping FruitConfig and CivConfig. Small plumbing feature — establishes
 the pattern for generator sequencing.
 
-**Draft:** `docs/drafts/encyclopedia_civs.md` §Worldgen Framework
+**Draft:** `docs/drafts/elfcyclopedia_civs.md` §Worldgen Framework
 
 ### Soul Mechanics & Magic
 
@@ -2082,31 +2082,31 @@ The debug menu should be easy to hide entirely for non-dev builds later.
 
 **Related:** F-spawn-toolbar
 
-#### F-encyclopedia-know — Encyclopedia civ/fruit knowledge pages
+#### F-elfcyclopedia-know — Elfcyclopedia civ/fruit knowledge pages
 **Status:** Todo
 
-Adds knowledge-gated pages to the encyclopedia web server: Civilizations
+Adds knowledge-gated pages to the elfcyclopedia web server: Civilizations
 tab (known civs with asymmetric opinions) and Fruits tab (tier-gated
 detail — Awareness shows name/appearance, Properties shows parts and
 processing paths, Cultivation shows growing info). Queries sim state
-through the same read handle as the base encyclopedia server.
+through the same read handle as the base elfcyclopedia server.
 
-**Draft:** `docs/drafts/encyclopedia_civs.md` §Encyclopedia (Web-Based)
+**Draft:** `docs/drafts/elfcyclopedia_civs.md` §Elfcyclopedia (Web-Based)
 
 **Blocked by:** F-civ-knowledge
 **Related:** F-civ-knowledge
 
-#### F-encyclopedia-srv — Embedded localhost HTTP encyclopedia server
+#### F-elfcyclopedia-srv — Embedded localhost HTTP elfcyclopedia server
 **Status:** Done
 
 Embedded HTTP server on localhost (127.0.0.1, configurable port) serving
-the encyclopedia as HTML pages in the player's web browser. Server runs
+the elfcyclopedia as HTML pages in the player's web browser. Server runs
 on a dedicated thread with read-only access to sim state. Species
 bestiary from JSON data file. In-game toolbar button shows URL and opens
 browser on click. Server-rendered HTML templates, no JavaScript required.
 Auto-refresh via meta tag. Independent of all sim/worldgen features.
 
-**Draft:** `docs/drafts/encyclopedia_civs.md` §Encyclopedia (Web-Based)
+**Draft:** `docs/drafts/elfcyclopedia_civs.md` §Elfcyclopedia (Web-Based)
 
 #### F-fruit-sprites — Procedural fruit sprites
 **Status:** Todo · **Phase:** 7
