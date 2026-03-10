@@ -2682,6 +2682,24 @@ impl SimState {
         stack.kind.display_name().to_owned()
     }
 
+    /// Display name for an item kind + specific material combination. For fruit
+    /// species, uses the Vaelith name + shape noun. For wood materials, uses
+    /// "Oak Bow" etc. Falls back to the item kind's display name.
+    pub fn material_item_display_name(
+        &self,
+        kind: inventory::ItemKind,
+        material: inventory::Material,
+    ) -> String {
+        if kind == inventory::ItemKind::Fruit
+            && let inventory::Material::FruitSpecies(id) = material
+            && let Some(species) = self.db.fruit_species.get(&id)
+        {
+            let noun = species.appearance.shape.item_noun();
+            return format!("{} {}", species.vaelith_name, noun);
+        }
+        format!("{} {}", material.display_name(), kind.display_name())
+    }
+
     /// Resolve a completed Eat action for fruit: restore food, remove fruit
     /// from world, generate thought, complete task. Always returns true.
     fn resolve_eat_fruit_action(
@@ -3233,9 +3251,18 @@ impl SimState {
             return true;
         }
 
-        // Add items to creature inventory.
+        // Add items to creature inventory, preserving the hauled material.
         let inv_id = self.creature_inv(creature_id);
-        self.inv_add_simple_item(inv_id, item_kind, picked_up, None, None);
+        self.inv_add_item(
+            inv_id,
+            item_kind,
+            picked_up,
+            None,
+            None,
+            haul.hauled_material,
+            0,
+            None,
+        );
 
         // Switch to GoingToDestination phase.
         let mut updated_haul = haul.clone();
@@ -3295,13 +3322,22 @@ impl SimState {
         let item_kind = haul.item_kind;
         let quantity = haul.quantity;
 
-        // Deposit items into destination building.
-        self.inv_remove_item(self.creature_inv(creature_id), item_kind, quantity);
-        self.inv_add_simple_item(
+        // Deposit items into destination building, preserving material.
+        let material = haul.hauled_material;
+        self.inv_remove_item_with_material(
+            self.creature_inv(creature_id),
+            item_kind,
+            material,
+            quantity,
+        );
+        self.inv_add_item(
             self.structure_inv(destination),
             item_kind,
             quantity,
             None,
+            None,
+            material,
+            0,
             None,
         );
         self.complete_task(task_id);
@@ -3349,13 +3385,28 @@ impl SimState {
             }
             task::HaulPhase::GoingToDestination => {
                 // Creature is carrying items — drop as ground pile at current position.
+                let material = haul.hauled_material;
                 if let Some(creature) = self.db.creatures.get(&creature_id) {
                     let pos = creature.position;
-                    let removed = self.inv_remove_item(creature.inventory_id, item_kind, quantity);
+                    let removed = self.inv_remove_item_with_material(
+                        creature.inventory_id,
+                        item_kind,
+                        material,
+                        quantity,
+                    );
                     if removed > 0 {
                         let pile_id = self.ensure_ground_pile(pos);
                         let pile = self.db.ground_piles.get(&pile_id).unwrap();
-                        self.inv_add_simple_item(pile.inventory_id, item_kind, removed, None, None);
+                        self.inv_add_item(
+                            pile.inventory_id,
+                            item_kind,
+                            removed,
+                            None,
+                            None,
+                            material,
+                            0,
+                            None,
+                        );
                     }
                 }
             }
@@ -3619,14 +3670,20 @@ impl SimState {
                     let output_count: u32 = recipe
                         .outputs
                         .iter()
-                        .map(|o| self.inv_item_count(inv_id, o.item_kind))
+                        .map(|o| {
+                            self.inv_item_count(inv_id, o.item_kind, inventory::MaterialFilter::Any)
+                        })
                         .sum();
                     if output_count >= target {
                         continue;
                     }
 
                     let all_available = recipe.inputs.iter().all(|input| {
-                        self.inv_unreserved_item_count(inv_id, input.item_kind) >= input.quantity
+                        self.inv_unreserved_item_count(
+                            inv_id,
+                            input.item_kind,
+                            inventory::MaterialFilter::Any,
+                        ) >= input.quantity
                     });
                     if all_available {
                         chosen_recipe = Some(recipe.clone());
@@ -3647,10 +3704,16 @@ impl SimState {
                 None => continue,
             };
 
-            // Reserve all inputs.
+            // Reserve all inputs (recipes are material-unaware, use Any filter).
             let task_id = TaskId::new(&mut self.rng);
             for input in &recipe.inputs {
-                self.inv_reserve_items(inv_id, input.item_kind, input.quantity, task_id);
+                self.inv_reserve_items(
+                    inv_id,
+                    input.item_kind,
+                    inventory::MaterialFilter::Any,
+                    input.quantity,
+                    task_id,
+                );
             }
 
             let recipe_id = recipe.id.clone();
@@ -3719,16 +3782,23 @@ impl SimState {
 
     /// Compute logistics wants from a set of recipe IDs. Each input item kind
     /// gets a want with quantity equal to the max needed by any single recipe.
+    /// Deduplicates on `(item_kind, material_filter)` pairs. All recipe wants
+    /// currently use `MaterialFilter::Any`.
     fn compute_recipe_wants(&self, recipe_ids: &[String]) -> Vec<crate::building::LogisticsWant> {
         let mut wants: Vec<crate::building::LogisticsWant> = Vec::new();
         for rid in recipe_ids {
             if let Some(recipe) = self.config.recipes.iter().find(|r| r.id == *rid) {
                 for input in &recipe.inputs {
-                    if let Some(w) = wants.iter_mut().find(|w| w.item_kind == input.item_kind) {
+                    let filter = inventory::MaterialFilter::Any;
+                    if let Some(w) = wants
+                        .iter_mut()
+                        .find(|w| w.item_kind == input.item_kind && w.material_filter == filter)
+                    {
                         w.target_quantity = w.target_quantity.max(input.quantity);
                     } else {
                         wants.push(crate::building::LogisticsWant {
                             item_kind: input.item_kind,
+                            material_filter: filter,
                             target_quantity: input.quantity,
                         });
                     }
@@ -4259,6 +4329,10 @@ impl SimState {
     /// Create Harvest tasks when logistics buildings want fruit but not enough
     /// fruit items exist. Scans all trees for unclaimed fruit voxels and creates
     /// up to `max_haul_tasks_per_heartbeat` Harvest tasks.
+    ///
+    /// Harvest demand is material-unaware — uses `MaterialFilter::Any` for total
+    /// fruit demand vs total fruit supply, because the sim can't direct elves to
+    /// harvest a specific species (determined by the voxel).
     fn process_harvest_tasks(&mut self) {
         // 1. Sum total fruit demand across logistics-enabled buildings.
         let mut total_demand: u32 = 0;
@@ -4267,12 +4341,18 @@ impl SimState {
                 continue;
             }
             let fruit_target =
-                self.inv_want_target(structure.inventory_id, inventory::ItemKind::Fruit);
+                self.inv_want_target_total(structure.inventory_id, inventory::ItemKind::Fruit);
             if fruit_target > 0 {
-                let current =
-                    self.inv_item_count(structure.inventory_id, inventory::ItemKind::Fruit);
-                let in_transit =
-                    self.count_in_transit_items(structure.id, inventory::ItemKind::Fruit);
+                let current = self.inv_item_count(
+                    structure.inventory_id,
+                    inventory::ItemKind::Fruit,
+                    inventory::MaterialFilter::Any,
+                );
+                let in_transit = self.count_in_transit_items(
+                    structure.id,
+                    inventory::ItemKind::Fruit,
+                    inventory::MaterialFilter::Any,
+                );
                 let effective = current + in_transit;
                 if fruit_target > effective {
                     total_demand += fruit_target - effective;
@@ -4289,13 +4369,19 @@ impl SimState {
         // because their fruit can't be hauled out.
         let mut available_items: u32 = 0;
         for pile in self.db.ground_piles.iter_all() {
-            available_items +=
-                self.inv_unreserved_item_count(pile.inventory_id, inventory::ItemKind::Fruit);
+            available_items += self.inv_unreserved_item_count(
+                pile.inventory_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Any,
+            );
         }
         for structure in self.db.structures.iter_all() {
             if structure.logistics_priority.is_some() {
-                available_items += self
-                    .inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Fruit);
+                available_items += self.inv_unreserved_item_count(
+                    structure.inventory_id,
+                    inventory::ItemKind::Fruit,
+                    inventory::MaterialFilter::Any,
+                );
             }
         }
 
@@ -4397,16 +4483,18 @@ impl SimState {
                     break;
                 }
 
-                // Count current inventory in this building for this item kind.
+                let filter = want.material_filter;
+
+                // Count current inventory in this building for this item kind + filter.
                 let current = self
                     .db
                     .structures
                     .get(building_id)
-                    .map(|s| self.inv_item_count(s.inventory_id, want.item_kind))
+                    .map(|s| self.inv_item_count(s.inventory_id, want.item_kind, filter))
                     .unwrap_or(0);
 
                 // Count in-transit items (from active Haul tasks targeting this building).
-                let in_transit = self.count_in_transit_items(*building_id, want.item_kind);
+                let in_transit = self.count_in_transit_items(*building_id, want.item_kind, filter);
 
                 let effective = current + in_transit;
                 if effective >= want.target_quantity {
@@ -4416,9 +4504,13 @@ impl SimState {
                 let needed = want.target_quantity - effective;
 
                 // Find a source for these items.
-                if let Some((source, available, source_nav_node)) =
-                    self.find_haul_source(want.item_kind, needed, *building_id, *building_priority)
-                {
+                if let Some((source, available, source_nav_node)) = self.find_haul_source(
+                    want.item_kind,
+                    filter,
+                    needed,
+                    *building_id,
+                    *building_priority,
+                ) {
                     let quantity = available.min(needed);
 
                     // Find destination nav node.
@@ -4432,7 +4524,8 @@ impl SimState {
 
                     // Reserve items at source.
                     let task_id = TaskId::new(&mut self.rng);
-                    self.reserve_haul_items(&source, want.item_kind, quantity, task_id);
+                    let hauled_material =
+                        self.reserve_haul_items(&source, want.item_kind, filter, quantity, task_id);
 
                     // Create haul task.
                     let new_task = task::Task {
@@ -4453,7 +4546,16 @@ impl SimState {
                         origin: task::TaskOrigin::Automated,
                         target_creature: None,
                     };
+                    // Store material filter and hauled material on the haul data extension.
+                    // These are set after insert_task creates the base TaskHaulData row.
                     self.insert_task(new_task);
+                    // Patch the TaskHaulData row with material info.
+                    if let Some(haul_data) = self.task_haul_data(task_id) {
+                        let _ = self.db.task_haul_data.modify_unchecked(&haul_data.id, |h| {
+                            h.material_filter = filter;
+                            h.hauled_material = hauled_material;
+                        });
+                    }
                     tasks_created += 1;
                 }
             }
@@ -4490,15 +4592,21 @@ impl SimState {
             };
 
             // Skip if bread target reached.
-            let bread_count =
-                self.inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Bread);
+            let bread_count = self.inv_unreserved_item_count(
+                structure.inventory_id,
+                inventory::ItemKind::Bread,
+                inventory::MaterialFilter::Any,
+            );
             if bread_count >= structure.cooking_bread_target {
                 continue;
             }
 
             // Skip if not enough unreserved fruit.
-            let fruit_count =
-                self.inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Fruit);
+            let fruit_count = self.inv_unreserved_item_count(
+                structure.inventory_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Any,
+            );
             if fruit_count < cook_fruit_input {
                 continue;
             }
@@ -4528,11 +4636,12 @@ impl SimState {
                 None => continue,
             };
 
-            // Create Cook task with reserved fruit.
+            // Create Cook task with reserved fruit (any species).
             let task_id = TaskId::new(&mut self.rng);
             self.inv_reserve_items(
                 self.structure_inv(sid),
                 inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Any,
                 cook_fruit_input,
                 task_id,
             );
@@ -4553,11 +4662,14 @@ impl SimState {
     }
 
     /// Count items of the given kind that are in-transit to the given building
-    /// via active Haul tasks.
+    /// via active Haul tasks. Uses `hauled_material` (not the haul's
+    /// `material_filter`) for matching — a `Specific(X)` request only counts
+    /// hauls actually carrying X, while `Any` counts all hauls.
     fn count_in_transit_items(
         &self,
         structure_id: StructureId,
         item_kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
     ) -> u32 {
         // Find haul tasks targeting this structure via HaulDestination refs.
         self.db
@@ -4571,7 +4683,7 @@ impl SimState {
                     return None;
                 }
                 let haul = self.task_haul_data(r.task_id)?;
-                if haul.item_kind == item_kind {
+                if haul.item_kind == item_kind && filter.matches(haul.hauled_material) {
                     Some(haul.quantity)
                 } else {
                     None
@@ -4639,21 +4751,27 @@ impl SimState {
         }
     }
 
-    /// Find a source for hauling `needed` items of the given kind.
+    /// Find a source for hauling `needed` items of the given kind and material
+    /// filter.
     ///
-    /// Searches ground piles first (deterministic BTreeMap order), then buildings
-    /// with strictly lower logistics priority. Returns the source, available
-    /// (unreserved) quantity, and the source's nav node.
+    /// Three-phase search:
+    /// 1. Ground piles (deterministic BTreeMap order).
+    /// 2. Buildings with strictly lower logistics priority.
+    /// 3. Logistics-enabled buildings with surplus (held > wanted).
+    ///
+    /// Phase 3 uses `inv_want_target_total` (total wants for the kind, regardless
+    /// of filter) to prevent taking items a source building itself wants.
     fn find_haul_source(
         &self,
         item_kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
         needed: u32,
         exclude_building: StructureId,
         requester_priority: u8,
     ) -> Option<(task::HaulSource, u32, NavNodeId)> {
-        // Check ground piles first.
+        // Phase 1: Check ground piles.
         for pile in self.db.ground_piles.iter_all() {
-            let available = self.inv_unreserved_item_count(pile.inventory_id, item_kind);
+            let available = self.inv_unreserved_item_count(pile.inventory_id, item_kind, filter);
             if available > 0
                 && let Some(nav_node) = self.nav_graph.find_nearest_node(pile.position)
             {
@@ -4665,7 +4783,7 @@ impl SimState {
             }
         }
 
-        // Check other buildings with strictly lower priority.
+        // Phase 2: Check other buildings with strictly lower priority.
         for structure in self.db.structures.iter_all() {
             let sid = structure.id;
             if sid == exclude_building {
@@ -4677,7 +4795,8 @@ impl SimState {
             if src_priority >= requester_priority {
                 continue;
             }
-            let available = self.inv_unreserved_item_count(structure.inventory_id, item_kind);
+            let available =
+                self.inv_unreserved_item_count(structure.inventory_id, item_kind, filter);
             if available > 0
                 && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
             {
@@ -4689,9 +4808,10 @@ impl SimState {
             }
         }
 
-        // Check logistics-enabled buildings (any priority) for surplus items.
-        // A building has surplus when it holds more unreserved items of this kind
-        // than its own logistics_wants target for that kind.
+        // Phase 3: Check logistics-enabled buildings for surplus items.
+        // `held` uses the caller's filter. `wanted` sums all wants for this kind
+        // (regardless of filter) to prevent stripping items from buildings with
+        // complex multi-material wants.
         for structure in self.db.structures.iter_all() {
             let sid = structure.id;
             if sid == exclude_building {
@@ -4700,8 +4820,8 @@ impl SimState {
             if structure.logistics_priority.is_none() {
                 continue;
             }
-            let held = self.inv_unreserved_item_count(structure.inventory_id, item_kind);
-            let wanted = self.inv_want_target(structure.inventory_id, item_kind);
+            let held = self.inv_unreserved_item_count(structure.inventory_id, item_kind, filter);
+            let wanted = self.inv_want_target_total(structure.inventory_id, item_kind);
             let surplus = held.saturating_sub(wanted);
             if surplus > 0
                 && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
@@ -4717,14 +4837,16 @@ impl SimState {
         None
     }
 
-    /// Reserve items at a haul source for a given task.
+    /// Reserve items at a haul source for a given task. Returns the material of
+    /// the reserved stacks (for `hauled_material` tracking).
     fn reserve_haul_items(
         &mut self,
         source: &task::HaulSource,
         item_kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
         quantity: u32,
         task_id: TaskId,
-    ) {
+    ) -> Option<inventory::Material> {
         match source {
             task::HaulSource::GroundPile(pos) => {
                 if let Some(pile) = self
@@ -4734,15 +4856,28 @@ impl SimState {
                     .into_iter()
                     .next()
                 {
-                    self.inv_reserve_items(pile.inventory_id, item_kind, quantity, task_id);
+                    return self.inv_reserve_items(
+                        pile.inventory_id,
+                        item_kind,
+                        filter,
+                        quantity,
+                        task_id,
+                    );
                 }
             }
             task::HaulSource::Building(sid) => {
                 if let Some(structure) = self.db.structures.get(sid) {
-                    self.inv_reserve_items(structure.inventory_id, item_kind, quantity, task_id);
+                    return self.inv_reserve_items(
+                        structure.inventory_id,
+                        item_kind,
+                        filter,
+                        quantity,
+                        task_id,
+                    );
                 }
             }
         }
+        None
     }
 
     /// Find a source of unowned, unreserved items for personal acquisition.
@@ -4753,11 +4888,12 @@ impl SimState {
     fn find_item_source(
         &self,
         kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
         needed: u32,
     ) -> Option<(task::HaulSource, u32, NavNodeId)> {
         // Check ground piles.
         for pile in self.db.ground_piles.iter_all() {
-            let available = self.inv_count_unowned_unreserved(pile.inventory_id, kind);
+            let available = self.inv_count_unowned_unreserved(pile.inventory_id, kind, filter);
             if available > 0
                 && let Some(nav_node) = self.nav_graph.find_nearest_node(pile.position)
             {
@@ -4772,7 +4908,7 @@ impl SimState {
         // Check building inventories.
         for structure in self.db.structures.iter_all() {
             let sid = structure.id;
-            let available = self.inv_count_unowned_unreserved(structure.inventory_id, kind);
+            let available = self.inv_count_unowned_unreserved(structure.inventory_id, kind, filter);
             if available > 0
                 && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
             {
@@ -4905,23 +5041,24 @@ impl SimState {
                 .map(|w| {
                     let owned =
                         self.inv_count_owned(creature.inventory_id, w.item_kind, creature_id);
-                    (w.item_kind, w.target_quantity, owned)
+                    (w.item_kind, w.material_filter, w.target_quantity, owned)
                 })
-                .collect::<Vec<(inventory::ItemKind, u32, u32)>>()
+                .collect::<Vec<(inventory::ItemKind, inventory::MaterialFilter, u32, u32)>>()
         };
 
         // Find first unsatisfied want.
-        for (item_kind, target, owned) in &owned_counts {
+        for (item_kind, filter, target, owned) in &owned_counts {
             if *owned >= *target {
                 continue;
             }
             let needed = *target - *owned;
 
             // Find a source.
-            let (source, quantity, nav_node) = match self.find_item_source(*item_kind, needed) {
-                Some(s) => s,
-                None => continue, // No source for this kind; try next want.
-            };
+            let (source, quantity, nav_node) =
+                match self.find_item_source(*item_kind, *filter, needed) {
+                    Some(s) => s,
+                    None => continue, // No source for this kind; try next want.
+                };
 
             // Reserve items at source.
             let task_id = TaskId::new(&mut self.rng);
@@ -4937,6 +5074,7 @@ impl SimState {
                         self.inv_reserve_unowned_items(
                             pile.inventory_id,
                             *item_kind,
+                            *filter,
                             quantity,
                             task_id,
                         );
@@ -4947,6 +5085,7 @@ impl SimState {
                         self.inv_reserve_unowned_items(
                             structure.inventory_id,
                             *item_kind,
+                            *filter,
                             quantity,
                             task_id,
                         );
@@ -5484,10 +5623,10 @@ impl SimState {
 
         // 3. Attacker must have a Bow and at least one Arrow.
         let inv_id = attacker.inventory_id;
-        if self.inv_item_count(inv_id, ItemKind::Bow) == 0 {
+        if self.inv_item_count(inv_id, ItemKind::Bow, inventory::MaterialFilter::Any) == 0 {
             return false;
         }
-        if self.inv_item_count(inv_id, ItemKind::Arrow) == 0 {
+        if self.inv_item_count(inv_id, ItemKind::Arrow, inventory::MaterialFilter::Any) == 0 {
             return false;
         }
 
@@ -5532,7 +5671,7 @@ impl SimState {
         }
 
         // 6. All checks passed — consume arrow and fire.
-        self.inv_remove_item(inv_id, ItemKind::Arrow, 1);
+        self.inv_remove_item_with_material(inv_id, ItemKind::Arrow, None, 1);
 
         // Create projectile inventory with one arrow (projectile carries its payload).
         let proj_inv_id = self.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
@@ -6139,12 +6278,14 @@ impl SimState {
         self.inv_normalize(dst);
     }
 
-    /// Remove up to `quantity` items of the given kind from an inventory.
-    /// Returns the amount actually removed. Drops stacks that reach zero.
-    fn inv_remove_item(
+    /// Remove up to `quantity` items of the given kind and material from an
+    /// inventory. Returns the amount actually removed. Drops stacks that reach
+    /// zero.
+    fn inv_remove_item_with_material(
         &mut self,
         inv_id: InventoryId,
         kind: inventory::ItemKind,
+        material: Option<inventory::Material>,
         quantity: u32,
     ) -> u32 {
         let stacks = self
@@ -6154,7 +6295,7 @@ impl SimState {
         let mut remaining = quantity;
         let mut removed = 0u32;
         for stack in &stacks {
-            if stack.kind == kind && remaining > 0 {
+            if stack.kind == kind && stack.material == material && remaining > 0 {
                 let take = remaining.min(stack.quantity);
                 let new_qty = stack.quantity - take;
                 if new_qty == 0 {
@@ -6171,13 +6312,19 @@ impl SimState {
         removed
     }
 
-    /// Count the total quantity of a given item kind in an inventory.
-    pub fn inv_item_count(&self, inv_id: InventoryId, kind: inventory::ItemKind) -> u32 {
+    /// Count the total quantity of a given item kind in an inventory,
+    /// filtered by material.
+    pub fn inv_item_count(
+        &self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
+    ) -> u32 {
         self.db
             .item_stacks
             .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
             .iter()
-            .filter(|s| s.kind == kind)
+            .filter(|s| s.kind == kind && filter.matches(s.material))
             .map(|s| s.quantity)
             .sum()
     }
@@ -6198,13 +6345,18 @@ impl SimState {
             .sum()
     }
 
-    /// Count unreserved items of the given kind.
-    fn inv_unreserved_item_count(&self, inv_id: InventoryId, kind: inventory::ItemKind) -> u32 {
+    /// Count unreserved items of the given kind, filtered by material.
+    fn inv_unreserved_item_count(
+        &self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
+    ) -> u32 {
         self.db
             .item_stacks
             .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
             .iter()
-            .filter(|s| s.kind == kind && s.reserved_by.is_none())
+            .filter(|s| s.kind == kind && s.reserved_by.is_none() && filter.matches(s.material))
             .map(|s| s.quantity)
             .sum()
     }
@@ -6241,59 +6393,72 @@ impl SimState {
         removed
     }
 
-    /// Reserve up to `quantity` unreserved items of the given kind for a task.
-    /// Splits stacks as needed. Returns the amount actually reserved.
+    /// Reserve up to `quantity` unreserved items of the given kind for a task,
+    /// filtered by material. Under `Any` filter, locks in a single material on
+    /// the first matching stack (avoids mixed-material hauls). Returns the
+    /// material of the reserved stacks.
     fn inv_reserve_items(
         &mut self,
         inv_id: InventoryId,
         kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
         quantity: u32,
         task_id: TaskId,
-    ) -> u32 {
+    ) -> Option<inventory::Material> {
         let stacks = self
             .db
             .item_stacks
             .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
         let mut remaining = quantity;
-        let mut reserved = 0u32;
+        let mut locked_material: Option<Option<inventory::Material>> = None;
         for stack in &stacks {
-            if stack.kind == kind && stack.reserved_by.is_none() && remaining > 0 {
-                let take = remaining.min(stack.quantity);
-                if take == stack.quantity {
-                    // Reserve the entire stack — changes indexed field.
-                    let mut s = stack.clone();
-                    s.reserved_by = Some(task_id);
-                    let _ = self.db.item_stacks.update_no_fk(s);
-                } else {
-                    // Split: reduce this stack and create a new reserved stack.
-                    let new_qty = stack.quantity - take;
-                    let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
-                        s.quantity = new_qty;
-                    });
-                    let mat = stack.material;
-                    let qual = stack.quality;
-                    let ench = stack.enchantment_id;
-                    let own = stack.owner;
-                    let _ = self
-                        .db
-                        .item_stacks
-                        .insert_auto_no_fk(|id| crate::db::ItemStack {
-                            id,
-                            inventory_id: inv_id,
-                            kind,
-                            quantity: take,
-                            material: mat,
-                            quality: qual,
-                            enchantment_id: ench,
-                            owner: own,
-                            reserved_by: Some(task_id),
-                        });
-                }
-                remaining -= take;
-                reserved += take;
+            if stack.kind != kind || stack.reserved_by.is_some() || remaining == 0 {
+                continue;
             }
+            if !filter.matches(stack.material) {
+                continue;
+            }
+            // Single-material lock: once we pick the first stack's material,
+            // only reserve stacks with the same material.
+            match locked_material {
+                None => locked_material = Some(stack.material),
+                Some(locked) if locked != stack.material => continue,
+                _ => {}
+            }
+            let take = remaining.min(stack.quantity);
+            if take == stack.quantity {
+                // Reserve the entire stack — changes indexed field.
+                let mut s = stack.clone();
+                s.reserved_by = Some(task_id);
+                let _ = self.db.item_stacks.update_no_fk(s);
+            } else {
+                // Split: reduce this stack and create a new reserved stack.
+                let new_qty = stack.quantity - take;
+                let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                    s.quantity = new_qty;
+                });
+                let mat = stack.material;
+                let qual = stack.quality;
+                let ench = stack.enchantment_id;
+                let own = stack.owner;
+                let _ = self
+                    .db
+                    .item_stacks
+                    .insert_auto_no_fk(|id| crate::db::ItemStack {
+                        id,
+                        inventory_id: inv_id,
+                        kind,
+                        quantity: take,
+                        material: mat,
+                        quality: qual,
+                        enchantment_id: ench,
+                        owner: own,
+                        reserved_by: Some(task_id),
+                    });
+            }
+            remaining -= take;
         }
-        reserved
+        locked_material.flatten()
     }
 
     /// Clear all reservations for a task, then re-merge matching stacks.
@@ -6344,22 +6509,34 @@ impl SimState {
         removed
     }
 
-    /// Count unowned (`owner == None`) and unreserved items.
-    fn inv_count_unowned_unreserved(&self, inv_id: InventoryId, kind: inventory::ItemKind) -> u32 {
+    /// Count unowned (`owner == None`) and unreserved items, filtered by material.
+    fn inv_count_unowned_unreserved(
+        &self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
+    ) -> u32 {
         self.db
             .item_stacks
             .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
             .iter()
-            .filter(|s| s.kind == kind && s.owner.is_none() && s.reserved_by.is_none())
+            .filter(|s| {
+                s.kind == kind
+                    && s.owner.is_none()
+                    && s.reserved_by.is_none()
+                    && filter.matches(s.material)
+            })
             .map(|s| s.quantity)
             .sum()
     }
 
-    /// Reserve up to `quantity` unowned unreserved items for a task.
+    /// Reserve up to `quantity` unowned unreserved items for a task, filtered
+    /// by material. Single-material lock applies (same as `inv_reserve_items`).
     fn inv_reserve_unowned_items(
         &mut self,
         inv_id: InventoryId,
         kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
         quantity: u32,
         task_id: TaskId,
     ) -> u32 {
@@ -6369,43 +6546,53 @@ impl SimState {
             .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
         let mut remaining = quantity;
         let mut reserved = 0u32;
+        let mut locked_material: Option<Option<inventory::Material>> = None;
         for stack in &stacks {
-            if stack.kind == kind
-                && stack.owner.is_none()
-                && stack.reserved_by.is_none()
-                && remaining > 0
+            if stack.kind != kind
+                || stack.owner.is_some()
+                || stack.reserved_by.is_some()
+                || remaining == 0
             {
-                let take = remaining.min(stack.quantity);
-                if take == stack.quantity {
-                    let mut s = stack.clone();
-                    s.reserved_by = Some(task_id);
-                    let _ = self.db.item_stacks.update_no_fk(s);
-                } else {
-                    let new_qty = stack.quantity - take;
-                    let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
-                        s.quantity = new_qty;
-                    });
-                    let mat = stack.material;
-                    let qual = stack.quality;
-                    let ench = stack.enchantment_id;
-                    let _ = self
-                        .db
-                        .item_stacks
-                        .insert_auto_no_fk(|id| crate::db::ItemStack {
-                            id,
-                            inventory_id: inv_id,
-                            kind,
-                            quantity: take,
-                            material: mat,
-                            quality: qual,
-                            enchantment_id: ench,
-                            owner: None,
-                            reserved_by: Some(task_id),
-                        });
-                }
-                remaining -= take;
-                reserved += take;
+                continue;
             }
+            if !filter.matches(stack.material) {
+                continue;
+            }
+            match locked_material {
+                None => locked_material = Some(stack.material),
+                Some(locked) if locked != stack.material => continue,
+                _ => {}
+            }
+            let take = remaining.min(stack.quantity);
+            if take == stack.quantity {
+                let mut s = stack.clone();
+                s.reserved_by = Some(task_id);
+                let _ = self.db.item_stacks.update_no_fk(s);
+            } else {
+                let new_qty = stack.quantity - take;
+                let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                    s.quantity = new_qty;
+                });
+                let mat = stack.material;
+                let qual = stack.quality;
+                let ench = stack.enchantment_id;
+                let _ = self
+                    .db
+                    .item_stacks
+                    .insert_auto_no_fk(|id| crate::db::ItemStack {
+                        id,
+                        inventory_id: inv_id,
+                        kind,
+                        quantity: take,
+                        material: mat,
+                        quality: qual,
+                        enchantment_id: ench,
+                        owner: None,
+                        reserved_by: Some(task_id),
+                    });
+            }
+            remaining -= take;
+            reserved += take;
         }
         reserved
     }
@@ -6493,6 +6680,8 @@ impl SimState {
     }
 
     /// Set logistics wants for an inventory (replaces all existing wants).
+    /// Deduplicates input by `(item_kind, material_filter)` pairs, taking the
+    /// max quantity for duplicates.
     fn set_inv_wants(&mut self, inv_id: InventoryId, wants: &[building::LogisticsWant]) {
         // Remove existing wants for this inventory.
         let existing = self
@@ -6502,29 +6691,60 @@ impl SimState {
         for row in &existing {
             let _ = self.db.logistics_want_rows.remove_no_fk(&row.id);
         }
-        // Insert new wants.
+        // Deduplicate by (kind, filter), taking max quantity.
+        let mut deduped: std::collections::BTreeMap<
+            (inventory::ItemKind, inventory::MaterialFilter),
+            u32,
+        > = std::collections::BTreeMap::new();
         for want in wants {
+            let key = (want.item_kind, want.material_filter);
+            let entry = deduped.entry(key).or_insert(0);
+            *entry = (*entry).max(want.target_quantity);
+        }
+        // Insert deduplicated wants.
+        for ((item_kind, material_filter), target_quantity) in &deduped {
             let _ =
                 self.db
                     .logistics_want_rows
                     .insert_auto_no_fk(|id| crate::db::LogisticsWantRow {
                         id,
                         inventory_id: inv_id,
-                        item_kind: want.item_kind,
-                        target_quantity: want.target_quantity,
+                        item_kind: *item_kind,
+                        material_filter: *material_filter,
+                        target_quantity: *target_quantity,
                     });
         }
     }
 
-    /// Find the target quantity for a specific item kind in an inventory's wants.
-    fn inv_want_target(&self, inv_id: InventoryId, kind: inventory::ItemKind) -> u32 {
+    /// Find the target quantity for a specific `(item_kind, material_filter)`
+    /// pair in an inventory's wants, or 0 if no such want exists.
+    #[cfg(test)]
+    fn inv_want_target(
+        &self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
+    ) -> u32 {
         self.db
             .logistics_want_rows
             .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
             .iter()
-            .find(|w| w.item_kind == kind)
+            .find(|w| w.item_kind == kind && w.material_filter == filter)
             .map(|w| w.target_quantity)
             .unwrap_or(0)
+    }
+
+    /// Sum target quantities of all wants for a given item kind in an inventory,
+    /// regardless of material filter. Used by surplus calculation in
+    /// `find_haul_source()` Phase 3.
+    fn inv_want_target_total(&self, inv_id: InventoryId, kind: inventory::ItemKind) -> u32 {
+        self.db
+            .logistics_want_rows
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|w| w.item_kind == kind)
+            .map(|w| w.target_quantity)
+            .sum()
     }
 
     // -----------------------------------------------------------------------
@@ -6803,6 +7023,8 @@ impl SimState {
                         phase: *phase,
                         source_kind,
                         destination_nav_node: *destination_nav_node,
+                        material_filter: inventory::MaterialFilter::Any,
+                        hauled_material: None,
                     });
             }
             task::TaskKind::AcquireItem {
@@ -7868,10 +8090,12 @@ impl SimState {
                 vec![
                     building::LogisticsWant {
                         item_kind: inventory::ItemKind::Fruit,
+                        material_filter: inventory::MaterialFilter::Any,
                         target_quantity: self.config.storehouse_default_fruit_want,
                     },
                     building::LogisticsWant {
                         item_kind: inventory::ItemKind::Bread,
+                        material_filter: inventory::MaterialFilter::Any,
                         target_quantity: self.config.storehouse_default_bread_want,
                     },
                 ]
@@ -7882,6 +8106,7 @@ impl SimState {
                 structure.cooking_bread_target = self.config.kitchen_default_bread_target;
                 vec![building::LogisticsWant {
                     item_kind: inventory::ItemKind::Fruit,
+                    material_filter: inventory::MaterialFilter::Any,
                     target_quantity: self.config.kitchen_default_fruit_want,
                 }]
             }
@@ -16961,7 +17186,11 @@ mod tests {
             None,
         );
 
-        let count = sim.inv_item_count(sim.creature_inv(elf_id), crate::inventory::ItemKind::Bread);
+        let count = sim.inv_item_count(
+            sim.creature_inv(elf_id),
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
+        );
         assert_eq!(count, 5);
     }
 
@@ -16980,7 +17209,11 @@ mod tests {
         );
 
         // Verify via inv_item_count (serialization of item_stacks is tested separately).
-        let count = sim.inv_item_count(sim.creature_inv(elf_id), crate::inventory::ItemKind::Bread);
+        let count = sim.inv_item_count(
+            sim.creature_inv(elf_id),
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
+        );
         assert_eq!(count, 3);
     }
 
@@ -17255,7 +17488,11 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(
-            sim.inv_item_count(pile.inventory_id, crate::inventory::ItemKind::Bread),
+            sim.inv_item_count(
+                pile.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                crate::inventory::MaterialFilter::Any
+            ),
             4
         );
     }
@@ -17301,7 +17538,11 @@ mod tests {
             .unwrap();
         assert_eq!(pile1.position, pos1);
         assert_eq!(
-            restored.inv_item_count(pile1.inventory_id, crate::inventory::ItemKind::Fruit),
+            restored.inv_item_count(
+                pile1.inventory_id,
+                crate::inventory::ItemKind::Fruit,
+                crate::inventory::MaterialFilter::Any
+            ),
             2
         );
         let pile2 = restored
@@ -17313,7 +17554,11 @@ mod tests {
             .unwrap();
         assert_eq!(pile2.position, pos2);
         assert_eq!(
-            restored.inv_item_count(pile2.inventory_id, crate::inventory::ItemKind::Bread),
+            restored.inv_item_count(
+                pile2.inventory_id,
+                crate::inventory::ItemKind::Bread,
+                crate::inventory::MaterialFilter::Any
+            ),
             5
         );
     }
@@ -17349,7 +17594,8 @@ mod tests {
         assert_eq!(
             restored.inv_item_count(
                 restored_pile.inventory_id,
-                crate::inventory::ItemKind::Bread
+                crate::inventory::ItemKind::Bread,
+                crate::inventory::MaterialFilter::Any,
             ),
             7
         );
@@ -17426,6 +17672,7 @@ mod tests {
             Some(5),
             vec![crate::building::LogisticsWant {
                 item_kind: crate::inventory::ItemKind::Bread,
+                material_filter: crate::inventory::MaterialFilter::Any,
                 target_quantity: 5,
             }],
         );
@@ -17458,8 +17705,11 @@ mod tests {
             .into_iter()
             .next()
             .unwrap();
-        let unreserved =
-            sim.inv_unreserved_item_count(pile.inventory_id, crate::inventory::ItemKind::Bread);
+        let unreserved = sim.inv_unreserved_item_count(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
+        );
         assert_eq!(unreserved, 5, "5 items should remain unreserved");
     }
 
@@ -17489,6 +17739,7 @@ mod tests {
             Some(10),
             vec![crate::building::LogisticsWant {
                 item_kind: crate::inventory::ItemKind::Bread,
+                material_filter: crate::inventory::MaterialFilter::Any,
                 target_quantity: 2,
             }],
         );
@@ -17501,6 +17752,7 @@ mod tests {
             Some(1),
             vec![crate::building::LogisticsWant {
                 item_kind: crate::inventory::ItemKind::Bread,
+                material_filter: crate::inventory::MaterialFilter::Any,
                 target_quantity: 2,
             }],
         );
@@ -17525,8 +17777,11 @@ mod tests {
             .into_iter()
             .next()
             .unwrap();
-        let unreserved =
-            sim.inv_unreserved_item_count(pile.inventory_id, crate::inventory::ItemKind::Bread);
+        let unreserved = sim.inv_unreserved_item_count(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
+        );
         assert_eq!(unreserved, 0, "All bread should be reserved");
     }
 
@@ -17550,6 +17805,7 @@ mod tests {
             sim.inv_reserve_items(
                 pile.inventory_id,
                 crate::inventory::ItemKind::Bread,
+                crate::inventory::MaterialFilter::Any,
                 3,
                 task_id,
             );
@@ -17563,6 +17819,7 @@ mod tests {
             Some(5),
             vec![crate::building::LogisticsWant {
                 item_kind: crate::inventory::ItemKind::Bread,
+                material_filter: crate::inventory::MaterialFilter::Any,
                 target_quantity: 5,
             }],
         );
@@ -17608,6 +17865,7 @@ mod tests {
             Some(5),
             vec![crate::building::LogisticsWant {
                 item_kind: crate::inventory::ItemKind::Bread,
+                material_filter: crate::inventory::MaterialFilter::Any,
                 target_quantity: 8,
             }],
         );
@@ -17675,6 +17933,7 @@ mod tests {
             Some(5),
             vec![crate::building::LogisticsWant {
                 item_kind: crate::inventory::ItemKind::Bread,
+                material_filter: crate::inventory::MaterialFilter::Any,
                 target_quantity: 3,
             }],
         );
@@ -17727,6 +17986,7 @@ mod tests {
             Some(2),
             vec![crate::building::LogisticsWant {
                 item_kind: crate::inventory::ItemKind::Bread,
+                material_filter: crate::inventory::MaterialFilter::Any,
                 target_quantity: 5,
             }],
         );
@@ -17789,6 +18049,7 @@ mod tests {
                 Some(5),
                 vec![crate::building::LogisticsWant {
                     item_kind: crate::inventory::ItemKind::Bread,
+                    material_filter: crate::inventory::MaterialFilter::Any,
                     target_quantity: 10,
                 }],
             );
@@ -17845,8 +18106,11 @@ mod tests {
 
         // Verify fruit is reserved.
         let structure = sim.db.structures.get(&sid).unwrap();
-        let unreserved =
-            sim.inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Fruit);
+        let unreserved = sim.inv_unreserved_item_count(
+            structure.inventory_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+        );
         assert_eq!(unreserved, 0, "Fruit should be reserved for cook task");
     }
 
@@ -17906,10 +18170,16 @@ mod tests {
 
         // Verify: fruit consumed, bread produced.
         let structure = sim.db.structures.get(&sid).unwrap();
-        let fruit_count =
-            sim.inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Fruit);
-        let bread_count =
-            sim.inv_unreserved_item_count(structure.inventory_id, inventory::ItemKind::Bread);
+        let fruit_count = sim.inv_unreserved_item_count(
+            structure.inventory_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+        );
+        let bread_count = sim.inv_unreserved_item_count(
+            structure.inventory_id,
+            inventory::ItemKind::Bread,
+            inventory::MaterialFilter::Any,
+        );
         assert_eq!(fruit_count, 0, "Fruit should be consumed");
         assert_eq!(bread_count, 10, "Should produce 10 bread");
 
@@ -17989,7 +18259,11 @@ mod tests {
             .find(|p| p.position.x == elf_pos.x && p.position.z == elf_pos.z)
             .expect("Ground pile should exist in elf's column");
         assert_eq!(
-            sim.inv_item_count(pile.inventory_id, inventory::ItemKind::Fruit),
+            sim.inv_item_count(
+                pile.inventory_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Any
+            ),
             1,
             "Ground pile should have 1 fruit"
         );
@@ -18024,6 +18298,7 @@ mod tests {
             Some(kitchen_priority),
             vec![building::LogisticsWant {
                 item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Any,
                 target_quantity: 5,
             }],
         );
@@ -18105,6 +18380,7 @@ mod tests {
             sim.structure_inv(sid_store),
             &[building::LogisticsWant {
                 item_kind: inventory::ItemKind::Bread,
+                material_filter: inventory::MaterialFilter::Any,
                 target_quantity: 10,
             }],
         );
@@ -18123,6 +18399,7 @@ mod tests {
             sim.structure_inv(sid_kitchen),
             &[building::LogisticsWant {
                 item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Any,
                 target_quantity: 1,
             }],
         );
@@ -18137,8 +18414,11 @@ mod tests {
         sim.step(&[], sim.tick + 500_000);
 
         // Storehouse should have bread from cooking (full pipeline: harvest → haul → cook → haul).
-        let store_bread =
-            sim.inv_unreserved_item_count(sim.structure_inv(sid_store), inventory::ItemKind::Bread);
+        let store_bread = sim.inv_unreserved_item_count(
+            sim.structure_inv(sid_store),
+            inventory::ItemKind::Bread,
+            inventory::MaterialFilter::Any,
+        );
         assert!(
             store_bread >= 10,
             "Storehouse should have at least 10 bread from cooking, got {store_bread}"
@@ -18151,6 +18431,7 @@ mod tests {
         sim.config.elf_starting_bread = 0;
         sim.config.elf_default_wants = vec![building::LogisticsWant {
             item_kind: inventory::ItemKind::Bread,
+            material_filter: inventory::MaterialFilter::Any,
             target_quantity: 2,
         }];
         // Disable hunger/tiredness.
@@ -18187,6 +18468,7 @@ mod tests {
             sim.structure_inv(sid_kitchen),
             &[building::LogisticsWant {
                 item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Any,
                 target_quantity: 1,
             }],
         );
@@ -18331,8 +18613,11 @@ mod tests {
         };
         sim.step(&[cmd], sim.tick + 2);
 
-        let bread_count =
-            sim.inv_item_count(sim.creature_inv(elf_id), crate::inventory::ItemKind::Bread);
+        let bread_count = sim.inv_item_count(
+            sim.creature_inv(elf_id),
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
+        );
         assert_eq!(bread_count, 5);
     }
 
@@ -18359,7 +18644,11 @@ mod tests {
             .into_iter()
             .next()
             .expect("pile should exist");
-        let bread_count = sim.inv_item_count(pile.inventory_id, crate::inventory::ItemKind::Bread);
+        let bread_count = sim.inv_item_count(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
+        );
         assert_eq!(bread_count, 3);
     }
 
@@ -18457,6 +18746,7 @@ mod tests {
         let bread_count = sim.inv_item_count(
             sim.creature_inv(elves[1].id),
             crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
         );
         assert_eq!(bread_count, 3);
     }
@@ -18478,7 +18768,11 @@ mod tests {
             .into_iter()
             .next()
             .expect("ground pile should exist");
-        let bread_count = sim.inv_item_count(pile.inventory_id, crate::inventory::ItemKind::Bread);
+        let bread_count = sim.inv_item_count(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
+        );
         assert_eq!(bread_count, 5);
     }
 
@@ -18550,6 +18844,7 @@ mod tests {
             sim.inv_reserve_unowned_items(
                 pile.inventory_id,
                 inventory::ItemKind::Bread,
+                inventory::MaterialFilter::Any,
                 2,
                 task_id,
             );
@@ -18588,7 +18883,11 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(
-            sim.inv_item_count(pile.inventory_id, inventory::ItemKind::Bread),
+            sim.inv_item_count(
+                pile.inventory_id,
+                inventory::ItemKind::Bread,
+                inventory::MaterialFilter::Any
+            ),
             1,
             "Ground pile should have 1 bread left"
         );
@@ -18628,6 +18927,7 @@ mod tests {
         // Set elf wants = [Bread: 2].
         sim.config.elf_default_wants = vec![building::LogisticsWant {
             item_kind: inventory::ItemKind::Bread,
+            material_filter: inventory::MaterialFilter::Any,
             target_quantity: 2,
         }];
 
@@ -18693,6 +18993,7 @@ mod tests {
 
         sim.config.elf_default_wants = vec![building::LogisticsWant {
             item_kind: inventory::ItemKind::Bread,
+            material_filter: inventory::MaterialFilter::Any,
             target_quantity: 2,
         }];
 
@@ -19321,6 +19622,7 @@ mod tests {
         sim.config.elf_starting_bread = 2;
         sim.config.elf_default_wants = vec![building::LogisticsWant {
             item_kind: inventory::ItemKind::Bread,
+            material_filter: inventory::MaterialFilter::Any,
             target_quantity: 2,
         }];
 
@@ -20416,9 +20718,17 @@ mod tests {
         sim.resolve_craft_action(elf_id);
 
         // Verify: Fruit consumed, Bowstring produced.
-        let fruit_count = sim.inv_item_count(inv_id, inventory::ItemKind::Fruit);
+        let fruit_count = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+        );
         assert_eq!(fruit_count, 0, "Fruit should be consumed");
-        let bowstring_count = sim.inv_item_count(inv_id, inventory::ItemKind::Bowstring);
+        let bowstring_count = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Bowstring,
+            inventory::MaterialFilter::Any,
+        );
         assert_eq!(bowstring_count, 20, "Should produce 20 Bowstrings");
 
         // Task should be complete.
@@ -20465,7 +20775,11 @@ mod tests {
         sim.resolve_craft_action(elf_id);
 
         // Verify Bow produced.
-        let bow_count = sim.inv_item_count(inv_id, inventory::ItemKind::Bow);
+        let bow_count = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Bow,
+            inventory::MaterialFilter::Any,
+        );
         assert_eq!(bow_count, 1, "Should produce 1 Bow");
 
         // Verify subcomponent recorded.
@@ -20569,9 +20883,20 @@ mod tests {
 
         sim.resolve_craft_action(elf_id);
 
-        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Fruit), 0);
         assert_eq!(
-            sim.inv_item_count(inv_id, inventory::ItemKind::Bowstring),
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Any
+            ),
+            0
+        );
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Bowstring,
+                inventory::MaterialFilter::Any
+            ),
             20
         );
     }
@@ -20609,7 +20934,14 @@ mod tests {
         sim.resolve_craft_action(elf_id);
 
         let inv_id = sim.structure_inv(structure_id);
-        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 20);
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Arrow,
+                inventory::MaterialFilter::Any
+            ),
+            20
+        );
     }
 
     #[test]
@@ -21345,6 +21677,7 @@ mod tests {
             Some(5),
             vec![crate::building::LogisticsWant {
                 item_kind: crate::inventory::ItemKind::Bread,
+                material_filter: crate::inventory::MaterialFilter::Any,
                 target_quantity: 5,
             }],
         );
@@ -21378,6 +21711,7 @@ mod tests {
             let bread_count = sim.inv_unreserved_item_count(
                 structure.inventory_id,
                 crate::inventory::ItemKind::Bread,
+                crate::inventory::MaterialFilter::Any,
             );
             assert!(bread_count > 0, "Bread should have been delivered");
         } else {
@@ -24797,9 +25131,23 @@ mod tests {
 
         // Arrow consumed from inventory.
         let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
-        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 4);
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Arrow,
+                inventory::MaterialFilter::Any
+            ),
+            4
+        );
         // Bow still there.
-        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Bow), 1);
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Bow,
+                inventory::MaterialFilter::Any
+            ),
+            1
+        );
 
         // Elf is now on Shoot cooldown.
         let elf_creature = sim.db.creatures.get(&elf).unwrap();
@@ -24927,7 +25275,14 @@ mod tests {
 
         // Arrow count should only have decreased by 1 (second shot failed).
         let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
-        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 9);
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Arrow,
+                inventory::MaterialFilter::Any
+            ),
+            9
+        );
     }
 
     #[test]
@@ -25117,7 +25472,14 @@ mod tests {
         );
         assert_eq!(sim.db.projectiles.iter_all().count(), 1);
         let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
-        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 9);
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Arrow,
+                inventory::MaterialFilter::Any
+            ),
+            9
+        );
 
         // Advance past the cooldown. The activation system clears the Shoot
         // action, but the elf may flee or wander. Force idle and restore
@@ -25140,7 +25502,14 @@ mod tests {
             }],
             tick2 + 1,
         );
-        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 8);
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Arrow,
+                inventory::MaterialFilter::Any
+            ),
+            8
+        );
     }
 
     #[test]
@@ -25194,7 +25563,11 @@ mod tests {
         sim.step(&[], sim.tick + 20_000);
 
         let inv_id = sim.db.creatures.get(&goblin_id).unwrap().inventory_id;
-        let arrows_remaining = sim.inv_item_count(inv_id, inventory::ItemKind::Arrow);
+        let arrows_remaining = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any,
+        );
         let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
 
         // The goblin should have either shot arrows or attacked in melee.
@@ -26398,6 +26771,598 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Material filter tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn material_filter_matches_any() {
+        use crate::inventory::{Material, MaterialFilter};
+        let any = MaterialFilter::Any;
+        assert!(any.matches(None));
+        assert!(any.matches(Some(Material::Oak)));
+        assert!(
+            any.matches(Some(Material::FruitSpecies(crate::fruit::FruitSpeciesId(
+                1
+            ))))
+        );
+    }
+
+    #[test]
+    fn material_filter_matches_specific() {
+        use crate::inventory::{Material, MaterialFilter};
+        let specific = MaterialFilter::Specific(Material::Oak);
+        assert!(specific.matches(Some(Material::Oak)));
+        assert!(!specific.matches(None));
+        assert!(!specific.matches(Some(Material::Birch)));
+        assert!(
+            !specific.matches(Some(Material::FruitSpecies(crate::fruit::FruitSpeciesId(
+                1
+            ))))
+        );
+    }
+
+    #[test]
+    fn material_filter_ord_deterministic() {
+        use crate::inventory::{Material, MaterialFilter};
+        // Any < Specific(*)
+        assert!(MaterialFilter::Any < MaterialFilter::Specific(Material::Oak));
+        // Specific variants ordered by Material's Ord
+        assert!(
+            MaterialFilter::Specific(Material::Oak) < MaterialFilter::Specific(Material::Birch)
+        );
+    }
+
+    #[test]
+    fn material_filter_serde_roundtrip() {
+        use crate::inventory::{Material, MaterialFilter};
+        for filter in [
+            MaterialFilter::Any,
+            MaterialFilter::Specific(Material::Oak),
+            MaterialFilter::Specific(Material::FruitSpecies(crate::fruit::FruitSpeciesId(42))),
+        ] {
+            let json = serde_json::to_string(&filter).unwrap();
+            let restored: MaterialFilter = serde_json::from_str(&json).unwrap();
+            assert_eq!(filter, restored, "roundtrip failed for {json}");
+        }
+    }
+
+    #[test]
+    fn material_filter_default_is_any() {
+        use crate::inventory::MaterialFilter;
+        assert_eq!(MaterialFilter::default(), MaterialFilter::Any);
+    }
+
+    #[test]
+    fn logistics_want_serde_backward_compat() {
+        // Old format without material_filter should deserialize with default (Any).
+        let json = r#"{"item_kind":"Bread","target_quantity":5}"#;
+        let want: building::LogisticsWant = serde_json::from_str(json).unwrap();
+        assert_eq!(want.material_filter, inventory::MaterialFilter::Any);
+        assert_eq!(want.item_kind, inventory::ItemKind::Bread);
+        assert_eq!(want.target_quantity, 5);
+    }
+
+    #[test]
+    fn inv_item_count_respects_material_filter() {
+        let mut sim = test_sim(42);
+        let pos = VoxelCoord::new(10, 1, 20);
+        let pile_id = sim.ensure_ground_pile(pos);
+        let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+
+        let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+        let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            3,
+            None,
+            None,
+            Some(species_a),
+            0,
+            None,
+        );
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            5,
+            None,
+            None,
+            Some(species_b),
+            0,
+            None,
+        );
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 2, None, None);
+
+        // Any filter counts all fruit.
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Any
+            ),
+            8
+        );
+        // Specific filter counts only matching species.
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Specific(species_a)
+            ),
+            3
+        );
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Specific(species_b)
+            ),
+            5
+        );
+        // Bread is unmaterialed — Specific for a material should return 0.
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Bread,
+                inventory::MaterialFilter::Specific(inventory::Material::Oak)
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn inv_reserve_items_single_material_lock() {
+        let mut sim = test_sim(42);
+        let pos = VoxelCoord::new(10, 1, 20);
+        let pile_id = sim.ensure_ground_pile(pos);
+        let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+
+        let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+        let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+        // Add 3 of species A and 5 of species B.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            3,
+            None,
+            None,
+            Some(species_a),
+            0,
+            None,
+        );
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            5,
+            None,
+            None,
+            Some(species_b),
+            0,
+            None,
+        );
+
+        // Request 6 fruit with Any filter. Should lock in one material.
+        let task_id = TaskId::new(&mut sim.rng.clone());
+        let hauled_material = sim.inv_reserve_items(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+            6,
+            task_id,
+        );
+
+        // Should have locked in species_a (first in BTree order) and reserved only 3.
+        assert_eq!(hauled_material, Some(species_a));
+        let unreserved = sim.inv_unreserved_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+        );
+        assert_eq!(unreserved, 5, "Only species B (5) should remain unreserved");
+    }
+
+    #[test]
+    fn inv_reserve_items_specific_filter() {
+        let mut sim = test_sim(42);
+        let pos = VoxelCoord::new(10, 1, 20);
+        let pile_id = sim.ensure_ground_pile(pos);
+        let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+
+        let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+        let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            3,
+            None,
+            None,
+            Some(species_a),
+            0,
+            None,
+        );
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            5,
+            None,
+            None,
+            Some(species_b),
+            0,
+            None,
+        );
+
+        // Reserve with Specific(species_b) filter — should only reserve species B.
+        let task_id = TaskId::new(&mut sim.rng.clone());
+        let hauled = sim.inv_reserve_items(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(species_b),
+            10,
+            task_id,
+        );
+        assert_eq!(hauled, Some(species_b));
+
+        // All species A should still be unreserved.
+        assert_eq!(
+            sim.inv_unreserved_item_count(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Specific(species_a)
+            ),
+            3
+        );
+        // Species B should all be reserved.
+        assert_eq!(
+            sim.inv_unreserved_item_count(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Specific(species_b)
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn set_inv_wants_deduplicates_by_kind_filter() {
+        let mut sim = test_sim(42);
+        let inv_id = sim
+            .db
+            .inventories
+            .insert_auto_no_fk(|id| crate::db::Inventory {
+                id,
+                owner_kind: crate::db::InventoryOwnerKind::Structure,
+            })
+            .unwrap();
+
+        let wants = vec![
+            building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Any,
+                target_quantity: 5,
+            },
+            building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Any,
+                target_quantity: 10,
+            },
+        ];
+        sim.set_inv_wants(inv_id, &wants);
+
+        // Should deduplicate: one want with max quantity.
+        let stored = sim.inv_wants(inv_id);
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].target_quantity, 10);
+    }
+
+    #[test]
+    fn overlapping_wants_additive() {
+        let mut sim = test_sim(42);
+        let inv_id = sim
+            .db
+            .inventories
+            .insert_auto_no_fk(|id| crate::db::Inventory {
+                id,
+                owner_kind: crate::db::InventoryOwnerKind::Structure,
+            })
+            .unwrap();
+
+        let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+        let wants = vec![
+            building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Any,
+                target_quantity: 5,
+            },
+            building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Specific(species_a),
+                target_quantity: 10,
+            },
+        ];
+        sim.set_inv_wants(inv_id, &wants);
+
+        // Both should be stored independently.
+        let stored = sim.inv_wants(inv_id);
+        assert_eq!(stored.len(), 2);
+
+        // Per-filter queries.
+        assert_eq!(
+            sim.inv_want_target(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Any
+            ),
+            5
+        );
+        assert_eq!(
+            sim.inv_want_target(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Specific(species_a)
+            ),
+            10
+        );
+
+        // Total for item kind sums both.
+        assert_eq!(
+            sim.inv_want_target_total(inv_id, inventory::ItemKind::Fruit),
+            15
+        );
+    }
+
+    #[test]
+    fn gap_calculation_with_material_filter() {
+        let mut sim = test_sim(42);
+        let inv_id = sim
+            .db
+            .inventories
+            .insert_auto_no_fk(|id| crate::db::Inventory {
+                id,
+                owner_kind: crate::db::InventoryOwnerKind::Structure,
+            })
+            .unwrap();
+
+        let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+
+        // Set up wants: "Any Fruit: 5" and "Species A Fruit: 10".
+        let wants = vec![
+            building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Any,
+                target_quantity: 5,
+            },
+            building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Specific(species_a),
+                target_quantity: 10,
+            },
+        ];
+        sim.set_inv_wants(inv_id, &wants);
+
+        // Add 12 of species A to the inventory.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            12,
+            None,
+            None,
+            Some(species_a),
+            0,
+            None,
+        );
+
+        // Any want: current=12 (all fruit), target=5 → gap=0.
+        let any_current = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+        );
+        assert_eq!(any_current, 12);
+        assert!(any_current >= 5, "Any want should be satisfied");
+
+        // Specific want: current=12, target=10 → gap=0.
+        let specific_current = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(species_a),
+        );
+        assert_eq!(specific_current, 12);
+        assert!(specific_current >= 10, "Specific want should be satisfied");
+    }
+
+    #[test]
+    fn surplus_uses_want_target_total() {
+        let mut sim = test_sim(42);
+        let inv_id = sim
+            .db
+            .inventories
+            .insert_auto_no_fk(|id| crate::db::Inventory {
+                id,
+                owner_kind: crate::db::InventoryOwnerKind::Structure,
+            })
+            .unwrap();
+
+        let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+        let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+        // Want: "Species A Fruit: 10"
+        let wants = vec![building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Specific(species_a),
+            target_quantity: 10,
+        }];
+        sim.set_inv_wants(inv_id, &wants);
+
+        // Hold 8 of species B.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            8,
+            None,
+            None,
+            Some(species_b),
+            0,
+            None,
+        );
+
+        // Surplus for Specific(species_b): held=8, total wanted=10 → surplus=0.
+        let held = sim.inv_unreserved_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(species_b),
+        );
+        let wanted = sim.inv_want_target_total(inv_id, inventory::ItemKind::Fruit);
+        let surplus = held.saturating_sub(wanted);
+        assert_eq!(
+            surplus, 0,
+            "Conservative surplus: total wanted (10) > held species B (8)"
+        );
+    }
+
+    #[test]
+    fn config_backward_compat_missing_material_filter() {
+        // Verify that default_config.json without material_filter in elf_default_wants
+        // deserializes correctly (covered by the `#[serde(default)]` on the field).
+        let json = r#"{"item_kind":"Bread","target_quantity":2}"#;
+        let want: building::LogisticsWant = serde_json::from_str(json).unwrap();
+        assert_eq!(want.material_filter, inventory::MaterialFilter::Any);
+    }
+
+    #[test]
+    fn task_haul_data_serde_backward_compat() {
+        // Old TaskHaulData without material_filter and hauled_material fields.
+        let json = r#"{
+            "id": 1,
+            "task_id": "00000000-0000-0000-0000-000000000001",
+            "item_kind": "Bread",
+            "quantity": 5,
+            "phase": "GoingToSource",
+            "source_kind": "Pile",
+            "destination_nav_node": 0
+        }"#;
+        let data: crate::db::TaskHaulData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.material_filter, inventory::MaterialFilter::Any);
+        assert_eq!(data.hauled_material, None);
+    }
+
+    #[test]
+    fn material_item_display_name_fruit_species() {
+        let sim = test_sim(42);
+        // The test_sim worldgen should have created fruit species.
+        // Verify that material_item_display_name uses the Vaelith name.
+        if let Some(species) = sim.db.fruit_species.iter_all().next() {
+            let mat = inventory::Material::FruitSpecies(species.id);
+            let name = sim.material_item_display_name(inventory::ItemKind::Fruit, mat);
+            // Should contain the Vaelith name, not generic "Fruit".
+            assert!(
+                name.contains(&species.vaelith_name),
+                "Display name '{name}' should contain Vaelith name '{}'",
+                species.vaelith_name
+            );
+        }
+    }
+
+    #[test]
+    fn material_item_display_name_wood() {
+        let sim = test_sim(42);
+        let name =
+            sim.material_item_display_name(inventory::ItemKind::Bow, inventory::Material::Oak);
+        assert_eq!(name, "Oak Bow");
+    }
+
+    #[test]
+    fn logistics_heartbeat_specific_filter_hauls_correct_species() {
+        let mut sim = test_sim(42);
+
+        let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+        let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+        // Place a ground pile with mixed fruit.
+        let pile_pos = sim.trees[&sim.player_tree_id].position;
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                inventory::ItemKind::Fruit,
+                3,
+                None,
+                None,
+                Some(species_a),
+                0,
+                None,
+            );
+            sim.inv_add_item(
+                pile.inventory_id,
+                inventory::ItemKind::Fruit,
+                5,
+                None,
+                None,
+                Some(species_b),
+                0,
+                None,
+            );
+        }
+
+        // Create building wanting only species B fruit.
+        let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+        let _sid = insert_building(
+            &mut sim,
+            building_anchor,
+            Some(5),
+            vec![building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Specific(species_b),
+                target_quantity: 3,
+            }],
+        );
+
+        sim.process_logistics_heartbeat();
+
+        // Should have created a haul task.
+        let haul_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Haul)
+            .collect();
+        assert_eq!(haul_tasks.len(), 1, "Expected 1 haul task");
+
+        let haul = sim
+            .task_haul_data(haul_tasks[0].id)
+            .expect("Haul task should have haul data");
+        assert_eq!(haul.item_kind, inventory::ItemKind::Fruit);
+        assert_eq!(haul.quantity, 3);
+        // The haul should track the actual material and the filter.
+        assert_eq!(
+            haul.material_filter,
+            inventory::MaterialFilter::Specific(species_b)
+        );
+        assert_eq!(haul.hauled_material, Some(species_b));
+
+        // Species A should be completely unreserved.
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(
+            sim.inv_unreserved_item_count(
+                pile.inventory_id,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Specific(species_a)
+            ),
+            3,
+            "Species A should be untouched"
+        );
+    }
+
     #[test]
     fn attack_target_autonomous_preemption_is_autonomous_combat() {
         assert_eq!(
@@ -26703,5 +27668,182 @@ mod tests {
             new_dist >= old_dist,
             "Elf should flee away from nearest goblin: old={old_dist}, new={new_dist}"
         );
+    }
+
+    #[test]
+    fn in_transit_counting_uses_hauled_material() {
+        let mut sim = test_sim(42);
+
+        let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+        let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+        // Place ground piles with species A and B.
+        let pile_pos = sim.trees[&sim.player_tree_id].position;
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                inventory::ItemKind::Fruit,
+                10,
+                None,
+                None,
+                Some(species_a),
+                0,
+                None,
+            );
+            sim.inv_add_item(
+                pile.inventory_id,
+                inventory::ItemKind::Fruit,
+                10,
+                None,
+                None,
+                Some(species_b),
+                0,
+                None,
+            );
+        }
+
+        // Create building wanting "Any Fruit: 20".
+        let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+        let sid = insert_building(
+            &mut sim,
+            building_anchor,
+            Some(5),
+            vec![building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Any,
+                target_quantity: 20,
+            }],
+        );
+
+        sim.process_logistics_heartbeat();
+
+        // Should have created a haul task.
+        let haul_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Haul)
+            .collect();
+        assert!(!haul_tasks.is_empty(), "Expected at least 1 haul task");
+
+        let haul = sim
+            .task_haul_data(haul_tasks[0].id)
+            .expect("Haul task should have haul data");
+        let hauled_mat = haul.hauled_material;
+
+        // In-transit with Any filter should count this haul.
+        let any_in_transit = sim.count_in_transit_items(
+            sid,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+        );
+        assert!(
+            any_in_transit > 0,
+            "Any filter should count in-transit items"
+        );
+
+        // In-transit with Specific(hauled material) should also count it.
+        if let Some(mat) = hauled_mat {
+            let specific_in_transit = sim.count_in_transit_items(
+                sid,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Specific(mat),
+            );
+            assert!(
+                specific_in_transit > 0,
+                "Specific filter matching hauled material should count"
+            );
+
+            // In-transit with a different Specific filter should NOT count it.
+            let other_mat = if mat == species_a {
+                species_b
+            } else {
+                species_a
+            };
+            let other_in_transit = sim.count_in_transit_items(
+                sid,
+                inventory::ItemKind::Fruit,
+                inventory::MaterialFilter::Specific(other_mat),
+            );
+            assert_eq!(
+                other_in_transit, 0,
+                "Specific filter for different material should not count in-transit"
+            );
+        }
+    }
+
+    #[test]
+    fn haul_preserves_material_through_pickup_and_dropoff() {
+        let mut sim = test_sim(42);
+
+        let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+
+        // Place a ground pile with fruit that has a species material.
+        let pile_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_item(
+            pile.inventory_id,
+            inventory::ItemKind::Fruit,
+            5,
+            None,
+            None,
+            Some(species_a),
+            0,
+            None,
+        );
+
+        // Create a building with a Specific want for species_a fruit.
+        let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+        let structure_id = insert_building(
+            &mut sim,
+            building_anchor,
+            Some(5),
+            vec![building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Specific(species_a),
+                target_quantity: 10,
+            }],
+        );
+        let dest_inv = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+
+        // Run logistics heartbeat to create haul task.
+        sim.process_logistics_heartbeat();
+
+        // Find the haul task and verify hauled_material is set.
+        let haul_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == crate::db::TaskKindTag::Haul)
+            .collect();
+        assert_eq!(haul_tasks.len(), 1, "Should have one haul task");
+        let haul_data = sim.task_haul_data(haul_tasks[0].id).unwrap();
+        assert_eq!(haul_data.hauled_material, Some(species_a));
+
+        // Spawn an elf and fast-forward to let it complete the haul.
+        let _elf_id = sim.spawn_creature(crate::types::Species::Elf, pile_pos, &mut Vec::new());
+        for _ in 0..500 {
+            sim.step(&[], sim.tick + 100);
+        }
+
+        // Check the destination building's inventory: fruit should have the
+        // species material, not None.
+        let fruit_stacks: Vec<_> = sim
+            .inv_items(dest_inv)
+            .into_iter()
+            .filter(|s| s.kind == inventory::ItemKind::Fruit)
+            .collect();
+        if !fruit_stacks.is_empty() {
+            for stack in &fruit_stacks {
+                assert_eq!(
+                    stack.material,
+                    Some(species_a),
+                    "Hauled fruit should preserve species material in destination inventory"
+                );
+            }
+        }
     }
 }

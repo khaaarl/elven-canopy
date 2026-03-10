@@ -109,7 +109,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
-[ ] F-logistics-filter     Logistics material filter
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
@@ -214,6 +213,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-large-nav-tolerance  1-voxel height tolerance for large nav
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-logistics            Spatial resource flow (Kanban-style)
+[x] F-logistics-filter     Logistics material filter
 [x] F-main-menu            Main menu UI
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-melee-action         Melee attack action
@@ -1213,7 +1213,7 @@ differentiation, deeper integration with food chain and cooking.
 (property-based recipe matching), F-food-chain (logistics pipeline),
 item schema (FruitSpeciesId references).
 
-**Blocked by:** F-fruit-sprites, F-logistics-filter
+**Blocked by:** F-fruit-sprites
 **Blocks:** F-civ-knowledge
 **Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-naming, F-fruit-prod, F-fruit-sprites, F-fruit-yields, F-logistics-filter, F-recipes
 
@@ -1263,7 +1263,7 @@ setting priority, and configuring wants.
 **Related:** F-bldg-storehouse, F-elf-acquire, F-food-chain, F-hauling, F-items
 
 #### F-logistics-filter — Logistics material filter
-**Status:** Todo · **Phase:** 4
+**Status:** Done · **Phase:** 4
 
 Extend logistics wants with material filtering. Currently wants store only
 ItemKind; this adds a MaterialFilter enum (Any / Specific(Material)) so
@@ -1275,9 +1275,6 @@ in-transit counting, additive overlapping want semantics.
 
 **Draft:** `docs/drafts/logistics_material_filter.md`
 
-**Draft:** `docs/drafts/logistics_material_filter.md`
-
-**Blocks:** F-fruit-variety
 **Related:** F-fruit-variety
 
 #### F-mana-system — Mana generation, storage, and spending

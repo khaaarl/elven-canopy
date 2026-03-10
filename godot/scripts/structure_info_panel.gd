@@ -24,10 +24,13 @@
 ## existing home indicators. Emits assign_elf_requested / unassign_elf_requested
 ## which main.gd wires to bridge.assign_home().
 ##
-## For furnished buildings, a Logistics section is shown with:
-## - An enable checkbox + priority SpinBox (1-10)
-## - A list of item wants (kind + quantity) with remove buttons
-## - An "Add Item..." button to add new wants
+## For furnished buildings, a Logistics section is shown with a summary label
+## and "Details..." button. The details open a secondary panel (sibling
+## PanelContainer positioned left of the main panel, same pattern as crafting)
+## containing:
+## - An enable checkbox + priority controls (1-10)
+## - A scrollable wants list (kind + material filter + quantity, with remove)
+## - An "Add Item..." two-step picker (item kind -> material filter)
 ## Emits logistics_priority_changed and logistics_wants_changed.
 ##
 ## For Kitchen buildings, a Cooking section is shown with:
@@ -80,13 +83,24 @@ var _assign_button: Button
 var _elf_picker_scroll: ScrollContainer
 var _elf_picker_vbox: VBoxContainer
 var _inventory_label: Label
-var _logistics_section: VBoxContainer
+var _logistics_wrapper: VBoxContainer
+var _logistics_summary_label: Label
+var _logistics_details_button: Button
+var _logistics_details_panel: PanelContainer
 var _logistics_priority_hbox: HBoxContainer
 var _logistics_priority_edit: LineEdit
 var _logistics_enabled_check: CheckButton
 var _logistics_wants_vbox: VBoxContainer
 var _logistics_add_button: Button
 var _logistics_item_picker: VBoxContainer
+var _logistics_material_picker: VBoxContainer
+## Cached item kinds from the bridge (static, set once by main.gd).
+var _cached_item_kinds: Array = []
+## Cached material options per item kind from the bridge.
+## Dictionary mapping kind string -> Array of {filter, label} dicts.
+var _cached_material_options: Dictionary = {}
+## The item kind selected in step 1 of the two-step picker.
+var _pending_item_kind: String = ""
 var _cooking_wrapper: VBoxContainer
 var _cooking_section: VBoxContainer
 var _cooking_enabled_check: CheckButton
@@ -256,22 +270,63 @@ func _ready() -> void:
 	_inventory_label.text = "(empty)"
 	vbox.add_child(_inventory_label)
 
-	# Logistics section (visible for furnished buildings).
-	vbox.add_child(HSeparator.new())
+	# Logistics section — summary + details button (visible for furnished buildings).
+	_logistics_wrapper = VBoxContainer.new()
+	_logistics_wrapper.visible = false
+	_logistics_wrapper.add_theme_constant_override("separation", 4)
+	vbox.add_child(_logistics_wrapper)
+
+	_logistics_wrapper.add_child(HSeparator.new())
 
 	var logistics_title := Label.new()
 	logistics_title.text = "Logistics"
 	logistics_title.add_theme_font_size_override("font_size", 16)
-	vbox.add_child(logistics_title)
+	_logistics_wrapper.add_child(logistics_title)
 
-	_logistics_section = VBoxContainer.new()
-	_logistics_section.add_theme_constant_override("separation", 4)
-	_logistics_section.visible = false
-	vbox.add_child(_logistics_section)
+	_logistics_summary_label = Label.new()
+	_logistics_summary_label.text = ""
+	_logistics_wrapper.add_child(_logistics_summary_label)
 
-	# Enable/priority row.
+	_logistics_details_button = Button.new()
+	_logistics_details_button.text = "Details..."
+	_logistics_details_button.pressed.connect(_on_logistics_details_pressed)
+	_logistics_wrapper.add_child(_logistics_details_button)
+
+	# Logistics details panel — created as sibling, positioned left of main panel.
+	_logistics_details_panel = PanelContainer.new()
+	_logistics_details_panel.visible = false
+	_logistics_details_panel.custom_minimum_size.x = 360
+
+	var logistics_margin := MarginContainer.new()
+	logistics_margin.add_theme_constant_override("margin_left", 12)
+	logistics_margin.add_theme_constant_override("margin_right", 12)
+	logistics_margin.add_theme_constant_override("margin_top", 12)
+	logistics_margin.add_theme_constant_override("margin_bottom", 12)
+	_logistics_details_panel.add_child(logistics_margin)
+
+	var logistics_vbox := VBoxContainer.new()
+	logistics_vbox.add_theme_constant_override("separation", 8)
+	logistics_margin.add_child(logistics_vbox)
+
+	var logistics_header := HBoxContainer.new()
+	logistics_vbox.add_child(logistics_header)
+
+	var logistics_header_title := Label.new()
+	logistics_header_title.text = "Logistics Details"
+	logistics_header_title.add_theme_font_size_override("font_size", 20)
+	logistics_header_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	logistics_header.add_child(logistics_header_title)
+
+	var logistics_close := Button.new()
+	logistics_close.text = "X"
+	logistics_close.pressed.connect(func(): _logistics_details_panel.visible = false)
+	logistics_header.add_child(logistics_close)
+
+	logistics_vbox.add_child(HSeparator.new())
+
+	# Enable/priority row inside details panel.
 	_logistics_priority_hbox = HBoxContainer.new()
-	_logistics_section.add_child(_logistics_priority_hbox)
+	logistics_vbox.add_child(_logistics_priority_hbox)
 
 	_logistics_enabled_check = CheckButton.new()
 	_logistics_enabled_check.text = "Enabled"
@@ -303,26 +358,31 @@ func _ready() -> void:
 	priority_plus.pressed.connect(_on_logistics_priority_button.bind(1))
 	_logistics_priority_hbox.add_child(priority_plus)
 
-	# Wants list.
+	logistics_vbox.add_child(HSeparator.new())
+
+	# Wants list inside a scroll container.
+	var wants_scroll := ScrollContainer.new()
+	wants_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	logistics_vbox.add_child(wants_scroll)
+
 	_logistics_wants_vbox = VBoxContainer.new()
 	_logistics_wants_vbox.add_theme_constant_override("separation", 2)
-	_logistics_section.add_child(_logistics_wants_vbox)
+	_logistics_wants_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	wants_scroll.add_child(_logistics_wants_vbox)
 
-	# Add item button + picker.
+	# Add item button + pickers at the bottom of the details panel.
 	_logistics_add_button = Button.new()
 	_logistics_add_button.text = "Add Item..."
 	_logistics_add_button.pressed.connect(_on_logistics_add_pressed)
-	_logistics_section.add_child(_logistics_add_button)
+	logistics_vbox.add_child(_logistics_add_button)
 
 	_logistics_item_picker = VBoxContainer.new()
 	_logistics_item_picker.visible = false
-	_logistics_section.add_child(_logistics_item_picker)
+	logistics_vbox.add_child(_logistics_item_picker)
 
-	for item_name in ["Bread", "Fruit"]:
-		var btn := Button.new()
-		btn.text = item_name
-		btn.pressed.connect(_on_logistics_item_picked.bind(item_name))
-		_logistics_item_picker.add_child(btn)
+	_logistics_material_picker = VBoxContainer.new()
+	_logistics_material_picker.visible = false
+	logistics_vbox.add_child(_logistics_material_picker)
 
 	# Cooking section (visible for kitchen buildings).
 	_cooking_wrapper = VBoxContainer.new()
@@ -471,16 +531,18 @@ func _ready() -> void:
 func _add_details_panel_to_parent() -> void:
 	var parent := get_parent()
 	if parent:
-		parent.add_child(_crafting_details_panel)
-		# Position to the left of the main panel.
-		_crafting_details_panel.anchor_top = 0.0
-		_crafting_details_panel.anchor_bottom = 1.0
-		_crafting_details_panel.anchor_left = 1.0
-		_crafting_details_panel.anchor_right = 1.0
-		_crafting_details_panel.offset_right = -328
-		_crafting_details_panel.offset_left = -688
-		_crafting_details_panel.offset_top = 0
-		_crafting_details_panel.offset_bottom = 0
+		# Both details panels share the same screen position (left of main panel).
+		# The toggle handlers ensure only one is visible at a time.
+		for panel in [_crafting_details_panel, _logistics_details_panel]:
+			parent.add_child(panel)
+			panel.anchor_top = 0.0
+			panel.anchor_bottom = 1.0
+			panel.anchor_left = 1.0
+			panel.anchor_right = 1.0
+			panel.offset_right = -328
+			panel.offset_left = -688
+			panel.offset_top = 0
+			panel.offset_bottom = 0
 
 
 ## Cache recipe definitions from the bridge. Called once by main.gd after
@@ -493,12 +555,24 @@ func set_cultivable_fruits(fruits: Array) -> void:
 	_cached_cultivable_fruits = fruits
 
 
+## Cache logistics item kinds from the bridge. Called by main.gd.
+func set_logistics_item_kinds(kinds: Array) -> void:
+	_cached_item_kinds = kinds
+
+
+## Cache logistics material options from the bridge. Called by main.gd.
+func set_logistics_material_options(options: Dictionary) -> void:
+	_cached_material_options = options
+
+
 func show_structure(info: Dictionary) -> void:
 	_editing_name = false
 	_furnish_picker.visible = false
 	_greenhouse_picker_scroll.visible = false
 	_elf_picker_scroll.visible = false
 	_logistics_item_picker.visible = false
+	_logistics_material_picker.visible = false
+	_logistics_details_panel.visible = false
 	_crafting_details_panel.visible = false
 	_recipe_rows_built = false
 	_recipe_widgets.clear()
@@ -514,6 +588,7 @@ func hide_panel() -> void:
 	_editing_name = false
 	if _name_edit.has_focus():
 		_name_edit.release_focus()
+	_logistics_details_panel.visible = false
 	_crafting_details_panel.visible = false
 	visible = false
 
@@ -643,12 +718,29 @@ func _update_inventory(info: Dictionary) -> void:
 func _update_logistics(info: Dictionary, furnishing: String) -> void:
 	# Only show logistics for furnished buildings.
 	if furnishing == "":
-		_logistics_section.visible = false
+		_logistics_wrapper.visible = false
+		if _logistics_details_panel:
+			_logistics_details_panel.visible = false
 		return
-	_logistics_section.visible = true
+	_logistics_wrapper.visible = true
 
 	var priority: int = info.get("logistics_priority", -1)
 	var is_enabled := priority >= 0
+	var wants: Array = info.get("logistics_wants", [])
+
+	# Update summary in main panel.
+	if is_enabled:
+		_logistics_summary_label.text = (
+			"Enabled (priority %d), %d want%s"
+			% [priority, wants.size(), "s" if wants.size() != 1 else ""]
+		)
+	else:
+		_logistics_summary_label.text = "Disabled"
+
+	# Update details panel if visible.
+	if not _logistics_details_panel.visible:
+		return
+
 	_logistics_enabled_check.set_pressed_no_signal(is_enabled)
 	_logistics_priority_edit.editable = is_enabled
 	if is_enabled and not _logistics_priority_edit.has_focus():
@@ -657,18 +749,23 @@ func _update_logistics(info: Dictionary, furnishing: String) -> void:
 	# Rebuild wants list.
 	for child in _logistics_wants_vbox.get_children():
 		child.queue_free()
-	var wants: Array = info.get("logistics_wants", [])
 	for want in wants:
-		var kind: String = want.get("kind", "?")
+		var display_label: String = want.get("label", want.get("kind", "?"))
 		var qty: int = want.get("target_quantity", 0)
+		var kind: String = want.get("kind", "?")
+		var mat_filter: String = want.get("material_filter", '"Any"')
 		var row := HBoxContainer.new()
 		var label := Label.new()
-		label.text = "%s: %d" % [kind, qty]
+		label.text = "%s: %d" % [display_label, qty]
 		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		# Store kind and filter as metadata for roundtripping in emit functions.
+		row.set_meta("kind", kind)
+		row.set_meta("material_filter", mat_filter)
+		row.set_meta("quantity", qty)
 		row.add_child(label)
 		var remove_btn := Button.new()
 		remove_btn.text = "X"
-		remove_btn.pressed.connect(_on_logistics_want_removed.bind(kind))
+		remove_btn.pressed.connect(_on_logistics_want_removed.bind(kind, mat_filter))
 		row.add_child(remove_btn)
 		_logistics_wants_vbox.add_child(row)
 
@@ -911,6 +1008,9 @@ func _refresh_recipe_rows(
 
 func _on_crafting_details_pressed() -> void:
 	_crafting_details_panel.visible = not _crafting_details_panel.visible
+	# Hide the logistics panel — they share the same screen position.
+	if _crafting_details_panel.visible:
+		_logistics_details_panel.visible = false
 	# Reset built flag so rows are rebuilt fresh when reopening.
 	if _crafting_details_panel.visible:
 		_recipe_rows_built = false
@@ -980,6 +1080,13 @@ func _emit_workshop_config() -> void:
 	workshop_config_changed.emit(_current_structure_id, enabled, recipe_configs)
 
 
+func _on_logistics_details_pressed() -> void:
+	_logistics_details_panel.visible = not _logistics_details_panel.visible
+	# Hide the crafting panel — they share the same screen position.
+	if _logistics_details_panel.visible:
+		_crafting_details_panel.visible = false
+
+
 func _on_logistics_enabled_toggled(pressed: bool) -> void:
 	if _current_structure_id < 0:
 		return
@@ -1018,55 +1125,108 @@ func _on_logistics_priority_focus_exited() -> void:
 
 
 func _on_logistics_add_pressed() -> void:
-	_logistics_item_picker.visible = not _logistics_item_picker.visible
+	_logistics_material_picker.visible = false
+	var was_visible := _logistics_item_picker.visible
+	_logistics_item_picker.visible = not was_visible
+	if not was_visible:
+		_populate_item_kind_picker()
 
 
-func _on_logistics_item_picked(item_name: String) -> void:
+func _populate_item_kind_picker() -> void:
+	for child in _logistics_item_picker.get_children():
+		child.queue_free()
+	for entry in _cached_item_kinds:
+		var kind: String = entry.get("kind", "")
+		var label: String = entry.get("label", kind)
+		var btn := Button.new()
+		btn.text = label
+		btn.pressed.connect(_on_logistics_item_kind_picked.bind(kind))
+		_logistics_item_picker.add_child(btn)
+
+
+func _on_logistics_item_kind_picked(kind: String) -> void:
 	_logistics_item_picker.visible = false
+	_pending_item_kind = kind
+
+	# Check if this kind has material options beyond just "Any".
+	var options: Array = _cached_material_options.get(kind, [])
+	if options.size() <= 1:
+		# Only "Any" or no options — skip step 2, auto-select Any.
+		_on_logistics_material_picked('"Any"')
+		return
+
+	# Show step 2: material filter picker.
+	_populate_material_picker(options)
+	_logistics_material_picker.visible = true
+
+
+func _populate_material_picker(options: Array) -> void:
+	for child in _logistics_material_picker.get_children():
+		child.queue_free()
+	for entry in options:
+		var filter_str: String = entry.get("filter", '"Any"')
+		var label: String = entry.get("label", "?")
+		var btn := Button.new()
+		btn.text = label
+		btn.pressed.connect(_on_logistics_material_picked.bind(filter_str))
+		_logistics_material_picker.add_child(btn)
+
+
+func _on_logistics_material_picked(filter_str: String) -> void:
+	_logistics_material_picker.visible = false
 	if _current_structure_id < 0:
 		return
 	# Add a want with default quantity 10, or increment existing.
-	_emit_wants_with_added(item_name, 10)
+	_emit_wants_with_added(_pending_item_kind, filter_str, 10)
 
 
-func _on_logistics_want_removed(kind: String) -> void:
+func _on_logistics_want_removed(kind: String, filter_str: String) -> void:
 	if _current_structure_id < 0:
 		return
-	_emit_wants_without(kind)
+	_emit_wants_without(kind, filter_str)
 
 
-func _emit_wants_with_added(kind: String, default_qty: int) -> void:
-	# Build JSON from current wants, adding or updating the specified kind.
+func _emit_wants_with_added(kind: String, filter_str: String, default_qty: int) -> void:
+	# Build JSON from current wants, adding or updating the specified (kind, filter).
 	var wants: Array = []
 	var found := false
+	var filter_val: Variant = JSON.parse_string(filter_str)
 	for child in _logistics_wants_vbox.get_children():
-		if child is HBoxContainer:
-			var label: Label = child.get_child(0)
-			var parts := label.text.split(": ")
-			if parts.size() == 2:
-				var k: String = parts[0]
-				var q: int = int(parts[1])
-				if k == kind:
-					q += default_qty
-					found = true
-				wants.append({"kind": k, "quantity": q})
+		if child is HBoxContainer and child.has_meta("kind"):
+			var k: String = child.get_meta("kind")
+			var mf: String = child.get_meta("material_filter")
+			var q: int = child.get_meta("quantity")
+			var mf_val: Variant = JSON.parse_string(mf)
+			if k == kind and _variant_eq(mf_val, filter_val):
+				q += default_qty
+				found = true
+			wants.append(_make_want_entry(k, mf_val, q))
 	if not found:
-		wants.append({"kind": kind, "quantity": default_qty})
+		wants.append(_make_want_entry(kind, filter_val, default_qty))
 	logistics_wants_changed.emit(_current_structure_id, JSON.stringify(wants))
 
 
-func _emit_wants_without(kind: String) -> void:
+func _emit_wants_without(kind: String, filter_str: String) -> void:
 	var wants: Array = []
+	var filter_val: Variant = JSON.parse_string(filter_str)
 	for child in _logistics_wants_vbox.get_children():
-		if child is HBoxContainer:
-			var label: Label = child.get_child(0)
-			var parts := label.text.split(": ")
-			if parts.size() == 2:
-				var k: String = parts[0]
-				var q: int = int(parts[1])
-				if k != kind:
-					wants.append({"kind": k, "quantity": q})
+		if child is HBoxContainer and child.has_meta("kind"):
+			var k: String = child.get_meta("kind")
+			var mf: String = child.get_meta("material_filter")
+			var q: int = child.get_meta("quantity")
+			var mf_val: Variant = JSON.parse_string(mf)
+			if k != kind or not _variant_eq(mf_val, filter_val):
+				wants.append(_make_want_entry(k, mf_val, q))
 	logistics_wants_changed.emit(_current_structure_id, JSON.stringify(wants))
+
+
+static func _make_want_entry(k: String, mf: Variant, q: int) -> Dictionary:
+	return {"kind": k, "material_filter": mf, "quantity": q}
+
+
+## Deep-compare two Variants (for comparing parsed JSON material filter values).
+static func _variant_eq(a: Variant, b: Variant) -> bool:
+	return JSON.stringify(a) == JSON.stringify(b)
 
 
 func _on_name_submitted(new_text: String) -> void:

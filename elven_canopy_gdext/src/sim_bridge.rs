@@ -116,6 +116,10 @@
 //   — configure cooking on a kitchen building.
 //   `set_workshop_config(id, enabled, recipe_ids)` — configure workshop
 //   recipes. `get_recipes()` — returns all available recipe definitions.
+//   `set_logistics_wants(id, wants_json)` — set building logistics wants
+//   (each want is an `{item_kind, material_filter, quantity}` triple).
+//   `get_logistics_item_kinds()` and `get_logistics_material_options(kind)`
+//   — dynamic UI picker data for the two-step logistics want flow.
 // - **Ground piles:** `get_ground_piles()` — returns a `VarArray` of
 //   `{x, y, z, inventory: [{kind, quantity}]}` dicts.
 //   `get_ground_pile_info(x,y,z)` — returns a single pile's dict (same
@@ -1448,6 +1452,20 @@ impl SimBridge {
         for want in sim.inv_wants(structure.inventory_id) {
             let mut want_dict = VarDictionary::new();
             want_dict.set("kind", GString::from(want.item_kind.display_name()));
+            // Serialize material filter as JSON string for GDScript.
+            let filter_json = Self::serialize_material_filter(want.material_filter);
+            let filter_str = filter_json.to_string();
+            want_dict.set("material_filter", GString::from(&filter_str));
+            // Build display label: "Any Fruit", "Shinethúni Fruit", "Oak Bow", etc.
+            let label = match want.material_filter {
+                elven_canopy_sim::inventory::MaterialFilter::Any => {
+                    format!("Any {}", want.item_kind.display_name())
+                }
+                elven_canopy_sim::inventory::MaterialFilter::Specific(mat) => {
+                    sim.material_item_display_name(want.item_kind, mat)
+                }
+            };
+            want_dict.set("label", GString::from(label.as_str()));
             want_dict.set("target_quantity", want.target_quantity as i64);
             wants_arr.push(&want_dict.to_variant());
         }
@@ -1467,6 +1485,7 @@ impl SimBridge {
             let bread_count: u32 = sim.inv_item_count(
                 structure.inventory_id,
                 elven_canopy_sim::inventory::ItemKind::Bread,
+                elven_canopy_sim::inventory::MaterialFilter::Any,
             );
             if bread_count >= structure.cooking_bread_target {
                 "Bread target reached"
@@ -1511,7 +1530,13 @@ impl SimBridge {
                 let stock: u32 = recipe
                     .outputs
                     .iter()
-                    .map(|o| sim.inv_item_count(structure.inventory_id, o.item_kind))
+                    .map(|o| {
+                        sim.inv_item_count(
+                            structure.inventory_id,
+                            o.item_kind,
+                            elven_canopy_sim::inventory::MaterialFilter::Any,
+                        )
+                    })
                     .sum();
                 stocks_dict.set(GString::from(recipe.id.as_str()), stock as i64);
             }
@@ -1635,8 +1660,90 @@ impl SimBridge {
         });
     }
 
+    /// Parse a `MaterialFilter` from a JSON value (matching serde externally-tagged
+    /// enum format). Returns `Any` if missing or malformed.
+    fn parse_material_filter(
+        val: Option<&serde_json::Value>,
+    ) -> elven_canopy_sim::inventory::MaterialFilter {
+        use elven_canopy_sim::inventory::MaterialFilter;
+        let Some(v) = val else {
+            return MaterialFilter::Any;
+        };
+        if v == "Any" {
+            return MaterialFilter::Any;
+        }
+        if let Some(obj) = v.as_object()
+            && let Some(specific) = obj.get("Specific")
+            && let Some(mat) = Self::parse_material_value(specific)
+        {
+            return MaterialFilter::Specific(mat);
+        }
+        MaterialFilter::Any
+    }
+
+    /// Parse a `Material` from a JSON value. Wood types are bare strings
+    /// ("Oak", "Birch", etc.). Fruit species use `{"FruitSpecies": id}`.
+    fn parse_material_value(
+        val: &serde_json::Value,
+    ) -> Option<elven_canopy_sim::inventory::Material> {
+        use elven_canopy_sim::inventory::Material;
+        if let Some(s) = val.as_str() {
+            return match s {
+                "Oak" => Some(Material::Oak),
+                "Birch" => Some(Material::Birch),
+                "Willow" => Some(Material::Willow),
+                "Ash" => Some(Material::Ash),
+                "Yew" => Some(Material::Yew),
+                _ => None,
+            };
+        }
+        if let Some(obj) = val.as_object()
+            && let Some(fs_val) = obj.get("FruitSpecies")
+        {
+            // Godot's JSON parser converts all numbers to float, so 0 becomes
+            // 0.0. Try as_u64 first (from Rust-generated JSON), then as_f64
+            // (from Godot roundtripped JSON).
+            let id = fs_val
+                .as_u64()
+                .or_else(|| fs_val.as_f64().map(|f| f as u64))?;
+            let id16 = u16::try_from(id).ok()?;
+            return Some(Material::FruitSpecies(
+                elven_canopy_sim::fruit::FruitSpeciesId(id16),
+            ));
+        }
+        None
+    }
+
+    /// Serialize a `MaterialFilter` to a `serde_json::Value` matching the serde
+    /// externally-tagged enum format.
+    fn serialize_material_filter(
+        filter: elven_canopy_sim::inventory::MaterialFilter,
+    ) -> serde_json::Value {
+        use elven_canopy_sim::inventory::{Material, MaterialFilter};
+        use serde_json::{Value, json};
+        match filter {
+            MaterialFilter::Any => Value::String("Any".into()),
+            MaterialFilter::Specific(mat) => {
+                let mat_val = match mat {
+                    Material::Oak => Value::String("Oak".into()),
+                    Material::Birch => Value::String("Birch".into()),
+                    Material::Willow => Value::String("Willow".into()),
+                    Material::Ash => Value::String("Ash".into()),
+                    Material::Yew => Value::String("Yew".into()),
+                    Material::FruitSpecies(id) => json!({"FruitSpecies": id.0}),
+                };
+                json!({"Specific": mat_val})
+            }
+        }
+    }
+
     /// Set the logistics wants for a building. Expects a JSON string like:
-    /// `[{"kind": "Bread", "quantity": 10}, {"kind": "Fruit", "quantity": 5}]`
+    /// `[{"kind": "Bread", "material_filter": "Any", "quantity": 10}]`
+    ///
+    /// Material filter encoding (matches serde externally-tagged enum format):
+    /// - `"Any"` → `MaterialFilter::Any`
+    /// - `{"Specific": "Oak"}` → `MaterialFilter::Specific(Material::Oak)`
+    /// - `{"Specific": {"FruitSpecies": 42}}` → `MaterialFilter::Specific(Material::FruitSpecies(...))`
     #[func]
     fn set_logistics_wants(&mut self, structure_id: i64, wants_json: GString) {
         let json_str = wants_json.to_string();
@@ -1661,10 +1768,12 @@ impl SimBridge {
                     continue;
                 }
             };
+            let material_filter = Self::parse_material_filter(entry.get("material_filter"));
             let quantity = entry.get("quantity").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             if quantity > 0 {
                 wants.push(elven_canopy_sim::building::LogisticsWant {
                     item_kind: kind,
+                    material_filter,
                     target_quantity: quantity,
                 });
             }
@@ -1673,6 +1782,100 @@ impl SimBridge {
             structure_id: StructureId(structure_id as u64),
             wants,
         });
+    }
+
+    /// Get all available item kinds for the logistics UI picker.
+    /// Returns a VarArray of dictionaries: `[{"kind": "Bread", "label": "Bread"}, ...]`
+    #[func]
+    fn get_logistics_item_kinds(&self) -> VarArray {
+        use elven_canopy_sim::inventory::ItemKind;
+        let mut arr = VarArray::new();
+        for kind in [
+            ItemKind::Bread,
+            ItemKind::Fruit,
+            ItemKind::Bow,
+            ItemKind::Arrow,
+            ItemKind::Bowstring,
+        ] {
+            let mut d = VarDictionary::new();
+            d.set("kind", GString::from(kind.display_name()));
+            d.set("label", GString::from(kind.display_name()));
+            arr.push(&d.to_variant());
+        }
+        arr
+    }
+
+    /// Get material filter options for a given item kind (two-step UI picker).
+    /// Returns a VarArray of dictionaries:
+    /// `[{"filter": "Any", "label": "Any Fruit"}, {"filter": {"Specific": ...}, "label": "..."}, ...]`
+    ///
+    /// Always includes an "Any" option. For Fruit, includes each fruit species
+    /// in the DB. For Bow/Arrow/Bowstring, includes each wood material.
+    /// For Bread, only "Any" (no material variants).
+    #[func]
+    fn get_logistics_material_options(&self, kind_name: GString) -> VarArray {
+        use elven_canopy_sim::inventory::{ItemKind, Material, MaterialFilter};
+        let mut arr = VarArray::new();
+        let kind_str = kind_name.to_string();
+        let kind = match kind_str.as_str() {
+            "Bread" => ItemKind::Bread,
+            "Fruit" => ItemKind::Fruit,
+            "Bow" => ItemKind::Bow,
+            "Arrow" => ItemKind::Arrow,
+            "Bowstring" => ItemKind::Bowstring,
+            _ => return arr,
+        };
+
+        // Always include "Any" first.
+        let any_label = format!("Any {}", kind.display_name());
+        let mut any_dict = VarDictionary::new();
+        let any_filter_str = Self::serialize_material_filter(MaterialFilter::Any).to_string();
+        any_dict.set("filter", GString::from(&any_filter_str));
+        any_dict.set("label", GString::from(any_label.as_str()));
+        arr.push(&any_dict.to_variant());
+
+        let Some(sim) = &self.session.sim else {
+            return arr;
+        };
+
+        match kind {
+            ItemKind::Fruit => {
+                // Add each fruit species from the DB.
+                for species in sim.db.fruit_species.iter_all() {
+                    let mat = Material::FruitSpecies(species.id);
+                    let label = sim.material_item_display_name(kind, mat);
+                    let filter_str =
+                        Self::serialize_material_filter(MaterialFilter::Specific(mat)).to_string();
+                    let mut d = VarDictionary::new();
+                    d.set("filter", GString::from(&filter_str));
+                    d.set("label", GString::from(label.as_str()));
+                    arr.push(&d.to_variant());
+                }
+            }
+            ItemKind::Bow | ItemKind::Arrow | ItemKind::Bowstring => {
+                // Add each wood material.
+                for mat in [
+                    Material::Oak,
+                    Material::Birch,
+                    Material::Willow,
+                    Material::Ash,
+                    Material::Yew,
+                ] {
+                    let label = sim.material_item_display_name(kind, mat);
+                    let filter_str =
+                        Self::serialize_material_filter(MaterialFilter::Specific(mat)).to_string();
+                    let mut d = VarDictionary::new();
+                    d.set("filter", GString::from(&filter_str));
+                    d.set("label", GString::from(label.as_str()));
+                    arr.push(&d.to_variant());
+                }
+            }
+            ItemKind::Bread => {
+                // No material variants for bread — only "Any" (already added above).
+            }
+        }
+
+        arr
     }
 
     /// Set the cooking configuration for a kitchen building.

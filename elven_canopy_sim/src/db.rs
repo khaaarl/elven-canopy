@@ -424,6 +424,14 @@ pub struct TaskHaulData {
     pub phase: HaulPhase,
     pub source_kind: HaulSourceKind,
     pub destination_nav_node: NavNodeId,
+    /// The material filter from the want that triggered this haul.
+    #[serde(default)]
+    pub material_filter: crate::inventory::MaterialFilter,
+    /// The actual material of the items being hauled. Set when the haul is
+    /// created based on what `inv_reserve_items` selected. `None` for
+    /// unmaterialed items (e.g., Bread).
+    #[serde(default)]
+    pub hauled_material: Option<Material>,
 }
 
 /// Sleep-specific state (extension table).
@@ -769,7 +777,7 @@ pub struct GroundPile {
     pub inventory_id: InventoryId,
 }
 
-/// A desired item kind and target quantity for an inventory.
+/// A desired item kind, material filter, and target quantity for an inventory.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct LogisticsWantRow {
     #[primary_key(auto_increment)]
@@ -777,6 +785,8 @@ pub struct LogisticsWantRow {
     #[indexed]
     pub inventory_id: InventoryId,
     pub item_kind: ItemKind,
+    #[serde(default)]
+    pub material_filter: crate::inventory::MaterialFilter,
     pub target_quantity: u32,
 }
 

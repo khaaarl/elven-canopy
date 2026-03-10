@@ -513,6 +513,14 @@ func _setup_common(bridge: SimBridge) -> void:
 	)
 	_structure_info_panel.set_recipes(bridge.get_recipes())
 	_structure_info_panel.set_cultivable_fruits(bridge.get_cultivable_fruit_species())
+	# Cache logistics item kinds and material options for the two-step picker.
+	var item_kinds: Array = bridge.get_logistics_item_kinds()
+	_structure_info_panel.set_logistics_item_kinds(item_kinds)
+	var mat_options: Dictionary = {}
+	for entry in item_kinds:
+		var kind: String = entry.get("kind", "")
+		mat_options[kind] = bridge.get_logistics_material_options(kind)
+	_structure_info_panel.set_logistics_material_options(mat_options)
 
 	# Menu button.
 	var menu_btn := Button.new()

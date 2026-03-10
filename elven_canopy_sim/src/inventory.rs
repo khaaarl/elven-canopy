@@ -1,14 +1,19 @@
 // Item type enum for the simulation.
 //
 // Provides `ItemKind` (the enum of distinct item types: Bread, Fruit, Bow,
-// Arrow, Bowstring), `Material` (wood species for crafted items), and
-// `EffectKind` (stubbed enchantment effect types for future use).
+// Arrow, Bowstring), `Material` (wood species for crafted items),
+// `MaterialFilter` (logistics want constraint: `Any` or `Specific(Material)`),
+// and `EffectKind` (stubbed enchantment effect types for future use).
 // Item storage is now handled by the `db::ItemStack` and `db::Inventory`
 // tabulosity tables. `SimState` has `inv_*` methods (in `sim.rs`) for all
 // inventory operations (add, remove, count, reserve, etc.).
 //
+// `MaterialFilter` is used by building logistics wants and creature personal
+// wants to constrain which materials satisfy a request. `Any` matches all
+// materials; `Specific(m)` matches only items with that exact material.
+//
 // See also: `db.rs` for the tabulosity table definitions, `sim.rs` for the
-// `inv_*` methods on `SimState`.
+// `inv_*` methods on `SimState`, `building.rs` for `LogisticsWant` DTO.
 
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +65,32 @@ impl Material {
             Material::Ash => "Ash",
             Material::Yew => "Yew",
             Material::FruitSpecies(_) => "Fruit",
+        }
+    }
+}
+
+/// Constrains which materials satisfy a logistics want.
+///
+/// `Any` matches any material (or no material). `Specific(m)` matches only
+/// items with `material == Some(m)`. Derives `Default` (→ `Any`) for serde
+/// backward compatibility, and `Ord` for use as a BTreeMap key (determinism).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum MaterialFilter {
+    /// Any material or no material. "Give me any Fruit."
+    #[default]
+    Any,
+    /// A specific material. "Give me Shinethúni Fruit."
+    Specific(Material),
+}
+
+impl MaterialFilter {
+    /// Does this filter accept an item with the given material?
+    pub fn matches(self, material: Option<Material>) -> bool {
+        match self {
+            MaterialFilter::Any => true,
+            MaterialFilter::Specific(m) => material == Some(m),
         }
     }
 }

@@ -1343,6 +1343,7 @@ fn default_elf_starting_bread() -> u32 {
 fn default_elf_default_wants() -> Vec<crate::building::LogisticsWant> {
     vec![crate::building::LogisticsWant {
         item_kind: crate::inventory::ItemKind::Bread,
+        material_filter: crate::inventory::MaterialFilter::Any,
         target_quantity: 2,
     }]
 }

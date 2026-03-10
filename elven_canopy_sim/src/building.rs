@@ -22,9 +22,11 @@
 //
 // ## LogisticsWant DTO
 //
-// `LogisticsWant` is a simple DTO pairing an `ItemKind` with a target
-// quantity. Used by building logistics (automated hauling) and creature
-// personal item acquisition (`Creature.wants` in `sim.rs`).
+// `LogisticsWant` is a DTO pairing an `ItemKind` and `MaterialFilter` with a
+// target quantity. Used by building logistics (automated hauling) and creature
+// personal item acquisition (`Creature.wants` in `sim.rs`). The
+// `material_filter` field (default `Any`) constrains which materials satisfy
+// the want — `Any` accepts all, `Specific(m)` requires an exact match.
 //
 // ## CompletedStructure (moved)
 //
@@ -38,17 +40,19 @@
 //
 // **Critical constraint: determinism.** Uses `BTreeMap` for output ordering.
 
-use crate::inventory::ItemKind;
+use crate::inventory::{ItemKind, MaterialFilter};
 use crate::types::{FaceData, FaceDirection, FaceType, VoxelCoord};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// A desired item kind and target quantity. Used by building logistics
-/// (automated hauling) and creature personal acquisition (`Creature.wants`
-/// in `sim.rs`).
+/// A desired item kind, material filter, and target quantity. Used by building
+/// logistics (automated hauling) and creature personal acquisition
+/// (`Creature.wants` in `sim.rs`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogisticsWant {
     pub item_kind: ItemKind,
+    #[serde(default)]
+    pub material_filter: MaterialFilter,
     pub target_quantity: u32,
 }
 
