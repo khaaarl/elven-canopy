@@ -147,6 +147,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
+[ ] F-support-struts       Support strut construction
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
@@ -569,6 +570,23 @@ and assignments. Requires structural validation of the expanded footprint.
 
 **Related:** F-construction, F-demolish, F-struct-names
 
+#### F-support-struts — Support strut construction
+**Status:** Todo · **Phase:** 3 · **Refs:** §9
+
+Diagonal braces and support struts that elves can build under platforms and
+between structures. Struts convert bending stress into compression along
+their length, dramatically reducing stress at connection points. The FEM
+solver (F-voxel-fem) already handles arbitrary geometry — struts are a
+construction primitive that players learn to use for stronger builds.
+
+Design doc §9 mentions struts as an emergent structural strategy: "A diagonal
+brace under a platform converts bending stress into compression along the
+strut, dramatically reducing stress at the connection." Blueprint stress
+preview (F-stress-heatmap) should suggest adding struts at high-stress
+connections.
+
+**Related:** F-stress-heatmap, F-voxel-fem
+
 #### F-task-priority — Priority queue and auto-assignment
 **Status:** Todo · **Phase:** 2 · **Refs:** §11, §15
 
@@ -736,7 +754,7 @@ solver iterations (~20–30) for responsive preview during placement, full
 iterations on confirm. See draft §7.2 for `BlueprintValidation` data
 structure and §7.4 for performance budget.
 
-**Related:** F-blueprint-mode
+**Related:** F-blueprint-mode, F-support-struts
 
 #### F-struct-basic — Basic structural integrity (flood fill)
 **Status:** Done · **Phase:** 3 · **Refs:** §9
@@ -768,7 +786,7 @@ blueprint validation (OK / Warning / Blocked based on stress thresholds),
 bridge method for GDScript stress heatmap data. Construction intermediate
 states are exempt from checks (draft §12).
 
-**Related:** B-preview-blueprints, F-struct-basic
+**Related:** B-preview-blueprints, F-struct-basic, F-support-struts
 
 #### F-voxel-textures — Per-face Perlin noise voxel textures
 **Status:** Done · **Phase:** 2
