@@ -13,6 +13,10 @@ for future work.
 
 ## 1. Military Groups
 
+> **Implementation draft:** See `military_groups.md` for the refined design
+> with implicit civilian membership, UI spec, and implementation plan. This
+> section remains as the original design context.
+
 Military groups belong to **civilizations** (see `elfcyclopedia_civs.md`).
 Every creature that belongs to a civilization is assigned to exactly one of
 that civ's military groups. Creatures without a civilization (wildlife,

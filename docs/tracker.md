@@ -59,6 +59,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-apprentice           Skill transfer via proximity
+[ ] F-armor                Wearable armor system
 [ ] F-arrow-durability     Arrow durability and recovery
 [ ] F-attack-move          Attack-move task (walk + fight en route)
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
@@ -79,6 +80,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
+[ ] F-clothing             Wearable clothing system
 [ ] F-combat               Combat and invader threat system
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
@@ -113,7 +115,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
 [ ] F-mass-conserve        Wood mass tracking and conservation
+[ ] F-military-armor       Military group armor policy
 [ ] F-military-campaign    Send elves on world expeditions
+[ ] F-military-equip       Military group equipment acquisition
 [ ] F-military-groups      Military group data model and configuration
 [ ] F-military-org         Squad management and organization
 [ ] F-minimap              Minimap with tree silhouette and creature positions
@@ -1135,6 +1139,13 @@ also needs this function as a prerequisite.
 
 ### Economy & Logistics
 
+#### F-clothing — Wearable clothing system
+**Status:** Todo
+
+Creatures can wear clothing items in defined body slots (e.g., head, torso, legs, feet). Clothing is crafted at workshops, stored in inventories, and equipped by creatures. Many details TBD: slot system design (fixed slots vs. layering), how clothing affects mood/comfort/thoughts, crafting recipes and material requirements, visual representation (sprite overlays? color tinting?), clothing durability and wear, species-specific clothing (elf vs. other species body plans), and whether clothing provides any mechanical benefits beyond mood. This is the base wearable-item infrastructure that armor builds on.
+
+**Blocks:** F-armor
+
 #### F-crafting — Non-construction jobs and crafting
 **Status:** Todo · **Phase:** 8+ · **Refs:** §11
 
@@ -1588,6 +1599,14 @@ infrastructure.
 
 ### Combat & Defense
 
+#### F-armor — Wearable armor system
+**Status:** Todo
+
+Armor items that can be worn in clothing slots, providing damage reduction in combat. Builds on the clothing/wearable system (F-clothing) for slot mechanics and equip/unequip flow. Many details TBD: armor types and their stats (leather, chain, plate?), how damage reduction is calculated (flat reduction? percentage? per-damage-type?), armor durability and repair, crafting recipes and material requirements, how armor interacts with movement speed or other stats, visual representation, whether armor and clothing can be worn simultaneously (layering), and species-specific armor availability.
+
+**Blocked by:** F-clothing
+**Blocks:** F-military-armor
+
 #### F-arrow-durability — Arrow durability and recovery
 **Status:** Todo · **Phase:** 3
 
@@ -1620,7 +1639,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-military-groups, F-rts-selection
+**Blocked by:** F-attack-move, F-enemy-ai, F-military-groups, F-rts-selection
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1690,6 +1709,14 @@ Display creature HP in the game UI. Two elements:
 
 **Related:** F-hp-death
 
+#### F-military-armor — Military group armor policy
+**Status:** Todo
+
+Military groups can specify an armor policy — what armor, if any, members should wear. Extends the military group equipment system (F-military-equip) to handle armor specifically, using the wearable armor system (F-armor) for the actual equip mechanics. Many details TBD: how armor policy is specified (any available armor? specific armor type? minimum protection level?), how the policy interacts with armor availability (wait for crafting? use whatever's available?), priority of armor acquisition vs. weapon acquisition, UI for armor policy configuration within the military group detail panel, and how armor status is displayed per creature and per group.
+
+**Blocked by:** F-armor, F-military-equip
+**Related:** F-military-groups
+
 #### F-military-campaign — Send elves on world expeditions
 **Status:** Todo · **Phase:** 8+ · **Refs:** §26
 
@@ -1698,14 +1725,27 @@ control (unlike Dwarf Fortress's hands-off approach).
 
 **Blocked by:** F-combat, F-military-org
 
+#### F-military-equip — Military group equipment acquisition
+**Status:** Todo
+
+The player configures equipment policies on military groups (e.g., "members should carry a bow and 10 arrows"). The system automatically generates logistics-style wants for group members, causing them to seek out and acquire the specified items — similar to personal item acquisition but driven by group policy rather than individual creature wants. Unlike personal wants, group equipment wants do NOT confer ownership — items are held for the group's purpose, not the creature's personal use. Many details TBD: how equipment policies are specified (item kind + quantity pairs? equipment slots?), how wants interact with existing personal wants (priority? separate queue?), what happens when equipment is unavailable (partial fulfillment? queuing?), how re-equipment works after item loss (death drops, combat breakage), whether equipment policies generate tasks immediately or on a heartbeat cycle, and how the UI surfaces equipment status per creature and per group. Depends on F-military-groups for the group data model and UI.
+
+**Blocks:** F-military-armor
+**Related:** F-military-groups
+
 #### F-military-groups — Military group data model and configuration
 **Status:** Todo
 
-MilitaryGroup table in SimDb with civ_id FK (cascade on civ delete). Auto-increment PK. Fields: name, armor_policy, weapon_policy, food_carry, behavior (None/Train), hostile_response (Fight/Flee). Two default groups per civ during worldgen (Civilians, Soldiers). Creature gains military_group: Option<MilitaryGroupId> (nullable FK, nullify on group delete). Civ creatures assigned to Civilians at spawn; non-civ creatures get None. Player can create additional groups. Group configuration UI is Phase E (polish).
+MilitaryGroup table in SimDb with civ_id FK (cascade on civ delete). Auto-increment PK. Fields: name, is_default_civilian (bool, invariant: exactly one per civ), hostile_response (Fight/Flee). Two default groups per civ during worldgen (Civilians with Flee, Soldiers with Fight). Implicit civilian membership: creature `military_group: None` means civilian (governed by civ's default civilian group settings), `Some(group_id)` means explicitly assigned. Civilian count computed as total civ creatures minus assigned creatures. Commands: CreateMilitaryGroup, DeleteMilitaryGroup (reject for civilian group, nullify members), ReassignMilitaryGroup, RenameMilitaryGroup, SetGroupHostileResponse. `should_flee()` updated to check group hostile_response.
+
+UI: Military panel opened via existing Units [U] button. Summary page lists groups with member counts, click to navigate to detail. Detail page: left column with scrollable member list + reassign buttons, right column with hostile_response toggle (Fight/Flee) and delete button. Reassignment overlay (modal) lists groups for quick reassignment. Creature info panel shows military group name as clickable link to the group's detail view. Group configuration UI included in initial implementation (not deferred to polish).
+
+**Draft:** docs/drafts/military_groups.md
 
 **Draft:** docs/drafts/combat_military.md (§1)
 
 **Blocks:** F-combat
+**Related:** F-military-armor, F-military-equip
 
 #### F-military-org — Squad management and organization
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
