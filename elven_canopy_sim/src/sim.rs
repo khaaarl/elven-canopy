@@ -108,10 +108,10 @@
 // 1. A `CreateTask` command (from the UI via `sim_bridge.rs`) creates a task
 //    in `Available` state, snapped to the nearest nav node.
 // 2. On its next activation, an idle creature whose species matches calls
-//    `find_available_task`, which returns the first `Available` task in
-//    deterministic BTreeMap order. The creature calls `claim_task`, which
-//    sets the task to `InProgress`, sets the creature's `current_task`, and
-//    computes an A* path to `task.location`.
+//    `find_available_task`, which uses Dijkstra search on the nav graph to
+//    find the nearest `Available` task by travel cost. The creature calls
+//    `claim_task`, which sets the task to `InProgress`, sets the creature's
+//    `current_task`, and computes an A* path to `task.location`.
 // 3. Each subsequent activation runs the task's behavior script (see below).
 // 4. On completion, `complete_task` sets the task to `Complete` and clears
 //    `current_task` for assigned creatures, returning them to wandering.
@@ -185,8 +185,9 @@
 //
 // `find_available_task` filters by: (1) `TaskState::Available`, (2) species
 // compatibility (`required_species` is `None` or matches the creature's
-// species). It returns the first match in BTreeMap iteration order, which is
-// deterministic by `TaskId`.
+// species). Among candidates it picks the nearest by Dijkstra nav-graph
+// distance (actual travel cost), falling back to arbitrary order only for
+// tasks at the same nav node.
 //
 // Task checking happens on every activation of an idle creature. This is
 // simple and correct; optimization (checking less frequently) is deferred.
@@ -2245,21 +2246,59 @@ impl SimState {
         }
     }
 
-    /// Find the first available task this creature can work on.
-    /// Respects species restrictions: tasks with `required_species` are only
-    /// visible to matching creatures.
+    /// Find the nearest available task this creature can work on.
+    /// Uses Dijkstra search on the nav graph to prefer tasks closest by
+    /// actual travel cost, not just insertion order. Respects species
+    /// restrictions: tasks with `required_species` are only visible to
+    /// matching creatures.
     fn find_available_task(&self, creature_id: CreatureId) -> Option<TaskId> {
         let creature = self.db.creatures.get(&creature_id)?;
         let species = creature.species;
+        let current_node = creature.current_node?;
 
-        self.db
+        // Collect all candidate tasks (id + location) that this creature can work.
+        let candidates: Vec<(TaskId, NavNodeId)> = self
+            .db
             .tasks
             .iter_all()
-            .find(|t| {
+            .filter(|t| {
                 t.state == task::TaskState::Available
                     && t.required_species.is_none_or(|s| s == species)
             })
-            .map(|t| t.id)
+            .map(|t| (t.id, t.location))
+            .collect();
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Single candidate — skip Dijkstra.
+        if candidates.len() == 1 {
+            return Some(candidates[0].0);
+        }
+
+        let target_nodes: Vec<NavNodeId> = candidates.iter().map(|&(_, loc)| loc).collect();
+
+        let species_data = &self.species_table[&species];
+        let graph = self.graph_for_species(species);
+
+        let nearest_node = pathfinding::dijkstra_nearest(
+            graph,
+            current_node,
+            &target_nodes,
+            species_data.walk_ticks_per_voxel,
+            species_data.climb_ticks_per_voxel,
+            species_data.wood_ladder_tpv,
+            species_data.rope_ladder_tpv,
+            None, // no edge filter
+        )?;
+
+        // Find the task at the nearest node. If multiple tasks share a location,
+        // the first in iteration order wins (deterministic tiebreaker).
+        candidates
+            .iter()
+            .find(|&&(_, loc)| loc == nearest_node)
+            .map(|&(id, _)| id)
     }
 
     /// Assign a creature to a task.
@@ -27845,5 +27884,205 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn find_available_task_prefers_nearest_by_nav_distance() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Spawn an elf near the tree.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 2);
+
+        let elf = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Elf)
+            .expect("elf should exist");
+        let elf_id = elf.id;
+        let elf_node = elf.current_node.expect("elf should have a nav node");
+        let elf_pos = sim.nav_graph.node(elf_node).position;
+
+        // Find two nav nodes: one close to the elf, one farther away.
+        // We pick nodes by searching the graph for nodes at increasing
+        // Manhattan distances from the elf.
+        let mut nodes_by_distance: Vec<(NavNodeId, u32)> = sim
+            .nav_graph
+            .live_nodes()
+            .filter(|n| n.id != elf_node)
+            .map(|n| (n.id, n.position.manhattan_distance(elf_pos)))
+            .collect();
+        nodes_by_distance.sort_by_key(|&(_, d)| d);
+
+        // Pick a near node (close to elf) and a far node (much farther).
+        let near_node = nodes_by_distance[0].0;
+        let far_node = nodes_by_distance
+            .iter()
+            .find(|&&(_, d)| d >= 10)
+            .expect("should have a node at least 10 manhattan away")
+            .0;
+
+        // Create two Available tasks — far task first (to ensure it would be
+        // picked under the old first-found behavior if its TaskId sorts first).
+        let far_task_id = TaskId::new(&mut sim.rng);
+        let near_task_id = TaskId::new(&mut sim.rng);
+
+        let far_task = crate::db::Task {
+            id: far_task_id,
+            kind_tag: TaskKindTag::GoTo,
+            state: TaskState::Available,
+            location: far_node,
+            progress: 0.0,
+            total_cost: 1.0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+        };
+        let near_task = crate::db::Task {
+            id: near_task_id,
+            kind_tag: TaskKindTag::GoTo,
+            state: TaskState::Available,
+            location: near_node,
+            progress: 0.0,
+            total_cost: 1.0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+        };
+
+        sim.db.tasks.insert_no_fk(far_task).unwrap();
+        sim.db.tasks.insert_no_fk(near_task).unwrap();
+
+        // Clear the elf's current task so it's idle.
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.current_task = None;
+        });
+
+        let chosen = sim.find_available_task(elf_id).expect("should find a task");
+        assert_eq!(
+            chosen, near_task_id,
+            "find_available_task should prefer the nearest task by nav distance"
+        );
+    }
+
+    #[test]
+    fn find_available_task_single_candidate_skips_dijkstra() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 2);
+
+        let elf = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Elf)
+            .expect("elf should exist");
+        let elf_id = elf.id;
+
+        // Pick any nav node for the single task.
+        let task_node = sim
+            .nav_graph
+            .live_nodes()
+            .next()
+            .expect("should have nodes")
+            .id;
+
+        let task_id = TaskId::new(&mut sim.rng);
+        let task = crate::db::Task {
+            id: task_id,
+            kind_tag: TaskKindTag::GoTo,
+            state: TaskState::Available,
+            location: task_node,
+            progress: 0.0,
+            total_cost: 1.0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+        };
+        sim.db.tasks.insert_no_fk(task).unwrap();
+
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.current_task = None;
+        });
+
+        let chosen = sim
+            .find_available_task(elf_id)
+            .expect("should find the only task");
+        assert_eq!(chosen, task_id);
+    }
+
+    #[test]
+    fn find_available_task_respects_species_filter_with_proximity() {
+        let mut sim = test_sim(42);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+        // Spawn a capybara (non-elf).
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Capybara,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], 2);
+
+        let capy = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Capybara)
+            .expect("capybara should exist");
+        let capy_id = capy.id;
+
+        let task_node = sim
+            .nav_graph
+            .live_nodes()
+            .next()
+            .expect("should have nodes")
+            .id;
+
+        // Create an elf-only task — capybara should not see it.
+        let elf_task_id = TaskId::new(&mut sim.rng);
+        let elf_task = crate::db::Task {
+            id: elf_task_id,
+            kind_tag: TaskKindTag::GoTo,
+            state: TaskState::Available,
+            location: task_node,
+            progress: 0.0,
+            total_cost: 1.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+        };
+        sim.db.tasks.insert_no_fk(elf_task).unwrap();
+
+        let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+            c.current_task = None;
+        });
+
+        let chosen = sim.find_available_task(capy_id);
+        assert_eq!(
+            chosen, None,
+            "capybara should not be assigned an elf-only task"
+        );
     }
 }

@@ -151,6 +151,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
+[ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-memory          Ancient tree knowledge/vision system
@@ -273,6 +274,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-unique-idx       Unique index enforcement
 [x] F-task-interruption    Unified task interruption and cleanup
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
+[x] F-task-proximity       Proximity-based task assignment (Dijkstra nearest)
 [x] F-thoughts             Creature thoughts (DF-style event reactions)
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
@@ -573,7 +575,8 @@ Task queue with Low/Normal/High/Urgent priorities, auto-assignment of idle
 elves to highest-priority available tasks. Priority is already in the data
 model but not yet used for scheduling.
 
-**Related:** F-build-queue-ui, F-elf-needs, F-jobs
+**Blocks:** F-task-assign-opt
+**Related:** F-build-queue-ui, F-elf-needs, F-jobs, F-preemption, F-task-assign-opt
 
 #### F-tree-overlap — Construction overlap with tree geometry
 **Status:** Done · **Phase:** 2 · **Refs:** §11, §12
@@ -1057,7 +1060,7 @@ PreemptionLevel enum with explicit level() method (NOT derived Ord). 8 levels: I
 
 **Draft:** docs/drafts/combat_military.md (§8)
 
-**Related:** F-creature-actions
+**Related:** F-creature-actions, F-task-priority
 
 #### F-shoot-action — Ranged attack action (shooting arrows)
 **Status:** Done
@@ -1339,6 +1342,26 @@ via GameConfig so recipes can be added/tuned without code changes.
 Avoids hardcoding conversion logic per building type.
 
 **Related:** F-bldg-kitchen, F-bldg-workshop, F-crafting, F-food-chain, F-fruit-variety
+
+#### F-task-assign-opt — Event-driven bidirectional task assignment
+**Status:** Todo · **Phase:** 4
+
+Trigger task assignment at two events: (1) when an elf becomes idle, and
+(2) when a new task is added to the DB. In either case, run a bidirectional
+matching pass that can assign multiple idle elves to multiple available tasks
+simultaneously, preferring proximity (Dijkstra nav-graph distance). Not
+globally optimal (that would be computationally prohibitive), but significantly
+better than the current first-found pull model.
+
+Supersedes F-task-proximity (pull-side Dijkstra nearest, already implemented).
+
+**Blocked by:** F-task-priority
+**Related:** F-task-priority, F-task-proximity
+
+#### F-task-proximity — Proximity-based task assignment (Dijkstra nearest)
+**Status:** Done · **Phase:** 4
+
+**Related:** F-task-assign-opt
 
 #### F-tree-capacity — Per-tree carrying capacity limits
 **Status:** Todo · **Phase:** 7 · **Refs:** §13
