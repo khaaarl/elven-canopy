@@ -5,8 +5,12 @@
 // Out-of-bounds reads return `Air`; out-of-bounds writes are no-ops.
 //
 // Also provides `raycast_hits_solid()`, a 3D DDA (Amanatides & Woo) voxel
-// traversal that tests whether any solid voxel lies between two points.
-// Used by `sim_bridge.rs` to filter nav nodes occluded by geometry.
+// traversal that tests whether any solid voxel lies between two points
+// (used by `sim_bridge.rs` to filter nav nodes occluded by geometry), and
+// `has_los()`, a similar DDA traversal for line-of-sight checks between
+// voxel positions (used by ranged combat). `has_los` skips both origin and
+// destination voxels and treats Leaf/Fruit as transparent via
+// `VoxelType::blocks_los()`.
 //
 // The world is regenerated from seed at load time, so it skips
 // serialization (`#[serde(skip)]` on `SimState.world`). The `Default`
@@ -212,6 +216,90 @@ impl VoxelWorld {
             t_max[min_axis] += t_delta[min_axis];
         }
     }
+
+    /// Returns `true` if line-of-sight exists between two voxel positions.
+    /// Uses the same DDA algorithm as `raycast_hits_solid`, but only blocks
+    /// on voxels where `VoxelType::blocks_los()` is true (Leaf and Fruit are
+    /// transparent). Neither the origin nor destination voxel self-occlude.
+    ///
+    /// For multi-voxel targets, the caller should check LOS to each occupied
+    /// voxel and succeed if any ray is clear.
+    pub fn has_los(&self, from: VoxelCoord, to: VoxelCoord) -> bool {
+        if from == to {
+            return true;
+        }
+
+        let from_f = [
+            from.x as f32 + 0.5,
+            from.y as f32 + 0.5,
+            from.z as f32 + 0.5,
+        ];
+        let to_f = [to.x as f32 + 0.5, to.y as f32 + 0.5, to.z as f32 + 0.5];
+        let dir = [
+            to_f[0] - from_f[0],
+            to_f[1] - from_f[1],
+            to_f[2] - from_f[2],
+        ];
+
+        let mut voxel = [from.x, from.y, from.z];
+        let end_voxel = [to.x, to.y, to.z];
+
+        let mut step = [0i32; 3];
+        let mut t_max = [f32::INFINITY; 3];
+        let mut t_delta = [f32::INFINITY; 3];
+
+        for axis in 0..3 {
+            if dir[axis] > 0.0 {
+                step[axis] = 1;
+                t_delta[axis] = 1.0 / dir[axis];
+                t_max[axis] = ((voxel[axis] as f32 + 1.0) - from_f[axis]) / dir[axis];
+            } else if dir[axis] < 0.0 {
+                step[axis] = -1;
+                t_delta[axis] = 1.0 / (-dir[axis]);
+                t_max[axis] = (from_f[axis] - voxel[axis] as f32) / (-dir[axis]);
+            }
+        }
+
+        // Skip the origin voxel — advance once before checking.
+        let min_axis = if t_max[0] <= t_max[1] && t_max[0] <= t_max[2] {
+            0
+        } else if t_max[1] <= t_max[2] {
+            1
+        } else {
+            2
+        };
+        if t_max[min_axis] > 1.0 {
+            return true; // Adjacent voxels, nothing between them.
+        }
+        voxel[min_axis] += step[min_axis];
+        t_max[min_axis] += t_delta[min_axis];
+
+        loop {
+            if voxel == end_voxel {
+                return true; // Reached destination without obstruction.
+            }
+
+            let vt = self.get(VoxelCoord::new(voxel[0], voxel[1], voxel[2]));
+            if vt.blocks_los() {
+                return false;
+            }
+
+            let min_axis = if t_max[0] <= t_max[1] && t_max[0] <= t_max[2] {
+                0
+            } else if t_max[1] <= t_max[2] {
+                1
+            } else {
+                2
+            };
+
+            if t_max[min_axis] > 1.0 {
+                return true;
+            }
+
+            voxel[min_axis] += step[min_axis];
+            t_max[min_axis] += t_delta[min_axis];
+        }
+    }
 }
 
 #[cfg(test)]
@@ -374,5 +462,88 @@ mod tests {
         assert!(world.has_solid_face_neighbor(VoxelCoord::new(0, 1, 0)));
         // Coord at (-1,0,0) is OOB; its neighbors include (0,0,0) which is solid.
         assert!(world.has_solid_face_neighbor(VoxelCoord::new(-1, 0, 0)));
+    }
+
+    // -- has_los tests --
+
+    #[test]
+    fn los_clear_path() {
+        let world = VoxelWorld::new(16, 16, 16);
+        let a = VoxelCoord::new(2, 4, 8);
+        let b = VoxelCoord::new(10, 4, 8);
+        assert!(world.has_los(a, b));
+        assert!(world.has_los(b, a)); // symmetry
+    }
+
+    #[test]
+    fn los_same_voxel() {
+        let world = VoxelWorld::new(8, 8, 8);
+        let v = VoxelCoord::new(3, 3, 3);
+        assert!(world.has_los(v, v));
+    }
+
+    #[test]
+    fn los_blocked_by_trunk() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(5, 4, 8), VoxelType::Trunk);
+        let a = VoxelCoord::new(2, 4, 8);
+        let b = VoxelCoord::new(10, 4, 8);
+        assert!(!world.has_los(a, b));
+    }
+
+    #[test]
+    fn los_leaf_transparent() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(5, 4, 8), VoxelType::Leaf);
+        let a = VoxelCoord::new(2, 4, 8);
+        let b = VoxelCoord::new(10, 4, 8);
+        assert!(world.has_los(a, b));
+    }
+
+    #[test]
+    fn los_fruit_transparent() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(5, 4, 8), VoxelType::Fruit);
+        let a = VoxelCoord::new(2, 4, 8);
+        let b = VoxelCoord::new(10, 4, 8);
+        assert!(world.has_los(a, b));
+    }
+
+    #[test]
+    fn los_origin_and_dest_not_self_occluding() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        // Even if the destination voxel is solid, it shouldn't block LOS.
+        world.set(VoxelCoord::new(10, 4, 8), VoxelType::Trunk);
+        let a = VoxelCoord::new(2, 4, 8);
+        let b = VoxelCoord::new(10, 4, 8);
+        assert!(world.has_los(a, b));
+    }
+
+    #[test]
+    fn los_adjacent_voxels() {
+        let mut world = VoxelWorld::new(8, 8, 8);
+        // Adjacent voxels should always have LOS.
+        let a = VoxelCoord::new(3, 3, 3);
+        let b = VoxelCoord::new(4, 3, 3);
+        assert!(world.has_los(a, b));
+        // Even diagonally adjacent.
+        let c = VoxelCoord::new(4, 4, 4);
+        assert!(world.has_los(a, c));
+
+        // Still clear even with solid at destination.
+        world.set(VoxelCoord::new(4, 3, 3), VoxelType::Trunk);
+        assert!(world.has_los(a, b));
+    }
+
+    #[test]
+    fn los_diagonal_path() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let a = VoxelCoord::new(2, 4, 2);
+        let b = VoxelCoord::new(10, 4, 10);
+        assert!(world.has_los(a, b));
+
+        // Block a voxel along the diagonal.
+        world.set(VoxelCoord::new(6, 4, 6), VoxelType::Branch);
+        assert!(!world.has_los(a, b));
     }
 }

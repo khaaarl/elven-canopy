@@ -214,6 +214,11 @@ pub enum SimEventKind {
     },
     /// A projectile hit a solid surface and stuck/shattered.
     ProjectileHitSurface { position: VoxelCoord },
+    /// A creature launched a projectile at a target.
+    ProjectileLaunched {
+        attacker_id: CreatureId,
+        target_id: CreatureId,
+    },
 }
 
 #[cfg(test)]

@@ -224,6 +224,12 @@ pub enum SimAction {
         attacker_id: CreatureId,
         target_id: CreatureId,
     },
+    /// Order a ranged attack: shooter fires an arrow at target (debug/testing).
+    /// Validates: shooter alive, idle, has bow + arrow, aim feasibility, LOS.
+    DebugShootAction {
+        attacker_id: CreatureId,
+        target_id: CreatureId,
+    },
     /// Spawn a projectile at a position with a given velocity (debug/testing).
     /// Creates a projectile with an arrow item in its inventory.
     DebugSpawnProjectile {

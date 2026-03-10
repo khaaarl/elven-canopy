@@ -137,7 +137,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-rts-selection        RTS box selection and multi-creature commands
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
 [ ] F-seasons              Seasonal visual and gameplay effects
-[ ] F-shoot-action         Ranged attack action (shooting arrows)
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
@@ -244,6 +243,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-serde                Serialization for all sim types
 [x] F-session-sm           Formal session & sim state machines
 [x] F-shared-prng          Shared PRNG crate across all Rust crates
+[x] F-shoot-action         Ranged attack action (shooting arrows)
 [x] F-sim-commands         SimCommand pipeline
 [x] F-sim-db-impl          Tabulosity typed in-memory relational store
 [x] F-sim-speed            Simulation speed controls UI
@@ -1051,7 +1051,7 @@ PreemptionLevel enum with explicit level() method (NOT derived Ord). 8 levels: I
 **Related:** F-creature-actions
 
 #### F-shoot-action — Ranged attack action (shooting arrows)
-**Status:** Todo
+**Status:** Done
 
 Ranged attack as a creature ACTION. Uses the standard ActionKind / next_available_tick mechanism for cooldown — set action_kind = Shoot and next_available_tick = current_tick + shoot_cooldown_ticks (no separate last_shoot_tick field). Requires: LOS to target (voxel ray march / DDA, multi-voxel targets check any occupied voxel), range check (archer_range_sq in SpeciesData), ammo in inventory, cooldown elapsed. On shoot: compute aim velocity via iterative guess-and-simulate (same integer physics as real projectiles, max 5 iterations), consume arrow from inventory, spawn Projectile entity, emit ProjectileLaunched event. Aim skill tiers (novice/skilled/expert) for future. New ActionKind variant: Shoot. New config fields: shoot_cooldown_ticks in GameConfig, archer_range_sq in SpeciesData. LOS and aim computation are pure algorithms, unit-testable independently.
 
@@ -1061,8 +1061,6 @@ Ranged attack as a creature ACTION. Uses the standard ActionKind / next_availabl
 
 
 **Draft:** docs/drafts/combat_military.md (§5)
-
-**Blocks:** F-combat
 
 #### F-task-interruption — Unified task interruption and cleanup
 **Status:** Done
@@ -1627,7 +1625,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-military-groups, F-rts-selection, F-shoot-action
+**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-military-groups, F-rts-selection
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 

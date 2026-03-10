@@ -112,6 +112,8 @@ pub enum ActionKind {
     Mope = 12,
     /// A melee strike against an adjacent creature.
     MeleeStrike = 13,
+    /// Shooting a ranged projectile at a target creature.
+    Shoot = 14,
 }
 
 // ---------------------------------------------------------------------------

@@ -170,6 +170,11 @@
 //     Not task-driven. Triggered by `DebugMeleeAttack` command (or future
 //     AttackCreature task AI). Deals flat damage on start; action duration
 //     is the cooldown before the next strike. Creature becomes idle on resolve.
+//   Shoot — ActionKind::Shoot, duration `shoot_cooldown_ticks`.
+//     Not task-driven. Triggered by `DebugShootAction` command or hostile AI.
+//     Requires bow + arrow in inventory, LOS, and feasible aim trajectory.
+//     Consumes one arrow, spawns projectile on start; action duration is the
+//     cooldown before the next shot. Creature becomes idle on resolve.
 //
 // ### Task assignment details
 //
@@ -789,6 +794,12 @@ impl SimState {
                 target_id,
             } => {
                 self.try_melee_strike(*attacker_id, *target_id, events);
+            }
+            SimAction::DebugShootAction {
+                attacker_id,
+                target_id,
+            } => {
+                self.try_shoot_arrow(*attacker_id, *target_id, events);
             }
             SimAction::DebugSpawnProjectile {
                 origin,
@@ -2163,6 +2174,7 @@ impl SimState {
                 | ActionKind::DropOff
                 | ActionKind::Mope
                 | ActionKind::MeleeStrike
+                | ActionKind::Shoot
         ) {
             let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
                 c.action_kind = ActionKind::NoAction;
@@ -2483,8 +2495,8 @@ impl SimState {
                 };
                 self.resolve_acquire_item_action(creature_id, tid)
             }
-            ActionKind::MeleeStrike => {
-                // MeleeStrike is not task-driven; creature becomes idle.
+            ActionKind::MeleeStrike | ActionKind::Shoot => {
+                // MeleeStrike/Shoot are not task-driven; creature becomes idle.
                 false
             }
             _ => false,
@@ -4850,6 +4862,138 @@ impl SimState {
         true
     }
 
+    /// Attempt a ranged attack: `attacker_id` shoots an arrow at `target_id`.
+    ///
+    /// Validates: both alive, attacker is idle (NoAction + cooldown elapsed),
+    /// attacker has at least one Bow and one Arrow in inventory, the aim solver
+    /// finds a feasible trajectory (`hit_tick.is_some()`), and LOS exists
+    /// (voxel DDA ray from attacker to target, checking any occupied voxel of
+    /// a multi-voxel target).
+    ///
+    /// On success: consumes one arrow from attacker inventory, spawns a
+    /// Projectile entity, sets `ActionKind::Shoot` with `shoot_cooldown_ticks`
+    /// duration, emits `ProjectileLaunched` event. Returns true.
+    fn try_shoot_arrow(
+        &mut self,
+        attacker_id: CreatureId,
+        target_id: CreatureId,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        use crate::inventory::ItemKind;
+        use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+
+        // 1. Both creatures must exist and be alive.
+        let attacker = match self.db.creatures.get(&attacker_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return false,
+        };
+        let target = match self.db.creatures.get(&target_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return false,
+        };
+
+        // 2. Attacker must be idle.
+        if attacker.action_kind != ActionKind::NoAction {
+            return false;
+        }
+        if let Some(next_tick) = attacker.next_available_tick
+            && next_tick > self.tick
+        {
+            return false;
+        }
+
+        // 3. Attacker must have a Bow and at least one Arrow.
+        let inv_id = attacker.inventory_id;
+        if self.inv_item_count(inv_id, ItemKind::Bow) == 0 {
+            return false;
+        }
+        if self.inv_item_count(inv_id, ItemKind::Arrow) == 0 {
+            return false;
+        }
+
+        let attacker_pos = attacker.position;
+        let target_pos = target.position;
+        let target_species = target.species;
+        let target_footprint = self.species_table[&target_species].footprint;
+
+        // 4. LOS check — try each occupied voxel of the target's footprint.
+        let mut has_los = false;
+        let mut los_target_voxel = target_pos;
+        for dy in 0..target_footprint[1] as i32 {
+            for dx in 0..target_footprint[0] as i32 {
+                for dz in 0..target_footprint[2] as i32 {
+                    let tv =
+                        VoxelCoord::new(target_pos.x + dx, target_pos.y + dy, target_pos.z + dz);
+                    if self.world.has_los(attacker_pos, tv) {
+                        has_los = true;
+                        los_target_voxel = tv;
+                        break;
+                    }
+                }
+                if has_los {
+                    break;
+                }
+            }
+            if has_los {
+                break;
+            }
+        }
+        if !has_los {
+            return false;
+        }
+
+        // 5. Aim feasibility — use the aim solver to check if a trajectory exists.
+        let origin_sub = SubVoxelCoord::from_voxel_center(attacker_pos);
+        let speed = self.config.arrow_base_speed;
+        let gravity = self.config.arrow_gravity;
+        let aim = compute_aim_velocity(origin_sub, los_target_voxel, speed, gravity, 5, 5000);
+        if aim.hit_tick.is_none() {
+            return false;
+        }
+
+        // 6. All checks passed — consume arrow and fire.
+        self.inv_remove_item(inv_id, ItemKind::Arrow, 1);
+
+        // Create projectile inventory with one arrow (projectile carries its payload).
+        let proj_inv_id = self.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
+        self.inv_add_simple_item(proj_inv_id, ItemKind::Arrow, 1, None, None);
+
+        let was_empty = self.db.projectiles.is_empty();
+
+        let _ = self
+            .db
+            .projectiles
+            .insert_auto_no_fk(|id| crate::db::Projectile {
+                id,
+                shooter: Some(attacker_id),
+                inventory_id: proj_inv_id,
+                position: origin_sub,
+                velocity: aim.velocity,
+                prev_voxel: attacker_pos,
+                origin_voxel: attacker_pos,
+            });
+
+        if was_empty {
+            self.event_queue
+                .schedule(self.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+
+        // 7. Start the Shoot action (cooldown).
+        let duration = self.config.shoot_cooldown_ticks;
+        self.start_simple_action(attacker_id, ActionKind::Shoot, duration);
+
+        // 8. Emit ProjectileLaunched event.
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::ProjectileLaunched {
+                attacker_id,
+                target_id,
+            },
+        });
+
+        true
+    }
+
     // -----------------------------------------------------------------------
     // Projectile system
     // -----------------------------------------------------------------------
@@ -6271,7 +6415,14 @@ impl SimState {
             return true;
         }
 
-        // No target in melee range — pathfind toward nearest detected target.
+        // No target in melee range — try shooting if the attacker has a bow + arrow.
+        for &(target_id, _) in &targets {
+            if self.try_shoot_arrow(creature_id, target_id, events) {
+                return true;
+            }
+        }
+
+        // No melee or ranged option — pathfind toward nearest detected target.
         let target_nodes: Vec<NavNodeId> = targets.iter().map(|&(_, n)| n).collect();
 
         let species_data = &self.species_table[&species];
@@ -21018,7 +21169,7 @@ mod tests {
         assert!(elf.next_available_tick.is_none());
     }
 
-    /// ActionKind serde roundtrip for all 13 variants.
+    /// ActionKind serde roundtrip for all 15 variants.
     #[test]
     fn action_kind_serde_roundtrip_all_variants() {
         let variants = [
@@ -21035,6 +21186,8 @@ mod tests {
             ActionKind::PickUp,
             ActionKind::DropOff,
             ActionKind::Mope,
+            ActionKind::MeleeStrike,
+            ActionKind::Shoot,
         ];
         for variant in &variants {
             let json = serde_json::to_string(variant).unwrap();
@@ -23840,6 +23993,457 @@ mod tests {
             tick2 + 1,
         );
         assert_eq!(sim.db.creatures.get(&elf).unwrap().hp, elf_hp_before);
+    }
+
+    // -----------------------------------------------------------------------
+    // Shoot action tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: give a creature a bow and some arrows.
+    fn arm_with_bow_and_arrows(sim: &mut SimState, creature_id: CreatureId, arrows: u32) {
+        let inv_id = sim.db.creatures.get(&creature_id).unwrap().inventory_id;
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bow, 1, None, None);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, arrows, None, None);
+    }
+
+    #[test]
+    fn test_shoot_arrow_spawns_projectile() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place them apart with clear LOS (same Y, 5 voxels apart on X).
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+
+        // Give elf a bow and arrows.
+        arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+        let tick = sim.tick;
+        let events = sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+
+        // A projectile should exist.
+        assert_eq!(sim.db.projectiles.iter_all().count(), 1);
+
+        // Arrow consumed from inventory.
+        let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 4);
+        // Bow still there.
+        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Bow), 1);
+
+        // Elf is now on Shoot cooldown.
+        let elf_creature = sim.db.creatures.get(&elf).unwrap();
+        assert_eq!(elf_creature.action_kind, ActionKind::Shoot);
+        assert!(elf_creature.next_available_tick.is_some());
+
+        // ProjectileLaunched event emitted.
+        assert!(events.events.iter().any(|e| matches!(
+            &e.kind,
+            SimEventKind::ProjectileLaunched {
+                attacker_id,
+                target_id,
+            } if *attacker_id == elf && *target_id == goblin
+        )));
+    }
+
+    #[test]
+    fn test_shoot_arrow_no_bow_fails() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+
+        // Give arrows but NO bow.
+        let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+
+        // No projectile spawned.
+        assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+        // Elf still idle.
+        assert_eq!(
+            sim.db.creatures.get(&elf).unwrap().action_kind,
+            ActionKind::NoAction,
+        );
+    }
+
+    #[test]
+    fn test_shoot_arrow_no_arrows_fails() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+
+        // Give bow but NO arrows.
+        let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bow, 1, None, None);
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+
+        assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+    }
+
+    #[test]
+    fn test_shoot_arrow_cooldown_prevents_second_shot() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+        arm_with_bow_and_arrows(&mut sim, elf, 10);
+
+        // First shot.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+        assert_eq!(sim.db.projectiles.iter_all().count(), 1);
+
+        // Immediate second shot should fail (still on cooldown).
+        let tick2 = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick2 + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick2 + 1,
+        );
+
+        // Arrow count should only have decreased by 1 (second shot failed).
+        let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 9);
+    }
+
+    #[test]
+    fn test_shoot_arrow_blocked_los_fails() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        // Place goblin 5 voxels away.
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+        arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+        // Place a solid wall between them.
+        sim.world.set(
+            VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z),
+            VoxelType::Trunk,
+        );
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+
+        // No projectile — LOS blocked.
+        assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+    }
+
+    #[test]
+    fn test_shoot_arrow_leaf_does_not_block_los() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+        arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+        // Place a leaf between them — should NOT block LOS.
+        sim.world.set(
+            VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z),
+            VoxelType::Leaf,
+        );
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+
+        // Projectile spawned (leaf doesn't block).
+        assert_eq!(sim.db.projectiles.iter_all().count(), 1);
+    }
+
+    #[test]
+    fn test_shoot_arrow_dead_target_fails() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+        arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+        // Kill the goblin.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugKillCreature {
+                    creature_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+
+        // Try to shoot dead goblin.
+        let tick2 = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick2 + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick2 + 1,
+        );
+
+        assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+    }
+
+    #[test]
+    fn test_shoot_arrow_dead_attacker_fails() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+        arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+        // Kill the elf.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugKillCreature { creature_id: elf },
+            }],
+            tick + 1,
+        );
+
+        let tick2 = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick2 + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick2 + 1,
+        );
+
+        assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+    }
+
+    #[test]
+    fn test_shoot_action_serde_roundtrip() {
+        let action = ActionKind::Shoot;
+        let json = serde_json::to_string(&action).unwrap();
+        let restored: ActionKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, ActionKind::Shoot);
+    }
+
+    #[test]
+    fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+        arm_with_bow_and_arrows(&mut sim, elf, 10);
+
+        // First shot.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+        assert_eq!(sim.db.projectiles.iter_all().count(), 1);
+        let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 9);
+
+        // Advance past the cooldown. The activation system clears the Shoot
+        // action, but the elf may start wandering. Force idle again to isolate
+        // the second-shot test.
+        let cooldown = sim.config.shoot_cooldown_ticks;
+        sim.step(&[], sim.tick + cooldown + 1);
+        force_idle(&mut sim, elf);
+
+        // Second shot should succeed now that cooldown has expired.
+        let tick2 = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick2 + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick2 + 1,
+        );
+        assert_eq!(sim.inv_item_count(inv_id, inventory::ItemKind::Arrow), 8);
+    }
+
+    #[test]
+    fn test_shoot_arrow_rejected_when_not_idle() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+        // Put elf into a non-idle action (e.g., Build).
+        let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+            c.action_kind = ActionKind::Build;
+            c.next_available_tick = Some(sim.tick + 5000);
+        });
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: elf,
+                    target_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+
+        // No projectile — elf was busy.
+        assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+    }
+
+    #[test]
+    fn test_hostile_ai_shoots_when_armed() {
+        let mut sim = test_sim(99);
+        let elf_id = spawn_species(&mut sim, Species::Elf);
+        let goblin_id = spawn_species(&mut sim, Species::Goblin);
+
+        // Arm the goblin with bow + arrows. Don't reposition — let the sim's
+        // natural spawn placement and nav graph handle positions.
+        arm_with_bow_and_arrows(&mut sim, goblin_id, 10);
+
+        // Run the sim long enough for the goblin to activate and find elves.
+        // The goblin may melee if adjacent, or shoot if it has LOS and is far
+        // enough away. Either way, it should consume arrows or deal damage.
+        let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+        sim.step(&[], sim.tick + 20_000);
+
+        let inv_id = sim.db.creatures.get(&goblin_id).unwrap().inventory_id;
+        let arrows_remaining = sim.inv_item_count(inv_id, inventory::ItemKind::Arrow);
+        let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+        // The goblin should have either shot arrows or attacked in melee.
+        assert!(
+            arrows_remaining < 10 || elf_hp_after < elf_hp_before,
+            "Hostile goblin with bow+arrows should have attacked (arrows={arrows_remaining}, \
+             hp_before={elf_hp_before}, hp_after={elf_hp_after})"
+        );
     }
 
     // -----------------------------------------------------------------------

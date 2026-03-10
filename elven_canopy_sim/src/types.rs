@@ -949,6 +949,13 @@ impl VoxelType {
         )
     }
 
+    /// Returns `true` for voxel types that block line-of-sight for ranged
+    /// attacks. Same as `is_solid()` except Leaf and Fruit are transparent
+    /// (sparse canopy doesn't block arrows).
+    pub fn blocks_los(self) -> bool {
+        self.is_solid() && !matches!(self, VoxelType::Leaf | VoxelType::Fruit)
+    }
+
     /// Returns true if this voxel type is a ladder (wood or rope).
     pub fn is_ladder(self) -> bool {
         matches!(self, VoxelType::WoodLadder | VoxelType::RopeLadder)

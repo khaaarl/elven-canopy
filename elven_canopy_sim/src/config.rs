@@ -911,6 +911,10 @@ fn default_arrow_base_speed() -> i64 {
     crate::projectile::SUB_VOXEL_ONE / 20 // ~50 voxels/sec
 }
 
+fn default_shoot_cooldown_ticks() -> u64 {
+    3000 // 3 seconds between shots at 1000 ticks/sec
+}
+
 // ---------------------------------------------------------------------------
 // Civilization config
 // ---------------------------------------------------------------------------
@@ -1276,6 +1280,11 @@ pub struct GameConfig {
     /// `SUB_VOXEL_ONE / 20` (~50 voxels/sec = 25 m/s for a modest bow).
     #[serde(default = "default_arrow_base_speed")]
     pub arrow_base_speed: i64,
+
+    /// Cooldown in ticks between ranged shots (global, all species).
+    /// At 1000 ticks/sec, 3000 = 3 seconds between shots.
+    #[serde(default = "default_shoot_cooldown_ticks")]
+    pub shoot_cooldown_ticks: u64,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -1765,6 +1774,7 @@ impl Default for GameConfig {
             worldgen: crate::worldgen::WorldgenConfig::default(),
             arrow_gravity: default_arrow_gravity(),
             arrow_base_speed: default_arrow_base_speed(),
+            shoot_cooldown_ticks: default_shoot_cooldown_ticks(),
         }
     }
 }
