@@ -95,9 +95,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
+[ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
+[ ] F-elfcyclopedia-srv    Embedded localhost HTTP elfcyclopedia server
 [ ] F-emotions             Multi-dimensional emotional state
-[ ] F-elfcyclopedia-know    Elfcyclopedia civ/fruit knowledge pages
-[ ] F-elfcyclopedia-srv     Embedded localhost HTTP elfcyclopedia server
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
@@ -106,7 +106,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-fruit-prod           Basic fruit production and harvesting
-[ ] F-fruit-sprites        Procedural fruit sprites
+[ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-fruit-yields         Fruit yield model overhaul
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-jobs                 Elf job/role specialization
@@ -136,6 +136,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rts-selection        RTS box selection and multi-creature commands
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
+[ ] F-rust-sprites         Investigate moving sprite generation to Rust
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
@@ -194,12 +195,13 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-elf-names            Elf name generation from conlang rules
 [x] F-elf-needs            Hunger and rest self-direction
 [x] F-elf-sprite           Billboard elf sprite rendering
+[x] F-elfcyclopedia-srv    Embedded localhost HTTP elfcyclopedia server
 [x] F-emotions-basic       Mood score from thought weights
-[x] F-elfcyclopedia-srv     Embedded localhost HTTP elfcyclopedia server
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-flee                 Flee behavior for civilians
 [x] F-food-gauge           Creature food gauge with decay
 [x] F-fruit-naming         Fruit naming overhaul
+[x] F-fruit-sprites        Procedural fruit sprites
 [x] F-furnish              Building furnishing framework (dormitories)
 [x] F-game-session         Game session autoload singleton
 [x] F-gdext-bridge         gdext compilation and Rust bridge
@@ -1224,9 +1226,8 @@ differentiation, deeper integration with food chain and cooking.
 (property-based recipe matching), F-food-chain (logistics pipeline),
 item schema (FruitSpeciesId references).
 
-**Blocked by:** F-fruit-sprites
 **Blocks:** F-civ-knowledge
-**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-naming, F-fruit-prod, F-fruit-sprites, F-fruit-yields, F-logistics-filter, F-recipes
+**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-food-chain, F-fruit-naming, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-logistics-filter, F-recipes
 
 #### F-hauling — Item hauling task type
 **Status:** Done · **Phase:** 3
@@ -2145,8 +2146,23 @@ Auto-refresh via meta tag. Independent of all sim/worldgen features.
 
 **Draft:** `docs/drafts/elfcyclopedia_civs.md` §Elfcyclopedia (Web-Based)
 
+#### F-fruit-sprite-ui — Fruit sprites in inventory/logistics/selection UI
+**Status:** Todo
+
+Show the procedural fruit sprite (from SpriteFactory.create_fruit) next to
+fruit items wherever they appear in the UI: creature inventory panels,
+ground pile tooltips, logistics want lists, greenhouse species picker,
+kitchen/workshop recipe ingredient lists, and any other surface that
+displays fruit item names. Currently fruit items show as text only
+(Vaelith name + shape noun). The sprite textures are already cached
+per species in tree_renderer.gd; this feature needs to make them
+accessible to other UI scripts and add img/TextureRect elements
+alongside item text labels.
+
+**Related:** F-fruit-sprites, F-fruit-variety
+
 #### F-fruit-sprites — Procedural fruit sprites
-**Status:** Todo · **Phase:** 7
+**Status:** Done · **Phase:** 7
 
 Procedural billboarded sprites for fruit species, generated from species
 appearance data (shape, colors, size). Used on fruit voxels in the world
@@ -2154,8 +2170,7 @@ appearance data (shape, colors, size). Used on fruit voxels in the world
 Each species gets a unique sprite derived from its FruitAppearance struct.
 Follows the existing sprite_factory.gd pattern used for creature sprites.
 
-**Blocks:** F-fruit-variety
-**Related:** F-fruit-variety
+**Related:** F-fruit-sprite-ui, F-fruit-variety, F-rust-sprites
 
 #### F-godot-setup — Godot 4 project setup
 **Status:** Done · **Phase:** 0 · **Refs:** §3
@@ -2245,8 +2260,27 @@ Move voxel mesh generation from GDScript MultiMesh to Rust with per-face
 culling. Chunk-based (16x16x16) with caching and incremental dirty updates.
 Opaque faces between adjacent solid voxels are culled, reducing triangle count.
 Covers tree voxels (Trunk, Branch, Root, Leaf, Dirt) and construction voxels
-(GrownPlatform, GrownWall, GrownStairs, Bridge). Fruit stays as separate
-SphereMesh MultiMesh.
+(GrownPlatform, GrownWall, GrownStairs, Bridge). Fruit uses separate
+billboard Sprite3D rendering with per-species procedural textures.
+
+#### F-rust-sprites — Investigate moving sprite generation to Rust
+**Status:** Todo
+
+Investigate moving procedural sprite generation from GDScript
+(sprite_factory.gd) into Rust. Currently all creature and fruit sprites
+are drawn pixel-by-pixel in GDScript; fruit sprites were duplicated in
+Rust for the elfcyclopedia server. Moving to Rust would eliminate the
+duplication and keep rendering logic closer to the sim data.
+
+Questions to resolve: Which crate should own it? (sim is Godot-free,
+gdext is a thin bridge — may need a new crate or a non-Godot module in
+gdext.) How to pass pixel data to Godot efficiently? (PackedByteArray →
+Image → ImageTexture, or gdext Image bindings.) Impact on iteration
+speed vs compile times. Whether the existing sprite_factory.gd drawing
+helpers (circle, ellipse, rect) are easy to port. Scope: all 10 creature
+species + fruit, ~1500 lines of GDScript drawing code.
+
+**Related:** F-fruit-sprites
 
 #### F-select-struct — Selectable structures with interaction UI
 **Status:** Done · **Phase:** 3

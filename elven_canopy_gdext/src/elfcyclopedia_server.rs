@@ -13,6 +13,9 @@
 //   each frame).
 // - `tiny_http` handles HTTP on `127.0.0.1:PORT` (localhost only).
 // - Pages are server-rendered HTML with no JavaScript dependencies.
+// - Fruit sprites are generated as 16x16 RGBA pixel art (mirroring
+//   sprite_factory.gd's drawing logic), encoded as inline PNG data URIs
+//   using a minimal hand-rolled PNG encoder (no image library dependency).
 //
 // The server is strictly read-only — it never mutates sim state, so it has
 // no impact on determinism.
@@ -315,6 +318,525 @@ fn percent_decode(input: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Fruit sprite generation (mirrors sprite_factory.gd create_fruit)
+// ---------------------------------------------------------------------------
+
+/// RGBA pixel buffer for a 16x16 fruit sprite.
+struct PixelBuffer {
+    data: [u8; 16 * 16 * 4],
+}
+
+impl PixelBuffer {
+    fn new() -> Self {
+        Self {
+            data: [0; 16 * 16 * 4],
+        }
+    }
+
+    fn set_px(&mut self, x: i32, y: i32, r: u8, g: u8, b: u8, a: u8) {
+        if (0..16).contains(&x) && (0..16).contains(&y) {
+            let idx = ((y * 16 + x) * 4) as usize;
+            self.data[idx] = r;
+            self.data[idx + 1] = g;
+            self.data[idx + 2] = b;
+            self.data[idx + 3] = a;
+        }
+    }
+
+    fn get_alpha(&self, x: i32, y: i32) -> u8 {
+        if (0..16).contains(&x) && (0..16).contains(&y) {
+            self.data[((y * 16 + x) * 4 + 3) as usize]
+        } else {
+            0
+        }
+    }
+
+    fn draw_circle(&mut self, cx: i32, cy: i32, radius: i32, r: u8, g: u8, b: u8) {
+        for py in (cy - radius)..=(cy + radius) {
+            for px in (cx - radius)..=(cx + radius) {
+                if (px - cx) * (px - cx) + (py - cy) * (py - cy) <= radius * radius {
+                    self.set_px(px, py, r, g, b, 255);
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_ellipse(&mut self, cx: i32, cy: i32, rx: i32, ry: i32, r: u8, g: u8, b: u8) {
+        if rx == 0 || ry == 0 {
+            return;
+        }
+        for py in (cy - ry)..=(cy + ry) {
+            for px in (cx - rx)..=(cx + rx) {
+                let dx = (px - cx) as f32 / rx as f32;
+                let dy = (py - cy) as f32 / ry as f32;
+                if dx * dx + dy * dy <= 1.0 {
+                    self.set_px(px, py, r, g, b, 255);
+                }
+            }
+        }
+    }
+}
+
+/// Color channel helpers matching GDScript _darken/_lighten.
+fn darken(val: u8, amount: f32) -> u8 {
+    let v = val as f32 / 255.0 - amount;
+    (v.clamp(0.0, 1.0) * 255.0) as u8
+}
+
+fn lighten(val: u8, amount: f32) -> u8 {
+    let v = val as f32 / 255.0 + amount;
+    (v.clamp(0.0, 1.0) * 255.0) as u8
+}
+
+/// Generate a 16x16 RGBA fruit sprite matching the GDScript sprite_factory.gd
+/// drawing routines. Returns base64-encoded PNG as a data URI string.
+fn generate_fruit_sprite_data_uri(entry: &FruitEntry) -> String {
+    let mut buf = PixelBuffer::new();
+
+    // Parse hex color.
+    let (cr, cg, cb) = parse_hex_color(&entry.color_hex);
+    let (dr, dg, db) = (darken(cr, 0.15), darken(cg, 0.15), darken(cb, 0.15));
+    let (lr, lg, lb) = (lighten(cr, 0.15), lighten(cg, 0.15), lighten(cb, 0.15));
+    let (or, og, ob) = (darken(cr, 0.35), darken(cg, 0.35), darken(cb, 0.35));
+
+    let scale = (entry.size_percent as f32 / 100.0).clamp(0.6, 1.5);
+    let cx = 8i32;
+    let cy = 8i32;
+
+    match entry.shape.as_str() {
+        "Round" => draw_fruit_round(
+            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
+        ),
+        "Oblong" => draw_fruit_oblong(
+            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
+        ),
+        "Clustered" => draw_fruit_clustered(
+            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
+        ),
+        "Pod" => draw_fruit_pod(
+            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
+        ),
+        "Nut" => draw_fruit_nut(
+            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
+        ),
+        "Gourd" => draw_fruit_gourd(
+            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
+        ),
+        _ => draw_fruit_round(
+            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
+        ),
+    }
+
+    // Stem (top center) for non-clustered.
+    if entry.shape != "Clustered" {
+        let (sr, sg, sb) = (76u8, 128, 38);
+        buf.set_px(cx, 1, sr, sg, sb, 255);
+        buf.set_px(cx, 2, sr, sg, sb, 255);
+    }
+
+    // Glow effect.
+    if entry.glows {
+        apply_fruit_glow(&mut buf, cr, cg, cb);
+    }
+
+    let png = encode_png_16x16(&buf);
+    let b64 = base64_encode(&png);
+    format!("data:image/png;base64,{b64}")
+}
+
+fn parse_hex_color(hex: &str) -> (u8, u8, u8) {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() >= 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(128);
+        let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(128);
+        let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(128);
+        (r, g, b)
+    } else {
+        (128, 128, 128)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_fruit_round(
+    buf: &mut PixelBuffer,
+    cx: i32,
+    cy: i32,
+    scale: f32,
+    cr: u8,
+    cg: u8,
+    cb: u8,
+    dr: u8,
+    dg: u8,
+    db: u8,
+    lr: u8,
+    lg: u8,
+    lb: u8,
+    or: u8,
+    og: u8,
+    ob: u8,
+) {
+    let r = (5.0 * scale) as i32;
+    buf.draw_circle(cx, cy, r, or, og, ob);
+    buf.draw_circle(cx, cy, r - 1, cr, cg, cb);
+    buf.draw_circle(cx + 1, cy + 1, r - 2, dr, dg, db);
+    buf.draw_circle(cx, cy, r - 2, cr, cg, cb);
+    buf.set_px(cx - 2, cy - 2, lr, lg, lb, 255);
+    buf.set_px(cx - 1, cy - 2, lr, lg, lb, 255);
+    buf.set_px(cx - 2, cy - 1, lr, lg, lb, 255);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_fruit_oblong(
+    buf: &mut PixelBuffer,
+    cx: i32,
+    cy: i32,
+    scale: f32,
+    cr: u8,
+    cg: u8,
+    cb: u8,
+    dr: u8,
+    dg: u8,
+    db: u8,
+    lr: u8,
+    lg: u8,
+    lb: u8,
+    or: u8,
+    og: u8,
+    ob: u8,
+) {
+    let rx = (3.0 * scale) as i32;
+    let ry = (6.0 * scale) as i32;
+    buf.draw_ellipse(cx, cy, rx, ry, or, og, ob);
+    buf.draw_ellipse(cx, cy, rx - 1, ry - 1, cr, cg, cb);
+    buf.draw_ellipse(cx + 1, cy + 1, rx - 2, ry - 2, dr, dg, db);
+    buf.draw_ellipse(cx, cy, rx - 2, ry - 2, cr, cg, cb);
+    buf.set_px(cx - 1, cy - 3, lr, lg, lb, 255);
+    buf.set_px(cx - 1, cy - 2, lr, lg, lb, 255);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_fruit_clustered(
+    buf: &mut PixelBuffer,
+    cx: i32,
+    cy: i32,
+    scale: f32,
+    cr: u8,
+    cg: u8,
+    cb: u8,
+    dr: u8,
+    dg: u8,
+    db: u8,
+    lr: u8,
+    lg: u8,
+    lb: u8,
+    or: u8,
+    og: u8,
+    ob: u8,
+) {
+    let r = (2.0 * scale) as i32;
+    let offsets = [(-3, 3), (0, 3), (3, 3), (-2, 0), (2, 0), (0, -3)];
+    for (ox, oy) in offsets {
+        let bx = cx + (ox as f32 * scale) as i32;
+        let by = cy + (oy as f32 * scale) as i32;
+        buf.draw_circle(bx, by, r, or, og, ob);
+        buf.draw_circle(bx, by, r - 1, cr, cg, cb);
+        buf.set_px(bx + 1, by + 1, dr, dg, db, 255);
+        buf.set_px(bx - 1, by - 1, lr, lg, lb, 255);
+    }
+    // Stem at top.
+    let (sr, sg, sb) = (76u8, 128, 38);
+    buf.set_px(cx, cy - (5.0 * scale) as i32, sr, sg, sb, 255);
+    buf.set_px(cx, cy - (4.0 * scale) as i32, sr, sg, sb, 255);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_fruit_pod(
+    buf: &mut PixelBuffer,
+    cx: i32,
+    cy: i32,
+    scale: f32,
+    cr: u8,
+    cg: u8,
+    cb: u8,
+    dr: u8,
+    dg: u8,
+    db: u8,
+    lr: u8,
+    lg: u8,
+    lb: u8,
+    or: u8,
+    og: u8,
+    ob: u8,
+) {
+    let rx = (2.0 * scale) as i32;
+    let ry = (6.0 * scale) as i32;
+    buf.draw_ellipse(cx, cy, rx, ry, or, og, ob);
+    buf.draw_ellipse(cx, cy, rx - 1, ry - 1, cr, cg, cb);
+    // Seam line.
+    for y in (cy - ry + 2)..=(cy + ry - 2) {
+        buf.set_px(cx, y, dr, dg, db, 255);
+    }
+    // Highlight.
+    for y in (cy - ry + 2)..=(cy + ry - 3) {
+        buf.set_px(cx - 1, y, lr, lg, lb, 255);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_fruit_nut(
+    buf: &mut PixelBuffer,
+    cx: i32,
+    cy: i32,
+    scale: f32,
+    cr: u8,
+    cg: u8,
+    cb: u8,
+    dr: u8,
+    dg: u8,
+    db: u8,
+    lr: u8,
+    lg: u8,
+    lb: u8,
+    or: u8,
+    og: u8,
+    ob: u8,
+) {
+    let r = (4.0 * scale) as i32;
+    let cap_r = darken(cr, 0.25);
+    let cap_g = darken(cg, 0.25);
+    let cap_b = darken(cb, 0.25);
+    let cap_dr = darken(cap_r, 0.15);
+    let cap_dg = darken(cap_g, 0.15);
+    let cap_db = darken(cap_b, 0.15);
+    // Cap.
+    let cap_y = cy - (2.0 * scale) as i32;
+    buf.draw_ellipse(cx, cap_y, r, (2.5 * scale) as i32, or, og, ob);
+    buf.draw_ellipse(cx, cap_y, r - 1, (2.0 * scale) as i32, cap_r, cap_g, cap_b);
+    // Cross-hatch on cap.
+    for x in ((cx - r + 2)..=(cx + r - 2)).step_by(2) {
+        buf.set_px(x, cap_y, cap_dr, cap_dg, cap_db, 255);
+    }
+    // Body.
+    let body_y = cy + scale as i32;
+    buf.draw_ellipse(cx, body_y, r - 1, (3.5 * scale) as i32, or, og, ob);
+    buf.draw_ellipse(cx, body_y, r - 2, (3.0 * scale) as i32, cr, cg, cb);
+    // Highlight.
+    buf.set_px(cx - 1, cy, lr, lg, lb, 255);
+    buf.set_px(cx - 2, cy + 1, lr, lg, lb, 255);
+    // Point at bottom.
+    buf.set_px(cx, cy + (4.0 * scale) as i32, dr, dg, db, 255);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_fruit_gourd(
+    buf: &mut PixelBuffer,
+    cx: i32,
+    cy: i32,
+    scale: f32,
+    cr: u8,
+    cg: u8,
+    cb: u8,
+    dr: u8,
+    dg: u8,
+    db: u8,
+    lr: u8,
+    lg: u8,
+    lb: u8,
+    or: u8,
+    og: u8,
+    ob: u8,
+) {
+    // Bottom bulge.
+    let br = (5.0 * scale) as i32;
+    let by = cy + (2.0 * scale) as i32;
+    buf.draw_ellipse(cx, by, br, (4.0 * scale) as i32, or, og, ob);
+    buf.draw_ellipse(cx, by, br - 1, (3.5 * scale) as i32, cr, cg, cb);
+    // Top bulge.
+    let tr = (3.0 * scale) as i32;
+    let ty = cy - (3.0 * scale) as i32;
+    buf.draw_ellipse(cx, ty, tr, (2.5 * scale) as i32, or, og, ob);
+    buf.draw_ellipse(cx, ty, tr - 1, (2.0 * scale) as i32, cr, cg, cb);
+    // Vertical ridges.
+    for x in [cx - 2, cx, cx + 2] {
+        for y in (by - (3.0 * scale) as i32)..(by + (3.0 * scale) as i32) {
+            buf.set_px(x, y, dr, dg, db, 255);
+        }
+    }
+    // Highlight.
+    buf.set_px(cx - 2, cy - 1, lr, lg, lb, 255);
+    buf.set_px(cx - 2, cy, lr, lg, lb, 255);
+}
+
+fn apply_fruit_glow(buf: &mut PixelBuffer, cr: u8, cg: u8, cb: u8) {
+    let gr = lighten(cr, 0.3);
+    let gg = lighten(cg, 0.3);
+    let gb = lighten(cb, 0.3);
+    // Collect opaque positions.
+    let mut opaque = Vec::new();
+    for y in 0..16i32 {
+        for x in 0..16i32 {
+            if buf.get_alpha(x, y) > 127 {
+                opaque.push((x, y));
+            }
+        }
+    }
+    // Paint glow in empty neighbors.
+    for (px, py) in opaque {
+        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let nx = px + dx;
+            let ny = py + dy;
+            if (0..16).contains(&nx) && (0..16).contains(&ny) && buf.get_alpha(nx, ny) < 25 {
+                buf.set_px(nx, ny, gr, gg, gb, 102); // alpha ~0.4*255
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal PNG encoder (no dependencies, uncompressed)
+// ---------------------------------------------------------------------------
+
+/// Encode a 16x16 RGBA pixel buffer as a PNG file. Uses uncompressed deflate
+/// (store blocks) to avoid needing a zlib/deflate library.
+fn encode_png_16x16(buf: &PixelBuffer) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2048);
+
+    // PNG signature.
+    out.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+
+    // IHDR chunk: 16x16, 8-bit RGBA.
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&16u32.to_be_bytes()); // width
+    ihdr.extend_from_slice(&16u32.to_be_bytes()); // height
+    ihdr.push(8); // bit depth
+    ihdr.push(6); // color type: RGBA
+    ihdr.push(0); // compression
+    ihdr.push(0); // filter
+    ihdr.push(0); // interlace
+    write_png_chunk(&mut out, b"IHDR", &ihdr);
+
+    // IDAT chunk: filtered row data wrapped in uncompressed zlib.
+    // Each row: filter byte (0 = None) + 16 * 4 bytes = 65 bytes.
+    // Total raw: 16 * 65 = 1040 bytes.
+    let mut raw = Vec::with_capacity(16 * 65);
+    for y in 0..16 {
+        raw.push(0); // filter: None
+        let row_start = y * 16 * 4;
+        raw.extend_from_slice(&buf.data[row_start..row_start + 16 * 4]);
+    }
+
+    let zlib = zlib_store(&raw);
+    write_png_chunk(&mut out, b"IDAT", &zlib);
+
+    // IEND chunk.
+    write_png_chunk(&mut out, b"IEND", &[]);
+
+    out
+}
+
+fn write_png_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(chunk_type);
+    out.extend_from_slice(data);
+    // CRC32 over type + data.
+    let crc = crc32(chunk_type, data);
+    out.extend_from_slice(&crc.to_be_bytes());
+}
+
+/// CRC32 as specified by PNG (ISO 3309 / ITU-T V.42).
+fn crc32(chunk_type: &[u8], data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in chunk_type.iter().chain(data.iter()) {
+        let idx = ((crc ^ byte as u32) & 0xFF) as usize;
+        crc = CRC_TABLE[idx] ^ (crc >> 8);
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+/// Pre-computed CRC32 lookup table.
+const CRC_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut n = 0u32;
+    while n < 256 {
+        let mut c = n;
+        let mut k = 0;
+        while k < 8 {
+            if c & 1 != 0 {
+                c = 0xEDB8_8320 ^ (c >> 1);
+            } else {
+                c >>= 1;
+            }
+            k += 1;
+        }
+        table[n as usize] = c;
+        n += 1;
+    }
+    table
+};
+
+/// Wrap raw data in a valid zlib stream using uncompressed (store) deflate
+/// blocks. No compression, but no external dependencies needed.
+fn zlib_store(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + 64);
+    // Zlib header: CM=8 (deflate), CINFO=7 (32K window), FCHECK so header % 31 == 0.
+    out.push(0x78);
+    out.push(0x01);
+
+    // Split into 65535-byte store blocks (max for uncompressed deflate).
+    let chunks: Vec<&[u8]> = data.chunks(65535).collect();
+    for (i, chunk) in chunks.iter().enumerate() {
+        let is_last = i == chunks.len() - 1;
+        out.push(if is_last { 0x01 } else { 0x00 }); // BFINAL + BTYPE=00
+        let len = chunk.len() as u16;
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes()); // NLEN
+        out.extend_from_slice(chunk);
+    }
+
+    // Adler-32 checksum.
+    let adler = adler32(data);
+    out.extend_from_slice(&adler.to_be_bytes());
+
+    out
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    let mut a: u32 = 1;
+    let mut b: u32 = 0;
+    for &byte in data {
+        a = (a + byte as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
+/// Base64 encode bytes to a string.
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // HTML rendering
 // ---------------------------------------------------------------------------
 
@@ -510,26 +1032,29 @@ fn render_fruits_list(data: &ElfcyclopediaData) -> String {
             body.push_str(&format!("<h2>{rarity}</h2>"));
             body.push_str("<table class=\"fruit-table\"><thead><tr>");
             body.push_str(
-                "<th>Name</th><th>Gloss</th><th>Habitat</th>\
+                "<th></th><th>Name</th><th>Gloss</th><th>Habitat</th>\
                  <th>Shape</th><th>Color</th></tr></thead><tbody>",
             );
             for f in &fruits {
+                let sprite_uri = generate_fruit_sprite_data_uri(f);
                 let color_swatch = format!(
                     "<span class=\"color-swatch\" style=\"background:{};\"></span>",
                     html_escape(&f.color_hex),
                 );
                 let glow = if f.glows { " &#x2728;" } else { "" };
                 body.push_str(&format!(
-                    "<tr><td><a href=\"/fruits/{}\">{}</a></td>\
-                     <td>{}</td><td>{}</td><td>{}</td>\
-                     <td>{}{}</td></tr>",
-                    f.id,
-                    html_escape(&f.vaelith_name),
-                    html_escape(&f.english_gloss),
-                    html_escape(&f.habitat),
-                    html_escape(&f.shape),
-                    color_swatch,
-                    glow,
+                    "<tr><td><img src=\"{sprite}\" class=\"fruit-sprite\" alt=\"{name}\"></td>\
+                     <td><a href=\"/fruits/{id}\">{name}</a></td>\
+                     <td>{gloss}</td><td>{habitat}</td><td>{shape}</td>\
+                     <td>{swatch}{glow}</td></tr>",
+                    sprite = sprite_uri,
+                    id = f.id,
+                    name = html_escape(&f.vaelith_name),
+                    gloss = html_escape(&f.english_gloss),
+                    habitat = html_escape(&f.habitat),
+                    shape = html_escape(&f.shape),
+                    swatch = color_swatch,
+                    glow = glow,
                 ));
             }
             body.push_str("</tbody></table>");
@@ -540,6 +1065,7 @@ fn render_fruits_list(data: &ElfcyclopediaData) -> String {
 }
 
 fn render_fruit_detail(entry: &FruitEntry, data: &ElfcyclopediaData) -> String {
+    let sprite_uri = generate_fruit_sprite_data_uri(entry);
     let color_swatch = format!(
         "<span class=\"color-swatch-lg\" style=\"background:{};\"></span>",
         html_escape(&entry.color_hex),
@@ -553,6 +1079,7 @@ fn render_fruit_detail(entry: &FruitEntry, data: &ElfcyclopediaData) -> String {
 
     let mut body = format!(
         r#"<p class="species-kind">{rarity} · {habitat}</p>
+<img src="{sprite}" class="fruit-sprite-lg" alt="{name}">
 <p class="fruit-gloss">{gloss}</p>
 <dl>
 <dt>Shape</dt><dd>{shape}</dd>
@@ -563,6 +1090,8 @@ fn render_fruit_detail(entry: &FruitEntry, data: &ElfcyclopediaData) -> String {
 </dl>"#,
         rarity = html_escape(&entry.rarity),
         habitat = html_escape(&entry.habitat),
+        sprite = sprite_uri,
+        name = html_escape(&entry.vaelith_name),
         gloss = html_escape(&entry.english_gloss),
         shape = html_escape(&entry.shape),
         swatch = color_swatch,
@@ -767,6 +1296,20 @@ table.fruit-table th {
     border: 1px solid var(--border);
 }
 
+.fruit-sprite {
+    image-rendering: pixelated;
+    width: 32px;
+    height: 32px;
+    vertical-align: middle;
+}
+
+.fruit-sprite-lg {
+    image-rendering: pixelated;
+    width: 96px;
+    height: 96px;
+    margin-bottom: 0.5rem;
+}
+
 .fruit-gloss {
     font-style: italic;
     font-size: 1.1rem;
@@ -808,4 +1351,125 @@ fn html_escape(s: &str) -> String {
 pub fn load_species_data() -> Vec<SpeciesEntry> {
     let json = include_str!("../../data/species_elfcyclopedia.json");
     serde_json::from_str(json).expect("embedded species_elfcyclopedia.json is malformed")
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify the PNG encoder produces a valid PNG that starts with the correct
+    /// signature, contains IHDR/IDAT/IEND chunks, and has internally consistent
+    /// CRC checksums.
+    #[test]
+    fn png_encoder_produces_valid_png() {
+        let mut buf = PixelBuffer::new();
+        // Draw a small red circle so the image isn't all-transparent.
+        buf.draw_circle(8, 8, 4, 255, 0, 0);
+
+        let png = encode_png_16x16(&buf);
+
+        // PNG signature (8 bytes).
+        assert_eq!(&png[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+
+        // Walk chunks and verify structure + CRCs.
+        let mut pos = 8;
+        let mut found_ihdr = false;
+        let mut found_idat = false;
+        let mut found_iend = false;
+
+        while pos + 8 <= png.len() {
+            let length =
+                u32::from_be_bytes([png[pos], png[pos + 1], png[pos + 2], png[pos + 3]]) as usize;
+            let chunk_type = &png[pos + 4..pos + 8];
+            let data_start = pos + 8;
+            let data_end = data_start + length;
+            assert!(
+                data_end + 4 <= png.len(),
+                "chunk data extends past end of file"
+            );
+
+            // Verify CRC over type + data.
+            let expected_crc = u32::from_be_bytes([
+                png[data_end],
+                png[data_end + 1],
+                png[data_end + 2],
+                png[data_end + 3],
+            ]);
+            let mut type_arr = [0u8; 4];
+            type_arr.copy_from_slice(chunk_type);
+            let actual_crc = crc32(&type_arr, &png[data_start..data_end]);
+            assert_eq!(
+                actual_crc,
+                expected_crc,
+                "CRC mismatch for chunk {:?}",
+                std::str::from_utf8(chunk_type)
+            );
+
+            match chunk_type {
+                b"IHDR" => {
+                    assert_eq!(length, 13, "IHDR must be 13 bytes");
+                    let width = u32::from_be_bytes([
+                        png[data_start],
+                        png[data_start + 1],
+                        png[data_start + 2],
+                        png[data_start + 3],
+                    ]);
+                    let height = u32::from_be_bytes([
+                        png[data_start + 4],
+                        png[data_start + 5],
+                        png[data_start + 6],
+                        png[data_start + 7],
+                    ]);
+                    assert_eq!(width, 16);
+                    assert_eq!(height, 16);
+                    assert_eq!(png[data_start + 8], 8, "bit depth should be 8");
+                    assert_eq!(png[data_start + 9], 6, "color type should be 6 (RGBA)");
+                    found_ihdr = true;
+                }
+                b"IDAT" => found_idat = true,
+                b"IEND" => {
+                    assert_eq!(length, 0, "IEND must be empty");
+                    found_iend = true;
+                }
+                _ => {}
+            }
+
+            pos = data_end + 4;
+        }
+
+        assert!(found_ihdr, "missing IHDR chunk");
+        assert!(found_idat, "missing IDAT chunk");
+        assert!(found_iend, "missing IEND chunk");
+        assert_eq!(pos, png.len(), "trailing bytes after IEND");
+    }
+
+    /// Verify the data URI wrapper produces the expected format.
+    #[test]
+    fn fruit_sprite_data_uri_format() {
+        let entry = FruitEntry {
+            id: 1,
+            vaelith_name: "Test".into(),
+            english_gloss: "test fruit".into(),
+            habitat: "Branch".into(),
+            rarity: "Common".into(),
+            shape: "Round".into(),
+            color_hex: "#FF6633".into(),
+            glows: false,
+            size_percent: 100,
+            greenhouse_cultivable: false,
+            parts: vec![],
+        };
+        let uri = generate_fruit_sprite_data_uri(&entry);
+        assert!(uri.starts_with("data:image/png;base64,"));
+        // Base64 should only contain valid characters.
+        let b64 = &uri["data:image/png;base64,".len()..];
+        assert!(
+            b64.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+        );
+    }
 }

@@ -27,8 +27,8 @@
 // - **World data / chunk mesh:** `build_world_mesh()` builds the initial
 //   chunk mesh cache, `update_world_mesh()` incrementally regenerates dirty
 //   chunks, `build_chunk_array_mesh(cx,cy,cz)` returns a Godot `ArrayMesh`
-//   for one chunk. `get_fruit_voxels()` — flat `PackedInt32Array` of (x,y,z)
-//   triples for fruit SphereMesh rendering (fruit is not part of chunk mesh).
+//   for one chunk. `get_fruit_voxels()` — flat `PackedInt32Array` of (x,y,z,species_id)
+//   quads for fruit billboard sprite rendering (fruit is not part of chunk mesh).
 // - **Creature positions:** `get_creature_positions(species_name, render_tick)`
 //   — generic `PackedVector3Array` for billboard sprite placement, replacing
 //   the per-species `get_elf_positions()` / `get_capybara_positions()` (which
@@ -441,9 +441,10 @@ impl SimBridge {
         }
     }
 
-    /// Return fruit voxel positions as a flat PackedInt32Array (x,y,z triples).
-    /// Kept as a separate method because fruit is rendered as SphereMesh
-    /// MultiMesh, not part of the chunk mesh system.
+    /// Return fruit voxel positions with species IDs as a flat
+    /// PackedInt32Array (x, y, z, species_id quads). Each fruit voxel
+    /// includes its species ID so the renderer can look up the correct
+    /// sprite texture. Skips voxels that have been carved to Air.
     #[func]
     fn get_fruit_voxels(&self) -> PackedInt32Array {
         let Some(sim) = &self.session.sim else {
@@ -459,9 +460,65 @@ impl SimBridge {
             if sim.world.get(*v) == VoxelType::Air {
                 continue;
             }
+            let species_id = sim
+                .fruit_voxel_species
+                .get(v)
+                .map(|id| id.0 as i32)
+                .unwrap_or(-1);
             arr.push(v.x);
             arr.push(v.y);
             arr.push(v.z);
+            arr.push(species_id);
+        }
+        arr
+    }
+
+    /// Return appearance data for all fruit species in the world.
+    ///
+    /// Returns an Array of VarDictionary, one per species. Each dict has:
+    /// - "id": int (FruitSpeciesId)
+    /// - "shape": String ("Round", "Oblong", "Clustered", "Pod", "Nut", "Gourd")
+    /// - "color_r": float (0.0-1.0)
+    /// - "color_g": float (0.0-1.0)
+    /// - "color_b": float (0.0-1.0)
+    /// - "size_percent": int
+    /// - "glows": bool
+    /// - "name": String (Vaelith name + english gloss)
+    #[func]
+    fn get_fruit_species_appearances(&self) -> VarArray {
+        let Some(sim) = &self.session.sim else {
+            return VarArray::new();
+        };
+        let mut arr = VarArray::new();
+        for species in sim.db.fruit_species.iter_all() {
+            let mut dict = VarDictionary::new();
+            dict.set("id", species.id.0 as i32);
+            let shape_str = match species.appearance.shape {
+                elven_canopy_sim::fruit::FruitShape::Round => "Round",
+                elven_canopy_sim::fruit::FruitShape::Oblong => "Oblong",
+                elven_canopy_sim::fruit::FruitShape::Clustered => "Clustered",
+                elven_canopy_sim::fruit::FruitShape::Pod => "Pod",
+                elven_canopy_sim::fruit::FruitShape::Nut => "Nut",
+                elven_canopy_sim::fruit::FruitShape::Gourd => "Gourd",
+            };
+            dict.set("shape", shape_str);
+            dict.set(
+                "color_r",
+                species.appearance.exterior_color.r as f64 / 255.0,
+            );
+            dict.set(
+                "color_g",
+                species.appearance.exterior_color.g as f64 / 255.0,
+            );
+            dict.set(
+                "color_b",
+                species.appearance.exterior_color.b as f64 / 255.0,
+            );
+            dict.set("size_percent", species.appearance.size_percent as i32);
+            dict.set("glows", species.appearance.glows);
+            let name = format!("{} ({})", species.vaelith_name, species.english_gloss);
+            dict.set("name", GString::from(name.as_str()));
+            arr.push(&dict.to_variant());
         }
         arr
     }

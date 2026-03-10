@@ -19,8 +19,12 @@
 ## chunk's ArrayMesh. Bark and ground surfaces get per-chunk materials with
 ## unique atlas textures; the leaf surface shares a single material.
 ##
-## Fruit is kept as a separate MultiMeshInstance3D with SphereMesh (different
-## geometry and emissive material, not part of the chunk mesh system).
+## Fruit is rendered as billboarded Sprite3D nodes, one per fruit voxel,
+## using procedural 16x16 pixel art textures from sprite_factory.gd. Each
+## fruit species gets a unique texture generated from its FruitAppearance
+## data (shape, color, size, glow). Textures are cached per species ID so
+## at most ~40 textures exist per game. Fruit sprites are rebuilt every
+## frame via _refresh_fruit(), grouped by species for texture reuse.
 ##
 ## See also: mesh_gen.rs (sim crate) for the face-culled mesh generation
 ## algorithm, texture_gen.rs for the 3D Perlin noise atlas generation,
@@ -31,13 +35,18 @@
 extends Node3D
 
 var _bridge: SimBridge
-var _fruit_mesh_instance: MultiMeshInstance3D
 ## Cached leaf texture — generated once, reused across refreshes.
 var _leaf_texture: ImageTexture
 ## Leaf material: vertex color tinted alpha-scissor with procedural texture.
 var _leaf_material: StandardMaterial3D
 ## Map from chunk key ("cx,cy,cz") to MeshInstance3D for fast lookup.
 var _chunk_instances: Dictionary = {}
+## Fruit sprite texture cache: species_id (int) → ImageTexture.
+var _fruit_textures: Dictionary = {}
+## Container node for fruit billboard sprites.
+var _fruit_container: Node3D
+## Pool of reusable Sprite3D nodes for fruit rendering.
+var _fruit_sprites: Array[Sprite3D] = []
 
 
 ## Call after SimBridge is initialized to build the chunk meshes.
@@ -45,8 +54,12 @@ func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
 	_leaf_texture = _generate_leaf_texture()
 	_leaf_material = _build_leaf_material()
+	_fruit_container = Node3D.new()
+	_fruit_container.name = "FruitSprites"
+	add_child(_fruit_container)
 	_bridge.build_world_mesh()
 	_build_all_chunks()
+	_cache_fruit_textures()
 	_refresh_fruit()
 
 
@@ -147,51 +160,60 @@ func _create_atlas_material(cx: int, cy: int, cz: int, surface: int) -> Standard
 	return mat
 
 
+## Generate and cache fruit textures for all species in the world.
+## Called once at setup; textures persist for the life of the scene.
+func _cache_fruit_textures() -> void:
+	var species_list: Array = _bridge.get_fruit_species_appearances()
+	for entry in species_list:
+		var dict: Dictionary = entry
+		var sid: int = dict.get("id", -1)
+		if sid < 0:
+			continue
+		var params := {
+			"shape": dict.get("shape", "Round"),
+			"color":
+			Color(dict.get("color_r", 0.9), dict.get("color_g", 0.5), dict.get("color_b", 0.2)),
+			"size_percent": dict.get("size_percent", 100),
+			"glows": dict.get("glows", false),
+		}
+		_fruit_textures[sid] = SpriteFactory.create_fruit(params)
+
+
+## Refresh fruit billboard sprites from current sim state.
+## Uses a pool pattern: sprites are created on demand, never freed, only
+## hidden when the fruit count decreases.
 func _refresh_fruit() -> void:
-	if _fruit_mesh_instance:
-		_fruit_mesh_instance.queue_free()
-		_fruit_mesh_instance = null
-
 	var voxels := _bridge.get_fruit_voxels()
-	var count := voxels.size() / 3
-	if count == 0:
-		return
+	var count := voxels.size() / 4  # (x, y, z, species_id) quads
 
-	_fruit_mesh_instance = _create_fruit_multimesh(voxels, count)
-	add_child(_fruit_mesh_instance)
+	# Ensure pool has enough sprites.
+	while _fruit_sprites.size() < count:
+		var sprite := Sprite3D.new()
+		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		sprite.pixel_size = 0.065
+		sprite.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+		sprite.transparent = true
+		_fruit_container.add_child(sprite)
+		_fruit_sprites.append(sprite)
 
-
-func _create_fruit_multimesh(voxels: PackedInt32Array, count: int) -> MultiMeshInstance3D:
-	var mesh := SphereMesh.new()
-	mesh.radius = 0.4
-	mesh.height = 0.8
-	mesh.radial_segments = 8
-	mesh.rings = 4
-
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.95, 0.65, 0.15)  # Warm amber/gold
-	mat.emission_enabled = true
-	mat.emission = Color(0.6, 0.35, 0.05)  # Subtle warm glow
-	mat.emission_energy_multiplier = 0.3
-	mesh.material = mat
-
-	var multi_mesh := MultiMesh.new()
-	multi_mesh.transform_format = MultiMesh.TRANSFORM_3D
-	multi_mesh.mesh = mesh
-	multi_mesh.instance_count = count
-
+	# Update active sprites with current positions and textures.
 	for i in count:
-		var idx := i * 3
+		var idx := i * 4
 		var x := float(voxels[idx])
 		var y := float(voxels[idx + 1])
 		var z := float(voxels[idx + 2])
-		var xform := Transform3D(Basis.IDENTITY, Vector3(x + 0.5, y + 0.5, z + 0.5))
-		multi_mesh.set_instance_transform(i, xform)
+		var sid := voxels[idx + 3]
+		var sprite := _fruit_sprites[i]
+		sprite.position = Vector3(x + 0.5, y + 0.5, z + 0.5)
+		if _fruit_textures.has(sid):
+			sprite.texture = _fruit_textures[sid]
+			sprite.visible = true
+		else:
+			sprite.visible = false
 
-	var instance := MultiMeshInstance3D.new()
-	instance.multimesh = multi_mesh
-	instance.name = "FruitMultiMesh"
-	return instance
+	# Hide excess sprites from pool.
+	for i in range(count, _fruit_sprites.size()):
+		_fruit_sprites[i].visible = false
 
 
 ## Generate a Minecraft-style leaf texture: 16x16 with opaque green patches

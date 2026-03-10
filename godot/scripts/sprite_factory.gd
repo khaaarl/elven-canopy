@@ -1,14 +1,15 @@
-## Programmatic sprite generator for all creature species.
+## Programmatic sprite generator for all creature species and fruit.
 ##
 ## Provides static factory methods that return ImageTexture objects built
 ## pixel-by-pixel using Image.create(). All sprites are deterministically
-## generated from integer seeds, so the same seed always produces the same
-## sprite. No external assets are needed.
+## generated — creature sprites from integer seeds, fruit sprites from
+## appearance data produced during worldgen. No external assets are needed.
 ##
 ## Usage: call species_params_from_seed(species_name, index) to get a params
 ## dictionary, then pass it to create_species_sprite(species_name, params).
 ## Per-species methods (elf_params_from_seed, create_chibi_elf, etc.) are
-## also available for direct use.
+## also available for direct use. For fruit, call create_fruit(params) with
+## a dictionary containing shape/color/size_percent/glows from SimBridge.
 ##
 ## Supported species:
 ## - Elf (48x48): hair color/style, eye color, skin tone, role variants
@@ -21,11 +22,14 @@
 ## - Orc (48x48): skin color, war paint variants
 ## - Squirrel (32x32): fur color, tail fluffiness variants
 ## - Troll (96x80): skin color, horn style variants
+## - Fruit (16x16): 6 shapes (Round/Oblong/Clustered/Pod/Nut/Gourd),
+##   per-species color, size scaling, optional glow effect
 ##
 ## Drawing helpers (_set_px, _draw_circle, _draw_ellipse, _draw_rect,
 ## _draw_hline, _draw_vline) handle bounds checking and primitive shapes.
 ##
-## See also: elf_renderer.gd, capybara_renderer.gd, creature_renderer.gd.
+## See also: elf_renderer.gd, capybara_renderer.gd, creature_renderer.gd,
+## tree_renderer.gd (fruit billboard rendering).
 
 class_name SpriteFactory
 
@@ -1437,6 +1441,260 @@ static func create_troll(params: Dictionary) -> ImageTexture:
 	_draw_rect(img, body_cx + 7, body_cy + 16, 8, 12, skin_dark)
 
 	return ImageTexture.create_from_image(img)
+
+
+# ---------------------------------------------------------------------------
+# Fruit sprite generation (16x16, from appearance data not seed)
+# ---------------------------------------------------------------------------
+
+
+## Create a fruit sprite from appearance parameters.
+##
+## `params` is a Dictionary with keys: "shape" (String), "color" (Color),
+## "size_percent" (int), "glows" (bool). Returns a 16x16 ImageTexture.
+## Unlike creature sprites (generated from seed), fruit sprites are generated
+## from deterministic appearance data produced during worldgen.
+static func create_fruit(params: Dictionary) -> ImageTexture:
+	var W := 16
+	var H := 16
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var base_color: Color = params.get("color", Color(0.9, 0.5, 0.2))
+	var shape: String = params.get("shape", "Round")
+	var size_pct: int = params.get("size_percent", 100)
+	var glows: bool = params.get("glows", false)
+
+	var dark := _darken(base_color, 0.15)
+	var light := _lighten(base_color, 0.15)
+	var outline := _darken(base_color, 0.35)
+	var cx := W / 2
+	var cy := H / 2
+
+	# Scale factor: size_percent maps 50-200 → smaller/larger drawing.
+	# We clamp to keep sprites readable at 16x16.
+	var scale := clampf(float(size_pct) / 100.0, 0.6, 1.5)
+
+	match shape:
+		"Round":
+			_draw_fruit_round(img, cx, cy, scale, outline, dark, base_color, light)
+		"Oblong":
+			_draw_fruit_oblong(img, cx, cy, scale, outline, dark, base_color, light)
+		"Clustered":
+			_draw_fruit_clustered(img, cx, cy, scale, outline, dark, base_color, light)
+		"Pod":
+			_draw_fruit_pod(img, cx, cy, scale, outline, dark, base_color, light)
+		"Nut":
+			_draw_fruit_nut(img, cx, cy, scale, outline, dark, base_color, light)
+		"Gourd":
+			_draw_fruit_gourd(img, cx, cy, scale, outline, dark, base_color, light)
+
+	# Stem/attachment point (top center, 2px) for non-clustered shapes.
+	if shape != "Clustered":
+		var stem_color := Color(0.30, 0.50, 0.15, 1.0)
+		_set_px(img, cx, 1, stem_color)
+		_set_px(img, cx, 2, stem_color)
+
+	# Glow: add bright halo pixels around the fruit.
+	if glows:
+		_apply_fruit_glow(img, base_color)
+
+	return ImageTexture.create_from_image(img)
+
+
+## Round fruit — classic apple/berry shape. Solid circle with highlight.
+static func _draw_fruit_round(
+	img: Image,
+	cx: int,
+	cy: int,
+	scale: float,
+	outline: Color,
+	dark: Color,
+	base: Color,
+	light: Color
+) -> void:
+	var r := int(5.0 * scale)
+	_draw_circle(img, cx, cy, r, outline)
+	_draw_circle(img, cx, cy, r - 1, base)
+	# Shadow on bottom-right.
+	_draw_circle(img, cx + 1, cy + 1, r - 2, dark)
+	# Main body.
+	_draw_circle(img, cx, cy, r - 2, base)
+	# Highlight on top-left.
+	_set_px(img, cx - 2, cy - 2, light)
+	_set_px(img, cx - 1, cy - 2, light)
+	_set_px(img, cx - 2, cy - 1, light)
+
+
+## Oblong fruit — tall ellipse (mango/banana shape).
+static func _draw_fruit_oblong(
+	img: Image,
+	cx: int,
+	cy: int,
+	scale: float,
+	outline: Color,
+	dark: Color,
+	base: Color,
+	light: Color
+) -> void:
+	var rx := int(3.0 * scale)
+	var ry := int(6.0 * scale)
+	_draw_ellipse(img, cx, cy, rx, ry, outline)
+	_draw_ellipse(img, cx, cy, rx - 1, ry - 1, base)
+	# Shadow.
+	_draw_ellipse(img, cx + 1, cy + 1, rx - 2, ry - 2, dark)
+	_draw_ellipse(img, cx, cy, rx - 2, ry - 2, base)
+	# Highlight.
+	_set_px(img, cx - 1, cy - 3, light)
+	_set_px(img, cx - 1, cy - 2, light)
+
+
+## Clustered fruit — small circles grouped (grapes/berries).
+static func _draw_fruit_clustered(
+	img: Image,
+	cx: int,
+	cy: int,
+	scale: float,
+	outline: Color,
+	dark: Color,
+	base: Color,
+	light: Color
+) -> void:
+	var r := int(2.0 * scale)
+	# Triangular cluster of small circles: 3 on bottom, 2 middle, 1 top.
+	var offsets := [
+		Vector2i(-3, 3),
+		Vector2i(0, 3),
+		Vector2i(3, 3),
+		Vector2i(-2, 0),
+		Vector2i(2, 0),
+		Vector2i(0, -3),
+	]
+	for off in offsets:
+		var bx := cx + int(float(off.x) * scale)
+		var by := cy + int(float(off.y) * scale)
+		_draw_circle(img, bx, by, r, outline)
+		_draw_circle(img, bx, by, r - 1, base)
+		_set_px(img, bx + 1, by + 1, dark)
+		_set_px(img, bx - 1, by - 1, light)
+	# Small stem at top.
+	var stem_color := Color(0.30, 0.50, 0.15, 1.0)
+	_set_px(img, cx, cy - int(5.0 * scale), stem_color)
+	_set_px(img, cx, cy - int(4.0 * scale), stem_color)
+
+
+## Pod fruit — elongated with tapered ends (bean pod).
+static func _draw_fruit_pod(
+	img: Image,
+	cx: int,
+	cy: int,
+	scale: float,
+	outline: Color,
+	dark: Color,
+	base: Color,
+	light: Color
+) -> void:
+	var rx := int(2.0 * scale)
+	var ry := int(6.0 * scale)
+	# Main pod body.
+	_draw_ellipse(img, cx, cy, rx, ry, outline)
+	_draw_ellipse(img, cx, cy, rx - 1, ry - 1, base)
+	# Seam line down the middle.
+	for y in range(cy - ry + 2, cy + ry - 1):
+		_set_px(img, cx, y, dark)
+	# Highlight along left edge.
+	for y in range(cy - ry + 2, cy + ry - 2):
+		_set_px(img, cx - 1, y, light)
+
+
+## Nut — small, squat, hard-looking (acorn shape).
+static func _draw_fruit_nut(
+	img: Image,
+	cx: int,
+	cy: int,
+	scale: float,
+	outline: Color,
+	dark: Color,
+	base: Color,
+	light: Color
+) -> void:
+	var r := int(4.0 * scale)
+	# Cap (top third) — darker, textured.
+	var cap_color := _darken(base, 0.25)
+	var cap_dark := _darken(cap_color, 0.15)
+	_draw_ellipse(img, cx, cy - int(2.0 * scale), r, int(2.5 * scale), outline)
+	_draw_ellipse(img, cx, cy - int(2.0 * scale), r - 1, int(2.0 * scale), cap_color)
+	# Cross-hatch texture on cap.
+	for x in range(cx - r + 2, cx + r - 1, 2):
+		_set_px(img, x, cy - int(2.0 * scale), cap_dark)
+	# Body (bottom, rounder).
+	_draw_ellipse(img, cx, cy + int(1.0 * scale), r - 1, int(3.5 * scale), outline)
+	_draw_ellipse(img, cx, cy + int(1.0 * scale), r - 2, int(3.0 * scale), base)
+	# Highlight.
+	_set_px(img, cx - 1, cy, light)
+	_set_px(img, cx - 2, cy + 1, light)
+	# Point at bottom.
+	_set_px(img, cx, cy + int(4.0 * scale), dark)
+
+
+## Gourd — pinched middle, bottom-heavy (pumpkin/squash shape).
+static func _draw_fruit_gourd(
+	img: Image,
+	cx: int,
+	cy: int,
+	scale: float,
+	outline: Color,
+	dark: Color,
+	base: Color,
+	light: Color
+) -> void:
+	# Bottom bulge (larger).
+	var br := int(5.0 * scale)
+	var by := cy + int(2.0 * scale)
+	_draw_ellipse(img, cx, by, br, int(4.0 * scale), outline)
+	_draw_ellipse(img, cx, by, br - 1, int(3.5 * scale), base)
+	# Top bulge (smaller).
+	var tr := int(3.0 * scale)
+	var ty := cy - int(3.0 * scale)
+	_draw_ellipse(img, cx, ty, tr, int(2.5 * scale), outline)
+	_draw_ellipse(img, cx, ty, tr - 1, int(2.0 * scale), base)
+	# Vertical ridges.
+	for x in [cx - 2, cx, cx + 2]:
+		for y in range(by - int(3.0 * scale), by + int(3.0 * scale)):
+			_set_px(img, x, y, dark)
+	# Highlight.
+	_set_px(img, cx - 2, cy - 1, light)
+	_set_px(img, cx - 2, cy, light)
+
+
+## Add a glow effect by placing semi-transparent bright pixels around
+## existing opaque pixels.
+static func _apply_fruit_glow(img: Image, base_color: Color) -> void:
+	var glow_color := Color(
+		clampf(base_color.r + 0.3, 0.0, 1.0),
+		clampf(base_color.g + 0.3, 0.0, 1.0),
+		clampf(base_color.b + 0.3, 0.0, 1.0),
+		0.4
+	)
+	var w := img.get_width()
+	var h := img.get_height()
+	# Collect positions of opaque pixels first to avoid modifying while iterating.
+	var opaque_positions: Array[Vector2i] = []
+	for y in range(h):
+		for x in range(w):
+			if img.get_pixel(x, y).a > 0.5:
+				opaque_positions.append(Vector2i(x, y))
+	# Paint glow in empty neighbors.
+	var neighbor_offsets: Array[Vector2i] = [
+		Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)
+	]
+	for pos in opaque_positions:
+		for off in neighbor_offsets:
+			var nx: int = pos.x + off.x
+			var ny: int = pos.y + off.y
+			if nx >= 0 and nx < w and ny >= 0 and ny < h:
+				if img.get_pixel(nx, ny).a < 0.1:
+					img.set_pixel(nx, ny, glow_color)
 
 
 # ---------------------------------------------------------------------------

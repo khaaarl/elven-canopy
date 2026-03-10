@@ -199,10 +199,11 @@ func _find_hover_target() -> Dictionary:
 	var fruit_y := 0
 	var fruit_z := 0
 	var i := 0
-	while i + 2 < fruit_data.size():
+	while i + 3 < fruit_data.size():
 		var fx: int = fruit_data[i]
 		var fy: int = fruit_data[i + 1]
 		var fz: int = fruit_data[i + 2]
+		# fruit_data[i + 3] is the species_id — not needed for tooltip hit testing.
 		var fruit_world := Vector3(fx + 0.5, fy + 0.5, fz + 0.5)
 		var fdist_sq := _point_to_ray_dist_sq(fruit_world, ray_origin, ray_dir)
 		if fdist_sq < fruit_best_dist_sq:
@@ -211,7 +212,7 @@ func _find_hover_target() -> Dictionary:
 			fruit_x = fx
 			fruit_y = fy
 			fruit_z = fz
-		i += 3
+		i += 4
 
 	if fruit_hit:
 		return {"type": "fruit", "x": fruit_x, "y": fruit_y, "z": fruit_z}
