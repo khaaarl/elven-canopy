@@ -100,6 +100,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-elfcyclopedia-srv    Embedded localhost HTTP elfcyclopedia server
 [ ] F-emotions             Multi-dimensional emotional state
+[ ] F-engagement-style     Unified engagement style (species + military group combat tactics)
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
@@ -111,6 +112,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-fruit-yields         Fruit yield model overhaul
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
+[ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -1643,7 +1645,7 @@ fog of war for surprise attacks.
 
 **Blocked by:** F-attack-move, F-enemy-ai, F-military-groups, F-rts-selection
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
-**Related:** F-fog-of-war
+**Related:** F-engagement-style, F-fog-of-war
 
 #### F-defense-struct — Defensive structures (ballista, wards)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
@@ -1675,6 +1677,27 @@ Simple aggression AI for non-civ hostile creatures. This is the first "it all co
 **Draft:** docs/drafts/combat_military.md (§6 "Initial Behavior")
 
 **Blocks:** F-combat
+**Related:** F-engagement-style
+
+#### F-engagement-style — Unified engagement style (species + military group combat tactics)
+**Status:** Todo
+
+A single `EngagementStyle` struct that governs how a creature uses its weapons in combat. Replaces the current split between `CombatAI` (species-level, coarse) and `HostileResponse` (military group, binary Fight/Flee). The same struct lives on both `SpeciesData` (species defaults for non-civ creatures) and `MilitaryGroup` (player-configurable per-group overrides for civ creatures), using identical code paths.
+
+**Fields (draft — refine during design):**
+
+- **Weapon preference:** Prefer ranged / prefer melee / mixed (ranged at distance, melee when close).
+- **Ammo exhaustion behavior:** Switch to melee / flee / hold position and wait.
+- **Engagement initiative:** Aggressive (pursue on detection) / defensive (fight only when attacked or when hostiles enter short range) / passive (never initiate).
+- **Melee confidence:** Willing to melee / reluctant (flee if forced into melee). Captures "I'm an archer, don't make me swing a sword."
+- **Disengage threshold:** Optional HP% below which the creature breaks off and flees (distinct from F-instinctual-flee which is involuntary panic).
+
+Species defaults should make intuitive sense (goblins: aggressive melee; orc archers: prefer ranged, switch to melee on ammo out; deer: passive). Military group config lets the player override for their civ creatures ("Archers" group: prefer ranged, flee on ammo out; "Vanguard": prefer melee, aggressive).
+
+Supersedes `CombatAI` enum on `SpeciesData` and `HostileResponse` on `MilitaryGroup` — both collapse into `EngagementStyle`. The `should_flee()` / `hostile_pursue()` / `wander()` combat decision logic is rewritten against the unified struct.
+
+**Blocks:** F-instinctual-flee
+**Related:** F-combat, F-enemy-ai, F-military-groups
 
 #### F-flee — Flee behavior for civilians
 **Status:** Done
@@ -1710,6 +1733,25 @@ Display creature HP in the game UI. Two elements:
    in peacetime). Needs hp/hp_max data piped to the sprite renderers.
 
 **Related:** F-hp-death
+
+#### F-instinctual-flee — Instinctual flee thresholds (species-level fear overrides)
+**Status:** Todo
+
+A per-species `FleeInstinct` struct on `SpeciesData` that defines involuntary panic responses — situations where a creature flees regardless of its engagement style, military group orders, or player commands. Fear as a biological override, not a tactical decision.
+
+**Trigger conditions (draft — refine during design):**
+
+- **HP threshold:** Flee when HP drops below X% (e.g., deer at 90%, orc at 20%, troll at 5%).
+- **Outnumbered threshold:** Flee when hostile-to-ally ratio exceeds N:1 within detection range.
+- **Ally death shock:** Flee for N ticks after witnessing an ally die within close range.
+- **Fire proximity:** Flee when fire is within N voxels (once F-fire-basic exists).
+- **Species-specific phobias:** Data-driven list of stimuli (e.g., elephants spooked by fire, prey animals by large predators).
+
+**Interaction with EngagementStyle:** FleeInstinct overrides EngagementStyle. A soldier ordered to Fight with aggressive engagement will still panic-flee if their FleeInstinct triggers. The override is temporary — once the creature is out of the trigger zone or the duration expires, they resume their normal engagement behavior. Player cannot suppress instinctual flee (but species with high courage like trolls have very low thresholds, so it rarely fires).
+
+**Distinct from EngagementStyle's disengage threshold:** The disengage threshold in EngagementStyle is a tactical, voluntary "I should retreat." FleeInstinct is involuntary panic — different movement behavior (possibly ignoring pathing efficiency, running in a random direction away from threat), different visual feedback (panic animation/particles), and cannot be overridden by orders.
+
+**Blocked by:** F-engagement-style
 
 #### F-military-armor — Military group armor policy
 **Status:** Todo
@@ -1747,7 +1789,7 @@ UI: Military panel opened via existing Units [U] button. Summary page lists grou
 **Draft:** docs/drafts/combat_military.md (§1)
 
 **Blocks:** F-combat
-**Related:** F-military-armor, F-military-equip
+**Related:** F-engagement-style, F-military-armor, F-military-equip
 
 #### F-military-org — Squad management and organization
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
