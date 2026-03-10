@@ -12,7 +12,7 @@
 #   scripts/build.sh run        # debug build then launch the game
 #   scripts/build.sh check      # run fmt, clippy, gdformat, gdlint checks
 #   scripts/build.sh coverage  # generate HTML code coverage report (requires cargo-llvm-cov)
-#   scripts/build.sh run-branch NAME  # pull main, checkout branch, pull, build+run
+#   scripts/build.sh run-branch NAME  # fetch, checkout branch, sync to remote, build+run
 #                                       NAME can be exact or partial (tries feature/ and bug/ prefixes)
 #
 # Run from the repo root.
@@ -175,13 +175,11 @@ case "$MODE" in
             exit 1
         fi
 
-        echo "Updating main..."
-        git checkout main
-        git pull
+        echo "Fetching latest from origin..."
+        git fetch --prune
 
         # Resolve branch name: try exact, then feature/, then bug/ prefix
         RESOLVED=""
-        git fetch --prune
         ALL_BRANCHES="$(git branch -a --format='%(refname:short)')"
         for CANDIDATE in "$BRANCH_NAME" "feature/$BRANCH_NAME" "bug/$BRANCH_NAME"; do
             if printf '%s\n' "$ALL_BRANCHES" | grep -qxF "$CANDIDATE"; then
@@ -204,9 +202,26 @@ case "$MODE" in
             exit 1
         fi
 
-        echo "Switching to $RESOLVED..."
-        git checkout "$RESOLVED"
-        git pull 2>/dev/null || true
+        CURRENT_BRANCH="$(git branch --show-current)"
+        if [ "$CURRENT_BRANCH" != "$RESOLVED" ]; then
+            echo "Switching to $RESOLVED..."
+            git checkout "$RESOLVED"
+        else
+            echo "Already on $RESOLVED."
+        fi
+
+        # Update local main ref without checking it out
+        git fetch origin main:main
+
+        # Update to match remote if needed (handles rebases/force-pushes)
+        LOCAL="$(git rev-parse HEAD)"
+        REMOTE="$(git rev-parse "origin/$RESOLVED")"
+        if [ "$LOCAL" != "$REMOTE" ]; then
+            echo "Updating to $(echo "$REMOTE" | head -c 8)..."
+            git reset --hard "origin/$RESOLVED"
+        else
+            echo "Already up to date."
+        fi
 
         echo ""
         echo "Building elven_canopy_gdext (debug)..."

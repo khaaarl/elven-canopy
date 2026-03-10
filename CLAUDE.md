@@ -179,7 +179,7 @@ scripts/build.sh release    # Release build
 scripts/build.sh test       # Run all crate tests
 scripts/build.sh quicktest  # Test only crates changed vs main + multiplayer
 scripts/build.sh run        # Debug build, then launch the game
-scripts/build.sh run-branch NAME  # Pull main, checkout branch, pull, build+run
+scripts/build.sh run-branch NAME  # Fetch, checkout branch, sync to remote, build+run
 ```
 
 To run sim tests alone: `cargo test -p elven_canopy_sim`
@@ -320,6 +320,8 @@ Things that are non-obvious or surprising about this codebase:
 **Keyboard shortcut assignment (CRITICAL):**
 - Before assigning ANY new keyboard shortcut, **thoroughly audit all existing bindings** across every GDScript file. Search for `KEY_` in `godot/scripts/` to find all current bindings. Many keys are already in use (Space, 1-3, B, T, U, I, F12, ?, ESC, Enter, arrow keys, +/=).
 - **Always ask the user** before assigning a shortcut — never pick one unilaterally.
+
+**"Pull main":** When asked to pull/update/rebase on main, first update the local ref: `git fetch origin main:main` (if not on main) or `git pull` (if on main). A stale local main causes wrong diffs in once-over and similar operations.
 
 **Dev profile tuning:**
 - `Cargo.toml` sets `opt-level = 0` for the dev profile (fastest compile times). For machines that run the game with UI, override to `opt-level = 1` via `.cargo/config.toml` (gitignored) for ~4x faster sim execution at a small compile-time cost. The test profile inherits from dev.
