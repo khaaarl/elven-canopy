@@ -382,14 +382,6 @@ pub enum Species {
     Troll,
 }
 
-impl Species {
-    /// Returns `true` for species with aggressive AI that pursue elves.
-    /// Currently: Goblin, Orc, Troll.
-    pub fn is_hostile(self) -> bool {
-        matches!(self, Species::Goblin | Species::Orc | Species::Troll)
-    }
-}
-
 /// Species that can form civilizations. Separate from the sim-active `Species`
 /// enum — `Species` tracks creature types with instances, rendering, and
 /// pathfinding, while `CivSpecies` tracks sapient species that form organized

@@ -31,7 +31,7 @@
 
 use crate::inventory::{ItemKind, Material};
 use crate::nav::EdgeType;
-use crate::species::SpeciesData;
+use crate::species::{CombatAI, SpeciesData};
 use crate::types::{CivSpecies, FaceType, MoodTier, Species, ThoughtKind, VoxelCoord, VoxelType};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -1408,6 +1408,8 @@ impl Default for GameConfig {
                 melee_damage: 10,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
+                combat_ai: CombatAI::Passive,
+                hostile_detection_range_sq: 0,
             },
         );
         species.insert(
@@ -1434,6 +1436,8 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
+                combat_ai: CombatAI::Passive,
+                hostile_detection_range_sq: 0,
             },
         );
         species.insert(
@@ -1460,6 +1464,8 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
+                combat_ai: CombatAI::Passive,
+                hostile_detection_range_sq: 0,
             },
         );
         species.insert(
@@ -1486,6 +1492,8 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
+                combat_ai: CombatAI::Passive,
+                hostile_detection_range_sq: 0,
             },
         );
         species.insert(
@@ -1512,6 +1520,8 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
+                combat_ai: CombatAI::Passive,
+                hostile_detection_range_sq: 0,
             },
         );
         species.insert(
@@ -1538,6 +1548,8 @@ impl Default for GameConfig {
                 melee_damage: 15,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
+                combat_ai: CombatAI::AggressiveMelee,
+                hostile_detection_range_sq: 225, // 15-voxel detection radius
             },
         );
         species.insert(
@@ -1564,6 +1576,8 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
+                combat_ai: CombatAI::Passive,
+                hostile_detection_range_sq: 0,
             },
         );
         species.insert(
@@ -1590,6 +1604,8 @@ impl Default for GameConfig {
                 melee_damage: 25,
                 melee_interval_ticks: 1200,
                 melee_range_sq: 2,
+                combat_ai: CombatAI::AggressiveMelee,
+                hostile_detection_range_sq: 400, // 20-voxel detection radius
             },
         );
         species.insert(
@@ -1616,6 +1632,8 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
+                combat_ai: CombatAI::Passive,
+                hostile_detection_range_sq: 0,
             },
         );
         species.insert(
@@ -1642,6 +1660,8 @@ impl Default for GameConfig {
                 melee_damage: 50,
                 melee_interval_ticks: 1500,
                 melee_range_sq: 2,
+                combat_ai: CombatAI::AggressiveMelee,
+                hostile_detection_range_sq: 144, // 12-voxel detection radius
             },
         );
 

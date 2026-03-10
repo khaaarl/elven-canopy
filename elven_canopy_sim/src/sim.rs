@@ -6174,21 +6174,28 @@ impl SimState {
             None => return,
         };
         let species = creature.species;
+        let combat_ai = self.species_table[&species].combat_ai;
 
-        // Hostile creatures pursue the nearest reachable elf instead of
-        // wandering randomly. If no elf is reachable, fall through to
-        // random wander.
-        if species.is_hostile() && self.hostile_pursue(creature_id, current_node, species, events) {
+        // Aggressive melee creatures pursue detected hostile targets instead
+        // of wandering randomly. Falls through to random wander if no target
+        // is within detection range or reachable.
+        use crate::species::CombatAI;
+        if matches!(
+            combat_ai,
+            CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+        ) && self.hostile_pursue(creature_id, current_node, species, events)
+        {
             return;
         }
 
         self.random_wander(creature_id, current_node, species);
     }
 
-    /// Hostile AI: if an elf is in melee range, strike it. Otherwise find the
-    /// nearest reachable elf via Dijkstra and take one step toward it.
+    /// Hostile AI: if a target is in melee range, strike it. Otherwise find
+    /// the nearest reachable hostile target within detection range via Dijkstra
+    /// and take one step toward it.
     /// Returns `true` if an action was taken (strike or move), `false` if no
-    /// elf is reachable (caller should fall back to random wander).
+    /// target is reachable (caller should fall back to random wander).
     fn hostile_pursue(
         &mut self,
         creature_id: CreatureId,
@@ -6196,46 +6203,50 @@ impl SimState {
         species: Species,
         events: &mut Vec<SimEvent>,
     ) -> bool {
-        // Collect IDs and nav nodes of all living elves.
-        let live_elves: Vec<(CreatureId, NavNodeId)> = self
-            .db
-            .creatures
-            .by_species(&Species::Elf, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .filter(|c| c.vital_status == VitalStatus::Alive)
-            .filter_map(|c| c.current_node.map(|n| (c.id, n)))
-            .collect();
-
-        if live_elves.is_empty() {
-            return false;
-        }
-
-        // Check if any elf is in melee range — if so, strike instead of moving.
-        let attacker_pos = match self.db.creatures.get(&creature_id) {
-            Some(c) => c.position,
+        let attacker = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
             None => return false,
         };
+        let attacker_pos = attacker.position;
+        let attacker_civ = attacker.civ_id;
+        let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
         let attacker_footprint = self.species_table[&species].footprint;
         let melee_range_sq = self.species_table[&species].melee_range_sq;
 
-        // Find the closest elf that's in melee range (by footprint distance).
-        let melee_target = live_elves.iter().find(|&&(elf_id, _)| {
-            let elf = match self.db.creatures.get(&elf_id) {
+        // Collect hostile targets within detection range.
+        // For non-civ aggressive creatures: all civ creatures of different
+        // species are targets. For civ creatures: creatures whose civ we
+        // consider Hostile. Non-civ aggressives don't attack each other.
+        let targets = self.detect_hostile_targets(
+            creature_id,
+            species,
+            attacker_pos,
+            attacker_civ,
+            detection_range_sq,
+        );
+
+        if targets.is_empty() {
+            return false;
+        }
+
+        // Check if any target is in melee range — if so, strike instead of moving.
+        let melee_target = targets.iter().find(|&&(target_id, _)| {
+            let target = match self.db.creatures.get(&target_id) {
                 Some(c) => c,
                 None => return false,
             };
-            let elf_footprint = self.species_table[&elf.species].footprint;
+            let target_footprint = self.species_table[&target.species].footprint;
             in_melee_range(
                 attacker_pos,
                 attacker_footprint,
-                elf.position,
-                elf_footprint,
+                target.position,
+                target_footprint,
                 melee_range_sq,
             )
         });
 
-        if let Some(&(elf_id, _)) = melee_target {
-            if self.try_melee_strike(creature_id, elf_id, events) {
+        if let Some(&(target_id, _)) = melee_target {
+            if self.try_melee_strike(creature_id, target_id, events) {
                 return true;
             }
             // Strike failed (cooldown). Wait here instead of wandering away —
@@ -6260,8 +6271,8 @@ impl SimState {
             return true;
         }
 
-        // No elf in melee range — pathfind toward nearest.
-        let elf_nodes: Vec<NavNodeId> = live_elves.iter().map(|&(_, n)| n).collect();
+        // No target in melee range — pathfind toward nearest detected target.
+        let target_nodes: Vec<NavNodeId> = targets.iter().map(|&(_, n)| n).collect();
 
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
@@ -6269,7 +6280,7 @@ impl SimState {
         let nearest = crate::pathfinding::dijkstra_nearest(
             graph,
             current_node,
-            &elf_nodes,
+            &target_nodes,
             species_data.walk_ticks_per_voxel,
             species_data.climb_ticks_per_voxel,
             species_data.wood_ladder_tpv,
@@ -6303,6 +6314,97 @@ impl SimState {
         let first_edge_idx = path.edge_indices[0];
         self.move_one_step(creature_id, species, first_edge_idx);
         true
+    }
+
+    /// Detect hostile targets within detection range. Returns a list of
+    /// `(CreatureId, NavNodeId)` pairs sorted by squared euclidean distance
+    /// (nearest first).
+    ///
+    /// Hostility rules for the initial pass:
+    /// - Non-civ aggressive creature (no `civ_id`): targets all living civ
+    ///   creatures of a different species. Non-civ aggressives don't attack
+    ///   each other.
+    /// - Civ creature: targets living creatures whose civ it considers
+    ///   `CivOpinion::Hostile`. (Future: also non-civ aggressives.)
+    fn detect_hostile_targets(
+        &self,
+        attacker_id: CreatureId,
+        attacker_species: Species,
+        attacker_pos: VoxelCoord,
+        attacker_civ: Option<CivId>,
+        detection_range_sq: i64,
+    ) -> Vec<(CreatureId, NavNodeId)> {
+        let mut targets: Vec<(CreatureId, NavNodeId, i64)> = Vec::new();
+        // Track seen creature IDs to avoid duplicates from multi-voxel footprints.
+        let mut seen = std::collections::BTreeSet::new();
+
+        // O(n) scan over all creatures in the spatial index.
+        for (&_voxel, creature_ids) in &self.spatial_index {
+            for &cid in creature_ids {
+                if cid == attacker_id || !seen.insert(cid) {
+                    continue;
+                }
+                let creature = match self.db.creatures.get(&cid) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                if creature.vital_status != VitalStatus::Alive {
+                    continue;
+                }
+                let node = match creature.current_node {
+                    Some(n) => n,
+                    None => continue,
+                };
+
+                // Squared 3D euclidean distance (i64 to prevent overflow).
+                let dx = attacker_pos.x as i64 - creature.position.x as i64;
+                let dy = attacker_pos.y as i64 - creature.position.y as i64;
+                let dz = attacker_pos.z as i64 - creature.position.z as i64;
+                let dist_sq = dx * dx + dy * dy + dz * dz;
+
+                if dist_sq > detection_range_sq {
+                    continue;
+                }
+
+                // Check hostility.
+                let is_target = if attacker_civ.is_none() {
+                    // Non-civ aggressive: target all civ creatures of
+                    // different species. Don't attack other non-civ creatures.
+                    creature.civ_id.is_some() && creature.species != attacker_species
+                } else if let (Some(my_civ), Some(their_civ)) = (attacker_civ, creature.civ_id) {
+                    // Both are civ creatures: check CivOpinion.
+                    if my_civ == their_civ {
+                        false
+                    } else {
+                        self.db
+                            .civ_relationships
+                            .by_from_civ(&my_civ, tabulosity::QueryOpts::ASC)
+                            .into_iter()
+                            .any(|r| r.to_civ == their_civ && r.opinion == CivOpinion::Hostile)
+                    }
+                } else {
+                    // Attacker has civ, target doesn't — check if target's
+                    // species has aggressive combat_ai.
+                    use crate::species::CombatAI;
+                    matches!(
+                        self.species_table[&creature.species].combat_ai,
+                        CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+                    )
+                };
+
+                if is_target {
+                    targets.push((cid, node, dist_sq));
+                }
+            }
+        }
+
+        // Sort by distance (nearest first), break ties by CreatureId for determinism.
+        targets.sort_by_key(|&(cid, _, dist)| (dist, cid));
+
+        targets
+            .into_iter()
+            .map(|(cid, node, _)| (cid, node))
+            .collect()
     }
 
     /// Move a creature one step along the given nav graph edge: update position,
@@ -18907,12 +19009,24 @@ mod tests {
 
     #[test]
     fn game_config_with_recipes_deserializes() {
+        use crate::species::CombatAI;
         let config_json = std::fs::read_to_string("../default_config.json").unwrap();
         let config: crate::config::GameConfig = serde_json::from_str(&config_json).unwrap();
         assert_eq!(config.recipes.len(), 3);
         assert_eq!(config.recipes[0].id, "bowstring");
         assert_eq!(config.recipes[1].id, "bow");
         assert_eq!(config.recipes[2].id, "arrow");
+        // CombatAI and detection range survive JSON roundtrip.
+        assert_eq!(
+            config.species[&Species::Goblin].combat_ai,
+            CombatAI::AggressiveMelee
+        );
+        assert_eq!(
+            config.species[&Species::Goblin].hostile_detection_range_sq,
+            225
+        );
+        assert_eq!(config.species[&Species::Elf].combat_ai, CombatAI::Passive);
+        assert_eq!(config.species[&Species::Elf].hostile_detection_range_sq, 0);
     }
 
     #[test]
@@ -23733,17 +23847,63 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn species_is_hostile() {
-        assert!(Species::Goblin.is_hostile());
-        assert!(Species::Orc.is_hostile());
-        assert!(Species::Troll.is_hostile());
-        assert!(!Species::Elf.is_hostile());
-        assert!(!Species::Capybara.is_hostile());
-        assert!(!Species::Deer.is_hostile());
-        assert!(!Species::Boar.is_hostile());
-        assert!(!Species::Monkey.is_hostile());
-        assert!(!Species::Squirrel.is_hostile());
-        assert!(!Species::Elephant.is_hostile());
+    fn combat_ai_config() {
+        use crate::species::CombatAI;
+        let sim = test_sim(42);
+        // Aggressive melee species.
+        assert_eq!(
+            sim.species_table[&Species::Goblin].combat_ai,
+            CombatAI::AggressiveMelee
+        );
+        assert_eq!(
+            sim.species_table[&Species::Orc].combat_ai,
+            CombatAI::AggressiveMelee
+        );
+        assert_eq!(
+            sim.species_table[&Species::Troll].combat_ai,
+            CombatAI::AggressiveMelee
+        );
+        // Passive species.
+        assert_eq!(
+            sim.species_table[&Species::Elf].combat_ai,
+            CombatAI::Passive
+        );
+        assert_eq!(
+            sim.species_table[&Species::Capybara].combat_ai,
+            CombatAI::Passive
+        );
+        assert_eq!(
+            sim.species_table[&Species::Deer].combat_ai,
+            CombatAI::Passive
+        );
+        assert_eq!(
+            sim.species_table[&Species::Boar].combat_ai,
+            CombatAI::Passive
+        );
+        assert_eq!(
+            sim.species_table[&Species::Monkey].combat_ai,
+            CombatAI::Passive
+        );
+        assert_eq!(
+            sim.species_table[&Species::Squirrel].combat_ai,
+            CombatAI::Passive
+        );
+        assert_eq!(
+            sim.species_table[&Species::Elephant].combat_ai,
+            CombatAI::Passive
+        );
+        // Detection ranges are set for aggressive species, zero for passive.
+        assert!(sim.species_table[&Species::Goblin].hostile_detection_range_sq > 0);
+        assert!(sim.species_table[&Species::Orc].hostile_detection_range_sq > 0);
+        assert!(sim.species_table[&Species::Troll].hostile_detection_range_sq > 0);
+        assert_eq!(
+            sim.species_table[&Species::Elf].hostile_detection_range_sq,
+            0
+        );
+        assert_eq!(
+            sim.species_table[&Species::Capybara].hostile_detection_range_sq,
+            0
+        );
     }
 
     #[test]
@@ -24179,6 +24339,129 @@ mod tests {
         assert!(
             dist <= 2,
             "Goblin should stay near elf on cooldown, not wander away (dist={dist})"
+        );
+    }
+
+    #[test]
+    fn hostile_ignores_elf_outside_detection_range() {
+        // A goblin with detection_range_sq=225 (15 voxels) should NOT pursue
+        // an elf that is >15 voxels away in euclidean distance.
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+
+        // Place elf far from goblin — 50 voxels away on X axis (50² = 2500 >> 225).
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+        let far_pos = VoxelCoord::new(goblin_pos.x + 50, goblin_pos.y, goblin_pos.z);
+        force_position(&mut sim, elf, far_pos);
+
+        // Schedule activation.
+        let tick = sim.tick;
+        sim.event_queue.schedule(
+            tick + 1,
+            ScheduledEventKind::CreatureActivation {
+                creature_id: goblin,
+            },
+        );
+        force_idle(&mut sim, goblin);
+
+        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+        // Run a short period — goblin should wander randomly, not pursue.
+        // Keep ticks low so random wander can't close the 50-voxel gap.
+        sim.step(&[], tick + 3000);
+
+        let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+        assert_eq!(
+            elf_hp_before, elf_hp_after,
+            "Goblin should not attack elf outside detection range"
+        );
+        // Goblin should have wandered but NOT moved closer to the elf.
+        // (It might have moved closer by random chance, so we just check
+        // it didn't deal damage — the key assertion.)
+    }
+
+    #[test]
+    fn hostile_pursues_elf_within_detection_range() {
+        // A goblin with detection_range_sq=225 (15 voxels) SHOULD pursue
+        // an elf within 10 voxels (10² = 100 < 225).
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+
+        // Place elf 5 voxels from goblin on X axis (5² = 25 < 225).
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+        let near_pos = VoxelCoord::new(goblin_pos.x + 5, goblin_pos.y, goblin_pos.z);
+        force_position(&mut sim, elf, near_pos);
+
+        // Schedule activation.
+        let tick = sim.tick;
+        sim.event_queue.schedule(
+            tick + 1,
+            ScheduledEventKind::CreatureActivation {
+                creature_id: goblin,
+            },
+        );
+        force_idle(&mut sim, goblin);
+
+        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+        let initial_dist = goblin_pos.manhattan_distance(near_pos);
+
+        sim.step(&[], tick + 10_000);
+
+        let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
+        let elf_current = sim.db.creatures.get(&elf).unwrap().position;
+        let new_dist = goblin_final.manhattan_distance(elf_current);
+        let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+
+        let moved_closer = new_dist < initial_dist;
+        let dealt_damage = elf_hp_after < elf_hp_before;
+        assert!(
+            moved_closer || dealt_damage,
+            "Goblin should pursue elf within detection range: \
+             initial dist={initial_dist}, new dist={new_dist}, \
+             elf hp {elf_hp_before} -> {elf_hp_after}"
+        );
+    }
+
+    #[test]
+    fn hostile_does_not_attack_same_species() {
+        // Two non-civ goblins adjacent to each other should NOT attack.
+        let mut sim = test_sim(42);
+        let g1 = spawn_species(&mut sim, Species::Goblin);
+        let g2 = spawn_species(&mut sim, Species::Goblin);
+
+        // Place them adjacent.
+        let g1_pos = sim.db.creatures.get(&g1).unwrap().position;
+        let g2_pos = VoxelCoord::new(g1_pos.x + 1, g1_pos.y, g1_pos.z);
+        force_position(&mut sim, g2, g2_pos);
+        force_idle(&mut sim, g1);
+        force_idle(&mut sim, g2);
+
+        let tick = sim.tick;
+        sim.event_queue.schedule(
+            tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: g1 },
+        );
+        sim.event_queue.schedule(
+            tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: g2 },
+        );
+
+        let g1_hp_before = sim.db.creatures.get(&g1).unwrap().hp;
+        let g2_hp_before = sim.db.creatures.get(&g2).unwrap().hp;
+
+        sim.step(&[], tick + 3000);
+
+        let g1_hp_after = sim.db.creatures.get(&g1).unwrap().hp;
+        let g2_hp_after = sim.db.creatures.get(&g2).unwrap().hp;
+        assert_eq!(
+            g1_hp_before, g1_hp_after,
+            "Goblins should not attack same species"
+        );
+        assert_eq!(
+            g2_hp_before, g2_hp_after,
+            "Goblins should not attack same species"
         );
     }
 

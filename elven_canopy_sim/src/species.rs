@@ -3,8 +3,8 @@
 // Most behavioral differences between creature species (elves, capybaras, etc.)
 // are expressed as data in `SpeciesData`, keyed by `Species` in the game config.
 // The sim code uses a single `Creature` type and reads species-specific values
-// from the species table at runtime. The one exception is `Species::is_hostile()`
-// (in `types.rs`), which gates hostile AI pursuit behavior in `sim.rs`.
+// from the species table at runtime, including `combat_ai` for hostility and
+// `hostile_detection_range_sq` for detection range.
 //
 // Current parameters:
 // - `walk_ticks_per_voxel` — ticks to traverse 1.0 units of euclidean distance
@@ -44,6 +44,14 @@
 //   idle creature will seek sleep (default 50).
 // - `rest_per_sleep_tick` — rest restored per sim tick of sleeping, applied
 //   at each sleep task activation.
+// - `combat_ai` — `CombatAI` enum controlling combat behavior: `Passive`
+//   (default, no combat), `FleeOnly` (future), `AggressiveMelee` (pursue
+//   and melee), `AggressiveRanged` (future). Replaces the hardcoded
+//   `Species::is_hostile()` discriminator with a data-driven approach.
+// - `hostile_detection_range_sq` — maximum squared 3D euclidean distance at
+//   which a creature can detect hostiles. 0 = no detection (passive species).
+//   E.g. 225 = 15-voxel radius, 400 = 20-voxel radius. Height is included,
+//   so ground-level goblins cannot detect canopy elves directly.
 //
 // See also: `config.rs` where the species table lives as part of `GameConfig`,
 // `sim.rs` for the unified `Creature` type and activation chain that consumes
@@ -54,6 +62,25 @@
 
 use crate::nav::EdgeType;
 use serde::{Deserialize, Serialize};
+
+/// Combat behavior for a species. Determines how the creature reacts to
+/// hostiles detected within its `hostile_detection_range_sq`.
+///
+/// For non-civ creatures, `combat_ai` directly drives behavior. For civ
+/// creatures, the military group's `hostile_response` overrides this;
+/// `combat_ai` is the fallback if the creature loses its civ.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CombatAI {
+    /// No combat behavior. Will not attack or flee. (Wildlife default.)
+    Passive,
+    /// Flee from hostiles within detection range. (Prey animals, future.)
+    FleeOnly,
+    /// Attack hostiles within detection range using melee.
+    AggressiveMelee,
+    /// Attack hostiles within detection range using ranged if possible,
+    /// melee as fallback. (Future: ranged hostiles.)
+    AggressiveRanged,
+}
 
 /// Data-driven behavioral parameters for a creature species.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -140,6 +167,20 @@ pub struct SpeciesData {
     #[serde(default = "default_melee_range_sq")]
     pub melee_range_sq: i64,
 
+    /// Combat behavior for this species. Determines whether the creature
+    /// attacks, flees, or ignores hostiles within detection range.
+    /// Default: `Passive` (no combat behavior).
+    #[serde(default = "default_combat_ai")]
+    pub combat_ai: CombatAI,
+
+    /// Maximum squared 3D euclidean distance at which this creature can
+    /// detect hostiles. Uses `i64` intermediates: `dx*dx + dy*dy + dz*dz`.
+    /// Default 0 means no detection (passive species). For aggressive
+    /// species, set to the desired detection radius squared (e.g., 225 for
+    /// 15-voxel radius, 400 for 20-voxel radius).
+    #[serde(default)]
+    pub hostile_detection_range_sq: i64,
+
     /// Maximum rest level (also the starting value). Same scale as `food_max`.
     /// 0 = species never gets tired (rest system is inert).
     #[serde(default = "default_rest_max")]
@@ -196,6 +237,10 @@ fn default_melee_interval_ticks() -> u64 {
 
 fn default_melee_range_sq() -> i64 {
     2
+}
+
+fn default_combat_ai() -> CombatAI {
+    CombatAI::Passive
 }
 
 fn default_rest_max() -> i64 {

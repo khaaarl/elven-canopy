@@ -110,7 +110,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-sprites        Procedural fruit sprites
 [ ] F-fruit-yields         Fruit yield model overhaul
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
-[ ] F-hostile-detection    Hostile detection and faction logic
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-logistics-filter     Logistics material filter
@@ -205,6 +204,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
+[x] F-hostile-detection    Hostile detection and faction logic
 [x] F-hostile-species      Goblin, Orc, and Troll species
 [x] F-hp-death             HP, VitalStatus, and creature death handling
 [x] F-hp-ui                HP bars in creature UI
@@ -1605,7 +1605,7 @@ TaskKindTag::AttackMove — hotkey A + click on ground. Extension table TaskAtta
 
 **Draft:** docs/drafts/combat_military.md (§2 "Attack-Move")
 
-**Blocked by:** F-attack-task, F-hostile-detection
+**Blocked by:** F-attack-task
 **Blocks:** F-combat
 **Related:** F-attack-task
 
@@ -1627,7 +1627,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action
+**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-military-groups, F-rts-selection, F-shoot-action
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1658,7 +1658,6 @@ Simple aggression AI for non-civ hostile creatures. This is the first "it all co
 
 **Draft:** docs/drafts/combat_military.md (§6 "Initial Behavior")
 
-**Blocked by:** F-hostile-detection
 **Blocks:** F-combat
 
 #### F-flee — Flee behavior for civilians
@@ -1672,17 +1671,14 @@ Creatures with Flee response (civilian military group default, or FleeOnly comba
 
 **Draft:** docs/drafts/combat_military.md (§7)
 
-**Blocked by:** F-hostile-detection
 **Blocks:** F-combat
 
 #### F-hostile-detection — Hostile detection and faction logic
-**Status:** Todo
+**Status:** Done
 
 Activation-driven hostile scanning. On each creature activation, scan for hostiles within hostile_detection_range_sq (SpeciesData, squared euclidean voxels). Hostility determination: per-direction (not mutual). Civ creatures check CivOpinion::Hostile toward other civ. Non-civ creatures with combat_ai: AggressiveMelee/AggressiveRanged treat all civ creatures as hostile (except same-species exemption). Non-civ aggressors don't attack each other. CombatAI enum on SpeciesData (Passive, FleeOnly, AggressiveMelee, AggressiveRanged). Auto-escalation when attacked (design question: no target civ for non-civ attackers — may only apply to civ-vs-civ). Detection is O(n) scan over all creatures with squared-distance filter (BTreeMap spatial index doesn't support 3D range queries). Height makes detection range ineffective across tree levels — design decision needed on whether this is intentional.
 
 **Draft:** docs/drafts/combat_military.md (§6, §7)
-
-**Blocks:** F-attack-move, F-combat, F-enemy-ai, F-flee
 
 #### F-hp-ui — HP bars in creature UI
 **Status:** Done
