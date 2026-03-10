@@ -38,7 +38,7 @@
 ## localhost encyclopedia HTTP server (started at launch, URL shown via a small
 ## book button next to the Menu button), tree_renderer.gd / elf_renderer.gd /
 ## capybara_renderer.gd / blueprint_renderer.gd / ladder_renderer.gd /
-## furniture_renderer.gd / ground_pile_renderer.gd for rendering,
+## furniture_renderer.gd / ground_pile_renderer.gd / projectile_renderer.gd for rendering,
 ## action_toolbar.gd for the toolbar UI, placement_controller.gd for
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
@@ -98,6 +98,7 @@ var _bldg_renderer: Node3D
 var _ladder_renderer: Node3D
 var _furniture_renderer: Node3D
 var _pile_renderer: Node3D
+var _projectile_renderer: Node3D
 var _tooltip_controller: Node
 var _notification_display: VBoxContainer
 var _status_bar: PanelContainer
@@ -352,6 +353,14 @@ func _setup_common(bridge: SimBridge) -> void:
 	_pile_renderer.name = "GroundPileRenderer"
 	add_child(_pile_renderer)
 	_pile_renderer.setup(bridge)
+
+	# Set up projectile renderer.
+	var proj_renderer_script = load("res://scripts/projectile_renderer.gd")
+	_projectile_renderer = Node3D.new()
+	_projectile_renderer.set_script(proj_renderer_script)
+	_projectile_renderer.name = "ProjectileRenderer"
+	add_child(_projectile_renderer)
+	_projectile_renderer.setup(bridge)
 
 	# Info panel layer (layer 3) — creature and structure info panels render
 	# on top of the units panel (layer 2) so clicking a unit row shows the
@@ -745,6 +754,8 @@ func _process(delta: float) -> void:
 	$CapybaraRenderer.set_render_tick(render_tick)
 	for r in _extra_renderers:
 		r.set_render_tick(render_tick)
+	if _projectile_renderer:
+		_projectile_renderer.set_render_tick(render_tick)
 	_selector.set_render_tick(render_tick)
 	if _tooltip_controller:
 		_tooltip_controller.set_render_tick(render_tick)

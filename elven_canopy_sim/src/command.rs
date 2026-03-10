@@ -224,6 +224,17 @@ pub enum SimAction {
         attacker_id: CreatureId,
         target_id: CreatureId,
     },
+    /// Spawn a projectile at a position with a given velocity (debug/testing).
+    /// Creates a projectile with an arrow item in its inventory.
+    DebugSpawnProjectile {
+        /// Position to spawn from (voxel coordinate, will be converted to
+        /// sub-voxel center).
+        origin: VoxelCoord,
+        /// Target voxel — the aim solver computes the launch velocity.
+        target: VoxelCoord,
+        /// Creature that "shot" this projectile (for attribution). Optional.
+        shooter_id: Option<CreatureId>,
+    },
 }
 
 /// A recipe configuration entry for workshop commands.

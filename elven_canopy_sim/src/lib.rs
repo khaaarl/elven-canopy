@@ -14,7 +14,7 @@
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
 // - `pathfinding.rs`: A* pathfinding over the nav graph.
 // - `preemption.rs`:  Task priority levels and preemption rules (Mood vs Survival, PlayerDirected override, etc.).
-// - `projectile.rs`:  Integer-only ballistic trajectory math (sub-voxel coords, aim solver, damage).
+// - `projectile.rs`:  Integer-only ballistic trajectory math (sub-voxel coords, aim solver).
 // - `command.rs`:     SimCommand / SimAction — all sim mutations.
 // - `event.rs`:       EventQueue (priority queue) + narrative SimEvents.
 // - `fruit.rs`:       Procedural fruit species: types, generation, coverage, Vaelith naming.

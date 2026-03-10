@@ -51,7 +51,6 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
-[~] F-projectiles          Projectile physics system (arrows)
 ```
 
 ### Todo
@@ -60,6 +59,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-apprentice           Skill transfer via proximity
+[ ] F-arrow-durability     Arrow durability and recovery
 [ ] F-attack-move          Attack-move task (walk + fight en route)
 [ ] F-attack-task          AttackCreature task (player-directed target pursuit)
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
@@ -154,6 +154,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-unfurnish            Unfurnish/refurnish a building
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-visual-smooth        Smooth voxel surface rendering
+[ ] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
@@ -231,6 +232,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-pile-gravity         Ground pile gravity and merging
 [x] F-placement-ui         Revamp construction placement UX
 [x] F-preemption           Task priority and preemption system
+[x] F-projectiles          Projectile physics system (arrows)
 [x] F-recipes              Recipe system for crafting/cooking
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
 [x] F-save-load            Save/load to JSON with versioning
@@ -1057,7 +1059,6 @@ Ranged attack as a creature ACTION. Uses the standard ActionKind / next_availabl
 
 **Draft:** docs/drafts/combat_military.md (§5)
 
-**Blocked by:** F-projectiles
 **Blocks:** F-combat
 
 #### F-task-interruption — Unified task interruption and cleanup
@@ -1589,6 +1590,11 @@ infrastructure.
 
 ### Combat & Defense
 
+#### F-arrow-durability — Arrow durability and recovery
+**Status:** Todo · **Phase:** 3
+
+Arrow durability system: arrows lose durability on impact and may break. Recoverable arrows that survive impact are placed on the ground for pickup. Extracted from F-projectiles as a separate concern — not needed for the first pass at combat.
+
 #### F-attack-move — Attack-move task (walk + fight en route)
 **Status:** Todo
 
@@ -1618,7 +1624,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-military-groups, F-projectiles, F-rts-selection, F-shoot-action
+**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-hostile-detection, F-military-groups, F-preemption, F-projectiles, F-rts-selection, F-shoot-action
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1719,23 +1725,16 @@ positions, and alert levels.
 **Blocks:** F-military-campaign
 
 #### F-projectiles — Projectile physics system (arrows)
-**Status:** In Progress
+**Status:** Done
 
-SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity table in SimDb (no FK constraints, serialized normally). Ballistic trajectory with symplectic Euler integration (velocity updated before position). ProjectileTick batched event — one event per tick while any projectiles are in flight, advances all projectiles. Per-tick: save prev_voxel (initialized to shooter position at spawn), apply gravity to velocity, apply velocity to position, check voxel collision (solid → surface impact, ground pile at prev_voxel), check bounds (out of world → despawn). Speed-dependent damage formula: base_damage * impact_speed_sq / launch_speed_sq (widened to i128 locally, min 1 damage). Arrow durability and recovery. Rendering: projectile_renderer.gd (pool pattern), SimBridge returns stride-6 float array (pos+vel), interpolation via position + velocity * fractional_offset.
+SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity table in SimDb with inventory-based payload (FK nullify on shooter, FK cascade on inventory). Ballistic trajectory with symplectic Euler integration (velocity updated before position). ProjectileTick batched event — one event per tick while any projectiles are in flight, advances all projectiles. Per-tick: save prev_voxel, apply gravity to velocity, apply velocity to position, check voxel collision (solid → surface impact, ground pile at prev_voxel), check creature collision (spatial index), check bounds (out of world → despawn). Momentum-based damage formula computed at impact time from velocity + item properties (linear in speed, not quadratic). Rendering: projectile_renderer.gd (pool pattern, thin elongated CylinderMesh oriented along velocity vector), SimBridge returns packed position+velocity arrays, interpolation via position + velocity * fractional_offset.
 
-**launch_speed_sq stored as i64** (not i128) on the Projectile struct — max value ~3×2^60 fits within i64::MAX. Widening to i128 happens only in the local damage calculation to avoid serde compatibility issues with i128.
+**Bounds check must be performed on i64 sub-voxel coordinates BEFORE converting to VoxelCoord via `as i32`**, to prevent silent truncation.
 
-**Bounds check (step 7) must be performed on i64 sub-voxel coordinates BEFORE converting to VoxelCoord via `as i32`**, to prevent silent truncation. Compare against world extents scaled to sub-voxel units, or right-shift and check against world size as i64 before casting to i32. Out-of-bounds projectiles must be caught before the `as i32` truncation in `to_voxel()`, which could silently wrap extreme i64 values into apparently-valid i32 coordinates.
-
-**ProjectileTick scheduling guard:** Schedule a ProjectileTick event if and only if the projectile table was empty before this spawn (count went from 0 → 1). Prevents duplicate scheduling when multiple archers fire on the same tick. Handler schedules the next ProjectileTick for tick+1 if projectiles remain after processing; stops when the table is empty.
-
-**Done so far:** `projectile.rs` module in `elven_canopy_sim` with pure-math ballistics (no sim integration). Implements: SubVoxelCoord/SubVoxelVec types with `to_voxel()` and `to_voxel_checked()`, `magnitude_sq()` (i128) and `magnitude_sq_i64()` variants, `from_voxel_center()`, render float conversion; `EARTH_GRAVITY_SUB_VOXEL` constant (5267, calibrated for 2m voxels); `ballistic_step()` symplectic Euler integration; `simulate_trajectory()` free-space arc simulation; `compute_aim_velocity()` iterative guess-and-simulate aim solver with `isqrt_i128()`; `compute_impact_damage()` with i64 launch_speed_sq and local i128 widening. 40 unit tests.
-
-**Not yet done (blocked by F-spatial-index or requires sim integration):** Projectile entity and SimDb table, ProjectileTick batched event, per-tick collision (solid voxel + creature hit via spatial index), arrow durability/recovery, ground pile placement at prev_voxel, SimBridge rendering API, projectile_renderer.gd.
+**ProjectileTick scheduling guard:** Schedule a ProjectileTick event if and only if the projectile table was empty before this spawn (count went from 0 → 1). Prevents duplicate scheduling when multiple archers fire on the same tick.
 
 **Draft:** docs/drafts/combat_military.md (§4)
 
-**Blocks:** F-combat, F-shoot-action
 **Related:** F-spatial-index
 
 #### F-spatial-index — Creature spatial index for voxel-level position queries
@@ -1748,6 +1747,11 @@ BTreeMap<VoxelCoord, Vec<CreatureId>> on SimState, #[serde(skip)], rebuilt on lo
 **Draft:** docs/drafts/combat_military.md (§4 "Creature Spatial Index")
 
 **Related:** F-projectiles
+
+#### F-voxel-exclusion — Creatures cannot enter voxels occupied by hostile creatures
+**Status:** Todo · **Phase:** 3
+
+Creatures should not be able to enter a voxel already occupied by a hostile creature (and vice versa). Currently multiple creatures freely share voxels regardless of faction. Needs pathfinding and/or movement-step checks to enforce. Edge case: if creatures are already sharing a voxel when hostility begins, behavior is TBD (push apart, allow temporary overlap, etc.).
 
 ### World Expansion & Ecology
 

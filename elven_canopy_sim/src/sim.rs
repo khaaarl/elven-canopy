@@ -237,6 +237,7 @@ use crate::nav::{self, NavGraph};
 use crate::pathfinding;
 use crate::preemption;
 use crate::prng::GameRng;
+use crate::projectile::SubVoxelVec;
 use crate::species::SpeciesData;
 use crate::structural;
 use crate::task;
@@ -788,6 +789,13 @@ impl SimState {
                 target_id,
             } => {
                 self.try_melee_strike(*attacker_id, *target_id, events);
+            }
+            SimAction::DebugSpawnProjectile {
+                origin,
+                target,
+                shooter_id,
+            } => {
+                self.spawn_projectile(*origin, *target, *shooter_id);
             }
         }
     }
@@ -1695,6 +1703,9 @@ impl SimState {
                 let next_tick = self.tick + self.config.logistics_heartbeat_interval_ticks;
                 self.event_queue
                     .schedule(next_tick, ScheduledEventKind::LogisticsHeartbeat);
+            }
+            ScheduledEventKind::ProjectileTick => {
+                self.process_projectile_tick(events);
             }
         }
     }
@@ -4837,6 +4848,271 @@ impl SimState {
         });
 
         true
+    }
+
+    // -----------------------------------------------------------------------
+    // Projectile system
+    // -----------------------------------------------------------------------
+
+    /// Spawn a projectile from `origin` aimed at `target`. Creates an inventory
+    /// with a single arrow, computes aim velocity, and inserts the projectile
+    /// into SimDb. Schedules a `ProjectileTick` event if this is the first
+    /// in-flight projectile (table was empty before this spawn).
+    fn spawn_projectile(
+        &mut self,
+        origin: VoxelCoord,
+        target: VoxelCoord,
+        shooter_id: Option<CreatureId>,
+    ) {
+        use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+
+        let was_empty = self.db.projectiles.is_empty();
+
+        // Create inventory with a single arrow.
+        let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
+        self.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
+
+        // Compute aim velocity.
+        let origin_sub = SubVoxelCoord::from_voxel_center(origin);
+        let speed = self.config.arrow_base_speed;
+        let gravity = self.config.arrow_gravity;
+        let aim = compute_aim_velocity(origin_sub, target, speed, gravity, 5, 5000);
+
+        // Insert projectile into SimDb.
+        let _ = self
+            .db
+            .projectiles
+            .insert_auto_no_fk(|id| crate::db::Projectile {
+                id,
+                shooter: shooter_id,
+                inventory_id: inv_id,
+                position: origin_sub,
+                velocity: aim.velocity,
+                prev_voxel: origin,
+                origin_voxel: origin,
+            });
+
+        // Schedule ProjectileTick if this is the first in-flight projectile.
+        if was_empty {
+            self.event_queue
+                .schedule(self.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    /// Advance all in-flight projectiles by one tick. For each projectile:
+    /// save prev_voxel, apply gravity+velocity (symplectic Euler via
+    /// `ballistic_step`), check bounds, check solid voxel collision, check
+    /// creature collision. Resolved projectiles are removed from the table.
+    /// Reschedules itself for tick+1 if projectiles remain.
+    fn process_projectile_tick(&mut self, events: &mut Vec<SimEvent>) {
+        use crate::projectile::ballistic_step;
+
+        let gravity = self.config.arrow_gravity;
+        let (world_sx, world_sy, world_sz) = self.config.world_size;
+
+        // Collect all projectile IDs to iterate (can't mutate DB while iterating).
+        let projectile_ids: Vec<ProjectileId> =
+            self.db.projectiles.iter_all().map(|p| p.id).collect();
+
+        for proj_id in projectile_ids {
+            let proj = match self.db.projectiles.get(&proj_id) {
+                Some(p) => p,
+                None => continue, // already removed
+            };
+
+            // Step 1: save current voxel as prev_voxel.
+            let current_voxel = proj.position.to_voxel();
+
+            // Step 2-3: symplectic Euler (gravity, then velocity).
+            let (new_pos, new_vel) = ballistic_step(proj.position, proj.velocity, gravity);
+
+            // Step 7 (early): bounds check on i64 BEFORE casting to i32.
+            let vx = new_pos.x >> crate::projectile::SUB_VOXEL_SHIFT;
+            let vy = new_pos.y >> crate::projectile::SUB_VOXEL_SHIFT;
+            let vz = new_pos.z >> crate::projectile::SUB_VOXEL_SHIFT;
+
+            if vx < 0
+                || vy < 0
+                || vz < 0
+                || vx >= world_sx as i64
+                || vy >= world_sy as i64
+                || vz >= world_sz as i64
+            {
+                // Out of bounds — despawn silently (arrow lost).
+                self.remove_projectile(proj_id);
+                continue;
+            }
+
+            // Step 4: determine containing voxel (safe to cast now).
+            let new_voxel = new_pos.to_voxel();
+
+            // Step 5: solid voxel check.
+            if self.world.in_bounds(new_voxel) && self.world.get(new_voxel).is_solid() {
+                // Surface hit — transfer arrow to ground pile at prev_voxel.
+                self.resolve_projectile_surface_hit(proj_id, current_voxel, events);
+                continue;
+            }
+
+            // Step 6: creature check via spatial index.
+            // Skip the origin voxel — projectiles don't hit creatures at their
+            // launch site (prevents friendly-fire on the shooter and allies
+            // sharing the same voxel).
+            let is_origin = self
+                .db
+                .projectiles
+                .get(&proj_id)
+                .is_some_and(|p| new_voxel == p.origin_voxel);
+            let creatures_here = if is_origin {
+                Vec::new()
+            } else {
+                self.creatures_at_voxel(new_voxel).to_vec()
+            };
+            if !creatures_here.is_empty() {
+                // Filter to alive creatures. Sort is preserved from spatial
+                // index for determinism.
+                let candidates: Vec<CreatureId> = creatures_here
+                    .into_iter()
+                    .filter(|cid| {
+                        self.db
+                            .creatures
+                            .get(cid)
+                            .is_some_and(|c| c.vital_status == VitalStatus::Alive)
+                    })
+                    .collect();
+
+                if !candidates.is_empty() {
+                    let target_id = if candidates.len() == 1 {
+                        candidates[0]
+                    } else {
+                        candidates[self.rng.next_u64() as usize % candidates.len()]
+                    };
+
+                    self.resolve_projectile_creature_hit(
+                        proj_id, target_id, new_vel, new_voxel, events,
+                    );
+                    continue;
+                }
+            }
+
+            // No collision — update projectile position and velocity.
+            if let Some(mut proj) = self.db.projectiles.get(&proj_id) {
+                proj.prev_voxel = current_voxel;
+                proj.position = new_pos;
+                proj.velocity = new_vel;
+                let _ = self.db.projectiles.update_no_fk(proj);
+            }
+        }
+
+        // Reschedule if projectiles remain.
+        if !self.db.projectiles.is_empty() {
+            self.event_queue
+                .schedule(self.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    /// Resolve a projectile hitting a solid surface. Transfers the arrow from
+    /// the projectile inventory to a ground pile at `prev_voxel`.
+    fn resolve_projectile_surface_hit(
+        &mut self,
+        proj_id: ProjectileId,
+        prev_voxel: VoxelCoord,
+        events: &mut Vec<SimEvent>,
+    ) {
+        let proj = match self.db.projectiles.get(&proj_id) {
+            Some(p) => p,
+            None => return,
+        };
+        let proj_inv = proj.inventory_id;
+
+        // Create/join ground pile at prev_voxel and merge items.
+        let pile_id = self.ensure_ground_pile(prev_voxel);
+        let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+        self.inv_merge(proj_inv, pile_inv);
+
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::ProjectileHitSurface {
+                position: prev_voxel,
+            },
+        });
+
+        self.remove_projectile(proj_id);
+    }
+
+    /// Resolve a projectile hitting a creature. Computes damage from impact
+    /// velocity, applies it, and transfers the arrow to a ground pile.
+    fn resolve_projectile_creature_hit(
+        &mut self,
+        proj_id: ProjectileId,
+        target_id: CreatureId,
+        impact_velocity: SubVoxelVec,
+        hit_voxel: VoxelCoord,
+        events: &mut Vec<SimEvent>,
+    ) {
+        let proj = match self.db.projectiles.get(&proj_id) {
+            Some(p) => p,
+            None => return,
+        };
+        let shooter_id = proj.shooter;
+        let proj_inv = proj.inventory_id;
+
+        // Compute damage from impact speed (momentum-based: linear in speed).
+        // For now: damage = impact_speed / REFERENCE_SPEED, minimum 1.
+        // REFERENCE_SPEED is arrow_base_speed (the "normal" launch speed).
+        let impact_speed_sq = impact_velocity.magnitude_sq();
+        let impact_speed = crate::projectile::isqrt_i128(impact_speed_sq);
+        let reference_speed = self.config.arrow_base_speed as i128;
+        let damage = if reference_speed > 0 {
+            (impact_speed / reference_speed).max(1) as i64
+        } else {
+            1
+        };
+
+        // Apply damage.
+        self.apply_damage(target_id, damage, events);
+
+        let remaining_hp = self.db.creatures.get(&target_id).map(|c| c.hp).unwrap_or(0);
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::ProjectileHitCreature {
+                target_id,
+                damage,
+                remaining_hp,
+                shooter_id,
+            },
+        });
+
+        // Transfer arrow to ground pile at the creature's position.
+        let pile_id = self.ensure_ground_pile(hit_voxel);
+        let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+        self.inv_merge(proj_inv, pile_inv);
+
+        self.remove_projectile(proj_id);
+    }
+
+    /// Remove a projectile and clean up its inventory. The Inventory FK
+    /// has no cascade from projectile→inventory (the FK direction is
+    /// projectile.inventory_id → inventories), so we must explicitly
+    /// remove the inventory and its item stacks.
+    fn remove_projectile(&mut self, proj_id: ProjectileId) {
+        if let Some(proj) = self.db.projectiles.get(&proj_id) {
+            let inv_id = proj.inventory_id;
+            // Remove projectile first (it references the inventory).
+            let _ = self.db.projectiles.remove_no_fk(&proj_id);
+            // Remove any remaining item stacks in the inventory.
+            let stacks: Vec<ItemStackId> = self
+                .db
+                .item_stacks
+                .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+                .iter()
+                .map(|s| s.id)
+                .collect();
+            for stack_id in stacks {
+                let _ = self.db.item_stacks.remove_no_fk(&stack_id);
+            }
+            // Remove the inventory row itself.
+            let _ = self.db.inventories.remove_no_fk(&inv_id);
+        }
     }
 
     /// Add a thought to a creature via the thoughts table, with dedup and cap.
@@ -23554,6 +23830,222 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Projectile system tests (F-projectiles)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn spawn_projectile_creates_entity_and_inventory() {
+        let mut sim = test_sim(42);
+        let origin = VoxelCoord::new(40, 5, 40);
+        let target = VoxelCoord::new(50, 5, 40);
+
+        sim.spawn_projectile(origin, target, None);
+
+        assert_eq!(sim.db.projectiles.len(), 1);
+        let proj = sim.db.projectiles.iter_all().next().unwrap();
+        assert_eq!(proj.shooter, None);
+        assert_eq!(proj.prev_voxel, origin);
+        // Should have an inventory with 1 arrow.
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&proj.inventory_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 1);
+        assert_eq!(stacks[0].kind, inventory::ItemKind::Arrow);
+        assert_eq!(stacks[0].quantity, 1);
+    }
+
+    #[test]
+    fn spawn_projectile_schedules_tick_event() {
+        let mut sim = test_sim(42);
+        let initial_events = sim.event_queue.len();
+        sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+        // Should have scheduled exactly one ProjectileTick.
+        assert_eq!(sim.event_queue.len(), initial_events + 1);
+    }
+
+    #[test]
+    fn second_spawn_does_not_duplicate_tick_event() {
+        let mut sim = test_sim(42);
+        let initial_events = sim.event_queue.len();
+        sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+        sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(45, 5, 40), None);
+        // Only one extra event (from first spawn), not two.
+        assert_eq!(sim.event_queue.len(), initial_events + 1);
+    }
+
+    #[test]
+    fn projectile_hits_solid_voxel_and_creates_ground_pile() {
+        let mut sim = test_sim(42);
+        // Place a solid wall at x=45.
+        for y in 1..=5 {
+            sim.world
+                .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+        }
+
+        // Spawn projectile heading +x toward the wall (flat, no gravity).
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+        sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+
+        // Run until the projectile resolves (max 500 ticks).
+        for _ in 0..500 {
+            if sim.db.projectiles.len() == 0 {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+            if sim.db.projectiles.len() > 0 {
+                sim.event_queue
+                    .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+            }
+        }
+
+        assert_eq!(sim.db.projectiles.len(), 0, "Projectile should be resolved");
+
+        // Should have a ground pile with an arrow in it near x=44 (prev_voxel).
+        let mut found_arrow = false;
+        for pile in sim.db.ground_piles.iter_all() {
+            let stacks = sim
+                .db
+                .item_stacks
+                .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+            for s in &stacks {
+                if s.kind == inventory::ItemKind::Arrow {
+                    found_arrow = true;
+                }
+            }
+        }
+        assert!(found_arrow, "Arrow should land as ground pile");
+    }
+
+    #[test]
+    fn projectile_hits_creature_and_deals_damage() {
+        let mut sim = test_sim(42);
+        // Spawn a goblin at a known position.
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+        let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
+
+        // Spawn projectile aimed at the goblin (no gravity for predictability).
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+        let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
+        sim.spawn_projectile(origin, goblin_pos, None);
+
+        // Run until resolved.
+        let mut hit_events = Vec::new();
+        for _ in 0..500 {
+            if sim.db.projectiles.len() == 0 {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+            for e in &events {
+                if matches!(e.kind, SimEventKind::ProjectileHitCreature { .. }) {
+                    hit_events.push(e.clone());
+                }
+            }
+            if sim.db.projectiles.len() > 0 {
+                sim.event_queue
+                    .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+            }
+        }
+
+        assert_eq!(sim.db.projectiles.len(), 0, "Projectile should be resolved");
+        assert!(!hit_events.is_empty(), "Should have hit the creature");
+
+        let goblin_hp_after = sim.db.creatures.get(&goblin).unwrap().hp;
+        assert!(
+            goblin_hp_after < goblin_hp_before,
+            "Goblin should have taken damage: {goblin_hp_before} -> {goblin_hp_after}"
+        );
+    }
+
+    #[test]
+    fn projectile_out_of_bounds_despawns_silently() {
+        let mut sim = test_sim(42);
+        // Shoot a projectile off the edge of the world.
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 5; // very fast
+
+        sim.spawn_projectile(
+            VoxelCoord::new(250, 5, 128),
+            VoxelCoord::new(260, 5, 128), // target is beyond world bounds
+            None,
+        );
+
+        // Run until resolved.
+        for _ in 0..2000 {
+            if sim.db.projectiles.len() == 0 {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+            // No surface hit or creature hit events expected.
+            for e in &events {
+                assert!(
+                    !matches!(e.kind, SimEventKind::ProjectileHitSurface { .. }),
+                    "Should not hit surface"
+                );
+            }
+            if sim.db.projectiles.len() > 0 {
+                sim.event_queue
+                    .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+            }
+        }
+
+        assert_eq!(
+            sim.db.projectiles.len(),
+            0,
+            "Projectile should have despawned"
+        );
+    }
+
+    #[test]
+    fn projectile_does_not_hit_shooter() {
+        let mut sim = test_sim(42);
+        // Spawn an elf and shoot from their position.
+        let elf = spawn_species(&mut sim, Species::Elf);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+        // Shoot from the elf's own position toward a distant target.
+        sim.spawn_projectile(
+            elf_pos,
+            VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z),
+            Some(elf),
+        );
+
+        // Run a few ticks — the projectile should pass through the shooter.
+        for _ in 0..50 {
+            if sim.db.projectiles.is_empty() {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+            if !sim.db.projectiles.is_empty() {
+                sim.event_queue
+                    .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+            }
+        }
+
+        // Elf should not have taken any damage.
+        let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+        assert_eq!(
+            elf_hp_after, elf_hp_before,
+            "Shooter should not be hit by their own arrow"
+        );
+    }
+
     #[test]
     fn hostile_creature_wanders_after_killing_elf() {
         let mut sim = test_sim(42);
@@ -23586,6 +24078,63 @@ mod tests {
         assert_ne!(
             goblin_final, goblin_pos,
             "Goblin should wander after elf is dead"
+        );
+    }
+
+    #[test]
+    fn projectile_skips_origin_voxel_creatures() {
+        let mut sim = test_sim(42);
+        // Spawn shooter and bystander at the same position.
+        let shooter = spawn_species(&mut sim, Species::Elf);
+        let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+        let shooter_hp = sim.db.creatures.get(&shooter).unwrap().hp;
+
+        let bystander = spawn_species(&mut sim, Species::Elf);
+        // Move bystander to the same position as the shooter.
+        if let Some(mut c) = sim.db.creatures.get(&bystander) {
+            c.position = shooter_pos;
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+        sim.rebuild_spatial_index();
+        let bystander_hp = sim.db.creatures.get(&bystander).unwrap().hp;
+
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+        // Shoot from the shared position toward a distant target.
+        sim.spawn_projectile(
+            shooter_pos,
+            VoxelCoord::new(shooter_pos.x + 20, shooter_pos.y, shooter_pos.z),
+            Some(shooter),
+        );
+
+        // Run ticks until projectile is consumed or max iterations.
+        for _ in 0..50 {
+            if sim.db.projectiles.is_empty() {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+            if !sim.db.projectiles.is_empty() {
+                sim.event_queue
+                    .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+            }
+        }
+
+        // Neither the shooter nor the bystander in the origin voxel should
+        // have been hit — projectiles skip the entire launch voxel.
+        let shooter_hp_after = sim.db.creatures.get(&shooter).unwrap().hp;
+        assert_eq!(
+            shooter_hp_after, shooter_hp,
+            "Shooter should not be hit by their own arrow"
+        );
+
+        let bystander_hp_after = sim.db.creatures.get(&bystander).unwrap().hp;
+        assert_eq!(
+            bystander_hp_after, bystander_hp,
+            "Bystander in origin voxel should not be hit (hp: {} -> {})",
+            bystander_hp, bystander_hp_after,
         );
     }
 
@@ -23666,5 +24215,122 @@ mod tests {
                  new dist={new_dist}, elf hp {elf_hp_before} -> {elf_hp_after}"
             );
         }
+    }
+
+    #[test]
+    fn projectile_hits_creature_beyond_origin_voxel() {
+        let mut sim = test_sim(42);
+        // Place a target creature a few voxels away from the origin.
+        let target = spawn_species(&mut sim, Species::Elf);
+        let origin = VoxelCoord::new(40, 1, 40);
+        let target_pos = VoxelCoord::new(42, 1, 40);
+        if let Some(mut c) = sim.db.creatures.get(&target) {
+            c.position = target_pos;
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+        sim.rebuild_spatial_index();
+        let target_hp = sim.db.creatures.get(&target).unwrap().hp;
+
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+        // Shoot from origin toward the target (no shooter creature).
+        sim.spawn_projectile(origin, target_pos, None);
+
+        // Run ticks.
+        let mut hit = false;
+        for _ in 0..100 {
+            if sim.db.projectiles.is_empty() {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+            for e in &events {
+                if let SimEventKind::ProjectileHitCreature { target_id, .. } = e.kind {
+                    if target_id == target {
+                        hit = true;
+                    }
+                }
+            }
+            if !sim.db.projectiles.is_empty() {
+                sim.event_queue
+                    .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+            }
+        }
+
+        assert!(hit, "Projectile should hit creature beyond origin voxel");
+        let target_hp_after = sim.db.creatures.get(&target).unwrap().hp;
+        assert!(
+            target_hp_after < target_hp,
+            "Target should have taken damage (hp: {} -> {})",
+            target_hp,
+            target_hp_after,
+        );
+    }
+
+    #[test]
+    fn projectile_cleanup_removes_inventory() {
+        let mut sim = test_sim(42);
+        sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+        let proj = sim.db.projectiles.iter_all().next().unwrap();
+        let inv_id = proj.inventory_id;
+        let proj_id = proj.id;
+
+        // Verify inventory exists.
+        assert!(sim.db.inventories.get(&inv_id).is_some());
+
+        sim.remove_projectile(proj_id);
+
+        // Projectile, inventory, and item stacks should all be gone.
+        assert_eq!(sim.db.projectiles.len(), 0);
+        assert!(sim.db.inventories.get(&inv_id).is_none());
+        assert!(
+            sim.db
+                .item_stacks
+                .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn projectile_serde_roundtrip() {
+        let mut sim = test_sim(42);
+        sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+
+        let json = sim.to_json().unwrap();
+        let sim2 = SimState::from_json(&json).unwrap();
+
+        assert_eq!(sim2.db.projectiles.len(), 1);
+        let proj = sim2.db.projectiles.iter_all().next().unwrap();
+        let stacks = sim2
+            .db
+            .item_stacks
+            .by_inventory_id(&proj.inventory_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 1);
+        assert_eq!(stacks[0].kind, inventory::ItemKind::Arrow);
+    }
+
+    #[test]
+    fn debug_spawn_projectile_command() {
+        let mut sim = test_sim(42);
+        let origin = VoxelCoord::new(40, 5, 40);
+        let target = VoxelCoord::new(50, 5, 40);
+        let tick = sim.tick;
+
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugSpawnProjectile {
+                    origin,
+                    target,
+                    shooter_id: None,
+                },
+            }],
+            tick + 1,
+        );
+
+        assert_eq!(sim.db.projectiles.len(), 1);
     }
 }

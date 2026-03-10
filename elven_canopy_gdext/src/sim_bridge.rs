@@ -35,6 +35,9 @@
 //   remain as thin wrappers). The `render_tick` parameter (a fractional tick
 //   returned by `frame_update()`) enables smooth interpolation between nav
 //   nodes via `Creature::interpolated_position()`.
+// - **Projectile data:** `get_projectile_positions(render_tick)` returns
+//   interpolated positions (PackedVector3Array), `get_projectile_velocities()`
+//   returns velocity vectors for orienting arrow meshes along flight direction.
 // - **Notifications:** `get_notifications_after(after_id)` polls for new
 //   notifications (returns `VarArray` of dicts with id/tick/message),
 //   `get_max_notification_id()` returns the highest ID (for initializing the
@@ -1689,6 +1692,42 @@ impl SimBridge {
                 1.0
             };
             arr.push(ratio.clamp(0.0, 1.0));
+        }
+        arr
+    }
+
+    /// Return positions of all in-flight projectiles as a PackedVector3Array.
+    /// SubVoxelCoord converted to float world coords (voxel units).
+    /// Used by projectile_renderer.gd for placement each frame.
+    #[func]
+    fn get_projectile_positions(&self, render_tick: f64) -> PackedVector3Array {
+        let Some(sim) = &self.session.sim else {
+            return PackedVector3Array::new();
+        };
+        let current_tick = sim.tick as f64;
+        let frac = (render_tick - current_tick).clamp(0.0, 1.0) as f32;
+        let mut arr = PackedVector3Array::new();
+        for proj in sim.db.projectiles.iter_all() {
+            let (px, py, pz) = proj.position.to_render_floats();
+            let (vx, vy, vz) = proj.velocity.to_render_floats();
+            arr.push(Vector3::new(px + vx * frac, py + vy * frac, pz + vz * frac));
+        }
+        arr
+    }
+
+    /// Return velocities of all in-flight projectiles as a PackedVector3Array,
+    /// in the same order as `get_projectile_positions()`. Velocity is in
+    /// voxels-per-tick (sub-voxel divided by 2^30). Used by the renderer to
+    /// orient arrow meshes along the flight direction.
+    #[func]
+    fn get_projectile_velocities(&self) -> PackedVector3Array {
+        let Some(sim) = &self.session.sim else {
+            return PackedVector3Array::new();
+        };
+        let mut arr = PackedVector3Array::new();
+        for proj in sim.db.projectiles.iter_all() {
+            let (vx, vy, vz) = proj.velocity.to_render_floats();
+            arr.push(Vector3::new(vx, vy, vz));
         }
         arr
     }

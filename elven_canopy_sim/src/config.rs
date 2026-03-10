@@ -903,6 +903,14 @@ fn default_greenhouse_base_production_ticks() -> u64 {
     60_000
 }
 
+fn default_arrow_gravity() -> i64 {
+    crate::projectile::EARTH_GRAVITY_SUB_VOXEL
+}
+
+fn default_arrow_base_speed() -> i64 {
+    crate::projectile::SUB_VOXEL_ONE / 20 // ~50 voxels/sec
+}
+
 // ---------------------------------------------------------------------------
 // Civilization config
 // ---------------------------------------------------------------------------
@@ -1257,6 +1265,17 @@ pub struct GameConfig {
     /// existing tree profile stays at the top level for backward compatibility.
     #[serde(default)]
     pub worldgen: crate::worldgen::WorldgenConfig,
+
+    /// Projectile gravity in sub-voxel units per tick² (positive = downward).
+    /// Defaults to `EARTH_GRAVITY_SUB_VOXEL` (5267), calibrated for 2m voxels
+    /// at 1000 ticks/sec. Override for gameplay tuning.
+    #[serde(default = "default_arrow_gravity")]
+    pub arrow_gravity: i64,
+
+    /// Arrow launch speed in sub-voxel units per tick. Defaults to
+    /// `SUB_VOXEL_ONE / 20` (~50 voxels/sec = 25 m/s for a modest bow).
+    #[serde(default = "default_arrow_base_speed")]
+    pub arrow_base_speed: i64,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -1724,6 +1743,8 @@ impl Default for GameConfig {
             workshop_default_priority: default_workshop_priority(),
             greenhouse_base_production_ticks: default_greenhouse_base_production_ticks(),
             worldgen: crate::worldgen::WorldgenConfig::default(),
+            arrow_gravity: default_arrow_gravity(),
+            arrow_base_speed: default_arrow_base_speed(),
         }
     }
 }

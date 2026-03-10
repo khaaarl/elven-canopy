@@ -312,6 +312,8 @@ auto_pk_id!(/// Auto-increment ID for music compositions.
 CompositionId);
 auto_pk_id!(/// Auto-increment ID for directed civ relationship records.
 CivRelationshipId);
+auto_pk_id!(/// Auto-increment ID for projectiles in flight.
+ProjectileId);
 
 // ---------------------------------------------------------------------------
 // Civilization IDs — sequential u16, assigned by worldgen in batch.

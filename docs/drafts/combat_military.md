@@ -351,31 +351,49 @@ auto_pk_id!(ProjectileId);  // auto-increment u64 newtype
 pub struct Projectile {
     #[primary_key(auto_increment)]
     pub id: ProjectileId,
-    pub shooter: CreatureId,       // not FK — shooter may die mid-flight
-    pub position: SubVoxelCoord,   // high-precision position
-    pub velocity: SubVoxelVec,     // high-precision velocity
-    pub prev_voxel: VoxelCoord,    // last air voxel (for surface-hit ground pile placement)
-    pub item_kind: ItemKind,       // Arrow (future: javelin, etc.)
-    pub durability: i32,           // remaining durability
-    pub base_damage: i64,          // damage at reference speed
-    pub launch_speed_sq: i64,      // speed² at launch, for damage scaling
+    pub shooter: Option<CreatureId>,  // FK nullify — shooter may die, projectile continues
+    pub inventory_id: InventoryId,    // FK restrict — manually cleaned up in remove_projectile()
+    pub position: SubVoxelCoord,      // high-precision position
+    pub velocity: SubVoxelVec,        // high-precision velocity
+    pub prev_voxel: VoxelCoord,       // last air voxel (for surface-hit ground pile placement)
+    pub origin_voxel: VoxelCoord,     // launch voxel — creatures here are immune
 }
 ```
 
-Note: `shooter` is stored as a plain `CreatureId`, not a tabulosity FK.
-The shooter may die while the arrow is in flight — the arrow should
-continue regardless. The shooter ID is used only for attribution (kill
-credit, notifications).
+`shooter` is an FK with `on_delete nullify`. Dead creatures are not deleted
+from SimDb (they persist with `vital_status = Dead`), so the FK is always
+valid during normal gameplay. Nullification is a safety net for future
+dead-creature cleanup. The shooter ID is used for attribution (kill credit,
+notifications).
+
+`origin_voxel` records the voxel from which the projectile was launched. The
+collision check skips this voxel entirely — no creature standing at the launch
+site can be hit. This prevents friendly-fire on the shooter and on allies
+sharing the same voxel (multiple friendly creatures commonly occupy the same
+voxel in the current implementation).
+
+The projectile owns its payload via an `Inventory` (FK restrict — manually
+cleaned up in `remove_projectile()` to control deletion order). Typically
+this inventory contains a single arrow `ItemStack`. This avoids embedding
+item data (kind, durability, material, enchantments) on the projectile
+struct — the item's full metadata lives in the inventory/item_stack tables
+where it belongs. On impact, the arrow is transferred to a ground pile
+inventory or destroyed based on durability.
+
+Damage is NOT stored on the projectile. It is computed at impact time from
+the impact velocity and the properties of the item in the inventory. This
+keeps the damage formula flexible — magical arrows can add effects
+independent of velocity, and the formula can evolve without schema changes.
 
 `prev_voxel` is initialized to the shooter's voxel position at spawn time,
 then updated each tick to the arrow's current voxel before advancing. When
 the arrow impacts a solid surface, the ground pile is created at
 `prev_voxel` (the last air voxel), not inside the solid voxel.
 
-The `Projectile` table is added to `SimDb`. It has no FK constraints (both
-`shooter` and `item_kind` are plain values). On save/load, projectiles are
-serialized normally — active projectiles in flight survive a save/load
-cycle.
+The `Projectile` table is added to `SimDb` with FK constraints:
+`shooter? = "creatures" on_delete nullify`, `inventory_id = "inventories"
+on_delete cascade`. On save/load, projectiles are serialized normally —
+active projectiles in flight survive a save/load cycle.
 
 ### Sub-Voxel Coordinate System
 
@@ -553,45 +571,25 @@ field update and the spatial index update is the cleanest approach.
 
 ### Damage Calculation
 
-Arrow damage is speed-dependent, using **integer-only arithmetic** to
-maintain determinism:
+Arrow damage is computed at impact time from the impact velocity and the
+item properties. Damage is NOT stored on the projectile entity — it is
+derived when the projectile hits something.
 
-```
-damage = base_damage * impact_speed_sq / launch_speed_sq
-```
+**Impact damage is proportional to momentum (impact speed), not kinetic
+energy (speed²).** Penetration — the primary damage mechanism for arrows —
+scales with momentum. The formula uses integer square root (`isqrt_i128`)
+to extract speed from the squared magnitude of the velocity vector.
 
-Where `impact_speed_sq = vx*vx + vy*vy + vz*vz` (squared magnitude of
-velocity at impact) and `launch_speed_sq` is stored on the projectile at
-spawn time. **All intermediate calculations use `i128`** — velocity
-components are `i64` at 2^30 scale, so squaring produces values up to ~2^60,
-and the sum of three squared components could reach ~3×2^60. This fits in
-`i128` with room to spare. Cast to `i128` before squaring. Note:
-`launch_speed_sq` is stored as `i64` on the Projectile struct (the max
-value ~3×2^60 fits within `i64::MAX` ≈ 9.2×10^18) to avoid serde
-compatibility issues with `i128`. The widening to `i128` happens only in
-this local calculation:
+The exact damage formula is defined in `F-shoot-action` (which inspects the
+arrow item in the projectile's inventory). The projectile system's
+responsibility is limited to: detecting the hit, computing the impact
+velocity, and passing it to the damage function along with the item.
 
-```rust
-let vx = self.velocity.x as i128;
-let vy = self.velocity.y as i128;
-let vz = self.velocity.z as i128;
-let impact_speed_sq: i128 = vx * vx + vy * vy + vz * vz;
-let damage = (self.base_damage as i128 * impact_speed_sq / self.launch_speed_sq as i128)
-    .max(1) as i64;  // minimum 1 damage to avoid ghost hits
-```
+Magical arrows may have damage effects independent of velocity, applied
+additively. These effects come from enchantment data on the item.
 
-**Minimum damage:** The formula produces 0 damage if the arrow is near-zero
-velocity (e.g., at the apex of a lob). A floor of 1 prevents "ghost hit"
-confusion where a projectile visually impacts a creature but deals no
-damage.
-
-Using squared speeds avoids the need for a square root (which would require
-floating-point). The damage scales with the square of speed rather than
-linearly — this somewhat amplifies the height advantage, but the effect is
-physically motivated (kinetic energy scales with v²) and creates strong
-tactical incentives to control high ground.
-
-This means:
+**Minimum damage:** A floor of 1 prevents "ghost hit" confusion where a
+projectile visually impacts a creature but deals no damage.
 
 - **Shooting downward** from height: arrows accelerate with gravity, dealing
   bonus damage. Archers in the tree canopy have a natural advantage.
@@ -602,34 +600,44 @@ This means:
 
 ### Arrow Impact Resolution
 
+On impact, the projectile's inventory contains the arrow item. The
+resolution transfers items from the projectile inventory to the world.
+
 **Surface hit (solid voxel):**
-- Roll random durability loss (PRNG, range configured in game config).
-- If arrow survives (durability > 0): create or join a ground pile at
+- Transfer the arrow from the projectile inventory to a ground pile at
   `prev_voxel` (the last air voxel before impact).
-- If arrow is destroyed: nothing (it shatters).
+- Future: roll durability loss; if arrow is destroyed, skip the transfer.
 
 **Creature hit:**
-- Apply speed-based damage to the creature.
-- Roll random durability loss (separate from surface hit config).
-- If arrow survives: it falls to the ground — create or join a ground pile
-  at the creature's voxel position.
-- If arrow is destroyed: nothing remains.
+- Compute damage from impact velocity and arrow properties (see §Damage
+  Calculation). Apply damage via `apply_damage()`.
+- Transfer the arrow to a ground pile at the creature's voxel position.
+- Future: roll durability loss; if arrow is destroyed, skip the transfer.
 
 **Out of bounds:**
-- Despawn. No ground pile, no event. Arrow is simply lost.
+- Despawn. The projectile's inventory is deleted (cascade), destroying the
+  arrow. No ground pile, no event — the arrow is lost.
+
+**Ground check (below y=0):**
+- Same as out of bounds — despawn silently. The arrow fell off the world.
 
 ### Rendering (Godot Side)
 
 A new `projectile_renderer.gd` (pool pattern, like creature renderers)
-renders arrows as small oriented 3D meshes. `SimBridge` exposes:
+renders arrows as thin elongated cylinders (CylinderMesh, ~0.06 radius ×
+0.6 height) oriented along the velocity vector using `Transform3D.looking_at`.
+The cylinder naturally tips downward as gravity curves the trajectory.
+`SimBridge` exposes two parallel arrays:
 
 ```rust
-/// Returns a flat array with stride 6:
-/// [pos_x, pos_y, pos_z, vel_x, vel_y, vel_z, pos_x, pos_y, pos_z, ...]
-/// Position: SubVoxelCoord converted to float world coords (voxel units).
-/// Velocity: converted to float voxels-per-tick (divide sub-voxel by 2^30).
-/// GDScript iterates with: for i in range(0, arr.size(), 6): ...
-fn get_projectile_positions(&self) -> PackedFloat32Array
+/// Positions of all in-flight projectiles (one Vector3 per projectile).
+/// SubVoxelCoord converted to float world coords (voxel units).
+fn get_projectile_positions(&self) -> PackedVector3Array
+
+/// Velocities of all in-flight projectiles (one Vector3 per projectile),
+/// in the same order as positions. Voxels per tick (sub-voxel / 2^30).
+/// Used for orientation (look_at along velocity) and frame interpolation.
+fn get_projectile_velocities(&self) -> PackedVector3Array
 ```
 
 Projectile rendering interpolation: unlike creatures (which interpolate
@@ -1543,9 +1551,10 @@ Split into sub-phases:
   pass).
 
 **C4 — Rendering:**
-- `projectile_renderer.gd` (pool pattern, oriented 3D meshes).
-- `SimBridge.get_projectile_positions()` (stride-6 PackedFloat32Array,
-  velocity in voxels-per-tick float units).
+- `projectile_renderer.gd` (pool pattern, thin elongated CylinderMesh
+  oriented along velocity vector via `Transform3D.looking_at`).
+- `SimBridge.get_projectile_positions()` (PackedVector3Array) and
+  `get_projectile_velocities()` (PackedVector3Array, voxels-per-tick).
 - Interpolation via `position + velocity * fractional_offset`.
 
 ### Phase D: RTS Selection and Commands

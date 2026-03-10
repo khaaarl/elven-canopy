@@ -20,6 +20,9 @@
 // - `TreeHeartbeat` — periodic tree updates (fruit, mana capacity).
 // - `LogisticsHeartbeat` — periodic scan of buildings with logistics config;
 //   creates `Haul` tasks to fill unmet item wants.
+// - `ProjectileTick` — batched per-tick update of all in-flight projectiles.
+//   Scheduled when the first projectile spawns (table 0→1), self-reschedules
+//   for tick+1 while projectiles remain. See `sim.rs` `process_projectile_tick()`.
 //
 // The `EventQueue` wraps a `BinaryHeap` with reversed `Ord` to get min-heap
 // behavior (earliest tick pops first). A monotonic `next_sequence` counter
@@ -34,8 +37,9 @@
 //
 // Emitted by the sim as output for the UI event log. Not queued — produced
 // synchronously during event processing and collected by the caller.
-// Includes `CreatureDied` (with cause: Debug or Damage) and
-// `CreatureDamaged` (melee strike hit).
+// Includes `CreatureDied` (with cause: Debug or Damage),
+// `CreatureDamaged` (melee strike hit), `ProjectileHitCreature`, and
+// `ProjectileHitSurface`.
 //
 // See also: `sim.rs` for the tick loop that processes scheduled events,
 // `types.rs` for entity IDs and the `Species` enum, `task.rs` for the task
@@ -78,6 +82,11 @@ pub enum ScheduledEventKind {
     TreeHeartbeat { tree_id: TreeId },
     /// Logistics heartbeat: scan buildings for unmet wants and create haul tasks.
     LogisticsHeartbeat,
+    /// Batched projectile update: advances all in-flight projectiles by one tick.
+    /// Scheduled when the first projectile is spawned (table goes 0→1) and
+    /// self-reschedules for tick+1 while projectiles remain. Stops when the
+    /// table is empty.
+    ProjectileTick,
 }
 
 // We want a min-heap: lowest (tick, sequence) fires first.
@@ -196,6 +205,15 @@ pub enum SimEventKind {
         damage: i64,
         remaining_hp: i64,
     },
+    /// A projectile hit a creature.
+    ProjectileHitCreature {
+        target_id: CreatureId,
+        damage: i64,
+        remaining_hp: i64,
+        shooter_id: Option<CreatureId>,
+    },
+    /// A projectile hit a solid surface and stuck/shattered.
+    ProjectileHitSurface { position: VoxelCoord },
 }
 
 #[cfg(test)]

@@ -33,15 +33,16 @@
 // avoids floating-point trig/sqrt while naturally handling all edge cases
 // (uphill, downhill, obstructed arcs). See §5.2 of the combat draft.
 //
-// ## What this module does NOT do
+// ## Sim integration
 //
-// Collision detection (solid voxels, creature hits) and the `Projectile`
-// entity/SimDb table are not here — they depend on `F-spatial-index` and
-// integration with the sim tick loop. This module provides the pure math:
-// trajectory stepping and aim solving.
+// The `Projectile` entity table lives in `db.rs`. Collision detection (solid
+// voxels, creature hits via spatial index), the `ProjectileTick` batched
+// event, and projectile spawn/despawn/impact logic live in `sim.rs`
+// (`spawn_projectile`, `process_projectile_tick`, `resolve_projectile_*`).
+// This module provides the pure math: trajectory stepping and aim solving.
 //
 // See also: `docs/drafts/combat_military.md` §4–§5, `types.rs` for
-// `VoxelCoord`, `config.rs` for `GameConfig` (will hold arrow_gravity etc.).
+// `VoxelCoord`, `config.rs` for `GameConfig` (arrow_gravity, arrow_base_speed).
 
 use crate::types::VoxelCoord;
 use serde::{Deserialize, Serialize};
@@ -163,8 +164,7 @@ impl SubVoxelCoord {
         x * x + y * y + z * z
     }
 
-    /// Squared magnitude as `i64`, for storing on structs (e.g.,
-    /// `Projectile.launch_speed_sq`). The max value ~3×2^60 fits within
+    /// Squared magnitude as `i64`. The max value ~3×2^60 fits within
     /// `i64::MAX` (~9.2×10^18). Panics in debug builds if the value
     /// would overflow `i64` (indicates a misconfigured velocity).
     pub fn magnitude_sq_i64(self) -> i64 {
@@ -461,7 +461,7 @@ pub fn compute_aim_velocity(
 
 /// Integer square root of a non-negative i128 using Newton's method.
 /// Returns floor(sqrt(n)). Deterministic, no floating-point.
-fn isqrt_i128(n: i128) -> i128 {
+pub fn isqrt_i128(n: i128) -> i128 {
     if n <= 0 {
         return 0;
     }
@@ -483,33 +483,6 @@ fn isqrt_i128(n: i128) -> i128 {
         x = next;
     }
     x
-}
-
-// ---------------------------------------------------------------------------
-// Damage calculation
-// ---------------------------------------------------------------------------
-
-/// Compute speed-dependent projectile damage.
-///
-/// `base_damage`: the projectile's base damage at reference speed.
-/// `impact_velocity`: velocity at moment of impact (sub-voxel units/tick).
-/// `launch_speed_sq`: squared speed at launch, stored as `i64` on the
-///   `Projectile` struct (max ~3×2^60 fits in `i64::MAX`).
-///
-/// Formula: `base_damage * impact_speed_sq / launch_speed_sq`, minimum 1.
-/// Widens to i128 locally for the multiplication to avoid overflow.
-pub fn compute_impact_damage(
-    base_damage: i64,
-    impact_velocity: SubVoxelVec,
-    launch_speed_sq: i64,
-) -> i64 {
-    if launch_speed_sq <= 0 {
-        return 1;
-    }
-    let impact_speed_sq = impact_velocity.magnitude_sq();
-    let damage = (base_damage as i128 * impact_speed_sq / launch_speed_sq as i128).max(1);
-    // Clamp to i64 range (should never overflow in practice)
-    damage.min(i64::MAX as i128) as i64
 }
 
 // ===========================================================================
@@ -818,65 +791,6 @@ mod tests {
         let s = isqrt_i128(n);
         assert!(s * s <= n);
         assert!((s + 1) * (s + 1) > n);
-    }
-
-    // -----------------------------------------------------------------------
-    // Damage calculation
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_damage_at_launch_speed() {
-        // Impact at same speed as launch → damage = base_damage
-        let vel = SubVoxelVec::new(1000, 2000, 3000);
-        let launch_sq = vel.magnitude_sq_i64();
-        let damage = compute_impact_damage(20, vel, launch_sq);
-        assert_eq!(damage, 20);
-    }
-
-    #[test]
-    fn test_damage_at_higher_speed() {
-        // Impact faster than launch → bonus damage
-        let launch_vel = SubVoxelVec::new(1000, 0, 0);
-        let launch_sq = launch_vel.magnitude_sq_i64();
-        // Impact at 2x speed → 4x damage (speed-squared scaling)
-        let impact_vel = SubVoxelVec::new(2000, 0, 0);
-        let damage = compute_impact_damage(20, impact_vel, launch_sq);
-        assert_eq!(damage, 80);
-    }
-
-    #[test]
-    fn test_damage_at_lower_speed() {
-        // Impact slower than launch → reduced damage
-        let launch_vel = SubVoxelVec::new(2000, 0, 0);
-        let launch_sq = launch_vel.magnitude_sq_i64();
-        let impact_vel = SubVoxelVec::new(1000, 0, 0);
-        let damage = compute_impact_damage(20, impact_vel, launch_sq);
-        assert_eq!(damage, 5); // 20 * 1/4 = 5
-    }
-
-    #[test]
-    fn test_damage_minimum_is_one() {
-        // Near-zero velocity → minimum 1 damage
-        let launch_vel = SubVoxelVec::new(10000, 0, 0);
-        let launch_sq = launch_vel.magnitude_sq_i64();
-        let impact_vel = SubVoxelVec::new(1, 0, 0);
-        let damage = compute_impact_damage(20, impact_vel, launch_sq);
-        assert_eq!(damage, 1);
-    }
-
-    #[test]
-    fn test_damage_with_realistic_values() {
-        // Arrow launched at 50 voxels/sec, impacting after falling from height
-        // (gaining speed from gravity).
-        let launch_speed = SUB_VOXEL_ONE / 20; // sub-voxel units per tick
-        let launch_vel = SubVoxelVec::new(launch_speed, 0, 0);
-        let launch_sq = launch_vel.magnitude_sq_i64();
-
-        // After falling: horizontal speed same, gained vertical speed
-        let impact_vel = SubVoxelVec::new(launch_speed, -launch_speed / 2, 0);
-        let damage = compute_impact_damage(20, impact_vel, launch_sq);
-        // speed² = 1.0 + 0.25 = 1.25x → damage ≈ 25 (integer division may round)
-        assert!(damage >= 24 && damage <= 25, "Expected ~25, got {damage}");
     }
 
     // -----------------------------------------------------------------------

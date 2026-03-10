@@ -6,10 +6,11 @@
 //
 // ## Table layout
 //
-// The database has 26 tables organized in three tiers:
+// The database has 27 tables organized in three tiers:
 //
-// **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures` — the
-// primary simulation entities, keyed by UUID-based or sequential IDs.
+// **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures`,
+// `projectiles` — the primary simulation entities, keyed by UUID-based or
+// sequential IDs.
 // `Creature` includes `hp`/`hp_max` (hit points) and `vital_status`
 // (`Alive`/`Dead`, `#[indexed]` for efficient filtering). Dead creatures
 // remain in the DB; all live-creature queries filter by vital_status.
@@ -52,14 +53,15 @@
 
 use crate::fruit::{FruitSpecies, FruitSpeciesTable};
 use crate::inventory::{EffectKind, ItemKind, Material};
+use crate::projectile::{SubVoxelCoord, SubVoxelVec};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
     BuildType, CivId, CivOpinion, CivRelationshipId, CivSpecies, CompositionId, CreatureId,
     CultureTag, EnchantmentEffectId, EnchantmentId, FurnishingType, FurnitureId, GroundPileId,
     InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId, NavNodeId, NotificationId,
-    ProjectId, Species, StructureId, TaskAcquireDataId, TaskBlueprintRefId, TaskCraftDataId,
-    TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId,
-    ThoughtKind, VitalStatus, VoxelCoord,
+    ProjectId, ProjectileId, Species, StructureId, TaskAcquireDataId, TaskBlueprintRefId,
+    TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId,
+    ThoughtId, ThoughtKind, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -870,6 +872,47 @@ pub struct CivRelationship {
 }
 
 // ---------------------------------------------------------------------------
+// Projectile entity
+// ---------------------------------------------------------------------------
+
+/// A projectile in flight (arrow, javelin, etc.). Exists only while airborne.
+///
+/// The projectile owns its payload (typically a single arrow) via an inventory.
+/// On impact, items are transferred to a ground pile or destroyed. Damage is
+/// computed at impact time from the velocity and item properties — not stored
+/// on the projectile.
+///
+/// `shooter` is an FK with nullify — the shooter may be cleaned up in the far
+/// future, but the projectile continues in flight regardless. `inventory_id`
+/// is FK restrict — manually cleaned up in `remove_projectile()`.
+///
+/// `origin_voxel` records the launch site; creatures at this voxel are immune
+/// to this projectile (prevents friendly-fire on the shooter and allies).
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct Projectile {
+    #[primary_key(auto_increment)]
+    pub id: ProjectileId,
+    /// Creature that fired this projectile. FK nullify — used for kill credit.
+    #[serde(default)]
+    #[indexed]
+    pub shooter: Option<CreatureId>,
+    /// Inventory containing the arrow (or other projectile item).
+    #[indexed]
+    pub inventory_id: InventoryId,
+    /// High-precision position in sub-voxel units (2^30 per voxel).
+    pub position: SubVoxelCoord,
+    /// Velocity in sub-voxel units per tick.
+    pub velocity: SubVoxelVec,
+    /// Last air voxel before the current position. Used for ground pile
+    /// placement on surface impact (the pile goes at prev_voxel, not inside
+    /// the solid voxel the projectile entered).
+    pub prev_voxel: VoxelCoord,
+    /// Voxel from which the projectile was launched. Creatures in this voxel
+    /// are immune to this projectile (prevents friendly-fire on launch).
+    pub origin_voxel: VoxelCoord,
+}
+
+// ---------------------------------------------------------------------------
 // Database
 // ---------------------------------------------------------------------------
 
@@ -899,6 +942,7 @@ impl std::fmt::Debug for SimDb {
             .field("furniture", &self.furniture.len())
             .field("notifications", &self.notifications.len())
             .field("music_compositions", &self.music_compositions.len())
+            .field("projectiles", &self.projectiles.len())
             .finish()
     }
 }
@@ -1023,4 +1067,10 @@ pub struct SimDb {
 
     #[table(singular = "notification", auto)]
     pub notifications: NotificationTable,
+
+    #[table(singular = "projectile",
+            auto,
+            fks(shooter? = "creatures" on_delete nullify,
+                inventory_id = "inventories"))]
+    pub projectiles: ProjectileTable,
 }
