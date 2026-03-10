@@ -154,6 +154,7 @@ func _build_sections(parent: VBoxContainer) -> void:
 		[
 			["T", "Tasks panel"],
 			["U", "Units panel"],
+			["M", "Military groups"],
 			["I", "Tree info"],
 			["?", "This help panel"],
 			["F12", "Toggle debug tools"],

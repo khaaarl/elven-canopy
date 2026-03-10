@@ -315,6 +315,30 @@ fn build_creature_info_dict(
         inv_arr.push(&item_dict.to_variant());
     }
     dict.set("inventory", inv_arr);
+    // Military group info (civ creatures only).
+    if let Some(civ_id) = c.civ_id {
+        let (group_id, group_name) = if let Some(gid) = c.military_group {
+            let name = sim
+                .db
+                .military_groups
+                .get(&gid)
+                .map(|g| g.name.clone())
+                .unwrap_or_default();
+            (gid.0 as i64, name)
+        } else {
+            // Implicit civilian — look up the default civilian group.
+            let civ_groups = sim
+                .db
+                .military_groups
+                .by_civ_id(&civ_id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+            match civ_groups.iter().find(|g| g.is_default_civilian) {
+                Some(cg) => (cg.id.0 as i64, cg.name.clone()),
+                None => (-1, String::new()),
+            }
+        };
+        dict.set("military_group_id", group_id);
+        dict.set("military_group_name", GString::from(group_name.as_str()));
+    }
     dict
 }
 
@@ -2540,6 +2564,196 @@ impl SimBridge {
         self.apply_or_send(SimAction::HealCreature {
             creature_id,
             amount,
+        });
+    }
+
+    // -------------------------------------------------------------------
+    // Military groups
+    // -------------------------------------------------------------------
+
+    /// Returns an array of dicts describing the player civ's military groups.
+    ///
+    /// Each dict: `{ id: int, name: String, is_civilian: bool,
+    /// hostile_response: String ("Fight"/"Flee"), member_count: int }`.
+    /// The civilian group's member_count is the computed leftover count
+    /// (total alive civ creatures minus those explicitly assigned).
+    /// All counts only include `vital_status = Alive` creatures.
+    #[func]
+    fn get_military_groups(&self) -> VarArray {
+        let Some(sim) = &self.session.sim else {
+            return VarArray::new();
+        };
+        let Some(player_civ) = sim.player_civ_id else {
+            return VarArray::new();
+        };
+
+        let groups = sim
+            .db
+            .military_groups
+            .by_civ_id(&player_civ, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+
+        // Count all alive civ creatures and those explicitly assigned.
+        let alive_civ_creatures: usize = sim
+            .db
+            .creatures
+            .by_civ_id(
+                &Some(player_civ),
+                elven_canopy_sim::tabulosity::QueryOpts::ASC,
+            )
+            .iter()
+            .filter(|c| c.vital_status == VitalStatus::Alive)
+            .count();
+        let explicitly_assigned: usize = sim
+            .db
+            .creatures
+            .by_civ_id(
+                &Some(player_civ),
+                elven_canopy_sim::tabulosity::QueryOpts::ASC,
+            )
+            .iter()
+            .filter(|c| c.vital_status == VitalStatus::Alive && c.military_group.is_some())
+            .count();
+
+        let mut arr = VarArray::new();
+        for g in &groups {
+            let mut dict = VarDictionary::new();
+            dict.set("id", g.id.0 as i64);
+            dict.set("name", GString::from(g.name.as_str()));
+            dict.set("is_civilian", g.is_default_civilian);
+            let response_str = match g.hostile_response {
+                elven_canopy_sim::db::HostileResponse::Fight => "Fight",
+                elven_canopy_sim::db::HostileResponse::Flee => "Flee",
+            };
+            dict.set("hostile_response", GString::from(response_str));
+
+            let member_count = if g.is_default_civilian {
+                // Implicit civilians = total alive civ - explicitly assigned.
+                alive_civ_creatures.saturating_sub(explicitly_assigned)
+            } else {
+                sim.db
+                    .creatures
+                    .by_military_group(&Some(g.id), elven_canopy_sim::tabulosity::QueryOpts::ASC)
+                    .iter()
+                    .filter(|c| c.vital_status == VitalStatus::Alive)
+                    .count()
+            };
+            dict.set("member_count", member_count as i64);
+            arr.push(&dict.to_variant());
+        }
+        arr
+    }
+
+    /// Returns an array of dicts for living members of a specific military
+    /// group. For the civilian group, returns creatures with
+    /// `military_group = None` and `vital_status = Alive`.
+    ///
+    /// Each dict: `{ creature_id: String, name: String, species: String }`.
+    #[func]
+    fn get_military_group_members(&self, group_id: i64) -> VarArray {
+        let Some(sim) = &self.session.sim else {
+            return VarArray::new();
+        };
+
+        let gid = elven_canopy_sim::types::MilitaryGroupId(group_id as u64);
+        let group = sim.db.military_groups.get(&gid);
+
+        let members: Vec<_> = match &group {
+            Some(g) if g.is_default_civilian => {
+                // Civilian group: creatures with military_group = None and matching civ_id.
+                sim.db
+                    .creatures
+                    .by_civ_id(
+                        &Some(g.civ_id),
+                        elven_canopy_sim::tabulosity::QueryOpts::ASC,
+                    )
+                    .into_iter()
+                    .filter(|c| c.vital_status == VitalStatus::Alive && c.military_group.is_none())
+                    .collect()
+            }
+            Some(_) => {
+                // Non-civilian group: creatures explicitly assigned.
+                sim.db
+                    .creatures
+                    .by_military_group(&Some(gid), elven_canopy_sim::tabulosity::QueryOpts::ASC)
+                    .into_iter()
+                    .filter(|c| c.vital_status == VitalStatus::Alive)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+
+        let mut arr = VarArray::new();
+        for c in &members {
+            let mut dict = VarDictionary::new();
+            dict.set("creature_id", GString::from(c.id.0.to_string().as_str()));
+            dict.set("name", GString::from(c.name.as_str()));
+            let species_str = format!("{:?}", c.species);
+            dict.set("species", GString::from(species_str.as_str()));
+            arr.push(&dict.to_variant());
+        }
+        arr
+    }
+
+    /// Create a new military group for the player's civ.
+    #[func]
+    fn create_military_group(&mut self, name: GString) {
+        self.apply_or_send(SimAction::CreateMilitaryGroup {
+            name: name.to_string(),
+        });
+    }
+
+    /// Delete a non-civilian military group. Members return to civilian.
+    #[func]
+    fn delete_military_group(&mut self, group_id: i64) {
+        self.apply_or_send(SimAction::DeleteMilitaryGroup {
+            group_id: elven_canopy_sim::types::MilitaryGroupId(group_id as u64),
+        });
+    }
+
+    /// Reassign a creature to a military group.
+    #[func]
+    fn reassign_military_group(&mut self, creature_uuid: GString, group_id: i64) {
+        let Some(creature_id) = parse_creature_id(&creature_uuid.to_string()) else {
+            return;
+        };
+        self.apply_or_send(SimAction::ReassignMilitaryGroup {
+            creature_id,
+            group_id: Some(elven_canopy_sim::types::MilitaryGroupId(group_id as u64)),
+        });
+    }
+
+    /// Reassign a creature back to civilian status.
+    #[func]
+    fn reassign_to_civilian(&mut self, creature_uuid: GString) {
+        let Some(creature_id) = parse_creature_id(&creature_uuid.to_string()) else {
+            return;
+        };
+        self.apply_or_send(SimAction::ReassignMilitaryGroup {
+            creature_id,
+            group_id: None,
+        });
+    }
+
+    /// Rename a military group (including the civilian group).
+    #[func]
+    fn rename_military_group(&mut self, group_id: i64, name: GString) {
+        self.apply_or_send(SimAction::RenameMilitaryGroup {
+            group_id: elven_canopy_sim::types::MilitaryGroupId(group_id as u64),
+            name: name.to_string(),
+        });
+    }
+
+    /// Change a military group's hostile response ("Fight" or "Flee").
+    #[func]
+    fn set_group_hostile_response(&mut self, group_id: i64, response: GString) {
+        let hostile_response = match response.to_string().as_str() {
+            "Fight" => elven_canopy_sim::db::HostileResponse::Fight,
+            "Flee" => elven_canopy_sim::db::HostileResponse::Flee,
+            _ => return,
+        };
+        self.apply_or_send(SimAction::SetGroupHostileResponse {
+            group_id: elven_canopy_sim::types::MilitaryGroupId(group_id as u64),
+            hostile_response,
         });
     }
 

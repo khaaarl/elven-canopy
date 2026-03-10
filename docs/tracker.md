@@ -121,7 +121,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-military-armor       Military group armor policy
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-equip       Military group equipment acquisition
-[ ] F-military-groups      Military group data model and configuration
 [ ] F-military-org         Squad management and organization
 [ ] F-minimap              Minimap with tree silhouette and creature positions
 [ ] F-modding              Scripting layer for modding support
@@ -228,6 +227,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-main-menu            Main menu UI
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-melee-action         Melee attack action
+[x] F-military-groups      Military group data model and configuration
 [x] F-mood-system          Mood with escalating consequences
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-mp-checksums         Multiplayer state checksums for desync detection
@@ -1687,7 +1687,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-enemy-ai, F-military-groups
+**Blocked by:** F-attack-move, F-enemy-ai
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-engagement-style, F-fog-of-war
 
@@ -1822,17 +1822,16 @@ The player configures equipment policies on military groups (e.g., "members shou
 **Related:** F-military-groups
 
 #### F-military-groups — Military group data model and configuration
-**Status:** Todo
+**Status:** Done
 
 MilitaryGroup table in SimDb with civ_id FK (cascade on civ delete). Auto-increment PK. Fields: name, is_default_civilian (bool, invariant: exactly one per civ), hostile_response (Fight/Flee). Two default groups per civ during worldgen (Civilians with Flee, Soldiers with Fight). Implicit civilian membership: creature `military_group: None` means civilian (governed by civ's default civilian group settings), `Some(group_id)` means explicitly assigned. Civilian count computed as total civ creatures minus assigned creatures. Commands: CreateMilitaryGroup, DeleteMilitaryGroup (reject for civilian group, nullify members), ReassignMilitaryGroup, RenameMilitaryGroup, SetGroupHostileResponse. `should_flee()` updated to check group hostile_response.
 
-UI: Military panel opened via existing Units [U] button. Summary page lists groups with member counts, click to navigate to detail. Detail page: left column with scrollable member list + reassign buttons, right column with hostile_response toggle (Fight/Flee) and delete button. Reassignment overlay (modal) lists groups for quick reassignment. Creature info panel shows military group name as clickable link to the group's detail view. Group configuration UI included in initial implementation (not deferred to polish).
+UI: Military panel opened via separate Military [M] toolbar button. Summary page lists groups with member counts, click to navigate to detail. Detail page: hostile_response toggle (Fight/Flee), rename, delete (non-civilian only), scrollable member list with reassign buttons. Reassignment overlay (modal) lists groups for quick reassignment. Creature info panel shows military group name as clickable link to the group's detail view.
 
 **Draft:** docs/drafts/military_groups.md
 
 **Draft:** docs/drafts/combat_military.md (§1)
 
-**Blocks:** F-combat
 **Related:** F-engagement-style, F-military-armor, F-military-equip
 
 #### F-military-org — Squad management and organization

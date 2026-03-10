@@ -219,6 +219,14 @@ pub enum SimEventKind {
         attacker_id: CreatureId,
         target_id: CreatureId,
     },
+    /// A new military group was created.
+    MilitaryGroupCreated { group_id: MilitaryGroupId },
+    /// A military group was disbanded. Members returned to civilian status.
+    MilitaryGroupDeleted {
+        group_id: MilitaryGroupId,
+        name: String,
+        member_count: usize,
+    },
 }
 
 #[cfg(test)]

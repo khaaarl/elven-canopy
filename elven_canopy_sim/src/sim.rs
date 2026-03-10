@@ -819,6 +819,27 @@ impl SimState {
             } => {
                 self.try_shoot_arrow(*attacker_id, *target_id, events);
             }
+            SimAction::CreateMilitaryGroup { name } => {
+                self.create_military_group(name.clone(), events);
+            }
+            SimAction::DeleteMilitaryGroup { group_id } => {
+                self.delete_military_group(*group_id, events);
+            }
+            SimAction::ReassignMilitaryGroup {
+                creature_id,
+                group_id,
+            } => {
+                self.reassign_military_group(*creature_id, *group_id);
+            }
+            SimAction::RenameMilitaryGroup { group_id, name } => {
+                self.rename_military_group(*group_id, name.clone());
+            }
+            SimAction::SetGroupHostileResponse {
+                group_id,
+                hostile_response,
+            } => {
+                self.set_group_hostile_response(*group_id, *hostile_response);
+            }
             SimAction::DebugSpawnProjectile {
                 origin,
                 target,
@@ -1811,6 +1832,7 @@ impl SimState {
             assigned_home: None,
             inventory_id: inv_id,
             civ_id,
+            military_group: None,
             action_kind: ActionKind::NoAction,
             next_available_tick: None,
             hp: hp_max,
@@ -6138,6 +6160,189 @@ impl SimState {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Military groups
+    // -----------------------------------------------------------------------
+
+    /// Resolve the effective `HostileResponse` for a civ creature.
+    ///
+    /// - If explicitly assigned to a group, returns that group's response.
+    /// - If implicit civilian (`military_group = None`), returns the civ's
+    ///   default civilian group's response.
+    /// - Returns `None` for non-civ creatures (caller should use `CombatAI`).
+    fn resolve_hostile_response(
+        &self,
+        creature_id: CreatureId,
+    ) -> Option<crate::db::HostileResponse> {
+        let creature = self.db.creatures.get(&creature_id)?;
+        let civ_id = creature.civ_id?;
+
+        if let Some(group_id) = creature.military_group {
+            return self
+                .db
+                .military_groups
+                .get(&group_id)
+                .map(|g| g.hostile_response);
+        }
+
+        // Implicit civilian — look up the civ's default civilian group.
+        self.db
+            .military_groups
+            .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|g| g.is_default_civilian)
+            .map(|g| g.hostile_response)
+    }
+
+    /// Look up the player's civ id from the cached field on `SimState`.
+    fn player_civ(&self) -> Option<CivId> {
+        self.player_civ_id
+    }
+
+    /// Create a new military group for the player's civ.
+    fn create_military_group(&mut self, name: String, events: &mut Vec<SimEvent>) {
+        let Some(civ_id) = self.player_civ() else {
+            return;
+        };
+        let group_name = name.clone();
+        let result = self
+            .db
+            .military_groups
+            .insert_auto_no_fk(|id| crate::db::MilitaryGroup {
+                id,
+                civ_id,
+                name,
+                is_default_civilian: false,
+                hostile_response: crate::db::HostileResponse::Fight,
+            });
+        if let Ok(group_id) = result {
+            self.add_notification(format!("Military group '{group_name}' created."));
+            events.push(SimEvent {
+                tick: self.tick,
+                kind: SimEventKind::MilitaryGroupCreated { group_id },
+            });
+        }
+    }
+
+    /// Delete a non-civilian military group. The FK nullify policy on
+    /// `Creature.military_group` automatically unassigns all members.
+    fn delete_military_group(&mut self, group_id: MilitaryGroupId, events: &mut Vec<SimEvent>) {
+        let group = match self.db.military_groups.get(&group_id) {
+            Some(g) => g.clone(),
+            None => return,
+        };
+        // Cannot delete the civilian group.
+        if group.is_default_civilian {
+            return;
+        }
+        // Count alive members and collect all member IDs for manual nullify.
+        let members = self
+            .db
+            .creatures
+            .by_military_group(&Some(group_id), tabulosity::QueryOpts::ASC);
+        let member_count = members
+            .iter()
+            .filter(|c| c.vital_status == VitalStatus::Alive)
+            .count();
+        let member_ids: Vec<CreatureId> = members.iter().map(|c| c.id).collect();
+
+        // Nullify creature.military_group for all members (manual FK nullify).
+        // Uses update_no_fk because military_group is an indexed field.
+        for cid in member_ids {
+            if let Some(mut creature) = self.db.creatures.get(&cid) {
+                creature.military_group = None;
+                let _ = self.db.creatures.update_no_fk(creature);
+            }
+        }
+
+        let _ = self.db.military_groups.remove_no_fk(&group_id);
+
+        self.add_notification(format!(
+            "Group '{}' disbanded, {} members returned to civilian duty.",
+            group.name, member_count
+        ));
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::MilitaryGroupDeleted {
+                group_id,
+                name: group.name,
+                member_count,
+            },
+        });
+    }
+
+    /// Reassign a creature to a different military group (or civilian).
+    fn reassign_military_group(
+        &mut self,
+        creature_id: CreatureId,
+        group_id: Option<MilitaryGroupId>,
+    ) {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return,
+        };
+        // Must be a civ creature.
+        let civ_id = match creature.civ_id {
+            Some(id) => id,
+            None => return,
+        };
+        // Must be alive.
+        if creature.vital_status != VitalStatus::Alive {
+            return;
+        }
+        // If assigning to a group, validate it belongs to the same civ.
+        if let Some(gid) = group_id {
+            match self.db.military_groups.get(&gid) {
+                Some(g) if g.civ_id == civ_id => {}
+                _ => return,
+            }
+        }
+        // Uses update_no_fk because military_group is an indexed field.
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+            creature.military_group = group_id;
+            let _ = self.db.creatures.update_no_fk(creature);
+        }
+    }
+
+    /// Rename a military group.
+    fn rename_military_group(&mut self, group_id: MilitaryGroupId, name: String) {
+        let Some(group) = self.db.military_groups.get(&group_id) else {
+            return;
+        };
+        // Validate it belongs to the player's civ.
+        let Some(player_civ) = self.player_civ() else {
+            return;
+        };
+        if group.civ_id != player_civ {
+            return;
+        }
+        let _ = self
+            .db
+            .military_groups
+            .modify_unchecked(&group_id, |g| g.name = name);
+    }
+
+    /// Change a military group's hostile response.
+    fn set_group_hostile_response(
+        &mut self,
+        group_id: MilitaryGroupId,
+        hostile_response: crate::db::HostileResponse,
+    ) {
+        let Some(group) = self.db.military_groups.get(&group_id) else {
+            return;
+        };
+        let Some(player_civ) = self.player_civ() else {
+            return;
+        };
+        if group.civ_id != player_civ {
+            return;
+        }
+        let _ = self
+            .db
+            .military_groups
+            .modify_unchecked(&group_id, |g| g.hostile_response = hostile_response);
+    }
+
     pub(crate) fn add_notification(&mut self, message: String) {
         let _ = self
             .db
@@ -7160,13 +7365,13 @@ impl SimState {
     /// Determine whether a creature should flee from nearby hostiles.
     ///
     /// Two categories of creatures flee:
-    /// - **Civ creatures** (elves): flee by default. When military groups are
-    ///   implemented, this will be gated by the group's `hostile_response`.
+    /// - **Civ creatures**: gated by their military group's `hostile_response`
+    ///   (Flee = flee, Fight = don't flee). Implicit civilians use the civ's
+    ///   default civilian group settings.
     /// - **Non-civ creatures with `CombatAI::FleeOnly`**: data-driven flee
     ///   behavior (e.g., prey animals).
     ///
-    /// Aggressive creatures (`AggressiveMelee`/`AggressiveRanged`) never flee —
-    /// they pursue via `hostile_pursue()`.
+    /// Creatures with a `PlayerCombat`-level task never flee (player override).
     fn should_flee(&self, creature_id: CreatureId, species: Species) -> bool {
         let creature = match self.db.creatures.get(&creature_id) {
             Some(c) => c,
@@ -7190,19 +7395,34 @@ impl SimState {
             }
         }
 
-        let combat_ai = species_data.combat_ai;
-        use crate::species::CombatAI;
-
         if creature.civ_id.is_some() {
-            // Civ creatures flee by default (future: check military group
-            // hostile_response). Aggressive combat_ai overrides for civ
-            // creatures that are configured to fight.
-            !matches!(
-                combat_ai,
-                CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
-            )
+            // Civ creatures: check military group hostile_response.
+            // Debug-assert the one-civilian-per-civ invariant.
+            #[cfg(debug_assertions)]
+            if let Some(civ_id) = creature.civ_id {
+                let civilian_count = self
+                    .db
+                    .military_groups
+                    .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+                    .iter()
+                    .filter(|g| g.is_default_civilian)
+                    .count();
+                debug_assert!(
+                    civilian_count == 1,
+                    "Expected exactly 1 civilian group for {civ_id}, found {civilian_count}"
+                );
+            }
+
+            match self.resolve_hostile_response(creature_id) {
+                Some(crate::db::HostileResponse::Flee) => true,
+                Some(crate::db::HostileResponse::Fight) => false,
+                // Fallback: no group found (shouldn't happen for civ creatures).
+                None => true,
+            }
         } else {
             // Non-civ creatures: only FleeOnly flees.
+            let combat_ai = species_data.combat_ai;
+            use crate::species::CombatAI;
             matches!(combat_ai, CombatAI::FleeOnly)
         }
     }
@@ -7312,6 +7532,10 @@ impl SimState {
     }
 
     /// Wander: pick a random adjacent nav node and move there.
+    ///
+    /// Aggressive non-civ creatures and Fight-group civ creatures auto-engage
+    /// detected hostiles via `hostile_pursue()` before falling back to random
+    /// wandering.
     fn wander(
         &mut self,
         creature_id: CreatureId,
@@ -7323,9 +7547,10 @@ impl SimState {
             None => return,
         };
         let species = creature.species;
+        let civ_id = creature.civ_id;
         let combat_ai = self.species_table[&species].combat_ai;
 
-        // Aggressive melee creatures pursue detected hostile targets instead
+        // Aggressive non-civ creatures pursue detected hostile targets instead
         // of wandering randomly. Falls through to random wander if no target
         // is within detection range or reachable.
         use crate::species::CombatAI;
@@ -7333,6 +7558,14 @@ impl SimState {
             combat_ai,
             CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
         ) && self.hostile_pursue(creature_id, current_node, species, events)
+        {
+            return;
+        }
+
+        // Fight-group civ creatures also auto-engage hostiles.
+        if civ_id.is_some()
+            && self.resolve_hostile_response(creature_id) == Some(crate::db::HostileResponse::Fight)
+            && self.hostile_pursue(creature_id, current_node, species, events)
         {
             return;
         }
@@ -11121,6 +11354,7 @@ mod tests {
             assigned_home: None,
             inventory_id: InventoryId(0),
             civ_id: None,
+            military_group: None,
             action_kind,
             next_available_tick,
             hp: 100,
@@ -28108,6 +28342,759 @@ mod tests {
         assert_eq!(
             chosen, None,
             "capybara should not be assigned an elf-only task"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Military group tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: directly set a creature's military group (test-only).
+    /// Uses update_no_fk because military_group is indexed.
+    fn set_military_group(
+        sim: &mut SimState,
+        creature_id: CreatureId,
+        group: Option<MilitaryGroupId>,
+    ) {
+        let mut creature = sim.db.creatures.get(&creature_id).unwrap();
+        creature.military_group = group;
+        sim.db.creatures.update_no_fk(creature).unwrap();
+    }
+
+    /// Helper: find the player civ's civilian group.
+    fn civilian_group(sim: &SimState) -> crate::db::MilitaryGroup {
+        let civ_id = sim.player_civ_id.unwrap();
+        sim.db
+            .military_groups
+            .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|g| g.is_default_civilian)
+            .expect("player civ should have a civilian group")
+    }
+
+    /// Helper: find the player civ's soldiers group.
+    fn soldiers_group(sim: &SimState) -> crate::db::MilitaryGroup {
+        let civ_id = sim.player_civ_id.unwrap();
+        sim.db
+            .military_groups
+            .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|g| !g.is_default_civilian && g.name == "Soldiers")
+            .expect("player civ should have a soldiers group")
+    }
+
+    #[test]
+    fn worldgen_creates_default_military_groups() {
+        let sim = test_sim(42);
+        let civ_id = sim.player_civ_id.unwrap();
+        let groups = sim
+            .db
+            .military_groups
+            .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+
+        assert!(
+            groups.len() >= 2,
+            "Should have at least 2 groups (Civilians + Soldiers)"
+        );
+
+        let civilians = groups.iter().filter(|g| g.is_default_civilian).count();
+        assert_eq!(civilians, 1, "Exactly one civilian group per civ");
+
+        let civilian = groups.iter().find(|g| g.is_default_civilian).unwrap();
+        assert_eq!(civilian.name, "Civilians");
+        assert_eq!(civilian.hostile_response, crate::db::HostileResponse::Flee);
+
+        let soldiers = groups.iter().find(|g| g.name == "Soldiers").unwrap();
+        assert!(!soldiers.is_default_civilian);
+        assert_eq!(soldiers.hostile_response, crate::db::HostileResponse::Fight);
+    }
+
+    #[test]
+    fn worldgen_all_civs_have_military_groups() {
+        let sim = test_sim(42);
+        for civ in sim.db.civilizations.iter_all() {
+            let groups = sim
+                .db
+                .military_groups
+                .by_civ_id(&civ.id, tabulosity::QueryOpts::ASC);
+            let civilian_count = groups.iter().filter(|g| g.is_default_civilian).count();
+            assert_eq!(
+                civilian_count, 1,
+                "Civ {:?} should have exactly 1 civilian group",
+                civ.id
+            );
+            assert!(
+                groups.len() >= 2,
+                "Civ {:?} should have at least Civilians + Soldiers",
+                civ.id
+            );
+        }
+    }
+
+    #[test]
+    fn create_military_group_command() {
+        let mut sim = test_sim(42);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::CreateMilitaryGroup {
+                name: "Archers".to_string(),
+            },
+        };
+        let result = sim.step(&[cmd], 1);
+
+        // Should emit MilitaryGroupCreated event.
+        assert!(
+            result
+                .events
+                .iter()
+                .any(|e| matches!(&e.kind, SimEventKind::MilitaryGroupCreated { .. })),
+            "Should emit MilitaryGroupCreated event"
+        );
+
+        // The new group should exist in the DB.
+        let civ_id = sim.player_civ_id.unwrap();
+        let groups = sim
+            .db
+            .military_groups
+            .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+        let archers = groups.iter().find(|g| g.name == "Archers");
+        assert!(archers.is_some(), "Archers group should exist");
+        let archers = archers.unwrap();
+        assert!(!archers.is_default_civilian);
+        assert_eq!(
+            archers.hostile_response,
+            crate::db::HostileResponse::Fight,
+            "New groups default to Fight"
+        );
+    }
+
+    #[test]
+    fn creature_reassignment_to_group_and_back() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        // Spawn an elf.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_id = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("should spawn elf");
+
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        assert_eq!(elf.military_group, None, "Spawned elf is implicit civilian");
+
+        // Assign to soldiers.
+        let soldiers = soldiers_group(&sim);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::ReassignMilitaryGroup {
+                creature_id: elf_id,
+                group_id: Some(soldiers.id),
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        assert_eq!(
+            elf.military_group,
+            Some(soldiers.id),
+            "Elf should be in soldiers group"
+        );
+
+        // Reassign back to civilian (None).
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::ReassignMilitaryGroup {
+                creature_id: elf_id,
+                group_id: None,
+            },
+        };
+        sim.step(&[cmd], 2);
+
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        assert_eq!(elf.military_group, None, "Elf should be back to civilian");
+    }
+
+    #[test]
+    fn reassign_between_non_civilian_groups() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_id = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("should spawn elf");
+
+        // Create a second group.
+        let create_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::CreateMilitaryGroup {
+                name: "Archers".to_string(),
+            },
+        };
+        sim.step(&[create_cmd], 1);
+
+        let civ_id = sim.player_civ_id.unwrap();
+        let archers = sim
+            .db
+            .military_groups
+            .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|g| g.name == "Archers")
+            .unwrap();
+
+        // Assign to soldiers.
+        let soldiers = soldiers_group(&sim);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::ReassignMilitaryGroup {
+                creature_id: elf_id,
+                group_id: Some(soldiers.id),
+            },
+        };
+        sim.step(&[cmd], 2);
+        assert_eq!(
+            sim.db.creatures.get(&elf_id).unwrap().military_group,
+            Some(soldiers.id)
+        );
+
+        // Reassign to archers.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 3,
+            action: SimAction::ReassignMilitaryGroup {
+                creature_id: elf_id,
+                group_id: Some(archers.id),
+            },
+        };
+        sim.step(&[cmd], 3);
+        assert_eq!(
+            sim.db.creatures.get(&elf_id).unwrap().military_group,
+            Some(archers.id)
+        );
+    }
+
+    #[test]
+    fn should_flee_with_fight_group() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_id = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("should spawn elf");
+
+        // Default: implicit civilian (Flee group) → should flee.
+        assert!(
+            sim.should_flee(elf_id, Species::Elf),
+            "Civilian elf should flee"
+        );
+
+        // Assign to soldiers (Fight group).
+        let soldiers = soldiers_group(&sim);
+        set_military_group(&mut sim, elf_id, Some(soldiers.id));
+
+        assert!(
+            !sim.should_flee(elf_id, Species::Elf),
+            "Fight-group elf should not flee"
+        );
+    }
+
+    #[test]
+    fn should_flee_with_flee_group() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_id = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("should spawn elf");
+
+        // Implicit civilian → Flee.
+        assert!(sim.should_flee(elf_id, Species::Elf));
+
+        // Explicitly assign to a Flee group (the civilian group).
+        let civ_group = civilian_group(&sim);
+        set_military_group(&mut sim, elf_id, Some(civ_group.id));
+
+        assert!(
+            sim.should_flee(elf_id, Species::Elf),
+            "Flee-group elf should still flee"
+        );
+    }
+
+    #[test]
+    fn should_flee_player_combat_override() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_id = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("should spawn elf");
+
+        // Elf is in Flee group (civilian).
+        assert!(sim.should_flee(elf_id, Species::Elf));
+
+        // Spawn a goblin target.
+        let goblin_id = sim
+            .spawn_creature(Species::Goblin, tree_pos, &mut events)
+            .expect("should spawn goblin");
+
+        // Issue a player-directed attack (creates a PlayerCombat-level task).
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::AttackCreature {
+                attacker_id: elf_id,
+                target_id: goblin_id,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // PlayerCombat task overrides flee behavior.
+        assert!(
+            !sim.should_flee(elf_id, Species::Elf),
+            "Elf with PlayerCombat task should not flee even in Flee group"
+        );
+    }
+
+    #[test]
+    fn delete_military_group_nullifies_members() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_id = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("should spawn elf");
+
+        // Create a new group and assign the elf to it.
+        let create_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::CreateMilitaryGroup {
+                name: "Scouts".to_string(),
+            },
+        };
+        sim.step(&[create_cmd], 1);
+
+        let civ_id = sim.player_civ_id.unwrap();
+        let scouts = sim
+            .db
+            .military_groups
+            .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|g| g.name == "Scouts")
+            .unwrap();
+
+        let assign_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::ReassignMilitaryGroup {
+                creature_id: elf_id,
+                group_id: Some(scouts.id),
+            },
+        };
+        sim.step(&[assign_cmd], 2);
+        assert_eq!(
+            sim.db.creatures.get(&elf_id).unwrap().military_group,
+            Some(scouts.id)
+        );
+
+        // Delete the group.
+        let delete_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 3,
+            action: SimAction::DeleteMilitaryGroup {
+                group_id: scouts.id,
+            },
+        };
+        let result = sim.step(&[delete_cmd], 3);
+
+        // Elf should be back to civilian (None).
+        assert_eq!(
+            sim.db.creatures.get(&elf_id).unwrap().military_group,
+            None,
+            "Deleted group should nullify creature.military_group"
+        );
+
+        // Group should be gone.
+        assert!(
+            sim.db.military_groups.get(&scouts.id).is_none(),
+            "Deleted group should be removed"
+        );
+
+        // Should emit MilitaryGroupDeleted event.
+        assert!(
+            result.events.iter().any(|e| matches!(
+                &e.kind,
+                SimEventKind::MilitaryGroupDeleted {
+                    name, member_count, ..
+                } if name == "Scouts" && *member_count == 1
+            )),
+            "Should emit MilitaryGroupDeleted with correct name and count"
+        );
+    }
+
+    #[test]
+    fn civilian_group_deletion_rejected() {
+        let mut sim = test_sim(42);
+        let civ_group = civilian_group(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DeleteMilitaryGroup {
+                group_id: civ_group.id,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Civilian group should still exist.
+        assert!(
+            sim.db.military_groups.get(&civ_group.id).is_some(),
+            "Civilian group cannot be deleted"
+        );
+    }
+
+    #[test]
+    fn dead_creature_not_counted_in_member_count() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_a = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("spawn elf a");
+        let elf_b = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("spawn elf b");
+
+        // Assign both to soldiers.
+        let soldiers = soldiers_group(&sim);
+        for eid in [elf_a, elf_b] {
+            set_military_group(&mut sim, eid, Some(soldiers.id));
+        }
+
+        // Kill elf_b.
+        let kill_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DebugKillCreature { creature_id: elf_b },
+        };
+        sim.step(&[kill_cmd], 1);
+
+        // Count alive members.
+        let alive_count = sim
+            .db
+            .creatures
+            .by_military_group(&Some(soldiers.id), tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|c| c.vital_status == VitalStatus::Alive)
+            .count();
+        assert_eq!(alive_count, 1, "Only elf_a should be alive in soldiers");
+
+        // Dead elf should still be assigned to soldiers.
+        let dead_elf = sim.db.creatures.get(&elf_b).unwrap();
+        assert_eq!(
+            dead_elf.military_group,
+            Some(soldiers.id),
+            "Dead creature preserves group assignment"
+        );
+        assert_eq!(dead_elf.vital_status, VitalStatus::Dead);
+    }
+
+    #[test]
+    fn cross_civ_reassignment_rejected() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        // Get a non-player civ.
+        let ai_civ = sim
+            .db
+            .civilizations
+            .iter_all()
+            .find(|c| !c.player_controlled)
+            .expect("need an AI civ");
+        let ai_groups = sim
+            .db
+            .military_groups
+            .by_civ_id(&ai_civ.id, tabulosity::QueryOpts::ASC);
+        let ai_soldiers = ai_groups
+            .iter()
+            .find(|g| !g.is_default_civilian)
+            .expect("AI civ should have a non-civilian group");
+
+        // Spawn an elf (player civ).
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_id = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("spawn elf");
+
+        // Try to assign elf to AI civ's group — should be rejected.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::ReassignMilitaryGroup {
+                creature_id: elf_id,
+                group_id: Some(ai_soldiers.id),
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(
+            sim.db.creatures.get(&elf_id).unwrap().military_group,
+            None,
+            "Cross-civ reassignment should be rejected"
+        );
+    }
+
+    #[test]
+    fn non_civ_creature_reassignment_rejected() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let goblin_id = sim
+            .spawn_creature(Species::Goblin, tree_pos, &mut events)
+            .expect("spawn goblin");
+
+        let soldiers = soldiers_group(&sim);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::ReassignMilitaryGroup {
+                creature_id: goblin_id,
+                group_id: Some(soldiers.id),
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(
+            sim.db.creatures.get(&goblin_id).unwrap().military_group,
+            None,
+            "Non-civ creatures cannot be assigned to military groups"
+        );
+    }
+
+    #[test]
+    fn rename_civilian_group() {
+        let mut sim = test_sim(42);
+        let civ_group = civilian_group(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::RenameMilitaryGroup {
+                group_id: civ_group.id,
+                name: "Villagers".to_string(),
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let renamed = sim.db.military_groups.get(&civ_group.id).unwrap();
+        assert_eq!(renamed.name, "Villagers");
+    }
+
+    #[test]
+    fn set_group_hostile_response() {
+        let mut sim = test_sim(42);
+        let civ_group = civilian_group(&sim);
+
+        // Change civilian group to Fight.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SetGroupHostileResponse {
+                group_id: civ_group.id,
+                hostile_response: crate::db::HostileResponse::Fight,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let updated = sim.db.military_groups.get(&civ_group.id).unwrap();
+        assert_eq!(updated.hostile_response, crate::db::HostileResponse::Fight);
+    }
+
+    #[test]
+    fn fk_cascade_civ_delete_removes_groups() {
+        let mut sim = test_sim(99);
+
+        // Find an AI civ (not the player civ, which might cause issues).
+        let ai_civ = sim
+            .db
+            .civilizations
+            .iter_all()
+            .find(|c| !c.player_controlled);
+        let Some(ai_civ) = ai_civ else {
+            // No AI civ in this seed — skip test.
+            return;
+        };
+        let ai_civ_id = ai_civ.id;
+
+        let groups_before = sim
+            .db
+            .military_groups
+            .by_civ_id(&ai_civ_id, tabulosity::QueryOpts::ASC);
+        assert!(
+            !groups_before.is_empty(),
+            "AI civ should have military groups"
+        );
+
+        // Delete the civ — groups should cascade.
+        let _ = sim.db.remove_civilization(&ai_civ_id);
+
+        let groups_after = sim
+            .db
+            .military_groups
+            .by_civ_id(&ai_civ_id, tabulosity::QueryOpts::ASC);
+        assert!(
+            groups_after.is_empty(),
+            "Deleting a civ should cascade-delete its military groups"
+        );
+    }
+
+    #[test]
+    fn hostile_response_serde_roundtrip() {
+        use crate::db::HostileResponse;
+        let fight = HostileResponse::Fight;
+        let flee = HostileResponse::Flee;
+
+        let fight_json = serde_json::to_string(&fight).unwrap();
+        let flee_json = serde_json::to_string(&flee).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<HostileResponse>(&fight_json).unwrap(),
+            fight
+        );
+        assert_eq!(
+            serde_json::from_str::<HostileResponse>(&flee_json).unwrap(),
+            flee
+        );
+    }
+
+    #[test]
+    fn military_group_serde_roundtrip() {
+        let sim = test_sim(42);
+
+        // Serialize and deserialize the full SimDb.
+        let json = serde_json::to_string(&sim.db).unwrap();
+        let db2: crate::db::SimDb = serde_json::from_str(&json).unwrap();
+
+        let civ_id = sim.player_civ_id.unwrap();
+        let groups_orig = sim
+            .db
+            .military_groups
+            .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+        let groups_deser = db2
+            .military_groups
+            .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+
+        assert_eq!(groups_orig.len(), groups_deser.len());
+        for (a, b) in groups_orig.iter().zip(groups_deser.iter()) {
+            assert_eq!(a.id, b.id);
+            assert_eq!(a.civ_id, b.civ_id);
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.is_default_civilian, b.is_default_civilian);
+            assert_eq!(a.hostile_response, b.hostile_response);
+        }
+    }
+
+    #[test]
+    fn military_group_command_serde_roundtrip() {
+        use crate::db::HostileResponse;
+
+        let actions = vec![
+            SimAction::CreateMilitaryGroup {
+                name: "Guards".to_string(),
+            },
+            SimAction::DeleteMilitaryGroup {
+                group_id: MilitaryGroupId(1),
+            },
+            SimAction::ReassignMilitaryGroup {
+                creature_id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
+                group_id: Some(MilitaryGroupId(2)),
+            },
+            SimAction::RenameMilitaryGroup {
+                group_id: MilitaryGroupId(1),
+                name: "Elite".to_string(),
+            },
+            SimAction::SetGroupHostileResponse {
+                group_id: MilitaryGroupId(1),
+                hostile_response: HostileResponse::Flee,
+            },
+        ];
+
+        for action in &actions {
+            let json = serde_json::to_string(action).unwrap();
+            let deser: SimAction = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&deser).unwrap();
+            assert_eq!(json, json2, "Serde roundtrip failed for {action:?}");
+        }
+    }
+
+    #[test]
+    fn fight_group_civ_creature_auto_engages() {
+        // This test verifies that a Fight-group civ creature will attempt to
+        // pursue hostiles via wander(), not just avoid them.
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_id = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("spawn elf");
+
+        // Assign to soldiers (Fight).
+        let soldiers = soldiers_group(&sim);
+        set_military_group(&mut sim, elf_id, Some(soldiers.id));
+
+        // Verify resolve_hostile_response returns Fight.
+        assert_eq!(
+            sim.resolve_hostile_response(elf_id),
+            Some(crate::db::HostileResponse::Fight),
+            "Soldiers group should resolve to Fight"
+        );
+    }
+
+    #[test]
+    fn resolve_hostile_response_implicit_civilian() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_id = sim
+            .spawn_creature(Species::Elf, tree_pos, &mut events)
+            .expect("spawn elf");
+
+        // Implicit civilian (military_group = None, civ_id = Some).
+        assert_eq!(
+            sim.resolve_hostile_response(elf_id),
+            Some(crate::db::HostileResponse::Flee),
+            "Implicit civilian should resolve to Flee (default civilian group)"
+        );
+    }
+
+    #[test]
+    fn resolve_hostile_response_non_civ_creature() {
+        let mut sim = test_sim(42);
+        let mut events = Vec::new();
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let goblin_id = sim
+            .spawn_creature(Species::Goblin, tree_pos, &mut events)
+            .expect("spawn goblin");
+
+        // Non-civ creature → None (behavior from CombatAI instead).
+        assert_eq!(
+            sim.resolve_hostile_response(goblin_id),
+            None,
+            "Non-civ creature should return None"
         );
     }
 }

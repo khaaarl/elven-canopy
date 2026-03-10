@@ -6,7 +6,7 @@
 //
 // ## Table layout
 //
-// The database has 27 tables organized in three tiers:
+// The database has 28 tables organized in three tiers:
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures`,
 // `projectiles` — the primary simulation entities, keyed by UUID-based or
@@ -58,10 +58,11 @@ use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
     BuildType, CivId, CivOpinion, CivRelationshipId, CivSpecies, CompositionId, CreatureId,
     CultureTag, EnchantmentEffectId, EnchantmentId, FurnishingType, FurnitureId, GroundPileId,
-    InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId, NavNodeId, NotificationId,
-    ProjectId, ProjectileId, Species, StructureId, TaskAcquireDataId, TaskAttackTargetDataId,
-    TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId,
-    TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VitalStatus, VoxelCoord,
+    InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId, MilitaryGroupId, NavNodeId,
+    NotificationId, ProjectId, ProjectileId, Species, StructureId, TaskAcquireDataId,
+    TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId,
+    TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VitalStatus,
+    VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -260,6 +261,14 @@ pub struct Creature {
     #[serde(default)]
     #[indexed]
     pub civ_id: Option<CivId>,
+    /// Military group assignment. For civ creatures (`civ_id` is `Some`),
+    /// `None` means civilian — governed by the civ's default civilian group
+    /// settings (notably `hostile_response`). For non-civ creatures (`civ_id`
+    /// is `None`), this is always `None` and behavior comes from the species'
+    /// `combat_ai` instead. Group assignment is preserved on death.
+    #[serde(default)]
+    #[indexed]
+    pub military_group: Option<MilitaryGroupId>,
     pub path: Option<CreaturePath>,
     /// What the creature is currently doing. `NoAction` when idle.
     #[serde(default)]
@@ -886,6 +895,40 @@ pub struct Civilization {
     pub player_controlled: bool,
 }
 
+/// How a military group responds when hostiles are detected.
+///
+/// Cross-reference: `CombatAI` in `species.rs` determines non-civ creature
+/// behavior; `HostileResponse` determines civ creature behavior via military
+/// group membership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HostileResponse {
+    /// Group members fight detected hostiles (auto-engage via `hostile_pursue`).
+    Fight,
+    /// Group members flee from detected hostiles (greedy retreat via `flee_step`).
+    Flee,
+}
+
+/// A military group within a civilization. Every civ has at least one group
+/// with `is_default_civilian = true` (the implicit home for unassigned
+/// creatures). Additional groups can be created by the player.
+///
+/// **Invariant:** Exactly one group per civ has `is_default_civilian = true`.
+/// This is enforced at creation time (reject duplicates) and the civilian
+/// group cannot be deleted or have its flag changed.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct MilitaryGroup {
+    #[primary_key(auto_increment)]
+    pub id: MilitaryGroupId,
+    #[indexed]
+    pub civ_id: CivId,
+    pub name: String,
+    /// If true, this is the civ's default civilian group. Creatures with
+    /// `military_group = None` are governed by this group's settings.
+    /// Write-once: set at creation, immutable thereafter.
+    pub is_default_civilian: bool,
+    pub hostile_response: HostileResponse,
+}
+
 /// Directed relationship: `from_civ`'s opinion of `to_civ`.
 /// Absence of a row means unaware. Awareness is asymmetric — Civ A can know
 /// about Civ B while B has never heard of A.
@@ -962,6 +1005,7 @@ impl std::fmt::Debug for SimDb {
         f.debug_struct("SimDb")
             .field("civilizations", &self.civilizations.len())
             .field("fruit_species", &self.fruit_species.len())
+            .field("military_groups", &self.military_groups.len())
             .field("civ_relationships", &self.civ_relationships.len())
             .field("creatures", &self.creatures.len())
             .field("thoughts", &self.thoughts.len())
@@ -987,6 +1031,11 @@ pub struct SimDb {
     #[table(singular = "fruit_species")]
     pub fruit_species: FruitSpeciesTable,
 
+    #[table(singular = "military_group",
+            auto,
+            fks(civ_id = "civilizations" on_delete cascade))]
+    pub military_groups: MilitaryGroupTable,
+
     #[table(singular = "civ_relationship",
             auto,
             fks(from_civ = "civilizations" on_delete cascade,
@@ -996,7 +1045,8 @@ pub struct SimDb {
     #[table(singular = "creature",
             fks(current_task? = "tasks",
                 assigned_home? = "structures",
-                civ_id? = "civilizations" on_delete nullify))]
+                civ_id? = "civilizations" on_delete nullify,
+                military_group? = "military_groups" on_delete nullify))]
     pub creatures: CreatureTable,
 
     #[table(singular = "move_action",

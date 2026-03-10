@@ -1,7 +1,7 @@
 ## Top toolbar for gameplay actions, speed controls, and a toggleable debug panel.
 ##
 ## The main toolbar row contains gameplay buttons: speed controls (pause/play/
-## fast/very fast), Build, Tasks, Structures, Units, Tree Info, and Debug toggle.
+## fast/very fast), Build, Tasks, Structures, Units, Military, Tree Info, and Debug toggle.
 ## A "Debug" toggle button (or F12) reveals a second row with dev/test tools:
 ## creature spawn buttons, Summon Elf, and Test Notif (sends a debug
 ## notification through the full sim command pipeline via SimBridge).
@@ -10,7 +10,7 @@
 ##
 ## Keyboard shortcuts:
 ## [Space] Toggle pause/resume, [1] Normal, [2] Fast, [3] Very Fast
-## [B] Build, [T] Tasks, [U] Units, [I] Tree Info, [?] Help, [F12] Toggle debug panel
+## [B] Build, [T] Tasks, [U] Units, [M] Military, [I] Tree Info, [?] Help, [F12] Toggle debug panel
 ##
 ## Emits three signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
@@ -128,6 +128,11 @@ func _ready() -> void:
 	units_button.pressed.connect(_on_units_pressed)
 	main_row.add_child(units_button)
 
+	var military_button := Button.new()
+	military_button.text = "Military [M]"
+	military_button.pressed.connect(_on_military_pressed)
+	main_row.add_child(military_button)
+
 	var tree_info_button := Button.new()
 	tree_info_button.text = "Tree [I]"
 	tree_info_button.pressed.connect(_on_tree_info_pressed)
@@ -238,6 +243,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif key.keycode == KEY_U:
 			_on_units_pressed()
 			get_viewport().set_input_as_handled()
+		elif key.keycode == KEY_M:
+			_on_military_pressed()
+			get_viewport().set_input_as_handled()
 		elif key.keycode == KEY_I:
 			_on_tree_info_pressed()
 			get_viewport().set_input_as_handled()
@@ -318,6 +326,10 @@ func _on_structures_pressed() -> void:
 
 func _on_units_pressed() -> void:
 	action_requested.emit("Units")
+
+
+func _on_military_pressed() -> void:
+	action_requested.emit("Military")
 
 
 func _on_tree_info_pressed() -> void:

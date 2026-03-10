@@ -316,6 +316,8 @@ auto_pk_id!(/// Auto-increment ID for directed civ relationship records.
 CivRelationshipId);
 auto_pk_id!(/// Auto-increment ID for projectiles in flight.
 ProjectileId);
+auto_pk_id!(/// Auto-increment ID for military groups within a civilization.
+MilitaryGroupId);
 
 // ---------------------------------------------------------------------------
 // Civilization IDs — sequential u16, assigned by worldgen in batch.

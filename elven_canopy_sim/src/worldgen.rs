@@ -282,6 +282,9 @@ fn generate_civilizations(
     };
     db.civilizations.insert_no_fk(player_civ).unwrap();
 
+    // Create default military groups for the player civ.
+    create_default_military_groups(db, player_civ_id);
+
     // Build the cumulative weight table for species selection.
     let total_weight: u64 = config.species_weights.values().map(|&w| w as u64).sum();
     if total_weight == 0 {
@@ -305,9 +308,36 @@ fn generate_civilizations(
             player_controlled: false,
         };
         db.civilizations.insert_no_fk(civ).unwrap();
+
+        // Create default military groups for this AI civ.
+        create_default_military_groups(db, civ_id);
     }
 
     player_civ_id
+}
+
+/// Create the two default military groups for a newly created civilization:
+/// - "Civilians" (default, Flee)
+/// - "Soldiers" (non-default, Fight)
+fn create_default_military_groups(db: &mut SimDb, civ_id: CivId) {
+    let _ = db
+        .military_groups
+        .insert_auto_no_fk(|id| crate::db::MilitaryGroup {
+            id,
+            civ_id,
+            name: "Civilians".to_string(),
+            is_default_civilian: true,
+            hostile_response: crate::db::HostileResponse::Flee,
+        });
+    let _ = db
+        .military_groups
+        .insert_auto_no_fk(|id| crate::db::MilitaryGroup {
+            id,
+            civ_id,
+            name: "Soldiers".to_string(),
+            is_default_civilian: false,
+            hostile_response: crate::db::HostileResponse::Fight,
+        });
 }
 
 /// Pick a species from the weighted distribution.

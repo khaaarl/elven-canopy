@@ -24,6 +24,7 @@ signal follow_requested
 signal unfollow_requested
 signal panel_closed
 signal zoom_to_task_location(x: float, y: float, z: float)
+signal military_group_clicked(group_id: int)
 
 const MAX_DISPLAYED_THOUGHTS := 10
 
@@ -39,6 +40,8 @@ var _food_bar: ProgressBar
 var _food_label: Label
 var _rest_bar: ProgressBar
 var _rest_label: Label
+var _military_group_btn: Button
+var _military_group_id: int = -1
 var _mood_label: Label
 var _thoughts_container: VBoxContainer
 var _thoughts_header: Label
@@ -89,6 +92,14 @@ func _ready() -> void:
 	# Name (Vaelith name for elves, fallback "Species #N" for unnamed creatures).
 	_name_label = Label.new()
 	vbox.add_child(_name_label)
+
+	# Military group (clickable, opens military panel).
+	_military_group_btn = Button.new()
+	_military_group_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_military_group_btn.flat = true
+	_military_group_btn.visible = false
+	_military_group_btn.pressed.connect(_on_military_group_clicked)
+	vbox.add_child(_military_group_btn)
 
 	# HP gauge.
 	var hp_row := HBoxContainer.new()
@@ -248,6 +259,7 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 	_update_mood(info)
 	_update_thoughts(info)
 	_update_inventory(info)
+	_update_military_group(info)
 	_is_following = false
 	_follow_button.text = "Follow"
 	visible = true
@@ -262,6 +274,7 @@ func update_info(info: Dictionary) -> void:
 	_update_mood(info)
 	_update_thoughts(info)
 	_update_inventory(info)
+	_update_military_group(info)
 
 
 func hide_panel() -> void:
@@ -386,6 +399,23 @@ func _on_follow_pressed() -> void:
 		_is_following = true
 		_follow_button.text = "Unfollow"
 		follow_requested.emit()
+
+
+func _update_military_group(info: Dictionary) -> void:
+	var group_name: String = info.get("military_group_name", "")
+	var group_id: int = info.get("military_group_id", -1)
+	if group_name.is_empty() or group_id < 0:
+		_military_group_btn.visible = false
+		_military_group_id = -1
+	else:
+		_military_group_btn.text = "Group: %s" % group_name
+		_military_group_btn.visible = true
+		_military_group_id = group_id
+
+
+func _on_military_group_clicked() -> void:
+	if _military_group_id >= 0:
+		military_group_clicked.emit(_military_group_id)
 
 
 func _on_close_pressed() -> void:

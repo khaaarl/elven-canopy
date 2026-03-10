@@ -88,6 +88,7 @@ var _tree_info_panel: PanelContainer
 var _task_panel: ColorRect
 var _structure_panel: ColorRect
 var _units_panel: ColorRect
+var _military_panel: PanelContainer
 var _help_panel: ColorRect
 var _camera_pivot: Node3D
 var _construction_controller: Node
@@ -434,13 +435,15 @@ func _setup_common(bridge: SimBridge) -> void:
 	_camera_pivot = $CameraPivot
 	_selector.creatures_selected.connect(
 		func(ids: Array):
-			# Mutual exclusion: hide tree info, structure info, and pile panels.
+			# Mutual exclusion: hide tree info, structure info, pile, and military panels.
 			if _tree_info_panel and _tree_info_panel.visible:
 				_tree_info_panel.hide_panel()
 			if _structure_info_panel and _structure_info_panel.visible:
 				_structure_info_panel.hide_panel()
 			if _pile_info_panel and _pile_info_panel.visible:
 				_pile_info_panel.hide_panel()
+			if _military_panel and _military_panel.visible:
+				_military_panel.toggle()
 			if ids.size() == 1:
 				# Single selection — show detailed creature info panel.
 				if _group_panel and _group_panel.visible:
@@ -668,6 +671,26 @@ func _setup_common(bridge: SimBridge) -> void:
 		func(creature_id: String): _selector.select_creature_by_id(creature_id)
 	)
 
+	# Military groups panel (right-side, same CanvasLayer as creature info panels).
+	var military_panel_layer := CanvasLayer.new()
+	military_panel_layer.layer = 3
+	add_child(military_panel_layer)
+	var military_panel_script = load("res://scripts/military_panel.gd")
+	_military_panel = PanelContainer.new()
+	_military_panel.set_script(military_panel_script)
+	military_panel_layer.add_child(_military_panel)
+	_military_panel.setup(bridge)
+
+	# Wire military panel close -> no-op (just hides).
+	_military_panel.panel_closed.connect(func(): pass)
+
+	# Wire creature info panel military group click -> open military panel.
+	_panel.military_group_clicked.connect(
+		func(group_id: int):
+			_panel.hide_panel()
+			_military_panel.show_group_detail(group_id)
+	)
+
 	# Wire speed controls.
 	toolbar.speed_changed.connect(
 		func(speed_name: String):
@@ -685,6 +708,11 @@ func _setup_common(bridge: SimBridge) -> void:
 				_structure_panel.toggle()
 			elif action == "Units":
 				_units_panel.toggle()
+			elif action == "Military":
+				# Close creature info if open (shares screen space).
+				if _panel and _panel.visible:
+					_panel.hide_panel()
+				_military_panel.toggle()
 			elif action == "TreeInfo":
 				# Mutual exclusion: opening tree info deselects creature/structure/pile.
 				if not _tree_info_panel.visible:

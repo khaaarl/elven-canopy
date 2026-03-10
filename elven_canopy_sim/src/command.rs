@@ -62,6 +62,7 @@
 // `event.rs`).
 
 use crate::building::LogisticsWant;
+use crate::db::HostileResponse;
 use crate::inventory::ItemKind;
 use crate::task::TaskKind;
 use crate::types::*;
@@ -247,6 +248,27 @@ pub enum SimAction {
     DirectedGoTo {
         creature_id: CreatureId,
         position: VoxelCoord,
+    },
+    /// Create a new military group for the player's civ.
+    CreateMilitaryGroup { name: String },
+    /// Delete a non-civilian military group. Members return to civilian status
+    /// (their `military_group` field is nullified by the FK policy).
+    DeleteMilitaryGroup { group_id: MilitaryGroupId },
+    /// Reassign a creature to a different military group, or `None` for
+    /// civilian. Rejects non-civ creatures and cross-civ assignments.
+    ReassignMilitaryGroup {
+        creature_id: CreatureId,
+        group_id: Option<MilitaryGroupId>,
+    },
+    /// Rename a military group (including the civilian group).
+    RenameMilitaryGroup {
+        group_id: MilitaryGroupId,
+        name: String,
+    },
+    /// Change a military group's hostile response setting.
+    SetGroupHostileResponse {
+        group_id: MilitaryGroupId,
+        hostile_response: HostileResponse,
     },
     /// Spawn a projectile at a position with a given velocity (debug/testing).
     /// Creates a projectile with an arrow item in its inventory.
