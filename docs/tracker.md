@@ -52,7 +52,6 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 [~] F-projectiles          Projectile physics system (arrows)
-[~] F-rts-selection        RTS box selection and multi-creature commands
 ```
 
 ### Todo
@@ -248,6 +247,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-preemption           Task priority and preemption system
 [x] F-projectiles          Projectile physics system (arrows)
 [x] F-recipes              Recipe system for crafting/cooking
+[x] F-rts-selection        RTS box selection and multi-creature commands
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
 [x] F-save-load            Save/load to JSON with versioning
 [x] F-select-struct        Selectable structures with interaction UI
@@ -1687,7 +1687,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-enemy-ai, F-military-groups, F-rts-selection
+**Blocked by:** F-attack-move, F-enemy-ai, F-military-groups
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-engagement-style, F-fog-of-war
 
@@ -2343,7 +2343,7 @@ Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 ESC-triggered pause menu with Resume, Save, Load, and Quit options.
 
 #### F-rts-selection — RTS box selection and multi-creature commands
-**Status:** In Progress
+**Status:** Done
 
 Godot-side UI work. Box selection (click-drag rectangle) in selection_controller.gd. Multi-creature selection state (client-local, not sim state). Group info panel (portraits/icons, count by species). Right-click context commands: ground → GoTo, hostile creature → AttackCreature. All commands dispatch SimAction variants for each selected creature. Selection state not saved, not synced in multiplayer.
 
@@ -2354,8 +2354,6 @@ Godot-side UI work. Box selection (click-drag rectangle) in selection_controller
 **Draft:** docs/drafts/combat_military.md (§2)
 
 **Draft:** docs/drafts/combat_military.md (§2)
-
-**Blocks:** F-combat
 
 #### F-rust-mesh-complex — Rust mesh gen for buildings/ladders
 **Status:** Todo · **Phase:** 3
