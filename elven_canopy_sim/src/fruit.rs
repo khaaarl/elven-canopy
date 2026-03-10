@@ -181,9 +181,11 @@ pub struct FruitPart {
     pub properties: BTreeSet<PartProperty>,
     /// If pigmented, what dye color this part yields.
     pub pigment: Option<DyeColor>,
-    /// Percentage of the fruit's mass this part represents (1-100).
-    /// All parts of a fruit must sum to exactly 100.
-    pub yield_percent: u8,
+    /// How many units of this component a single fruit yields when processed.
+    /// Each part's units are independent (they do not sum to a fixed total).
+    /// The fruit's overall "size" is simply the sum of all parts' units.
+    /// Typical range: 10-100.
+    pub component_units: u16,
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +325,11 @@ impl FruitSpecies {
     /// Check if any part is pigmented.
     pub fn has_pigment(&self) -> bool {
         self.parts.iter().any(|p| p.pigment.is_some())
+    }
+
+    /// Total units across all parts — a proxy for the fruit's overall size.
+    pub fn total_units(&self) -> u32 {
+        self.parts.iter().map(|p| p.component_units as u32).sum()
     }
 }
 
@@ -567,81 +574,32 @@ fn generate_parts(
         chosen_types.push(available_types.remove(idx));
     }
 
-    // Allocate yield percentages (must sum to 100).
-    let yields = allocate_yields(rng, chosen_types.len());
+    // Allocate component units per part (independent values, 10-100 each).
+    let units = allocate_component_units(rng, chosen_types.len());
 
     // Generate properties for each part. The first part gets biased toward
     // filling coverage gaps; remaining parts get random properties.
     let mut parts = Vec::new();
-    for (i, (&pt, &yld)) in chosen_types.iter().zip(yields.iter()).enumerate() {
+    for (i, (&pt, &u)) in chosen_types.iter().zip(units.iter()).enumerate() {
         let (properties, pigment) =
             generate_part_properties(rng, pt, if i == 0 { coverage_gaps } else { &[] });
         parts.push(FruitPart {
             part_type: pt,
             properties,
             pigment,
-            yield_percent: yld,
+            component_units: u,
         });
     }
 
     parts
 }
 
-/// Allocate yield percentages across N parts, summing to exactly 100.
-fn allocate_yields(rng: &mut GameRng, count: usize) -> Vec<u8> {
-    if count == 0 {
-        return Vec::new();
-    }
-    if count == 1 {
-        return vec![100];
-    }
-
-    // Generate random breakpoints in [1, 99], sort, then take differences.
-    let mut breakpoints: Vec<u8> = Vec::new();
-    for _ in 0..count - 1 {
-        // Range 5..95 to avoid tiny yields.
-        let bp = 5 + (rng.next_u64() % 91) as u8;
-        breakpoints.push(bp);
-    }
-    breakpoints.sort();
-
-    // Ensure no two breakpoints are identical (shift duplicates).
-    for i in 1..breakpoints.len() {
-        if breakpoints[i] <= breakpoints[i - 1] {
-            breakpoints[i] = breakpoints[i - 1] + 1;
-        }
-    }
-
-    // Compute yields from breakpoints.
-    let mut yields = Vec::with_capacity(count);
-    yields.push(breakpoints[0]);
-    for i in 1..breakpoints.len() {
-        yields.push(breakpoints[i] - breakpoints[i - 1]);
-    }
-    yields.push(100 - breakpoints[breakpoints.len() - 1]);
-
-    // Clamp any zero or negative yields to at least 1, redistributing.
-    for y in yields.iter_mut() {
-        if *y == 0 {
-            *y = 1;
-        }
-    }
-
-    // Adjust to sum to exactly 100.
-    let sum: u16 = yields.iter().map(|&y| y as u16).sum();
-    if sum != 100 {
-        let diff = sum as i16 - 100;
-        // Find the largest yield and adjust it.
-        let max_idx = yields
-            .iter()
-            .enumerate()
-            .max_by_key(|&(_, &y)| y)
-            .unwrap()
-            .0;
-        yields[max_idx] = (yields[max_idx] as i16 - diff).max(1) as u8;
-    }
-
-    yields
+/// Allocate independent component unit values for N parts.
+/// Each part gets a value in [10, 100] — they do not sum to a fixed total.
+fn allocate_component_units(rng: &mut GameRng, count: usize) -> Vec<u16> {
+    (0..count)
+        .map(|_| 10 + (rng.next_u64() % 91) as u16)
+        .collect()
 }
 
 /// Generate properties and optional pigment for a single fruit part.
@@ -850,7 +808,7 @@ fn derive_appearance(parts: &[FruitPart], rng: &mut GameRng) -> FruitAppearance 
         .any(|p| p.part_type == PartType::Rind && p.properties.contains(&PartProperty::Tough));
     let has_big_flesh = parts
         .iter()
-        .any(|p| p.part_type == PartType::Flesh && p.yield_percent >= 50);
+        .any(|p| p.part_type == PartType::Flesh && p.component_units >= 50);
 
     let shape = if has_fiber {
         FruitShape::Pod
@@ -1263,7 +1221,7 @@ fn is_shape_root(affinities: &[(AffinityTrait, u8)]) -> bool {
         .unwrap_or(false)
 }
 
-/// Compute trait intensity for a fruit. Properties/pigments use yield_percent sums.
+/// Compute trait intensity for a fruit. Properties/pigments use component_units sums.
 /// Shapes and habitats use binary 0/1.
 fn fruit_trait_intensity(fruit: &FruitSpecies, trait_: AffinityTrait) -> u32 {
     match trait_ {
@@ -1271,13 +1229,13 @@ fn fruit_trait_intensity(fruit: &FruitSpecies, trait_: AffinityTrait) -> u32 {
             .parts
             .iter()
             .filter(|p| p.properties.contains(&prop))
-            .map(|p| p.yield_percent as u32)
+            .map(|p| p.component_units as u32)
             .sum(),
         AffinityTrait::Pigment(color) => fruit
             .parts
             .iter()
             .filter(|p| p.pigment == Some(color))
-            .map(|p| p.yield_percent as u32)
+            .map(|p| p.component_units as u32)
             .sum(),
         AffinityTrait::Shape(shape) => {
             if fruit.appearance.shape == shape {
@@ -1700,36 +1658,31 @@ mod tests {
         assert!(violates_exclusion(&props, PartProperty::Bitter, false));
     }
 
-    // --- Yield allocation ---
+    // --- Component unit allocation ---
 
     #[test]
-    fn yields_sum_to_100() {
+    fn component_units_in_range() {
         let mut rng = GameRng::new(42);
         for _ in 0..100 {
             for count in 1..=4 {
-                let yields = allocate_yields(&mut rng, count);
-                let sum: u16 = yields.iter().map(|&y| y as u16).sum();
-                assert_eq!(sum, 100, "Yields {:?} don't sum to 100", yields);
-                assert_eq!(yields.len(), count);
-                for &y in &yields {
-                    assert!(y >= 1, "Yield should be at least 1, got {}", y);
+                let units = allocate_component_units(&mut rng, count);
+                assert_eq!(units.len(), count);
+                for &u in &units {
+                    assert!(
+                        (10..=100).contains(&u),
+                        "Component units should be in [10, 100], got {}",
+                        u
+                    );
                 }
             }
         }
     }
 
     #[test]
-    fn single_part_yield_is_100() {
-        let mut rng = GameRng::new(0);
-        let yields = allocate_yields(&mut rng, 1);
-        assert_eq!(yields, vec![100]);
-    }
-
-    #[test]
     fn empty_parts_yield_empty() {
         let mut rng = GameRng::new(0);
-        let yields = allocate_yields(&mut rng, 0);
-        assert!(yields.is_empty());
+        let units = allocate_component_units(&mut rng, 0);
+        assert!(units.is_empty());
     }
 
     // --- Full generation ---
@@ -1814,17 +1767,25 @@ mod tests {
     }
 
     #[test]
-    fn all_parts_sum_to_100() {
+    fn all_component_units_in_range() {
         let config = test_config();
         let mut rng = GameRng::new(42);
         let fruits = generate_and_name(&mut rng, &config);
 
         for fruit in &fruits {
-            let sum: u16 = fruit.parts.iter().map(|p| p.yield_percent as u16).sum();
-            assert_eq!(
-                sum, 100,
-                "Fruit '{}' parts sum to {}, not 100",
-                fruit.vaelith_name, sum
+            for part in &fruit.parts {
+                assert!(
+                    (10..=100).contains(&part.component_units),
+                    "Fruit '{}' part {:?} has component_units {}, expected [10, 100]",
+                    fruit.vaelith_name,
+                    part.part_type,
+                    part.component_units,
+                );
+            }
+            assert!(
+                fruit.total_units() > 0,
+                "Fruit '{}' has zero total units",
+                fruit.vaelith_name,
             );
         }
     }
@@ -1967,13 +1928,13 @@ mod tests {
                     part_type: PartType::Flesh,
                     properties: [PartProperty::Starchy].into_iter().collect(),
                     pigment: None,
-                    yield_percent: 70,
+                    component_units: 70,
                 },
                 FruitPart {
                     part_type: PartType::Rind,
                     properties: [PartProperty::Aromatic].into_iter().collect(),
                     pigment: Some(DyeColor::Red),
-                    yield_percent: 30,
+                    component_units: 30,
                 },
             ],
             habitat: GrowthHabitat::Branch,
@@ -2100,7 +2061,7 @@ mod tests {
 
     #[test]
     fn property_intensity_scoring() {
-        // A fruit with 70% Starchy flesh should score high for "grain" root.
+        // A fruit with 70 units of Starchy flesh should score high for "grain" root.
         let fruit = FruitSpecies {
             id: FruitSpeciesId(0),
             vaelith_name: String::new(),
@@ -2109,7 +2070,7 @@ mod tests {
                 part_type: PartType::Flesh,
                 properties: [PartProperty::Starchy].into_iter().collect(),
                 pigment: None,
-                yield_percent: 70,
+                component_units: 70,
             }],
             habitat: GrowthHabitat::Branch,
             rarity: Rarity::Common,
@@ -2155,7 +2116,7 @@ mod tests {
                 part_type: PartType::Flesh,
                 properties: [PartProperty::Bland].into_iter().collect(),
                 pigment: None,
-                yield_percent: 100,
+                component_units: 100,
             }],
             habitat: GrowthHabitat::Branch,
             rarity: Rarity::Common,

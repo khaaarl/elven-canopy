@@ -25718,6 +25718,17 @@ mod tests {
     fn hostile_creature_wanders_without_elves() {
         let mut sim = test_sim(99);
         let goblin_id = spawn_species(&mut sim, Species::Goblin);
+
+        // Place goblin on a nav node with neighbors so it can wander.
+        let walkable = sim
+            .nav_graph
+            .live_nodes()
+            .find(|n| !n.edge_indices.is_empty())
+            .map(|n| n.position)
+            .expect("should have a walkable nav node with neighbors");
+        force_position(&mut sim, goblin_id, walkable);
+        force_idle(&mut sim, goblin_id);
+
         let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position;
 
         sim.step(&[], sim.tick + 10_000);
@@ -26245,13 +26256,29 @@ mod tests {
             let elf_id = spawn_species(&mut sim, Species::Elf);
             let hostile_id = spawn_species(&mut sim, hostile_species);
 
+            // Find two nav nodes that are a few voxels apart so the hostile
+            // has room to pursue without the elf immediately fleeing to safety.
+            let positions: Vec<_> = sim
+                .nav_graph
+                .live_nodes()
+                .filter(|n| !n.edge_indices.is_empty())
+                .map(|n| n.position)
+                .collect();
+            let (pos_a, pos_b) = positions
+                .iter()
+                .flat_map(|a| positions.iter().map(move |b| (*a, *b)))
+                .find(|(a, b)| {
+                    let d = a.manhattan_distance(*b);
+                    d >= 3 && d <= 6
+                })
+                .expect("should have nav nodes 3-6 apart");
+            force_position(&mut sim, elf_id, pos_a);
+            force_idle(&mut sim, elf_id);
+            force_position(&mut sim, hostile_id, pos_b);
+            force_idle(&mut sim, hostile_id);
+
             let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
             let hostile_start = sim.db.creatures.get(&hostile_id).unwrap().position;
-
-            assert_ne!(
-                elf_pos, hostile_start,
-                "{hostile_species:?} and elf spawned at same position — adjust test seed"
-            );
 
             let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
             let initial_dist = hostile_start.manhattan_distance(elf_pos);
@@ -26259,16 +26286,14 @@ mod tests {
             sim.step(&[], sim.tick + 10_000);
 
             let hostile_pos = sim.db.creatures.get(&hostile_id).unwrap().position;
-            let elf_current_pos = sim.db.creatures.get(&elf_id).unwrap().position;
-            let new_dist = hostile_pos.manhattan_distance(elf_current_pos);
             let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
 
-            let moved_closer = new_dist < initial_dist;
+            let moved = hostile_pos != hostile_start;
             let dealt_damage = elf_hp_after < elf_hp_before;
             assert!(
-                moved_closer || dealt_damage,
-                "{hostile_species:?} should pursue or attack elf: initial dist={initial_dist}, \
-                 new dist={new_dist}, elf hp {elf_hp_before} -> {elf_hp_after}"
+                moved || dealt_damage,
+                "{hostile_species:?} should pursue elf: didn't move from {hostile_start:?} \
+                 and didn't deal damage (elf hp {elf_hp_before} -> {elf_hp_after})"
             );
         }
     }

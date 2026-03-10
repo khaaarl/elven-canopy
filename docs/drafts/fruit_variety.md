@@ -36,14 +36,16 @@ component of the fruit.
 | Sap       | Liquid interior | Sweet, Fermentable, Luminescent, Psychoactive |
 | Resin     | Thick, sticky exudate | Aromatic, Adhesive, ManaResonant |
 
-A fruit always has at least one part. Most have 2-3. The generator assigns
-each part a `yield_percent` (integer 1-100, how much of the fruit's mass
-it represents), which affects output quantities when processing. A
-fruit's parts must have `yield_percent` values that sum to exactly 100 —
-they represent a physical mass budget, not independent weights. The
-generator allocates 100 points across parts (e.g., a fruit with Flesh 60
-/ Rind 25 / Seed 15 sums to 100). All numeric fruit data uses integers
-to avoid floating-point determinism issues across platforms and in JSON
+A fruit always has at least one part. Most have 2-3. Each part has
+`component_units: u16` — the number of units of that component a single
+fruit yields when processed (typical range: 10-100). Units are
+independent per part and do not sum to a fixed total. A fruit's overall
+"size" is simply the sum of all its parts' units (e.g., a fruit with
+Flesh 37 + Rind 52 + Seed 15 = 104 total units). Recipes consume a
+fixed number of same-species component units (e.g., "10 units of any
+starch-bearing material → 1 loaf"), so fruits with more starchy pulp
+produce more bread per fruit. All numeric fruit data uses integers to
+avoid floating-point determinism issues across platforms and in JSON
 serialization.
 
 ### Part Properties
@@ -99,16 +101,29 @@ starchy flesh is perfectly natural.
 
 ## Processing Model
 
-### Step 1: Separation
+### Step 1: Separation (Hulling/Extraction)
 
 The first processing step takes a whole fruit and separates it into its
-constituent parts. This happens at a **processing workshop**. A fruit with
-3 parts yields up to 3 distinct intermediate materials, each carrying the
-properties of their source part.
+constituent parts. A fruit with 3 parts yields up to 3 distinct
+component item stacks, each carrying the properties of their source part.
+For example, hulling a Shinethúni fruit (37 pulp + 52 fiber + 15 seed)
+produces "37 Shinethúni Pulp", "52 Shinethúni Fiber", and "15 Shinethúni
+Seed" as separate inventory items.
 
-The separation method is flavor (press, husk, crack, ret) but mechanically
-uniform in the initial implementation. Different separation methods could
-become mechanically distinct later (requiring different workshops or tools).
+The separation verb differs by fruit composition — **hull**, **press**,
+**husk**, **crack**, etc. — and different facilities may specialize in
+certain methods. Kitchens have distinct UI selections for each operation:
+the player selects e.g. "Husk Shinethúni" from the crafting menu, which
+produces all component outputs. Since separation has multiple outputs,
+the task UI shows target fields per output (e.g., "at least 100 Pulp,
+at least 0 Husk") and the task repeats until all targets are satisfied.
+
+Recipes never consume whole fruits directly — there is always an
+extraction step first. This creates meaningful labor (hulling takes time,
+facilities have throughput limits) and forces storage decisions (you hull
+3 fruits and now have components cluttering your storehouse — do you have
+recipes that use the fiber? If not, it sits there until you build a loom
+or a composter).
 
 ### Step 2: Transformation
 
@@ -410,10 +425,11 @@ struct FruitPart {
     properties: BTreeSet<PartProperty>,
     /// If pigmented, what color.
     pigment: Option<DyeColor>,
-    /// Percentage of the fruit's mass this part represents (1-100).
-    /// All parts of a fruit must sum to exactly 100.
-    /// Affects output quantity when processing.
-    yield_percent: u8,
+    /// How many units of this component a single fruit yields when processed.
+    /// Each part's units are independent (they do not sum to a fixed total).
+    /// The fruit's overall "size" is the sum of all parts' units.
+    /// Typical range: 10-100.
+    component_units: u16,
 }
 
 enum PartType {
@@ -519,11 +535,10 @@ properties rather than chosen independently:
   parts tend toward Pod. Fruits with many small Seeds tend toward
   Clustered. Fruits with a Tough Rind tend toward Nut. Flesh-heavy
   fruits default to Round or Gourd (depending on size).
-- **size_percent** — derived from part count and dominant part yield.
-  Since yields always sum to 100, size is driven by how many parts the
-  fruit has and how the mass is distributed: a single-part fruit is
-  small (Nut-sized); a 3-4 part fruit with a large Flesh yield is
-  large (Gourd-sized).
+- **size_percent** — derived from part count. Single-part fruits tend
+  small (Nut-sized); multi-part fruits tend larger. The fruit's total
+  component units (sum of all parts) also serves as a gameplay-facing
+  size proxy.
 - **glows** — true if any part has the Luminescent property.
 
 ### GameConfig Integration
@@ -693,8 +708,9 @@ load. Individual fruit items reference species by ID.
   pigment fruit count to 3-5 instead of 12+, freeing roster slots.
 
 - **No floating-point numbers:** All numeric fruit data uses integers —
-  `yield_percent: u8` (1-100), `size_percent: u16` (50-200), etc. Avoids
-  cross-platform determinism hazards and JSON serialization ambiguity.
+  `component_units: u16` (10-100 per part), `size_percent: u16` (50-200),
+  etc. Avoids cross-platform determinism hazards and JSON serialization
+  ambiguity.
 
 - **Spoilage:** Deferred to late development, but the property system is
   designed to inform spoilage rates when it arrives. Sweet parts spoil

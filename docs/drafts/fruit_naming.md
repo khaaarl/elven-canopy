@@ -99,30 +99,28 @@ At startup, the naming algorithm loads the botanical pool from the lexicon (filt
 
 The 48 existing botanical roots partition into ~40 property/color/descriptive roots and ~8 shape roots. With ~40 property roots and ~8 shape roots forming property+shape pairs, the combinatorial space is ~320 pairs. This exceeds the 40-fruit maximum, but with a thinner margin than a naive 48-choose-2 calculation would suggest — the roots are not interchangeable across categories. The margin is sufficient for typical worlds (20-40 fruits), and fruits that can't get a unique property+shape pair fall through to world-naming, so the algorithm degrades gracefully rather than failing.
 
-### Property intensity via yield_percent
+### Property intensity via component_units
 
-`FruitPart.properties` is a `BTreeSet<PartProperty>` (boolean per-part) and `pigment` is `Option<DyeColor>`. However, intensity CAN be derived from `yield_percent: u8` on each part — the percentage of the fruit's mass that part represents.
+`FruitPart.properties` is a `BTreeSet<PartProperty>` (boolean per-part) and `pigment` is `Option<DyeColor>`. Intensity is derived from `component_units: u16` on each part — the number of units of that component a single fruit yields when processed.
 
 **Intensity formula:** For a given property P across the entire fruit:
 
 ```
-intensity(fruit, P) = sum of yield_percent for all parts that have property P
+intensity(fruit, P) = sum of component_units for all parts that have property P
 ```
 
 For pigment colors:
 
 ```
-intensity(fruit, color) = sum of yield_percent for all parts where pigment == Some(color)
+intensity(fruit, color) = sum of component_units for all parts where pigment == Some(color)
 ```
 
 Examples:
-- A fruit with Flesh (yield 60%, Sweet) and Rind (yield 25%, Sweet) has Sweet intensity = 85.
-- A fruit with Sap (yield 5%, Luminescent) has Luminescent intensity = 5.
-- A fruit with Flesh (yield 50%, pigment Red) and Rind (yield 30%, pigment Red) has PigmentRed intensity = 80.
+- A fruit with Flesh (60 units, Sweet) and Rind (25 units, Sweet) has Sweet intensity = 85.
+- A fruit with Sap (15 units, Luminescent) has Luminescent intensity = 15.
+- A fruit with Flesh (50 units, pigment Red) and Rind (30 units, pigment Red) has PigmentRed intensity = 80.
 
-This gives a natural 0-100 scale where bulky, dominant parts contribute more than trace components. The fruit whose red pigment comes from 80% of its mass is "bloodier" than one where only a 5% sap layer is red.
-
-**Note:** F-fruit-yields will reexamine the yield model in the future. For now, `yield_percent` is the intensity signal.
+Parts with more component units contribute more to naming intensity. A fruit whose red pigment comes from an 80-unit part is "bloodier" than one where only a 15-unit sap layer is red.
 
 For shape and habitat traits, intensity is binary (1 or 0) — a fruit either has shape Round or it doesn't.
 
@@ -139,7 +137,7 @@ score(fruit, root) = sum over root's affinities:
     if fruit has trait T: affinity_weight(root, T) * intensity(fruit, T)
 ```
 
-All values are integers. `affinity_weight` comes from the static table (`u8`, max 255). `intensity` comes from the `yield_percent` formula above (0-100 scale for properties/pigments, 0 or 1 for shapes/habitats). The product of a single `(weight, intensity)` pair fits in `u32` (max 255 * 100 = 25,500). The sum across all affinities for one root also fits in `u32` (a root with 5 affinities at max values: 5 * 25,500 = 127,500). Scores are stored as `u32`.
+All values are integers. `affinity_weight` comes from the static table (`u8`, max 255). `intensity` comes from the `component_units` formula above (10-100 scale per part for properties/pigments, 0 or 1 for shapes/habitats). The product of a single `(weight, intensity)` pair fits in `u32` (max 255 * 100 = 25,500). The sum across all affinities for one root also fits in `u32` (a root with 5 affinities at max values: 5 * 25,500 = 127,500). Scores are stored as `u32`.
 
 Shape affinities use a bonus for matching shape but with lower weights than property affinities, since many fruits share shapes.
 
@@ -230,7 +228,7 @@ Pass count is hardcoded at 10 (sufficient for up to 40 fruits; not worth exposin
 - `AffinityTrait` as a wrapper enum: `Property(PartProperty)`, `Pigment(DyeColor)`, `Shape(FruitShape)`, `Habitat(HabitatTrait)`
 - `RootAffinity` with `u8` weights (sufficient range for the 1-8 scale used in practice; enforces the max=255 assumption at the type level)
 - Multi-pass fruit-first temperature-weighted root assignment algorithm (integer scoring, `u64` exponentiated weights, `range_u64` sampling)
-- Property intensity derived from `yield_percent` sums
+- Property intensity derived from `component_units` sums
 - World-naming fallback with Vaelith genitive case for possessives (person-style only)
 - Changing `generate_name_part` in `names.rs` to `pub` with return type `(String, String, VowelClass)` — name text, English gloss, and last root's vowel class
 - Uniqueness enforcement with zero number suffixes (root-set uniqueness in Phase 2 as optimization, string-level uniqueness in Phase 4 as guarantee)
@@ -246,7 +244,7 @@ Pass count is hardcoded at 10 (sufficient for up to 40 fruits; not worth exposin
 - Player-visible naming history ("this fruit was named after Elfandriel because...")
 - Player renaming of fruits
 - Dynamic re-naming when new fruits are discovered mid-game
-- Reworking yield_percent values (deferred to F-fruit-yields)
+- ~~Reworking yield_percent values~~ (done in F-fruit-yields: replaced with `component_units: u16`)
 
 ## Test plan
 
@@ -254,7 +252,7 @@ Pass count is hardcoded at 10 (sufficient for up to 40 fruits; not worth exposin
 2. **Determinism** — same seed produces identical names across runs.
 3. **Variety across seeds** — different seeds produce meaningfully different name distributions (not all worlds have the same "most red fruit = bloodberry" pattern).
 4. **World-name generation** — verify world-named fruits use correct Vaelith genitive case (`-li`/`-lu` suffix matching last root's vowel class).
-5. **Property-intensity scoring** — a fruit with Red pigment on 80% yield_percent parts should outscore one with Red on 5% yield_percent parts for "blood"/"fire" roots.
+5. **Property-intensity scoring** — a fruit with Red pigment on an 80-unit part should outscore one with Red on a 15-unit part for "blood"/"fire" roots.
 6. **Shape root sharing** — multiple fruits can share a shape root; verify this happens naturally.
 7. **Guaranteed termination** — verify the algorithm completes within 10 passes for all tested seeds, with remaining fruits falling through to world-naming.
 8. **Serde roundtrip** — `FruitSpecies` with new name fields roundtrips correctly. Lexicon JSON is unchanged and still loads without modification.

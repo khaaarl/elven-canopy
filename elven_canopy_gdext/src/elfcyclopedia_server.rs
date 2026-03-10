@@ -69,7 +69,7 @@ pub struct FruitEntry {
     pub glows: bool,
     pub size_percent: u16,
     pub greenhouse_cultivable: bool,
-    /// Each part: (type_name, properties, pigment, yield_percent)
+    /// Each part: (type_name, properties, pigment, component_units)
     pub parts: Vec<FruitPartEntry>,
 }
 
@@ -79,7 +79,7 @@ pub struct FruitPartEntry {
     pub part_type: String,
     pub properties: Vec<String>,
     pub pigment: Option<String>,
-    pub yield_percent: u8,
+    pub component_units: u16,
 }
 
 /// Shared data snapshot read by the HTTP server thread. Updated by the main
@@ -1104,7 +1104,7 @@ fn render_fruit_detail(entry: &FruitEntry, data: &ElfcyclopediaData) -> String {
     body.push_str("<h2>Parts</h2>");
     body.push_str(
         "<table class=\"fruit-table\"><thead><tr>\
-         <th>Part</th><th>Yield</th><th>Properties</th><th>Pigment</th>\
+         <th>Part</th><th>Units</th><th>Properties</th><th>Pigment</th>\
          </tr></thead><tbody>",
     );
     for part in &entry.parts {
@@ -1123,9 +1123,9 @@ fn render_fruit_detail(entry: &FruitEntry, data: &ElfcyclopediaData) -> String {
             .map(html_escape)
             .unwrap_or_else(|| "—".to_owned());
         body.push_str(&format!(
-            "<tr><td>{}</td><td>{}%</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             html_escape(&part.part_type),
-            part.yield_percent,
+            part.component_units,
             props,
             pigment,
         ));

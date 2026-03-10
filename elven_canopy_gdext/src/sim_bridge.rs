@@ -4434,7 +4434,7 @@ impl SimBridge {
                     part_type: pt.to_owned(),
                     properties: props,
                     pigment,
-                    yield_percent: p.yield_percent,
+                    component_units: p.component_units,
                 }
             })
             .collect();

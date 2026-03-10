@@ -490,7 +490,7 @@ struct FruitPartSummary {
     part_type: PartType,
     properties: Vec<PartProperty>,
     pigment: Option<DyeColor>,
-    yield_percent: u8,
+    component_units: u16,
 }
 ```
 

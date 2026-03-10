@@ -110,7 +110,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
-[ ] F-fruit-yields         Fruit yield model overhaul
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
@@ -206,6 +205,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-food-gauge           Creature food gauge with decay
 [x] F-fruit-naming         Fruit naming overhaul
 [x] F-fruit-sprites        Procedural fruit sprites
+[x] F-fruit-yields         Fruit yield model overhaul
 [x] F-furnish              Building furnishing framework (dormitories)
 [x] F-game-session         Game session autoload singleton
 [x] F-gdext-bridge         gdext compilation and Rust bridge
@@ -1906,17 +1906,20 @@ locations) for less distinctive fruits. Zero number suffixes.
 **Related:** F-fruit-variety, F-fruit-yields
 
 #### F-fruit-yields — Fruit yield model overhaul
-**Status:** Todo · **Phase:** 7
+**Status:** Done · **Phase:** 7
 
-Reexamine fruit yield representation. Currently `FruitPart.yield_percent`
-(u8, percentage of fruit mass) is floating-point-flavored and doesn't
-directly map to gameplay. Consider replacing with integer conversion
-ratios — e.g., "how many fruits needed to produce 1 unit of target
-material" (1 bread, 1 dye, etc.). This gives a natural intensity signal
-(lower count = more productive) that's inherently integer, easy to
-reason about in recipes, and useful for naming weights. Broader than
-just naming — affects recipe costs, processing paths, and economy
-balance.
+Replaced `FruitPart.yield_percent: u8` (percentage of fruit mass,
+parts summing to 100) with `component_units: u16` (independent per-part
+unit count, typical range 10-100). Each part independently specifies how
+many units it produces when the fruit is processed. The fruit's overall
+"size" is the sum of all parts' units. Recipes consume a fixed number of
+same-species component units (e.g., 10 starchy units → 1 loaf), so a
+fruit with more starchy pulp produces more bread.
+
+Updated generation (independent per-part allocation replaces the
+breakpoint algorithm), naming intensity (sums component_units instead of
+yield_percent), appearance derivation, elfcyclopedia display, and all
+tests and documentation.
 
 **Related:** F-fruit-naming, F-fruit-variety
 
