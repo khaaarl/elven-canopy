@@ -219,6 +219,12 @@ pub enum TaskKind {
         structure_id: StructureId,
         recipe_id: String,
     },
+    /// Player-directed attack on a specific creature. Pursue the target via
+    /// dynamic pursuit, attempt melee when adjacent, ranged when in LOS with
+    /// bow+arrow. Task completes when target is dead or missing. If pathfinding
+    /// fails repeatedly (configurable `attack_path_retry_limit`), the task is
+    /// cancelled.
+    AttackTarget { target: CreatureId },
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.

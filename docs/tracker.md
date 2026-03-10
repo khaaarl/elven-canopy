@@ -61,7 +61,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-arrow-durability     Arrow durability and recovery
 [ ] F-attack-move          Attack-move task (walk + fight en route)
-[ ] F-attack-task          AttackCreature task (player-directed target pursuit)
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
@@ -169,6 +168,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
+[x] F-attack-task          AttackCreature task (player-directed target pursuit)
 [x] F-audio-synth          Waveform synthesis for audio rendering
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
@@ -1603,12 +1603,11 @@ TaskKindTag::AttackMove — hotkey A + click on ground. Extension table TaskAtta
 
 **Draft:** docs/drafts/combat_military.md (§2 "Attack-Move")
 
-**Blocked by:** F-attack-task
 **Blocks:** F-combat
 **Related:** F-attack-task
 
 #### F-attack-task — AttackCreature task (player-directed target pursuit)
-**Status:** Todo
+**Status:** Done
 
 TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates task with TaskOrigin::PlayerDirected, PreemptionLevel::PlayerCombat(6). Extension table TaskAttackTargetData with target: CreatureId (plain ID, not FK). Behavior: pathfind toward target via dynamic pursuit, when adjacent perform melee actions, when in range with LOS perform shoot actions. Poll target vital_status each activation — if Dead or row missing, task completes. Works with melee-only initially; ranged is additive. Autonomous combat tasks (created by hostile detection) are immediately claimed by the detecting creature — NOT left in Available state.
 
@@ -1616,7 +1615,6 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 
 **Draft:** docs/drafts/combat_military.md (§5 "Attack Tasks")
 
-**Blocks:** F-attack-move, F-combat
 **Related:** F-attack-move
 
 #### F-combat — Combat and invader threat system
@@ -1625,7 +1623,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-attack-task, F-enemy-ai, F-flee, F-military-groups, F-rts-selection
+**Blocked by:** F-attack-move, F-enemy-ai, F-flee, F-military-groups, F-rts-selection
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-fog-of-war
 
@@ -1650,9 +1648,11 @@ Weapon types with different ranges, damage, and crafting requirements.
 
 Simple aggression AI for non-civ hostile creatures. This is the first "it all comes together" milestone — debug-spawn a goblin and watch it chase and attack an elf.
 
-**Done so far:** Simplified hostile AI via the wander path (no tasks, no formal detection/preemption). `Species::is_hostile()` gates behavior for Goblin/Orc/Troll. On each activation with no task, `hostile_pursue()` collects living elf nav nodes, runs Dijkstra to find the nearest reachable elf, A* to get a path, and moves one edge toward it. When in melee range, auto-calls `try_melee_strike()`. On cooldown, waits in place and re-activates when cooldown expires. Falls back to random wander if no elf reachable. Events threaded through the activation chain so combat events (CreatureDamaged, CreatureDied) are properly emitted. Refactored `wander()` into `hostile_pursue()`, `random_wander()`, and shared `move_one_step()`.
+**Done so far:** Simplified hostile AI via the wander path (no tasks, no formal detection/preemption). `Species::is_hostile()` gates behavior for Goblin/Orc/Troll. On each activation with no task, `hostile_pursue()` collects living elf nav nodes, runs Dijkstra to find the nearest reachable elf, A* to get a path, and moves one edge toward it. When in melee range, auto-calls `try_melee_strike()`. On cooldown, waits in place and re-activates when cooldown expires. Falls back to random wander if no elf reachable. Events threaded through the activation chain so combat events (CreatureDamaged, CreatureDied) are properly emitted. Refactored `wander()` into `hostile_pursue()`, `random_wander()`, and shared `move_one_step()`. Formal hostile detection system (F-hostile-detection) with configurable detection range, CombatAI enum on SpeciesData, and faction-based hostility. Task-driven attack (F-attack-task) with AttackTarget task kind and dynamic pursuit. Preemption system (F-preemption) so combat can interrupt lower-priority tasks.
 
-**Not yet done:** Formal hostile detection system (F-hostile-detection) with configurable detection range, CombatAI enum on SpeciesData, and faction-based hostility. Task-driven attack (F-attack-task) with AttackTarget task kind and dynamic pursuit. Preemption system (F-preemption) so combat can interrupt lower-priority tasks. Two-phase proximity optimization (squared distance filter before pathfinding). Target selection by closest distance rather than first-by-ID. Path caching to avoid Dijkstra+A* on every activation.
+**Not yet done:** Two-phase proximity optimization (squared distance filter before pathfinding). Target selection by closest distance rather than first-by-ID. Path caching to avoid Dijkstra+A* on every activation.
+
+**Draft:** docs/drafts/combat_military.md (§6 "Initial Behavior")
 
 **Draft:** docs/drafts/combat_military.md (§6 "Initial Behavior")
 

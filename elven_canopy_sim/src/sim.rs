@@ -789,6 +789,18 @@ impl SimState {
             } => {
                 self.apply_heal(*creature_id, *amount);
             }
+            SimAction::AttackCreature {
+                attacker_id,
+                target_id,
+            } => {
+                self.command_attack_creature(*attacker_id, *target_id, events);
+            }
+            SimAction::DirectedGoTo {
+                creature_id,
+                position,
+            } => {
+                self.command_directed_goto(*creature_id, *position, events);
+            }
             SimAction::DebugMeleeAttack {
                 attacker_id,
                 target_id,
@@ -2329,9 +2341,57 @@ impl SimState {
             return;
         }
 
+        // AttackTarget tasks: check combat range before walking. The creature
+        // may be able to attack from a nearby node without reaching the exact
+        // target location. Also handles pathfinding retry limits.
+        let task_kind_tag = self
+            .db
+            .tasks
+            .get(&task_id)
+            .map(|t| t.kind_tag)
+            .unwrap_or(crate::db::TaskKindTag::GoTo);
+        if task_kind_tag == crate::db::TaskKindTag::AttackTarget {
+            // Check if target is still alive before doing anything.
+            if let Some(attack_data) = self.task_attack_target_data(task_id) {
+                let target_id = attack_data.target;
+                let target_alive = self
+                    .db
+                    .creatures
+                    .get(&target_id)
+                    .is_some_and(|c| c.vital_status == VitalStatus::Alive);
+                if !target_alive {
+                    self.complete_task(task_id);
+                    return;
+                }
+            }
+
+            // Try combat actions at range (melee or ranged).
+            if self.try_attack_target_combat(creature_id, task_id, events) {
+                return;
+            }
+
+            // Not in combat range — walk toward target.
+            if current_node != task_location {
+                self.walk_toward_attack_target(
+                    creature_id,
+                    task_id,
+                    task_location,
+                    current_node,
+                    events,
+                );
+                return;
+            }
+            // At location but not in range (target just moved) — re-activate.
+            self.event_queue.schedule(
+                self.tick + 1,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return;
+        }
+
         if current_node == task_location {
             // At task location — run the kind-specific completion/work logic.
-            self.execute_task_at_location(creature_id, task_id);
+            self.execute_task_at_location(creature_id, task_id, events);
         } else {
             // Not at location — walk one edge toward it.
             self.walk_toward_task(creature_id, task_location, current_node, events);
@@ -2339,7 +2399,12 @@ impl SimState {
     }
 
     /// Execute task-kind-specific logic when the creature is at the task location.
-    fn execute_task_at_location(&mut self, creature_id: CreatureId, task_id: TaskId) {
+    fn execute_task_at_location(
+        &mut self,
+        creature_id: CreatureId,
+        task_id: TaskId,
+        events: &mut Vec<SimEvent>,
+    ) {
         let task = match self.db.tasks.get(&task_id) {
             Some(t) => t,
             None => return,
@@ -2411,6 +2476,10 @@ impl SimState {
             }
             crate::db::TaskKindTag::Craft => {
                 self.start_craft_action(creature_id, task_id);
+                return;
+            }
+            crate::db::TaskKindTag::AttackTarget => {
+                self.execute_attack_target_at_location(creature_id, task_id, events);
                 return;
             }
         }
@@ -3662,6 +3731,500 @@ impl SimState {
             .next()
     }
 
+    /// Get the AttackTarget extension data for a task.
+    fn task_attack_target_data(&self, task_id: TaskId) -> Option<crate::db::TaskAttackTargetData> {
+        self.db
+            .task_attack_target_data
+            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+    }
+
+    /// Process an `AttackCreature` command: create an AttackTarget task for
+    /// the attacker and immediately assign it, preempting lower-priority tasks.
+    fn command_attack_creature(
+        &mut self,
+        attacker_id: CreatureId,
+        target_id: CreatureId,
+        _events: &mut Vec<SimEvent>,
+    ) {
+        // Validate: both creatures alive and distinct.
+        let attacker = match self.db.creatures.get(&attacker_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return,
+        };
+        let target = match self.db.creatures.get(&target_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return,
+        };
+        if attacker_id == target_id {
+            return;
+        }
+
+        let target_node = match target.current_node {
+            Some(n) => n,
+            None => return,
+        };
+
+        // Check preemption: can PlayerCombat preempt the current task?
+        if let Some(current_task_id) = attacker.current_task
+            && let Some(current_task) = self.db.tasks.get(&current_task_id)
+        {
+            let current_level =
+                preemption::preemption_level(current_task.kind_tag, current_task.origin);
+            let current_origin = current_task.origin;
+            if !preemption::can_preempt(
+                current_level,
+                current_origin,
+                preemption::PreemptionLevel::PlayerCombat,
+                task::TaskOrigin::PlayerDirected,
+            ) {
+                return;
+            }
+            // Preempt: interrupt the current task.
+            self.interrupt_task(attacker_id, current_task_id);
+        }
+
+        // Create and immediately assign the AttackTarget task.
+        let task_id = TaskId::new(&mut self.rng);
+        let new_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::AttackTarget { target: target_id },
+            state: task::TaskState::InProgress,
+            location: target_node,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(attacker.species),
+            origin: task::TaskOrigin::PlayerDirected,
+            target_creature: Some(target_id),
+        };
+        self.insert_task(new_task);
+        // Assign directly — skip Available state.
+        if let Some(mut c) = self.db.creatures.get(&attacker_id) {
+            c.current_task = Some(task_id);
+            c.path = None;
+            let _ = self.db.creatures.update_no_fk(c);
+        }
+
+        // Schedule immediate activation.
+        self.event_queue.schedule(
+            self.tick + 1,
+            ScheduledEventKind::CreatureActivation {
+                creature_id: attacker_id,
+            },
+        );
+    }
+
+    /// Process a `DirectedGoTo` command: create a GoTo task for a specific
+    /// creature and immediately assign it, preempting lower-priority tasks.
+    fn command_directed_goto(
+        &mut self,
+        creature_id: CreatureId,
+        position: VoxelCoord,
+        _events: &mut Vec<SimEvent>,
+    ) {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return,
+        };
+
+        let location = match self.nav_graph.find_nearest_node(position) {
+            Some(n) => n,
+            None => return,
+        };
+
+        // Check preemption: can PlayerDirected preempt the current task?
+        if let Some(current_task_id) = creature.current_task
+            && let Some(current_task) = self.db.tasks.get(&current_task_id)
+        {
+            let current_level =
+                preemption::preemption_level(current_task.kind_tag, current_task.origin);
+            let current_origin = current_task.origin;
+            if !preemption::can_preempt(
+                current_level,
+                current_origin,
+                preemption::PreemptionLevel::PlayerDirected,
+                task::TaskOrigin::PlayerDirected,
+            ) {
+                return;
+            }
+            self.interrupt_task(creature_id, current_task_id);
+        }
+
+        let task_id = TaskId::new(&mut self.rng);
+        let new_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::GoTo,
+            state: task::TaskState::InProgress,
+            location,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(creature.species),
+            origin: task::TaskOrigin::PlayerDirected,
+            target_creature: None,
+        };
+        self.insert_task(new_task);
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
+            c.current_task = Some(task_id);
+            c.path = None;
+            let _ = self.db.creatures.update_no_fk(c);
+        }
+
+        self.event_queue.schedule(
+            self.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
+    }
+
+    /// Execute the AttackTarget task behavior when the creature has arrived
+    /// at the target's location (or is close enough to attack).
+    fn execute_attack_target_at_location(
+        &mut self,
+        creature_id: CreatureId,
+        task_id: TaskId,
+        events: &mut Vec<SimEvent>,
+    ) {
+        // Get attack target data.
+        let attack_data = match self.task_attack_target_data(task_id) {
+            Some(d) => d,
+            None => {
+                self.complete_task(task_id);
+                return;
+            }
+        };
+        let target_id = attack_data.target;
+
+        // Check if target is still alive.
+        let target = match self.db.creatures.get(&target_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => {
+                // Target dead or gone — mission accomplished.
+                self.complete_task(task_id);
+                return;
+            }
+        };
+
+        let attacker = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return,
+        };
+        let species = attacker.species;
+        let species_data = &self.species_table[&species];
+        let attacker_pos = attacker.position;
+        let attacker_footprint = species_data.footprint;
+        let target_pos = target.position;
+        let target_footprint = self.species_table[&target.species].footprint;
+
+        // Try melee if in range.
+        if species_data.melee_damage > 0
+            && in_melee_range(
+                attacker_pos,
+                attacker_footprint,
+                target_pos,
+                target_footprint,
+                species_data.melee_range_sq,
+            )
+        {
+            if self.try_melee_strike(creature_id, target_id, events) {
+                return;
+            }
+            // On cooldown — wait.
+            if let Some(next_tick) = self
+                .db
+                .creatures
+                .get(&creature_id)
+                .and_then(|c| c.next_available_tick)
+            {
+                self.event_queue.schedule(
+                    next_tick,
+                    ScheduledEventKind::CreatureActivation { creature_id },
+                );
+            } else {
+                self.event_queue.schedule(
+                    self.tick + 100,
+                    ScheduledEventKind::CreatureActivation { creature_id },
+                );
+            }
+            return;
+        }
+
+        // Try ranged if have bow + arrow.
+        if self.try_shoot_arrow(creature_id, target_id, events) {
+            return;
+        }
+
+        // If we're at the same node but out of melee range (shouldn't happen
+        // normally), re-activate next tick — the dynamic pursuit system in
+        // execute_task_behavior will update the location.
+        self.event_queue.schedule(
+            self.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
+    }
+
+    /// Try to perform a combat action (melee or ranged) against the attack
+    /// task's target from the creature's current position. Returns `true` if
+    /// an action was taken or the creature is waiting on cooldown.
+    fn try_attack_target_combat(
+        &mut self,
+        creature_id: CreatureId,
+        task_id: TaskId,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        let attack_data = match self.task_attack_target_data(task_id) {
+            Some(d) => d,
+            None => return false,
+        };
+        let target_id = attack_data.target;
+
+        let attacker = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return false,
+        };
+        let target = match self.db.creatures.get(&target_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return false,
+        };
+
+        let species = attacker.species;
+        let species_data = &self.species_table[&species];
+        let attacker_pos = attacker.position;
+        let attacker_footprint = species_data.footprint;
+        let target_pos = target.position;
+        let target_footprint = self.species_table[&target.species].footprint;
+
+        // Try melee if in range.
+        if species_data.melee_damage > 0
+            && in_melee_range(
+                attacker_pos,
+                attacker_footprint,
+                target_pos,
+                target_footprint,
+                species_data.melee_range_sq,
+            )
+        {
+            // Reset path failure counter on combat contact.
+            if let Some(data) = self.task_attack_target_data(task_id) {
+                let data_id = data.id;
+                let _ = self
+                    .db
+                    .task_attack_target_data
+                    .modify_unchecked(&data_id, |d| {
+                        d.path_failures = 0;
+                    });
+            }
+
+            if self.try_melee_strike(creature_id, target_id, events) {
+                return true;
+            }
+            // On cooldown — wait.
+            if let Some(next_tick) = self
+                .db
+                .creatures
+                .get(&creature_id)
+                .and_then(|c| c.next_available_tick)
+            {
+                self.event_queue.schedule(
+                    next_tick,
+                    ScheduledEventKind::CreatureActivation { creature_id },
+                );
+            } else {
+                self.event_queue.schedule(
+                    self.tick + 100,
+                    ScheduledEventKind::CreatureActivation { creature_id },
+                );
+            }
+            return true;
+        }
+
+        // Try ranged.
+        if self.try_shoot_arrow(creature_id, target_id, events) {
+            // Reset path failure counter on combat contact.
+            if let Some(data) = self.task_attack_target_data(task_id) {
+                let data_id = data.id;
+                let _ = self
+                    .db
+                    .task_attack_target_data
+                    .modify_unchecked(&data_id, |d| {
+                        d.path_failures = 0;
+                    });
+            }
+            return true;
+        }
+
+        false
+    }
+
+    /// Walk toward the attack target, with retry-limit handling on pathfinding
+    /// failure. On failure, increments the path_failures counter; if it exceeds
+    /// `attack_path_retry_limit`, cancels the task.
+    fn walk_toward_attack_target(
+        &mut self,
+        creature_id: CreatureId,
+        task_id: TaskId,
+        task_location: NavNodeId,
+        current_node: NavNodeId,
+        events: &mut Vec<SimEvent>,
+    ) {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return,
+        };
+        let species = creature.species;
+        let species_data = &self.species_table[&species];
+        let graph = self.graph_for_species(species);
+
+        // Check for cached path.
+        let next_step = if let Some(ref path) = creature.path {
+            if !path.remaining_edge_indices.is_empty() {
+                Some((path.remaining_edge_indices[0], path.remaining_nodes[0]))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let walk_tpv = species_data.walk_ticks_per_voxel;
+        let climb_tpv = species_data.climb_ticks_per_voxel;
+        let wood_ladder_tpv = species_data.wood_ladder_tpv;
+        let rope_ladder_tpv = species_data.rope_ladder_tpv;
+
+        let (edge_idx, dest_node) = if let Some(step) = next_step {
+            // Reset failure counter on successful path usage.
+            if let Some(data) = self.task_attack_target_data(task_id)
+                && data.path_failures > 0
+            {
+                let data_id = data.id;
+                let _ = self
+                    .db
+                    .task_attack_target_data
+                    .modify_unchecked(&data_id, |d| {
+                        d.path_failures = 0;
+                    });
+            }
+            step
+        } else {
+            // Compute a new path.
+            let path_result = if let Some(ref allowed) = species_data.allowed_edge_types {
+                pathfinding::astar_filtered(
+                    graph,
+                    current_node,
+                    task_location,
+                    walk_tpv,
+                    climb_tpv,
+                    wood_ladder_tpv,
+                    rope_ladder_tpv,
+                    allowed,
+                )
+            } else {
+                pathfinding::astar(
+                    graph,
+                    current_node,
+                    task_location,
+                    walk_tpv,
+                    climb_tpv,
+                    wood_ladder_tpv,
+                    rope_ladder_tpv,
+                )
+            };
+
+            let path_result = match path_result {
+                Some(r) if r.nodes.len() >= 2 => r,
+                _ => {
+                    // Pathfinding failed — increment counter, check limit.
+                    if let Some(data) = self.task_attack_target_data(task_id) {
+                        let new_failures = data.path_failures + 1;
+                        if new_failures >= self.config.attack_path_retry_limit {
+                            // Too many failures — cancel the attack task.
+                            self.interrupt_task(creature_id, task_id);
+                            self.wander(creature_id, current_node, events);
+                            return;
+                        }
+                        let data_id = data.id;
+                        let _ = self
+                            .db
+                            .task_attack_target_data
+                            .modify_unchecked(&data_id, |d| {
+                                d.path_failures = new_failures;
+                            });
+                    }
+                    // Retry next activation.
+                    self.event_queue.schedule(
+                        self.tick + 500,
+                        ScheduledEventKind::CreatureActivation { creature_id },
+                    );
+                    return;
+                }
+            };
+
+            let first_edge = path_result.edge_indices[0];
+            let first_dest = path_result.nodes[1];
+
+            let _ = self
+                .db
+                .creatures
+                .modify_unchecked(&creature_id, |creature| {
+                    creature.path = Some(CreaturePath {
+                        remaining_nodes: path_result.nodes[1..].to_vec(),
+                        remaining_edge_indices: path_result.edge_indices.to_vec(),
+                    });
+                });
+
+            (first_edge, first_dest)
+        };
+
+        // Move one edge.
+        let graph = self.graph_for_species(species);
+        let edge = graph.edge(edge_idx);
+        let tpv = match edge.edge_type {
+            crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
+                climb_tpv.unwrap_or(walk_tpv)
+            }
+            crate::nav::EdgeType::WoodLadderClimb => wood_ladder_tpv.unwrap_or(walk_tpv),
+            crate::nav::EdgeType::RopeLadderClimb => rope_ladder_tpv.unwrap_or(walk_tpv),
+            _ => walk_tpv,
+        };
+        let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
+        let dest_pos = graph.node(dest_node).position;
+
+        let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
+        let tick = self.tick;
+        let _ = self
+            .db
+            .creatures
+            .modify_unchecked(&creature_id, |creature| {
+                creature.position = dest_pos;
+                creature.current_node = Some(dest_node);
+                creature.action_kind = ActionKind::Move;
+                creature.next_available_tick = Some(tick + delay);
+                if let Some(ref mut path) = creature.path {
+                    if !path.remaining_nodes.is_empty() {
+                        path.remaining_nodes.remove(0);
+                    }
+                    if !path.remaining_edge_indices.is_empty() {
+                        path.remaining_edge_indices.remove(0);
+                    }
+                }
+            });
+
+        self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
+
+        let move_action = MoveAction {
+            creature_id,
+            move_from: old_pos,
+            move_to: dest_pos,
+            move_start_tick: tick,
+        };
+        let _ = self.db.move_actions.remove_no_fk(&creature_id);
+        self.db.move_actions.insert_no_fk(move_action).unwrap();
+
+        self.event_queue.schedule(
+            self.tick + delay,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
+    }
+
     /// Clean up a Harvest task on node invalidation. Harvest tasks have no
     /// reservations, so just mark the task complete so `process_harvest_tasks`
     /// can create a replacement on the next heartbeat.
@@ -4623,7 +5186,8 @@ impl SimState {
             | crate::db::TaskKindTag::EatBread
             | crate::db::TaskKindTag::EatFruit
             | crate::db::TaskKindTag::Sleep
-            | crate::db::TaskKindTag::Mope => {
+            | crate::db::TaskKindTag::Mope
+            | crate::db::TaskKindTag::AttackTarget => {
                 if let Some(mut t) = self.db.tasks.get(&task_id) {
                     t.state = task::TaskState::Complete;
                     let _ = self.db.tasks.update_no_fk(t);
@@ -6286,6 +6850,16 @@ impl SimState {
                         task_id,
                         recipe_id: rid,
                     });
+            }
+            task::TaskKind::AttackTarget { target } => {
+                let _ = self.db.task_attack_target_data.insert_auto_no_fk(|id| {
+                    crate::db::TaskAttackTargetData {
+                        id,
+                        task_id,
+                        target: *target,
+                        path_failures: 0,
+                    }
+                });
             }
             // GoTo, EatBread, Mope — no extra data.
             task::TaskKind::GoTo | task::TaskKind::EatBread | task::TaskKind::Mope => {}
@@ -25233,5 +25807,436 @@ mod tests {
         );
 
         assert_eq!(sim.db.projectiles.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // F-attack-task: AttackTarget task tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn attack_creature_command_creates_task_and_assigns() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place them nearby.
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackCreature {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        };
+        sim.step(&[cmd], tick + 2);
+
+        // Elf should have an AttackTarget task assigned.
+        let creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(
+            creature.current_task.is_some(),
+            "Elf should have a task assigned"
+        );
+        let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+        assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackTarget);
+        assert_eq!(task.state, TaskState::InProgress);
+        assert_eq!(task.origin, TaskOrigin::PlayerDirected);
+        assert_eq!(task.target_creature, Some(goblin));
+
+        // Extension data should exist.
+        let attack_data = sim.task_attack_target_data(task.id).unwrap();
+        assert_eq!(attack_data.target, goblin);
+        assert_eq!(attack_data.path_failures, 0);
+    }
+
+    #[test]
+    fn attack_target_task_pursues_and_strikes() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place goblin within reach of elf.
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, elf);
+
+        let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
+
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackCreature {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        };
+        // Run for 10 seconds — enough time to walk there and attack.
+        sim.step(&[cmd], tick + 10_000);
+
+        let goblin_hp_after = sim.db.creatures.get(&goblin).unwrap().hp;
+        let elf_creature = sim.db.creatures.get(&elf).unwrap();
+        let final_dist = elf_creature.position.manhattan_distance(goblin_pos);
+
+        let moved_closer = final_dist < elf_pos.manhattan_distance(goblin_pos);
+        let dealt_damage = goblin_hp_after < goblin_hp_before;
+        assert!(
+            moved_closer || dealt_damage,
+            "Elf should pursue and/or damage goblin: initial_dist={}, final_dist={final_dist}, \
+             hp {goblin_hp_before} -> {goblin_hp_after}",
+            elf_pos.manhattan_distance(goblin_pos)
+        );
+    }
+
+    #[test]
+    fn attack_target_completes_when_target_dies() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place goblin adjacent to elf (instant melee range).
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let adjacent_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, adjacent_pos);
+        force_idle(&mut sim, elf);
+
+        // Give elf high melee damage to kill quickly.
+        // Just use commands to create the attack task and then kill the target.
+        let tick = sim.tick;
+        let attack_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackCreature {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        };
+        sim.step(&[attack_cmd], tick + 2);
+
+        let task_id = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+        // Kill the goblin.
+        let kill_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 3,
+            action: SimAction::DebugKillCreature {
+                creature_id: goblin,
+            },
+        };
+        // Step enough that the elf's activation runs after the kill.
+        sim.step(&[kill_cmd], tick + 5000);
+
+        // Task should be complete.
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(
+            task.state,
+            TaskState::Complete,
+            "Attack task should complete when target dies"
+        );
+        // Elf should be free.
+        let elf_creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(
+            elf_creature.current_task.is_none(),
+            "Elf should have no task after target dies"
+        );
+    }
+
+    #[test]
+    fn attack_target_preempts_lower_priority_task() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Give elf a GoTo task (PlayerDirected level 2).
+        let far_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+        let goto_task_id = insert_goto_task(&mut sim, far_node);
+        sim.claim_task(elf, goto_task_id);
+
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackCreature {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        };
+        sim.step(&[cmd], tick + 2);
+
+        // Old task should be completed/interrupted.
+        let old_task = sim.db.tasks.get(&goto_task_id).unwrap();
+        assert_eq!(
+            old_task.state,
+            TaskState::Complete,
+            "GoTo task should be interrupted by AttackCreature"
+        );
+
+        // Elf should have the attack task.
+        let elf_creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(elf_creature.current_task.is_some());
+        let new_task = sim
+            .db
+            .tasks
+            .get(&elf_creature.current_task.unwrap())
+            .unwrap();
+        assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::AttackTarget);
+    }
+
+    #[test]
+    fn attack_target_cannot_attack_self() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle(&mut sim, elf);
+
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackCreature {
+                attacker_id: elf,
+                target_id: elf,
+            },
+        };
+        sim.step(&[cmd], tick + 2);
+
+        // Elf should NOT have an attack task.
+        let elf_creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(
+            elf_creature.current_task.is_none(),
+            "Should not be able to attack self"
+        );
+    }
+
+    #[test]
+    fn attack_target_cannot_attack_dead_creature() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        force_idle(&mut sim, elf);
+
+        // Kill goblin first.
+        let tick = sim.tick;
+        let kill_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: goblin,
+            },
+        };
+        sim.step(&[kill_cmd], tick + 2);
+
+        // Try to attack.
+        let attack_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 3,
+            action: SimAction::AttackCreature {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        };
+        sim.step(&[attack_cmd], tick + 4);
+
+        let elf_creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(
+            elf_creature.current_task.is_none(),
+            "Should not be able to attack dead creature"
+        );
+    }
+
+    #[test]
+    fn attack_target_task_serde_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let target = CreatureId::new(&mut rng);
+        let location = NavNodeId(5);
+
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::AttackTarget { target },
+            state: TaskState::InProgress,
+            location,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: Some(target),
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.id, task_id);
+        match &restored.kind {
+            TaskKind::AttackTarget { target: t } => assert_eq!(*t, target),
+            other => panic!("Expected AttackTarget, got {:?}", other),
+        }
+        assert_eq!(restored.state, TaskState::InProgress);
+        assert_eq!(restored.origin, TaskOrigin::PlayerDirected);
+        assert_eq!(restored.target_creature, Some(target));
+    }
+
+    // -----------------------------------------------------------------------
+    // DirectedGoTo command tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn directed_goto_creates_task_for_specific_creature() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle(&mut sim, elf);
+
+        // Pick a target position.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let target_pos = VoxelCoord::new(tree_pos.x + 3, 1, tree_pos.z);
+
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target_pos,
+            },
+        };
+        sim.step(&[cmd], tick + 2);
+
+        let creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(
+            creature.current_task.is_some(),
+            "Elf should have a GoTo task"
+        );
+        let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+        assert_eq!(task.kind_tag, crate::db::TaskKindTag::GoTo);
+        assert_eq!(task.state, TaskState::InProgress);
+        assert_eq!(task.origin, TaskOrigin::PlayerDirected);
+    }
+
+    #[test]
+    fn directed_goto_replaces_player_directed_task() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+
+        // Give elf a PlayerDirected GoTo task (PlayerDirected level 2).
+        let task_id = TaskId::new(&mut sim.rng);
+        let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::InProgress,
+            location: dest_node,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+        };
+        sim.insert_task(task);
+        sim.claim_task(elf, task_id);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let target_pos = VoxelCoord::new(tree_pos.x + 2, 1, tree_pos.z);
+
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target_pos,
+            },
+        };
+        sim.step(&[cmd], tick + 2);
+
+        // Old task should be interrupted (Complete).
+        let old_task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(old_task.state, TaskState::Complete);
+
+        // Elf should have the new GoTo task.
+        let creature = sim.db.creatures.get(&elf).unwrap();
+        let new_task_id = creature.current_task.unwrap();
+        assert_ne!(new_task_id, task_id);
+        let new_task = sim.db.tasks.get(&new_task_id).unwrap();
+        assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::GoTo);
+    }
+
+    #[test]
+    fn directed_goto_preempts_autonomous_task() {
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+
+        // Give elf an autonomous Harvest task (Autonomous level 1).
+        let task_id = TaskId::new(&mut sim.rng);
+        let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+        let fruit_pos = VoxelCoord::new(0, 0, 0);
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::Harvest { fruit_pos },
+            state: TaskState::InProgress,
+            location: dest_node,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+            target_creature: None,
+        };
+        sim.insert_task(task);
+        sim.claim_task(elf, task_id);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let target_pos = VoxelCoord::new(tree_pos.x + 2, 1, tree_pos.z);
+
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target_pos,
+            },
+        };
+        sim.step(&[cmd], tick + 2);
+
+        // Old autonomous task should be interrupted (Complete).
+        let old_task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(old_task.state, TaskState::Complete);
+
+        // Elf should have the new GoTo task.
+        let creature = sim.db.creatures.get(&elf).unwrap();
+        let new_task_id = creature.current_task.unwrap();
+        assert_ne!(new_task_id, task_id);
+        let new_task = sim.db.tasks.get(&new_task_id).unwrap();
+        assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::GoTo);
+    }
+
+    // -----------------------------------------------------------------------
+    // AttackTarget preemption level tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn attack_target_preemption_is_player_combat() {
+        assert_eq!(
+            preemption::preemption_level(
+                crate::db::TaskKindTag::AttackTarget,
+                TaskOrigin::PlayerDirected
+            ),
+            preemption::PreemptionLevel::PlayerCombat,
+        );
+    }
+
+    #[test]
+    fn attack_target_autonomous_preemption_is_autonomous_combat() {
+        assert_eq!(
+            preemption::preemption_level(
+                crate::db::TaskKindTag::AttackTarget,
+                TaskOrigin::Autonomous
+            ),
+            preemption::PreemptionLevel::AutonomousCombat,
+        );
     }
 }

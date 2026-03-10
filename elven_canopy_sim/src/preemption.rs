@@ -104,6 +104,12 @@ pub fn preemption_level(kind: TaskKindTag, origin: TaskOrigin) -> PreemptionLeve
                 PreemptionLevel::Mood
             }
         },
+
+        // Player-directed combat — PlayerCombat(6).
+        TaskKindTag::AttackTarget => match origin {
+            TaskOrigin::PlayerDirected => PreemptionLevel::PlayerCombat,
+            TaskOrigin::Autonomous | TaskOrigin::Automated => PreemptionLevel::AutonomousCombat,
+        },
     }
 }
 

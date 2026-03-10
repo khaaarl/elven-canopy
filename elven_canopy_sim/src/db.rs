@@ -59,9 +59,9 @@ use crate::types::{
     BuildType, CivId, CivOpinion, CivRelationshipId, CivSpecies, CompositionId, CreatureId,
     CultureTag, EnchantmentEffectId, EnchantmentId, FurnishingType, FurnitureId, GroundPileId,
     InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId, NavNodeId, NotificationId,
-    ProjectId, ProjectileId, Species, StructureId, TaskAcquireDataId, TaskBlueprintRefId,
-    TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId,
-    ThoughtId, ThoughtKind, VitalStatus, VoxelCoord,
+    ProjectId, ProjectileId, Species, StructureId, TaskAcquireDataId, TaskAttackTargetDataId,
+    TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId,
+    TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -137,6 +137,7 @@ pub enum TaskKindTag {
     AcquireItem,
     Mope,
     Craft,
+    AttackTarget,
 }
 
 impl TaskKindTag {
@@ -155,6 +156,7 @@ impl TaskKindTag {
             Self::AcquireItem => "AcquireItem",
             Self::Mope => "Moping",
             Self::Craft => "Craft",
+            Self::AttackTarget => "Attack",
         }
     }
 
@@ -174,6 +176,7 @@ impl TaskKindTag {
             TaskKind::AcquireItem { .. } => Self::AcquireItem,
             TaskKind::Mope => Self::Mope,
             TaskKind::Craft { .. } => Self::Craft,
+            TaskKind::AttackTarget { .. } => Self::AttackTarget,
         }
     }
 }
@@ -822,6 +825,23 @@ pub struct TaskCraftData {
     pub recipe_id: String,
 }
 
+/// AttackTarget task extension data — stores the target creature and pathfinding
+/// retry counter. The target is a plain `CreatureId`, not an FK — the task polls
+/// the target's vital_status each activation and completes if the target is dead
+/// or missing.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct TaskAttackTargetData {
+    #[primary_key(auto_increment)]
+    pub id: TaskAttackTargetDataId,
+    #[indexed]
+    pub task_id: TaskId,
+    /// Target creature to pursue and attack. Plain ID, not FK — checked each tick.
+    pub target: CreatureId,
+    /// Consecutive pathfinding failures. Reset to 0 on any successful step.
+    #[serde(default)]
+    pub path_failures: u32,
+}
+
 /// A placed or planned furniture item within a structure.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct Furniture {
@@ -1018,6 +1038,11 @@ pub struct SimDb {
             auto,
             fks(task_id = "tasks" on_delete cascade))]
     pub task_craft_data: TaskCraftDataTable,
+
+    #[table(singular = "task_attack_target_data",
+            auto,
+            fks(task_id = "tasks" on_delete cascade))]
+    pub task_attack_target_data: TaskAttackTargetDataTable,
 
     #[table(singular = "music_composition", auto)]
     pub music_compositions: MusicCompositionTable,

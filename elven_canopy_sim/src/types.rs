@@ -308,6 +308,8 @@ auto_pk_id!(/// Auto-increment ID for individual enchantment effects.
 EnchantmentEffectId);
 auto_pk_id!(/// Auto-increment ID for craft task extension data.
 TaskCraftDataId);
+auto_pk_id!(/// Auto-increment ID for attack target task extension data.
+TaskAttackTargetDataId);
 auto_pk_id!(/// Auto-increment ID for music compositions.
 CompositionId);
 auto_pk_id!(/// Auto-increment ID for directed civ relationship records.

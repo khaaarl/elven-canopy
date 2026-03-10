@@ -1,4 +1,5 @@
-## Handles click-to-select for creatures, structures, and ground piles.
+## Handles click-to-select and right-click commands for creatures, structures,
+## and ground piles.
 ##
 ## On left-click (when not in placement mode), casts a ray from the camera
 ## through the mouse position and finds the closest creature sprite using
@@ -7,6 +8,11 @@
 ## structure hits, then checks ground pile positions. Uses the interpolated
 ## render_tick positions (via set_render_tick(), called by main.gd each frame)
 ## so click targets match the smooth visual positions.
+##
+## On right-click (when a creature is selected), issues context-sensitive
+## commands: attack if the target is hostile, move-to if it's a friendly
+## creature or ground location. Uses bridge.get_creature_uuid(),
+## bridge.is_hostile(), bridge.attack_creature(), and bridge.directed_goto().
 ##
 ## Selection state: tracks either a creature (species name + index), a
 ## structure (structure_id), or a ground pile (Vector3i position). Selecting
@@ -143,6 +149,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
 			_try_select(mb.position)
+		elif mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
+			_try_right_click_command(mb.position)
 
 	if event is InputEventKey:
 		var key := event as InputEventKey
@@ -263,3 +271,77 @@ func _point_to_ray_dist_sq(point: Vector3, ray_origin: Vector3, ray_dir: Vector3
 	var t := maxf(0.0, to_point.dot(ray_dir))
 	var closest := ray_origin + ray_dir * t
 	return (point - closest).length_squared()
+
+
+## Right-click command: if a creature is selected, right-clicking on the world
+## issues a context-sensitive command (attack hostile, move to ground).
+func _try_right_click_command(mouse_pos: Vector2) -> void:
+	# Only works when a creature is selected.
+	if _selected_index < 0 or _selected_species == "":
+		return
+
+	var ray_origin := _camera.project_ray_origin(mouse_pos)
+	var ray_dir := _camera.project_ray_normal(mouse_pos)
+
+	# Get the selected creature's UUID.
+	var attacker_uuid: String = _bridge.get_creature_uuid(_selected_species, _selected_index)
+	if attacker_uuid == "":
+		return
+
+	# Check if we clicked on a creature (potential attack target).
+	var best_dist_sq := SNAP_THRESHOLD * SNAP_THRESHOLD
+	var target_species := ""
+	var target_index := -1
+
+	for species_name in SPECIES_Y_OFFSETS:
+		var positions := _bridge.get_creature_positions(species_name, _render_tick)
+		var y_off: float = SPECIES_Y_OFFSETS[species_name]
+		for i in positions.size():
+			var pos := positions[i]
+			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
+			if dist_sq < best_dist_sq:
+				best_dist_sq = dist_sq
+				target_species = species_name
+				target_index = i
+
+	# If we clicked on a creature, check hostility.
+	if target_index >= 0:
+		var target_uuid: String = _bridge.get_creature_uuid(target_species, target_index)
+		if target_uuid != "" and target_uuid != attacker_uuid:
+			if _bridge.is_hostile(_selected_species, _selected_index, target_species, target_index):
+				_bridge.attack_creature(attacker_uuid, target_uuid)
+				get_viewport().set_input_as_handled()
+				return
+			# Friendly creature — move to their location.
+			var positions := _bridge.get_creature_positions(target_species, _render_tick)
+			if target_index < positions.size():
+				var p := positions[target_index]
+				_bridge.directed_goto(attacker_uuid, int(p.x), int(p.y), int(p.z))
+				get_viewport().set_input_as_handled()
+				return
+
+	# No creature clicked — snap to nearest nav node and issue directed goto.
+	var cam_pos := _camera.global_position
+	var nav_nodes := _bridge.get_visible_nav_nodes(cam_pos)
+	var nav_best_dist_sq := 25.0  # 5.0 squared — generous threshold for ground clicks
+	var nav_best_pos := Vector3.ZERO
+	var nav_found := false
+
+	for i in nav_nodes.size():
+		var pos := nav_nodes[i]
+		var to_pos := pos - ray_origin
+		var t := maxf(0.0, to_pos.dot(ray_dir))
+		var closest_on_ray := ray_origin + ray_dir * t
+		var diff := pos - closest_on_ray
+		var dist_sq := diff.length_squared()
+		if dist_sq < nav_best_dist_sq:
+			nav_best_dist_sq = dist_sq
+			nav_best_pos = pos
+			nav_found = true
+
+	if nav_found:
+		_bridge.directed_goto(
+			attacker_uuid, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z)
+		)
+		get_viewport().set_input_as_handled()

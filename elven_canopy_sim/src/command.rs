@@ -48,6 +48,10 @@
 // - `DebugKillCreature` — kill a creature immediately (debug/testing).
 // - `DamageCreature` — reduce a creature's HP. Death at 0 HP.
 // - `HealCreature` — restore a creature's HP (clamped to hp_max, no-op on dead).
+// - `AttackCreature` — player-directed attack: creates an AttackTarget task with
+//   PlayerCombat preemption, pursues target until dead.
+// - `DirectedGoTo` — player-directed goto for a specific creature, preempting
+//   lower-priority tasks.
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -229,6 +233,20 @@ pub enum SimAction {
     DebugShootAction {
         attacker_id: CreatureId,
         target_id: CreatureId,
+    },
+    /// Player-directed attack: the attacker creature pursues and attacks the
+    /// target creature until the target is dead. Creates an AttackTarget task
+    /// with PlayerCombat preemption level.
+    AttackCreature {
+        attacker_id: CreatureId,
+        target_id: CreatureId,
+    },
+    /// Player-directed goto for a specific creature. Creates a GoTo task and
+    /// immediately assigns it to the specified creature, preempting lower-
+    /// priority tasks.
+    DirectedGoTo {
+        creature_id: CreatureId,
+        position: VoxelCoord,
     },
     /// Spawn a projectile at a position with a given velocity (debug/testing).
     /// Creates a projectile with an arrow item in its inventory.

@@ -915,6 +915,10 @@ fn default_shoot_cooldown_ticks() -> u64 {
     3000 // 3 seconds between shots at 1000 ticks/sec
 }
 
+fn default_attack_path_retry_limit() -> u32 {
+    3
+}
+
 // ---------------------------------------------------------------------------
 // Civilization config
 // ---------------------------------------------------------------------------
@@ -1296,6 +1300,12 @@ pub struct GameConfig {
     /// At 1000 ticks/sec, 3000 = 3 seconds between shots.
     #[serde(default = "default_shoot_cooldown_ticks")]
     pub shoot_cooldown_ticks: u64,
+
+    /// Maximum consecutive pathfinding failures before an AttackTarget task
+    /// is cancelled. The creature returns to normal behavior and may re-detect
+    /// the target later if it moves to a reachable location.
+    #[serde(default = "default_attack_path_retry_limit")]
+    pub attack_path_retry_limit: u32,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -1786,6 +1796,7 @@ impl Default for GameConfig {
             arrow_gravity: default_arrow_gravity(),
             arrow_base_speed: default_arrow_base_speed(),
             shoot_cooldown_ticks: default_shoot_cooldown_ticks(),
+            attack_path_retry_limit: default_attack_path_retry_limit(),
         }
     }
 }

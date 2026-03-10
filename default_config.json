@@ -556,5 +556,6 @@
       "work_ticks": 3000
     }
   ],
-  "workshop_default_priority": 8
+  "workshop_default_priority": 8,
+  "attack_path_retry_limit": 3
 }

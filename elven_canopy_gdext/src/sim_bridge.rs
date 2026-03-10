@@ -732,6 +732,119 @@ impl SimBridge {
         });
     }
 
+    /// Send a specific creature to a location. Creates a GoTo task and
+    /// immediately assigns it, preempting lower-priority tasks.
+    #[func]
+    fn directed_goto(&mut self, creature_uuid: GString, x: i32, y: i32, z: i32) {
+        let Some(creature_id) = parse_creature_id(&creature_uuid.to_string()) else {
+            return;
+        };
+        self.apply_or_send(SimAction::DirectedGoTo {
+            creature_id,
+            position: VoxelCoord::new(x, y, z),
+        });
+    }
+
+    /// Order a creature to attack a target creature. Creates an AttackTarget
+    /// task with PlayerCombat preemption.
+    #[func]
+    fn attack_creature(&mut self, attacker_uuid: GString, target_uuid: GString) {
+        let Some(attacker_id) = parse_creature_id(&attacker_uuid.to_string()) else {
+            return;
+        };
+        let Some(target_id) = parse_creature_id(&target_uuid.to_string()) else {
+            return;
+        };
+        self.apply_or_send(SimAction::AttackCreature {
+            attacker_id,
+            target_id,
+        });
+    }
+
+    /// Return the UUID string of a creature at the given species-filtered index.
+    /// Returns an empty string if species is unknown or index is out of bounds.
+    #[func]
+    fn get_creature_uuid(&self, species_name: GString, index: i32) -> GString {
+        let Some(sim) = &self.session.sim else {
+            return GString::new();
+        };
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return GString::new();
+        };
+        let creature = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
+            .nth(index as usize);
+        match creature {
+            Some(c) => GString::from(c.id.0.to_string().as_str()),
+            None => GString::new(),
+        }
+    }
+
+    /// Check if two creatures are hostile to each other. Returns true if the
+    /// attacker would consider the target a valid hostile target.
+    #[func]
+    fn is_hostile(
+        &self,
+        attacker_species: GString,
+        attacker_index: i32,
+        target_species: GString,
+        target_index: i32,
+    ) -> bool {
+        let Some(sim) = &self.session.sim else {
+            return false;
+        };
+        let Some(a_species) = parse_species(&attacker_species.to_string()) else {
+            return false;
+        };
+        let Some(t_species) = parse_species(&target_species.to_string()) else {
+            return false;
+        };
+        let attacker = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == a_species && c.vital_status == VitalStatus::Alive)
+            .nth(attacker_index as usize);
+        let target = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == t_species && c.vital_status == VitalStatus::Alive)
+            .nth(target_index as usize);
+        let (Some(a), Some(t)) = (attacker, target) else {
+            return false;
+        };
+        if a.id == t.id {
+            return false;
+        }
+        // Same logic as detect_hostile_targets hostility check.
+        if a.civ_id.is_none() {
+            // Non-civ aggressive: targets civ creatures of different species.
+            t.civ_id.is_some() && t.species != a.species
+        } else if let (Some(my_civ), Some(their_civ)) = (a.civ_id, t.civ_id) {
+            if my_civ == their_civ {
+                false
+            } else {
+                use elven_canopy_sim::types::CivOpinion;
+                sim.db
+                    .civ_relationships
+                    .by_from_civ(&my_civ, elven_canopy_sim::tabulosity::QueryOpts::ASC)
+                    .into_iter()
+                    .any(|r| r.to_civ == their_civ && r.opinion == CivOpinion::Hostile)
+            }
+        } else {
+            // Attacker has civ, target doesn't — check if target's species has aggressive AI.
+            use elven_canopy_sim::species::CombatAI;
+            matches!(
+                sim.species_table[&t.species].combat_ai,
+                CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+            )
+        }
+    }
+
     /// Return info about the creature at the given species-filtered index.
     ///
     /// The index corresponds to the creature's position in the iteration
