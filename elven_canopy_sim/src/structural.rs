@@ -31,6 +31,17 @@
 //   `Designated` blueprints. Both fast validators accept one so they see the
 //   cumulative structural effect of all planned builds (B-preview-blueprints).
 //
+// ## Ladder anchor model
+//
+// Ladders (WoodLadder, RopeLadder) are modeled as hanging from a single anchor
+// point. In the FEM network, a ladder voxel only connects to non-ladder
+// neighbors if it is the *anchor* — the highest voxel in a contiguous vertical
+// ladder column that has at least one non-ladder structural neighbor. If the
+// top voxel loses its neighbors (e.g., a platform is carved away), the anchor
+// shifts down to the next voxel that still touches structure. Rope ladders
+// additionally cannot anchor at the bottom of their column (they must hang from
+// above, not rest on the ground). See `should_skip_ladder_spring()`.
+//
 // ## Integration points
 //
 // - `worldgen.rs`: `generate_tree()` wraps tree generation in a retry loop
@@ -155,6 +166,102 @@ pub struct BlueprintValidation {
 // Network construction
 // ---------------------------------------------------------------------------
 
+/// Check whether a voxel type is structurally relevant (participates in FEM).
+fn is_structural(vt: VoxelType) -> bool {
+    vt != VoxelType::Air && vt != VoxelType::Leaf && vt != VoxelType::Fruit
+}
+
+/// Check whether a ladder voxel has at least one face-adjacent non-ladder
+/// structural neighbor.
+fn has_non_ladder_structural_neighbor(
+    coord: VoxelCoord,
+    get_vt: &impl Fn(VoxelCoord) -> VoxelType,
+) -> bool {
+    for &dir in &FaceDirection::ALL {
+        let (dx, dy, dz) = dir.to_offset();
+        let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+        let vt = get_vt(neighbor);
+        if is_structural(vt) && !vt.is_ladder() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check whether a spring between two voxels should be skipped because it
+/// connects a non-anchor ladder voxel to a non-ladder voxel.
+///
+/// Ladders are modeled as hanging from their anchor point: the only FEM
+/// connection between a ladder column and the rest of the structure is at the
+/// anchor — the **highest** ladder voxel in a contiguous vertical column that
+/// has at least one non-ladder structural neighbor. All other ladder voxels
+/// connect only to adjacent ladder voxels, so they dangle freely and never
+/// bear structural load from platforms or other buildings.
+///
+/// If the topmost ladder voxel has no structural neighbors (e.g., the platform
+/// above was carved away), the anchor shifts down to the next ladder voxel
+/// that does. Wood ladders anchored only at the bottom (e.g., to the floor)
+/// still hold. Rope ladders require an anchor above the bottom of the
+/// column — they must hang, not rest on the ground.
+///
+/// `get_vt` returns the `VoxelType` at a coordinate (may return `Air` for
+/// out-of-bounds or absent coords).
+fn should_skip_ladder_spring(
+    coord_a: VoxelCoord,
+    vt_a: VoxelType,
+    coord_b: VoxelCoord,
+    vt_b: VoxelType,
+    get_vt: impl Fn(VoxelCoord) -> VoxelType,
+) -> bool {
+    let a_ladder = vt_a.is_ladder();
+    let b_ladder = vt_b.is_ladder();
+
+    // Both ladder or neither ladder — no filtering needed.
+    if a_ladder == b_ladder {
+        return false;
+    }
+
+    // One is ladder, one is not. The ladder voxel must be its column's anchor
+    // to keep this spring. The anchor is the highest ladder voxel in the
+    // contiguous column that has at least one non-ladder structural neighbor.
+    let ladder_coord = if a_ladder { coord_a } else { coord_b };
+    let ladder_vt = if a_ladder { vt_a } else { vt_b };
+
+    // Walk upward through contiguous ladder voxels. If any higher one also
+    // has a non-ladder structural neighbor, then *this* voxel is not the
+    // anchor — skip the spring.
+    let mut check = VoxelCoord::new(ladder_coord.x, ladder_coord.y + 1, ladder_coord.z);
+    loop {
+        let check_vt = get_vt(check);
+        if !check_vt.is_ladder() {
+            break;
+        }
+        if has_non_ladder_structural_neighbor(check, &get_vt) {
+            return true; // A higher ladder voxel is the anchor instead.
+        }
+        check = VoxelCoord::new(check.x, check.y + 1, check.z);
+    }
+
+    // No higher ladder voxel qualifies. But rope ladders cannot anchor at the
+    // bottom of their column — they need to hang from above, not rest on the
+    // ground. If this is a rope ladder at y=1 (bottom of column, sitting on
+    // floor) and no higher voxel is the anchor, the rope ladder has no valid
+    // anchor and should not connect.
+    if ladder_vt == VoxelType::RopeLadder {
+        // Check: is this the bottommost ladder in the column (no ladder below)?
+        let below = VoxelCoord::new(ladder_coord.x, ladder_coord.y - 1, ladder_coord.z);
+        let below_vt = get_vt(below);
+        if !below_vt.is_ladder() {
+            // This is the bottom of the column and it's a rope ladder.
+            // Rope ladders can't stand on the ground — they must hang.
+            return true;
+        }
+    }
+
+    // This ladder voxel is the anchor — allow the spring.
+    false
+}
+
 /// Build a structural network from a voxel world.
 ///
 /// Creates nodes for all solid voxels and BuildingInterior voxels, and springs
@@ -234,6 +341,11 @@ pub fn build_network(
                 None => continue,
             };
             let vt_b = world.get(coord_b);
+
+            // Ladders only connect to non-ladder voxels at their anchor.
+            if should_skip_ladder_spring(coord_a, vt_a, coord_b, vt_b, |c| world.get(c)) {
+                continue;
+            }
 
             // Determine spring properties based on the two voxel types.
             let (stiffness, strength, rest_length) = compute_spring_properties(
@@ -859,6 +971,13 @@ fn build_network_from_set(
             };
             let vt_b = voxels[&coord_b];
 
+            // Ladders only connect to non-ladder voxels at their anchor.
+            if should_skip_ladder_spring(coord_a, vt_a, coord_b, vt_b, |c| {
+                voxels.get(&c).copied().unwrap_or(VoxelType::Air)
+            }) {
+                continue;
+            }
+
             let (stiffness, strength, rest_length) = compute_spring_properties(
                 coord_a, vt_a, coord_b, vt_b, dx, dy, dz, face_data, structural,
             );
@@ -936,11 +1055,6 @@ pub fn validate_blueprint_fast(
         } else {
             world.get(coord)
         }
-    };
-
-    // Helper: is this coord structurally relevant (non-Air, non-Leaf, non-Fruit)?
-    let is_structural = |vt: VoxelType| -> bool {
-        vt != VoxelType::Air && vt != VoxelType::Leaf && vt != VoxelType::Fruit
     };
 
     // BFS from proposed voxels outward through face-adjacent structural voxels.
@@ -1121,10 +1235,6 @@ pub fn validate_carve_fast(
         } else {
             world.get(coord)
         }
-    };
-
-    let is_structural = |vt: VoxelType| -> bool {
-        vt != VoxelType::Air && vt != VoxelType::Leaf && vt != VoxelType::Fruit
     };
 
     // Seed BFS from face-adjacent neighbors of carved voxels that are
@@ -2197,6 +2307,370 @@ mod tests {
             ValidationTier::Blocked,
             "Carving column tip with overlay platform should not disconnect ground: {}",
             result.message
+        );
+    }
+
+    // --- Ladder anchor-only connection tests ---
+
+    #[test]
+    fn ladder_column_only_connects_to_non_ladder_at_anchor() {
+        // Setup: trunk column at (4,4), platform at y=5 from x=5..7,
+        // ladder column at (5,4) from y=1..4 (below the platform).
+        // The ladder's anchor is at (5,4,4) — the topmost voxel,
+        // adjacent to the platform at (5,5,4).
+        //
+        // Expected: The only spring connecting a ladder voxel to a
+        // non-ladder voxel should be between (5,4,4) and (5,5,4).
+        // The bottom ladder voxel at (5,1,4) should NOT have a spring
+        // to the ForestFloor at (5,0,4).
+        let mut world = make_column_world(16, 0..8, 4, 4, 5);
+        add_horizontal_arm(&mut world, 5, 4, 5, 7, VoxelType::GrownPlatform);
+
+        // Ladder column from y=1 to y=4 at (5, 4).
+        for y in 1..=4 {
+            world.set(VoxelCoord::new(5, y, 4), VoxelType::WoodLadder);
+        }
+
+        let config = GameConfig::default();
+        let network = build_network(&world, &BTreeMap::new(), &config);
+
+        // Find springs connecting ladder voxels to non-ladder voxels.
+        let mut cross_springs = Vec::new();
+        for spring in &network.springs {
+            let coord_a = network
+                .coord_to_node
+                .iter()
+                .find(|&(_, &idx)| idx == spring.node_a)
+                .map(|(&c, _)| c)
+                .unwrap();
+            let coord_b = network
+                .coord_to_node
+                .iter()
+                .find(|&(_, &idx)| idx == spring.node_b)
+                .map(|(&c, _)| c)
+                .unwrap();
+            let vt_a = world.get(coord_a);
+            let vt_b = world.get(coord_b);
+            if vt_a.is_ladder() != vt_b.is_ladder() {
+                cross_springs.push((coord_a, coord_b));
+            }
+        }
+
+        // Only the anchor at (5,4,4) should connect to non-ladder voxels.
+        // It connects upward to the platform at (5,5,4).
+        assert!(
+            !cross_springs.is_empty(),
+            "Anchor ladder voxel should still connect to the platform above"
+        );
+        for (ca, cb) in &cross_springs {
+            let ladder_coord = if world.get(*ca).is_ladder() { ca } else { cb };
+            assert_eq!(
+                *ladder_coord,
+                VoxelCoord::new(5, 4, 4),
+                "Only the anchor voxel (5,4,4) should connect to non-ladder; \
+                 found cross-spring at {:?}-{:?}",
+                ca,
+                cb
+            );
+        }
+    }
+
+    #[test]
+    fn ladder_column_voxels_still_connect_to_each_other() {
+        // Ladder voxels within a column should still have springs between them.
+        let mut world = make_column_world(16, 0..8, 4, 4, 5);
+        add_horizontal_arm(&mut world, 5, 4, 5, 7, VoxelType::GrownPlatform);
+
+        for y in 1..=4 {
+            world.set(VoxelCoord::new(5, y, 4), VoxelType::WoodLadder);
+        }
+
+        let config = GameConfig::default();
+        let network = build_network(&world, &BTreeMap::new(), &config);
+
+        // Count springs where both ends are ladder voxels.
+        let ladder_ladder_springs = network
+            .springs
+            .iter()
+            .filter(|spring| {
+                let coord_a = network
+                    .coord_to_node
+                    .iter()
+                    .find(|&(_, &idx)| idx == spring.node_a)
+                    .map(|(&c, _)| c)
+                    .unwrap();
+                let coord_b = network
+                    .coord_to_node
+                    .iter()
+                    .find(|&(_, &idx)| idx == spring.node_b)
+                    .map(|(&c, _)| c)
+                    .unwrap();
+                world.get(coord_a).is_ladder() && world.get(coord_b).is_ladder()
+            })
+            .count();
+
+        // 4 ladder voxels in a column = 3 vertical springs between them.
+        assert_eq!(
+            ladder_ladder_springs, 3,
+            "Ladder voxels should still connect to each other"
+        );
+    }
+
+    #[test]
+    fn ladder_does_not_bear_platform_load() {
+        // A heavy platform supported by a trunk column on one side and a
+        // ladder column on the other. The ladder should not bear load, so
+        // the structure's stress should be the same as if the ladder weren't
+        // there (the trunk bears everything).
+        let mut world = make_column_world(32, 0..16, 8, 8, 10);
+        // Platform at y=10 from x=9..15 (7 voxels extending from trunk).
+        add_horizontal_arm(&mut world, 10, 8, 9, 15, VoxelType::GrownPlatform);
+        // Ladder column at far end (15, 8) from y=1..9.
+        for y in 1..=9 {
+            world.set(VoxelCoord::new(15, y, 8), VoxelType::WoodLadder);
+        }
+
+        let config = GameConfig::default();
+        let network = build_network(&world, &BTreeMap::new(), &config);
+
+        // The ladder's bottom voxel (15,1,8) should NOT have a spring to
+        // the ForestFloor at (15,0,8).
+        let ladder_bottom_idx = network.coord_to_node.get(&VoxelCoord::new(15, 1, 8));
+        let floor_idx = network.coord_to_node.get(&VoxelCoord::new(15, 0, 8));
+
+        if let (Some(&li), Some(&fi)) = (ladder_bottom_idx, floor_idx) {
+            let has_spring = network
+                .springs
+                .iter()
+                .any(|s| (s.node_a == li && s.node_b == fi) || (s.node_a == fi && s.node_b == li));
+            assert!(
+                !has_spring,
+                "Ladder bottom should not connect to floor — only anchor connects to non-ladder"
+            );
+        }
+    }
+
+    #[test]
+    fn rope_ladder_anchor_same_as_wood() {
+        // Rope ladders should behave identically to wood ladders for anchor
+        // logic: only the topmost voxel connects to non-ladder neighbors.
+        let mut world = make_column_world(16, 0..8, 4, 4, 5);
+        add_horizontal_arm(&mut world, 5, 4, 5, 7, VoxelType::GrownPlatform);
+        for y in 1..=4 {
+            world.set(VoxelCoord::new(5, y, 4), VoxelType::RopeLadder);
+        }
+
+        let config = GameConfig::default();
+        let network = build_network(&world, &BTreeMap::new(), &config);
+
+        // Bottom rope ladder at (5,1,4) should not connect to floor (5,0,4).
+        let ladder_bottom_idx = network.coord_to_node.get(&VoxelCoord::new(5, 1, 4));
+        let floor_idx = network.coord_to_node.get(&VoxelCoord::new(5, 0, 4));
+        if let (Some(&li), Some(&fi)) = (ladder_bottom_idx, floor_idx) {
+            let has_spring = network
+                .springs
+                .iter()
+                .any(|s| (s.node_a == li && s.node_b == fi) || (s.node_a == fi && s.node_b == li));
+            assert!(
+                !has_spring,
+                "Rope ladder bottom should not connect to floor"
+            );
+        }
+
+        // Anchor at (5,4,4) should connect to platform at (5,5,4).
+        let anchor_idx = network.coord_to_node.get(&VoxelCoord::new(5, 4, 4));
+        let platform_idx = network.coord_to_node.get(&VoxelCoord::new(5, 5, 4));
+        if let (Some(&ai), Some(&pi)) = (anchor_idx, platform_idx) {
+            let has_spring = network
+                .springs
+                .iter()
+                .any(|s| (s.node_a == ai && s.node_b == pi) || (s.node_a == pi && s.node_b == ai));
+            assert!(
+                has_spring,
+                "Rope ladder anchor should connect to platform above"
+            );
+        }
+    }
+
+    #[test]
+    fn wood_ladder_anchor_shifts_when_top_loses_neighbors() {
+        // Wood ladder column at (5, 4) from y=1..4. Trunk column at (4, 4)
+        // from y=1..5 — so the trunk is adjacent to ladder voxels at y=1..4.
+        // No platform above. The highest ladder voxel with a non-ladder
+        // structural neighbor is (5,4,4) because trunk is at (4,4,4).
+        // But if we remove trunk at y=4..5, the highest with a neighbor
+        // becomes (5,3,4) next to trunk (4,3,4).
+        let mut world = make_column_world(16, 0..8, 4, 4, 3);
+        // Trunk only goes to y=3 now, so ladder at y=4 has no trunk neighbor.
+        for y in 1..=4 {
+            world.set(VoxelCoord::new(5, y, 4), VoxelType::WoodLadder);
+        }
+
+        let config = GameConfig::default();
+        let network = build_network(&world, &BTreeMap::new(), &config);
+
+        // Find cross-springs (ladder <-> non-ladder).
+        let mut cross_spring_ladder_coords = Vec::new();
+        for spring in &network.springs {
+            let coord_a = network
+                .coord_to_node
+                .iter()
+                .find(|&(_, &idx)| idx == spring.node_a)
+                .map(|(&c, _)| c)
+                .unwrap();
+            let coord_b = network
+                .coord_to_node
+                .iter()
+                .find(|&(_, &idx)| idx == spring.node_b)
+                .map(|(&c, _)| c)
+                .unwrap();
+            let vt_a = world.get(coord_a);
+            let vt_b = world.get(coord_b);
+            if vt_a.is_ladder() != vt_b.is_ladder() {
+                let ladder_c = if vt_a.is_ladder() { coord_a } else { coord_b };
+                cross_spring_ladder_coords.push(ladder_c);
+            }
+        }
+
+        // The anchor should be at (5,3,4) — the highest ladder voxel
+        // adjacent to trunk. (5,4,4) has no structural neighbors.
+        assert!(
+            !cross_spring_ladder_coords.is_empty(),
+            "There should be at least one cross-spring"
+        );
+        for c in &cross_spring_ladder_coords {
+            assert_eq!(
+                *c,
+                VoxelCoord::new(5, 3, 4),
+                "Anchor should shift to (5,3,4) since (5,4,4) has no structural neighbors; \
+                 found cross-spring for ladder at {:?}",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn wood_ladder_anchors_at_bottom_on_floor() {
+        // A wood ladder column with no platform above — only the floor below.
+        // The bottom ladder voxel at y=1 is adjacent to ForestFloor at y=0.
+        // Wood ladders CAN anchor at the bottom (they lean against things).
+        let mut world = VoxelWorld::new(16, 16, 16);
+        for x in 0..8 {
+            for z in 0..8 {
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+            }
+        }
+        // Freestanding ladder column with no trunk nearby except the floor.
+        for y in 1..=4 {
+            world.set(VoxelCoord::new(5, y, 4), VoxelType::WoodLadder);
+        }
+
+        let config = GameConfig::default();
+        let network = build_network(&world, &BTreeMap::new(), &config);
+
+        // The anchor should be at (5,1,4) — the only ladder voxel with a
+        // non-ladder structural neighbor (the floor at (5,0,4)).
+        let ladder_bottom_idx = network.coord_to_node.get(&VoxelCoord::new(5, 1, 4));
+        let floor_idx = network.coord_to_node.get(&VoxelCoord::new(5, 0, 4));
+        if let (Some(&li), Some(&fi)) = (ladder_bottom_idx, floor_idx) {
+            let has_spring = network
+                .springs
+                .iter()
+                .any(|s| (s.node_a == li && s.node_b == fi) || (s.node_a == fi && s.node_b == li));
+            assert!(
+                has_spring,
+                "Wood ladder should anchor at bottom when only the floor is adjacent"
+            );
+        } else {
+            panic!("Both ladder bottom and floor should be in the network");
+        }
+    }
+
+    #[test]
+    fn rope_ladder_collapses_when_only_floor_below() {
+        // A rope ladder column with no platform above — only the floor below.
+        // Rope ladders must hang from above, so the bottom voxel at y=1
+        // adjacent to ForestFloor should NOT become the anchor. The rope
+        // ladder has no valid anchor and should be fully disconnected from
+        // non-ladder structure.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        for x in 0..8 {
+            for z in 0..8 {
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+            }
+        }
+        for y in 1..=4 {
+            world.set(VoxelCoord::new(5, y, 4), VoxelType::RopeLadder);
+        }
+
+        let config = GameConfig::default();
+        let network = build_network(&world, &BTreeMap::new(), &config);
+
+        // No cross-springs should exist — the rope ladder is disconnected.
+        let cross_count = network
+            .springs
+            .iter()
+            .filter(|spring| {
+                let coord_a = network
+                    .coord_to_node
+                    .iter()
+                    .find(|&(_, &idx)| idx == spring.node_a)
+                    .map(|(&c, _)| c)
+                    .unwrap();
+                let coord_b = network
+                    .coord_to_node
+                    .iter()
+                    .find(|&(_, &idx)| idx == spring.node_b)
+                    .map(|(&c, _)| c)
+                    .unwrap();
+                world.get(coord_a).is_ladder() != world.get(coord_b).is_ladder()
+            })
+            .count();
+
+        assert_eq!(
+            cross_count, 0,
+            "Rope ladder with only floor below should have no cross-springs (it collapses)"
+        );
+    }
+
+    #[test]
+    fn fast_validator_respects_ladder_anchor() {
+        // Proposing a platform that connects to the ground only through a
+        // ladder column should still be connected (ladder is part of the BFS
+        // graph), but the ladder should not bear structural load.
+        let mut world = make_column_world(32, 0..16, 8, 8, 10);
+        // Existing ladder column from y=1..9 at (10, 8).
+        for y in 1..=9 {
+            world.set(VoxelCoord::new(10, y, 8), VoxelType::WoodLadder);
+        }
+
+        let config = GameConfig::default();
+
+        // Propose a platform at y=10 from x=9..11, adjacent to the trunk at
+        // (8,10,8) and on top of the ladder anchor at (10,9,8).
+        let proposed = vec![
+            VoxelCoord::new(9, 10, 8),
+            VoxelCoord::new(10, 10, 8),
+            VoxelCoord::new(11, 10, 8),
+        ];
+
+        let fast = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::GrownPlatform,
+            &BTreeMap::new(),
+            &config,
+            &BlueprintOverlay::empty(),
+        );
+
+        // Should be Ok — the platform connects to the trunk column, and the
+        // ladder is just hanging there, not affecting stress.
+        assert_eq!(
+            fast.tier,
+            ValidationTier::Ok,
+            "Platform next to trunk should be OK even with ladder below: {}",
+            fast.message
         );
     }
 }
