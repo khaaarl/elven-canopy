@@ -28,7 +28,8 @@ __pycache__/
 # Claude stuff
 .claude/settings.local.json
 
-# temporary files
-.tmp
+# temporary files (directory kept via .gitkeep)
+.tmp/*
+!.tmp/.gitkeep
 
 .cargo/config.toml
