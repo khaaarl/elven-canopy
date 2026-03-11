@@ -20,157 +20,15 @@ For full details, see `docs/design_doc.md`. Note that the design doc is an aspir
 
 ## Implementation Status
 
-Loose overview of where things stand. See `docs/tracker.md` for the full project tracker with per-feature status, blocking relationships, and design doc cross-references. **Keep this section roughly in sync with the tracker** — it's a quick orientation aid, not a detailed status report.
+Phase 0–1 complete (foundations, tree, 10 species with procedural sprites). Phase 2 partial (construction loop, save/load, chunk mesh rendering — no mana economy). Phase 3 complete (projectiles, melee, ranged, HP/death, hostile AI, flee, RTS selection, military groups). Phase 4 partial (cooking, manufacturing, mood, notifications, logistics, proximity tasks). Phase 6 complete (music crate, lang crate, elfcyclopedia). Phase 7 partial (fruit sprites/generation/cultivation — no recipe matching). Phases 5, 8 not started. Tabulosity (sim DB) complete and integrated (28-table SimDb).
 
-- **Phase 0 (Foundations):** Complete.
-- **Phase 1 (A Tree and an Elf):** Complete. Ten species implemented: Elf, Capybara, Boar, Deer, Elephant, Goblin, Monkey, Orc, Squirrel, Troll (all with procedural sprites, data-driven behavior). Goblin/Orc/Troll are hostile-faction placeholders — spawnable via debug UI, wander and climb, no food decay or mood system yet. Dynamic pursuit infrastructure: tasks can track a moving target creature with automatic repathfinding (prerequisite for combat).
-- **Phase 2 (Construction and Persistence):** Partial — construction loop works (designate/build/cancel with incremental nav updates), save/load works, Rust chunk-based mesh generation with face culling replaces GDScript MultiMesh rendering. Mouse-driven click-drag placement UI with height-slice grid overlay implemented. Hover tooltips for creatures, structures, ground piles, and fruit. Persistent status bar (bottom-left) showing elf population, idle count, active tasks, and sim speed. No mana economy, no visual smoothing.
-- **Phase 6 (Culture and Language):** Music crate complete with Phase 1 waveform synthesizer (`synth.rs`) and runtime generation API (`generate.rs`). Integrated into game via gdext: construction designation triggers background composition, GDScript `construction_music.gd` plays PCM through `AudioStreamGenerator`. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation. Embedded elfcyclopedia HTTP server (localhost, species bestiary) with in-game book button to open in browser.
-- **Phase 4 (Economy and Ecology):** Kitchen cooking, workshop manufacturing (bow/arrow/bowstring recipes), elf personal item acquisition, creature thoughts, and basic mood scoring implemented. Notification system with sim-side persistence (SimDb table), multiplayer-aware command pipeline, toast UI, and moping notifications. Creature actions formalized as typed, duration-bearing operations (`ActionKind` enum, `MoveAction` table for interpolation). Unified `interrupt_task()` entry point for all task interruption and cleanup (nav invalidation, mope preemption, pursuit abandonment). Logistics material filtering: `MaterialFilter` enum (`Any`/`Specific(Material)`) threads through all inventory and logistics functions, `hauled_material` tracking on haul tasks for precise in-transit counting, dynamic two-step UI picker (item kind → material filter). Proximity-based task assignment: idle creatures pick the nearest available task by Dijkstra nav-graph distance; rest not started.
-- **Tabulosity (sim DB):** Typed in-memory relational store complete — derive macros for `Bounded`, `Table`, `Database` with FK validation and serde support (feature-gated). Includes compound indexes (`#[index(...)]`) with prefix queries, filtered/partial indexes, unified `IntoQuery` API, tracked runtime bounds, `on_delete cascade`/`nullify` FK semantics with cycle detection, auto-increment primary keys (`#[primary_key(auto_increment)]`), unique index enforcement (`#[indexed(unique)]`), `modify_unchecked` closure-based in-place mutation with debug-build safety checks, `QueryOpts` for ordering (asc/desc) and offset (skip N) on all query methods, `modify_each_by_*` query-driven batch mutation, and schema versioning (`#[schema_version(N)]`) with missing-tables-default-to-empty on deserialization. **Integrated into `elven_canopy_sim`:** `SimDb` (28 tables) replaces all BTreeMap entity storage — creatures, tasks (with decomposed extension tables), blueprints, structures, inventories, item stacks (with subcomponents and enchantments), ground piles, thoughts, notifications, furniture, music compositions, logistics wants, civilizations, civ relationships, and military groups.
-- **Phase 3 (Combat):** Projectile system complete: ballistics math module (integer-only sub-voxel coordinates, symplectic Euler trajectory stepping, iterative aim solver), projectile entity table in SimDb (inventory-based payload, FK nullify on shooter), ProjectileTick batched event, collision detection (solid voxels + creature spatial index), momentum-based damage (linear in impact speed), impact resolution (surface → ground pile, creature → damage + ground pile, OOB → despawn), DebugSpawnProjectile command, rendering (oriented cylinder meshes via projectile_renderer.gd). Creature spatial index complete (BTreeMap voxel→creatures, maintained at all position mutation points, multi-voxel footprint support). HP/death system complete: per-species hp_max, VitalStatus (Alive/Dead), DamageCreature/HealCreature/DebugKillCreature commands, death handler (task interruption, inventory drop, spatial index deregistration, notification). Dead creatures remain in DB (vital_status=Dead) for future states (ghost, undead). HP bars in UI: overhead sprite bars (visible only when damaged, green/yellow/red) and creature info panel health bar with current/max display. Melee strike action complete: per-species melee_damage/melee_interval_ticks/melee_range_sq config, ActionKind::MeleeStrike with cooldown, closest-point AABB range check (multi-voxel footprint support), DebugMeleeAttack command, CreatureDamaged event. Ranged shoot action complete: ActionKind::Shoot with configurable cooldown (shoot_cooldown_ticks), requires bow + arrow in inventory, line-of-sight check (VoxelWorld::has_los DDA ray march, leaf/fruit transparent, multi-voxel footprint support), aim feasibility via existing iterative solver (no artificial range cap), DebugShootAction command, ProjectileLaunched event, arrow consumed from inventory on fire. Hostile AI with data-driven detection: `CombatAI` enum on `SpeciesData` (Passive/FleeOnly/AggressiveMelee/AggressiveRanged), per-species `hostile_detection_range_sq` (squared 3D euclidean voxels). `detect_hostile_targets()` scans spatial index with distance filter and faction-aware hostility rules. Goblin/Orc/Troll pursue nearest detected target via Dijkstra; auto-melee when adjacent, attempt ranged attacks (bow+arrows) before pathfinding. Task preemption priority system complete. Civilian flee behavior: civ creatures (elves) and `FleeOnly` species detect hostiles within `hostile_detection_range_sq` and perform greedy retreat (maximize distance from nearest threat per activation step), interrupting current tasks. Player-directed attack task (AttackCreature command): creates AttackTarget task with PlayerCombat preemption, pursues target with melee/ranged combat, completes on target death, configurable path retry limit. Player-directed goto (DirectedGoTo command): assigns GoTo task directly to a specific creature with preemption. Right-click context commands in selection_controller.gd: attack hostile, move-to friendly/ground. RTS selection: stable CreatureId addressing (replaced fragile species+index), box selection with click-drag rectangle, multi-creature selection with Shift modifier, group info panel (`group_info_panel.gd`) showing sprites/names/activity for multi-select, faction-colored selection highlight rings at creatures' feet (`selection_highlight.gd`). Military groups: `MilitaryGroup` table (auto-increment PK, civ FK cascade), `HostileResponse` enum (Fight/Flee), implicit civilian membership (`creature.military_group = None`), worldgen default groups (Civilians + Soldiers), 5 SimAction commands (create/delete/reassign/rename/set response), group-aware `should_flee`/`wander` behavior, Military [M] toolbar button and panel UI (`military_panel.gd`) with summary/detail pages, Fight/Flee toggle, rename, delete, member reassignment.
-- **Phase 7 (Fruit Variety):** Partial — procedural fruit sprites (6 shapes, per-species color/glow, billboarded in-world rendering and elfcyclopedia display). Fruit variety generation, naming, and greenhouse cultivation done. Property-based recipe matching and processing paths not started.
-- **Phases 5, 8:** Not started.
+For detailed per-feature status, see `docs/implementation_status.md` and `docs/tracker.md`.
 
 ## Project Structure
 
-```
-elven-canopy/
-├── Cargo.toml                  # Workspace root (resolver = "2")
-├── elven_canopy_sim/           # Pure Rust simulation library (no Godot deps)
-│   └── src/
-│       ├── lib.rs              # Crate root, module declarations, re-exports prng crate
-│       ├── types.rs            # VoxelCoord, SimUuid, entity IDs, Species enum
-│       ├── command.rs          # SimCommand, SimAction
-│       ├── config.rs           # GameConfig (loaded from JSON)
-│       ├── species.rs          # SpeciesData — data-driven creature behavior
-│       ├── event.rs            # EventQueue (priority queue), SimEvent
-│       ├── fruit.rs            # Procedural fruit species: types, generation, coverage, Vaelith naming
-│       ├── session.rs          # GameSession — message-driven session management
-│       ├── local_relay.rs      # LocalRelay — accumulator-based tick pacer (SP)
-│       ├── sim.rs              # SimState, tick loop, command processing
-│       ├── db.rs               # SimDb — tabulosity relational store (28 tables, all entities)
-│       ├── mesh_gen.rs          # Chunk-based voxel mesh generation with face culling
-│       ├── texture_gen.rs      # Procedural face textures (3D Perlin noise atlases)
-│       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
-│       ├── pathfinding.rs      # A* search over NavGraph
-│       ├── projectile.rs       # Integer-only ballistic trajectories, aim solver
-│       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
-│       ├── world.rs            # Dense 3D voxel grid
-│       └── worldgen.rs         # Worldgen framework — generator sequencing, worldgen PRNG
-├── elven_canopy_lang/          # Shared Vaelith conlang (types, lexicon, name gen)
-│   └── src/
-│       ├── lib.rs              # Lexicon loader (JSON → typed struct), re-exports
-│       ├── types.rs            # Tone, VowelClass, Syllable, LexEntry, Word, PartOfSpeech
-│       ├── phonotactics.rs     # Suffix tables (aspect, case) with vowel harmony
-│       └── names.rs            # Deterministic elvish name generator
-├── elven_canopy_prng/          # Shared xoshiro256++ PRNG (used by sim, music, lang)
-│   ├── src/
-│   │   └── lib.rs              # GameRng: xoshiro256++ with SplitMix64 seeding
-│   └── Cargo.toml
-├── tabulosity/                 # Typed in-memory relational store (derive macros)
-│   ├── src/
-│   │   ├── lib.rs              # Re-exports, module declarations
-│   │   ├── error.rs            # Error enum (5 variants), DeserializeError
-│   │   └── table.rs            # Bounded, FkCheck, TableMeta, AutoIncrementable, IntoQuery, QueryOpts
-│   ├── tests/
-│   │   ├── auto_increment.rs   # Auto-increment PK generation and serde roundtrip
-│   │   ├── basic_table.rs      # CRUD operations on derived tables
-│   │   ├── bounded.rs          # derive(Bounded) on newtypes
-│   │   ├── database.rs         # FK validation, restrict/cascade/nullify on-delete
-│   │   ├── indexed_table.rs    # Secondary indexes, range queries
-│   │   ├── modify_unchecked.rs # Closure-based mutation (single/range/all) + debug assertions
-│   │   ├── query_opts.rs       # QueryOpts ordering/offset + modify_each_by_*
-│   │   ├── serde.rs            # Serde roundtrip (feature-gated)
-│   │   └── unique_index.rs     # Unique index enforcement on insert/update
-│   └── Cargo.toml
-├── tabulosity_derive/          # Proc macros: derive(Bounded), derive(Table), derive(Database)
-│   └── src/
-│       ├── lib.rs              # Proc macro entry points
-│       ├── bounded.rs          # derive(Bounded) for newtypes
-│       ├── database.rs         # derive(Database) — FK validation, cascade/nullify, modify_unchecked delegation
-│       ├── parse.rs            # Shared attribute parsing (#[primary_key], #[indexed])
-│       └── table.rs            # derive(Table) — companion struct, indexes, serde, modify_unchecked, modify_each_by_*
-├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
-│   └── src/
-│       ├── lib.rs              # ExtensionLibrary entry point
-│       ├── mesh_cache.rs       # Chunk mesh cache with dirty tracking
-│       ├── elfcyclopedia_server.rs # Embedded localhost HTTP species bestiary
-│       └── sim_bridge.rs       # SimBridge node exposed to Godot
-├── elven_canopy_music/         # Palestrina-style polyphonic music generator
-│   ├── src/
-│   │   ├── lib.rs              # Crate root, module declarations
-│   │   ├── main.rs             # CLI: single/batch/mode-scan generation
-│   │   ├── grid.rs             # Core SATB score grid (eighth-note resolution)
-│   │   ├── mode.rs             # Church mode scales (dorian through ionian)
-│   │   ├── markov.rs           # Melodic/harmonic Markov models + motif library
-│   │   ├── structure.rs        # High-level form planning, imitation points
-│   │   ├── draft.rs            # Initial note placement with voice-leading
-│   │   ├── scoring.rs          # 10-layer counterpoint quality scoring
-│   │   ├── sa.rs               # Simulated annealing with adaptive cooling
-│   │   ├── vaelith.rs          # Vaelith conlang grammar engine (elvish lyrics)
-│   │   ├── text_mapping.rs     # Syllable-to-grid mapping, tonal contours
-│   │   ├── midi.rs             # MIDI file output with embedded lyrics
-│   │   ├── lilypond.rs         # LilyPond sheet music output
-│   │   ├── generate.rs         # High-level runtime API (full pipeline in one call)
-│   │   └── synth.rs            # Phase 1 waveform synthesizer (Grid → mono PCM)
-│   └── Cargo.toml
-├── godot/                      # Godot 4 project
-│   ├── project.godot           # Project config + input map + autoloads
-│   ├── elven_canopy.gdextension
-│   ├── target -> ../target     # Symlink so Godot can find the compiled .so
-│   ├── scenes/
-│   │   ├── main.tscn           # Game scene (3D world, camera, renderers)
-│   │   ├── main_menu.tscn      # Main menu (New Game / Load / Quit)
-│   │   └── new_game.tscn       # New game config (seed, tree presets)
-│   └── scripts/
-│       ├── main.gd             # Game scene controller, wires all subsystems
-│       ├── game_session.gd     # Autoload: persists seed/config across scenes
-│       ├── main_menu.gd        # Main menu UI
-│       ├── new_game_menu.gd    # New game screen with tree parameter sliders
-│       ├── pause_menu.gd       # In-game pause overlay (ESC)
-│       ├── save_dialog.gd      # Modal save-game dialog (name input)
-│       ├── load_dialog.gd      # Modal load-game dialog (file list)
-│       ├── orbital_camera.gd   # Camera controls (orbit, follow, vertical snap)
-│       ├── elf_renderer.gd     # Billboard chibi elf sprites (pool pattern)
-│       ├── capybara_renderer.gd # Billboard chibi capybara sprites
-│       ├── tree_renderer.gd    # Tree voxel mesh rendering (MultiMesh)
-│       ├── sprite_factory.gd   # Procedural chibi sprite generation from seed
-│       ├── action_toolbar.gd   # Top toolbar (speed controls, gameplay) + toggleable debug panel
-│       ├── construction_controller.gd # Click-drag construction placement (5-state FSM)
-│       ├── height_grid_renderer.gd    # Wireframe height-slice grid overlay
-│       ├── placement_controller.gd  # Click-to-place for spawns and tasks
-│       ├── selection_controller.gd  # Click-to-select creatures
-│       ├── tooltip_controller.gd    # Hover tooltips for world objects
-│       ├── notification_display.gd  # Toast-style event notifications
-│       ├── status_bar.gd           # Persistent bottom-left status bar (population, idle, tasks, speed)
-│       ├── keybind_help.gd         # Keyboard shortcuts help overlay
-│       ├── creature_info_panel.gd   # Right-side creature info + follow button
-│       ├── group_info_panel.gd     # Right-side multi-creature selection panel
-│       ├── selection_highlight.gd    # Faction-colored selection ring rendering (pool pattern)
-│       ├── hp_bar.gd               # Overhead HP bar textures and sprite helpers
-│       ├── projectile_renderer.gd   # In-flight projectile rendering (oriented CylinderMesh pool)
-│       └── construction_music.gd    # Construction music playback (PCM via AudioStreamGenerator)
-├── data/                       # Shared data files (lexicon, Markov models, elfcyclopedia)
-│   ├── vaelith_lexicon.json    # Vaelith vocabulary (41 entries with syllables + tones)
-│   ├── species_elfcyclopedia.json # Species bestiary data (name, description, traits)
-│   ├── markov_models.json      # Interval transition tables from Palestrina corpus
-│   └── motif_library.json      # Ranked interval n-gram motifs
-├── python/                     # Offline tools (not part of game runtime)
-│   ├── corpus_analysis.py      # Trains Markov models from Renaissance polyphony
-│   ├── rate_midi.py            # Pairwise MIDI comparison for preference training
-│   └── requirements.txt        # music21, numpy, mido, python-rtmidi
-├── docs/
-│   ├── design_doc.md           # Full design specification (all phases)
-│   ├── tracker.md              # Project tracker (features, bugs, status)
-│   ├── music_generator.md      # Music generator user guide + CLI reference
-│   ├── organic_tree_vision.md  # Tree generation design notes
-│   └── drafts/                 # Working design documents
-├── scripts/
-│   ├── build.sh                # Build, test, and run script
-│   └── tracker.py              # CLI tool for docs/tracker.md queries and mutations
-└── default_config.json         # Default GameConfig values
-```
+Top-level crates: `elven_canopy_sim` (pure Rust sim), `elven_canopy_gdext` (GDExtension bridge), `elven_canopy_music` (polyphonic music generator), `elven_canopy_lang` (Vaelith conlang), `elven_canopy_prng` (shared PRNG), `tabulosity`/`tabulosity_derive` (in-memory relational store). Godot project in `godot/` (scenes + scripts). Data files in `data/`. Python offline tools in `python/`. Docs in `docs/`. Build scripts in `scripts/`.
+
+For the full annotated directory tree, see `docs/project_structure.md`.
 
 ## Building and Running
 
@@ -185,27 +43,11 @@ scripts/build.sh run        # Debug build, then launch the game
 scripts/build.sh run-branch NAME  # Fetch, checkout branch, sync to remote, build+run
 ```
 
-To run sim tests alone: `cargo test -p elven_canopy_sim`
-
-To run lang crate tests: `cargo test -p elven_canopy_lang`
-
-To run music crate tests: `cargo test -p elven_canopy_music`
-
-To run tabulosity tests: `cargo test -p tabulosity -p tabulosity_derive`
-
-To run tabulosity serde tests (separate invocation): `cargo test -p tabulosity --features serde --test serde`
-
-To generate music from the CLI: `cargo run -p elven_canopy_music -- --help` (see `docs/music_generator.md` for full usage).
+Individual crate tests: `cargo test -p elven_canopy_sim`, `cargo test -p elven_canopy_lang`, `cargo test -p elven_canopy_music`, `cargo test -p tabulosity -p tabulosity_derive`. Tabulosity serde tests: `cargo test -p tabulosity --features serde --test serde`. Music CLI: `cargo run -p elven_canopy_music -- --help`.
 
 ### Python Tools
 
 The `python/` directory contains offline training tools for the music generator — they are **not** part of the game runtime. **Never use `source .venv/bin/activate`** — always invoke tools via their full venv path (e.g., `python/.venv/bin/python`).
-
-```bash
-cd python && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # One-time setup
-cd python && .venv/bin/python corpus_analysis.py   # Train Markov models from Palestrina corpus → data/
-cd python && .venv/bin/python rate_midi.py          # Pairwise MIDI comparison for preference model training
-```
 
 ## Toolchain Versions
 
@@ -217,41 +59,7 @@ When upgrading the `godot` crate, check for a matching `api-4-x` feature flag. T
 
 ## Code Quality Tools
 
-`cargo fmt`, `cargo clippy`, `cargo test`, `gdformat`, and `gdlint` are all enforced in CI via `.github/workflows/ci.yml`. Run all checks locally with:
-
-```bash
-scripts/build.sh check      # fmt --check + clippy + gdformat --check + gdlint
-scripts/build.sh test       # run all crate tests + gdext compile check
-scripts/build.sh quicktest  # test only crates changed vs main
-```
-
-### Rust
-
-Workspace lint config lives in the root `Cargo.toml` under `[workspace.lints.clippy]`. Each crate inherits via `[lints] workspace = true`. Formatting config is in `rustfmt.toml` (currently all defaults).
-
-Run individually:
-
-```bash
-cargo fmt --all --check       # check formatting
-cargo clippy --workspace -- -D warnings   # lint
-cargo fmt --all               # auto-format
-```
-
-### GDScript
-
-GDScript files are checked with **gdformat** (formatter) and **gdlint** (linter) from the [gdtoolkit](https://github.com/Scony/godot-gdscript-toolkit) package.
-
-**Setup (one-time):** `scripts/build.sh check` auto-creates the venv and installs gdtoolkit if missing.
-
-Run individually:
-
-```bash
-python/.venv/bin/gdformat --check --line-length 100 godot/scripts/*.gd
-python/.venv/bin/gdlint godot/scripts/*.gd
-python/.venv/bin/gdformat --line-length 100 godot/scripts/*.gd   # auto-format
-```
-
-**Configuration:** `.gdlintrc` at the repo root configures gdlint. Currently disables `function-variable-name` (short names like `W`/`H` are intentional in pixel-drawing code).
+`cargo fmt`, `cargo clippy`, `cargo test`, `gdformat`, and `gdlint` are all enforced in CI via `.github/workflows/ci.yml`. Run all checks locally with `scripts/build.sh check`. Workspace lint config lives in the root `Cargo.toml` under `[workspace.lints.clippy]`. GDScript uses gdtoolkit (`gdformat`/`gdlint`); `.gdlintrc` at repo root configures gdlint.
 
 ## Running Commands
 
@@ -265,69 +73,24 @@ Use `.tmp/` in the repo root (gitignored) for any temporary files — benchmark 
 
 ## Module Docstrings
 
-Every code file should have a top-level comment that helps someone new to the codebase orient themselves. Cover:
+Every code file should have a top-level comment that helps someone new to the codebase orient themselves. Cover: what the file does, how it fits into the system (reference sibling files with extensions), notable algorithms, and critical constraints (e.g., determinism). Keep it proportional to the file's complexity.
 
-- **What the file does** — its purpose and scope.
-- **How it fits into the system** — which sibling files it delegates to or depends on, and what role it plays in the larger architecture. Use file extensions when referencing files (e.g., ``tempering.py``, not ``tempering``) so it's clear these are files, not abstract concepts.
-- **Notable or surprising algorithms** — anything non-obvious that a reader might need context for (e.g., angular-sweep visibility, OBB collision via SAT).
-- **Critical constraints** — if the file is subject to the determinism requirement, say so explicitly. A newcomer who doesn't know about the requirement can easily break it.
-
-Keep it proportional to the file's complexity. A 50-line utility doesn't need a paragraph; an 800-line engine core may need several paragraphs to explain its algorithms and how it fits into the rest of the project. Test files can be brief.
-
-When making changes to a file, consider whether documentation elsewhere needs updating — module docstrings in sibling files that reference the changed module, the architecture overview in this file, etc. A renamed function or shifted responsibility can leave other files' docstrings silently wrong.
+When making changes to a file, consider whether documentation elsewhere needs updating — module docstrings in sibling files that reference the changed module, the architecture overview in this file, etc.
 
 ## Codebase Patterns and Gotchas
 
-Things that are non-obvious or surprising about this codebase:
+For the full list of codebase patterns, conventions, and gotchas, see `docs/codebase_patterns.md`. The most critical items are duplicated here:
 
 **Data file loading (CRITICAL):**
-- **Never use runtime file I/O (`std::fs`, `FileAccess`) to load static data files** (JSON configs, lexicons, etc.). Always use `include_str!` or `include_bytes!` to embed them at compile time. Runtime paths break in exported Godot builds because `res://` points into the PCK bundle and relative paths outside it don't exist. See `elven_canopy_lang/src/lib.rs` and `elven_canopy_gdext/src/elfcyclopedia_server.rs` for examples of the correct pattern.
-
-**Tick rate and sim decoupling:**
-- The sim runs at **1000 ticks per simulated second** (`tick_duration_ms = 1`). All tick-denominated config values (heartbeat intervals, food decay rates, species speed params) are calibrated for this rate.
-- The sim is decoupled from the frame rate. `main.gd` calls `bridge.frame_update(delta)` each frame. In single-player, a `LocalRelay` on the Rust side handles tick pacing with a time-based accumulator, capped at 5000 ticks per frame to prevent spiral-of-death.
-- Movement speed is per-species: `walk_ticks_per_voxel` (ticks per 1.0 units of euclidean distance on flat ground) and `climb_ticks_per_voxel` (ticks per 1.0 units on TrunkClimb/GroundToTrunk edges). Nav graph edges store euclidean distance, not time-cost — speed config is not needed for graph construction.
-
-**Voxel coordinate system:**
-- Y is up. The world is (x, z) horizontal, y vertical.
-- Flat array indexing: `x + z * size_x + y * size_x * size_z`. Y is the outermost axis, not the middle one.
-- Forest floor is at y=0 (solid `ForestFloor` voxels). Creatures walk on air voxels at y=1 (above the floor). Nav nodes start at y=1.
-- Voxel coordinates are integer corners. Renderers offset by +0.5 to center meshes/sprites on the voxel.
-
-**Navigation graph:**
-- Built from the voxel world at startup, not updated incrementally. If the world changes, the nav graph must be rebuilt.
-- Uses 26-connectivity (not 6) to avoid disconnecting thin geometry like radius-1 branches. Duplicate edges are avoided by only checking 13 "positive-half" neighbor offsets per node.
-- A nav node exists for every air voxel that has at least one face-adjacent solid voxel (i.e., the creature is standing on or clinging to a surface).
-
-**Tree generation:**
-- Trunk is just the first branch — all segments (trunk, branches, roots) use the same growth algorithm with different parameters.
-- Every tree voxel must be face-connected (6-connectivity) to at least one other tree voxel. `bridge_cross_sections()` fills gaps when growth steps diagonally.
-- Voxel type priority: Trunk > Branch > Root > Leaf > Air. Higher types are never overwritten by lower ones.
-
-**GDScript UI:**
-- All UI is built programmatically in `_ready()` methods, not in `.tscn` scene files. The scene files are mostly empty shells.
-- `game_session.gd` is a Godot autoload singleton that persists seed and tree config across scene transitions (main menu → new game → game).
-
-**SimBridge command flow:**
-- All commands (spawn, goto, build, carve, etc.) are buffered and execute on the next `frame_update()` (~16ms at 60fps), with identical behavior in SP and MP. No command auto-steps the sim.
-- Build/carve validation is done upfront by the `validate_*_preview()` query methods that GDScript calls before confirming placement. The designation commands themselves are fire-and-forget.
-
-**Sprite rendering and movement interpolation:**
-- Elf sprites are offset +0.48 in Y, capybara sprites +0.32, to visually center them above their nav node position. Selection ray-to-sprite distance uses these same offsets.
-- Sprites use a pool pattern: created on demand, never destroyed, only hidden when count decreases.
-- Creature positions are smoothly interpolated between nav nodes. Movement interpolation data lives in the `MoveAction` table (`move_from`/`move_to`/`move_start_tick`/`move_end_tick`), separate from the `Creature` struct. Each `Creature` has `action_kind` and `next_available_tick` fields tracking its current action. `bridge.frame_update(delta)` returns a fractional `render_tick` each frame; `main.gd` distributes it to renderers and the selection controller. `SimBridge.get_creature_positions(species, render_tick)` calls `Creature::interpolated_position()` to lerp between nav nodes using the associated `MoveAction` row.
-
-**Input precedence:**
-- ESC handling flows: placement_controller (cancel placement) → construction_controller (cancel construction) → selection_controller (deselect) → pause_menu (open/close menu). Each handler calls `set_input_as_handled()` to prevent downstream handlers from firing.
+- **Never use runtime file I/O (`std::fs`, `FileAccess`) to load static data files.** Always use `include_str!` or `include_bytes!` to embed at compile time. Runtime paths break in exported Godot builds.
 
 **Keyboard shortcut assignment (CRITICAL):**
-- Before assigning ANY new keyboard shortcut, **thoroughly audit all existing bindings** across every GDScript file. Search for `KEY_` in `godot/scripts/` to find all current bindings. Many keys are already in use (Space, 1-3, B, T, U, I, F12, ?, ESC, Enter, arrow keys, +/=).
+- Before assigning ANY new keyboard shortcut, **thoroughly audit all existing bindings** across every GDScript file. Search for `KEY_` in `godot/scripts/`. Many keys are already in use.
 - **Always ask the user** before assigning a shortcut — never pick one unilaterally.
 
-**"Pull main":** When asked to pull/update/rebase on main, first update the local ref: `git fetch origin main:main` (if not on main) or `git pull` (if on main). A stale local main causes wrong diffs in once-over and similar operations.
+**Voxel coordinate system:** Y is up. Flat array indexing: `x + z * size_x + y * size_x * size_z`. Forest floor at y=0, creatures walk at y=1. Renderers offset by +0.5.
 
-**Dev profile tuning:**
-- `Cargo.toml` sets `opt-level = 0` for the dev profile (fastest compile times). For machines that run the game with UI, override to `opt-level = 1` via `.cargo/config.toml` (gitignored) for ~4x faster sim execution at a small compile-time cost. The test profile inherits from dev.
+**"Pull main":** When asked to pull/update/rebase on main, first update the local ref: `git fetch origin main:main` (if not on main) or `git pull` (if on main). A stale local main causes wrong diffs.
 
 ## Branching (CRITICAL — DO THIS FIRST)
 
