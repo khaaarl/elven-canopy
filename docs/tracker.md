@@ -66,6 +66,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
+[ ] F-batch-construct      Batch construction mode with ensemble validation
 [ ] F-binding-conflicts    Binding conflict detection
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
@@ -131,6 +132,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-narrative-log        Events and narrative log
+[ ] F-no-bp-overlap        Reject overlapping blueprint designations
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-poetry-reading       Social gatherings and poetry readings
@@ -305,7 +307,24 @@ Queue multiple blueprints with automatic dependency ordering (e.g., build
 the platform before the walls on top of it). Structural warnings for
 blueprints that would create unsupported geometry.
 
-**Related:** F-blueprint-mode, F-struct-basic
+**Related:** F-batch-construct, F-blueprint-mode, F-struct-basic
+
+#### F-batch-construct — Batch construction mode with ensemble validation
+**Status:** Todo · **Phase:** 3
+
+Batch construction mode: the player enters a planning mode, creates several
+blueprints (e.g., multiple struts holding up a platform with a building on
+top), then hits "finalize" to commit the whole ensemble. All blueprints are
+validated structurally as a unit, built together, and accompanied by a
+single large choral composition (bigger project = grander song). This
+enables building structures that can't be constructed piecemeal — e.g., a
+platform in open air supported only by struts that aren't yet built.
+
+Each blueprint within the batch still occupies distinct voxels
+(F-no-blueprint-overlap enforced within the batch). Dependency ordering
+(F-batch-blueprint) determines which pieces are built first.
+
+**Related:** F-batch-blueprint, F-support-struts
 
 #### F-bldg-concert — Concert hall
 **Status:** Todo · **Phase:** 4
@@ -509,6 +528,24 @@ produces it. Conservation of mass prevents infinite building.
 
 **Related:** F-branch-growth, F-mana-system
 
+#### F-no-bp-overlap — Reject overlapping blueprint designations
+**Status:** Todo · **Phase:** 2
+
+Reject construction designations that overlap existing blueprint voxels.
+Currently nothing prevents a player from designating a platform on top of
+an in-progress strut blueprint (or vice versa), which creates ambiguous
+ownership and cancel-restoration conflicts. This constraint simplifies
+the construction pipeline: a voxel can only belong to one blueprint at a
+time. The player must wait for one build to complete (or cancel it) before
+designating over the same voxels.
+
+Future work (F-batch-construction) will allow composing multiple blueprints
+as a single batch, but each blueprint within the batch still occupies
+distinct voxels.
+
+**Blocks:** F-support-struts
+**Related:** F-support-struts
+
 #### F-placement-ui — Revamp construction placement UX
 **Status:** Done · **Phase:** 2
 
@@ -575,20 +612,23 @@ and assignments. Requires structural validation of the expanded footprint.
 
 #### F-support-struts — Support strut construction
 **Status:** Todo · **Phase:** 3 · **Refs:** §9
+**Draft:** `docs/drafts/support_struts.md`
 
-Diagonal braces and support struts that elves can build under platforms and
-between structures. Struts convert bending stress into compression along
-their length, dramatically reducing stress at connection points. The FEM
-solver (F-voxel-fem) already handles arbitrary geometry — struts are a
-construction primitive that players learn to use for stronger builds.
+Diagonal braces and support struts that elves can build between two
+designated endpoints. A 3D Bresenham line of solid `Strut` voxels is placed
+between the endpoints, replacing natural materials (air, dirt, trunk, leaves)
+but not player-built structures. Virtual "rod springs" thread through the
+strut for efficient axial load transfer in the structural solver — making
+struts genuinely stronger than an ad-hoc staircase of wood voxels. Struts
+can cross each other to form trusses. Two-click-then-confirm placement UX
+using the height stepper.
 
-Design doc §9 mentions struts as an emergent structural strategy: "A diagonal
-brace under a platform converts bending stress into compression along the
-strut, dramatically reducing stress at the connection." Blueprint stress
-preview (F-stress-heatmap) should suggest adding struts at high-stress
-connections.
+Design doc §9: "A diagonal brace under a platform converts bending stress
+into compression along the strut, dramatically reducing stress at the
+connection."
 
-**Related:** F-stress-heatmap, F-voxel-fem
+**Blocked by:** F-no-bp-overlap
+**Related:** F-batch-construct, F-no-bp-overlap, F-stress-heatmap, F-voxel-fem
 
 #### F-task-priority — Priority queue and auto-assignment
 **Status:** Todo · **Phase:** 2 · **Refs:** §11, §15
