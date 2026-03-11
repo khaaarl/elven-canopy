@@ -2984,7 +2984,13 @@ impl SimBridge {
             return false;
         };
         let coord = VoxelCoord::new(x, y, z);
-        sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+        if !sim.world.in_bounds(coord) || sim.world.get(coord) != VoxelType::Air {
+            return false;
+        }
+        // F-no-bp-overlap: also reject if this voxel is claimed by an
+        // existing designated blueprint.
+        let overlay = sim.blueprint_overlay();
+        !overlay.voxels.contains_key(&coord)
     }
 
     /// Check whether a single voxel has at least one face-adjacent solid
@@ -3130,37 +3136,26 @@ impl SimBridge {
             }
         }
 
-        // Count carvable voxels (solid and not ForestFloor), considering
-        // blueprint overlay so designated builds count as carvable.
-        let mut carvable_count = 0;
-        for dy in 0..h {
-            for dx in 0..w {
-                for dz in 0..d {
-                    let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
-                    let vt = effective_type(coord);
-                    if vt.is_solid() && vt != VoxelType::ForestFloor {
-                        carvable_count += 1;
-                    }
-                }
-            }
-        }
-
-        if carvable_count == 0 {
-            return Self::preview_result("Blocked", "Nothing to carve.");
-        }
-
-        // Collect carvable coords for structural validation.
+        // Collect carvable coords: solid, not ForestFloor, and not already
+        // claimed by an existing blueprint (F-no-bp-overlap).
         let mut carve_coords = Vec::new();
         for dy in 0..h {
             for dx in 0..w {
                 for dz in 0..d {
                     let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
+                    if overlay.voxels.contains_key(&coord) {
+                        continue;
+                    }
                     let vt = effective_type(coord);
                     if vt.is_solid() && vt != VoxelType::ForestFloor {
                         carve_coords.push(coord);
                     }
                 }
             }
+        }
+
+        if carve_coords.is_empty() {
+            return Self::preview_result("Blocked", "Nothing to carve.");
         }
 
         let validation = structural::validate_carve_fast(
@@ -3266,6 +3261,12 @@ impl SimBridge {
             }
         }
 
+        // F-no-bp-overlap: reject if any voxel belongs to an existing
+        // designated blueprint.
+        if voxels.iter().any(|v| overlay.voxels.contains_key(v)) {
+            return Self::preview_result("Blocked", "Overlaps an existing blueprint designation.");
+        }
+
         // Overlap-aware classification: Platform allows tree overlap.
         // Uses effective type (world + blueprint overlay) so existing
         // designated blueprints are treated as already built.
@@ -3355,8 +3356,26 @@ impl SimBridge {
             return Self::preview_result("Blocked", "Building too small (min 3x3x1).");
         }
 
-        // Validate foundation (all must be solid, considering blueprint overlay).
         let anchor = VoxelCoord::new(x, y, z);
+
+        // F-no-bp-overlap: reject if any interior voxel belongs to an
+        // existing designated blueprint. Checked early so the overlap
+        // message takes priority over foundation/interior checks.
+        for dy in 1..=height {
+            for dx in 0..width {
+                for dz in 0..depth {
+                    let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
+                    if overlay.voxels.contains_key(&coord) {
+                        return Self::preview_result(
+                            "Blocked",
+                            "Overlaps an existing blueprint designation.",
+                        );
+                    }
+                }
+            }
+        }
+
+        // Validate foundation (all must be solid, considering blueprint overlay).
         for dx in 0..width {
             for dz in 0..depth {
                 let coord = VoxelCoord::new(x + dx, y, z + dz);
@@ -3973,6 +3992,18 @@ impl SimBridge {
             _ => return Self::preview_result("Blocked", "Invalid orientation."),
         };
         let (odx, _, odz) = face_dir.to_offset();
+
+        // F-no-bp-overlap: reject if any ladder voxel belongs to an
+        // existing designated blueprint.
+        for dy in 0..height {
+            let coord = VoxelCoord::new(x, y + dy, z);
+            if overlay.voxels.contains_key(&coord) {
+                return Self::preview_result(
+                    "Blocked",
+                    "Overlaps an existing blueprint designation.",
+                );
+            }
+        }
 
         // Build column and validate using effective type (world + blueprint overlay).
         let mut build_voxels = Vec::new();

@@ -865,6 +865,7 @@ impl SimState {
     /// Validation (silent no-op on failure, consistent with other commands):
     /// - Voxels must be non-empty.
     /// - All voxels must be in-bounds.
+    /// - No voxel may belong to an existing designated blueprint (F-no-bp-overlap).
     /// - All voxels must be Air (or overlap-compatible, considering overlay).
     /// - At least one voxel must have a solid face neighbor (considering overlay).
     fn designate_build(
@@ -891,6 +892,16 @@ impl SimState {
         // planned builds as already present for overlap, adjacency, and
         // structural checks.
         let overlay = self.blueprint_overlay();
+
+        // F-no-bp-overlap: reject if any proposed voxel belongs to an
+        // existing designated blueprint. A voxel can only belong to one
+        // blueprint at a time.
+        if voxels.iter().any(|v| overlay.voxels.contains_key(v)) {
+            self.last_build_message =
+                Some("Overlaps an existing blueprint designation.".to_string());
+            return;
+        }
+
         let effective_type =
             |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
 
@@ -1028,6 +1039,7 @@ impl SimState {
     /// - All foundation voxels (anchor.y level) must be solid (considering overlay)
     /// - All interior voxels (above foundation) must be Air (considering overlay)
     /// - All interior voxels must be in-bounds
+    /// - No interior voxel may belong to an existing designated blueprint (F-no-bp-overlap)
     fn designate_building(
         &mut self,
         anchor: VoxelCoord,
@@ -1047,6 +1059,22 @@ impl SimState {
         let overlay = self.blueprint_overlay();
         let effective_type =
             |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
+
+        // F-no-bp-overlap: reject if any interior voxel belongs to an
+        // existing designated blueprint. Checked early (before foundation/
+        // interior validation) so the overlap message takes priority.
+        for y in anchor.y + 1..anchor.y + 1 + height {
+            for x in anchor.x..anchor.x + width {
+                for z in anchor.z..anchor.z + depth {
+                    let coord = VoxelCoord::new(x, y, z);
+                    if overlay.voxels.contains_key(&coord) {
+                        self.last_build_message =
+                            Some("Overlaps an existing blueprint designation.".to_string());
+                        return;
+                    }
+                }
+            }
+        }
 
         // Validate foundation (all must be solid, considering blueprint overlay).
         for x in anchor.x..anchor.x + width {
@@ -1149,6 +1177,7 @@ impl SimState {
     /// Validation:
     /// - height >= 1
     /// - orientation must be horizontal (PosX/NegX/PosZ/NegZ)
+    /// - No column voxel may belong to an existing designated blueprint (F-no-bp-overlap)
     /// - All column voxels must be Air or Convertible (considering overlay)
     /// - Wood: at least one voxel's ladder face is adjacent to solid (considering overlay)
     /// - Rope: topmost voxel's ladder face is adjacent to solid (considering overlay)
@@ -1179,6 +1208,17 @@ impl SimState {
         let overlay = self.blueprint_overlay();
         let effective_type =
             |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
+
+        // F-no-bp-overlap: reject if any ladder voxel belongs to an
+        // existing designated blueprint.
+        for dy in 0..height {
+            let coord = VoxelCoord::new(anchor.x, anchor.y + dy, anchor.z);
+            if overlay.voxels.contains_key(&coord) {
+                self.last_build_message =
+                    Some("Overlaps an existing blueprint designation.".to_string());
+                return;
+            }
+        }
 
         // Classify column voxels using overlap rules (ladders allow tree overlap).
         let build_type = match kind {
@@ -1301,8 +1341,9 @@ impl SimState {
     /// that is solid but overlaid as Air (pending carve) is not.
     ///
     /// Filters the input to only carvable voxels (solid and not ForestFloor,
-    /// considering overlay). Air and ForestFloor voxels are silently skipped.
-    /// Records original voxel types for cancel restoration.
+    /// considering overlay). Air, ForestFloor, and voxels belonging to existing
+    /// blueprints (F-no-bp-overlap) are silently skipped. Records original
+    /// voxel types for cancel restoration.
     fn designate_carve(
         &mut self,
         voxels: &[VoxelCoord],
@@ -1326,11 +1367,14 @@ impl SimState {
         let effective_type =
             |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
 
-        // Filter to only carvable voxels: solid and not ForestFloor
-        // (considering blueprint overlay so designated builds are carvable).
+        // Filter to only carvable voxels: solid, not ForestFloor, and not
+        // already claimed by an existing blueprint (F-no-bp-overlap).
         let mut carve_voxels = Vec::new();
         let mut original_voxels = Vec::new();
         for &coord in voxels {
+            if overlay.voxels.contains_key(&coord) {
+                continue;
+            }
             let vt = effective_type(coord);
             if vt.is_solid() && vt != VoxelType::ForestFloor {
                 carve_voxels.push(coord);
@@ -15640,6 +15684,489 @@ mod tests {
         let orig = bp.original_voxels.iter().find(|(c, _)| *c == solid);
         assert!(orig.is_some());
         assert_eq!(orig.unwrap().1, original_type);
+    }
+
+    // -------------------------------------------------------------------
+    // Blueprint overlap rejection (F-no-bp-overlap)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn build_rejects_overlap_with_existing_build_blueprint() {
+        let mut sim = test_sim(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // First designation succeeds.
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Second designation on the same voxel should be rejected.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd2], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            1,
+            "Second blueprint should not be created"
+        );
+        assert!(
+            sim.last_build_message
+                .as_ref()
+                .unwrap()
+                .contains("existing blueprint"),
+            "Should mention existing blueprint overlap: {:?}",
+            sim.last_build_message
+        );
+    }
+
+    #[test]
+    fn build_rejects_overlap_with_carve_blueprint() {
+        let mut sim = test_sim(42);
+        let solid = find_carvable_voxel(&sim);
+
+        // Designate a carve on the solid voxel.
+        let carve_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateCarve {
+                voxels: vec![solid],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[carve_cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Attempt to build on the same voxel (carve shows as Air in overlay).
+        // This should be rejected due to blueprint overlap, not silently allowed.
+        let build_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Wall,
+                voxels: vec![solid],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[build_cmd], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            1,
+            "Build should not overlap carve blueprint"
+        );
+        assert!(
+            sim.last_build_message
+                .as_ref()
+                .unwrap()
+                .contains("existing blueprint"),
+        );
+    }
+
+    #[test]
+    fn carve_filters_out_build_blueprint_voxels() {
+        let mut sim = test_sim(42);
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Designate a platform build.
+        let build_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[build_cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Attempt to carve the same voxel — filtered out as blueprint-claimed,
+        // so nothing to carve.
+        let carve_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateCarve {
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[carve_cmd], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            1,
+            "Carve should not overlap build blueprint"
+        );
+    }
+
+    #[test]
+    fn carve_filters_out_carve_blueprint_voxels() {
+        let mut sim = test_sim(42);
+        let solid = find_carvable_voxel(&sim);
+
+        // First carve designation.
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateCarve {
+                voxels: vec![solid],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Second carve on the same voxel — filtered out.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateCarve {
+                voxels: vec![solid],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd2], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            1,
+            "Double carve should be filtered"
+        );
+    }
+
+    #[test]
+    fn building_rejects_overlap_with_existing_blueprint() {
+        let mut sim = test_sim(42);
+        let site = find_building_site(&sim);
+
+        // Designate a platform on one of the building's wall voxels (y+1).
+        // Building walls are at the perimeter of (site.x..site.x+3, site.y+1, site.z..site.z+3).
+        let wall_coord = VoxelCoord::new(site.x, site.y + 1, site.z);
+        assert_eq!(sim.world.get(wall_coord), VoxelType::Air);
+
+        // First: place a platform at the wall position.
+        // Need adjacency — wall_coord is above solid ground, so has a solid
+        // face neighbor below.
+        let platform_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![wall_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[platform_cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Now try to designate a building that overlaps.
+        let building_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuilding {
+                anchor: site,
+                width: 3,
+                depth: 3,
+                height: 1,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[building_cmd], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            1,
+            "Building should be rejected due to overlap; msg: {:?}",
+            sim.last_build_message
+        );
+        assert!(
+            sim.last_build_message
+                .as_ref()
+                .unwrap()
+                .contains("existing blueprint"),
+        );
+    }
+
+    #[test]
+    fn ladder_rejects_overlap_with_existing_blueprint() {
+        let mut sim = test_sim(42);
+        let (anchor, orientation) = find_ladder_column(&sim, 2);
+
+        // Designate a platform at the ladder's anchor voxel.
+        let platform_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![anchor],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[platform_cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Now try to designate a ladder overlapping that voxel.
+        let ladder_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateLadder {
+                anchor,
+                height: 2,
+                orientation,
+                kind: LadderKind::Wood,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[ladder_cmd], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            1,
+            "Ladder should be rejected due to overlap; msg: {:?}",
+            sim.last_build_message
+        );
+        assert!(
+            sim.last_build_message
+                .as_ref()
+                .unwrap()
+                .contains("existing blueprint"),
+        );
+    }
+
+    #[test]
+    fn carve_partial_overlap_filters_claimed_voxels() {
+        // When carving a region where some voxels are claimed by an existing
+        // blueprint and some are not, only unclaimed voxels appear in the
+        // new carve blueprint.
+        let mut sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+
+        // Find two carvable (solid, non-ForestFloor) voxels.
+        let carvable: Vec<VoxelCoord> = tree
+            .trunk_voxels
+            .iter()
+            .copied()
+            .filter(|v| {
+                let vt = sim.world.get(*v);
+                vt.is_solid() && vt != VoxelType::ForestFloor && v.y > 0
+            })
+            .take(2)
+            .collect();
+        assert!(carvable.len() >= 2, "Need two carvable voxels");
+
+        // Designate a carve on the first voxel.
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateCarve {
+                voxels: vec![carvable[0]],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Now carve both voxels — the first should be filtered out.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateCarve {
+                voxels: carvable.clone(),
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd2], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            2,
+            "Second carve should succeed with the unclaimed voxel"
+        );
+        let second_bp = sim
+            .db
+            .blueprints
+            .iter_all()
+            .find(|bp| bp.voxels.len() == 1 && bp.voxels[0] == carvable[1])
+            .expect("Second blueprint should contain only the unclaimed voxel");
+        assert_eq!(second_bp.voxels, vec![carvable[1]]);
+    }
+
+    #[test]
+    fn build_partial_overlap_rejected() {
+        // If a multi-voxel designation has even one voxel overlapping an
+        // existing blueprint, the entire designation is rejected.
+        let mut sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+
+        // Find two adjacent air voxels next to trunk.
+        let mut air_pair: Option<(VoxelCoord, VoxelCoord)> = None;
+        'outer: for &trunk_coord in &tree.trunk_voxels {
+            for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let a = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y, trunk_coord.z + dz);
+                let b = VoxelCoord::new(a.x + dx, a.y, a.z + dz);
+                if sim.world.in_bounds(a)
+                    && sim.world.in_bounds(b)
+                    && sim.world.get(a) == VoxelType::Air
+                    && sim.world.get(b) == VoxelType::Air
+                {
+                    air_pair = Some((a, b));
+                    break 'outer;
+                }
+            }
+        }
+        let (a, b) = air_pair.expect("Need two adjacent air voxels near trunk");
+
+        // Designate first voxel.
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![a],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Try to designate both voxels (a overlaps, b is new).
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![a, b],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd2], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            1,
+            "Partial overlap should reject entire designation"
+        );
+    }
+
+    #[test]
+    fn non_overlapping_builds_both_succeed() {
+        let mut sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+
+        // Find two separate air voxels next to trunk.
+        let mut air_voxels = Vec::new();
+        for &trunk_coord in &tree.trunk_voxels {
+            for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let neighbor =
+                    VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y, trunk_coord.z + dz);
+                if sim.world.in_bounds(neighbor) && sim.world.get(neighbor) == VoxelType::Air {
+                    air_voxels.push(neighbor);
+                    if air_voxels.len() >= 2 {
+                        break;
+                    }
+                }
+            }
+            if air_voxels.len() >= 2 {
+                break;
+            }
+        }
+        assert!(air_voxels.len() >= 2, "Need two air voxels near trunk");
+        let (a, b) = (air_voxels[0], air_voxels[1]);
+        assert_ne!(a, b);
+
+        let cmd1 = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![a],
+                priority: Priority::Normal,
+            },
+        };
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![b],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd1, cmd2], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            2,
+            "Non-overlapping builds should both succeed"
+        );
+    }
+
+    #[test]
+    fn completed_blueprint_does_not_block_carve() {
+        // Completed blueprints should not trigger the overlap check — only
+        // Designated blueprints are in the overlay.
+        let mut config = test_config();
+        config.build_work_ticks_per_voxel = 1;
+        let mut sim = SimState::with_config(42, config);
+
+        let air_coord = find_air_adjacent_to_trunk(&sim);
+
+        // Spawn an elf and designate a platform.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
+        let spawn_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: elf_pos,
+            },
+        };
+        let build_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Platform,
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[spawn_cmd, build_cmd], 2);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Let the build complete.
+        sim.step(&[], 500_000);
+        assert_eq!(
+            sim.world.get(air_coord),
+            VoxelType::GrownPlatform,
+            "Platform should be materialized"
+        );
+
+        // Now carve the completed platform — should succeed since the
+        // blueprint is Complete, not Designated.
+        let carve_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 500_001,
+            action: SimAction::DesignateCarve {
+                voxels: vec![air_coord],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[carve_cmd], 500_001);
+        // Should have 2 blueprints now (the completed build + the new carve).
+        assert_eq!(
+            sim.db.blueprints.len(),
+            2,
+            "Carve over completed build should succeed; msg: {:?}",
+            sim.last_build_message
+        );
     }
 
     #[test]
