@@ -139,6 +139,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
+[ ] F-relay-multi-game     Relay server supports multiple simultaneous games
+[ ] F-relay-release        Standalone relay server release build
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
@@ -2802,7 +2804,33 @@ trees) deferred to F-multi-tree. Draft doc covers relay architecture,
 session management, and UI design (main menu flow, lobby, in-game controls,
 ESC menu behavior, save/load semantics, sim speed policy).
 
-**Related:** F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-save-load, F-session-sm
+**Related:** F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
+
+#### F-relay-multi-game — Relay server supports multiple simultaneous games
+**Status:** Todo · **Phase:** 8
+
+Extend the relay server to host multiple simultaneous game sessions.
+Each session has its own independent lobby, command queue, turn counter,
+and connected-client list. Clients specify which session to join (or
+create) during the handshake. The relay multiplexes all sessions on a
+single listening port. Requires per-session isolation so that a crash
+or desync in one game cannot affect others. Depends on F-relay-release
+(standalone relay must exist first) and F-multiplayer (core relay
+protocol).
+
+**Related:** F-multiplayer, F-relay-release
+
+#### F-relay-release — Standalone relay server release build
+**Status:** Todo · **Phase:** 8
+
+Build the `elven_canopy_relay` crate as a standalone headless binary
+with a release profile. Add a `scripts/build.sh relay` (or similar)
+target that produces an optimized, stripped binary suitable for
+deployment on a dedicated server. Include any necessary Cargo profile
+tuning (LTO, codegen-units=1, strip=true) for minimal binary size and
+maximum performance.
+
+**Related:** F-multiplayer, F-relay-multi-game
 
 #### F-save-load — Save/load to JSON with versioning
 **Status:** Done · **Phase:** 2 · **Refs:** §4, §5
