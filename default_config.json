@@ -385,6 +385,8 @@
   "logistics_heartbeat_interval_ticks": 5000,
   "max_haul_tasks_per_heartbeat": 5,
   "elf_starting_bread": 2,
+  "elf_starting_bows": 1,
+  "elf_starting_arrows": 20,
   "elf_default_wants": [
     { "item_kind": "Bread", "target_quantity": 2 }
   ],

@@ -1901,15 +1901,36 @@ impl SimState {
             self.set_inv_wants(inv_id, &default_wants);
         }
 
-        // Give elves starting bread so they don't immediately forage.
-        if species == Species::Elf && self.config.elf_starting_bread > 0 {
-            self.inv_add_simple_item(
-                inv_id,
-                inventory::ItemKind::Bread,
-                self.config.elf_starting_bread,
-                Some(creature_id),
-                None,
-            );
+        // Give elves starting items so they don't immediately forage and can
+        // defend themselves.
+        if species == Species::Elf {
+            if self.config.elf_starting_bread > 0 {
+                self.inv_add_simple_item(
+                    inv_id,
+                    inventory::ItemKind::Bread,
+                    self.config.elf_starting_bread,
+                    Some(creature_id),
+                    None,
+                );
+            }
+            if self.config.elf_starting_bows > 0 {
+                self.inv_add_simple_item(
+                    inv_id,
+                    inventory::ItemKind::Bow,
+                    self.config.elf_starting_bows,
+                    Some(creature_id),
+                    None,
+                );
+            }
+            if self.config.elf_starting_arrows > 0 {
+                self.inv_add_simple_item(
+                    inv_id,
+                    inventory::ItemKind::Arrow,
+                    self.config.elf_starting_arrows,
+                    Some(creature_id),
+                    None,
+                );
+            }
         }
 
         // Schedule first activation (drives movement — wander or task work).
@@ -6441,8 +6462,9 @@ impl SimState {
         let impact_speed_sq = impact_velocity.magnitude_sq();
         let impact_speed = crate::projectile::isqrt_i128(impact_speed_sq);
         let reference_speed = self.config.arrow_base_speed as i128;
+        let multiplier = self.config.arrow_damage_multiplier.max(1) as i128;
         let damage = if reference_speed > 0 {
-            (impact_speed / reference_speed).max(1) as i64
+            (impact_speed * multiplier / reference_speed).max(1) as i64
         } else {
             1
         };
@@ -18258,20 +18280,32 @@ mod tests {
     // --- Inventory integration tests ---
 
     #[test]
-    fn elf_spawns_with_starting_bread() {
+    fn elf_spawns_with_starting_items() {
         let mut sim = test_sim(42);
         let elf_id = spawn_elf(&mut sim);
-        // Elves now spawn with starting bread (config.elf_starting_bread = 2).
-        let bread_count =
-            sim.inv_count_owned(sim.creature_inv(elf_id), inventory::ItemKind::Bread, elf_id);
+        let inv_id = sim.creature_inv(elf_id);
+        // Bread.
+        let bread_count = sim.inv_count_owned(inv_id, inventory::ItemKind::Bread, elf_id);
         assert_eq!(
             bread_count, 2,
             "Elf should spawn with 2 owned bread from elf_starting_bread config"
         );
+        // Bow.
+        let bow_count = sim.inv_count_owned(inv_id, inventory::ItemKind::Bow, elf_id);
         assert_eq!(
-            sim.inv_items(sim.creature_inv(elf_id)).len(),
-            1,
-            "Inventory should have exactly one stack (bread)"
+            bow_count, 1,
+            "Elf should spawn with 1 owned bow from elf_starting_bows config"
+        );
+        // Arrows.
+        let arrow_count = sim.inv_count_owned(inv_id, inventory::ItemKind::Arrow, elf_id);
+        assert_eq!(
+            arrow_count, 20,
+            "Elf should spawn with 20 owned arrows from elf_starting_arrows config"
+        );
+        assert_eq!(
+            sim.inv_items(inv_id).len(),
+            3,
+            "Inventory should have exactly three stacks (bread, bow, arrows)"
         );
     }
 
@@ -26316,6 +26350,8 @@ mod tests {
     #[test]
     fn test_shoot_arrow_spawns_projectile() {
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
         let elf = spawn_elf(&mut sim);
         let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -26382,6 +26418,8 @@ mod tests {
     #[test]
     fn test_shoot_arrow_no_bow_fails() {
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
         let elf = spawn_elf(&mut sim);
         let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -26419,6 +26457,8 @@ mod tests {
     #[test]
     fn test_shoot_arrow_no_arrows_fails() {
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
         let elf = spawn_elf(&mut sim);
         let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -26450,6 +26490,8 @@ mod tests {
     #[test]
     fn test_shoot_arrow_cooldown_prevents_second_shot() {
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
         let elf = spawn_elf(&mut sim);
         let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -26663,6 +26705,8 @@ mod tests {
     #[test]
     fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
         let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
         let elf = spawn_elf(&mut sim);
         let goblin = spawn_species(&mut sim, Species::Goblin);
 

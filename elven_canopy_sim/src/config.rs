@@ -907,6 +907,10 @@ fn default_arrow_gravity() -> i64 {
     crate::projectile::EARTH_GRAVITY_SUB_VOXEL
 }
 
+fn default_arrow_damage_multiplier() -> i64 {
+    20
+}
+
 fn default_arrow_base_speed() -> i64 {
     crate::projectile::SUB_VOXEL_ONE / 20 // ~50 voxels/sec
 }
@@ -1213,6 +1217,14 @@ pub struct GameConfig {
     #[serde(default = "default_elf_starting_bread")]
     pub elf_starting_bread: u32,
 
+    /// Number of bows given to each elf on spawn (0 or 1).
+    #[serde(default = "default_elf_starting_bows")]
+    pub elf_starting_bows: u32,
+
+    /// Number of arrows given to each elf on spawn.
+    #[serde(default = "default_elf_starting_arrows")]
+    pub elf_starting_arrows: u32,
+
     /// Default personal item desires for newly spawned elves. Each entry is an
     /// `(item_kind, target_quantity)` pair — idle elves create `AcquireItem`
     /// tasks to maintain these quantities in their personal inventory.
@@ -1296,6 +1308,12 @@ pub struct GameConfig {
     #[serde(default = "default_arrow_base_speed")]
     pub arrow_base_speed: i64,
 
+    /// Multiplier applied to arrow impact damage. The base formula yields
+    /// damage = impact_speed / reference_speed (≈1 at normal launch speed);
+    /// this multiplier scales the result before applying.
+    #[serde(default = "default_arrow_damage_multiplier")]
+    pub arrow_damage_multiplier: i64,
+
     /// Cooldown in ticks between ranged shots (global, all species).
     /// At 1000 ticks/sec, 3000 = 3 seconds between shots.
     #[serde(default = "default_shoot_cooldown_ticks")]
@@ -1338,6 +1356,14 @@ fn default_max_haul_tasks_per_heartbeat() -> u32 {
 
 fn default_elf_starting_bread() -> u32 {
     2
+}
+
+fn default_elf_starting_bows() -> u32 {
+    1
+}
+
+fn default_elf_starting_arrows() -> u32 {
+    20
 }
 
 fn default_elf_default_wants() -> Vec<crate::building::LogisticsWant> {
@@ -1733,6 +1759,8 @@ impl Default for GameConfig {
             logistics_heartbeat_interval_ticks: 5000,
             max_haul_tasks_per_heartbeat: 5,
             elf_starting_bread: 2,
+            elf_starting_bows: 1,
+            elf_starting_arrows: 20,
             elf_default_wants: default_elf_default_wants(),
             storehouse_default_priority: 2,
             storehouse_default_fruit_want: 10,
@@ -1796,6 +1824,7 @@ impl Default for GameConfig {
             worldgen: crate::worldgen::WorldgenConfig::default(),
             arrow_gravity: default_arrow_gravity(),
             arrow_base_speed: default_arrow_base_speed(),
+            arrow_damage_multiplier: default_arrow_damage_multiplier(),
             shoot_cooldown_ticks: default_shoot_cooldown_ticks(),
             attack_path_retry_limit: default_attack_path_retry_limit(),
         }
