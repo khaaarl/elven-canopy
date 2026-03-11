@@ -2757,12 +2757,24 @@ impl SimState {
         kind: inventory::ItemKind,
         material: inventory::Material,
     ) -> String {
-        if kind == inventory::ItemKind::Fruit
-            && let inventory::Material::FruitSpecies(id) = material
+        if let inventory::Material::FruitSpecies(id) = material
             && let Some(species) = self.db.fruit_species.get(&id)
         {
-            let noun = species.appearance.shape.item_noun();
-            return format!("{} {}", species.vaelith_name, noun);
+            if kind == inventory::ItemKind::Fruit {
+                let noun = species.appearance.shape.item_noun();
+                return format!("{} {}", species.vaelith_name, noun);
+            }
+            if matches!(
+                kind,
+                inventory::ItemKind::Pulp
+                    | inventory::ItemKind::Husk
+                    | inventory::ItemKind::Seed
+                    | inventory::ItemKind::FruitFiber
+                    | inventory::ItemKind::FruitSap
+                    | inventory::ItemKind::FruitResin
+            ) {
+                return format!("{} {}", species.vaelith_name, kind.display_name());
+            }
         }
         format!("{} {}", material.display_name(), kind.display_name())
     }
@@ -27853,6 +27865,32 @@ mod tests {
         let name =
             sim.material_item_display_name(inventory::ItemKind::Bow, inventory::Material::Oak);
         assert_eq!(name, "Oak Bow");
+    }
+
+    #[test]
+    fn material_item_display_name_extracted_component() {
+        let sim = test_sim(42);
+        if let Some(species) = sim.db.fruit_species.iter_all().next() {
+            let mat = inventory::Material::FruitSpecies(species.id);
+            let component_kinds = [
+                (inventory::ItemKind::Pulp, "Pulp"),
+                (inventory::ItemKind::Husk, "Husk"),
+                (inventory::ItemKind::Seed, "Seed"),
+                (inventory::ItemKind::FruitFiber, "Fiber"),
+                (inventory::ItemKind::FruitSap, "Sap"),
+                (inventory::ItemKind::FruitResin, "Resin"),
+            ];
+            for (kind, expected_suffix) in component_kinds {
+                let name = sim.material_item_display_name(kind, mat);
+                let expected = format!("{} {expected_suffix}", species.vaelith_name);
+                assert_eq!(
+                    name, expected,
+                    "Display name for {kind:?} should be '{expected}', got '{name}'"
+                );
+            }
+        } else {
+            panic!("test_sim should have at least one fruit species");
+        }
     }
 
     #[test]
