@@ -159,6 +159,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tree-species         Multiple tree species with properties
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-unfurnish            Unfurnish/refurnish a building
+[ ] F-unified-craft-ui     Unified data-driven building crafting UI
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-visual-smooth        Smooth voxel surface rendering
 [ ] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
@@ -1450,6 +1451,16 @@ Each tree has a carrying capacity limiting how many elves/structures it can
 support. Encourages distributed village design across multiple trees.
 
 **Related:** F-multi-tree, F-population
+
+#### F-unified-craft-ui — Unified data-driven building crafting UI
+**Status:** Todo · **Phase:** 4
+
+Replace per-building-type crafting UIs (kitchen cooking toggle, workshop
+recipe list, extraction settings) with a single unified data-driven
+crafting panel. Buildings expose available recipes based on their
+furnishing type; the UI dynamically renders recipe selection, material
+pickers, and output targets from recipe metadata. Reduces code
+duplication and makes adding new recipe types trivial.
 
 ### Social & Emotional
 
