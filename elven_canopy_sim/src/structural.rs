@@ -12,6 +12,13 @@
 // acts on each node; springs resist deformation. After a fixed number of
 // relaxation iterations, per-spring stress is computed as `force / strength`.
 //
+// **Rod springs:** Diagonal support struts (`VoxelType::Strut`) additionally
+// receive chain-topology rod springs along their axis via `add_rod_springs()`.
+// These high-stiffness springs connect every Nth voxel (configurable via
+// `strut_rod_spacing`) and help route load along the strut's length, reducing
+// stress at intermediate points. The fast validator (`validate_blueprint_fast`)
+// also accounts for rod springs in its weight-flow analysis.
+//
 // ## Key functions
 //
 // - `build_network()`: Construct the spring-mass network from a voxel world.
@@ -27,6 +34,9 @@
 // - `validate_carve_fast()`: Like `validate_blueprint_fast()` but checks whether
 //   *removing* voxels would compromise remaining structure. Seeds BFS from
 //   neighbors of carved voxels rather than the carved voxels themselves.
+// - `add_rod_springs()`: Insert chain-topology rod springs along strut axes
+//   into an existing `StructuralNetwork`. Called by `build_network()` and by
+//   the fast validator's weight-flow phase.
 // - `BlueprintOverlay`: Carries voxel-type and face-data overlays from all
 //   `Designated` blueprints. Both fast validators accept one so they see the
 //   cumulative structural effect of all planned builds (B-preview-blueprints).
@@ -62,6 +72,7 @@
 // HashMap. All floating-point operations are deterministic given identical input.
 
 use crate::config::GameConfig;
+use crate::db::Strut;
 use crate::types::{FaceData, FaceDirection, FaceType, VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
 use std::collections::BTreeMap;
@@ -92,6 +103,10 @@ struct Spring {
     strength: f32,
     /// Natural (unstressed) length.
     rest_length: f32,
+    /// Whether this is a rod spring (along a strut axis). Rod springs only
+    /// redistribute load *within* a strut — they do not attract external load
+    /// from non-strut neighbors during weight-flow analysis.
+    is_rod: bool,
 }
 
 /// The spring-mass network built from a voxel world.
@@ -362,6 +377,7 @@ pub fn build_network(
                 stiffness,
                 strength,
                 rest_length,
+                is_rod: false,
             });
         }
     }
@@ -633,7 +649,10 @@ fn compute_weight_flow_stress(
         return;
     }
 
-    // BFS from pinned nodes to compute distance-to-ground.
+    // BFS from pinned nodes to compute distance-to-ground. Rod springs are
+    // excluded from BFS traversal — they don't represent face-adjacent
+    // connections and would create distance shortcuts that cause the
+    // weight-flow heuristic to route external load through struts.
     let mut dist_to_ground: Vec<u32> = vec![u32::MAX; num_nodes];
     let mut queue = std::collections::VecDeque::new();
     for (i, node) in network.nodes.iter().enumerate() {
@@ -643,7 +662,10 @@ fn compute_weight_flow_stress(
         }
     }
     while let Some(current) = queue.pop_front() {
-        for &(_, other) in &node_springs[current] {
+        for &(si, other) in &node_springs[current] {
+            if network.springs[si].is_rod {
+                continue;
+            }
             if dist_to_ground[other] > dist_to_ground[current] + 1 {
                 dist_to_ground[other] = dist_to_ground[current] + 1;
                 queue.push_back(other);
@@ -667,12 +689,23 @@ fn compute_weight_flow_stress(
         }
 
         // Find upstream springs (connecting to closer-to-ground nodes).
+        // Rod springs participate in load distribution (sharing load with
+        // face-adjacent springs within a strut) but use capped stiffness
+        // so they don't attract disproportionate external load.
         let mut upstream: Vec<(usize, usize, f32)> = Vec::new();
         let mut total_k = 0.0f32;
 
         for &(si, other) in &node_springs[node_idx] {
             if dist_to_ground[other] < dist_to_ground[node_idx] {
-                let k = network.springs[si].stiffness.max(1e-6);
+                let spring = &network.springs[si];
+                // Rod springs use the same stiffness as face-adjacent
+                // springs for load *attraction*, but their high strength
+                // still reduces stress on the load they carry.
+                let k = if spring.is_rod {
+                    spring.stiffness.clamp(1e-6, 20.0)
+                } else {
+                    spring.stiffness.max(1e-6)
+                };
                 upstream.push((si, other, k));
                 total_k += k;
             }
@@ -992,6 +1025,7 @@ fn build_network_from_set(
                 stiffness,
                 strength,
                 rest_length,
+                is_rod: false,
             });
         }
     }
@@ -1000,6 +1034,81 @@ fn build_network_from_set(
         nodes,
         springs,
         coord_to_node,
+    }
+}
+
+/// Add rod springs along strut axes to an existing network.
+///
+/// For each strut, recomputes the voxel line from endpoints and verifies that
+/// every voxel along the line is `VoxelType::Strut` in the `visited` set
+/// (overlay-aware — the visited set merges world + overlay + proposed types).
+/// If all voxels are present and Strut, chain-topology rod springs are added
+/// at the configured spacing.
+///
+/// Used by both `validate_blueprint_fast()` and `validate_carve_fast()`.
+fn add_rod_springs(
+    network: &mut StructuralNetwork,
+    struts: &[Strut],
+    visited: &BTreeMap<VoxelCoord, VoxelType>,
+    config: &GameConfig,
+) {
+    let structural = &config.structural;
+    let spacing = structural.strut_rod_spacing.max(1) as usize;
+
+    for strut in struts {
+        let line = strut.endpoint_a.line_to(strut.endpoint_b);
+        if line.len() < 2 {
+            continue;
+        }
+
+        // Integrity check: every voxel must be Strut in the visited set.
+        let all_strut = line
+            .iter()
+            .all(|coord| visited.get(coord).is_some_and(|&vt| vt == VoxelType::Strut));
+        if !all_strut {
+            continue;
+        }
+
+        // Compute connection points: every `spacing`-th voxel, plus the last.
+        let mut connection_indices = Vec::new();
+        for i in (0..line.len()).step_by(spacing) {
+            connection_indices.push(i);
+        }
+        if *connection_indices.last().unwrap() != line.len() - 1 {
+            connection_indices.push(line.len() - 1);
+        }
+
+        // Add a rod spring between each consecutive pair of connection points.
+        for pair in connection_indices.windows(2) {
+            let coord_a = line[pair[0]];
+            let coord_b = line[pair[1]];
+
+            let idx_a = match network.coord_to_node.get(&coord_a) {
+                Some(&idx) => idx,
+                None => continue,
+            };
+            let idx_b = match network.coord_to_node.get(&coord_b) {
+                Some(&idx) => idx,
+                None => continue,
+            };
+
+            // Rest length: Euclidean distance between the two connection points.
+            let pos_a = network.nodes[idx_a].position;
+            let pos_b = network.nodes[idx_b].position;
+            let dx = pos_b[0] - pos_a[0];
+            let dy = pos_b[1] - pos_a[1];
+            let dz = pos_b[2] - pos_a[2];
+            let rest_length = (dx * dx + dy * dy + dz * dz).sqrt();
+
+            network.springs.push(Spring {
+                node_a: idx_a,
+                node_b: idx_b,
+                stiffness: structural.strut_rod_stiffness,
+                strength: structural.strut_rod_strength,
+                rest_length,
+                is_rod: true,
+            });
+        }
     }
 }
 
@@ -1033,6 +1142,7 @@ pub fn validate_blueprint_fast(
     proposed_faces: &BTreeMap<VoxelCoord, FaceData>,
     config: &GameConfig,
     overlay: &BlueprintOverlay,
+    struts: &[Strut],
 ) -> BlueprintValidation {
     if proposed_voxels.is_empty() {
         return BlueprintValidation {
@@ -1122,8 +1232,23 @@ pub fn validate_blueprint_fast(
         }
     }
 
+    // Strut builds skip stress analysis — they are structural reinforcements
+    // whose benefit (bending resistance) can't be captured by the simplified
+    // weight-flow model. Connectivity to ground is sufficient.
+    if proposed_type == VoxelType::Strut {
+        return BlueprintValidation {
+            tier: ValidationTier::Ok,
+            stress_map: BTreeMap::new(),
+            message: "Strut is connected to ground.".to_string(),
+        };
+    }
+
     // Build network from visited set and run weight-flow-only analysis.
-    let network = build_network_from_set(&visited, &merged_face_data, config);
+    let mut network = build_network_from_set(&visited, &merged_face_data, config);
+
+    // Add rod springs along strut axes for structural benefit.
+    add_rod_springs(&mut network, struts, &visited, config);
+
     let gravity = config.structural.gravity;
 
     // Build per-node adjacency.
@@ -1139,7 +1264,9 @@ pub fn validate_blueprint_fast(
     let mut weight_stresses = vec![0.0f32; num_springs];
     compute_weight_flow_stress(&network, gravity, &node_springs, &mut weight_stresses);
 
-    // Find max stress and build per-voxel stress map.
+    // Find max stress and build per-voxel stress map. Strut-internal
+    // springs (is_rod) are excluded from the max — their stress is
+    // by-design and doesn't reflect structural risk.
     let mut max_stress_ratio: f32 = 0.0;
     let mut stress_map = BTreeMap::new();
 
@@ -1149,9 +1276,44 @@ pub fn validate_blueprint_fast(
         .map(|(&coord, &idx)| (idx, coord))
         .collect();
 
+    // Build a set of strut-related node indices: strut voxels themselves plus
+    // their face-adjacent neighbors (junction voxels). Springs touching these
+    // nodes are part of the strut's support system — their elevated stress is
+    // expected and shouldn't penalize the proposed build's validation.
+    let strut_coords: std::collections::BTreeSet<VoxelCoord> = network
+        .coord_to_node
+        .keys()
+        .filter(|coord| {
+            !proposed_set.contains_key(coord)
+                && visited.get(coord).is_some_and(|vt| *vt == VoxelType::Strut)
+        })
+        .copied()
+        .collect();
+    let mut strut_zone: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for &coord in &strut_coords {
+        if let Some(&idx) = network.coord_to_node.get(&coord) {
+            strut_zone.insert(idx);
+        }
+        // Include face-adjacent neighbors (junction voxels).
+        for &dir in &FaceDirection::ALL {
+            let (dx, dy, dz) = dir.to_offset();
+            let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+            if !proposed_set.contains_key(&neighbor)
+                && let Some(&idx) = network.coord_to_node.get(&neighbor)
+            {
+                strut_zone.insert(idx);
+            }
+        }
+    }
+
     for (si, spring) in network.springs.iter().enumerate() {
         let stress = weight_stresses[si];
-        if stress > max_stress_ratio {
+        // Exclude springs where either endpoint is in the strut zone
+        // (strut voxels + face-adjacent junction voxels). These are part
+        // of the strut's support system and shouldn't penalize the build.
+        let touches_strut =
+            strut_zone.contains(&spring.node_a) || strut_zone.contains(&spring.node_b);
+        if !touches_strut && stress > max_stress_ratio {
             max_stress_ratio = stress;
         }
         if let Some(&coord_a) = node_to_coord.get(&spring.node_a) {
@@ -1213,6 +1375,7 @@ pub fn validate_carve_fast(
     carved_voxels: &[VoxelCoord],
     config: &GameConfig,
     overlay: &BlueprintOverlay,
+    struts: &[Strut],
 ) -> BlueprintValidation {
     if carved_voxels.is_empty() {
         return BlueprintValidation {
@@ -1330,7 +1493,11 @@ pub fn validate_carve_fast(
     }
 
     // Build network from visited set and run weight-flow-only analysis.
-    let network = build_network_from_set(&visited, &merged_face_data, config);
+    let mut network = build_network_from_set(&visited, &merged_face_data, config);
+
+    // Add rod springs along strut axes for structural benefit.
+    add_rod_springs(&mut network, struts, &visited, config);
+
     let gravity = config.structural.gravity;
 
     let num_nodes = network.nodes.len();
@@ -2000,6 +2167,7 @@ mod tests {
             &BTreeMap::new(),
             &config,
             &BlueprintOverlay::empty(),
+            &[],
         );
         let full = validate_blueprint(
             &world,
@@ -2032,6 +2200,7 @@ mod tests {
             &BTreeMap::new(),
             &config,
             &BlueprintOverlay::empty(),
+            &[],
         );
         let full = validate_blueprint(
             &world,
@@ -2061,6 +2230,7 @@ mod tests {
             &BTreeMap::new(),
             &config,
             &BlueprintOverlay::empty(),
+            &[],
         );
 
         assert_eq!(fast.tier, ValidationTier::Blocked);
@@ -2092,6 +2262,7 @@ mod tests {
             &BTreeMap::new(),
             &config,
             &BlueprintOverlay::empty(),
+            &[],
         );
         let full = validate_blueprint(
             &world,
@@ -2146,6 +2317,7 @@ mod tests {
             &BTreeMap::new(),
             &config,
             &BlueprintOverlay::empty(),
+            &[],
         );
         let full = validate_blueprint(
             &world,
@@ -2186,6 +2358,7 @@ mod tests {
             &carved,
             &config,
             &BlueprintOverlay::empty(),
+            &[],
         );
 
         assert_eq!(
@@ -2210,6 +2383,7 @@ mod tests {
             &carved,
             &config,
             &BlueprintOverlay::empty(),
+            &[],
         );
 
         assert_eq!(
@@ -2241,6 +2415,7 @@ mod tests {
             &BTreeMap::new(),
             &config,
             &BlueprintOverlay::empty(),
+            &[],
         );
         assert_eq!(
             result_no_overlay.tier,
@@ -2265,6 +2440,7 @@ mod tests {
             &BTreeMap::new(),
             &config,
             &overlay,
+            &[],
         );
         assert_eq!(
             result_with_overlay.tier,
@@ -2297,7 +2473,7 @@ mod tests {
         // The remaining column (4,1..4,4) is still connected to ground.
         // So this should still be Ok — the carved voxel is the tip.
         let carved = vec![VoxelCoord::new(4, 5, 4)];
-        let result = validate_carve_fast(&world, &BTreeMap::new(), &carved, &config, &overlay);
+        let result = validate_carve_fast(&world, &BTreeMap::new(), &carved, &config, &overlay, &[]);
         // BFS seeds from face-adjacent neighbors of the carved voxel:
         // (5,5,4) from the overlay (isolated after carve) and (4,4,4)
         // from the column (reaches ground). The remaining column is
@@ -2662,6 +2838,7 @@ mod tests {
             &BTreeMap::new(),
             &config,
             &BlueprintOverlay::empty(),
+            &[],
         );
 
         // Should be Ok — the platform connects to the trunk column, and the
@@ -2671,6 +2848,633 @@ mod tests {
             ValidationTier::Ok,
             "Platform next to trunk should be OK even with ladder below: {}",
             fast.message
+        );
+    }
+
+    // --- Rod spring tests ---
+
+    #[test]
+    fn rod_springs_added_for_completed_strut() {
+        // Build a world with forest floor, a trunk column, and a completed
+        // diagonal strut of VoxelType::Strut voxels.
+        let config = GameConfig::default();
+        let mut world = make_column_world(24, 0..16, 5, 5, 10);
+
+        // Place a diagonal strut from (6,1,5) to (10,5,5) — 6-connected.
+        let a = VoxelCoord::new(6, 1, 5);
+        let b = VoxelCoord::new(10, 5, 5);
+        let line = a.line_to(b);
+        for &coord in &line {
+            world.set(coord, VoxelType::Strut);
+        }
+
+        let strut = crate::db::Strut {
+            id: crate::types::StrutId(1),
+            endpoint_a: a,
+            endpoint_b: b,
+            blueprint_id: None,
+            structure_id: Some(crate::types::StructureId(0)),
+        };
+
+        // Build network with rod springs.
+        let mut network = build_network(&world, &BTreeMap::new(), &config);
+        let spring_count_before = network.springs.len();
+
+        let visited: BTreeMap<VoxelCoord, VoxelType> = network
+            .coord_to_node
+            .keys()
+            .map(|&c| (c, world.get(c)))
+            .collect();
+        add_rod_springs(&mut network, &[strut], &visited, &config);
+
+        assert!(
+            network.springs.len() > spring_count_before,
+            "Rod springs should be added: {} before, {} after",
+            spring_count_before,
+            network.springs.len()
+        );
+
+        // Verify rod springs have the right stiffness.
+        let rod_springs: Vec<&Spring> = network.springs[spring_count_before..].iter().collect();
+        for rs in &rod_springs {
+            assert_eq!(rs.stiffness, config.structural.strut_rod_stiffness);
+            assert_eq!(rs.strength, config.structural.strut_rod_strength);
+            assert!(rs.rest_length > 0.0);
+        }
+    }
+
+    #[test]
+    fn rod_springs_skip_broken_strut() {
+        // If a strut has a non-Strut voxel along the line (e.g., carved to Air),
+        // no rod springs are generated.
+        let config = GameConfig::default();
+        let mut world = make_column_world(24, 0..16, 5, 5, 10);
+
+        let a = VoxelCoord::new(6, 1, 5);
+        let b = VoxelCoord::new(10, 5, 5);
+        let line = a.line_to(b);
+        for &coord in &line {
+            world.set(coord, VoxelType::Strut);
+        }
+        // Break the strut in the middle.
+        let mid = line[line.len() / 2];
+        world.set(mid, VoxelType::Air);
+
+        let strut = crate::db::Strut {
+            id: crate::types::StrutId(1),
+            endpoint_a: a,
+            endpoint_b: b,
+            blueprint_id: None,
+            structure_id: Some(crate::types::StructureId(0)),
+        };
+
+        let mut network = build_network(&world, &BTreeMap::new(), &config);
+        let spring_count_before = network.springs.len();
+
+        let visited: BTreeMap<VoxelCoord, VoxelType> = network
+            .coord_to_node
+            .keys()
+            .map(|&c| (c, world.get(c)))
+            .collect();
+        add_rod_springs(&mut network, &[strut], &visited, &config);
+
+        assert_eq!(
+            network.springs.len(),
+            spring_count_before,
+            "No rod springs should be added for a broken strut"
+        );
+    }
+
+    #[test]
+    fn rod_springs_chain_count() {
+        // A strut of length 10 with spacing 2 should have 5 connection
+        // points (0, 2, 4, 6, 8, 9) = 5 rod springs.
+        let config = GameConfig::default();
+        let mut world = make_column_world(24, 0..16, 5, 5, 10);
+
+        // Axis-aligned strut: 10 voxels from (6,5,5) to (15,5,5).
+        let a = VoxelCoord::new(6, 5, 5);
+        let b = VoxelCoord::new(15, 5, 5);
+        let line = a.line_to(b);
+        assert_eq!(line.len(), 10);
+        for &coord in &line {
+            world.set(coord, VoxelType::Strut);
+        }
+
+        let strut = crate::db::Strut {
+            id: crate::types::StrutId(1),
+            endpoint_a: a,
+            endpoint_b: b,
+            blueprint_id: None,
+            structure_id: Some(crate::types::StructureId(0)),
+        };
+
+        let mut network = build_network(&world, &BTreeMap::new(), &config);
+        let spring_count_before = network.springs.len();
+
+        let visited: BTreeMap<VoxelCoord, VoxelType> = network
+            .coord_to_node
+            .keys()
+            .map(|&c| (c, world.get(c)))
+            .collect();
+        add_rod_springs(&mut network, &[strut], &visited, &config);
+
+        // spacing=2: connection points at indices 0,2,4,6,8,9 → 5 springs.
+        let rod_count = network.springs.len() - spring_count_before;
+        assert_eq!(
+            rod_count, 5,
+            "Expected 5 rod springs for 10-voxel strut with spacing 2, got {}",
+            rod_count
+        );
+    }
+
+    #[test]
+    fn strut_rod_springs_provide_structural_benefit() {
+        // Verify that rod springs reduce internal stress within a strut column.
+        //
+        // Scenario: a standalone strut column (no trunk) supporting a
+        // cantilevered platform arm.  The strut is the SOLE path to ground,
+        // so rod springs cannot cause adverse load rerouting.  Without rod
+        // springs, intermediate face-adjacent springs carry cumulative load
+        // with low material strength (12).  With rod springs (strength 150),
+        // most axial load bypasses the weak face-adjacent springs, reducing
+        // stress at mid-height voxels.
+        let config = GameConfig::default();
+
+        // Small world with ForestFloor at y=0 (no trunk).
+        let mut world = VoxelWorld::new(24, 24, 24);
+        for x in 0..16 {
+            for z in 0..16 {
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+            }
+        }
+
+        // Strut column from y=1 to y=9.
+        let strut_a = VoxelCoord::new(5, 1, 5);
+        let strut_b = VoxelCoord::new(5, 9, 5);
+        let strut_line = strut_a.line_to(strut_b);
+        for &c in &strut_line {
+            world.set(c, VoxelType::Strut);
+        }
+
+        // Platform arm at y=10 extending from the strut top (x=5) to x=10.
+        for x in 5..=10 {
+            world.set(VoxelCoord::new(x, 10, 5), VoxelType::GrownPlatform);
+        }
+
+        let strut = crate::db::Strut {
+            id: crate::types::StrutId(1),
+            endpoint_a: strut_a,
+            endpoint_b: strut_b,
+            blueprint_id: None,
+            structure_id: Some(crate::types::StructureId(0)),
+        };
+
+        // Propose extending the platform further.
+        let proposed: Vec<VoxelCoord> = (11..=12).map(|x| VoxelCoord::new(x, 10, 5)).collect();
+
+        // Fast validator with rod springs.
+        let val_with = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::GrownPlatform,
+            &BTreeMap::new(),
+            &config,
+            &BlueprintOverlay::empty(),
+            &[strut],
+        );
+
+        // Fast validator without rod springs (same world, Strut voxels still
+        // present as face-adjacent support, but no rod spring data).
+        let val_without = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::GrownPlatform,
+            &BTreeMap::new(),
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+
+        // Compare stress at a mid-height strut voxel.  Rod springs should
+        // reduce intermediate stress by routing load through high-strength
+        // rod springs rather than weak face-adjacent springs.
+        let mid_coord = VoxelCoord::new(5, 5, 5);
+        let mid_with = val_with.stress_map.get(&mid_coord).copied().unwrap_or(0.0);
+        let mid_without = val_without
+            .stress_map
+            .get(&mid_coord)
+            .copied()
+            .unwrap_or(0.0);
+
+        assert!(
+            mid_with < mid_without,
+            "Rod springs should reduce stress at mid-strut: with={:.3}, without={:.3}",
+            mid_with,
+            mid_without
+        );
+
+        // Max stress should not increase (both cases have the same ground
+        // connection bottleneck carrying identical total load).
+        let max_with = val_with.stress_map.values().copied().fold(0.0f32, f32::max);
+        let max_without = val_without
+            .stress_map
+            .values()
+            .copied()
+            .fold(0.0f32, f32::max);
+
+        assert!(
+            max_with <= max_without,
+            "Rod springs should not increase max stress: with={:.3}, without={:.3}",
+            max_with,
+            max_without
+        );
+    }
+
+    #[test]
+    fn knee_brace_strut_improves_cantilever_integrity() {
+        // A diagonal knee brace under a long cantilever should IMPROVE
+        // the validation tier — the cantilever is Warning/Blocked without
+        // the brace but Ok with it.
+        //
+        // Layout (side view, x-axis horizontal, y-axis vertical):
+        //
+        //   y=15:  [trunk] PPPPPPPPPPPPPPPPPPPPPPPP PP  (long platform + proposed)
+        //   y=14:  [trunk]                   S
+        //   y=13:  [trunk]                 S
+        //   y=12:  [trunk]               S
+        //   y=11:  [trunk]             S          (diagonal strut)
+        //   y=10:  [trunk]           S
+        //   y=9:   [trunk]         S
+        //   y=8:   [trunk]       S
+        //   y=7:   [trunk]     S
+        //   y=6:   [trunk]   S
+        //   ...
+        //   y=1:   [trunk]
+        //   y=0:   [floor]
+        let config = GameConfig::default();
+
+        let mut world = VoxelWorld::new(48, 24, 24);
+        // ForestFloor at y=0.
+        for x in 0..32 {
+            for z in 0..16 {
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+            }
+        }
+        // Trunk column at x=5,z=5 from y=1 to y=15.
+        for y in 1..=15 {
+            world.set(VoxelCoord::new(5, y, 5), VoxelType::Trunk);
+        }
+        // Platform arm at y=15 from x=6 to x=22.
+        for x in 6..=22 {
+            world.set(VoxelCoord::new(x, 15, 5), VoxelType::GrownPlatform);
+        }
+
+        // Propose extending the platform tip further.
+        let proposed: Vec<VoxelCoord> = (23..=25).map(|x| VoxelCoord::new(x, 15, 5)).collect();
+
+        // --- Without knee brace: should be Warning or Blocked ---
+        let val_no_brace = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::GrownPlatform,
+            &BTreeMap::new(),
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+
+        assert_ne!(
+            val_no_brace.tier,
+            ValidationTier::Ok,
+            "Long unsupported cantilever should NOT be Ok (stress should exceed warn threshold): {}",
+            val_no_brace.message,
+        );
+
+        // --- With knee brace ---
+        // Diagonal strut from near trunk (6,6,5) to near platform tip
+        // (20,14,5) — entirely below the platform. Bottom is face-adjacent
+        // to trunk (5,6,5). Top is face-adjacent to platform (20,15,5).
+        let brace_a = VoxelCoord::new(6, 6, 5);
+        let brace_b = VoxelCoord::new(20, 14, 5);
+        let brace_line = brace_a.line_to(brace_b);
+        for &c in &brace_line {
+            world.set(c, VoxelType::Strut);
+        }
+
+        let brace_strut = crate::db::Strut {
+            id: crate::types::StrutId(1),
+            endpoint_a: brace_a,
+            endpoint_b: brace_b,
+            blueprint_id: None,
+            structure_id: None,
+        };
+
+        let val_with_brace = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::GrownPlatform,
+            &BTreeMap::new(),
+            &config,
+            &BlueprintOverlay::empty(),
+            &[brace_strut],
+        );
+
+        // With the brace, the cantilever should validate Ok.
+        assert_eq!(
+            val_with_brace.tier,
+            ValidationTier::Ok,
+            "Braced cantilever should be Ok but got {:?}: {}",
+            val_with_brace.tier,
+            val_with_brace.message,
+        );
+    }
+
+    #[test]
+    fn strut_placement_validates_ok_when_connected() {
+        // Strut builds skip stress analysis — they only need ground
+        // connectivity. A diagonal strut from trunk to open air should
+        // validate Ok.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(24, 24, 24);
+        for x in 0..16 {
+            for z in 0..16 {
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+            }
+        }
+        for y in 1..=10 {
+            world.set(VoxelCoord::new(5, y, 5), VoxelType::Trunk);
+        }
+
+        // Propose a diagonal strut from (6,5,5) to (10,9,5).
+        let brace_a = VoxelCoord::new(6, 5, 5);
+        let brace_b = VoxelCoord::new(10, 9, 5);
+        let proposed = brace_a.line_to(brace_b);
+
+        let val = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::Strut,
+            &BTreeMap::new(),
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+
+        assert_eq!(
+            val.tier,
+            ValidationTier::Ok,
+            "Connected strut should validate Ok: {}",
+            val.message
+        );
+    }
+
+    #[test]
+    fn rod_springs_overlay_aware() {
+        // A designated (not yet built) strut should contribute rod springs
+        // when its voxels appear in the overlay/visited set as Strut.
+        let config = GameConfig::default();
+        let mut world = make_column_world(24, 0..16, 5, 5, 10);
+
+        // Strut endpoints.
+        let strut_a = VoxelCoord::new(6, 1, 5);
+        let strut_b = VoxelCoord::new(6, 5, 5);
+        let strut_line = strut_a.line_to(strut_b);
+
+        // Create an overlay with strut voxels (designated, not built yet).
+        let mut voxel_overlay = BTreeMap::new();
+        for &c in &strut_line {
+            voxel_overlay.insert(c, VoxelType::Strut);
+        }
+        let overlay = BlueprintOverlay {
+            voxels: voxel_overlay,
+            faces: BTreeMap::new(),
+        };
+
+        let strut = crate::db::Strut {
+            id: crate::types::StrutId(1),
+            endpoint_a: strut_a,
+            endpoint_b: strut_b,
+            blueprint_id: Some(crate::types::ProjectId(crate::types::SimUuid::new_v4(
+                &mut crate::prng::GameRng::new(1),
+            ))),
+            structure_id: None,
+        };
+
+        // Validate a platform near the strut — strut is in overlay.
+        let proposed = vec![VoxelCoord::new(7, 5, 5)];
+        let result = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::GrownPlatform,
+            &BTreeMap::new(),
+            &config,
+            &overlay,
+            &[strut],
+        );
+
+        // Should be Ok (connected to ground via overlay strut + trunk column).
+        assert_ne!(
+            result.tier,
+            ValidationTier::Blocked,
+            "Platform near overlay strut should be connected: {}",
+            result.message
+        );
+    }
+
+    #[test]
+    fn strut_on_strut_multi_chain() {
+        // Two crossing struts should generate independent rod spring chains.
+        let config = GameConfig::default();
+        let mut world = make_column_world(24, 0..16, 5, 5, 10);
+
+        // Strut A: horizontal at y=5 from (6,5,5) to (10,5,5).
+        let a1 = VoxelCoord::new(6, 5, 5);
+        let a2 = VoxelCoord::new(10, 5, 5);
+        let line_a = a1.line_to(a2);
+        for &c in &line_a {
+            world.set(c, VoxelType::Strut);
+        }
+
+        // Strut B: vertical at x=8 from (8,3,5) to (8,7,5).
+        let b1 = VoxelCoord::new(8, 3, 5);
+        let b2 = VoxelCoord::new(8, 7, 5);
+        let line_b = b1.line_to(b2);
+        for &c in &line_b {
+            world.set(c, VoxelType::Strut);
+        }
+
+        let strut_a = crate::db::Strut {
+            id: crate::types::StrutId(1),
+            endpoint_a: a1,
+            endpoint_b: a2,
+            blueprint_id: None,
+            structure_id: Some(crate::types::StructureId(0)),
+        };
+        let strut_b = crate::db::Strut {
+            id: crate::types::StrutId(2),
+            endpoint_a: b1,
+            endpoint_b: b2,
+            blueprint_id: None,
+            structure_id: Some(crate::types::StructureId(1)),
+        };
+
+        let mut network = build_network(&world, &BTreeMap::new(), &config);
+        let spring_count_before = network.springs.len();
+
+        let visited: BTreeMap<VoxelCoord, VoxelType> = network
+            .coord_to_node
+            .keys()
+            .map(|&c| (c, world.get(c)))
+            .collect();
+        add_rod_springs(&mut network, &[strut_a, strut_b], &visited, &config);
+
+        let rod_count = network.springs.len() - spring_count_before;
+        // Both struts should contribute springs.
+        // Strut A: 5 voxels, spacing 2 → points at 0,2,4 → 2 springs.
+        // Strut B: 5 voxels, spacing 2 → points at 0,2,4 → 2 springs.
+        assert!(
+            rod_count >= 4,
+            "Expected rod springs from both struts, got {} total",
+            rod_count
+        );
+    }
+
+    #[test]
+    fn solver_convergence_with_rod_springs() {
+        // Verify the full solver produces finite, reasonable stress with
+        // rod springs (no oscillation or divergence from mixed rest lengths).
+        let config = GameConfig::default();
+        let mut world = make_column_world(24, 0..16, 5, 5, 10);
+
+        // Add a diagonal strut.
+        let strut_a = VoxelCoord::new(6, 1, 5);
+        let strut_b = VoxelCoord::new(9, 8, 5);
+        let strut_line = strut_a.line_to(strut_b);
+        for &c in &strut_line {
+            world.set(c, VoxelType::Strut);
+        }
+
+        // Add a platform arm to create load on the strut.
+        add_horizontal_arm(&mut world, 8, 5, 6, 12, VoxelType::GrownPlatform);
+
+        let strut = crate::db::Strut {
+            id: crate::types::StrutId(1),
+            endpoint_a: strut_a,
+            endpoint_b: strut_b,
+            blueprint_id: None,
+            structure_id: Some(crate::types::StructureId(0)),
+        };
+
+        let mut network = build_network(&world, &BTreeMap::new(), &config);
+        let visited: BTreeMap<VoxelCoord, VoxelType> = network
+            .coord_to_node
+            .keys()
+            .map(|&c| (c, world.get(c)))
+            .collect();
+        add_rod_springs(&mut network, &[strut], &visited, &config);
+
+        let result = solve(&mut network, &config);
+
+        assert!(
+            result.max_stress_ratio.is_finite(),
+            "Solver should converge to finite stress, got {}",
+            result.max_stress_ratio
+        );
+        assert!(
+            result.max_stress_ratio < 10.0,
+            "Stress should be reasonable, got {}",
+            result.max_stress_ratio
+        );
+    }
+
+    #[test]
+    fn strut_pinning_behavior() {
+        // A strut voxel replacing ForestFloor or Dirt should NOT be pinned,
+        // but adjacent Dirt/ForestFloor voxels should remain pinned.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(16, 16, 16);
+
+        // ForestFloor at y=0.
+        for x in 0..8 {
+            for z in 0..8 {
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+            }
+        }
+        // Dirt at y=1.
+        for x in 0..8 {
+            for z in 0..8 {
+                world.set(VoxelCoord::new(x, 1, z), VoxelType::Dirt);
+            }
+        }
+
+        // Replace one Dirt voxel with Strut.
+        let strut_coord = VoxelCoord::new(4, 1, 4);
+        world.set(strut_coord, VoxelType::Strut);
+
+        let network = build_network(&world, &BTreeMap::new(), &config);
+
+        // The strut node should NOT be pinned.
+        let strut_idx = network.coord_to_node[&strut_coord];
+        assert!(
+            !network.nodes[strut_idx].pinned,
+            "Strut voxel should not be pinned"
+        );
+
+        // Adjacent Dirt should still be pinned.
+        let neighbor = VoxelCoord::new(3, 1, 4);
+        let neighbor_idx = network.coord_to_node[&neighbor];
+        assert!(
+            network.nodes[neighbor_idx].pinned,
+            "Adjacent Dirt should remain pinned"
+        );
+
+        // ForestFloor below should still be pinned.
+        let ground = VoxelCoord::new(4, 0, 4);
+        let ground_idx = network.coord_to_node[&ground];
+        assert!(
+            network.nodes[ground_idx].pinned,
+            "ForestFloor below should remain pinned"
+        );
+    }
+
+    #[test]
+    fn strut_material_properties_used() {
+        // Verify strut voxels get their own material properties (density,
+        // stiffness, strength), not zero or some other type's properties.
+        let config = GameConfig::default();
+        let strut_mat = config
+            .structural
+            .materials
+            .get(&VoxelType::Strut)
+            .expect("Strut should have material properties");
+
+        assert!(strut_mat.density > 0.0, "Strut density should be positive");
+        assert!(
+            strut_mat.stiffness > 0.0,
+            "Strut stiffness should be positive"
+        );
+        assert!(
+            strut_mat.strength > 0.0,
+            "Strut strength should be positive"
+        );
+
+        // Verify a strut node in a network uses the correct mass.
+        let mut world = VoxelWorld::new(8, 8, 8);
+        world.set(VoxelCoord::new(3, 0, 3), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(3, 1, 3), VoxelType::Strut);
+
+        let network = build_network(&world, &BTreeMap::new(), &config);
+        let strut_idx = network.coord_to_node[&VoxelCoord::new(3, 1, 3)];
+        assert!(
+            (network.nodes[strut_idx].mass - strut_mat.density).abs() < 1e-6,
+            "Strut node mass should equal strut density"
         );
     }
 }

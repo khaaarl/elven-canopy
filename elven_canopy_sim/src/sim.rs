@@ -927,8 +927,19 @@ impl SimState {
 
         // F-no-bp-overlap: reject if any proposed voxel belongs to an
         // existing designated blueprint. A voxel can only belong to one
-        // blueprint at a time.
-        if voxels.iter().any(|v| overlay.voxels.contains_key(v)) {
+        // blueprint at a time. Exception: struts can overlap with platform
+        // and bridge blueprints (they pass through flat structures).
+        let strut_overlap_ok = build_type == BuildType::Strut;
+        if voxels.iter().any(|v| {
+            overlay.voxels.get(v).is_some_and(|&vt| {
+                if strut_overlap_ok {
+                    // Struts only conflict with non-flat blueprint types.
+                    !matches!(vt, VoxelType::GrownPlatform | VoxelType::Bridge)
+                } else {
+                    true
+                }
+            })
+        }) {
             self.last_build_message =
                 Some("Overlaps an existing blueprint designation.".to_string());
             return;
@@ -937,12 +948,64 @@ impl SimState {
         let effective_type =
             |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
 
-        // Branch validation: overlap-enabled types classify voxels, others
-        // require all Air.
+        // Branch validation: struts use custom replacement rules, overlap-enabled
+        // types classify voxels, and the default requires all Air.
         let build_voxels: Vec<VoxelCoord>;
         let original_voxels: Vec<(VoxelCoord, VoxelType)>;
 
-        if build_type.allows_tree_overlap() {
+        if build_type == BuildType::Strut {
+            // Strut-specific validation: Bresenham list check + replacement rules.
+            if voxels.len() < 2 {
+                self.last_build_message = Some("Strut must have at least 2 voxels.".to_string());
+                return;
+            }
+            let endpoint_a = voxels[0];
+            let endpoint_b = voxels[voxels.len() - 1];
+            let recomputed = endpoint_a.line_to(endpoint_b);
+            if recomputed.len() != voxels.len()
+                || !recomputed.iter().zip(voxels.iter()).all(|(a, b)| a == b)
+            {
+                self.last_build_message =
+                    Some("Strut voxel list does not match Bresenham line.".to_string());
+                return;
+            }
+
+            // Replacement validation: check each voxel is a replaceable type.
+            let mut ov = Vec::new();
+            for &coord in voxels {
+                let eff = effective_type(coord);
+                match eff {
+                    VoxelType::Air => {}
+                    VoxelType::Leaf
+                    | VoxelType::Fruit
+                    | VoxelType::Dirt
+                    | VoxelType::Trunk
+                    | VoxelType::Branch
+                    | VoxelType::Root
+                    | VoxelType::ForestFloor => {
+                        ov.push((coord, self.world.get(coord)));
+                    }
+                    VoxelType::Strut | VoxelType::GrownPlatform | VoxelType::Bridge => {
+                        // Struts can pass through platforms, bridges, and
+                        // existing struts. Record the original type for
+                        // restoration on cancel.
+                        ov.push((coord, self.world.get(coord)));
+                    }
+                    VoxelType::GrownWall
+                    | VoxelType::GrownStairs
+                    | VoxelType::BuildingInterior
+                    | VoxelType::WoodLadder
+                    | VoxelType::RopeLadder => {
+                        self.last_build_message = Some(
+                            "Strut cannot pass through buildings, walls, or ladders.".to_string(),
+                        );
+                        return;
+                    }
+                }
+            }
+            build_voxels = voxels.to_vec();
+            original_voxels = ov;
+        } else if build_type.allows_tree_overlap() {
             let mut bv = Vec::new();
             let mut ov = Vec::new();
             for &coord in voxels {
@@ -981,7 +1044,15 @@ impl SimState {
             original_voxels = Vec::new();
         }
 
-        let any_adjacent = build_voxels.iter().any(|&coord| {
+        // Adjacency check: at least one build voxel (for struts, at least one
+        // endpoint) must be face-adjacent to existing solid structure or overlay.
+        let adjacency_voxels = if build_type == BuildType::Strut {
+            // For struts, only check the two endpoints (not interior voxels).
+            vec![build_voxels[0], build_voxels[build_voxels.len() - 1]]
+        } else {
+            build_voxels.clone()
+        };
+        let any_adjacent = adjacency_voxels.iter().any(|&coord| {
             self.world.has_solid_face_neighbor(coord)
                 || FaceDirection::ALL.iter().any(|&dir| {
                     let (dx, dy, dz) = dir.to_offset();
@@ -999,6 +1070,7 @@ impl SimState {
         }
 
         // Structural validation: fast BFS + weight-flow check (no full solver).
+        let struts: Vec<_> = self.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_blueprint_fast(
             &self.world,
             &self.face_data,
@@ -1007,6 +1079,7 @@ impl SimState {
             &BTreeMap::new(),
             &self.config,
             &overlay,
+            &struts,
         );
         if matches!(validation.tier, structural::ValidationTier::Blocked) {
             self.last_build_message = Some(validation.message);
@@ -1038,6 +1111,18 @@ impl SimState {
             target_creature: None,
         };
         self.insert_task(build_task);
+
+        // For struts, create a Strut row in the database.
+        if build_type == BuildType::Strut {
+            let strut = crate::db::Strut {
+                id: StrutId(0), // auto-increment
+                endpoint_a: build_voxels[0],
+                endpoint_b: build_voxels[build_voxels.len() - 1],
+                blueprint_id: Some(project_id),
+                structure_id: None,
+            };
+            self.db.struts.insert_no_fk(strut).unwrap();
+        }
 
         let composition_id = Some(self.create_composition(build_voxels.len()));
         let bp = Blueprint {
@@ -1140,6 +1225,7 @@ impl SimState {
         let voxels: Vec<VoxelCoord> = face_layout.keys().copied().collect();
 
         // Structural validation: fast BFS + weight-flow check (no full solver).
+        let struts: Vec<_> = self.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_blueprint_fast(
             &self.world,
             &self.face_data,
@@ -1148,6 +1234,7 @@ impl SimState {
             &face_layout,
             &self.config,
             &overlay,
+            &struts,
         );
         if matches!(validation.tier, structural::ValidationTier::Blocked) {
             self.last_build_message = Some(validation.message);
@@ -1418,12 +1505,14 @@ impl SimState {
             self.last_build_message = Some("Nothing to carve.".to_string());
             return;
         }
+        let struts: Vec<_> = self.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_carve_fast(
             &self.world,
             &self.face_data,
             &carve_voxels,
             &self.config,
             &overlay,
+            &struts,
         );
         if matches!(validation.tier, structural::ValidationTier::Blocked) {
             self.last_build_message = Some(validation.message);
@@ -1484,6 +1573,19 @@ impl SimState {
             Ok(bp) => bp,
             Err(_) => return,
         };
+
+        // Remove any strut row linked to this blueprint.
+        if bp.build_type == BuildType::Strut {
+            let strut_id: Option<StrutId> = self
+                .db
+                .struts
+                .iter_all()
+                .find(|s| s.blueprint_id == Some(project_id))
+                .map(|s| s.id);
+            if let Some(id) = strut_id {
+                let _ = self.db.struts.remove_no_fk(&id);
+            }
+        }
 
         // Remove any completed structure for this project (linear scan — map is small).
         // Also remove structure_voxels entries for the cancelled blueprint.
@@ -9011,6 +9113,7 @@ impl SimState {
         let voxel_type = build_type.to_voxel_type();
         let is_building = build_type == BuildType::Building;
         let is_ladder = matches!(build_type, BuildType::WoodLadder | BuildType::RopeLadder);
+        let is_strut = build_type == BuildType::Strut;
         let allows_overlap = build_type.allows_tree_overlap();
 
         // Find unplaced voxels that are adjacent to existing geometry.
@@ -9021,6 +9124,9 @@ impl SimState {
         // (ladder voxels grow from bottom to top or from an anchored voxel).
         // For overlap-enabled types, a voxel is "unplaced" if it hasn't been
         // converted to the target type yet (it may be Air, Leaf, or Fruit).
+        // For struts, voxels may be Air or any replaceable natural type
+        // (Trunk, Dirt, etc.) — struts replace natural materials during
+        // construction.
         let eligible: Vec<VoxelCoord> = bp
             .voxels
             .iter()
@@ -9039,6 +9145,11 @@ impl SimState {
                             OverlapClassification::Convertible
                         )
                     {
+                        return false;
+                    }
+                } else if is_strut {
+                    // Struts replace natural materials. Already Strut → skip.
+                    if current == VoxelType::Strut {
                         return false;
                     }
                 } else if current != VoxelType::Air {
@@ -9219,6 +9330,22 @@ impl SimState {
             let structure =
                 crate::db::CompletedStructure::from_blueprint(structure_id, &bp, self.tick, inv_id);
             self.db.structures.insert_no_fk(structure).unwrap();
+
+            // For struts: update the Strut row with the completed structure_id
+            // and clear the blueprint_id (build is done).
+            if bp.build_type == BuildType::Strut {
+                let strut_to_update: Option<crate::db::Strut> = self
+                    .db
+                    .struts
+                    .iter_all()
+                    .find(|s| s.blueprint_id == Some(project_id))
+                    .cloned();
+                if let Some(mut strut) = strut_to_update {
+                    strut.blueprint_id = None;
+                    strut.structure_id = Some(structure_id);
+                    let _ = self.db.struts.update_no_fk(strut);
+                }
+            }
         }
 
         self.complete_task(task_id);
@@ -32502,6 +32629,193 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Strut designation and construction tests
+    // -----------------------------------------------------------------------
+
+    /// Find two air voxels adjacent to trunk that form a valid 2-voxel strut
+    /// line (face-adjacent pair, at least one endpoint adjacent to trunk).
+    fn find_strut_endpoints(sim: &SimState) -> (VoxelCoord, VoxelCoord) {
+        let tree = &sim.trees[&sim.player_tree_id];
+        for &trunk_coord in &tree.trunk_voxels {
+            // Try +X direction: two air voxels extending from trunk.
+            let a = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
+            let b = VoxelCoord::new(trunk_coord.x + 2, trunk_coord.y, trunk_coord.z);
+            if sim.world.in_bounds(a)
+                && sim.world.in_bounds(b)
+                && sim.world.get(a) == VoxelType::Air
+                && sim.world.get(b) == VoxelType::Air
+            {
+                return (a, b);
+            }
+        }
+        panic!("No suitable strut endpoints found");
+    }
+
+    #[test]
+    fn strut_designate_creates_blueprint_and_strut_row() {
+        let mut sim = test_sim(42);
+        let (a, b) = find_strut_endpoints(&sim);
+        let line = a.line_to(b);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line.clone(),
+                priority: Priority::Normal,
+            },
+        };
+        let result = sim.step(&[cmd], 1);
+
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
+        assert_eq!(bp.build_type, BuildType::Strut);
+        assert_eq!(bp.voxels, line);
+        assert_eq!(bp.state, BlueprintState::Designated);
+
+        // Strut row created with correct endpoints.
+        assert_eq!(sim.db.struts.len(), 1);
+        let strut = sim.db.struts.iter_all().next().unwrap();
+        assert_eq!(strut.endpoint_a, a);
+        assert_eq!(strut.endpoint_b, b);
+        assert_eq!(strut.blueprint_id, Some(bp.id));
+        assert!(strut.structure_id.is_none());
+
+        assert!(
+            result
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, SimEventKind::BlueprintDesignated { .. }))
+        );
+    }
+
+    #[test]
+    fn strut_rejects_single_voxel() {
+        let mut sim = test_sim(42);
+        let air = find_air_adjacent_to_trunk(&sim);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: vec![air],
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 0);
+        assert!(
+            sim.last_build_message
+                .as_ref()
+                .unwrap()
+                .contains("at least 2")
+        );
+    }
+
+    #[test]
+    fn strut_rejects_invalid_bresenham_list() {
+        let mut sim = test_sim(42);
+        let (a, b) = find_strut_endpoints(&sim);
+
+        // Submit a voxel list that doesn't match the line.
+        let bogus = vec![a, VoxelCoord::new(a.x + 5, a.y + 5, a.z + 5), b];
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: bogus,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 0);
+        assert!(
+            sim.last_build_message
+                .as_ref()
+                .unwrap()
+                .contains("Bresenham")
+        );
+    }
+
+    #[test]
+    fn strut_rejects_player_built_structure() {
+        let mut sim = test_sim(42);
+        let air = find_air_adjacent_to_trunk(&sim);
+
+        // Place a GrownPlatform at `air`.
+        sim.world.set(air, VoxelType::GrownPlatform);
+
+        // Try to designate a strut through the platform.
+        let b = VoxelCoord::new(air.x + 1, air.y, air.z);
+        if sim.world.in_bounds(b) && sim.world.get(b) == VoxelType::Air {
+            let line = air.line_to(b);
+            let cmd = SimCommand {
+                player_id: sim.player_id,
+                tick: 1,
+                action: SimAction::DesignateBuild {
+                    build_type: BuildType::Strut,
+                    voxels: line,
+                    priority: Priority::Normal,
+                },
+            };
+            sim.step(&[cmd], 1);
+            assert_eq!(sim.db.blueprints.len(), 0);
+            assert!(
+                sim.last_build_message
+                    .as_ref()
+                    .unwrap()
+                    .contains("player-built")
+            );
+        }
+    }
+
+    #[test]
+    fn strut_replaces_trunk_records_originals() {
+        let mut sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+        // Find a trunk voxel with air on both sides (+X).
+        let mut found = None;
+        for &trunk_coord in &tree.trunk_voxels {
+            let before = VoxelCoord::new(trunk_coord.x - 1, trunk_coord.y, trunk_coord.z);
+            let after = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
+            if sim.world.in_bounds(before)
+                && sim.world.in_bounds(after)
+                && sim.world.get(before) == VoxelType::Air
+                && sim.world.get(after) == VoxelType::Air
+            {
+                found = Some((before, trunk_coord, after));
+                break;
+            }
+        }
+        let (before, trunk, after) = found.expect("Need trunk with air on both sides");
+
+        let line = before.line_to(after);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        assert_eq!(sim.db.blueprints.len(), 1);
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
+        // Original voxels should record the trunk position.
+        assert!(
+            bp.original_voxels
+                .iter()
+                .any(|(c, vt)| *c == trunk && *vt == VoxelType::Trunk),
+            "Should record trunk in original_voxels"
+        );
+    }
+
     #[test]
     fn part_type_extracted_item_kind_mapping() {
         use crate::fruit::PartType;
@@ -32529,5 +32843,455 @@ mod tests {
             PartType::Resin.extracted_item_kind(),
             inventory::ItemKind::FruitResin
         );
+    }
+
+    #[test]
+    fn strut_rejects_no_adjacency() {
+        let mut sim = test_sim(42);
+        // Place strut entirely in open air, far from any structure.
+        let a = VoxelCoord::new(60, 60, 60);
+        let b = VoxelCoord::new(61, 60, 60);
+        if sim.world.in_bounds(a)
+            && sim.world.in_bounds(b)
+            && sim.world.get(a) == VoxelType::Air
+            && sim.world.get(b) == VoxelType::Air
+        {
+            let line = a.line_to(b);
+            let cmd = SimCommand {
+                player_id: sim.player_id,
+                tick: 1,
+                action: SimAction::DesignateBuild {
+                    build_type: BuildType::Strut,
+                    voxels: line,
+                    priority: Priority::Normal,
+                },
+            };
+            sim.step(&[cmd], 1);
+            assert_eq!(sim.db.blueprints.len(), 0);
+            assert!(
+                sim.last_build_message
+                    .as_ref()
+                    .unwrap()
+                    .contains("adjacent")
+            );
+        }
+    }
+
+    #[test]
+    fn strut_blueprint_overlap_rejected() {
+        let mut sim = test_sim(42);
+        let (a, b) = find_strut_endpoints(&sim);
+        let line = a.line_to(b);
+
+        // Designate first strut.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line.clone(),
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Try to designate overlapping strut.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd2], 2);
+        assert_eq!(
+            sim.db.blueprints.len(),
+            1,
+            "Second strut should be rejected"
+        );
+        assert!(
+            sim.last_build_message
+                .as_ref()
+                .unwrap()
+                .contains("Overlaps")
+        );
+    }
+
+    #[test]
+    fn strut_cancel_deletes_strut_row() {
+        let mut sim = test_sim(42);
+        let (a, b) = find_strut_endpoints(&sim);
+        let line = a.line_to(b);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.db.struts.len(), 1);
+
+        let bp_id = sim.db.blueprints.iter_all().next().unwrap().id;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::CancelBuild { project_id: bp_id },
+        };
+        sim.step(&[cmd], 2);
+        assert_eq!(
+            sim.db.struts.len(),
+            0,
+            "Strut row should be cascade-deleted on cancel"
+        );
+    }
+
+    #[test]
+    fn strut_serde_roundtrip() {
+        let mut sim = test_sim(42);
+        let (a, b) = find_strut_endpoints(&sim);
+        let line = a.line_to(b);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line.clone(),
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Serde roundtrip the sim state.
+        let json = serde_json::to_string(&sim).unwrap();
+        let restored: SimState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.db.struts.len(), 1);
+        let strut = restored.db.struts.iter_all().next().unwrap();
+        assert_eq!(strut.endpoint_a, a);
+        assert_eq!(strut.endpoint_b, b);
+
+        assert_eq!(restored.db.blueprints.len(), 1);
+        let bp = restored.db.blueprints.iter_all().next().unwrap();
+        assert_eq!(bp.build_type, BuildType::Strut);
+    }
+
+    #[test]
+    fn strut_replaces_replaceable_types() {
+        let mut sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+
+        // Find a trunk voxel at y > 1 to place air→trunk→air line.
+        let trunk_coord = tree
+            .trunk_voxels
+            .iter()
+            .find(|c| {
+                let a = VoxelCoord::new(c.x - 1, c.y, c.z);
+                let b = VoxelCoord::new(c.x + 1, c.y, c.z);
+                sim.world.in_bounds(a)
+                    && sim.world.in_bounds(b)
+                    && sim.world.get(a) == VoxelType::Air
+                    && sim.world.get(b) == VoxelType::Air
+            })
+            .copied()
+            .expect("Need trunk with air on both sides");
+
+        let a = VoxelCoord::new(trunk_coord.x - 1, trunk_coord.y, trunk_coord.z);
+        let b = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
+
+        let mut tick = 1u64;
+        // Set various replaceable types and verify strut accepts them.
+        for replaceable in [
+            VoxelType::Leaf,
+            VoxelType::Fruit,
+            VoxelType::Dirt,
+            VoxelType::Root,
+            VoxelType::Branch,
+        ] {
+            sim.world.set(trunk_coord, replaceable);
+            let line = a.line_to(b);
+            let cmd = SimCommand {
+                player_id: sim.player_id,
+                tick,
+                action: SimAction::DesignateBuild {
+                    build_type: BuildType::Strut,
+                    voxels: line,
+                    priority: Priority::Normal,
+                },
+            };
+            sim.step(&[cmd], tick);
+            tick += 1;
+            assert!(
+                sim.db.blueprints.len() >= 1,
+                "Strut should accept replacing {:?}, msg: {:?}",
+                replaceable,
+                sim.last_build_message
+            );
+            // Cancel so we can try the next type.
+            let bp_id = sim.db.blueprints.iter_all().next().unwrap().id;
+            let cmd = SimCommand {
+                player_id: sim.player_id,
+                tick,
+                action: SimAction::CancelBuild { project_id: bp_id },
+            };
+            sim.step(&[cmd], tick);
+            tick += 1;
+            // Restore the original type for the next iteration.
+            sim.world.set(trunk_coord, VoxelType::Trunk);
+        }
+    }
+
+    #[test]
+    fn strut_build_type_to_voxel_type() {
+        assert_eq!(BuildType::Strut.to_voxel_type(), VoxelType::Strut);
+    }
+
+    #[test]
+    fn strut_completed_structure_display_name() {
+        let inv_id = InventoryId(0);
+        let bp = Blueprint {
+            id: ProjectId(crate::types::SimUuid::new_v4(
+                &mut crate::prng::GameRng::new(1),
+            )),
+            build_type: BuildType::Strut,
+            voxels: vec![VoxelCoord::new(0, 0, 0), VoxelCoord::new(1, 0, 0)],
+            priority: Priority::Normal,
+            state: BlueprintState::Complete,
+            task_id: None,
+            composition_id: None,
+            face_layout: None,
+            stress_warning: false,
+            original_voxels: vec![],
+        };
+        let structure = CompletedStructure::from_blueprint(StructureId(42), &bp, 100, inv_id);
+        assert_eq!(structure.display_name(), "Strut #42");
+    }
+
+    #[test]
+    fn strut_cancel_restores_original_voxels() {
+        // Designating a strut through trunk records the trunk in
+        // original_voxels. Manually materializing the strut voxel and
+        // cancelling should restore the original trunk type.
+        let mut sim = test_sim(42);
+        let tree = &sim.trees[&sim.player_tree_id];
+
+        // Find a trunk voxel with air on both sides.
+        let trunk_coord = tree
+            .trunk_voxels
+            .iter()
+            .find(|c| {
+                let a = VoxelCoord::new(c.x - 1, c.y, c.z);
+                let b = VoxelCoord::new(c.x + 1, c.y, c.z);
+                sim.world.in_bounds(a)
+                    && sim.world.in_bounds(b)
+                    && sim.world.get(a) == VoxelType::Air
+                    && sim.world.get(b) == VoxelType::Air
+            })
+            .copied()
+            .expect("Need trunk with air on both sides");
+
+        let a = VoxelCoord::new(trunk_coord.x - 1, trunk_coord.y, trunk_coord.z);
+        let b = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
+        let line = a.line_to(b);
+
+        // Designate strut.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line.clone(),
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Verify original_voxels tracked the trunk voxel.
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
+        assert!(
+            bp.original_voxels
+                .iter()
+                .any(|(c, vt)| *c == trunk_coord && *vt == VoxelType::Trunk),
+            "original_voxels should include the trunk coord"
+        );
+
+        // Simulate materialization: set the trunk voxel to Strut and add
+        // to placed_voxels (as the build task would).
+        sim.world.set(trunk_coord, VoxelType::Strut);
+        sim.placed_voxels.push((trunk_coord, VoxelType::Strut));
+        assert_eq!(sim.world.get(trunk_coord), VoxelType::Strut);
+
+        // Cancel the build.
+        let bp_id = sim.db.blueprints.iter_all().next().unwrap().id;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::CancelBuild { project_id: bp_id },
+        };
+        sim.step(&[cmd], 2);
+
+        // After cancel, the trunk voxel should be restored.
+        assert_eq!(
+            sim.world.get(trunk_coord),
+            VoxelType::Trunk,
+            "Cancel should restore trunk voxel from original_voxels"
+        );
+
+        // placed_voxels should no longer contain the strut entry.
+        assert!(
+            !sim.placed_voxels.iter().any(|(c, _)| *c == trunk_coord),
+            "placed_voxels should not contain cancelled strut voxel"
+        );
+    }
+
+    #[test]
+    fn strut_materialization_creates_voxels() {
+        // Complete a strut build and verify all line voxels become Strut.
+        let mut sim = test_sim(42);
+        let (a, b) = find_strut_endpoints(&sim);
+        let line = a.line_to(b);
+
+        // Spawn an elf near the build site.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: a,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        // Designate the strut.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line.clone(),
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 2);
+        assert_eq!(sim.db.blueprints.len(), 1);
+
+        // Run forward until complete.
+        let max_tick = sim.tick + 1_000_000;
+        while sim.tick < max_tick {
+            sim.step(&[], sim.tick + 100);
+            let all_complete = sim
+                .db
+                .blueprints
+                .iter_all()
+                .all(|bp| bp.state == BlueprintState::Complete);
+            if all_complete {
+                break;
+            }
+        }
+        assert!(
+            sim.db
+                .blueprints
+                .iter_all()
+                .all(|bp| bp.state == BlueprintState::Complete),
+            "Strut build did not complete"
+        );
+
+        // All line voxels should be Strut.
+        for &coord in &line {
+            assert_eq!(
+                sim.world.get(coord),
+                VoxelType::Strut,
+                "Voxel at {:?} should be Strut after completion",
+                coord
+            );
+        }
+
+        // A CompletedStructure should exist.
+        assert!(
+            sim.db.structures.len() >= 1,
+            "Should have a completed structure"
+        );
+
+        // The Strut row should have structure_id set.
+        let strut = sim.db.struts.iter_all().next().unwrap();
+        assert!(
+            strut.structure_id.is_some(),
+            "Strut row should have structure_id after completion"
+        );
+    }
+
+    #[test]
+    fn strut_save_load_roundtrip_with_completed_strut() {
+        // Complete a strut, save, load, and verify the strut row + voxels
+        // survive the roundtrip.
+        let mut sim = test_sim(42);
+        let (a, b) = find_strut_endpoints(&sim);
+        let line = a.line_to(b);
+
+        // Spawn elf and designate.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: a,
+            },
+        };
+        sim.step(&[cmd], 1);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line.clone(),
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 2);
+
+        // Complete the build.
+        let max_tick = sim.tick + 1_000_000;
+        while sim.tick < max_tick {
+            sim.step(&[], sim.tick + 100);
+            if sim
+                .db
+                .blueprints
+                .iter_all()
+                .all(|bp| bp.state == BlueprintState::Complete)
+            {
+                break;
+            }
+        }
+
+        // Save/load roundtrip.
+        let json = serde_json::to_string(&sim).unwrap();
+        let mut restored: SimState = serde_json::from_str(&json).unwrap();
+        restored.rebuild_transient_state();
+
+        // Verify strut row survived.
+        assert_eq!(restored.db.struts.len(), 1);
+        let strut = restored.db.struts.iter_all().next().unwrap();
+        assert_eq!(strut.endpoint_a, a);
+        assert_eq!(strut.endpoint_b, b);
+        assert!(strut.structure_id.is_some());
+
+        // Verify voxels survived.
+        for &coord in &line {
+            assert_eq!(
+                restored.world.get(coord),
+                VoxelType::Strut,
+                "Strut voxel at {:?} should survive save/load",
+                coord
+            );
+        }
     }
 }

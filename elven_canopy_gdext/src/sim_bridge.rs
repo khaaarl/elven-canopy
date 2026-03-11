@@ -1328,6 +1328,7 @@ impl SimBridge {
                 BuildType::WoodLadder => "WoodLadder",
                 BuildType::RopeLadder => "RopeLadder",
                 BuildType::Carve => "Carve",
+                BuildType::Strut => "Strut",
             };
             dict.set("build_type", GString::from(build_type_str));
             dict.set("name", GString::from(&structure.display_name()));
@@ -1524,6 +1525,7 @@ impl SimBridge {
             BuildType::WoodLadder => "WoodLadder",
             BuildType::RopeLadder => "RopeLadder",
             BuildType::Carve => "Carve",
+            BuildType::Strut => "Strut",
         };
         dict.set("build_type", GString::from(build_type_str));
         dict.set("name", GString::from(&structure.display_name()));
@@ -3200,6 +3202,23 @@ impl SimBridge {
         })
     }
 
+    /// Designate a support strut between two endpoints.
+    ///
+    /// Computes the 6-connected voxel line between the endpoints and sends
+    /// a `DesignateBuild` command with `BuildType::Strut`. Returns a
+    /// validation message (empty = success).
+    #[func]
+    fn designate_strut(&mut self, ax: i32, ay: i32, az: i32, bx: i32, by: i32, bz: i32) -> GString {
+        let endpoint_a = VoxelCoord::new(ax, ay, az);
+        let endpoint_b = VoxelCoord::new(bx, by, bz);
+        let voxels = endpoint_a.line_to(endpoint_b);
+        self.apply_build_action(SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels,
+            priority: Priority::Normal,
+        })
+    }
+
     /// Preview-validate a rectangular carve placement.
     ///
     /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
@@ -3262,14 +3281,159 @@ impl SimBridge {
             return Self::preview_result("Blocked", "Nothing to carve.");
         }
 
+        let struts: Vec<_> = sim.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_carve_fast(
             &sim.world,
             &sim.face_data,
             &carve_coords,
             &sim.config,
             &overlay,
+            &struts,
         );
         Self::preview_result_from_tier(validation.tier, &validation.message)
+    }
+
+    /// Preview-validate a strut placement between two endpoints.
+    ///
+    /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
+    /// their target voxel types for adjacency and structural checks.
+    ///
+    /// Computes the 6-connected voxel line between the endpoints, checks
+    /// replacement rules, adjacency, overlap, bounds, and structural
+    /// integrity. Returns a `VarDictionary` with `"tier"`, `"message"`, and
+    /// `"voxels"` (PackedInt32Array of x,y,z triples for each voxel in the
+    /// line).
+    #[func]
+    fn validate_strut_preview(
+        &self,
+        ax: i32,
+        ay: i32,
+        az: i32,
+        bx: i32,
+        by: i32,
+        bz: i32,
+    ) -> VarDictionary {
+        let Some(sim) = &self.session.sim else {
+            return Self::preview_result("Blocked", "Simulation not initialized.");
+        };
+        let endpoint_a = VoxelCoord::new(ax, ay, az);
+        let endpoint_b = VoxelCoord::new(bx, by, bz);
+
+        // Compute the voxel line.
+        let line = endpoint_a.line_to(endpoint_b);
+
+        // Pack voxel coordinates into the result regardless of validation.
+        let mut voxel_array = PackedInt32Array::new();
+        for &coord in &line {
+            voxel_array.push(coord.x);
+            voxel_array.push(coord.y);
+            voxel_array.push(coord.z);
+        }
+
+        // Minimum length check.
+        if line.len() < 2 {
+            let mut dict = Self::preview_result("Blocked", "Strut must be at least 2 voxels.");
+            dict.set("voxels", voxel_array);
+            return dict;
+        }
+
+        let overlay = sim.blueprint_overlay();
+        let effective_type =
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
+
+        // Bounds check.
+        for &coord in &line {
+            if !sim.world.in_bounds(coord) {
+                let mut dict = Self::preview_result("Blocked", "Strut extends out of bounds.");
+                dict.set("voxels", voxel_array);
+                return dict;
+            }
+        }
+
+        // Blueprint overlap check (F-no-bp-overlap). Struts can overlap with
+        // platform and bridge blueprints (they pass through flat structures).
+        for &coord in &line {
+            if let Some(&bp_vt) = overlay.voxels.get(&coord)
+                && !matches!(bp_vt, VoxelType::GrownPlatform | VoxelType::Bridge)
+            {
+                let mut dict =
+                    Self::preview_result("Blocked", "Strut overlaps an existing blueprint.");
+                dict.set("voxels", voxel_array);
+                return dict;
+            }
+        }
+
+        // Replacement validation. Struts can pass through natural materials,
+        // platforms, and bridges, but not buildings, walls, or ladders.
+        for &coord in &line {
+            let vt = sim.world.get(coord);
+            match vt {
+                VoxelType::Air
+                | VoxelType::Leaf
+                | VoxelType::Fruit
+                | VoxelType::Dirt
+                | VoxelType::Trunk
+                | VoxelType::Branch
+                | VoxelType::Root
+                | VoxelType::ForestFloor
+                | VoxelType::Strut
+                | VoxelType::GrownPlatform
+                | VoxelType::Bridge => {}
+                _ => {
+                    let mut dict = Self::preview_result(
+                        "Blocked",
+                        "Strut cannot pass through buildings, walls, or ladders.",
+                    );
+                    dict.set("voxels", voxel_array);
+                    return dict;
+                }
+            }
+        }
+
+        // Adjacency pre-check: at least one endpoint face-adjacent to solid.
+        let has_adj = [endpoint_a, endpoint_b].iter().any(|&ep| {
+            FaceDirection::ALL.iter().any(|&dir| {
+                let (dx, dy, dz) = dir.to_offset();
+                let neighbor = VoxelCoord::new(ep.x + dx, ep.y + dy, ep.z + dz);
+                if line.contains(&neighbor) {
+                    return false;
+                }
+                effective_type(neighbor).is_solid()
+            })
+        });
+        if !has_adj {
+            let mut dict = Self::preview_result(
+                "Blocked",
+                "At least one endpoint must be adjacent to a solid voxel.",
+            );
+            dict.set("voxels", voxel_array);
+            return dict;
+        }
+
+        // Structural validation. Include the proposed strut in the list so
+        // that rod springs are generated for it during weight-flow analysis.
+        let mut struts: Vec<_> = sim.db.struts.iter_all().cloned().collect();
+        struts.push(elven_canopy_sim::db::Strut {
+            id: elven_canopy_sim::types::StrutId(u64::MAX),
+            endpoint_a,
+            endpoint_b,
+            blueprint_id: None,
+            structure_id: None,
+        });
+        let validation = structural::validate_blueprint_fast(
+            &sim.world,
+            &sim.face_data,
+            &line,
+            VoxelType::Strut,
+            &BTreeMap::new(),
+            &sim.config,
+            &overlay,
+            &struts,
+        );
+
+        let mut dict = Self::preview_result_from_tier(validation.tier, &validation.message);
+        dict.set("voxels", voxel_array);
+        dict
     }
 
     /// Validate whether a building can be placed at the given anchor.
@@ -3416,6 +3580,7 @@ impl SimBridge {
         }
 
         // Structural validation on buildable voxels only.
+        let struts: Vec<_> = sim.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_blueprint_fast(
             &sim.world,
             &sim.face_data,
@@ -3424,6 +3589,7 @@ impl SimBridge {
             &BTreeMap::new(),
             &sim.config,
             &overlay,
+            &struts,
         );
         Self::preview_result_from_tier(validation.tier, &validation.message)
     }
@@ -3506,6 +3672,7 @@ impl SimBridge {
             elven_canopy_sim::building::compute_building_face_layout(anchor, width, depth, height);
         let voxels: Vec<VoxelCoord> = face_layout.keys().copied().collect();
 
+        let struts: Vec<_> = sim.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_blueprint_fast(
             &sim.world,
             &sim.face_data,
@@ -3514,6 +3681,7 @@ impl SimBridge {
             &face_layout,
             &sim.config,
             &overlay,
+            &struts,
         );
         Self::preview_result_from_tier(validation.tier, &validation.message)
     }
@@ -4166,6 +4334,7 @@ impl SimBridge {
         } else {
             VoxelType::RopeLadder
         };
+        let struts: Vec<_> = sim.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_blueprint_fast(
             &sim.world,
             &sim.face_data,
@@ -4174,6 +4343,7 @@ impl SimBridge {
             &BTreeMap::new(),
             &sim.config,
             &overlay,
+            &struts,
         );
         Self::preview_result_from_tier(validation.tier, &validation.message)
     }

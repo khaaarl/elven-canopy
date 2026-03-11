@@ -60,7 +60,7 @@ use crate::types::{
     CivSpecies, CompositionId, CreatureId, CultureTag, EnchantmentEffectId, EnchantmentId,
     FurnishingType, FurnitureId, GroundPileId, InventoryId, ItemStackId, ItemSubcomponentId,
     LogisticsWantId, MilitaryGroupId, NavNodeId, NotificationId, ProjectId, ProjectileId, Species,
-    StructureId, TaskAcquireDataId, TaskAttackMoveDataId, TaskAttackTargetDataId,
+    StructureId, StrutId, TaskAcquireDataId, TaskAttackMoveDataId, TaskAttackTargetDataId,
     TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId,
     TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VitalStatus, VoxelCoord,
 };
@@ -631,6 +631,7 @@ impl CompletedStructure {
             BuildType::WoodLadder => "Wood Ladder",
             BuildType::RopeLadder => "Rope Ladder",
             BuildType::Carve => "Carve",
+            BuildType::Strut => "Strut",
         };
         format!("{} #{}", type_str, self.id.0)
     }
@@ -732,6 +733,25 @@ impl CompletedStructure {
         let height = max_y - min_y + 1;
         (anchor, width, depth, height)
     }
+}
+
+/// A diagonal support strut connecting two voxel endpoints.
+///
+/// Struts are 6-connected lines of `VoxelType::Strut` voxels rasterized via
+/// `VoxelCoord::line_to()`. They carry rod springs along their axis for
+/// structural benefit. The `blueprint_id` FK cascades on delete (cancelling the
+/// blueprint removes the strut row). The `structure_id` FK nullifies on delete
+/// (the strut persists even if the parent structure is removed).
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct Strut {
+    #[primary_key(auto_increment)]
+    pub id: StrutId,
+    pub endpoint_a: VoxelCoord,
+    pub endpoint_b: VoxelCoord,
+    #[indexed]
+    pub blueprint_id: Option<ProjectId>,
+    #[indexed]
+    pub structure_id: Option<StructureId>,
 }
 
 /// An abstract inventory container. Creatures, structures, and ground piles
@@ -1083,6 +1103,7 @@ impl std::fmt::Debug for SimDb {
             .field("furniture", &self.furniture.len())
             .field("notifications", &self.notifications.len())
             .field("music_compositions", &self.music_compositions.len())
+            .field("struts", &self.struts.len())
             .field("projectiles", &self.projectiles.len())
             .finish()
     }
@@ -1232,6 +1253,12 @@ pub struct SimDb {
 
     #[table(singular = "notification", auto)]
     pub notifications: NotificationTable,
+
+    #[table(singular = "strut",
+            auto,
+            fks(blueprint_id? = "blueprints" on_delete cascade,
+                structure_id? = "structures" on_delete nullify))]
+    pub struts: StrutTable,
 
     #[table(singular = "projectile",
             auto,

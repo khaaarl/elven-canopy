@@ -137,6 +137,8 @@ pub fn voxel_color(vt: VoxelType) -> [f32; 4] {
         | VoxelType::GrownWall
         | VoxelType::GrownStairs
         | VoxelType::Bridge => [0.50, 0.35, 0.18, 1.0],
+        // Strut: slightly darker/redder wood tint to distinguish from platforms.
+        VoxelType::Strut => [0.55, 0.30, 0.15, 1.0],
         // Types that don't produce geometry — return a visible debug color.
         _ => [1.0, 0.0, 1.0, 1.0],
     }
@@ -156,6 +158,7 @@ fn produces_geometry(vt: VoxelType) -> bool {
             | VoxelType::GrownWall
             | VoxelType::GrownStairs
             | VoxelType::Bridge
+            | VoxelType::Strut
     )
 }
 

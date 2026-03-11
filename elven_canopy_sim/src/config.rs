@@ -84,6 +84,16 @@ pub struct StructuralConfig {
     pub block_stress_ratio: f32,
     /// Maximum tree generation retry attempts before panicking.
     pub tree_gen_max_retries: u32,
+    /// Per-link stiffness of rod springs along a strut's axis. The effective
+    /// end-to-end stiffness of a strut is `k_link × spacing / N`, so longer
+    /// struts are naturally more flexible (physically correct).
+    pub strut_rod_stiffness: f32,
+    /// Per-link strength of rod springs along a strut's axis.
+    pub strut_rod_strength: f32,
+    /// Spacing (in voxels) between rod spring connection points along a strut.
+    /// E.g., 2 means connection points at every 2nd voxel. Lower spacing
+    /// means more springs (`O(N/spacing)` per strut) and stiffer behavior.
+    pub strut_rod_spacing: u32,
     /// Per-voxel-type material properties.
     pub materials: BTreeMap<VoxelType, MaterialProperties>,
     /// Per-face-type structural properties.
@@ -193,6 +203,17 @@ impl Default for StructuralConfig {
                 strength: 5.0,
             },
         );
+        // Strut: sturdy player-built diagonal support. Face-adjacent springs
+        // are slightly stiffer than GrownPlatform; the real structural benefit
+        // comes from rod springs along the strut axis (see structural.rs).
+        materials.insert(
+            VoxelType::Strut,
+            MaterialProperties {
+                density: 0.6,
+                stiffness: 25.0,
+                strength: 12.0,
+            },
+        );
         materials.insert(
             VoxelType::RopeLadder,
             MaterialProperties {
@@ -260,6 +281,9 @@ impl Default for StructuralConfig {
             warn_stress_ratio: 0.5,
             block_stress_ratio: 1.0,
             tree_gen_max_retries: 4,
+            strut_rod_stiffness: 150.0,
+            strut_rod_strength: 150.0,
+            strut_rod_spacing: 2,
             materials,
             face_properties: face_props,
         }

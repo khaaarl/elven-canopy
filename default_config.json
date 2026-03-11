@@ -407,6 +407,9 @@
     "warn_stress_ratio": 0.5,
     "block_stress_ratio": 1.0,
     "tree_gen_max_retries": 4,
+    "strut_rod_stiffness": 150.0,
+    "strut_rod_strength": 150.0,
+    "strut_rod_spacing": 2,
     "materials": {
       "Trunk": {
         "density": 1.0,

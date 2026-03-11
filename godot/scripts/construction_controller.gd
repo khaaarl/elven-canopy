@@ -3,7 +3,7 @@
 ## Manages the construction mode lifecycle with a five-state state machine:
 ##   INACTIVE → ACTIVE → HOVER → DRAGGING → PREVIEW → (confirm → HOVER)
 ##
-## Four build modes:
+## Five build modes:
 ##   "platform" — flat rectangular platform (1 voxel high), placed on a
 ##     height-slice via mouse projection onto the camera's Y-level plane.
 ##   "building" — enclosed room (min 3x3 footprint), placed by raycasting
@@ -12,9 +12,12 @@
 ##     Auto-orientation picks the facing with most adjacent solid voxels.
 ##   "carve" — removes voxels from a 3D rectangular prism. Uses height-slice
 ##     projection; vertical extent set by camera height changes during drag.
+##   "strut" — diagonal support strut between two endpoints. Uses height-slice
+##     projection; endpoint A Y set on mousedown, endpoint B Y changes with
+##     camera height during drag. Ghost via MultiMesh of voxel cubes.
 ##
 ## Mouse-to-voxel projection:
-##   Platform/carve: ray-plane intersection at Y = camera_focus_y + 0.5.
+##   Platform/carve/strut: ray-plane intersection at Y = camera_focus_y + 0.5.
 ##   Building/ladder: bridge.raycast_solid_with_blueprints() to find solid
 ##     surfaces (blueprint-aware — designated blueprints are hittable).
 ##
@@ -75,7 +78,7 @@ var _ghost: MeshInstance3D
 var _ghost_material: StandardMaterial3D
 var _height_grid: Node3D
 
-## Current build mode: "platform", "building", "ladder", or "carve".
+## Current build mode: "platform", "building", "ladder", "carve", or "strut".
 var _build_mode: String = "platform"
 
 ## Drag state.
@@ -87,6 +90,13 @@ var _drag_y_current: int = 0  # Carve: current camera Y during drag.
 var _last_valid_drag: Vector3i = Vector3i.ZERO  # Last valid drag position.
 var _has_valid_hover: bool = false
 var _hover_voxel: Vector3i = Vector3i.ZERO
+
+## Strut-specific state.
+var _strut_endpoint_a: Vector3i = Vector3i.ZERO
+var _strut_endpoint_b: Vector3i = Vector3i.ZERO
+var _strut_y_a: int = 0  # Locked Y-level of endpoint A (set on mousedown).
+var _strut_multimesh: MultiMeshInstance3D
+var _strut_ghost_voxels: PackedInt32Array = PackedInt32Array()
 
 ## Computed dimensions (from drag rectangle, capped at 10).
 var _width: int = 1
@@ -165,6 +175,7 @@ func _ready() -> void:
 	_build_rotations()
 	_build_panel()
 	_build_ghost()
+	_build_strut_ghost()
 
 
 func _build_rotations() -> void:
@@ -235,6 +246,11 @@ func _build_panel() -> void:
 	carve_btn.text = "Carve [C]"
 	carve_btn.pressed.connect(func(): _switch_mode("carve"))
 	vbox.add_child(carve_btn)
+
+	var strut_btn := Button.new()
+	strut_btn.text = "Strut"
+	strut_btn.pressed.connect(func(): _switch_mode("strut"))
+	vbox.add_child(strut_btn)
 
 	# PREVIEW controls container.
 	_placing_controls = VBoxContainer.new()
@@ -366,6 +382,27 @@ func _build_ghost() -> void:
 	add_child(_ghost)
 
 
+func _build_strut_ghost() -> void:
+	_strut_multimesh = MultiMeshInstance3D.new()
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = BoxMesh.new()
+	(mm.mesh as BoxMesh).size = Vector3(0.95, 0.95, 0.95)
+	mm.instance_count = 100
+	mm.visible_instance_count = 0
+	_strut_multimesh.multimesh = mm
+
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.vertex_color_use_as_albedo = true
+	mat.no_depth_test = true
+	_strut_multimesh.material_override = mat
+
+	_strut_multimesh.visible = false
+	add_child(_strut_multimesh)
+
+
 # -----------------------------------------------------------------------
 # State transitions
 # -----------------------------------------------------------------------
@@ -391,6 +428,7 @@ func _deactivate() -> void:
 	_state = State.INACTIVE
 	_panel.visible = false
 	_ghost.visible = false
+	_strut_multimesh.visible = false
 	_placing_controls.visible = false
 	_message_label.visible = false
 	_message_timer = 0.0
@@ -420,7 +458,9 @@ func _enter_hover() -> void:
 	_invalidate_preview_cache()
 
 	# Enable vertical snap and grid for height-slice modes.
-	var uses_height_slice := _build_mode == "platform" or _build_mode == "carve"
+	var uses_height_slice := (
+		_build_mode == "platform" or _build_mode == "carve" or _build_mode == "strut"
+	)
 	if _camera_pivot and _camera_pivot.has_method("set_vertical_snap"):
 		_camera_pivot.set_vertical_snap(uses_height_slice)
 	_set_grid_visible(uses_height_slice)
@@ -438,6 +478,9 @@ func _enter_dragging() -> void:
 		var focus: Vector3i = _camera_pivot.get_focus_voxel()
 		_drag_y_start = focus.y
 		_drag_y_current = focus.y
+	elif _build_mode == "strut":
+		_strut_endpoint_a = _hover_voxel
+		_strut_y_a = _hover_voxel.y
 
 	_update_drag_dimensions()
 	_update_ghost()
@@ -474,6 +517,9 @@ func _enter_preview() -> void:
 		_orientation_row.visible = false
 		_kind_row.visible = false
 
+	if _build_mode == "strut":
+		_strut_endpoint_b = _drag_current
+
 	_confirm_btn.text = "Carve" if _build_mode == "carve" else "Confirm"
 
 	# Resolve auto-orientation for ladders.
@@ -490,6 +536,7 @@ func _cancel_to_hover() -> void:
 
 func _cancel_any_drag() -> void:
 	_ghost.visible = false
+	_strut_multimesh.visible = false
 	_placing_controls.visible = false
 	_message_label.visible = false
 	_message_timer = 0.0
@@ -657,7 +704,7 @@ func _update_drag() -> void:
 
 ## Project for current mode (hover — fresh position).
 func _project_for_mode() -> Variant:
-	if _build_mode == "platform" or _build_mode == "carve":
+	if _build_mode in ["platform", "carve", "strut"]:
 		var focus: Vector3i = _camera_pivot.get_focus_voxel()
 		return _project_height_slice(focus.y)
 	return _project_surface()
@@ -667,7 +714,9 @@ func _project_for_mode() -> Variant:
 func _project_for_mode_drag() -> Variant:
 	if _build_mode == "platform":
 		return _project_height_slice(_drag_start.y)
-	if _build_mode == "carve":
+	if _build_mode in ["carve", "strut"]:
+		# Strut: endpoint B Y changes with camera height (unlike platform
+		# which locks Y to drag start).
 		var focus: Vector3i = _camera_pivot.get_focus_voxel()
 		return _project_height_slice(focus.y)
 	return _project_surface()
@@ -721,6 +770,10 @@ func _get_anchor() -> Vector3i:
 
 
 func _update_ghost() -> void:
+	if _build_mode == "strut":
+		_update_strut_ghost()
+		return
+
 	var anchor := _get_anchor()
 
 	if _build_mode == "ladder":
@@ -775,28 +828,60 @@ func _update_ghost() -> void:
 
 
 func _run_validation() -> void:
-	var anchor := _get_anchor()
+	var anchor: Vector3i
+	if _build_mode == "strut":
+		anchor = _strut_endpoint_a
+	else:
+		anchor = _get_anchor()
 
-	var needs_revalidate := (
-		anchor != _last_preview_voxel
-		or _width != _last_preview_width
-		or _depth != _last_preview_depth
-		or _height != _last_preview_height
-		or _effective_orientation != _last_preview_orientation
-		or _ladder_kind != _last_preview_kind
-	)
+	var needs_revalidate: bool
+	if _build_mode == "strut":
+		# Strut: cache on both endpoints.
+		needs_revalidate = (
+			anchor != _last_preview_voxel
+			or _strut_endpoint_b.x != _last_preview_width
+			or _strut_endpoint_b.y != _last_preview_depth
+			or _strut_endpoint_b.z != _last_preview_height
+		)
+	else:
+		needs_revalidate = (
+			anchor != _last_preview_voxel
+			or _width != _last_preview_width
+			or _depth != _last_preview_depth
+			or _height != _last_preview_height
+			or _effective_orientation != _last_preview_orientation
+			or _ladder_kind != _last_preview_kind
+		)
 	if not needs_revalidate:
 		return
 
 	_last_preview_voxel = anchor
-	_last_preview_width = _width
-	_last_preview_depth = _depth
-	_last_preview_height = _height
-	_last_preview_orientation = _effective_orientation
-	_last_preview_kind = _ladder_kind
+	if _build_mode == "strut":
+		_last_preview_width = _strut_endpoint_b.x
+		_last_preview_depth = _strut_endpoint_b.y
+		_last_preview_height = _strut_endpoint_b.z
+	else:
+		_last_preview_width = _width
+		_last_preview_depth = _depth
+		_last_preview_height = _height
+		_last_preview_orientation = _effective_orientation
+		_last_preview_kind = _ladder_kind
 
 	var result: Dictionary
-	if _build_mode == "ladder":
+	if _build_mode == "strut":
+		result = (
+			_bridge
+			. validate_strut_preview(
+				_strut_endpoint_a.x,
+				_strut_endpoint_a.y,
+				_strut_endpoint_a.z,
+				_strut_endpoint_b.x,
+				_strut_endpoint_b.y,
+				_strut_endpoint_b.z,
+			)
+		)
+		_strut_ghost_voxels = result.get("voxels", PackedInt32Array())
+	elif _build_mode == "ladder":
 		result = _bridge.validate_ladder_preview(
 			anchor.x, anchor.y, anchor.z, _height, _effective_orientation, _ladder_kind
 		)
@@ -962,7 +1047,19 @@ func _handle_mouse_button(mb: InputEventMouseButton) -> void:
 
 func _confirm_placement() -> void:
 	var anchor := _get_anchor()
-	if _build_mode == "ladder":
+	if _build_mode == "strut":
+		(
+			_bridge
+			. designate_strut(
+				_strut_endpoint_a.x,
+				_strut_endpoint_a.y,
+				_strut_endpoint_a.z,
+				_strut_endpoint_b.x,
+				_strut_endpoint_b.y,
+				_strut_endpoint_b.z,
+			)
+		)
+	elif _build_mode == "ladder":
 		_bridge.designate_ladder(
 			anchor.x, anchor.y, anchor.z, _height, _effective_orientation, _ladder_kind
 		)
@@ -1045,6 +1142,63 @@ func _set_height(value: int) -> void:
 		_resolve_ladder_orientation()
 	_invalidate_preview_cache()
 	_update_ghost()
+
+
+# -----------------------------------------------------------------------
+# Strut ghost
+# -----------------------------------------------------------------------
+
+
+func _update_strut_ghost() -> void:
+	# Determine endpoints based on state.
+	if _state == State.DRAGGING:
+		_strut_endpoint_b = _drag_current
+	# In PREVIEW, endpoints are already set.
+
+	# Hide the single-voxel ghost — strut uses the multimesh.
+	_ghost.visible = false
+
+	# Run validation to get the voxel line and tier.
+	_run_validation()
+
+	# Update MultiMesh instances from the validated voxel line.
+	var mm := _strut_multimesh.multimesh
+	var voxel_count := _strut_ghost_voxels.size() / 3
+	if voxel_count == 0:
+		_strut_multimesh.visible = false
+		return
+
+	# Grow the pool if needed (rare — struts > 100 voxels).
+	if voxel_count > mm.instance_count:
+		mm.instance_count = voxel_count
+
+	mm.visible_instance_count = voxel_count
+
+	# Choose color based on validation tier.
+	var color: Color
+	if _validation_tier == "Ok":
+		color = Color(0.55, 0.30, 0.15, 0.5)  # Brown (strut material color).
+	elif _validation_tier == "Warning":
+		color = Color(1.0, 0.85, 0.3, 0.5)
+	else:
+		color = Color(1.0, 0.2, 0.2, 0.5)
+
+	# Brighter color for endpoint A to distinguish it from the line.
+	var color_a := Color(0.7, 0.5, 0.3, 0.6) if _validation_tier == "Ok" else color
+
+	for i in range(voxel_count):
+		var vx: int = _strut_ghost_voxels[i * 3]
+		var vy: int = _strut_ghost_voxels[i * 3 + 1]
+		var vz: int = _strut_ghost_voxels[i * 3 + 2]
+		var xf := Transform3D(Basis.IDENTITY, Vector3(vx + 0.5, vy + 0.5, vz + 0.5))
+		mm.set_instance_transform(i, xf)
+		mm.set_instance_color(i, color_a if i == 0 else color)
+
+	_strut_multimesh.visible = true
+
+	# Update confirm button state.
+	if _state == State.PREVIEW:
+		_confirm_btn.disabled = not _focus_valid
 
 
 # -----------------------------------------------------------------------

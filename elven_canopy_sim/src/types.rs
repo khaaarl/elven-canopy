@@ -73,6 +73,83 @@ impl VoxelCoord {
             + ((self.y - other.y).unsigned_abs())
             + ((self.z - other.z).unsigned_abs())
     }
+
+    /// Returns all voxel coordinates along a **6-connected** line from `self`
+    /// to `other`, inclusive of both endpoints.
+    ///
+    /// Every consecutive pair of voxels in the returned list shares a face
+    /// (differs by exactly 1 on a single axis). This produces longer paths
+    /// than 26-connected Bresenham but guarantees structural face-adjacency
+    /// throughout the strut.
+    ///
+    /// **Symmetry guarantee:** `a.line_to(b)` produces the same set of
+    /// coordinates as `b.line_to(a)` (reversed order). Achieved by always
+    /// iterating from the lexicographically smaller endpoint (x, then y,
+    /// then z to break ties).
+    ///
+    /// **Tie-breaking:** When multiple axes have equal accumulated error,
+    /// the axis with lower index (x < y < z) is stepped first. Combined
+    /// with the canonical direction, this ensures deterministic results.
+    pub fn line_to(self, other: VoxelCoord) -> Vec<VoxelCoord> {
+        // Canonical direction: always iterate from the lex-smaller endpoint.
+        let (start, end) = if self <= other {
+            (self, other)
+        } else {
+            (other, self)
+        };
+
+        let dx = (end.x - start.x).abs();
+        let dy = (end.y - start.y).abs();
+        let dz = (end.z - start.z).abs();
+
+        let sx = (end.x - start.x).signum();
+        let sy = (end.y - start.y).signum();
+        let sz = (end.z - start.z).signum();
+
+        // Total number of steps in a 6-connected line is dx + dy + dz.
+        let total_steps = (dx + dy + dz) as usize;
+        let mut result = Vec::with_capacity(total_steps + 1);
+
+        let mut cur = start;
+        result.push(cur);
+
+        // Error accumulators: track how far behind each axis is.
+        // We use a scaled error approach: each step increments all axis
+        // errors by their respective deltas. We then step whichever axis
+        // has the largest accumulated error (ties broken by axis index).
+        let mut err_x: i32 = 0;
+        let mut err_y: i32 = 0;
+        let mut err_z: i32 = 0;
+
+        for _ in 0..total_steps {
+            err_x += dx;
+            err_y += dy;
+            err_z += dz;
+
+            // Step the axis with the largest error. Ties broken: x > y > z
+            // (lower-index axis preferred — since we compare >=).
+            if err_x >= err_y && err_x >= err_z {
+                cur.x += sx;
+                err_x -= dx + dy + dz;
+            } else if err_y >= err_z {
+                cur.y += sy;
+                err_y -= dx + dy + dz;
+            } else {
+                cur.z += sz;
+                err_z -= dx + dy + dz;
+            }
+
+            result.push(cur);
+        }
+
+        // If we iterated from `other` to `self`, reverse so the caller's
+        // endpoint order is preserved.
+        if self > other {
+            result.reverse();
+        }
+
+        result
+    }
 }
 
 impl fmt::Display for VoxelCoord {
@@ -322,6 +399,8 @@ auto_pk_id!(/// Auto-increment ID for directed civ relationship records.
 CivRelationshipId);
 auto_pk_id!(/// Auto-increment ID for projectiles in flight.
 ProjectileId);
+auto_pk_id!(/// Auto-increment ID for support struts.
+StrutId);
 auto_pk_id!(/// Auto-increment ID for military groups within a civilization.
 MilitaryGroupId);
 
@@ -704,6 +783,10 @@ pub enum BuildType {
     RopeLadder,
     /// Carve (remove) solid voxels to Air. The inverse of construction.
     Carve,
+    /// A diagonal support strut between two endpoints. Produces `Strut` voxels
+    /// along a 6-connected line. Uses custom replacement validation instead of
+    /// the normal `allows_tree_overlap()` flow.
+    Strut,
 }
 
 impl BuildType {
@@ -739,6 +822,7 @@ impl BuildType {
             BuildType::WoodLadder => VoxelType::WoodLadder,
             BuildType::RopeLadder => VoxelType::RopeLadder,
             BuildType::Carve => VoxelType::Air,
+            BuildType::Strut => VoxelType::Strut,
         }
     }
 }
@@ -907,6 +991,11 @@ pub enum VoxelType {
     WoodLadder,
     /// A rope ladder voxel. Non-solid, same face/orientation storage as WoodLadder.
     RopeLadder,
+    /// A support strut voxel. Solid like wood, but carries rod-spring metadata
+    /// for efficient diagonal load transfer via chain-topology springs along
+    /// the strut axis. Can be placed through natural materials (dirt, trunk,
+    /// leaves) and existing completed struts.
+    Strut,
 }
 
 /// Classification of a voxel for construction overlap with tree geometry.
@@ -944,6 +1033,7 @@ impl VoxelType {
                 | VoxelType::GrownWall
                 | VoxelType::GrownStairs
                 | VoxelType::Bridge
+                | VoxelType::Strut
         )
     }
 
@@ -987,7 +1077,8 @@ impl VoxelType {
             | VoxelType::Bridge
             | VoxelType::BuildingInterior
             | VoxelType::WoodLadder
-            | VoxelType::RopeLadder => OverlapClassification::Blocked,
+            | VoxelType::RopeLadder
+            | VoxelType::Strut => OverlapClassification::Blocked,
         }
     }
 }
@@ -1310,5 +1401,246 @@ mod tests {
         let restored: crate::db::Thought = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.kind, thought.kind);
         assert_eq!(restored.tick, thought.tick);
+    }
+
+    // --- Strut type property tests ---
+
+    #[test]
+    fn strut_voxel_type_properties() {
+        assert!(VoxelType::Strut.is_solid());
+        assert!(VoxelType::Strut.is_opaque());
+        assert!(VoxelType::Strut.blocks_los());
+        assert!(!VoxelType::Strut.is_ladder());
+        assert_eq!(
+            VoxelType::Strut.classify_for_overlap(),
+            OverlapClassification::Blocked
+        );
+    }
+
+    #[test]
+    fn strut_build_type_properties() {
+        assert_eq!(BuildType::Strut.to_voxel_type(), VoxelType::Strut);
+        assert!(!BuildType::Strut.allows_tree_overlap());
+        assert!(!BuildType::Strut.is_carve());
+    }
+
+    // --- VoxelCoord::line_to() tests ---
+
+    /// Helper: verify every consecutive pair in the line shares a face.
+    fn assert_face_connected(line: &[VoxelCoord]) {
+        for pair in line.windows(2) {
+            let d = pair[0].manhattan_distance(pair[1]);
+            assert_eq!(
+                d, 1,
+                "Consecutive voxels {:?} and {:?} have manhattan distance {}, expected 1",
+                pair[0], pair[1], d
+            );
+        }
+    }
+
+    #[test]
+    fn line_to_same_point() {
+        let a = VoxelCoord::new(5, 5, 5);
+        let line = a.line_to(a);
+        assert_eq!(line, vec![a]);
+    }
+
+    #[test]
+    fn line_to_axis_aligned_x() {
+        let a = VoxelCoord::new(0, 0, 0);
+        let b = VoxelCoord::new(5, 0, 0);
+        let line = a.line_to(b);
+        assert_eq!(line.len(), 6); // 0..=5
+        assert_eq!(line[0], a);
+        assert_eq!(line[5], b);
+        assert_face_connected(&line);
+    }
+
+    #[test]
+    fn line_to_axis_aligned_y() {
+        let a = VoxelCoord::new(3, 1, 7);
+        let b = VoxelCoord::new(3, 8, 7);
+        let line = a.line_to(b);
+        assert_eq!(line.len(), 8); // dy=7, total steps=7, +1 for start
+        assert_eq!(line[0], a);
+        assert_eq!(*line.last().unwrap(), b);
+        assert_face_connected(&line);
+    }
+
+    #[test]
+    fn line_to_axis_aligned_z() {
+        let a = VoxelCoord::new(2, 3, 0);
+        let b = VoxelCoord::new(2, 3, 10);
+        let line = a.line_to(b);
+        assert_eq!(line.len(), 11);
+        assert_face_connected(&line);
+    }
+
+    #[test]
+    fn line_to_negative_direction() {
+        let a = VoxelCoord::new(10, 10, 10);
+        let b = VoxelCoord::new(5, 10, 10);
+        let line = a.line_to(b);
+        assert_eq!(line.len(), 6);
+        assert_eq!(line[0], a);
+        assert_eq!(*line.last().unwrap(), b);
+        assert_face_connected(&line);
+    }
+
+    #[test]
+    fn line_to_diagonal_2d() {
+        let a = VoxelCoord::new(0, 0, 0);
+        let b = VoxelCoord::new(4, 4, 0);
+        let line = a.line_to(b);
+        // 6-connected: dx=4, dy=4, dz=0 → 8 steps + 1 = 9 voxels
+        assert_eq!(line.len(), 9);
+        assert_eq!(line[0], a);
+        assert_eq!(*line.last().unwrap(), b);
+        assert_face_connected(&line);
+    }
+
+    #[test]
+    fn line_to_diagonal_3d() {
+        let a = VoxelCoord::new(0, 0, 0);
+        let b = VoxelCoord::new(3, 3, 3);
+        let line = a.line_to(b);
+        // 6-connected: dx+dy+dz = 9 steps + 1 = 10 voxels
+        assert_eq!(line.len(), 10);
+        assert_eq!(line[0], a);
+        assert_eq!(*line.last().unwrap(), b);
+        assert_face_connected(&line);
+    }
+
+    #[test]
+    fn line_to_arbitrary_slope() {
+        let a = VoxelCoord::new(1, 2, 3);
+        let b = VoxelCoord::new(7, 4, 6);
+        // dx=6, dy=2, dz=3 → 11 steps + 1 = 12 voxels
+        let line = a.line_to(b);
+        assert_eq!(line.len(), 12);
+        assert_eq!(line[0], a);
+        assert_eq!(*line.last().unwrap(), b);
+        assert_face_connected(&line);
+    }
+
+    #[test]
+    fn line_to_symmetry_same_voxel_set() {
+        // a.line_to(b) and b.line_to(a) must produce the same set of voxels.
+        let cases = vec![
+            (VoxelCoord::new(0, 0, 0), VoxelCoord::new(5, 3, 7)),
+            (VoxelCoord::new(1, 2, 3), VoxelCoord::new(7, 4, 6)),
+            (VoxelCoord::new(0, 0, 0), VoxelCoord::new(4, 4, 0)),
+            (VoxelCoord::new(10, 5, 3), VoxelCoord::new(2, 8, 1)),
+            (VoxelCoord::new(0, 0, 0), VoxelCoord::new(0, 0, 0)),
+        ];
+        for (a, b) in cases {
+            let forward = a.line_to(b);
+            let backward = b.line_to(a);
+            // Same length.
+            assert_eq!(
+                forward.len(),
+                backward.len(),
+                "Different lengths for {:?} → {:?}",
+                a,
+                b
+            );
+            // Same voxel set (backward is the reverse of forward).
+            let mut forward_sorted = forward.clone();
+            forward_sorted.sort();
+            let mut backward_sorted = backward.clone();
+            backward_sorted.sort();
+            assert_eq!(
+                forward_sorted, backward_sorted,
+                "Different voxel sets for {:?} → {:?}",
+                a, b
+            );
+            // More specifically: backward should be forward reversed.
+            let mut forward_rev = forward.clone();
+            forward_rev.reverse();
+            assert_eq!(
+                forward_rev, backward,
+                "b.line_to(a) should be the reverse of a.line_to(b) for {:?} → {:?}",
+                a, b
+            );
+        }
+    }
+
+    #[test]
+    fn line_to_length_is_manhattan_distance_plus_one() {
+        // For a 6-connected line, the number of voxels is manhattan_distance + 1.
+        let cases = vec![
+            (VoxelCoord::new(0, 0, 0), VoxelCoord::new(5, 3, 7)),
+            (VoxelCoord::new(1, 1, 1), VoxelCoord::new(1, 1, 1)),
+            (VoxelCoord::new(0, 0, 0), VoxelCoord::new(10, 0, 0)),
+            (VoxelCoord::new(3, 7, 2), VoxelCoord::new(8, 1, 5)),
+        ];
+        for (a, b) in cases {
+            let line = a.line_to(b);
+            let expected = a.manhattan_distance(b) as usize + 1;
+            assert_eq!(
+                line.len(),
+                expected,
+                "Line from {:?} to {:?}: expected {} voxels, got {}",
+                a,
+                b,
+                expected,
+                line.len()
+            );
+        }
+    }
+
+    #[test]
+    fn line_to_tie_breaking_dx_eq_dy() {
+        // When dx == dy, the algorithm should break ties deterministically.
+        let a = VoxelCoord::new(0, 0, 0);
+        let b = VoxelCoord::new(3, 3, 0);
+        let line = a.line_to(b);
+        assert_face_connected(&line);
+        assert_eq!(line.len(), 7);
+        // The first step should be X (lower axis index breaks ties).
+        assert_eq!(line[1], VoxelCoord::new(1, 0, 0));
+    }
+
+    #[test]
+    fn line_to_tie_breaking_all_equal() {
+        // dx == dy == dz: the algorithm should still produce a face-connected line.
+        let a = VoxelCoord::new(0, 0, 0);
+        let b = VoxelCoord::new(2, 2, 2);
+        let line = a.line_to(b);
+        assert_face_connected(&line);
+        assert_eq!(line.len(), 7);
+        // First step should be X (lowest axis index).
+        assert_eq!(line[1], VoxelCoord::new(1, 0, 0));
+    }
+
+    #[test]
+    fn line_to_no_duplicate_voxels() {
+        let cases = vec![
+            (VoxelCoord::new(0, 0, 0), VoxelCoord::new(5, 3, 7)),
+            (VoxelCoord::new(0, 0, 0), VoxelCoord::new(3, 3, 3)),
+            (VoxelCoord::new(2, 5, 1), VoxelCoord::new(8, 2, 9)),
+        ];
+        for (a, b) in cases {
+            let line = a.line_to(b);
+            let mut seen = std::collections::BTreeSet::new();
+            for &v in &line {
+                assert!(
+                    seen.insert(v),
+                    "Duplicate voxel {:?} in line from {:?} to {:?}",
+                    v,
+                    a,
+                    b
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn line_to_adjacent_endpoints() {
+        // Minimum strut: 2 voxels (the two endpoints sharing a face).
+        let a = VoxelCoord::new(5, 5, 5);
+        let b = VoxelCoord::new(5, 6, 5);
+        let line = a.line_to(b);
+        assert_eq!(line, vec![a, b]);
     }
 }

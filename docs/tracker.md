@@ -149,7 +149,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
-[ ] F-support-struts       Support strut construction
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
@@ -274,6 +273,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-struct-basic         Basic structural integrity (flood fill)
 [x] F-struct-names         User-editable structure names
 [x] F-structure-reg        Completed structure registry + UI panel
+[x] F-support-struts       Support strut construction
 [x] F-tab-auto-pk          Auto-generated primary keys
 [x] F-tab-cascade-del      Cascade/nullify on delete
 [x] F-tab-compound-idx     Compound indexes with prefix queries
@@ -614,7 +614,7 @@ and assignments. Requires structural validation of the expanded footprint.
 **Related:** F-construction, F-demolish, F-struct-names
 
 #### F-support-struts — Support strut construction
-**Status:** Todo · **Phase:** 3 · **Refs:** §9
+**Status:** Done · **Phase:** 3 · **Refs:** §9
 **Draft:** `docs/drafts/support_struts.md`
 
 Diagonal braces and support struts that elves can build between two
