@@ -58,7 +58,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
-[ ] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-apprentice           Skill transfer via proximity
@@ -179,6 +178,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
+[x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] F-attack-move          Attack-move task (walk + fight en route)
@@ -850,7 +850,7 @@ data passing to Godot), `tree_renderer.gd` (per-chunk material creation).
 ### Navigation & Pathfinding
 
 #### B-erratic-movement — Erratic/too-fast creature movement after move commands
-**Status:** Todo
+**Status:** Done
 
 After issuing move commands (select creatures, right-click a destination), creature movement becomes erratic and possibly faster than intended. Repro: select one or more creatures, right-click to move them, observe movement behavior.
 

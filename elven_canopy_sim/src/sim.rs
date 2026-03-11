@@ -138,13 +138,18 @@
 // 3. Decision cascade — if task not done, re-enter `execute_task_behavior`
 //    to start the next action; if done, find a new task or wander.
 //
-// **Interruption:** `interrupt_task()` is the single entry point for task
-// interruption from any source (nav invalidation, mope preemption, death,
-// flee, player cancel). It calls `abort_current_action()` to clean up
-// action state (including Move's MoveAction row) without resolving effects,
-// dispatches per-kind cleanup (release reservations, drop carried items),
-// and handles task state: resumable tasks (Build, Furnish) return to
-// Available; all others are marked Complete.
+// **Interruption:** `interrupt_task()` is the entry point for hard task
+// interruption (nav invalidation, mope preemption, death, flee). It calls
+// `abort_current_action()` to cancel the in-progress action and purge
+// orphaned activation events, then delegates to `cleanup_and_unassign_task()`
+// for per-kind cleanup (release reservations, drop carried items) and task
+// state transitions (resumable → Available, others → Complete).
+//
+// **Preemption:** `preempt_task()` is used by player commands (DirectedGoTo,
+// AttackTarget, AttackMove) to swap the task without aborting the in-progress
+// action. The current action completes naturally at `next_available_tick`,
+// then the creature picks up the new task in the decision cascade. This
+// prevents exploitable double-speed movement from command spamming.
 //
 // ### Task kinds and their actions
 //
@@ -2198,6 +2203,11 @@ impl SimState {
             c.action_kind = ActionKind::NoAction;
             c.next_available_tick = None;
         });
+        // Remove orphaned CreatureActivation events from the queue.
+        // Without this, the old activation fires on a creature whose action
+        // state has been cleared, causing double-activations and erratic
+        // movement (B-erratic-movement).
+        self.event_queue.cancel_creature_activations(creature_id);
     }
 
     /// Creature activation: fires when a creature's current action completes
@@ -4427,6 +4437,7 @@ impl SimState {
         };
 
         // Check preemption: can PlayerCombat preempt the current task?
+        let mut mid_move = false;
         if let Some(current_task_id) = attacker.current_task
             && let Some(current_task) = self.db.tasks.get(&current_task_id)
         {
@@ -4441,8 +4452,7 @@ impl SimState {
             ) {
                 return;
             }
-            // Preempt: interrupt the current task.
-            self.interrupt_task(attacker_id, current_task_id);
+            mid_move = self.preempt_task(attacker_id, current_task_id);
         }
 
         // Create and immediately assign the AttackTarget task.
@@ -4466,13 +4476,15 @@ impl SimState {
             let _ = self.db.creatures.update_no_fk(c);
         }
 
-        // Schedule immediate activation.
-        self.event_queue.schedule(
-            self.tick + 1,
-            ScheduledEventKind::CreatureActivation {
-                creature_id: attacker_id,
-            },
-        );
+        // Only schedule activation if no Move action is in-flight.
+        if !mid_move {
+            self.event_queue.schedule(
+                self.tick + 1,
+                ScheduledEventKind::CreatureActivation {
+                    creature_id: attacker_id,
+                },
+            );
+        }
     }
 
     /// Process a `DirectedGoTo` command: create a GoTo task for a specific
@@ -4494,6 +4506,7 @@ impl SimState {
         };
 
         // Check preemption: can PlayerDirected preempt the current task?
+        let mut mid_move = false;
         if let Some(current_task_id) = creature.current_task
             && let Some(current_task) = self.db.tasks.get(&current_task_id)
         {
@@ -4508,7 +4521,9 @@ impl SimState {
             ) {
                 return;
             }
-            self.interrupt_task(creature_id, current_task_id);
+            // Preempt: for mid-Move, let the step complete naturally; for
+            // other actions, abort them (B-erratic-movement).
+            mid_move = self.preempt_task(creature_id, current_task_id);
         }
 
         let task_id = TaskId::new(&mut self.rng);
@@ -4530,10 +4545,15 @@ impl SimState {
             let _ = self.db.creatures.update_no_fk(c);
         }
 
-        self.event_queue.schedule(
-            self.tick + 1,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
+        // Only schedule a new activation if no Move action is in-flight.
+        // If mid-Move, the existing activation will fire at
+        // next_available_tick, resolve the step, and pick up the new task.
+        if !mid_move {
+            self.event_queue.schedule(
+                self.tick + 1,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+        }
     }
 
     /// Process an `AttackMove` command: create an AttackMove task for the
@@ -4556,6 +4576,7 @@ impl SimState {
         };
 
         // Check preemption: can PlayerCombat preempt the current task?
+        let mut mid_move = false;
         if let Some(current_task_id) = creature.current_task
             && let Some(current_task) = self.db.tasks.get(&current_task_id)
         {
@@ -4570,7 +4591,7 @@ impl SimState {
             ) {
                 return;
             }
-            self.interrupt_task(creature_id, current_task_id);
+            mid_move = self.preempt_task(creature_id, current_task_id);
         }
 
         let task_id = TaskId::new(&mut self.rng);
@@ -4605,10 +4626,12 @@ impl SimState {
             let _ = self.db.creatures.update_no_fk(c);
         }
 
-        self.event_queue.schedule(
-            self.tick + 1,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
+        if !mid_move {
+            self.event_queue.schedule(
+                self.tick + 1,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+        }
     }
 
     /// Execute the AttackMove task behavior. Called from `execute_task_behavior`
@@ -6166,17 +6189,46 @@ impl SimState {
         }
     }
 
-    /// Interrupt a creature's current task, performing all necessary cleanup.
+    /// Hard-interrupt a creature's current task: abort the in-progress action,
+    /// clean up task-specific state, and unassign the creature.
     ///
-    /// This is the single entry point for task interruption from any source
-    /// (nav invalidation, mope preemption, death, flee, player cancel, etc.).
-    /// Dispatches per-kind cleanup based on `TaskKindTag`, then handles task
-    /// state: resumable tasks (Build, Furnish) return to `Available` so
-    /// another creature can claim them; all others are marked `Complete`.
-    /// Clears the creature's action, task assignment, and path.
+    /// Used for forced interruptions (nav invalidation, mope preemption, death,
+    /// flee). Player commands use `preempt_task()` instead, which preserves
+    /// mid-Move actions to prevent exploitable double-speed movement.
     fn interrupt_task(&mut self, creature_id: CreatureId, task_id: TaskId) {
         self.abort_current_action(creature_id);
+        self.cleanup_and_unassign_task(creature_id, task_id);
+    }
 
+    /// Preempt a creature's current task for a player command. If the creature
+    /// is mid-Move, the action completes naturally (only the task is swapped).
+    /// For all other action kinds (Build, Cook, Eat, MeleeStrike, etc.), the
+    /// action is aborted because their resolve functions read `current_task`
+    /// for task-specific data and would operate on the wrong (new) task.
+    ///
+    /// Returns `true` if a Move action is still in-flight (caller should NOT
+    /// schedule a new activation — the existing one will fire).
+    fn preempt_task(&mut self, creature_id: CreatureId, task_id: TaskId) -> bool {
+        let is_mid_move =
+            self.db.creatures.get(&creature_id).is_some_and(|c| {
+                c.action_kind == ActionKind::Move && c.next_available_tick.is_some()
+            });
+        if is_mid_move {
+            // Move actions are self-contained (resolve just cleans up
+            // MoveAction row), so they can complete with the new task.
+            self.cleanup_and_unassign_task(creature_id, task_id);
+        } else {
+            // Non-Move actions couple to task data during resolve, so we
+            // must abort the action to avoid operating on the wrong task.
+            self.interrupt_task(creature_id, task_id);
+        }
+        is_mid_move
+    }
+
+    /// Shared cleanup for task interruption/preemption: per-kind cleanup
+    /// (release reservations, drop carried items), task state transition,
+    /// and creature unassignment. Does NOT touch the creature's action state.
+    fn cleanup_and_unassign_task(&mut self, creature_id: CreatureId, task_id: TaskId) {
         let kind_tag = match self.db.tasks.get(&task_id) {
             Some(t) => t.kind_tag,
             None => {
@@ -27050,6 +27102,21 @@ mod tests {
         });
     }
 
+    /// Like `force_idle` but also cancels any pending activation events (e.g.
+    /// from spawn). Use when you need the creature truly quiescent so you can
+    /// precisely control activation counts.
+    fn force_idle_and_cancel_activations(sim: &mut SimState, creature_id: CreatureId) {
+        force_idle(sim, creature_id);
+        sim.event_queue.cancel_creature_activations(creature_id);
+    }
+
+    impl SimState {
+        /// Test helper: count pending `CreatureActivation` events for a creature.
+        fn count_pending_activations_for(&self, creature_id: CreatureId) -> usize {
+            self.event_queue.count_creature_activations(creature_id)
+        }
+    }
+
     // -- in_melee_range pure-function tests --
 
     #[test]
@@ -29472,6 +29539,223 @@ mod tests {
         assert_ne!(new_task_id, task_id);
         let new_task = sim.db.tasks.get(&new_task_id).unwrap();
         assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::GoTo);
+    }
+
+    #[test]
+    fn directed_goto_does_not_abort_mid_walk_action() {
+        // B-erratic-movement: issuing a DirectedGoTo while a creature is
+        // mid-walk should NOT abort the in-progress Move action. The action
+        // should complete naturally, then the creature picks up the new task.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        // Issue a first DirectedGoTo to start the elf walking.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+        let tick = sim.tick;
+        let cmd_a = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target_a,
+            },
+        };
+        sim.step(&[cmd_a], tick + 2);
+
+        // Advance until the elf is mid-walk (action_kind == Move).
+        let mut mid_walk = false;
+        for t in (sim.tick + 1)..=(sim.tick + 50) {
+            sim.step(&[], t);
+            let c = sim.db.creatures.get(&elf).unwrap();
+            if c.action_kind == ActionKind::Move && c.next_available_tick.is_some() {
+                mid_walk = true;
+                break;
+            }
+        }
+        assert!(mid_walk, "Elf should be mid-walk after advancing ticks");
+
+        let c = sim.db.creatures.get(&elf).unwrap();
+        let action_before = c.action_kind;
+        let nat_before = c.next_available_tick;
+        let first_task_id = c.current_task.unwrap();
+
+        // Issue a second DirectedGoTo while mid-walk.
+        let target_b = VoxelCoord::new(tree_pos.x - 3, 1, tree_pos.z);
+        let tick2 = sim.tick;
+        let cmd_b = SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target_b,
+            },
+        };
+        sim.step(&[cmd_b], tick2 + 2);
+
+        // The in-progress Move action should NOT have been aborted.
+        let c = sim.db.creatures.get(&elf).unwrap();
+        assert_eq!(
+            c.action_kind, action_before,
+            "Move action should not be aborted by task preemption"
+        );
+        assert_eq!(
+            c.next_available_tick, nat_before,
+            "next_available_tick should be unchanged"
+        );
+
+        // The task should have changed to the new GoTo.
+        let new_task_id = c.current_task.unwrap();
+        assert_ne!(new_task_id, first_task_id, "Task should have been swapped");
+        let new_task = sim.db.tasks.get(&new_task_id).unwrap();
+        assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::GoTo);
+
+        // Old task should be completed.
+        let old_task = sim.db.tasks.get(&first_task_id).unwrap();
+        assert_eq!(old_task.state, TaskState::Complete);
+
+        // Advance past the original next_available_tick — the elf should
+        // resolve the Move action normally and then follow the new task.
+        let completion_tick = nat_before.unwrap();
+        let target_tick = completion_tick.max(sim.tick) + 1;
+        sim.step(&[], target_tick);
+
+        // After the original move resolves, the creature should have picked
+        // up the new GoTo task (it may have started a new Move step toward
+        // the new destination, which is fine — the key is it's using the
+        // new task, not the old one).
+        let c = sim.db.creatures.get(&elf).unwrap();
+        assert_eq!(
+            c.current_task,
+            Some(new_task_id),
+            "Creature should still be on the new GoTo task"
+        );
+    }
+
+    #[test]
+    fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
+        // B-erratic-movement: issuing a DirectedGoTo while a creature is
+        // mid-action should NOT schedule an extra CreatureActivation. The
+        // existing activation (from the in-progress action) is sufficient.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+        // Issue first DirectedGoTo and advance until mid-walk.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DirectedGoTo {
+                    creature_id: elf,
+                    position: target_a,
+                },
+            }],
+            tick + 2,
+        );
+        for t in (sim.tick + 1)..=(sim.tick + 50) {
+            sim.step(&[], t);
+            if sim
+                .db
+                .creatures
+                .get(&elf)
+                .is_some_and(|c| c.action_kind == ActionKind::Move)
+            {
+                break;
+            }
+        }
+        assert!(
+            sim.db
+                .creatures
+                .get(&elf)
+                .is_some_and(|c| c.action_kind == ActionKind::Move),
+            "Elf should be mid-walk"
+        );
+
+        // Count activations before issuing the second command.
+        let activations_before = sim.count_pending_activations_for(elf);
+        assert_eq!(
+            activations_before, 1,
+            "Should have exactly 1 pending activation before redirect"
+        );
+
+        // Issue a second DirectedGoTo while mid-walk — should NOT add an
+        // extra activation event.
+        let target_b = VoxelCoord::new(tree_pos.x - 3, 1, tree_pos.z);
+        let tick2 = sim.tick;
+        // Process the command on this tick without advancing further, so no
+        // events fire between the command and our assertion.
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick2 + 1,
+                action: SimAction::DirectedGoTo {
+                    creature_id: elf,
+                    position: target_b,
+                },
+            }],
+            tick2 + 1,
+        );
+
+        let activations_after = sim.count_pending_activations_for(elf);
+        assert_eq!(
+            activations_after, 1,
+            "Should still have exactly 1 pending activation after redirect (was {activations_after})"
+        );
+    }
+
+    #[test]
+    fn abort_current_action_cancels_orphaned_activation_events() {
+        // B-erratic-movement safety net: when abort_current_action is called
+        // (death, flee, nav invalidation), orphaned CreatureActivation events
+        // for that creature should be removed from the event queue.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        // Issue a DirectedGoTo and advance until the elf is mid-walk.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target,
+            },
+        };
+        sim.step(&[cmd], tick + 2);
+
+        for t in (sim.tick + 1)..=(sim.tick + 50) {
+            sim.step(&[], t);
+            let c = sim.db.creatures.get(&elf).unwrap();
+            if c.action_kind == ActionKind::Move {
+                break;
+            }
+        }
+
+        // Count CreatureActivation events for this elf before abort.
+        let count_before = sim.count_pending_activations_for(elf);
+        assert!(
+            count_before >= 1,
+            "Should have at least one pending activation"
+        );
+
+        // Abort the current action (simulating death/flee/nav invalidation).
+        sim.abort_current_action(elf);
+
+        // After abort, all CreatureActivation events for this elf should be gone.
+        let count_after = sim.count_pending_activations_for(elf);
+        assert_eq!(
+            count_after, 0,
+            "Orphaned activation events should be cancelled after abort"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -33,6 +33,11 @@
 // and do not reschedule for dead creatures, effectively terminating their
 // event chains.
 //
+// `cancel_creature_activations()` removes all pending `CreatureActivation`
+// events for a creature. Called by `abort_current_action()` when a creature's
+// action is forcibly interrupted (death, flee, nav invalidation) to prevent
+// orphaned activations from causing double-speed movement (B-erratic-movement).
+//
 // ## `SimEvent` — player-visible narrative events (output)
 //
 // Emitted by the sim as output for the UI event log. Not queued — produced
@@ -161,6 +166,40 @@ impl EventQueue {
 
     pub fn is_empty(&self) -> bool {
         self.heap.is_empty()
+    }
+
+    /// Remove all pending `CreatureActivation` events for a specific creature.
+    /// Called when a creature's action is forcibly aborted (death, flee, nav
+    /// invalidation) to prevent orphaned activations from firing and causing
+    /// erratic behavior (B-erratic-movement).
+    pub(crate) fn cancel_creature_activations(&mut self, creature_id: CreatureId) {
+        let old_heap = std::mem::take(&mut self.heap);
+        self.heap = old_heap
+            .into_iter()
+            .filter(|e| {
+                !matches!(
+                    &e.kind,
+                    ScheduledEventKind::CreatureActivation { creature_id: id }
+                    if *id == creature_id
+                )
+            })
+            .collect();
+    }
+
+    /// Count pending `CreatureActivation` events for a specific creature.
+    /// Used in tests to verify orphaned events are cleaned up.
+    #[cfg(test)]
+    pub fn count_creature_activations(&self, creature_id: CreatureId) -> usize {
+        self.heap
+            .iter()
+            .filter(|e| {
+                matches!(
+                    &e.kind,
+                    ScheduledEventKind::CreatureActivation { creature_id: id }
+                    if *id == creature_id
+                )
+            })
+            .count()
     }
 }
 
