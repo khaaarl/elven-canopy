@@ -1773,7 +1773,9 @@ Arrow durability system: arrows lose durability on impact and may break. Recover
 #### F-attack-move — Attack-move task (walk + fight en route)
 **Status:** Todo
 
-TaskKindTag::AttackMove — hotkey + click on ground (not A, since WASD is used for camera). Extension table TaskAttackMoveData with destination (VoxelCoord) and current_target (Option<CreatureId>, plain ID). Walk toward destination; on each activation scan for hostiles. If hostile detected, set current_target and engage (melee/ranged actions). Poll current_target vital_status — if Dead or missing, nullify and resume walking. On arrival at destination with no active target, task completes.
+TaskKindTag::AttackMove — hotkey F + click on ground (R and F camera keys remapped to Tab and Shift). Extension table TaskAttackMoveData with destination (VoxelCoord) and current_target (Option<CreatureId>, plain ID). Walk toward destination; on each activation scan for hostiles within species detection range. If hostile detected, pick one at random (sim PRNG), set current_target, and engage (melee/ranged actions). Poll current_target vital_status — if Dead or missing, nullify and resume walking. On arrival at destination with no active target, task completes. Player-directed origin gives PlayerCombat preemption level.
+
+**Draft:** docs/drafts/attack_move.md
 
 **Draft:** docs/drafts/combat_military.md (§2 "Attack-Move")
 

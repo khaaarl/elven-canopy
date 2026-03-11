@@ -157,6 +157,11 @@ an `AttackTarget` task (see §5). `AttackMove` creates an `AttackMove` task
 
 ### Attack-Move
 
+> **Note:** This section is superseded by `docs/drafts/attack_move.md`, which
+> incorporates this design plus later refinements (hotkey changed from A to F,
+> camera key remapping, random target selection, detailed behavior loop). Kept
+> here for historical reference.
+
 A dedicated hotkey (e.g., `A`) enters attack-move mode:
 
 - **A + left-click on ground:** Attack-move to that location.
