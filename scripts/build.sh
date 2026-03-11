@@ -223,17 +223,22 @@ case "$MODE" in
             echo "Already on $RESOLVED."
         fi
 
-        # Update local main ref without checking it out
-        git fetch origin main:main
-
-        # Update to match remote if needed (handles rebases/force-pushes)
-        LOCAL="$(git rev-parse HEAD)"
-        REMOTE="$(git rev-parse "origin/$RESOLVED")"
-        if [ "$LOCAL" != "$REMOTE" ]; then
-            echo "Updating to $(echo "$REMOTE" | head -c 8)..."
-            git reset --hard "origin/$RESOLVED"
+        if [ "$RESOLVED" = "main" ]; then
+            # On main: simple pull (fail on conflicts rather than force)
+            git pull
         else
-            echo "Already up to date."
+            # Update local main ref without checking it out
+            git fetch origin main:main
+
+            # Update to match remote if needed (handles rebases/force-pushes)
+            LOCAL="$(git rev-parse HEAD)"
+            REMOTE="$(git rev-parse "origin/$RESOLVED")"
+            if [ "$LOCAL" != "$REMOTE" ]; then
+                echo "Updating to $(echo "$REMOTE" | head -c 8)..."
+                git reset --hard "origin/$RESOLVED"
+            else
+                echo "Already up to date."
+            fi
         fi
 
         echo ""
