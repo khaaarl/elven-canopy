@@ -67,6 +67,7 @@ signal unassign_elf_requested(structure_id: int, creature_id_str: String)
 signal logistics_priority_changed(structure_id: int, priority: int)
 signal logistics_wants_changed(structure_id: int, wants_json: String)
 signal cooking_config_changed(structure_id: int, cooking_enabled: bool, bread_target: int)
+signal extraction_config_changed(structure_id: int, extraction_enabled: bool, species_id: int)
 signal workshop_config_changed(structure_id: int, workshop_enabled: bool, recipe_configs: Array)
 
 var _name_edit: LineEdit
@@ -106,6 +107,11 @@ var _cooking_section: VBoxContainer
 var _cooking_enabled_check: CheckButton
 var _cooking_bread_target_edit: LineEdit
 var _cooking_status_label: Label
+var _extraction_wrapper: VBoxContainer
+var _extraction_section: VBoxContainer
+var _extraction_enabled_check: CheckButton
+var _extraction_species_button: OptionButton
+var _extraction_status_label: Label
 var _crafting_wrapper: VBoxContainer
 var _crafting_summary_label: Label
 var _crafting_details_button: Button
@@ -437,6 +443,43 @@ func _ready() -> void:
 	_cooking_status_label.text = ""
 	_cooking_section.add_child(_cooking_status_label)
 
+	# Extraction section (visible for kitchen buildings, below cooking).
+	_extraction_wrapper = VBoxContainer.new()
+	_extraction_wrapper.visible = false
+	vbox.add_child(_extraction_wrapper)
+
+	_extraction_wrapper.add_child(HSeparator.new())
+
+	var extraction_title := Label.new()
+	extraction_title.text = "Extraction"
+	extraction_title.add_theme_font_size_override("font_size", 16)
+	_extraction_wrapper.add_child(extraction_title)
+
+	_extraction_section = VBoxContainer.new()
+	_extraction_section.add_theme_constant_override("separation", 4)
+	_extraction_wrapper.add_child(_extraction_section)
+
+	_extraction_enabled_check = CheckButton.new()
+	_extraction_enabled_check.text = "Extraction Enabled"
+	_extraction_enabled_check.toggled.connect(_on_extraction_enabled_toggled)
+	_extraction_section.add_child(_extraction_enabled_check)
+
+	var species_hbox := HBoxContainer.new()
+	_extraction_section.add_child(species_hbox)
+
+	var species_label := Label.new()
+	species_label.text = "Species:"
+	species_hbox.add_child(species_label)
+
+	_extraction_species_button = OptionButton.new()
+	_extraction_species_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_extraction_species_button.item_selected.connect(_on_extraction_species_selected)
+	species_hbox.add_child(_extraction_species_button)
+
+	_extraction_status_label = Label.new()
+	_extraction_status_label.text = ""
+	_extraction_section.add_child(_extraction_status_label)
+
 	# Crafting section — summary + details button (visible for workshop buildings).
 	_crafting_wrapper = VBoxContainer.new()
 	_crafting_wrapper.visible = false
@@ -699,6 +742,7 @@ func _update_info(info: Dictionary) -> void:
 	_update_inventory(info)
 	_update_logistics(info, furnishing)
 	_update_cooking(info, furnishing)
+	_update_extraction(info, furnishing)
 	_update_crafting(info, furnishing)
 
 
@@ -827,6 +871,63 @@ func _emit_cooking_config() -> void:
 	cooking_config_changed.emit(
 		_current_structure_id, _cooking_enabled_check.button_pressed, bread_target
 	)
+
+
+func _update_extraction(info: Dictionary, furnishing: String) -> void:
+	if furnishing != "Kitchen":
+		_extraction_wrapper.visible = false
+		return
+	_extraction_wrapper.visible = true
+
+	var extraction_enabled: bool = info.get("extraction_enabled", false)
+	var species_id: int = info.get("extraction_species_id", -1)
+	var extract_status: String = info.get("extract_status", "")
+	var fruit_species: Array = info.get("fruit_species_list", [])
+
+	_extraction_enabled_check.set_pressed_no_signal(extraction_enabled)
+	_extraction_species_button.disabled = not extraction_enabled
+
+	# Rebuild the species dropdown. Keep selection stable by matching species_id.
+	_extraction_species_button.clear()
+	_extraction_species_button.add_item("(none)", 0)
+	_extraction_species_button.set_item_metadata(0, -1)
+	var selected_idx := 0
+	for i in range(fruit_species.size()):
+		var sp: Dictionary = fruit_species[i]
+		var sp_id: int = sp.get("id", -1)
+		var sp_name: String = sp.get("name", "???")
+		_extraction_species_button.add_item(sp_name, i + 1)
+		_extraction_species_button.set_item_metadata(i + 1, sp_id)
+		if sp_id == species_id:
+			selected_idx = i + 1
+	_extraction_species_button.selected = selected_idx
+
+	if extract_status != "":
+		_extraction_status_label.text = extract_status
+		_extraction_status_label.visible = true
+	else:
+		_extraction_status_label.visible = false
+
+
+func _on_extraction_enabled_toggled(_pressed: bool) -> void:
+	if _current_structure_id < 0:
+		return
+	_emit_extraction_config()
+
+
+func _on_extraction_species_selected(_index: int) -> void:
+	if _current_structure_id < 0:
+		return
+	_emit_extraction_config()
+
+
+func _emit_extraction_config() -> void:
+	var enabled: bool = _extraction_enabled_check.button_pressed
+	var idx: int = _extraction_species_button.selected
+	var species_id: int = -1
+	if idx >= 0:
+		species_id = _extraction_species_button.get_item_metadata(idx)
+	extraction_config_changed.emit(_current_structure_id, enabled, species_id)
 
 
 func _update_crafting(info: Dictionary, furnishing: String) -> void:

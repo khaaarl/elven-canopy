@@ -34,6 +34,8 @@
 //   hauled to it. The `LogisticsHeartbeat` creates `Haul` tasks to fill these.
 // - `SetCookingConfig` — enable/disable cooking on a kitchen and set the
 //   bread production target.
+// - `SetExtractionConfig` — enable/disable fruit extraction on a kitchen and
+//   set which fruit species to extract.
 // - `SetCreatureFood` — directly set a creature's food value (initial spawning).
 // - `SetCreatureRest` — directly set a creature's rest value (initial spawning).
 // - `AddCreatureItem` — add items to a creature's inventory.
@@ -168,6 +170,13 @@ pub enum SimAction {
         structure_id: StructureId,
         cooking_enabled: bool,
         cooking_bread_target: u32,
+    },
+    /// Set the extraction configuration for a kitchen building.
+    /// `extraction_species` of `None` disables extraction.
+    SetExtractionConfig {
+        structure_id: StructureId,
+        extraction_enabled: bool,
+        extraction_species: Option<crate::fruit::FruitSpeciesId>,
     },
     /// Directly set a creature's food value (for initial spawning overrides).
     SetCreatureFood { creature_id: CreatureId, food: i64 },

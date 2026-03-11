@@ -729,6 +729,25 @@ impl SimState {
                     });
                 }
             }
+            SimAction::SetExtractionConfig {
+                structure_id,
+                extraction_enabled,
+                extraction_species,
+            } => {
+                if self
+                    .db
+                    .structures
+                    .get(structure_id)
+                    .is_some_and(|s| s.furnishing == Some(FurnishingType::Kitchen))
+                {
+                    let enabled = *extraction_enabled;
+                    let species = *extraction_species;
+                    let _ = self.db.structures.modify_unchecked(structure_id, |s| {
+                        s.extraction_enabled = enabled;
+                        s.extraction_species = species;
+                    });
+                }
+            }
             SimAction::SetCreatureFood { creature_id, food } => {
                 let _ = self.db.creatures.modify_unchecked(creature_id, |creature| {
                     creature.food = *food;
@@ -29834,6 +29853,44 @@ mod tests {
         assert_eq!(
             count_2, 1,
             "Second heartbeat should NOT create a duplicate task"
+        );
+    }
+
+    #[test]
+    fn set_extraction_config_command() {
+        let mut sim = test_sim(42);
+
+        let species_id = insert_test_fruit_species(&mut sim);
+        let sid = setup_extraction_kitchen(&mut sim, species_id);
+
+        // Disable extraction first.
+        {
+            let mut s = sim.db.structures.get(&sid).unwrap();
+            s.extraction_enabled = false;
+            s.extraction_species = None;
+            let _ = sim.db.structures.update_no_fk(s);
+        }
+
+        // Apply SetExtractionConfig command.
+        let player_id = crate::types::PlayerId::new(&mut sim.rng);
+        let cmd = crate::command::SimCommand {
+            player_id,
+            tick: sim.tick,
+            action: crate::command::SimAction::SetExtractionConfig {
+                structure_id: sid,
+                extraction_enabled: true,
+                extraction_species: Some(species_id),
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        // Verify the structure was updated.
+        let s = sim.db.structures.get(&sid).unwrap();
+        assert!(s.extraction_enabled, "Extraction should be enabled");
+        assert_eq!(
+            s.extraction_species,
+            Some(species_id),
+            "Extraction species should be set"
         );
     }
 }

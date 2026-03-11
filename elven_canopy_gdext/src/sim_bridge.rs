@@ -1650,6 +1650,58 @@ impl SimBridge {
         };
         dict.set("cook_status", GString::from(cook_status));
 
+        // Extraction data (for Kitchen buildings).
+        dict.set("extraction_enabled", structure.extraction_enabled);
+        let extraction_species_id: i64 = structure
+            .extraction_species
+            .map(|id| id.0 as i64)
+            .unwrap_or(-1);
+        dict.set("extraction_species_id", extraction_species_id);
+        let extraction_species_name = structure
+            .extraction_species
+            .and_then(|id| sim.db.fruit_species.get(&id))
+            .map(|s| s.vaelith_name.clone())
+            .unwrap_or_default();
+        dict.set(
+            "extraction_species_name",
+            GString::from(extraction_species_name.as_str()),
+        );
+        let extract_status = if structure.furnishing
+            == Some(elven_canopy_sim::types::FurnishingType::Kitchen)
+            && structure.extraction_enabled
+            && structure.extraction_species.is_some()
+        {
+            let has_extract_task =
+                sim.db
+                    .task_structure_refs
+                    .by_structure_id(&sid, elven_canopy_sim::tabulosity::QueryOpts::ASC)
+                    .iter()
+                    .any(|r| {
+                        r.role == elven_canopy_sim::db::TaskStructureRole::ExtractAt
+                            && sim.db.tasks.get(&r.task_id).is_some_and(|t| {
+                                t.state != elven_canopy_sim::task::TaskState::Complete
+                            })
+                    });
+            if has_extract_task {
+                "Extracting..."
+            } else {
+                "Idle"
+            }
+        } else {
+            ""
+        };
+        dict.set("extract_status", GString::from(extract_status));
+
+        // Available fruit species for the extraction dropdown.
+        let mut fruit_species_arr = VarArray::new();
+        for species in sim.db.fruit_species.iter_all() {
+            let mut d = VarDictionary::new();
+            d.set("id", species.id.0 as i64);
+            d.set("name", GString::from(species.vaelith_name.as_str()));
+            fruit_species_arr.push(&d.to_variant());
+        }
+        dict.set("fruit_species_list", fruit_species_arr);
+
         // Workshop data (for Workshop buildings).
         dict.set("workshop_enabled", structure.workshop_enabled);
         let mut recipe_ids_arr = VarArray::new();
@@ -2062,6 +2114,27 @@ impl SimBridge {
             structure_id: StructureId(structure_id as u64),
             cooking_enabled,
             cooking_bread_target: bread_target.max(0) as u32,
+        });
+    }
+
+    /// Set the extraction configuration for a kitchen building.
+    /// `species_id` of -1 means no species selected (disables extraction).
+    #[func]
+    fn set_extraction_config(
+        &mut self,
+        structure_id: i64,
+        extraction_enabled: bool,
+        species_id: i64,
+    ) {
+        let species = if species_id >= 0 {
+            Some(elven_canopy_sim::fruit::FruitSpeciesId(species_id as u16))
+        } else {
+            None
+        };
+        self.apply_or_send(SimAction::SetExtractionConfig {
+            structure_id: StructureId(structure_id as u64),
+            extraction_enabled,
+            extraction_species: species,
         });
     }
 

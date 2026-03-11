@@ -541,6 +541,10 @@ func _setup_common(bridge: SimBridge) -> void:
 	_structure_info_panel.cooking_config_changed.connect(
 		func(sid: int, enabled: bool, target: int): bridge.set_cooking_config(sid, enabled, target)
 	)
+	_structure_info_panel.extraction_config_changed.connect(
+		func(sid: int, enabled: bool, species_id: int):
+			bridge.set_extraction_config(sid, enabled, species_id)
+	)
 	_structure_info_panel.workshop_config_changed.connect(
 		func(sid: int, enabled: bool, recipe_configs: Array):
 			bridge.set_workshop_config(sid, enabled, JSON.stringify(recipe_configs))
