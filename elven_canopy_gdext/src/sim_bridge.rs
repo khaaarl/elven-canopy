@@ -2075,6 +2075,11 @@ impl SimBridge {
             d.set("key_json", GString::from(def.key.to_json().as_str()));
             d.set("display_name", GString::from(def.display_name.as_str()));
             d.set("work_ticks", def.work_ticks as i64);
+            let mut category = VarArray::new();
+            for part in &def.category {
+                category.push(&GString::from(part.as_str()).to_variant());
+            }
+            d.set("category", category);
             let mut inputs = VarArray::new();
             for input in &def.inputs {
                 let mut inp = VarDictionary::new();

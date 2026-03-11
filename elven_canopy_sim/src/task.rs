@@ -190,9 +190,9 @@ pub enum TaskKind {
         phase: HaulPhase,
         destination_nav_node: NavNodeId,
     },
-    /// Cook food in a kitchen. An elf walks to the kitchen, works for
-    /// `cook_work_ticks`, then converts `cook_fruit_input` fruit into
-    /// `cook_bread_output` bread in the kitchen's inventory.
+    /// Cook food in a kitchen. Legacy path — new bread tasks use
+    /// `TaskKind::Craft` via the unified crafting monitor. An elf walks to
+    /// the kitchen, works, then converts fruit into bread.
     Cook { structure_id: StructureId },
     /// Harvest a fruit voxel from a tree. The elf walks to the fruit's nav
     /// node, removes the fruit voxel from the world and tree, and creates a

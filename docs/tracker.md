@@ -52,7 +52,6 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 [~] F-projectiles          Projectile physics system (arrows)
-[~] F-unified-craft-ui     Unified data-driven building crafting UI
 ```
 
 ### Todo
@@ -290,6 +289,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
 [x] F-tree-overlap         Construction overlap with tree geometry
+[x] F-unified-craft-ui     Unified data-driven building crafting UI
 [x] F-voxel-fem            Voxel FEM structural analysis
 [x] F-voxel-textures       Per-face Perlin noise voxel textures
 [x] F-worldgen-framework   Worldgen generator framework
@@ -1298,13 +1298,12 @@ carrying the source species as material. For example, hulling a
 Shinethuni fruit (37 pulp + 52 fiber + 15 seed) produces "37 Shinethuni
 Pulp", "52 Shinethuni Fiber", and "15 Shinethuni Seed".
 
-**Status: ON HOLD.** Branch `feature/F-fruit-extraction` has a partial
-implementation but is blocked on F-unified-craft-ui. That feature will
-introduce a unified data-driven recipe format and crafting backend that
-will likely require significant rework of the extraction sim logic (not
-just the UI). The branch is kept around as reference for the design
-intent and tested behaviors, but much of the code may need to be
-rewritten to fit the new recipe system.
+**Status: READY.** F-unified-craft-ui is complete — the unified recipe
+catalog and ActiveRecipe system are in place. The old branch
+`feature/F-fruit-extraction` has a partial implementation that predates
+the unified system; it is kept as reference for the design intent and
+tested behaviors, but the extraction logic should be reimplemented using
+the unified RecipeDef/RecipeCatalog/ActiveRecipe infrastructure.
 
 **What's done on branch** (4 commits on `feature/F-fruit-extraction`):
 
@@ -1350,7 +1349,6 @@ UI (broken, needs complete redo):
 Does NOT include downstream transformation recipes (bread, thread, etc.)
 — those belong in F-component-recipes.
 
-**Blocked by:** F-unified-craft-ui
 **Blocks:** F-component-recipes
 **Related:** F-bldg-kitchen, F-food-chain, F-fruit-variety
 
@@ -1537,27 +1535,11 @@ support. Encourages distributed village design across multiple trees.
 **Related:** F-multi-tree, F-population
 
 #### F-unified-craft-ui — Unified data-driven building crafting UI
-**Status:** In Progress · **Phase:** 4
+**Status:** Done · **Phase:** 4
 
 Replace per-building-type crafting UIs (kitchen cooking toggle, workshop recipe list, extraction settings) with a single unified data-driven crafting panel. Buildings expose available recipes based on their furnishing type; the UI dynamically renders recipe selection, material pickers, and output targets from recipe metadata. Reduces code duplication and makes adding new recipe types trivial.
 
 **Draft:** docs/drafts/unified_craft_ui.md
-
-**What's done:**
-- Phase 1 complete: RecipeKey/RecipeDef/RecipeCatalog, ActiveRecipe + ActiveRecipeTarget DB tables, 9 granular SimAction commands, unified crafting monitor, auto-logistics with spare iterations, old cooking/workshop code removed.
-- Phase 2 complete: GDScript crafting detail panel (flat recipe picker, active recipe list with per-output targets, auto-logistics toggle, reorder/remove), bridge methods, signal wiring.
-- All recipes auto-added on furnishing (kitchen gets bread with default target; workshop gets all recipes with zero targets).
-
-**What remains:**
-- Hierarchical recipe picker with category tree (currently flat — correct for 4 recipes via smart flattening, but the recursive UI isn't built yet; needed when fruit extraction adds many recipes).
-- Remove `cook_work_ticks` from GameConfig — bread recipe should read work_ticks from its RecipeDef like all other recipes. Currently the Cook action still reads `config.cook_work_ticks`.
-- Orphan handling on save load — design doc says orphaned ActiveRecipe keys (recipe removed between versions) should trigger a notification and be cleaned up. Not yet implemented.
-- Design doc says "furnishing does NOT auto-add recipes" but implementation auto-adds all recipes on furnishing (deliberate divergence for UX convenience). Design doc should be updated to match.
-
-
-**Draft:** docs/drafts/unified_craft_ui.md
-
-**Blocks:** F-fruit-extraction
 
 ### Social & Emotional
 

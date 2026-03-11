@@ -170,8 +170,9 @@
 //     Single-action: picks up items from source.
 //   Haul — ActionKind::PickUp then ActionKind::DropOff.
 //     Two actions: pickup at source, dropoff at destination.
-//   Cook — ActionKind::Cook, duration `cook_work_ticks`.
-//     Single-action: consumes fruit, produces bread.
+//   Cook — ActionKind::Cook, duration from bread recipe `work_ticks`.
+//     Single-action: consumes fruit, produces bread. Legacy path; new
+//     bread tasks use the Craft action via unified crafting monitor.
 //   Craft — ActionKind::Craft, duration `recipe.work_ticks`.
 //     Single-action: consumes inputs, produces outputs.
 //   Mope — ActionKind::Mope, duration `mope_action_ticks`.
@@ -3589,10 +3590,17 @@ impl SimState {
         }
     }
 
-    /// Start a Cook action: set action kind and schedule next activation
-    /// after `cook_work_ticks`. Cook is a single-action task.
+    /// Start a Cook action: set action kind and schedule next activation.
+    /// Cook is a single-action task. Legacy path — new bread tasks go through
+    /// `start_craft_action` via the unified crafting monitor.
     fn start_cook_action(&mut self, creature_id: CreatureId) {
-        let duration = self.config.cook_work_ticks;
+        // Look up bread recipe work_ticks from catalog; fall back to 5000.
+        let duration = self
+            .recipe_catalog
+            .iter()
+            .find(|(_, d)| d.display_name == "Bread")
+            .map(|(_, d)| d.work_ticks)
+            .unwrap_or(5000);
         let tick = self.tick;
         let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
             c.action_kind = ActionKind::Cook;
@@ -3982,7 +3990,7 @@ impl SimState {
                 state: task::TaskState::Available,
                 location,
                 progress: 0.0,
-                total_cost: 1.0,
+                total_cost: recipe_def.work_ticks as f32,
                 required_species: recipe_def.required_species,
                 origin: task::TaskOrigin::Automated,
                 target_creature: None,
@@ -4144,6 +4152,50 @@ impl SimState {
         }
         // Fallback: serialize the key.
         key.to_json()
+    }
+
+    /// Remove `ActiveRecipe` rows whose `recipe_key_json` no longer matches
+    /// any entry in the current recipe catalog. Called during
+    /// `rebuild_transient_state()` (i.e., on save load) to handle recipes
+    /// removed between game versions. Creates a notification for each orphan.
+    /// Uses `db.remove_active_recipe()` (DB-level cascade) rather than
+    /// `self.remove_active_recipe()` because no creatures are mid-action
+    /// during transient state rebuild.
+    fn cleanup_orphaned_active_recipes(&mut self) {
+        let orphan_ids: Vec<(crate::types::ActiveRecipeId, String, String)> = self
+            .db
+            .active_recipes
+            .iter_all()
+            .filter(|ar| {
+                crate::recipe::RecipeKey::from_json(&ar.recipe_key_json)
+                    .and_then(|key| self.recipe_catalog.get(&key))
+                    .is_none()
+            })
+            .map(|ar| {
+                let building_name = self
+                    .db
+                    .structures
+                    .get(&ar.structure_id)
+                    .and_then(|s| s.name.clone())
+                    .unwrap_or_else(|| "a building".to_string());
+                (ar.id, ar.recipe_display_name.clone(), building_name)
+            })
+            .collect();
+        for (ar_id, recipe_name, building_name) in &orphan_ids {
+            let msg = format!(
+                "Recipe \"{}\" on {} is no longer available and has been removed.",
+                recipe_name, building_name
+            );
+            let _ = self
+                .db
+                .notifications
+                .insert_auto_no_fk(|id| crate::db::Notification {
+                    id,
+                    tick: self.tick,
+                    message: msg,
+                });
+            let _ = self.db.remove_active_recipe(ar_id);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -9820,6 +9872,7 @@ impl SimState {
         self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
         self.recipe_catalog = crate::recipe::build_catalog(&self.config);
+        self.cleanup_orphaned_active_recipes();
         self.lexicon = Some(elven_canopy_lang::default_lexicon());
 
         // Rebuild spatial_index from all living creatures. Must run after
@@ -19775,7 +19828,7 @@ mod tests {
             state: task::TaskState::Available,
             location: kitchen_nav,
             progress: 0.0,
-            total_cost: sim.config.cook_work_ticks as f32,
+            total_cost: 5000.0, // bread recipe work_ticks
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::Automated,
             target_creature: None,
@@ -19796,7 +19849,7 @@ mod tests {
         sim.spawn_creature(Species::Elf, interior_pos, &mut events);
 
         // Run enough ticks for elf to reach kitchen and complete cooking.
-        // cook_work_ticks = 5000, plus walking time.
+        // bread work_ticks = 5000, plus walking time.
         sim.step(&[], sim.tick + 15000);
 
         // Verify: fruit consumed, bread produced.
@@ -22037,6 +22090,52 @@ mod tests {
             other => panic!("Expected Craft task, got {:?}", other),
         }
         assert_eq!(restored.origin, task::TaskOrigin::Automated);
+    }
+
+    #[test]
+    fn orphaned_active_recipes_cleaned_up_on_load() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Verify recipes exist.
+        let initial_count = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .len();
+        assert!(initial_count > 0);
+
+        // Corrupt one recipe's key_json to simulate an orphan.
+        let ar = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        let _ = sim.db.active_recipes.modify_unchecked(&ar.id, |r| {
+            r.recipe_key_json = "__orphaned_recipe_key__".to_string();
+        });
+
+        // Run orphan cleanup (normally called during rebuild_transient_state).
+        sim.cleanup_orphaned_active_recipes();
+
+        // The orphaned recipe should be removed.
+        let after_count = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .len();
+        assert_eq!(after_count, initial_count - 1);
+
+        // A notification should exist.
+        let notifications: Vec<_> = sim.db.notifications.iter_all().collect();
+        assert!(
+            notifications
+                .iter()
+                .any(|n| n.message.contains("no longer available")),
+            "Should create a notification for orphaned recipe"
+        );
     }
 
     // =========================================================================

@@ -217,7 +217,7 @@ fn build_bread_recipe(config: &crate::config::GameConfig) -> RecipeDef {
             material: None,
             quality: 0,
         }],
-        work_ticks: config.cook_work_ticks,
+        work_ticks: config.cook_bread_work_ticks,
         subcomponent_records: vec![],
         required_species: Some(Species::Elf),
     }

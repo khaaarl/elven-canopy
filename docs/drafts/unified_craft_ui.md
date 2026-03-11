@@ -244,7 +244,7 @@ Remove from `CompletedStructure`:
 Add to `CompletedStructure`:
 - `crafting_enabled: bool` — single toggle replacing both `workshop_enabled` and `cooking_enabled`.
 
-**Default on furnishing:** Furnishing a building does NOT auto-add recipes or auto-enable `crafting_enabled`. The player explicitly opens the crafting panel, adds recipes, and sets targets. The old kitchen auto-enable behavior was a placeholder convenience; the unified system is explicit-configuration by design. `crafting_enabled` defaults to `false` on new buildings.
+**Default on furnishing:** Furnishing a building auto-adds all available recipes for the building's furnishing type (via `add_default_active_recipes`). Output targets default to 0 (no automatic production). For kitchens, the bread recipe's target is set to `kitchen_default_bread_target` (50). `crafting_enabled` defaults to `false` on new buildings — the player must explicitly enable crafting and set targets.
 
 **Save compatibility:** Old saves will deserialize with the new `ActiveRecipe` / `ActiveRecipeTarget` tables defaulting to empty (standard tabulosity missing-table behavior). The removed fields will be silently dropped by serde. This means existing workshop and kitchen configurations are lost on upgrade — acceptable during early development.
 
@@ -402,12 +402,12 @@ The kitchen's current hardcoded bread recipe (`cooking_enabled`, `cooking_bread_
 - `verb: RecipeVerb::Cook`
 - `inputs`: whatever the bread recipe currently consumes (fruit)
 - `outputs`: `[(ItemKind::Bread, None, 1)]`
-- `work_ticks`: value from `config.cook_work_ticks` (moved into the recipe definition)
+- `work_ticks`: value from `config.cook_bread_work_ticks` (renamed from `cook_work_ticks`)
 - `furnishing_types`: `[FurnishingType::Kitchen]`
 - `category`: `[]` (top-level, no hierarchy needed for a kitchen with few recipes)
 - `required_species`: `Some(Species::Elf)`
 
-The `cook_work_ticks` field is removed from `GameConfig` — work duration lives on the `RecipeDef` like all other recipes.
+The `cook_work_ticks` field is renamed to `cook_bread_work_ticks` in `GameConfig` (with a serde alias for old saves). The bread `RecipeDef` reads its `work_ticks` from this config field at catalog build time. The legacy `start_cook_action` reads duration from the recipe catalog.
 
 ## Migration Path
 

@@ -396,7 +396,7 @@
   "kitchen_default_priority": 8,
   "kitchen_default_fruit_want": 5,
   "kitchen_default_bread_target": 50,
-  "cook_work_ticks": 5000,
+  "cook_bread_work_ticks": 5000,
   "cook_fruit_input": 1,
   "cook_bread_output": 10,
   "structural": {

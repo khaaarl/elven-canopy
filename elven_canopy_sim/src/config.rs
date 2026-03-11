@@ -1260,9 +1260,10 @@ pub struct GameConfig {
     #[serde(default = "default_kitchen_default_bread_target")]
     pub kitchen_default_bread_target: u32,
 
-    /// Ticks of work to complete one cook cycle (5000 = 5 sim-seconds).
-    #[serde(default = "default_cook_work_ticks")]
-    pub cook_work_ticks: u64,
+    /// Ticks of work to complete one bread cook cycle (5000 = 5 sim-seconds).
+    /// Used by the bread RecipeDef in the recipe catalog.
+    #[serde(default = "default_cook_bread_work_ticks", alias = "cook_work_ticks")]
+    pub cook_bread_work_ticks: u64,
 
     /// Fruit consumed per cook cycle.
     #[serde(default = "default_cook_fruit_input")]
@@ -1431,7 +1432,7 @@ fn default_mope_action_ticks() -> u64 {
     1000
 }
 
-fn default_cook_work_ticks() -> u64 {
+fn default_cook_bread_work_ticks() -> u64 {
     5000
 }
 
@@ -1773,7 +1774,7 @@ impl Default for GameConfig {
             kitchen_default_priority: 8,
             kitchen_default_fruit_want: 5,
             kitchen_default_bread_target: 50,
-            cook_work_ticks: 5000,
+            cook_bread_work_ticks: 5000,
             cook_fruit_input: 1,
             cook_bread_output: 10,
             initial_creatures: vec![
