@@ -111,6 +111,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-friendly-fire        Friendly-fire avoidance for ranged attacks
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
+[ ] F-ghost-above          Ghost out voxels above camera focus height
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
@@ -126,6 +127,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-minimap              Minimap with tree silhouette and creature positions
 [ ] F-modding              Scripting layer for modding support
 [ ] F-modifier-keybinds    Modifier key combinations in bindings
+[ ] F-move-spread          Spread destinations for multi-creature move commands
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
@@ -138,11 +140,13 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-recipe-hierarchy     Recipe catalog UI hierarchy and organization
 [ ] F-relay-multi-game     Relay server supports multiple simultaneous games
 [ ] F-relay-release        Standalone relay server release build
+[ ] F-roof-click-select    Roof click selects building, not elf underneath
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
 [ ] F-rust-sprites         Investigate moving sprite generation to Rust
 [ ] F-seasons              Seasonal visual and gameplay effects
+[ ] F-skirmish             Ranged skirmish/kite behavior (shoot-retreat loop)
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
@@ -1144,7 +1148,7 @@ Ranged attack as a creature ACTION. Uses the standard ActionKind / next_availabl
 
 **Draft:** docs/drafts/combat_military.md (§5)
 
-**Related:** F-friendly-fire
+**Related:** F-friendly-fire, F-skirmish
 
 #### F-task-interruption — Unified task interruption and cleanup
 **Status:** Done
@@ -1887,7 +1891,7 @@ Species defaults should make intuitive sense (goblins: aggressive melee; orc arc
 
 Supersedes `CombatAI` enum on `SpeciesData` and `HostileResponse` on `MilitaryGroup` — both collapse into `EngagementStyle`. The `should_flee()` / `hostile_pursue()` / `wander()` combat decision logic is rewritten against the unified struct.
 
-**Blocks:** F-instinctual-flee
+**Blocks:** F-instinctual-flee, F-skirmish
 **Related:** F-combat, F-enemy-ai, F-military-groups
 
 #### F-flee — Flee behavior for civilians
@@ -1997,6 +2001,18 @@ positions, and alert levels.
 **Blocked by:** F-combat
 **Blocks:** F-military-campaign
 
+#### F-move-spread — Spread destinations for multi-creature move commands
+**Status:** Todo
+
+When a move or attack-move command targets a single location with multiple
+selected creatures, automatically spread their destinations to nearby
+nav nodes rather than stacking them all on the same voxel. Standard RTS
+behavior — pick the closest available node for each creature, expanding
+outward from the target. Applies to both regular move and attack-move
+commands for military groups and ad-hoc selections.
+
+**Related:** F-rts-selection
+
 #### F-projectiles — Projectile physics system (arrows)
 **Status:** Done
 
@@ -2009,6 +2025,19 @@ SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity t
 **Draft:** docs/drafts/combat_military.md (§4)
 
 **Related:** F-friendly-fire, F-spatial-index
+
+#### F-skirmish — Ranged skirmish/kite behavior (shoot-retreat loop)
+**Status:** Todo
+
+Ranged creatures with a skirmish engagement style maintain distance from
+their target, retreating while shooting — classic "kiting" behavior.
+When an enemy closes to within a comfort range, the creature moves away
+to re-establish range before firing again. Requires F-engagement-style
+to provide the configuration knobs (weapon preference, disengage
+threshold) that determine when a creature uses this tactic.
+
+**Blocked by:** F-engagement-style
+**Related:** F-shoot-action
 
 #### F-spatial-index — Creature spatial index for voxel-level position queries
 **Status:** Done
@@ -2210,7 +2239,7 @@ enclosed structures. Applies to completed Building/Enclosure voxels only —
 platforms, bridges, and tree voxels remain opaque. Rendering-side change
 using material alpha override.
 
-**Related:** F-wireframe-ghost, F-zlevel-vis
+**Related:** F-roof-click-select, F-wireframe-ghost, F-zlevel-vis
 
 #### F-build-queue-ui — Construction queue/progress UI
 **Status:** Todo · **Phase:** 2
@@ -2431,6 +2460,19 @@ Follows the existing sprite_factory.gd pattern used for creature sprites.
 
 **Related:** F-fruit-sprite-ui, F-fruit-variety, F-rust-sprites
 
+#### F-ghost-above — Ghost out voxels above camera focus height
+**Status:** Todo · **Phase:** 2
+
+Voxels above the camera focus point's Y-level render as ghosted
+(translucent or hidden) so the player can see the level they're looking
+at without upper platforms, branches, and structures obscuring the view.
+One concrete approach to the Z-level visibility problem described in
+F-zlevel-vis. The cutoff should track the orbital camera's focus/target
+Y coordinate and update in real time as the player orbits or shifts
+focus.
+
+**Related:** F-zlevel-vis
+
 #### F-godot-setup — Godot 4 project setup
 **Status:** Done · **Phase:** 0 · **Refs:** §3
 
@@ -2495,6 +2537,18 @@ Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 
 ESC-triggered pause menu with Resume, Save, Load, and Quit options.
 
+#### F-roof-click-select — Roof click selects building, not elf underneath
+**Status:** Todo · **Phase:** 2
+
+When the player clicks on a roof voxel of a building, select the building
+(opening the structure panel) rather than selecting an elf who is inside
+the building underneath the roof. The roof acts as a click shield for the
+building interior. Elves on top of the roof or outside the building are
+still directly selectable. Pairs with F-bldg-transparency which lets the
+player hide roofs to click on elves inside.
+
+**Related:** F-bldg-transparency, F-select-struct
+
 #### F-rts-selection — RTS box selection and multi-creature commands
 **Status:** Done
 
@@ -2507,6 +2561,8 @@ Godot-side UI work. Box selection (click-drag rectangle) in selection_controller
 **Draft:** docs/drafts/combat_military.md (§2)
 
 **Draft:** docs/drafts/combat_military.md (§2)
+
+**Related:** F-move-spread
 
 #### F-rust-mesh-complex — Rust mesh gen for buildings/ladders
 **Status:** Todo · **Phase:** 3
@@ -2555,7 +2611,7 @@ structure-specific actions. Extends the existing creature selection system
 to handle structure entities. Foundation for per-structure interaction like
 rope ladder furling, building furnishing, and structure demolition.
 
-**Related:** F-demolish, F-elf-assign, F-rope-retract, F-selection, F-struct-names, F-structure-reg
+**Related:** F-demolish, F-elf-assign, F-roof-click-select, F-rope-retract, F-selection, F-struct-names, F-structure-reg
 
 #### F-selection — Click-to-select creatures
 **Status:** Done · **Refs:** §26
@@ -2645,7 +2701,7 @@ construction near world limits.
 How to show lower platforms when upper ones occlude them. Transparency,
 cutaway, or hide-upper-levels toggle. Open design question (§27).
 
-**Related:** F-bldg-transparency, F-minimap
+**Related:** F-bldg-transparency, F-ghost-above, F-minimap
 
 ### Infrastructure & Multiplayer
 
