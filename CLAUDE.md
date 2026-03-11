@@ -20,7 +20,7 @@ For full details, see `docs/design_doc.md`. Note that the design doc is an aspir
 
 ## Implementation Status
 
-Phase 0–1 complete (foundations, tree, 10 species with procedural sprites). Phase 2 partial (construction loop, save/load, chunk mesh rendering — no mana economy). Phase 3 complete (projectiles, melee, ranged, HP/death, hostile AI, flee, RTS selection, military groups). Phase 4 partial (cooking, manufacturing, mood, notifications, logistics, proximity tasks). Phase 6 complete (music crate, lang crate, elfcyclopedia). Phase 7 partial (fruit sprites/generation/cultivation — no recipe matching). Phases 5, 8 not started. Tabulosity (sim DB) complete and integrated (28-table SimDb).
+Phase 0–1 complete (foundations, tree, 10 species with procedural sprites). Phase 2 partial (construction loop, save/load, chunk mesh rendering — no mana economy). Phase 3 complete (projectiles, melee, ranged, HP/death, hostile AI, flee, attack-move, RTS selection, military groups). Phase 4 partial (cooking, manufacturing, mood, notifications, logistics, proximity tasks). Phase 6 complete (music crate, lang crate, elfcyclopedia). Phase 7 partial (fruit sprites/generation/cultivation — no recipe matching). Phases 5, 8 not started. Tabulosity (sim DB) complete and integrated (30-table SimDb).
 
 For detailed per-feature status, see `docs/implementation_status.md` and `docs/tracker.md`.
 

@@ -12,6 +12,10 @@
 ## creature or ground location. Uses bridge.is_hostile_by_id(),
 ## bridge.attack_creature(), and bridge.directed_goto() with UUID strings.
 ##
+## F key toggles attack-move mode: the next left-click dispatches an
+## AttackMove command (walk to destination, fight hostiles en route) for
+## each selected creature. ESC or F again cancels the mode.
+##
 ## Selection state: tracks a set of selected creature IDs (stable UUIDs), or
 ## a single structure_id, or a single ground pile position. Selecting creatures
 ## deselects structures/piles and vice versa. ESC deselects all.
@@ -87,6 +91,10 @@ var _box_layer: CanvasLayer = null
 ## to prevent programmatic selections (e.g., from group panel clicks) from being
 ## immediately undone by the release event falling through to _try_select().
 var _ignore_next_release: bool = false
+
+## When true, the next left-click dispatches attack-move instead of selection.
+## Toggled by pressing F with creatures selected; cancelled by ESC or F again.
+var _attack_move_mode: bool = false
 
 
 func setup(bridge: SimBridge, camera: Camera3D) -> void:
@@ -165,6 +173,7 @@ func select_structure(id: int) -> void:
 
 
 func deselect() -> void:
+	_attack_move_mode = false
 	if not _selected_creature_ids.is_empty():
 		_selected_creature_ids = []
 		creature_deselected.emit()
@@ -179,14 +188,22 @@ func deselect() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	# Don't process selection clicks during placement or construction mode.
 	if _placement_controller and _placement_controller.is_placing():
+		_attack_move_mode = false
 		return
 	if _construction_controller and _construction_controller.is_placing():
+		_attack_move_mode = false
 		return
 
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
+				if _attack_move_mode:
+					_execute_attack_move(mb.position)
+					_attack_move_mode = false
+					_ignore_next_release = true
+					get_viewport().set_input_as_handled()
+					return
 				_drag_start = mb.position
 				_drag_active = false
 			else:
@@ -202,7 +219,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				else:
 					_try_select(mb.position, mb.shift_pressed)
 		elif mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
-			_try_right_click_command(mb.position)
+			if _attack_move_mode:
+				_execute_attack_move(mb.position)
+				_attack_move_mode = false
+				get_viewport().set_input_as_handled()
+			else:
+				_try_right_click_command(mb.position)
 
 	if event is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 		var mm := event as InputEventMouseMotion
@@ -214,7 +236,13 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event is InputEventKey:
 		var key := event as InputEventKey
-		if (
+		if key.pressed and key.keycode == KEY_F and has_creature_selection():
+			_attack_move_mode = not _attack_move_mode
+			get_viewport().set_input_as_handled()
+		elif key.pressed and key.keycode == KEY_ESCAPE and _attack_move_mode:
+			_attack_move_mode = false
+			get_viewport().set_input_as_handled()
+		elif (
 			key.pressed
 			and key.keycode == KEY_ESCAPE
 			and (
@@ -462,6 +490,62 @@ func _try_right_click_command(mouse_pos: Vector2) -> void:
 				attacker_uuid, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z)
 			)
 		get_viewport().set_input_as_handled()
+
+
+## Execute attack-move: dispatch AttackMove command for each selected creature
+## to the clicked location (ground or creature position).
+func _execute_attack_move(mouse_pos: Vector2) -> void:
+	if _selected_creature_ids.is_empty():
+		return
+
+	var ray_origin := _camera.project_ray_origin(mouse_pos)
+	var ray_dir := _camera.project_ray_normal(mouse_pos)
+
+	# Check if we clicked on a creature — use their position as the destination.
+	var best_dist_sq := SNAP_THRESHOLD * SNAP_THRESHOLD
+	var target_pos := Vector3.ZERO
+	var found_creature := false
+
+	for species_name in SPECIES_Y_OFFSETS:
+		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
+		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
+		var y_off: float = SPECIES_Y_OFFSETS[species_name]
+		for i in positions.size():
+			var pos := positions[i]
+			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
+			if dist_sq < best_dist_sq:
+				best_dist_sq = dist_sq
+				target_pos = pos
+				found_creature = true
+
+	if found_creature:
+		for cid in _selected_creature_ids:
+			_bridge.attack_move(cid, int(target_pos.x), int(target_pos.y), int(target_pos.z))
+		return
+
+	# No creature clicked — snap to nearest nav node.
+	var cam_pos := _camera.global_position
+	var nav_nodes := _bridge.get_visible_nav_nodes(cam_pos)
+	var nav_best_dist_sq := 25.0
+	var nav_best_pos := Vector3.ZERO
+	var nav_found := false
+
+	for i in nav_nodes.size():
+		var pos := nav_nodes[i]
+		var to_pos := pos - ray_origin
+		var t := maxf(0.0, to_pos.dot(ray_dir))
+		var closest_on_ray := ray_origin + ray_dir * t
+		var diff := pos - closest_on_ray
+		var dist_sq := diff.length_squared()
+		if dist_sq < nav_best_dist_sq:
+			nav_best_dist_sq = dist_sq
+			nav_best_pos = pos
+			nav_found = true
+
+	if nav_found:
+		for cid in _selected_creature_ids:
+			_bridge.attack_move(cid, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z))
 
 
 ## Create the CanvasLayer + ColorRect used for the box selection overlay.

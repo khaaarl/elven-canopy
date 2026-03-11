@@ -9,6 +9,7 @@
 ## - Up/Down arrows or middle-mouse drag: tilt the camera up/down.
 ## - Scroll wheel or +/= and - keys: zoom (distance from focal point to camera).
 ## - Page Up/Down: move the focal point vertically (clamped to world bounds).
+## - R/F formerly duplicated Page Up/Down; removed to free F for attack-move.
 ##
 ## Follow mode: main.gd calls start_follow() / update_follow_target() to lock
 ## the pivot onto a creature's position each frame. WASD and vertical movement

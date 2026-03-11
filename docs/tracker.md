@@ -63,7 +63,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-armor                Wearable armor system
 [ ] F-arrow-durability     Arrow durability and recovery
-[ ] F-attack-move          Attack-move task (walk + fight en route)
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
@@ -180,6 +179,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
+[x] F-attack-move          Attack-move task (walk + fight en route)
 [x] F-attack-task          AttackCreature task (player-directed target pursuit)
 [x] F-audio-synth          Waveform synthesis for audio rendering
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
@@ -1814,17 +1814,14 @@ Armor items that can be worn in clothing slots, providing damage reduction in co
 Arrow durability system: arrows lose durability on impact and may break. Recoverable arrows that survive impact are placed on the ground for pickup. Extracted from F-projectiles as a separate concern — not needed for the first pass at combat.
 
 #### F-attack-move — Attack-move task (walk + fight en route)
-**Status:** Todo
+**Status:** Done
 
-TaskKindTag::AttackMove — hotkey F + click on ground (R and F camera keys remapped to Tab and Shift). Extension table TaskAttackMoveData with destination (VoxelCoord) and current_target (Option<CreatureId>, plain ID). Walk toward destination; on each activation scan for hostiles within species detection range. If hostile detected, pick one at random (sim PRNG), set current_target, and engage (melee/ranged actions). Poll current_target vital_status — if Dead or missing, nullify and resume walking. On arrival at destination with no active target, task completes. Player-directed origin gives PlayerCombat preemption level.
+TaskKindTag::AttackMove — hotkey F + click on ground (R and F camera keys removed from focal_up/focal_down, Page Up/Down remain). Extension table TaskAttackMoveData with destination (VoxelCoord). Walk toward destination; on each activation scan for hostiles within species detection range. If hostile detected, pick nearest by squared euclidean distance (ties broken by CreatureId), set target_creature on base Task row, and engage (melee/ranged actions via shared combat helpers). Poll target vital_status — if Dead or missing, clear target_creature and resume walking. On path failure during engagement, disengage immediately (no retry). On arrival at destination with no active target, task completes. Player-directed origin gives PlayerCombat preemption level (exempt from flee).
 
 **Draft:** docs/drafts/attack_move.md
 
 **Draft:** docs/drafts/combat_military.md (§2 "Attack-Move")
 
-**Draft:** docs/drafts/combat_military.md (§2 "Attack-Move")
-
-**Blocks:** F-combat
 **Related:** F-attack-task
 
 #### F-attack-task — AttackCreature task (player-directed target pursuit)
@@ -1844,7 +1841,7 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
-**Blocked by:** F-attack-move, F-enemy-ai
+**Blocked by:** F-enemy-ai
 **Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
 **Related:** F-engagement-style, F-fog-of-war
 

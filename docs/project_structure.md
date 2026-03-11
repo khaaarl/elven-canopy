@@ -17,7 +17,7 @@ elven-canopy/
 │       ├── session.rs          # GameSession — message-driven session management
 │       ├── local_relay.rs      # LocalRelay — accumulator-based tick pacer (SP)
 │       ├── sim.rs              # SimState, tick loop, command processing
-│       ├── db.rs               # SimDb — tabulosity relational store (28 tables, all entities)
+│       ├── db.rs               # SimDb — tabulosity relational store (30 tables, all entities)
 │       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with face culling
 │       ├── texture_gen.rs      # Procedural face textures (3D Perlin noise atlases)
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction

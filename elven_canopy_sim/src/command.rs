@@ -52,6 +52,9 @@
 //   PlayerCombat preemption, pursues target until dead.
 // - `DirectedGoTo` — player-directed goto for a specific creature, preempting
 //   lower-priority tasks.
+// - `AttackMove` — player-directed attack-move: creature walks toward a
+//   destination, engaging hostiles en route. Creates an AttackMove task with
+//   PlayerCombat preemption.
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -248,6 +251,13 @@ pub enum SimAction {
     DirectedGoTo {
         creature_id: CreatureId,
         position: VoxelCoord,
+    },
+    /// Player-directed attack-move: the creature walks toward the destination,
+    /// engaging any hostiles detected en route. Creates an AttackMove task with
+    /// PlayerCombat preemption level.
+    AttackMove {
+        creature_id: CreatureId,
+        destination: VoxelCoord,
     },
     /// Create a new military group for the player's civ.
     CreateMilitaryGroup { name: String },

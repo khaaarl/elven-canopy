@@ -924,6 +924,20 @@ impl SimBridge {
         });
     }
 
+    /// Order a creature to attack-move to a destination. The creature walks
+    /// toward the destination, engaging any hostiles detected en route.
+    /// Creates an AttackMove task with PlayerCombat preemption.
+    #[func]
+    fn attack_move(&mut self, creature_uuid: GString, x: i32, y: i32, z: i32) {
+        let Some(creature_id) = parse_creature_id(&creature_uuid.to_string()) else {
+            return;
+        };
+        self.apply_or_send(SimAction::AttackMove {
+            creature_id,
+            destination: VoxelCoord::new(x, y, z),
+        });
+    }
+
     /// Order a creature to attack a target creature. Creates an AttackTarget
     /// task with PlayerCombat preemption.
     #[func]

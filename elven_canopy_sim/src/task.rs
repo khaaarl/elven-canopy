@@ -88,6 +88,10 @@
 //   heartbeat mood check (Phase 2b½) when mood is Unhappy or worse. Location
 //   is the creature's assigned home if available, else current node. No side
 //   effects beyond consuming the creature's time.
+// - `AttackMove` — walk toward a destination, engaging hostiles detected en
+//   route. Destination stored in `TaskAttackMoveData` extension table.
+//   Transient combat targets tracked via `Task.target_creature`. On target
+//   death/loss, creature resumes walking. Completes on arrival with no target.
 //
 // ## Lifecycle
 //
@@ -225,6 +229,13 @@ pub enum TaskKind {
     /// fails repeatedly (configurable `attack_path_retry_limit`), the task is
     /// cancelled.
     AttackTarget { target: CreatureId },
+    /// Attack-move: walk toward a destination, engaging any hostile creatures
+    /// detected en route. The destination is stored in the `TaskAttackMoveData`
+    /// extension table. Transient combat targets are tracked via the base
+    /// `Task.target_creature` field (enabling dynamic pursuit). When the target
+    /// dies or is lost, the creature resumes walking to the destination. The task
+    /// completes when the creature reaches the destination with no target engaged.
+    AttackMove,
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.

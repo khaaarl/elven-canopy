@@ -6,7 +6,7 @@
 //
 // ## Table layout
 //
-// The database has 28 tables organized in three tiers:
+// The database has 30 tables organized in three tiers:
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures`,
 // `projectiles` — the primary simulation entities, keyed by UUID-based or
@@ -60,9 +60,9 @@ use crate::types::{
     CultureTag, EnchantmentEffectId, EnchantmentId, FurnishingType, FurnitureId, GroundPileId,
     InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId, MilitaryGroupId, NavNodeId,
     NotificationId, ProjectId, ProjectileId, Species, StructureId, TaskAcquireDataId,
-    TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId,
-    TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VitalStatus,
-    VoxelCoord,
+    TaskAttackMoveDataId, TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId,
+    TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId,
+    ThoughtKind, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -126,38 +126,40 @@ pub enum ActionKind {
 /// and extension tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TaskKindTag {
-    GoTo,
+    AcquireItem,
+    AttackMove,
+    AttackTarget,
     Build,
+    Cook,
+    Craft,
     EatBread,
     EatFruit,
     Furnish,
-    Sleep,
-    Haul,
-    Cook,
+    GoTo,
     Harvest,
-    AcquireItem,
+    Haul,
     Mope,
-    Craft,
-    AttackTarget,
+    Sleep,
 }
 
 impl TaskKindTag {
     /// Human-readable display name for UI purposes.
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::GoTo => "GoTo",
+            Self::AcquireItem => "AcquireItem",
+            Self::AttackMove => "AttackMove",
+            Self::AttackTarget => "Attack",
             Self::Build => "Build",
+            Self::Cook => "Cook",
+            Self::Craft => "Craft",
             Self::EatBread => "EatBread",
             Self::EatFruit => "EatFruit",
             Self::Furnish => "Furnish",
-            Self::Sleep => "Sleep",
-            Self::Haul => "Haul",
-            Self::Cook => "Cook",
+            Self::GoTo => "GoTo",
             Self::Harvest => "Harvest",
-            Self::AcquireItem => "AcquireItem",
+            Self::Haul => "Haul",
             Self::Mope => "Moping",
-            Self::Craft => "Craft",
-            Self::AttackTarget => "Attack",
+            Self::Sleep => "Sleep",
         }
     }
 
@@ -165,19 +167,20 @@ impl TaskKindTag {
     pub fn from_kind(kind: &crate::task::TaskKind) -> Self {
         use crate::task::TaskKind;
         match kind {
-            TaskKind::GoTo => Self::GoTo,
+            TaskKind::AcquireItem { .. } => Self::AcquireItem,
+            TaskKind::AttackMove => Self::AttackMove,
+            TaskKind::AttackTarget { .. } => Self::AttackTarget,
             TaskKind::Build { .. } => Self::Build,
+            TaskKind::Cook { .. } => Self::Cook,
+            TaskKind::Craft { .. } => Self::Craft,
             TaskKind::EatBread => Self::EatBread,
             TaskKind::EatFruit { .. } => Self::EatFruit,
             TaskKind::Furnish { .. } => Self::Furnish,
-            TaskKind::Sleep { .. } => Self::Sleep,
-            TaskKind::Haul { .. } => Self::Haul,
-            TaskKind::Cook { .. } => Self::Cook,
+            TaskKind::GoTo => Self::GoTo,
             TaskKind::Harvest { .. } => Self::Harvest,
-            TaskKind::AcquireItem { .. } => Self::AcquireItem,
+            TaskKind::Haul { .. } => Self::Haul,
             TaskKind::Mope => Self::Mope,
-            TaskKind::Craft { .. } => Self::Craft,
-            TaskKind::AttackTarget { .. } => Self::AttackTarget,
+            TaskKind::Sleep { .. } => Self::Sleep,
         }
     }
 }
@@ -861,6 +864,19 @@ pub struct TaskAttackTargetData {
     pub path_failures: u32,
 }
 
+/// AttackMove task extension data — stores the destination voxel that the
+/// creature walks toward when not engaged with a hostile. The transient combat
+/// target is tracked on the base `Task.target_creature` field.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct TaskAttackMoveData {
+    #[primary_key(auto_increment)]
+    pub id: TaskAttackMoveDataId,
+    #[indexed]
+    pub task_id: TaskId,
+    /// The destination the creature is walking toward (original command target).
+    pub destination: VoxelCoord,
+}
+
 /// A placed or planned furniture item within a structure.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct Furniture {
@@ -1103,6 +1119,11 @@ pub struct SimDb {
             auto,
             fks(task_id = "tasks" on_delete cascade))]
     pub task_attack_target_data: TaskAttackTargetDataTable,
+
+    #[table(singular = "task_attack_move_data",
+            auto,
+            fks(task_id = "tasks" on_delete cascade))]
+    pub task_attack_move_data: TaskAttackMoveDataTable,
 
     #[table(singular = "music_composition", auto)]
     pub music_compositions: MusicCompositionTable,

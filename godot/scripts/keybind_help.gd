@@ -116,8 +116,8 @@ func _build_sections(parent: VBoxContainer) -> void:
 			["+  /  -", "Zoom in / out"],
 			["Scroll Wheel", "Zoom in / out"],
 			["Middle Mouse Drag", "Orbit camera"],
-			["R / Page Up", "Move view up"],
-			["F / Page Down", "Move view down"],
+			["Page Up", "Move view up"],
+			["Page Down", "Move view down"],
 		]
 	)
 
@@ -166,6 +166,9 @@ func _build_sections(parent: VBoxContainer) -> void:
 		"Selection",
 		[
 			["Left Click", "Select creature / structure / pile"],
+			["Shift + Click/Drag", "Add to selection"],
+			["Right Click", "Context command (attack / move)"],
+			["F + Click", "Attack-move to location"],
 			["ESC", "Deselect"],
 		]
 	)
