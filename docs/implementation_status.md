@@ -24,7 +24,7 @@ Not started.
 Music crate complete with Phase 1 waveform synthesizer (`synth.rs`) and runtime generation API (`generate.rs`). Integrated into game via gdext: construction designation triggers background composition, GDScript `construction_music.gd` plays PCM through `AudioStreamGenerator`. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation. Embedded elfcyclopedia HTTP server (localhost, species bestiary) with in-game book button to open in browser.
 
 ## Phase 7 (Fruit Variety)
-Partial — procedural fruit sprites (6 shapes, per-species color/glow, billboarded in-world rendering and elfcyclopedia display). Fruit variety generation, naming, and greenhouse cultivation done. Property-based recipe matching and processing paths not started.
+Partial — procedural fruit sprites (6 shapes, per-species color/glow, billboarded in-world rendering and elfcyclopedia display). Fruit variety generation, naming, and greenhouse cultivation done. Fruit extraction (hull fruit → component items) done. Component-based crafting recipes done (starchy→flour→bread, fine fiber→thread→bowstring, coarse fiber→cord→bowstring — all property-based, per-species, data-driven via GameConfig).
 
 ## Phase 8
 Not started.

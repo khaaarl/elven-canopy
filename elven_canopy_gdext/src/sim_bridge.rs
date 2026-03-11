@@ -1946,6 +1946,9 @@ impl SimBridge {
                 "Fiber" => elven_canopy_sim::inventory::ItemKind::FruitFiber,
                 "Sap" => elven_canopy_sim::inventory::ItemKind::FruitSap,
                 "Resin" => elven_canopy_sim::inventory::ItemKind::FruitResin,
+                "Flour" => elven_canopy_sim::inventory::ItemKind::Flour,
+                "Thread" => elven_canopy_sim::inventory::ItemKind::Thread,
+                "Cord" => elven_canopy_sim::inventory::ItemKind::Cord,
                 other => {
                     godot_error!("SimBridge: unknown item kind in logistics wants: '{other}'");
                     continue;
@@ -1985,6 +1988,9 @@ impl SimBridge {
             ItemKind::FruitFiber,
             ItemKind::FruitSap,
             ItemKind::FruitResin,
+            ItemKind::Flour,
+            ItemKind::Thread,
+            ItemKind::Cord,
         ] {
             let mut d = VarDictionary::new();
             d.set("kind", GString::from(kind.display_name()));
@@ -1998,9 +2004,10 @@ impl SimBridge {
     /// Returns a VarArray of dictionaries:
     /// `[{"filter": "Any", "label": "Any Fruit"}, {"filter": {"Specific": ...}, "label": "..."}, ...]`
     ///
-    /// Always includes an "Any" option. For Fruit, includes each fruit species
-    /// in the DB. For Bow/Arrow/Bowstring, includes each wood material.
-    /// For Bread, only "Any" (no material variants).
+    /// Always includes an "Any" option. For Fruit and fruit-derived items
+    /// (components, flour, thread, cord, bread), includes each fruit species
+    /// in the DB. For Bow/Arrow, includes wood materials. For Bowstring,
+    /// includes both wood materials and fruit species.
     #[func]
     fn get_logistics_material_options(&self, kind_name: GString) -> VarArray {
         use elven_canopy_sim::inventory::{ItemKind, Material, MaterialFilter};
@@ -2018,6 +2025,9 @@ impl SimBridge {
             "Fiber" => ItemKind::FruitFiber,
             "Sap" => ItemKind::FruitSap,
             "Resin" => ItemKind::FruitResin,
+            "Flour" => ItemKind::Flour,
+            "Thread" => ItemKind::Thread,
+            "Cord" => ItemKind::Cord,
             _ => return arr,
         };
 
@@ -2040,7 +2050,10 @@ impl SimBridge {
             | ItemKind::Seed
             | ItemKind::FruitFiber
             | ItemKind::FruitSap
-            | ItemKind::FruitResin => {
+            | ItemKind::FruitResin
+            | ItemKind::Flour
+            | ItemKind::Thread
+            | ItemKind::Cord => {
                 // Add each fruit species from the DB.
                 for species in sim.db.fruit_species.iter_all() {
                     let mat = Material::FruitSpecies(species.id);
@@ -2070,9 +2083,33 @@ impl SimBridge {
                     d.set("label", GString::from(label.as_str()));
                     arr.push(&d.to_variant());
                 }
+                // Bowstrings can also be crafted from fruit fiber/cord.
+                if kind == ItemKind::Bowstring {
+                    for species in sim.db.fruit_species.iter_all() {
+                        let mat = Material::FruitSpecies(species.id);
+                        let label = sim.material_item_display_name(kind, mat);
+                        let filter_str =
+                            Self::serialize_material_filter(MaterialFilter::Specific(mat))
+                                .to_string();
+                        let mut d = VarDictionary::new();
+                        d.set("filter", GString::from(&filter_str));
+                        d.set("label", GString::from(label.as_str()));
+                        arr.push(&d.to_variant());
+                    }
+                }
             }
             ItemKind::Bread => {
-                // No material variants for bread — only "Any" (already added above).
+                // Species-specific bread variants from component recipe baking.
+                for species in sim.db.fruit_species.iter_all() {
+                    let mat = Material::FruitSpecies(species.id);
+                    let label = sim.material_item_display_name(kind, mat);
+                    let filter_str =
+                        Self::serialize_material_filter(MaterialFilter::Specific(mat)).to_string();
+                    let mut d = VarDictionary::new();
+                    d.set("filter", GString::from(&filter_str));
+                    d.set("label", GString::from(label.as_str()));
+                    arr.push(&d.to_variant());
+                }
             }
         }
 

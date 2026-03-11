@@ -2950,8 +2950,9 @@ impl SimState {
 
     /// Return a human-readable display name for an item stack. For fruit with
     /// a known species, returns e.g. "Shinethúni Fruit" or "Révatórun Pod".
-    /// For extracted components with a fruit species material, returns e.g.
-    /// "Shinethúni Pulp". For all other items, returns the basic
+    /// For any other item with a fruit species material (extracted components,
+    /// processed components, species-specific bread/bowstrings), returns
+    /// "SpeciesName ItemType". For all other items, returns the basic
     /// `ItemKind::display_name()`.
     pub fn item_display_name(&self, stack: &crate::db::ItemStack) -> String {
         if let Some(inventory::Material::FruitSpecies(id)) = stack.material
@@ -2961,17 +2962,16 @@ impl SimState {
                 let noun = species.appearance.shape.item_noun();
                 return format!("{} {}", species.vaelith_name, noun);
             }
-            if stack.kind.is_extracted_component() {
-                return format!("{} {}", species.vaelith_name, stack.kind.display_name());
-            }
+            // All other fruit-species items: "SpeciesName ItemType".
+            return format!("{} {}", species.vaelith_name, stack.kind.display_name());
         }
         stack.kind.display_name().to_owned()
     }
 
     /// Display name for an item kind + specific material combination. For fruit
-    /// species, uses the Vaelith name + shape noun. For extracted components,
-    /// uses "Shinethúni Pulp" etc. For wood materials, uses "Oak Bow" etc.
-    /// Falls back to the item kind's display name.
+    /// species, uses the Vaelith name + shape noun (for Fruit) or
+    /// "SpeciesName ItemType" (for all other fruit-species items). For wood
+    /// materials, uses "Oak Bow" etc. Falls back to the item kind's display name.
     pub fn material_item_display_name(
         &self,
         kind: inventory::ItemKind,
@@ -2984,9 +2984,8 @@ impl SimState {
                 let noun = species.appearance.shape.item_noun();
                 return format!("{} {}", species.vaelith_name, noun);
             }
-            if kind.is_extracted_component() {
-                return format!("{} {}", species.vaelith_name, kind.display_name());
-            }
+            // All other fruit-species items: "SpeciesName ItemType".
+            return format!("{} {}", species.vaelith_name, kind.display_name());
         }
         format!("{} {}", material.display_name(), kind.display_name())
     }
@@ -22121,14 +22120,14 @@ mod tests {
             .db
             .active_recipes
             .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
-        let workshop_recipe_count = sim
+        let default_recipe_count = sim
             .recipe_catalog
-            .recipes_for_furnishing(FurnishingType::Workshop)
+            .default_recipes_for_furnishing(FurnishingType::Workshop)
             .len();
         assert_eq!(
             active_recipes.len(),
-            workshop_recipe_count,
-            "Workshop should have all workshop recipes as active recipes"
+            default_recipe_count,
+            "Workshop should have all default workshop recipes as active recipes"
         );
     }
 
@@ -32176,14 +32175,15 @@ mod tests {
         let kitchen_recipes = sim
             .recipe_catalog
             .recipes_for_furnishing(FurnishingType::Kitchen);
-        // Should have bread + one extraction recipe per species.
-        assert_eq!(
-            kitchen_recipes.len(),
-            1 + fruit_count,
-            "kitchen should have bread + extraction recipes"
+        // Should have bread + extraction recipes + component recipes (mill/bake
+        // for starchy species). At minimum: bread + one extraction per species.
+        assert!(
+            kitchen_recipes.len() >= 1 + fruit_count,
+            "kitchen should have at least bread + extraction recipes, got {}",
+            kitchen_recipes.len()
         );
 
-        // Verify extraction recipes are NOT auto-added.
+        // Verify only bread is auto-added (extraction and component recipes are not).
         let default_recipes = sim
             .recipe_catalog
             .default_recipes_for_furnishing(FurnishingType::Kitchen);
@@ -32404,6 +32404,43 @@ mod tests {
                 inventory::Material::FruitSpecies(species_id)
             ),
             "Testaleth Resin"
+        );
+
+        // Processed components and species-specific bread/bowstring.
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::Flour,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Flour"
+        );
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::Thread,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Thread"
+        );
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::Cord,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Cord"
+        );
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::Bread,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Bread"
+        );
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::Bowstring,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Bowstring"
         );
 
         // Also test item_display_name by adding items to an inventory.

@@ -139,6 +139,15 @@ impl PartProperty {
     }
 }
 
+/// Properties that drive crafting recipe generation. Each of these must appear
+/// on at most one part per fruit to avoid ambiguous recipes (e.g., two different
+/// "Species Flour" recipes from different components of the same fruit).
+pub const RECIPE_RELEVANT_PROPERTIES: [PartProperty; 3] = [
+    PartProperty::Starchy,
+    PartProperty::FibrousCoarse,
+    PartProperty::FibrousFine,
+];
+
 /// Dye colors available from pigmented fruit parts. Primary colors appear
 /// directly on fruit; secondary colors are only produced by mixing at a dye
 /// workshop.
@@ -602,6 +611,25 @@ fn generate_parts(
             pigment,
             component_units: u,
         });
+    }
+
+    // Dedup recipe-relevant properties across parts: each may appear on at most
+    // one part per fruit. The first part to carry a property keeps it; later
+    // parts have it stripped. This prevents ambiguous crafting recipes.
+    let mut seen_recipe_props = BTreeSet::new();
+    for part in &mut parts {
+        part.properties.retain(|prop| {
+            if RECIPE_RELEVANT_PROPERTIES.contains(prop) {
+                seen_recipe_props.insert(*prop)
+                // insert returns true if newly added (first occurrence) → keep it
+            } else {
+                true
+            }
+        });
+        // If stripping left this part propertyless, add Bland as fallback.
+        if part.properties.is_empty() {
+            part.properties.insert(PartProperty::Bland);
+        }
     }
 
     parts
@@ -1833,6 +1861,39 @@ mod tests {
                         fruit.vaelith_name,
                         part.part_type,
                         in_group
+                    );
+                }
+            }
+        }
+    }
+
+    /// Recipe-relevant properties (Starchy, FibrousCoarse, FibrousFine) must
+    /// appear on at most one part per fruit. If two parts carried the same
+    /// recipe-relevant property, we'd generate ambiguous crafting recipes
+    /// (e.g., two different "Species Flour" recipes from different components).
+    #[test]
+    fn no_cross_part_recipe_property_repeats() {
+        let config = test_config();
+
+        for seed in 0..50 {
+            let mut rng = GameRng::new(seed);
+            let fruits = generate_fruit_species(&mut rng, &config);
+
+            for fruit in &fruits {
+                for &prop in &RECIPE_RELEVANT_PROPERTIES {
+                    let parts_with: Vec<_> = fruit
+                        .parts
+                        .iter()
+                        .filter(|p| p.properties.contains(&prop))
+                        .map(|p| p.part_type)
+                        .collect();
+                    assert!(
+                        parts_with.len() <= 1,
+                        "Seed {}: fruit {:?} has {:?} on multiple parts: {:?}",
+                        seed,
+                        fruit.id,
+                        prop,
+                        parts_with,
                     );
                 }
             }

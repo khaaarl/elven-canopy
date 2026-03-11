@@ -869,6 +869,158 @@ pub struct Recipe {
     pub subcomponent_records: Vec<RecipeSubcomponentRecord>,
 }
 
+/// Parameters for component-based crafting recipes generated per fruit species.
+///
+/// Each recipe chain transforms extracted fruit components into useful items
+/// based on the component's properties. Recipes are property-based: if a
+/// fruit has a starchy part, it gets the flour/bread chain; if it has a
+/// fine-fibrous part, it gets the thread chain, etc. Same-species constraint
+/// applies — no mixing different fruit species in one recipe invocation.
+///
+/// See `recipe.rs` `build_component_recipes()` for the generation logic.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ComponentRecipeConfig {
+    /// Mill: starchy component → flour. Work ticks per batch.
+    #[serde(default = "default_mill_work_ticks")]
+    pub mill_work_ticks: u64,
+    /// Mill: units of starchy component consumed per batch.
+    #[serde(default = "default_mill_input")]
+    pub mill_input: u32,
+    /// Mill: units of flour produced per batch.
+    #[serde(default = "default_mill_output")]
+    pub mill_output: u32,
+
+    /// Bake: flour → bread. Work ticks per batch.
+    #[serde(default = "default_bake_work_ticks")]
+    pub bake_work_ticks: u64,
+    /// Bake: units of flour consumed per loaf.
+    #[serde(default = "default_bake_input")]
+    pub bake_input: u32,
+    /// Bake: loaves of bread produced per batch.
+    #[serde(default = "default_bake_output")]
+    pub bake_output: u32,
+
+    /// Spin: fine-fibrous component → thread. Work ticks per batch.
+    #[serde(default = "default_spin_work_ticks")]
+    pub spin_work_ticks: u64,
+    /// Spin: units of fine fiber consumed per batch.
+    #[serde(default = "default_spin_input")]
+    pub spin_input: u32,
+    /// Spin: units of thread produced per batch.
+    #[serde(default = "default_spin_output")]
+    pub spin_output: u32,
+
+    /// Twist: coarse-fibrous component → cord. Work ticks per batch.
+    #[serde(default = "default_twist_work_ticks")]
+    pub twist_work_ticks: u64,
+    /// Twist: units of coarse fiber consumed per batch.
+    #[serde(default = "default_twist_input")]
+    pub twist_input: u32,
+    /// Twist: units of cord produced per batch.
+    #[serde(default = "default_twist_output")]
+    pub twist_output: u32,
+
+    /// Thread → bowstring. Work ticks.
+    #[serde(default = "default_thread_bowstring_work_ticks")]
+    pub thread_bowstring_work_ticks: u64,
+    /// Thread → bowstring: units of thread consumed.
+    #[serde(default = "default_thread_bowstring_input")]
+    pub thread_bowstring_input: u32,
+    /// Thread → bowstring: bowstrings produced.
+    #[serde(default = "default_thread_bowstring_output")]
+    pub thread_bowstring_output: u32,
+
+    /// Cord → bowstring. Work ticks.
+    #[serde(default = "default_cord_bowstring_work_ticks")]
+    pub cord_bowstring_work_ticks: u64,
+    /// Cord → bowstring: units of cord consumed.
+    #[serde(default = "default_cord_bowstring_input")]
+    pub cord_bowstring_input: u32,
+    /// Cord → bowstring: bowstrings produced.
+    #[serde(default = "default_cord_bowstring_output")]
+    pub cord_bowstring_output: u32,
+}
+
+impl Default for ComponentRecipeConfig {
+    fn default() -> Self {
+        Self {
+            mill_work_ticks: default_mill_work_ticks(),
+            mill_input: default_mill_input(),
+            mill_output: default_mill_output(),
+            bake_work_ticks: default_bake_work_ticks(),
+            bake_input: default_bake_input(),
+            bake_output: default_bake_output(),
+            spin_work_ticks: default_spin_work_ticks(),
+            spin_input: default_spin_input(),
+            spin_output: default_spin_output(),
+            twist_work_ticks: default_twist_work_ticks(),
+            twist_input: default_twist_input(),
+            twist_output: default_twist_output(),
+            thread_bowstring_work_ticks: default_thread_bowstring_work_ticks(),
+            thread_bowstring_input: default_thread_bowstring_input(),
+            thread_bowstring_output: default_thread_bowstring_output(),
+            cord_bowstring_work_ticks: default_cord_bowstring_work_ticks(),
+            cord_bowstring_input: default_cord_bowstring_input(),
+            cord_bowstring_output: default_cord_bowstring_output(),
+        }
+    }
+}
+
+fn default_mill_work_ticks() -> u64 {
+    4000
+}
+fn default_mill_input() -> u32 {
+    10
+}
+fn default_mill_output() -> u32 {
+    10
+}
+fn default_bake_work_ticks() -> u64 {
+    5000
+}
+fn default_bake_input() -> u32 {
+    10
+}
+fn default_bake_output() -> u32 {
+    1
+}
+fn default_spin_work_ticks() -> u64 {
+    4000
+}
+fn default_spin_input() -> u32 {
+    10
+}
+fn default_spin_output() -> u32 {
+    5
+}
+fn default_twist_work_ticks() -> u64 {
+    4000
+}
+fn default_twist_input() -> u32 {
+    10
+}
+fn default_twist_output() -> u32 {
+    5
+}
+fn default_thread_bowstring_work_ticks() -> u64 {
+    3000
+}
+fn default_thread_bowstring_input() -> u32 {
+    5
+}
+fn default_thread_bowstring_output() -> u32 {
+    1
+}
+fn default_cord_bowstring_work_ticks() -> u64 {
+    3000
+}
+fn default_cord_bowstring_input() -> u32 {
+    5
+}
+fn default_cord_bowstring_output() -> u32 {
+    1
+}
+
 fn default_recipes() -> Vec<Recipe> {
     vec![
         Recipe {
@@ -1304,6 +1456,12 @@ pub struct GameConfig {
     /// Bread produced per cook cycle.
     #[serde(default = "default_cook_bread_output")]
     pub cook_bread_output: u32,
+
+    /// Parameters for component-based crafting recipes (flour, thread, cord,
+    /// and their downstream products). Recipes are dynamically generated per
+    /// fruit species based on part properties.
+    #[serde(default)]
+    pub component_recipes: ComponentRecipeConfig,
 
     /// Creatures to spawn when a new game starts. Each spec describes a group
     /// of one species with optional per-creature food/rest/bread overrides.
@@ -1819,6 +1977,7 @@ impl Default for GameConfig {
             extract_work_ticks: 3000,
             cook_fruit_input: 1,
             cook_bread_output: 10,
+            component_recipes: ComponentRecipeConfig::default(),
             initial_creatures: vec![
                 InitialCreatureSpec {
                     species: Species::Elf,

@@ -83,7 +83,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
 [ ] F-clothing             Wearable clothing system
 [ ] F-combat               Combat and invader threat system
-[ ] F-component-recipes    Component-based crafting recipes (bread, thread, bowstring)
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
@@ -136,6 +135,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
+[ ] F-recipe-hierarchy     Recipe catalog UI hierarchy and organization
 [ ] F-relay-multi-game     Relay server supports multiple simultaneous games
 [ ] F-relay-release        Standalone relay server release build
 [ ] F-root-network         Root network expansion and diplomacy
@@ -191,6 +191,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-capybara             Capybara species
 [x] F-carve-holes          Remove material (doors, storage hollows)
 [x] F-civilizations        Procedural civilization generation and diplomacy
+[x] F-component-recipes    Component-based crafting recipes (bread, thread, bowstring)
 [x] F-construction         Platform construction (designate/build/cancel)
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crate-structure      Two-crate sim/gdext structure
@@ -1226,7 +1227,7 @@ Creatures can wear clothing items in defined body slots (e.g., head, torso, legs
 **Blocks:** F-armor, F-equipment-sprites
 
 #### F-component-recipes — Component-based crafting recipes (bread, thread, bowstring)
-**Status:** Todo · **Phase:** 7
+**Status:** Done · **Phase:** 7
 
 Property-based crafting recipes that consume extracted fruit components
 (from F-fruit-extraction) to produce useful items. Recipes match on
@@ -1250,7 +1251,7 @@ Later expansions (not in initial scope): dye pressing from pigmented
 parts, fermentation, medicinal brewing, luminous oil distillation,
 mana essence refinement.
 
-**Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-recipes
+**Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-recipe-hierarchy, F-recipes
 
 #### F-crafting — Non-construction jobs and crafting
 **Status:** Todo · **Phase:** 8+ · **Refs:** §11
@@ -1361,17 +1362,14 @@ Elfcyclopedia server with /fruits list and detail pages. Greenhouse
 furnishing type with species picker UI, autonomous production during
 logistics heartbeat. Fruit-specific item display names in all inventory
 UI (Vaelith name + shape noun, e.g. "Shinethúni Fruit x3"). Material
-enum with FruitSpecies variant and serde support.
+enum with FruitSpecies variant and serde support. Fruit extraction
+(hull fruit → component items). Property-based component recipe
+generation (starchy→flour→bread, fine fiber→thread→bowstring, coarse
+fiber→cord→bowstring).
 
-**Still TODO:** Property-based recipe matching, fruit processing paths,
-wild-only species restrictions, fruit part rendering/visual
-differentiation, deeper integration with food chain and cooking.
-
-**Draft:** `docs/drafts/fruit_variety.md`
-
-**Related systems:** F-fruit-prod (production mechanics), F-recipes
-(property-based recipe matching), F-food-chain (logistics pipeline),
-item schema (FruitSpeciesId references).
+**Still TODO:** Wild-only species restrictions, fruit part
+rendering/visual differentiation, deeper integration with food chain
+and cooking.
 
 **Blocks:** F-civ-knowledge
 **Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-logistics-filter, F-recipes
@@ -1473,6 +1471,27 @@ platform beneath them is deconstructed) should fall until they reach a
 surface. If a falling pile lands on a voxel that already has a ground pile,
 the two piles merge their inventories into one.
 
+#### F-recipe-hierarchy — Recipe catalog UI hierarchy and organization
+**Status:** Todo · **Phase:** 4
+
+The recipe catalog now generates many per-species recipes (extraction,
+milling, baking, spinning, twisting, bowstring assembly). With 20-40
+fruit species and multiple recipe chains, the flat recipe list in the
+structure info panel becomes unwieldy.
+
+Add hierarchical browsing of the recipe catalog in the UI. Recipes
+already carry a `category` field (e.g., `["Processing", "Milling"]`,
+`["Extraction"]`). The UI should present these as collapsible groups
+or a tree so players can quickly find and enable/disable recipes by
+category rather than scrolling a flat list of 100+ entries.
+
+Scope:
+- GDScript UI changes to render recipe categories as a tree/accordion
+- Possibly a search/filter box for quick lookup
+- No sim changes needed — category data is already populated
+
+**Related:** F-component-recipes, F-recipes
+
 #### F-recipes — Recipe system for crafting/cooking
 **Status:** Done · **Phase:** 3
 
@@ -1482,7 +1501,7 @@ to bread; workshops use recipes to convert wood to bows. Data-driven
 via GameConfig so recipes can be added/tuned without code changes.
 Avoids hardcoding conversion logic per building type.
 
-**Related:** F-bldg-kitchen, F-bldg-workshop, F-component-recipes, F-crafting, F-food-chain, F-fruit-variety
+**Related:** F-bldg-kitchen, F-bldg-workshop, F-component-recipes, F-crafting, F-food-chain, F-fruit-variety, F-recipe-hierarchy
 
 #### F-task-assign-opt — Event-driven bidirectional task assignment
 **Status:** Todo · **Phase:** 4
