@@ -724,16 +724,11 @@ func _update_ghost() -> void:
 	var anchor := _get_anchor()
 
 	if _build_mode == "ladder":
-		var orient := _effective_orientation if _state == State.PREVIEW else _drag_start_face
-		# During drag with auto, use the drag start face as a hint.
-		if _state == State.DRAGGING and _ladder_orientation == -1:
-			# Use drag_start_face if it's a horizontal face, else default East.
-			if _drag_start_face in [0, 1, 4, 5]:
-				orient = _drag_start_face
-			else:
-				orient = 0
-		elif _state == State.DRAGGING and _ladder_orientation != -1:
-			orient = _ladder_orientation
+		# In auto mode, always resolve the real orientation so the ghost and
+		# validation agree — even while dragging.
+		if _state == State.DRAGGING:
+			_resolve_ladder_orientation()
+		var orient := _effective_orientation
 
 		_ghost.mesh.size = Vector3(0.9, _height, 0.05)
 		_ghost.basis = _face_rotations[orient]
