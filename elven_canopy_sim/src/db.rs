@@ -56,13 +56,13 @@ use crate::inventory::{EffectKind, ItemKind, Material};
 use crate::projectile::{SubVoxelCoord, SubVoxelVec};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
-    BuildType, CivId, CivOpinion, CivRelationshipId, CivSpecies, CompositionId, CreatureId,
-    CultureTag, EnchantmentEffectId, EnchantmentId, FurnishingType, FurnitureId, GroundPileId,
-    InventoryId, ItemStackId, ItemSubcomponentId, LogisticsWantId, MilitaryGroupId, NavNodeId,
-    NotificationId, ProjectId, ProjectileId, Species, StructureId, TaskAcquireDataId,
-    TaskAttackMoveDataId, TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId,
-    TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId,
-    ThoughtKind, VitalStatus, VoxelCoord,
+    ActiveRecipeId, ActiveRecipeTargetId, BuildType, CivId, CivOpinion, CivRelationshipId,
+    CivSpecies, CompositionId, CreatureId, CultureTag, EnchantmentEffectId, EnchantmentId,
+    FurnishingType, FurnitureId, GroundPileId, InventoryId, ItemStackId, ItemSubcomponentId,
+    LogisticsWantId, MilitaryGroupId, NavNodeId, NotificationId, ProjectId, ProjectileId, Species,
+    StructureId, TaskAcquireDataId, TaskAttackMoveDataId, TaskAttackTargetDataId,
+    TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId,
+    TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -569,16 +569,9 @@ pub struct CompletedStructure {
     pub furnishing: Option<FurnishingType>,
     pub inventory_id: InventoryId,
     pub logistics_priority: Option<u8>,
-    pub cooking_enabled: bool,
-    pub cooking_bread_target: u32,
+    /// Unified crafting toggle for all building types.
     #[serde(default)]
-    pub workshop_enabled: bool,
-    #[serde(default)]
-    pub workshop_recipe_ids: Vec<String>,
-    /// Per-recipe output targets. Key = recipe ID, value = target quantity.
-    /// A target of 0 or missing entry means "don't craft this recipe."
-    #[serde(default)]
-    pub workshop_recipe_targets: std::collections::BTreeMap<String, u32>,
+    pub crafting_enabled: bool,
     /// For greenhouses: the fruit species being cultivated.
     #[serde(default)]
     pub greenhouse_species: Option<crate::fruit::FruitSpeciesId>,
@@ -613,11 +606,7 @@ impl CompletedStructure {
             furnishing: None,
             inventory_id,
             logistics_priority: None,
-            cooking_enabled: false,
-            cooking_bread_target: 0,
-            workshop_enabled: false,
-            workshop_recipe_ids: Vec::new(),
-            workshop_recipe_targets: std::collections::BTreeMap::new(),
+            crafting_enabled: false,
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -837,7 +826,9 @@ pub struct EnchantmentEffect {
     pub threshold: Option<i32>,
 }
 
-/// Craft task extension data — stores the recipe ID for a Craft task.
+/// Craft task extension data — stores the recipe key and active recipe FK for
+/// a Craft task. The `active_recipe_id` FK enables `RemoveActiveRecipe` to
+/// find and interrupt in-progress craft tasks for the removed recipe.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct TaskCraftData {
     #[primary_key(auto_increment)]
@@ -845,6 +836,64 @@ pub struct TaskCraftData {
     #[indexed]
     pub task_id: TaskId,
     pub recipe_id: String,
+    /// FK to the active recipe that spawned this craft task. Used by
+    /// `RemoveActiveRecipe` to interrupt in-progress tasks.
+    #[serde(default)]
+    pub active_recipe_id: Option<ActiveRecipeId>,
+}
+
+// ---------------------------------------------------------------------------
+// Active recipe tables (unified crafting system)
+// ---------------------------------------------------------------------------
+
+/// An active recipe on a crafting building. Provides a unified table shared by
+/// all building types (kitchens, workshops, etc.).
+///
+/// `sort_order` determines priority: lower values are higher priority. Globally
+/// unique to guarantee deterministic iteration with no tiebreaker needed.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[index(name = "structure_sort", fields("structure_id", "sort_order"))]
+pub struct ActiveRecipe {
+    #[primary_key(auto_increment)]
+    pub id: ActiveRecipeId,
+
+    #[indexed]
+    pub structure_id: StructureId,
+
+    /// Structural identity of the recipe (serialized JSON).
+    pub recipe_key_json: String,
+
+    /// Cached display name for orphan notification messages on load.
+    pub recipe_display_name: String,
+
+    /// Can be toggled without removing the recipe.
+    pub enabled: bool,
+
+    /// Priority ordering (lower = higher priority). Globally unique.
+    #[indexed(unique)]
+    pub sort_order: u32,
+
+    /// Whether to auto-generate logistics wants for inputs.
+    pub auto_logistics: bool,
+
+    /// Extra iterations of input materials to pre-stage beyond what's needed.
+    pub spare_iterations: u32,
+}
+
+/// Per-output target quantity for an active recipe. One row per recipe output.
+/// `target_quantity = 0` means "don't care about this output" — the recipe
+/// won't run until at least one target is non-zero.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct ActiveRecipeTarget {
+    #[primary_key(auto_increment)]
+    pub id: ActiveRecipeTargetId,
+
+    #[indexed]
+    pub active_recipe_id: ActiveRecipeId,
+
+    pub output_item_kind: ItemKind,
+    pub output_material: Option<Material>,
+    pub target_quantity: u32,
 }
 
 /// AttackTarget task extension data — stores the target creature and pathfinding
@@ -1114,6 +1163,14 @@ pub struct SimDb {
             auto,
             fks(task_id = "tasks" on_delete cascade))]
     pub task_craft_data: TaskCraftDataTable,
+
+    #[table(singular = "active_recipe", auto, fks(structure_id = "structures"))]
+    pub active_recipes: ActiveRecipeTable,
+
+    #[table(singular = "active_recipe_target",
+            auto,
+            fks(active_recipe_id = "active_recipes" on_delete cascade))]
+    pub active_recipe_targets: ActiveRecipeTargetTable,
 
     #[table(singular = "task_attack_target_data",
             auto,

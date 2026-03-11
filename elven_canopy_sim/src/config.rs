@@ -29,7 +29,7 @@
 // simulation logic. All clients must use identical configs for identical
 // results.
 
-use crate::inventory::{ItemKind, Material};
+use crate::inventory::{ItemKind, Material, MaterialFilter};
 use crate::nav::EdgeType;
 use crate::species::{CombatAI, SpeciesData};
 use crate::types::{CivSpecies, FaceType, MoodTier, Species, ThoughtKind, VoxelCoord, VoxelType};
@@ -808,6 +808,9 @@ pub struct InitialGroundPileSpec {
 pub struct RecipeInput {
     pub item_kind: ItemKind,
     pub quantity: u32,
+    /// Material constraint for this input. `Any` (default) matches all materials.
+    #[serde(default)]
+    pub material_filter: MaterialFilter,
 }
 
 /// An output product from a recipe.
@@ -850,6 +853,7 @@ fn default_recipes() -> Vec<Recipe> {
             inputs: vec![RecipeInput {
                 item_kind: ItemKind::Fruit,
                 quantity: 1,
+                material_filter: MaterialFilter::Any,
             }],
             outputs: vec![RecipeOutput {
                 item_kind: ItemKind::Bowstring,
@@ -866,6 +870,7 @@ fn default_recipes() -> Vec<Recipe> {
             inputs: vec![RecipeInput {
                 item_kind: ItemKind::Bowstring,
                 quantity: 1,
+                material_filter: MaterialFilter::Any,
             }],
             outputs: vec![RecipeOutput {
                 item_kind: ItemKind::Bow,

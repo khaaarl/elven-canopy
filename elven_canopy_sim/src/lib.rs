@@ -58,6 +58,7 @@ pub mod preemption;
 pub mod projectile;
 pub use elven_canopy_prng as prng;
 pub use tabulosity;
+pub mod recipe;
 pub mod session;
 pub mod sim;
 pub mod species;

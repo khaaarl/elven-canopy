@@ -33,18 +33,16 @@
 ## - An "Add Item..." two-step picker (item kind -> material filter)
 ## Emits logistics_priority_changed and logistics_wants_changed.
 ##
-## For Kitchen buildings, a Cooking section is shown with:
-## - A "Cooking Enabled" checkbox
-## - A "Bread Target" SpinBox (0-500, step 10)
-## - A status label showing current cooking activity
-## Emits cooking_config_changed.
-##
-## For Workshop buildings, a Crafting section is shown with:
-## - A "Crafting Enabled" checkbox
-## - Per-recipe CheckButtons showing input → output descriptions
-## - Per-recipe target controls (LineEdit + ±increment buttons, 0 = don't craft)
-## - A status label showing current crafting activity
-## Emits workshop_config_changed.
+## For Kitchen and Workshop buildings (any building with crafting recipes),
+## a unified Crafting section is shown with a summary and "Details..." button.
+## The detail panel (sibling PanelContainer) contains:
+## - A "Crafting Enabled" toggle
+## - An "Add Recipe..." button that expands an inline recipe picker
+## - Active recipe list with per-output target controls, auto-logistics toggle,
+##   reorder/remove buttons, and per-recipe enable toggles
+## Emits crafting_enabled_changed, add_recipe_requested, remove_recipe_requested,
+## recipe_output_target_changed, recipe_auto_logistics_changed,
+## recipe_enabled_changed, recipe_move_up_requested, recipe_move_down_requested.
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## Updated every frame by main.gd while visible.
@@ -53,8 +51,8 @@
 ## creature_info_panel.gd for the creature equivalent,
 ## main.gd which wires everything together,
 ## sim_bridge.rs for rename_structure(), furnish_structure(), assign_home(),
-## set_logistics_priority(), set_logistics_wants(), set_cooking_config(),
-## set_workshop_config(), get_recipes().
+## set_logistics_priority(), set_logistics_wants(), set_crafting_enabled(),
+## get_recipe_catalog_for_building(), add_active_recipe(), etc.
 
 extends PanelContainer
 
@@ -66,8 +64,16 @@ signal assign_elf_requested(structure_id: int, creature_id_str: String)
 signal unassign_elf_requested(structure_id: int, creature_id_str: String)
 signal logistics_priority_changed(structure_id: int, priority: int)
 signal logistics_wants_changed(structure_id: int, wants_json: String)
-signal cooking_config_changed(structure_id: int, cooking_enabled: bool, bread_target: int)
-signal workshop_config_changed(structure_id: int, workshop_enabled: bool, recipe_configs: Array)
+signal crafting_enabled_changed(structure_id: int, enabled: bool)
+signal add_recipe_requested(structure_id: int, recipe_key_json: String)
+signal remove_recipe_requested(active_recipe_id: int)
+signal recipe_output_target_changed(active_recipe_target_id: int, target_quantity: int)
+signal recipe_auto_logistics_changed(
+	active_recipe_id: int, auto_logistics: bool, spare_iterations: int
+)
+signal recipe_enabled_changed(active_recipe_id: int, enabled: bool)
+signal recipe_move_up_requested(active_recipe_id: int)
+signal recipe_move_down_requested(active_recipe_id: int)
 
 var _name_edit: LineEdit
 var _type_label: Label
@@ -101,24 +107,25 @@ var _cached_item_kinds: Array = []
 var _cached_material_options: Dictionary = {}
 ## The item kind selected in step 1 of the two-step picker.
 var _pending_item_kind: String = ""
-var _cooking_wrapper: VBoxContainer
-var _cooking_section: VBoxContainer
-var _cooking_enabled_check: CheckButton
-var _cooking_bread_target_edit: LineEdit
-var _cooking_status_label: Label
 var _crafting_wrapper: VBoxContainer
 var _crafting_summary_label: Label
 var _crafting_details_button: Button
 var _crafting_details_panel: PanelContainer
+var _crafting_details_scroll: ScrollContainer
+var _crafting_details_vbox: VBoxContainer
 var _crafting_details_enabled_check: CheckButton
-var _crafting_details_recipe_vbox: VBoxContainer
+var _crafting_add_recipe_button: Button
+var _crafting_recipe_picker: VBoxContainer
+var _crafting_active_recipes_vbox: VBoxContainer
 var _crafting_details_status_label: Label
-## Recipe definitions from the bridge, cached on first load.
-var _cached_recipes: Array = []
-## Per-recipe widget references, built once when the details panel opens.
-## Each entry: { check: CheckButton, target_edit: LineEdit, stock_label: Label, increment: int }
-var _recipe_widgets: Array = []
-## Whether recipe rows have been built for the current details panel session.
+## Whether the recipe picker is currently expanded.
+var _recipe_picker_visible: bool = false
+## Cached recipe catalog for the current building (from bridge).
+var _cached_building_recipes: Array = []
+## Per-active-recipe widget references, rebuilt each frame when details visible.
+## Stored to preserve focus state on LineEdits.
+var _active_recipe_widgets: Dictionary = {}
+## Whether active recipe rows have been built for the current details panel session.
 var _recipe_rows_built: bool = false
 var _greenhouse_picker_scroll: ScrollContainer
 var _greenhouse_picker_vbox: VBoxContainer
@@ -384,60 +391,7 @@ func _ready() -> void:
 	_logistics_material_picker.visible = false
 	logistics_vbox.add_child(_logistics_material_picker)
 
-	# Cooking section (visible for kitchen buildings).
-	_cooking_wrapper = VBoxContainer.new()
-	_cooking_wrapper.visible = false
-	vbox.add_child(_cooking_wrapper)
-
-	_cooking_wrapper.add_child(HSeparator.new())
-
-	var cooking_title := Label.new()
-	cooking_title.text = "Cooking"
-	cooking_title.add_theme_font_size_override("font_size", 16)
-	_cooking_wrapper.add_child(cooking_title)
-
-	_cooking_section = VBoxContainer.new()
-	_cooking_section.add_theme_constant_override("separation", 4)
-	_cooking_wrapper.add_child(_cooking_section)
-
-	_cooking_enabled_check = CheckButton.new()
-	_cooking_enabled_check.text = "Cooking Enabled"
-	_cooking_enabled_check.toggled.connect(_on_cooking_enabled_toggled)
-	_cooking_section.add_child(_cooking_enabled_check)
-
-	var bread_target_hbox := HBoxContainer.new()
-	_cooking_section.add_child(bread_target_hbox)
-
-	var bread_target_label := Label.new()
-	bread_target_label.text = "Bread Target:"
-	bread_target_hbox.add_child(bread_target_label)
-
-	var bread_minus := Button.new()
-	bread_minus.text = "-10"
-	bread_minus.custom_minimum_size.x = 40
-	bread_minus.pressed.connect(_on_cooking_bread_target_button.bind(-10))
-	bread_target_hbox.add_child(bread_minus)
-
-	_cooking_bread_target_edit = LineEdit.new()
-	_cooking_bread_target_edit.text = "0"
-	_cooking_bread_target_edit.custom_minimum_size.x = 48
-	_cooking_bread_target_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_cooking_bread_target_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_cooking_bread_target_edit.text_submitted.connect(_on_cooking_bread_target_submitted)
-	_cooking_bread_target_edit.focus_exited.connect(_on_cooking_bread_target_focus_exited)
-	bread_target_hbox.add_child(_cooking_bread_target_edit)
-
-	var bread_plus := Button.new()
-	bread_plus.text = "+10"
-	bread_plus.custom_minimum_size.x = 40
-	bread_plus.pressed.connect(_on_cooking_bread_target_button.bind(10))
-	bread_target_hbox.add_child(bread_plus)
-
-	_cooking_status_label = Label.new()
-	_cooking_status_label.text = ""
-	_cooking_section.add_child(_cooking_status_label)
-
-	# Crafting section — summary + details button (visible for workshop buildings).
+	# Crafting section — summary + details button (visible for crafting buildings).
 	_crafting_wrapper = VBoxContainer.new()
 	_crafting_wrapper.visible = false
 	_crafting_wrapper.add_theme_constant_override("separation", 4)
@@ -462,7 +416,7 @@ func _ready() -> void:
 	# Crafting details panel — created as sibling, positioned left of main panel.
 	_crafting_details_panel = PanelContainer.new()
 	_crafting_details_panel.visible = false
-	_crafting_details_panel.custom_minimum_size.x = 360
+	_crafting_details_panel.custom_minimum_size.x = 400
 
 	var details_margin := MarginContainer.new()
 	details_margin.add_theme_constant_override("margin_left", 12)
@@ -471,12 +425,19 @@ func _ready() -> void:
 	details_margin.add_theme_constant_override("margin_bottom", 12)
 	_crafting_details_panel.add_child(details_margin)
 
-	var details_vbox := VBoxContainer.new()
-	details_vbox.add_theme_constant_override("separation", 8)
-	details_margin.add_child(details_vbox)
+	# The entire detail panel is one scroll container.
+	_crafting_details_scroll = ScrollContainer.new()
+	_crafting_details_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_crafting_details_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	details_margin.add_child(_crafting_details_scroll)
+
+	_crafting_details_vbox = VBoxContainer.new()
+	_crafting_details_vbox.add_theme_constant_override("separation", 8)
+	_crafting_details_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_crafting_details_scroll.add_child(_crafting_details_vbox)
 
 	var details_header := HBoxContainer.new()
-	details_vbox.add_child(details_header)
+	_crafting_details_vbox.add_child(details_header)
 
 	var details_title := Label.new()
 	details_title.text = "Crafting Details"
@@ -489,27 +450,37 @@ func _ready() -> void:
 	details_close.pressed.connect(func(): _crafting_details_panel.visible = false)
 	details_header.add_child(details_close)
 
-	details_vbox.add_child(HSeparator.new())
+	_crafting_details_vbox.add_child(HSeparator.new())
 
 	_crafting_details_enabled_check = CheckButton.new()
 	_crafting_details_enabled_check.text = "Crafting Enabled"
 	_crafting_details_enabled_check.toggled.connect(_on_crafting_enabled_toggled)
-	details_vbox.add_child(_crafting_details_enabled_check)
+	_crafting_details_vbox.add_child(_crafting_details_enabled_check)
 
-	details_vbox.add_child(HSeparator.new())
+	_crafting_details_vbox.add_child(HSeparator.new())
 
-	var recipes_scroll := ScrollContainer.new()
-	recipes_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	details_vbox.add_child(recipes_scroll)
+	# Add Recipe button and picker.
+	_crafting_add_recipe_button = Button.new()
+	_crafting_add_recipe_button.text = "Add Recipe..."
+	_crafting_add_recipe_button.pressed.connect(_on_add_recipe_pressed)
+	_crafting_details_vbox.add_child(_crafting_add_recipe_button)
 
-	_crafting_details_recipe_vbox = VBoxContainer.new()
-	_crafting_details_recipe_vbox.add_theme_constant_override("separation", 8)
-	_crafting_details_recipe_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	recipes_scroll.add_child(_crafting_details_recipe_vbox)
+	_crafting_recipe_picker = VBoxContainer.new()
+	_crafting_recipe_picker.visible = false
+	_crafting_recipe_picker.add_theme_constant_override("separation", 2)
+	_crafting_details_vbox.add_child(_crafting_recipe_picker)
+
+	_crafting_details_vbox.add_child(HSeparator.new())
+
+	# Active recipes list.
+	_crafting_active_recipes_vbox = VBoxContainer.new()
+	_crafting_active_recipes_vbox.add_theme_constant_override("separation", 4)
+	_crafting_active_recipes_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_crafting_details_vbox.add_child(_crafting_active_recipes_vbox)
 
 	_crafting_details_status_label = Label.new()
 	_crafting_details_status_label.text = ""
-	details_vbox.add_child(_crafting_details_status_label)
+	_crafting_details_vbox.add_child(_crafting_details_status_label)
 
 	# Defer adding the details panel to the parent CanvasLayer so it's a sibling.
 	call_deferred("_add_details_panel_to_parent")
@@ -545,10 +516,10 @@ func _add_details_panel_to_parent() -> void:
 			panel.offset_bottom = 0
 
 
-## Cache recipe definitions from the bridge. Called once by main.gd after
-## the sim is initialized.
-func set_recipes(recipes: Array) -> void:
-	_cached_recipes = recipes
+## Cache the recipe catalog for the current building. Called by main.gd
+## when the details panel opens or the structure changes.
+func set_building_recipes(recipes: Array) -> void:
+	_cached_building_recipes = recipes
 
 
 func set_cultivable_fruits(fruits: Array) -> void:
@@ -575,7 +546,9 @@ func show_structure(info: Dictionary) -> void:
 	_logistics_details_panel.visible = false
 	_crafting_details_panel.visible = false
 	_recipe_rows_built = false
-	_recipe_widgets.clear()
+	_active_recipe_widgets.clear()
+	_recipe_picker_visible = false
+	_cached_building_recipes = []
 	_update_info(info)
 	visible = true
 
@@ -624,6 +597,12 @@ func set_elf_list(elves: Array) -> void:
 		btn.text = label_text
 		btn.pressed.connect(_on_elf_picked.bind(cid))
 		_elf_picker_vbox.add_child(btn)
+
+
+## Returns true if the crafting details panel is visible (for main.gd to
+## know when to fetch and provide the recipe catalog).
+func is_crafting_details_visible() -> bool:
+	return _crafting_details_panel.visible
 
 
 func _update_info(info: Dictionary) -> void:
@@ -698,7 +677,6 @@ func _update_info(info: Dictionary) -> void:
 
 	_update_inventory(info)
 	_update_logistics(info, furnishing)
-	_update_cooking(info, furnishing)
 	_update_crafting(info, furnishing)
 
 
@@ -770,104 +748,51 @@ func _update_logistics(info: Dictionary, furnishing: String) -> void:
 		_logistics_wants_vbox.add_child(row)
 
 
-func _update_cooking(info: Dictionary, furnishing: String) -> void:
-	if furnishing != "Kitchen":
-		_cooking_wrapper.visible = false
-		return
-	_cooking_wrapper.visible = true
-
-	var cooking_enabled: bool = info.get("cooking_enabled", false)
-	var bread_target: int = info.get("cooking_bread_target", 0)
-	var cook_status: String = info.get("cook_status", "")
-
-	_cooking_enabled_check.set_pressed_no_signal(cooking_enabled)
-	_cooking_bread_target_edit.editable = cooking_enabled
-	if not _cooking_bread_target_edit.has_focus():
-		_cooking_bread_target_edit.text = str(bread_target)
-
-	if cook_status != "":
-		_cooking_status_label.text = cook_status
-		_cooking_status_label.visible = true
-	else:
-		_cooking_status_label.visible = false
-
-
-func _on_cooking_enabled_toggled(_pressed: bool) -> void:
-	if _current_structure_id < 0:
-		return
-	_emit_cooking_config()
-
-
-func _on_cooking_bread_target_button(delta: int) -> void:
-	if _current_structure_id < 0:
-		return
-	var current := maxi(0, int(_cooking_bread_target_edit.text))
-	_cooking_bread_target_edit.text = str(maxi(0, current + delta))
-	_emit_cooking_config()
-
-
-func _on_cooking_bread_target_submitted(_text: String) -> void:
-	if _current_structure_id < 0:
-		return
-	var val := maxi(0, int(_cooking_bread_target_edit.text))
-	_cooking_bread_target_edit.text = str(val)
-	_cooking_bread_target_edit.release_focus()
-
-
-func _on_cooking_bread_target_focus_exited() -> void:
-	if _current_structure_id < 0:
-		return
-	var val := maxi(0, int(_cooking_bread_target_edit.text))
-	_cooking_bread_target_edit.text = str(val)
-	_emit_cooking_config()
-
-
-func _emit_cooking_config() -> void:
-	var bread_target := maxi(0, int(_cooking_bread_target_edit.text))
-	cooking_config_changed.emit(
-		_current_structure_id, _cooking_enabled_check.button_pressed, bread_target
-	)
-
-
 func _update_crafting(info: Dictionary, furnishing: String) -> void:
-	if furnishing != "Workshop":
+	# Show crafting section for any building with a furnishing type that has recipes.
+	# Kitchen and Workshop are the current crafting building types.
+	if furnishing != "Kitchen" and furnishing != "Workshop":
 		_crafting_wrapper.visible = false
 		if _crafting_details_panel:
 			_crafting_details_panel.visible = false
 		return
 	_crafting_wrapper.visible = true
 
-	var workshop_enabled: bool = info.get("workshop_enabled", false)
-	var active_recipe_ids: Array = info.get("workshop_recipe_ids", [])
+	var crafting_enabled: bool = info.get("crafting_enabled", false)
+	var active_count: int = info.get("active_recipe_count", 0)
+	var satisfied_count: int = info.get("satisfied_recipe_count", 0)
 	var craft_status: String = info.get("craft_status", "")
 
-	# Update summary in main panel. Count recipes with target > 0 as "active."
-	var recipe_targets: Dictionary = info.get("workshop_recipe_targets", {})
-	var active_count := 0
-	for rid in active_recipe_ids:
-		if int(recipe_targets.get(rid, 0)) > 0:
-			active_count += 1
+	# Update summary in main panel.
 	var status_suffix := ""
 	if craft_status != "":
 		status_suffix = " — %s" % craft_status
-	_crafting_summary_label.text = (
-		"%d recipe%s active%s" % [active_count, "s" if active_count != 1 else "", status_suffix]
-	)
+	if active_count > 0:
+		_crafting_summary_label.text = (
+			"%d active (%d satisfied)%s" % [active_count, satisfied_count, status_suffix]
+		)
+	elif crafting_enabled:
+		_crafting_summary_label.text = "No active recipes" + status_suffix
+	else:
+		_crafting_summary_label.text = "Disabled"
 
 	# Update details panel if visible.
 	if not _crafting_details_panel.visible:
 		return
 
-	_crafting_details_enabled_check.set_pressed_no_signal(workshop_enabled)
+	_crafting_details_enabled_check.set_pressed_no_signal(crafting_enabled)
 
-	var recipe_stocks: Dictionary = info.get("workshop_recipe_stocks", {})
+	var active_recipes: Array = info.get("active_recipes", [])
 
-	# Build recipe rows once; update in-place on subsequent frames.
+	# Build active recipe rows once; update in-place on subsequent frames.
 	if not _recipe_rows_built:
-		_build_recipe_rows(workshop_enabled, active_recipe_ids, recipe_targets, recipe_stocks)
+		_build_active_recipe_rows(active_recipes)
 		_recipe_rows_built = true
 	else:
-		_refresh_recipe_rows(workshop_enabled, active_recipe_ids, recipe_targets, recipe_stocks)
+		_refresh_active_recipe_rows(active_recipes)
+
+	# Update recipe picker availability (gray out already-active recipes).
+	_update_recipe_picker_availability(active_recipes)
 
 	# Status label in details panel.
 	if craft_status != "":
@@ -877,133 +802,209 @@ func _update_crafting(info: Dictionary, furnishing: String) -> void:
 		_crafting_details_status_label.visible = false
 
 
-## Build recipe row widgets from scratch. Called once when the details panel
-## first becomes visible for a given structure.
-func _build_recipe_rows(
-	workshop_enabled: bool,
-	active_recipe_ids: Array,
-	recipe_targets: Dictionary,
-	recipe_stocks: Dictionary,
-) -> void:
-	# Clear any leftover rows.
-	for child in _crafting_details_recipe_vbox.get_children():
+## Build active recipe row widgets from scratch.
+func _build_active_recipe_rows(active_recipes: Array) -> void:
+	for child in _crafting_active_recipes_vbox.get_children():
 		child.queue_free()
-	_recipe_widgets.clear()
+	_active_recipe_widgets.clear()
 
-	for recipe in _cached_recipes:
-		var rid: String = recipe.get("id", "")
-		var display: String = recipe.get("display_name", rid)
-		var inputs: Array = recipe.get("inputs", [])
-		var outputs: Array = recipe.get("outputs", [])
+	for ar in active_recipes:
+		var ar_id: int = ar.get("active_recipe_id", 0)
+		var display_name: String = ar.get("recipe_display_name", "?")
+		var enabled: bool = ar.get("enabled", false)
+		var auto_logistics: bool = ar.get("auto_logistics", true)
+		var spare_iterations: int = ar.get("spare_iterations", 0)
+		var targets: Array = ar.get("targets", [])
 
-		var row := VBoxContainer.new()
-		row.add_theme_constant_override("separation", 2)
+		var section := VBoxContainer.new()
+		section.add_theme_constant_override("separation", 4)
 
-		# Row 1: CheckButton with recipe name.
-		var check := CheckButton.new()
-		check.text = display
-		check.set_pressed_no_signal(active_recipe_ids.has(rid))
-		check.disabled = not workshop_enabled
-		check.toggled.connect(_on_recipe_toggled.bind(rid))
-		row.add_child(check)
+		# Header row: name (bold) + reorder + remove buttons.
+		var header := HBoxContainer.new()
+		var name_label := Label.new()
+		name_label.text = display_name
+		name_label.add_theme_font_size_override("font_size", 15)
+		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		header.add_child(name_label)
 
-		# Row 2: Input → Output description (indented).
-		var parts: PackedStringArray = []
-		for inp in inputs:
-			parts.append("%d %s" % [inp.get("quantity", 0), inp.get("item_kind", "?")])
-		var input_str := " + ".join(parts) if parts.size() > 0 else "(nothing)"
-		parts = []
-		for out in outputs:
-			parts.append("%d %s" % [out.get("quantity", 0), out.get("item_kind", "?")])
-		var output_str := " + ".join(parts)
-		var desc := Label.new()
-		desc.text = "  %s → %s" % [input_str, output_str]
-		row.add_child(desc)
+		var up_btn := Button.new()
+		up_btn.text = "▲"
+		up_btn.custom_minimum_size.x = 28
+		up_btn.pressed.connect(_on_recipe_move_up.bind(ar_id))
+		header.add_child(up_btn)
 
-		# Row 3: Target control + Stock count (indented).
-		# Increment is the recipe's total output quantity (e.g. 20 for arrows).
-		var increment := 1
-		for out in outputs:
-			increment = maxi(increment, int(out.get("quantity", 1)))
+		var down_btn := Button.new()
+		down_btn.text = "▼"
+		down_btn.custom_minimum_size.x = 28
+		down_btn.pressed.connect(_on_recipe_move_down.bind(ar_id))
+		header.add_child(down_btn)
 
-		var target_row := HBoxContainer.new()
-		var target_label := Label.new()
-		target_label.text = "  Target:"
-		target_row.add_child(target_label)
+		var remove_btn := Button.new()
+		remove_btn.text = "X"
+		remove_btn.custom_minimum_size.x = 28
+		remove_btn.pressed.connect(_on_recipe_remove.bind(ar_id))
+		header.add_child(remove_btn)
 
-		var minus_btn := Button.new()
-		minus_btn.text = "-%d" % increment
-		minus_btn.custom_minimum_size.x = 36
-		minus_btn.pressed.connect(_on_target_button.bind(rid, -increment))
-		target_row.add_child(minus_btn)
+		section.add_child(header)
 
-		var current_target: int = recipe_targets.get(rid, 0)
-		var target_edit := LineEdit.new()
-		target_edit.text = str(current_target)
-		target_edit.custom_minimum_size.x = 48
-		target_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		target_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
-		target_edit.tooltip_text = "0 = don't craft"
-		target_edit.text_submitted.connect(_on_target_text_submitted.bind(rid))
-		target_edit.focus_exited.connect(_on_target_focus_exited.bind(rid, target_edit))
-		target_row.add_child(target_edit)
+		# Enabled toggle.
+		var enabled_check := CheckButton.new()
+		enabled_check.text = "Enabled"
+		enabled_check.set_pressed_no_signal(enabled)
+		enabled_check.toggled.connect(_on_recipe_enabled_toggled.bind(ar_id))
+		section.add_child(enabled_check)
 
-		var plus_btn := Button.new()
-		plus_btn.text = "+%d" % increment
-		plus_btn.custom_minimum_size.x = 36
-		plus_btn.pressed.connect(_on_target_button.bind(rid, increment))
-		target_row.add_child(plus_btn)
+		# Per-output target rows.
+		var target_widgets: Array = []
+		for target in targets:
+			var target_id: int = target.get("target_id", 0)
+			var item_kind: String = target.get("item_kind", "?")
+			var material: String = target.get("material", "")
+			var target_qty: int = target.get("target_quantity", 0)
+			var stock: int = target.get("stock", 0)
 
-		var stock_count: int = recipe_stocks.get(rid, 0)
-		var stock_label := Label.new()
-		stock_label.text = "Stock: %d" % stock_count
-		target_row.add_child(stock_label)
+			var output_label_text := item_kind
+			if material != "":
+				output_label_text = material
 
-		row.add_child(target_row)
-		row.add_child(HSeparator.new())
-		_crafting_details_recipe_vbox.add_child(row)
+			var target_row := HBoxContainer.new()
+			var output_label := Label.new()
+			output_label.text = "  %s:" % output_label_text
+			output_label.custom_minimum_size.x = 80
+			target_row.add_child(output_label)
 
-		(
-			_recipe_widgets
-			. append(
-				{
-					"check": check,
-					"target_edit": target_edit,
-					"stock_label": stock_label,
-					"increment": increment,
-				}
+			# Increment is the output quantity from the recipe def.
+			# Use target quantity or a sensible default.
+			var increment := maxi(1, int(target.get("target_quantity", 10)))
+			# Use output quantity from catalog as increment if available.
+			var recipe_output_qty := _get_output_quantity_for_target(
+				ar.get("recipe_key_json", ""), item_kind
 			)
-		)
+			if recipe_output_qty > 0:
+				increment = recipe_output_qty
+
+			var minus_btn := Button.new()
+			minus_btn.text = "-%d" % increment
+			minus_btn.custom_minimum_size.x = 40
+			minus_btn.pressed.connect(_on_output_target_button.bind(target_id, -increment))
+			target_row.add_child(minus_btn)
+
+			var target_edit := LineEdit.new()
+			target_edit.text = str(target_qty)
+			target_edit.custom_minimum_size.x = 48
+			target_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			target_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+			target_edit.tooltip_text = "0 = don't craft"
+			target_edit.text_submitted.connect(_on_output_target_submitted.bind(target_id))
+			target_edit.focus_exited.connect(
+				_on_output_target_focus_exited.bind(target_id, target_edit)
+			)
+			target_row.add_child(target_edit)
+
+			var plus_btn := Button.new()
+			plus_btn.text = "+%d" % increment
+			plus_btn.custom_minimum_size.x = 40
+			plus_btn.pressed.connect(_on_output_target_button.bind(target_id, increment))
+			target_row.add_child(plus_btn)
+
+			var stock_label := Label.new()
+			stock_label.text = "(%d)" % stock
+			target_row.add_child(stock_label)
+
+			section.add_child(target_row)
+			(
+				target_widgets
+				. append(
+					{
+						"target_id": target_id,
+						"target_edit": target_edit,
+						"stock_label": stock_label,
+					}
+				)
+			)
+
+		# Auto-logistics section.
+		var auto_hbox := HBoxContainer.new()
+		var auto_check := CheckButton.new()
+		auto_check.text = "Auto-logistics"
+		auto_check.set_pressed_no_signal(auto_logistics)
+		auto_check.toggled.connect(_on_auto_logistics_toggled.bind(ar_id))
+		auto_hbox.add_child(auto_check)
+
+		var spare_label := Label.new()
+		spare_label.text = "  Spare:"
+		auto_hbox.add_child(spare_label)
+
+		var spare_edit := LineEdit.new()
+		spare_edit.text = str(spare_iterations)
+		spare_edit.custom_minimum_size.x = 36
+		spare_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+		spare_edit.editable = auto_logistics
+		spare_edit.text_submitted.connect(_on_spare_iterations_submitted.bind(ar_id))
+		spare_edit.focus_exited.connect(_on_spare_iterations_focus_exited.bind(ar_id, spare_edit))
+		auto_hbox.add_child(spare_edit)
+
+		section.add_child(auto_hbox)
+		section.add_child(HSeparator.new())
+		_crafting_active_recipes_vbox.add_child(section)
+
+		_active_recipe_widgets[ar_id] = {
+			"enabled_check": enabled_check,
+			"auto_check": auto_check,
+			"spare_edit": spare_edit,
+			"target_widgets": target_widgets,
+		}
 
 
-## Update existing recipe row widgets in-place without destroying them.
-## This preserves LineEdit focus and pending text edits.
-func _refresh_recipe_rows(
-	workshop_enabled: bool,
-	active_recipe_ids: Array,
-	recipe_targets: Dictionary,
-	recipe_stocks: Dictionary,
-) -> void:
-	for i in range(_recipe_widgets.size()):
-		if i >= _cached_recipes.size():
-			break
-		var rid: String = _cached_recipes[i].get("id", "")
-		var w: Dictionary = _recipe_widgets[i]
-		var check: CheckButton = w["check"]
-		var target_edit: LineEdit = w["target_edit"]
-		var stock_label: Label = w["stock_label"]
+## Update existing active recipe row widgets in-place.
+func _refresh_active_recipe_rows(active_recipes: Array) -> void:
+	# Check if the recipe list structure changed (added/removed/reordered).
+	var current_ids: Array = []
+	for ar in active_recipes:
+		current_ids.append(ar.get("active_recipe_id", 0))
+	var widget_ids: Array = _active_recipe_widgets.keys()
+	if current_ids != widget_ids:
+		# Structure changed — rebuild from scratch.
+		_build_active_recipe_rows(active_recipes)
+		return
 
-		check.set_pressed_no_signal(active_recipe_ids.has(rid))
-		check.disabled = not workshop_enabled
+	# In-place update of existing widgets.
+	for ar in active_recipes:
+		var ar_id: int = ar.get("active_recipe_id", 0)
+		if not _active_recipe_widgets.has(ar_id):
+			continue
+		var w: Dictionary = _active_recipe_widgets[ar_id]
 
-		target_edit.editable = workshop_enabled and active_recipe_ids.has(rid)
-		# Only update the text if the user isn't actively editing it.
-		if not target_edit.has_focus():
-			var current_target: int = recipe_targets.get(rid, 0)
-			target_edit.text = str(current_target)
+		var enabled_check: CheckButton = w["enabled_check"]
+		enabled_check.set_pressed_no_signal(ar.get("enabled", false))
 
-		var stock_count: int = recipe_stocks.get(rid, 0)
-		stock_label.text = "Stock: %d" % stock_count
+		var auto_check: CheckButton = w["auto_check"]
+		auto_check.set_pressed_no_signal(ar.get("auto_logistics", true))
+
+		var spare_edit: LineEdit = w["spare_edit"]
+		spare_edit.editable = ar.get("auto_logistics", true)
+		if not spare_edit.has_focus():
+			spare_edit.text = str(ar.get("spare_iterations", 0))
+
+		var targets: Array = ar.get("targets", [])
+		var target_widgets: Array = w["target_widgets"]
+		for i in range(mini(targets.size(), target_widgets.size())):
+			var tw: Dictionary = target_widgets[i]
+			var target_edit: LineEdit = tw["target_edit"]
+			var stock_label: Label = tw["stock_label"]
+			if not target_edit.has_focus():
+				target_edit.text = str(targets[i].get("target_quantity", 0))
+			stock_label.text = "(%d)" % targets[i].get("stock", 0)
+
+
+## Get the output quantity for a target's item kind from the cached catalog.
+func _get_output_quantity_for_target(recipe_key_json: String, item_kind: String) -> int:
+	for recipe in _cached_building_recipes:
+		if recipe.get("key_json", "") == recipe_key_json:
+			for out in recipe.get("outputs", []):
+				if out.get("item_kind", "") == item_kind:
+					return int(out.get("quantity", 1))
+	return 0
 
 
 func _on_crafting_details_pressed() -> void:
@@ -1014,70 +1015,147 @@ func _on_crafting_details_pressed() -> void:
 	# Reset built flag so rows are rebuilt fresh when reopening.
 	if _crafting_details_panel.visible:
 		_recipe_rows_built = false
-		_recipe_widgets.clear()
+		_active_recipe_widgets.clear()
+		_recipe_picker_visible = false
 
 
-func _on_crafting_enabled_toggled(_pressed: bool) -> void:
+func _on_crafting_enabled_toggled(pressed: bool) -> void:
 	if _current_structure_id < 0:
 		return
-	_emit_workshop_config()
+	crafting_enabled_changed.emit(_current_structure_id, pressed)
 
 
-func _on_recipe_toggled(_pressed: bool, _recipe_id: String) -> void:
+func _on_add_recipe_pressed() -> void:
+	_recipe_picker_visible = not _recipe_picker_visible
+	_crafting_recipe_picker.visible = _recipe_picker_visible
+	if _recipe_picker_visible:
+		_populate_recipe_picker()
+
+
+func _populate_recipe_picker() -> void:
+	for child in _crafting_recipe_picker.get_children():
+		child.queue_free()
+	for recipe in _cached_building_recipes:
+		var key_json: String = recipe.get("key_json", "")
+		var display_name: String = recipe.get("display_name", "?")
+		var inputs: Array = recipe.get("inputs", [])
+		var outputs: Array = recipe.get("outputs", [])
+
+		# Build input → output description.
+		var parts: PackedStringArray = []
+		for inp in inputs:
+			parts.append("%d %s" % [inp.get("quantity", 0), inp.get("item_kind", "?")])
+		var input_str := " + ".join(parts) if parts.size() > 0 else "(nothing)"
+		parts = []
+		for out in outputs:
+			parts.append("%d %s" % [out.get("quantity", 0), out.get("item_kind", "?")])
+		var output_str := " + ".join(parts)
+
+		var btn := Button.new()
+		btn.text = "%s  (%s → %s)" % [display_name, input_str, output_str]
+		btn.set_meta("key_json", key_json)
+		btn.pressed.connect(_on_recipe_picker_selected.bind(key_json))
+		_crafting_recipe_picker.add_child(btn)
+
+
+func _update_recipe_picker_availability(active_recipes: Array) -> void:
+	if not _crafting_recipe_picker.visible:
+		return
+	# Collect active recipe key JSONs.
+	var active_keys: Array = []
+	for ar in active_recipes:
+		active_keys.append(ar.get("recipe_key_json", ""))
+	# Gray out recipes already active.
+	for child in _crafting_recipe_picker.get_children():
+		if child is Button and child.has_meta("key_json"):
+			var key: String = child.get_meta("key_json")
+			child.disabled = active_keys.has(key)
+
+
+func _on_recipe_picker_selected(key_json: String) -> void:
 	if _current_structure_id < 0:
 		return
-	_emit_workshop_config()
+	add_recipe_requested.emit(_current_structure_id, key_json)
+	_recipe_picker_visible = false
+	_crafting_recipe_picker.visible = false
 
 
-func _on_target_button(recipe_id: String, delta: int) -> void:
-	if _current_structure_id < 0:
-		return
-	# Find the widget for this recipe and adjust the value.
-	for i in range(_recipe_widgets.size()):
-		if i < _cached_recipes.size() and _cached_recipes[i].get("id", "") == recipe_id:
-			var target_edit: LineEdit = _recipe_widgets[i]["target_edit"]
-			var current := maxi(0, int(target_edit.text))
-			var new_val := maxi(0, current + delta)
-			target_edit.text = str(new_val)
-			break
-	_emit_workshop_config()
+func _on_recipe_remove(active_recipe_id: int) -> void:
+	remove_recipe_requested.emit(active_recipe_id)
 
 
-func _on_target_text_submitted(_text: String, recipe_id: String) -> void:
-	if _current_structure_id < 0:
-		return
-	# Clamp to >= 0 and update the text to the cleaned value.
-	# release_focus() triggers _on_target_focus_exited which calls _emit_workshop_config.
-	for i in range(_recipe_widgets.size()):
-		if i < _cached_recipes.size() and _cached_recipes[i].get("id", "") == recipe_id:
-			var target_edit: LineEdit = _recipe_widgets[i]["target_edit"]
-			var val := maxi(0, int(target_edit.text))
-			target_edit.text = str(val)
-			target_edit.release_focus()
-			break
+func _on_recipe_move_up(active_recipe_id: int) -> void:
+	recipe_move_up_requested.emit(active_recipe_id)
 
 
-func _on_target_focus_exited(_recipe_id: String, target_edit: LineEdit) -> void:
-	if _current_structure_id < 0:
-		return
+func _on_recipe_move_down(active_recipe_id: int) -> void:
+	recipe_move_down_requested.emit(active_recipe_id)
+
+
+func _on_recipe_enabled_toggled(pressed: bool, active_recipe_id: int) -> void:
+	recipe_enabled_changed.emit(active_recipe_id, pressed)
+
+
+func _on_output_target_button(target_id: int, delta: int) -> void:
+	# Find the widget and adjust value.
+	for ar_id in _active_recipe_widgets:
+		var w: Dictionary = _active_recipe_widgets[ar_id]
+		for tw in w["target_widgets"]:
+			if tw["target_id"] == target_id:
+				var target_edit: LineEdit = tw["target_edit"]
+				var current := maxi(0, int(target_edit.text))
+				var new_val := maxi(0, current + delta)
+				target_edit.text = str(new_val)
+				recipe_output_target_changed.emit(target_id, new_val)
+				return
+
+
+func _on_output_target_submitted(_text: String, target_id: int) -> void:
+	for ar_id in _active_recipe_widgets:
+		var w: Dictionary = _active_recipe_widgets[ar_id]
+		for tw in w["target_widgets"]:
+			if tw["target_id"] == target_id:
+				var target_edit: LineEdit = tw["target_edit"]
+				var val := maxi(0, int(target_edit.text))
+				target_edit.text = str(val)
+				target_edit.release_focus()
+				return
+
+
+func _on_output_target_focus_exited(target_id: int, target_edit: LineEdit) -> void:
 	var val := maxi(0, int(target_edit.text))
 	target_edit.text = str(val)
-	_emit_workshop_config()
+	recipe_output_target_changed.emit(target_id, val)
 
 
-func _emit_workshop_config() -> void:
-	var enabled: bool = _crafting_details_enabled_check.button_pressed
-	var recipe_configs: Array = []
-	for i in range(_recipe_widgets.size()):
-		if i >= _cached_recipes.size():
-			break
-		var w: Dictionary = _recipe_widgets[i]
-		var check: CheckButton = w["check"]
-		var target_edit: LineEdit = w["target_edit"]
-		if check.button_pressed:
-			var target_val := maxi(0, int(target_edit.text))
-			recipe_configs.append({"id": _cached_recipes[i].get("id", ""), "target": target_val})
-	workshop_config_changed.emit(_current_structure_id, enabled, recipe_configs)
+func _on_auto_logistics_toggled(pressed: bool, active_recipe_id: int) -> void:
+	# Get current spare iterations from widget.
+	if not _active_recipe_widgets.has(active_recipe_id):
+		return
+	var w: Dictionary = _active_recipe_widgets[active_recipe_id]
+	var spare_edit: LineEdit = w["spare_edit"]
+	spare_edit.editable = pressed
+	var spare := maxi(0, int(spare_edit.text))
+	recipe_auto_logistics_changed.emit(active_recipe_id, pressed, spare)
+
+
+func _on_spare_iterations_submitted(_text: String, active_recipe_id: int) -> void:
+	if not _active_recipe_widgets.has(active_recipe_id):
+		return
+	var w: Dictionary = _active_recipe_widgets[active_recipe_id]
+	var spare_edit: LineEdit = w["spare_edit"]
+	var val := maxi(0, int(spare_edit.text))
+	spare_edit.text = str(val)
+	spare_edit.release_focus()
+
+
+func _on_spare_iterations_focus_exited(active_recipe_id: int, spare_edit: LineEdit) -> void:
+	if not _active_recipe_widgets.has(active_recipe_id):
+		return
+	var val := maxi(0, int(spare_edit.text))
+	spare_edit.text = str(val)
+	var auto_check: CheckButton = _active_recipe_widgets[active_recipe_id]["auto_check"]
+	recipe_auto_logistics_changed.emit(active_recipe_id, auto_check.button_pressed, val)
 
 
 func _on_logistics_details_pressed() -> void:

@@ -68,9 +68,9 @@
 //   abandonment: GoingToSource clears reservations; GoingToDestination drops
 //   carried items as a ground pile.
 // - `Cook { structure_id }` — converts reserved fruit into bread at a kitchen.
-//   Created by `process_kitchen_monitor()` when a kitchen has unreserved fruit
-//   and `cooking_enabled == true`. Progress increments each tick; on completion,
-//   fruit is consumed and bread is added to the kitchen's inventory.
+//   Created by `process_unified_crafting_monitor()` when a kitchen has an active
+//   bread recipe with unreserved fruit. Progress increments each tick; on
+//   completion, fruit is consumed and bread is added to the kitchen's inventory.
 // - `Harvest { fruit_pos }` — walk to a fruit voxel, remove it, and create a
 //   ground pile with 1 Fruit at the elf's position. Instant (`total_cost = 0`).
 //   Created by `process_harvest_tasks()` when logistics buildings want fruit
@@ -215,10 +215,10 @@ pub enum TaskKind {
     /// mood check when mood is Unhappy or worse. Duration comes from
     /// `total_cost` on the Task struct (same pattern as Sleep).
     Mope,
-    /// Craft an item at a workshop. An elf walks to the workshop, works for
+    /// Craft an item at a building. An elf walks to the building, works for
     /// the recipe's `work_ticks`, then converts reserved inputs into outputs
-    /// in the workshop's inventory. Created by `process_workshop_monitor()`
-    /// when a workshop has available inputs for a configured recipe.
+    /// in the building's inventory. Created by `process_unified_crafting_monitor()`
+    /// when a building has an active recipe with available inputs.
     Craft {
         structure_id: StructureId,
         recipe_id: String,

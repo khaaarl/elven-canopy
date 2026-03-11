@@ -538,14 +538,31 @@ func _setup_common(bridge: SimBridge) -> void:
 	_structure_info_panel.logistics_wants_changed.connect(
 		func(sid: int, json: String): bridge.set_logistics_wants(sid, json)
 	)
-	_structure_info_panel.cooking_config_changed.connect(
-		func(sid: int, enabled: bool, target: int): bridge.set_cooking_config(sid, enabled, target)
+	_structure_info_panel.crafting_enabled_changed.connect(
+		func(sid: int, enabled: bool): bridge.set_crafting_enabled(sid, enabled)
 	)
-	_structure_info_panel.workshop_config_changed.connect(
-		func(sid: int, enabled: bool, recipe_configs: Array):
-			bridge.set_workshop_config(sid, enabled, JSON.stringify(recipe_configs))
+	_structure_info_panel.add_recipe_requested.connect(
+		func(sid: int, key_json: String): bridge.add_active_recipe(sid, key_json)
 	)
-	_structure_info_panel.set_recipes(bridge.get_recipes())
+	_structure_info_panel.remove_recipe_requested.connect(
+		func(ar_id: int): bridge.remove_active_recipe(ar_id)
+	)
+	_structure_info_panel.recipe_output_target_changed.connect(
+		func(target_id: int, qty: int): bridge.set_recipe_output_target(target_id, qty)
+	)
+	_structure_info_panel.recipe_auto_logistics_changed.connect(
+		func(ar_id: int, auto: bool, spare: int):
+			bridge.set_recipe_auto_logistics(ar_id, auto, spare)
+	)
+	_structure_info_panel.recipe_enabled_changed.connect(
+		func(ar_id: int, enabled: bool): bridge.set_recipe_enabled(ar_id, enabled)
+	)
+	_structure_info_panel.recipe_move_up_requested.connect(
+		func(ar_id: int): bridge.move_active_recipe_up(ar_id)
+	)
+	_structure_info_panel.recipe_move_down_requested.connect(
+		func(ar_id: int): bridge.move_active_recipe_down(ar_id)
+	)
 	_structure_info_panel.set_cultivable_fruits(bridge.get_cultivable_fruit_species())
 	# Cache logistics item kinds and material options for the two-step picker.
 	var item_kinds: Array = bridge.get_logistics_item_kinds()
@@ -937,6 +954,10 @@ func _process(delta: float) -> void:
 			_structure_info_panel.update_info(sinfo)
 			if _structure_info_panel.is_elf_picker_visible():
 				_structure_info_panel.set_elf_list(bridge.get_all_elves())
+			if _structure_info_panel.is_crafting_details_visible():
+				_structure_info_panel.set_building_recipes(
+					bridge.get_recipe_catalog_for_building(_selector.get_selected_structure_id())
+				)
 		else:
 			# Structure was demolished — deselect and hide panel.
 			_selector.deselect()

@@ -308,6 +308,10 @@ auto_pk_id!(/// Auto-increment ID for individual enchantment effects.
 EnchantmentEffectId);
 auto_pk_id!(/// Auto-increment ID for craft task extension data.
 TaskCraftDataId);
+auto_pk_id!(/// Auto-increment ID for active recipe entries on crafting buildings.
+ActiveRecipeId);
+auto_pk_id!(/// Auto-increment ID for per-output target rows on active recipes.
+ActiveRecipeTargetId);
 auto_pk_id!(/// Auto-increment ID for attack target task extension data.
 TaskAttackTargetDataId);
 auto_pk_id!(/// Auto-increment ID for attack-move task extension data.

@@ -32,15 +32,11 @@
 //   its pull priority (higher = served first).
 // - `SetLogisticsWants` — set which items and quantities a building wants
 //   hauled to it. The `LogisticsHeartbeat` creates `Haul` tasks to fill these.
-// - `SetCookingConfig` — enable/disable cooking on a kitchen and set the
-//   bread production target.
 // - `SetCreatureFood` — directly set a creature's food value (initial spawning).
 // - `SetCreatureRest` — directly set a creature's rest value (initial spawning).
 // - `AddCreatureItem` — add items to a creature's inventory.
 // - `AddGroundPileItem` — add items to a ground pile (creating it if needed).
 // - `DebugNotification` — create a debug notification for testing.
-// - `SetWorkshopConfig` — enable/disable a workshop and set which recipe IDs
-//   it should produce. Recomputes logistics wants from recipe inputs.
 // - `DiscoverCiv` — a civ becomes aware of another civ, creating a
 //   CivRelationship row. No-op if already aware.
 // - `SetCivOpinion` — update a civ's opinion of another civ. No-op if
@@ -67,6 +63,7 @@
 use crate::building::LogisticsWant;
 use crate::db::HostileResponse;
 use crate::inventory::ItemKind;
+use crate::recipe::RecipeKey;
 use crate::task::TaskKind;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
@@ -166,12 +163,6 @@ pub enum SimAction {
         structure_id: StructureId,
         wants: Vec<LogisticsWant>,
     },
-    /// Set the cooking configuration for a kitchen building.
-    SetCookingConfig {
-        structure_id: StructureId,
-        cooking_enabled: bool,
-        cooking_bread_target: u32,
-    },
     /// Directly set a creature's food value (for initial spawning overrides).
     SetCreatureFood { creature_id: CreatureId, food: i64 },
     /// Directly set a creature's rest value (for initial spawning overrides).
@@ -190,13 +181,43 @@ pub enum SimAction {
     },
     /// Create a debug notification for testing the notification pipeline.
     DebugNotification { message: String },
-    /// Set workshop configuration (enabled state and active recipe configs).
-    /// Each recipe config carries a recipe ID and an output target (0 = don't craft).
-    SetWorkshopConfig {
+    /// Set the unified crafting toggle for a building.
+    SetCraftingEnabled {
         structure_id: StructureId,
-        workshop_enabled: bool,
-        recipe_configs: Vec<WorkshopRecipeEntry>,
+        enabled: bool,
     },
+    /// Add a recipe to a building's active recipe list. Output targets are
+    /// initialized to 0 — the user must set at least one non-zero target.
+    /// Rejects duplicates (same recipe_key already active on the structure).
+    AddActiveRecipe {
+        structure_id: StructureId,
+        recipe_key: RecipeKey,
+    },
+    /// Remove an active recipe from a building. Interrupts any in-progress
+    /// craft task for this recipe.
+    RemoveActiveRecipe { active_recipe_id: ActiveRecipeId },
+    /// Set the target quantity for a specific recipe output.
+    SetRecipeOutputTarget {
+        active_recipe_target_id: ActiveRecipeTargetId,
+        target_quantity: u32,
+    },
+    /// Configure auto-logistics for an active recipe.
+    SetRecipeAutoLogistics {
+        active_recipe_id: ActiveRecipeId,
+        auto_logistics: bool,
+        spare_iterations: u32,
+    },
+    /// Toggle an individual active recipe without removing it.
+    SetRecipeEnabled {
+        active_recipe_id: ActiveRecipeId,
+        enabled: bool,
+    },
+    /// Move an active recipe up in priority (lower sort_order). No-op if
+    /// already at the top within its structure.
+    MoveActiveRecipeUp { active_recipe_id: ActiveRecipeId },
+    /// Move an active recipe down in priority (higher sort_order). No-op if
+    /// already at the bottom within its structure.
+    MoveActiveRecipeDown { active_recipe_id: ActiveRecipeId },
     /// A civ becomes aware of another civ. Creates a CivRelationship row with
     /// the specified initial opinion. No-op if the relationship already exists.
     DiscoverCiv {
@@ -291,13 +312,6 @@ pub enum SimAction {
         /// Creature that "shot" this projectile (for attribution). Optional.
         shooter_id: Option<CreatureId>,
     },
-}
-
-/// A recipe configuration entry for workshop commands.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WorkshopRecipeEntry {
-    pub recipe_id: String,
-    pub target: u32,
 }
 
 #[cfg(test)]

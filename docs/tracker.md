@@ -52,6 +52,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 [~] F-projectiles          Projectile physics system (arrows)
+[~] F-unified-craft-ui     Unified data-driven building crafting UI
 ```
 
 ### Todo
@@ -161,7 +162,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tree-species         Multiple tree species with properties
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-unfurnish            Unfurnish/refurnish a building
-[ ] F-unified-craft-ui     Unified data-driven building crafting UI
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-visual-smooth        Smooth voxel surface rendering
 [ ] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
@@ -1535,9 +1535,23 @@ support. Encourages distributed village design across multiple trees.
 **Related:** F-multi-tree, F-population
 
 #### F-unified-craft-ui — Unified data-driven building crafting UI
-**Status:** Todo · **Phase:** 4
+**Status:** In Progress · **Phase:** 4
 
 Replace per-building-type crafting UIs (kitchen cooking toggle, workshop recipe list, extraction settings) with a single unified data-driven crafting panel. Buildings expose available recipes based on their furnishing type; the UI dynamically renders recipe selection, material pickers, and output targets from recipe metadata. Reduces code duplication and makes adding new recipe types trivial.
+
+**Draft:** docs/drafts/unified_craft_ui.md
+
+**What's done:**
+- Phase 1 complete: RecipeKey/RecipeDef/RecipeCatalog, ActiveRecipe + ActiveRecipeTarget DB tables, 9 granular SimAction commands, unified crafting monitor, auto-logistics with spare iterations, old cooking/workshop code removed.
+- Phase 2 complete: GDScript crafting detail panel (flat recipe picker, active recipe list with per-output targets, auto-logistics toggle, reorder/remove), bridge methods, signal wiring.
+- All recipes auto-added on furnishing (kitchen gets bread with default target; workshop gets all recipes with zero targets).
+
+**What remains:**
+- Hierarchical recipe picker with category tree (currently flat — correct for 4 recipes via smart flattening, but the recursive UI isn't built yet; needed when fruit extraction adds many recipes).
+- Remove `cook_work_ticks` from GameConfig — bread recipe should read work_ticks from its RecipeDef like all other recipes. Currently the Cook action still reads `config.cook_work_ticks`.
+- Orphan handling on save load — design doc says orphaned ActiveRecipe keys (recipe removed between versions) should trigger a notification and be cleaned up. Not yet implemented.
+- Design doc says "furnishing does NOT auto-add recipes" but implementation auto-adds all recipes on furnishing (deliberate divergence for UX convenience). Design doc should be updated to match.
+
 
 **Draft:** docs/drafts/unified_craft_ui.md
 

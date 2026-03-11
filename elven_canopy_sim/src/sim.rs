@@ -351,6 +351,11 @@ pub struct SimState {
     #[serde(skip)]
     pub species_table: BTreeMap<Species, SpeciesData>,
 
+    /// Immutable recipe catalog built at startup from config + dynamic recipes.
+    /// Not serialized — deterministically rebuilt from config on load.
+    #[serde(skip)]
+    pub recipe_catalog: crate::recipe::RecipeCatalog,
+
     /// Vaelith lexicon for elf name generation. Transient — loaded from the
     /// embedded JSON at startup and after deserialization. Not serialized.
     #[serde(skip)]
@@ -519,8 +524,9 @@ impl SimState {
         let mut trees = BTreeMap::new();
         trees.insert(player_tree_id, wg.home_tree);
 
-        // Build species table from config.
+        // Build species table and recipe catalog from config.
         let species_table = config.species.clone();
+        let recipe_catalog = crate::recipe::build_catalog(&config);
 
         let mut state = Self {
             tick: 0,
@@ -543,6 +549,7 @@ impl SimState {
             nav_graph: wg.nav_graph,
             large_nav_graph: wg.large_nav_graph,
             species_table,
+            recipe_catalog,
             lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
             structure_voxels: BTreeMap::new(),
@@ -710,25 +717,6 @@ impl SimState {
                 let inv_id = self.structure_inv(*structure_id);
                 self.set_inv_wants(inv_id, wants);
             }
-            SimAction::SetCookingConfig {
-                structure_id,
-                cooking_enabled,
-                cooking_bread_target,
-            } => {
-                if self
-                    .db
-                    .structures
-                    .get(structure_id)
-                    .is_some_and(|s| s.furnishing == Some(FurnishingType::Kitchen))
-                {
-                    let cooking_enabled_val = *cooking_enabled;
-                    let cooking_bread_target_val = *cooking_bread_target;
-                    let _ = self.db.structures.modify_unchecked(structure_id, |s| {
-                        s.cooking_enabled = cooking_enabled_val;
-                        s.cooking_bread_target = cooking_bread_target_val;
-                    });
-                }
-            }
             SimAction::SetCreatureFood { creature_id, food } => {
                 let _ = self.db.creatures.modify_unchecked(creature_id, |creature| {
                     creature.food = *food;
@@ -756,15 +744,52 @@ impl SimState {
                 let pile = self.db.ground_piles.get(&pile_id).unwrap();
                 self.inv_add_simple_item(pile.inventory_id, *item_kind, *quantity, None, None);
             }
-            SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled,
-                recipe_configs,
-            } => {
-                self.set_workshop_config(*structure_id, *workshop_enabled, recipe_configs.clone());
-            }
             SimAction::DebugNotification { message } => {
                 self.add_notification(message.clone());
+            }
+            SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled,
+            } => {
+                self.set_crafting_enabled(*structure_id, *enabled);
+            }
+            SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key,
+            } => {
+                self.add_active_recipe(*structure_id, recipe_key.clone());
+            }
+            SimAction::RemoveActiveRecipe { active_recipe_id } => {
+                self.remove_active_recipe(*active_recipe_id);
+            }
+            SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id,
+                target_quantity,
+            } => {
+                self.set_recipe_output_target(*active_recipe_target_id, *target_quantity);
+            }
+            SimAction::SetRecipeAutoLogistics {
+                active_recipe_id,
+                auto_logistics,
+                spare_iterations,
+            } => {
+                self.set_recipe_auto_logistics(
+                    *active_recipe_id,
+                    *auto_logistics,
+                    *spare_iterations,
+                );
+            }
+            SimAction::SetRecipeEnabled {
+                active_recipe_id,
+                enabled,
+            } => {
+                self.set_recipe_enabled(*active_recipe_id, *enabled);
+            }
+            SimAction::MoveActiveRecipeUp { active_recipe_id } => {
+                self.move_active_recipe_up(*active_recipe_id);
+            }
+            SimAction::MoveActiveRecipeDown { active_recipe_id } => {
+                self.move_active_recipe_down(*active_recipe_id);
             }
             SimAction::DiscoverCiv {
                 civ_id,
@@ -3625,15 +3650,28 @@ impl SimState {
     /// Start a Craft action: set action kind and schedule next activation
     /// after `recipe.work_ticks`. Craft is a single-action task.
     fn start_craft_action(&mut self, creature_id: CreatureId, task_id: TaskId) {
-        // Look up the recipe to get work_ticks.
-        let duration = self
-            .task_craft_data(task_id)
+        // Look up the recipe to get work_ticks. Try config recipes first,
+        // then fall back to the unified recipe catalog.
+        let craft_data = self.task_craft_data(task_id);
+        let duration = craft_data
+            .as_ref()
             .and_then(|d| {
                 self.config
                     .recipes
                     .iter()
                     .find(|r| r.id == d.recipe_id)
                     .map(|r| r.work_ticks)
+            })
+            .or_else(|| {
+                craft_data.as_ref().and_then(|d| {
+                    d.active_recipe_id.and_then(|ar_id| {
+                        self.db.active_recipes.get(&ar_id).and_then(|ar| {
+                            crate::recipe::RecipeKey::from_json(&ar.recipe_key_json).and_then(
+                                |key| self.recipe_catalog.get(&key).map(|def| def.work_ticks),
+                            )
+                        })
+                    })
+                })
             })
             .unwrap_or(5000);
 
@@ -3666,77 +3704,130 @@ impl SimState {
                 None => return false,
             };
 
-        // Look up recipe via TaskCraftData.
-        let recipe_id = match self.task_craft_data(task_id) {
-            Some(d) => d.recipe_id.clone(),
+        // Look up recipe via TaskCraftData. Try config recipes first (legacy
+        // workshop path), then fall back to the unified recipe catalog.
+        let craft_data = match self.task_craft_data(task_id) {
+            Some(d) => d,
             None => {
                 self.complete_task(task_id);
                 return true;
             }
         };
-        let recipe = match self.config.recipes.iter().find(|r| r.id == recipe_id) {
-            Some(r) => r.clone(),
-            None => {
-                self.complete_task(task_id);
-                return true;
-            }
-        };
+
+        // Try config recipe lookup first (legacy path).
+        let config_recipe = self
+            .config
+            .recipes
+            .iter()
+            .find(|r| r.id == craft_data.recipe_id)
+            .cloned();
+
+        // Catalog lookup via active_recipe_id (unified path). Cloned to
+        // avoid holding an immutable borrow on self.recipe_catalog.
+        let catalog_def = craft_data.active_recipe_id.and_then(|ar_id| {
+            self.db.active_recipes.get(&ar_id).and_then(|ar| {
+                crate::recipe::RecipeKey::from_json(&ar.recipe_key_json)
+                    .and_then(|key| self.recipe_catalog.get(&key).cloned())
+            })
+        });
 
         let inv_id = self.structure_inv(structure_id);
 
-        // Remove reserved inputs.
-        for input in &recipe.inputs {
-            self.inv_remove_reserved_items(inv_id, input.item_kind, input.quantity, task_id);
-        }
-
-        // Produce outputs and record subcomponents.
-        for output in &recipe.outputs {
-            self.inv_add_item(
-                inv_id,
-                output.item_kind,
-                output.quantity,
-                None,
-                None,
-                output.material,
-                output.quality,
-                None,
-            );
-
-            // Record subcomponents on the output stack.
-            if !recipe.subcomponent_records.is_empty() {
-                // Find the stack we just added.
-                let stacks = self
-                    .db
-                    .item_stacks
-                    .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
-                if let Some(output_stack) = stacks.iter().rev().find(|s| {
-                    s.kind == output.item_kind
-                        && s.material == output.material
-                        && s.quality == output.quality
-                        && s.owner.is_none()
-                        && s.reserved_by.is_none()
-                }) {
-                    let stack_id = output_stack.id;
-                    for sub in &recipe.subcomponent_records {
-                        let sub_kind = sub.input_kind;
-                        let sub_qty = sub.quantity_per_item;
-                        let _ = self.db.item_subcomponents.insert_auto_no_fk(|id| {
-                            crate::db::ItemSubcomponent {
-                                id,
-                                item_stack_id: stack_id,
-                                component_kind: sub_kind,
-                                material: None,
-                                quality: 0,
-                                quantity_per_item: sub_qty,
-                            }
-                        });
-                    }
+        // Resolve via whichever path found the recipe.
+        match (&config_recipe, &catalog_def) {
+            (Some(recipe), _) => {
+                // Legacy config recipe path.
+                for input in &recipe.inputs {
+                    self.inv_remove_reserved_items(
+                        inv_id,
+                        input.item_kind,
+                        input.quantity,
+                        task_id,
+                    );
                 }
+                for output in &recipe.outputs {
+                    self.inv_add_item(
+                        inv_id,
+                        output.item_kind,
+                        output.quantity,
+                        None,
+                        None,
+                        output.material,
+                        output.quality,
+                        None,
+                    );
+                    self.record_subcomponents(inv_id, output, &recipe.subcomponent_records);
+                }
+            }
+            (None, Some(def)) => {
+                // Unified catalog recipe path.
+                for input in &def.inputs {
+                    self.inv_remove_reserved_items(
+                        inv_id,
+                        input.item_kind,
+                        input.quantity,
+                        task_id,
+                    );
+                }
+                for output in &def.outputs {
+                    self.inv_add_item(
+                        inv_id,
+                        output.item_kind,
+                        output.quantity,
+                        None,
+                        None,
+                        output.material,
+                        output.quality,
+                        None,
+                    );
+                    self.record_subcomponents(inv_id, output, &def.subcomponent_records);
+                }
+            }
+            (None, None) => {
+                // Recipe not found in either path — skip.
             }
         }
 
         self.complete_task(task_id);
         true
+    }
+
+    /// Record subcomponent records on the most recently added item stack
+    /// matching the given output. Called after `inv_add_item` for crafted items.
+    fn record_subcomponents(
+        &mut self,
+        inv_id: InventoryId,
+        output: &crate::config::RecipeOutput,
+        subcomponent_records: &[crate::config::RecipeSubcomponentRecord],
+    ) {
+        if subcomponent_records.is_empty() {
+            return;
+        }
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        if let Some(output_stack) = stacks.iter().rev().find(|s| {
+            s.kind == output.item_kind
+                && s.material == output.material
+                && s.quality == output.quality
+                && s.owner.is_none()
+                && s.reserved_by.is_none()
+        }) {
+            let stack_id = output_stack.id;
+            for sub in subcomponent_records {
+                let _ = self.db.item_subcomponents.insert_auto_no_fk(|id| {
+                    crate::db::ItemSubcomponent {
+                        id,
+                        item_stack_id: stack_id,
+                        component_kind: sub.input_kind,
+                        material: None,
+                        quality: 0,
+                        quantity_per_item: sub.quantity_per_item,
+                    }
+                });
+            }
+        }
     }
 
     /// Clean up a Craft task on node invalidation: release reserved inputs in
@@ -3754,36 +3845,37 @@ impl SimState {
         }
     }
 
-    /// Scan workshops and create Craft tasks when conditions are met.
-    /// Called at the end of each logistics heartbeat after the kitchen monitor.
-    fn process_workshop_monitor(&mut self) {
-        let workshop_ids: Vec<StructureId> = self
+    /// Unified crafting monitor: scan all buildings with `crafting_enabled` and
+    /// at least one `ActiveRecipe`, then create Craft tasks for the highest-
+    /// priority recipe that has unmet targets and available inputs.
+    ///
+    /// All crafting buildings (kitchens, workshops, etc.) use this unified system.
+    fn process_unified_crafting_monitor(&mut self) {
+        // Collect structure IDs with crafting_enabled.
+        let crafting_sids: Vec<StructureId> = self
             .db
             .structures
             .iter_all()
-            .filter_map(|s| {
-                if s.furnishing == Some(FurnishingType::Workshop) && s.workshop_enabled {
-                    Some(s.id)
-                } else {
-                    None
-                }
-            })
+            .filter(|s| s.crafting_enabled && s.furnishing.is_some())
+            .map(|s| s.id)
             .collect();
 
-        for sid in workshop_ids {
+        for sid in crafting_sids {
             let structure = match self.db.structures.get(&sid) {
                 Some(s) => s,
                 None => continue,
             };
+            let inv_id = structure.inventory_id;
 
-            // Skip if there's already an active (non-Complete) Craft task for this workshop.
+            // Skip if there's already an active (non-Complete) Craft task for this building.
             let has_active_craft = self
                 .db
                 .task_structure_refs
                 .by_structure_id(&sid, tabulosity::QueryOpts::ASC)
                 .iter()
                 .any(|r| {
-                    r.role == crate::db::TaskStructureRole::CraftAt
+                    (r.role == crate::db::TaskStructureRole::CraftAt
+                        || r.role == crate::db::TaskStructureRole::CookAt)
                         && self
                             .db
                             .tasks
@@ -3794,70 +3886,83 @@ impl SimState {
                 continue;
             }
 
-            let recipe_ids = structure.workshop_recipe_ids.clone();
-            let recipe_targets = structure.workshop_recipe_targets.clone();
-            let inv_id = structure.inventory_id;
+            // Get active recipes in priority order (sort_order ascending).
+            let active_recipes = self.db.active_recipes.by_structure_sort(
+                &sid,
+                tabulosity::MatchAll,
+                tabulosity::QueryOpts::ASC,
+            );
 
-            // Find first recipe whose inputs are all available (unreserved) and
-            // whose output target has not been reached.
-            let mut chosen_recipe: Option<crate::config::Recipe> = None;
-            for rid in &recipe_ids {
-                if let Some(recipe) = self.config.recipes.iter().find(|r| &r.id == rid) {
-                    // Check per-recipe output target. 0 or missing = don't craft.
-                    let target = recipe_targets.get(rid).copied().unwrap_or(0);
-                    if target == 0 {
-                        continue;
-                    }
-                    let output_count: u32 = recipe
-                        .outputs
-                        .iter()
-                        .map(|o| {
-                            self.inv_item_count(inv_id, o.item_kind, inventory::MaterialFilter::Any)
-                        })
-                        .sum();
-                    if output_count >= target {
-                        continue;
-                    }
+            // Find first recipe with unmet targets and available inputs.
+            let mut chosen: Option<(
+                ActiveRecipeId,
+                crate::recipe::RecipeKey,
+                crate::recipe::RecipeDef,
+            )> = None;
+            for ar in &active_recipes {
+                if !ar.enabled {
+                    continue;
+                }
 
-                    let all_available = recipe.inputs.iter().all(|input| {
-                        self.inv_unreserved_item_count(
-                            inv_id,
-                            input.item_kind,
-                            inventory::MaterialFilter::Any,
-                        ) >= input.quantity
-                    });
-                    if all_available {
-                        chosen_recipe = Some(recipe.clone());
-                        break;
-                    }
+                let Some(recipe_key) = crate::recipe::RecipeKey::from_json(&ar.recipe_key_json)
+                else {
+                    continue;
+                };
+                let Some(recipe_def) = self.recipe_catalog.get(&recipe_key) else {
+                    continue;
+                };
+
+                // Compute runs_needed from per-output targets.
+                let targets = self
+                    .db
+                    .active_recipe_targets
+                    .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC);
+
+                let runs_needed = self.compute_runs_needed(recipe_def, &targets, inv_id);
+                if runs_needed == 0 {
+                    continue;
+                }
+
+                // Check if all inputs are available (unreserved).
+                let all_available = recipe_def.inputs.iter().all(|input| {
+                    self.inv_unreserved_item_count(inv_id, input.item_kind, input.material_filter)
+                        >= input.quantity
+                });
+                if all_available {
+                    chosen = Some((ar.id, recipe_key, recipe_def.clone()));
+                    break;
                 }
             }
 
-            let recipe = match chosen_recipe {
-                Some(r) => r,
+            let (ar_id, recipe_key, recipe_def) = match chosen {
+                Some(c) => c,
                 None => continue,
             };
 
-            // Find nav node inside the workshop.
+            // Find nav node inside the building.
             let interior_pos = self.db.structures.get(&sid).unwrap().anchor;
             let location = match self.nav_graph.find_nearest_node(interior_pos) {
                 Some(n) => n,
                 None => continue,
             };
 
-            // Reserve all inputs (recipes are material-unaware, use Any filter).
+            // Reserve all inputs.
             let task_id = TaskId::new(&mut self.rng);
-            for input in &recipe.inputs {
+            for input in &recipe_def.inputs {
                 self.inv_reserve_items(
                     inv_id,
                     input.item_kind,
-                    inventory::MaterialFilter::Any,
+                    input.material_filter,
                     input.quantity,
                     task_id,
                 );
             }
 
-            let recipe_id = recipe.id.clone();
+            // Create a Craft task. We reuse the existing Craft TaskKind,
+            // storing the recipe's old-style ID for backward compatibility
+            // with resolve_craft_action. We also look up the old recipe ID
+            // from the catalog for the task kind.
+            let recipe_id = self.recipe_key_to_legacy_id(&recipe_key);
             let new_task = task::Task {
                 id: task_id,
                 kind: task::TaskKind::Craft {
@@ -3867,86 +3972,405 @@ impl SimState {
                 state: task::TaskState::Available,
                 location,
                 progress: 0.0,
-                total_cost: 1.0, // Single action per craft recipe.
-                required_species: Some(Species::Elf),
+                total_cost: 1.0,
+                required_species: recipe_def.required_species,
                 origin: task::TaskOrigin::Automated,
                 target_creature: None,
             };
             self.insert_task(new_task);
+
+            // Update the TaskCraftData to record the active_recipe_id.
+            if let Some(tcd) = self.task_craft_data(task_id) {
+                let _ = self.db.task_craft_data.modify_unchecked(&tcd.id, |d| {
+                    d.active_recipe_id = Some(ar_id);
+                });
+            }
         }
     }
 
-    /// Set workshop configuration: enabled state and active recipe configs.
-    /// Rejects invalid recipe IDs and non-Workshop structures.
-    fn set_workshop_config(
-        &mut self,
+    /// Compute how many runs of a recipe are needed to satisfy all output targets.
+    /// Returns 0 if all targets are met or all targets are zero.
+    fn compute_runs_needed(
+        &self,
+        recipe_def: &crate::recipe::RecipeDef,
+        targets: &[crate::db::ActiveRecipeTarget],
+        inv_id: InventoryId,
+    ) -> u32 {
+        let mut runs_needed: u32 = 0;
+        for target in targets {
+            if target.target_quantity == 0 {
+                continue;
+            }
+            let filter = match target.output_material {
+                None => inventory::MaterialFilter::Any,
+                Some(m) => inventory::MaterialFilter::Specific(m),
+            };
+            let stock = self.inv_unreserved_item_count(inv_id, target.output_item_kind, filter);
+            let shortfall = target.target_quantity.saturating_sub(stock);
+            if shortfall == 0 {
+                continue;
+            }
+            // Find the output quantity for this item in the recipe's outputs.
+            // Use 1 as a fallback to avoid division by zero.
+            let output_qty = recipe_def
+                .outputs
+                .iter()
+                .find(|o| {
+                    o.item_kind == target.output_item_kind && o.material == target.output_material
+                })
+                .map(|o| o.quantity.max(1))
+                .unwrap_or(1);
+            let runs_for_output = shortfall.div_ceil(output_qty);
+            runs_needed = runs_needed.max(runs_for_output);
+        }
+        runs_needed
+    }
+
+    /// Compute the effective logistics wants for a building, merging explicit
+    /// `LogisticsWantRow` entries with auto-logistics wants from active recipes.
+    ///
+    /// Auto-logistics wants are only generated for `ActiveRecipe` rows with
+    /// `auto_logistics = true` and `enabled = true` on buildings with
+    /// `crafting_enabled = true`. The auto-want for each input is
+    /// `input.quantity * (runs_needed + spare_iterations)`, summed across all
+    /// qualifying recipes. The final want per `(ItemKind, MaterialFilter)` is
+    /// the **sum** of explicit wants and auto-wants (not max).
+    fn compute_effective_wants(
+        &self,
         structure_id: StructureId,
-        workshop_enabled: bool,
-        recipe_configs: Vec<crate::command::WorkshopRecipeEntry>,
-    ) {
+    ) -> Vec<crate::building::LogisticsWant> {
+        let structure = match self.db.structures.get(&structure_id) {
+            Some(s) => s,
+            None => return vec![],
+        };
+        let inv_id = structure.inventory_id;
+
+        // Start with explicit wants from the DB.
+        let mut merged: std::collections::BTreeMap<
+            (inventory::ItemKind, inventory::MaterialFilter),
+            u32,
+        > = std::collections::BTreeMap::new();
+        for row in self.inv_wants(inv_id) {
+            let entry = merged
+                .entry((row.item_kind, row.material_filter))
+                .or_insert(0);
+            *entry += row.target_quantity;
+        }
+
+        // Add auto-logistics from active recipes if crafting is enabled.
+        if structure.crafting_enabled {
+            let active_recipes = self.db.active_recipes.by_structure_sort(
+                &structure_id,
+                tabulosity::MatchAll,
+                tabulosity::QueryOpts::ASC,
+            );
+            for ar in &active_recipes {
+                if !ar.enabled || !ar.auto_logistics {
+                    continue;
+                }
+
+                let Some(recipe_key) = crate::recipe::RecipeKey::from_json(&ar.recipe_key_json)
+                else {
+                    continue;
+                };
+                let Some(recipe_def) = self.recipe_catalog.get(&recipe_key) else {
+                    continue;
+                };
+
+                let targets = self
+                    .db
+                    .active_recipe_targets
+                    .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC);
+                let runs_needed = self.compute_runs_needed(recipe_def, &targets, inv_id);
+
+                let total_runs = runs_needed + ar.spare_iterations;
+                if total_runs == 0 {
+                    continue;
+                }
+
+                for input in &recipe_def.inputs {
+                    let auto_qty = input.quantity * total_runs;
+                    let entry = merged
+                        .entry((input.item_kind, input.material_filter))
+                        .or_insert(0);
+                    *entry += auto_qty;
+                }
+            }
+        }
+
+        merged
+            .into_iter()
+            .map(
+                |((item_kind, material_filter), target_quantity)| crate::building::LogisticsWant {
+                    item_kind,
+                    material_filter,
+                    target_quantity,
+                },
+            )
+            .collect()
+    }
+
+    /// Map a RecipeKey back to a legacy recipe ID string for backward
+    /// compatibility with TaskKind::Craft { recipe_id }.
+    fn recipe_key_to_legacy_id(&self, key: &crate::recipe::RecipeKey) -> String {
+        // Check bread recipe first.
+        let bread_key = {
+            let def = self
+                .recipe_catalog
+                .iter()
+                .find(|(_, d)| d.display_name == "Bread")
+                .map(|(_, d)| d);
+            def.map(|d| d.key.clone())
+        };
+        if bread_key.as_ref() == Some(key) {
+            return "bread".to_string();
+        }
+        // Check config recipes.
+        for recipe in &self.config.recipes {
+            let def_key = crate::recipe::convert_config_recipe_key(recipe);
+            if def_key == *key {
+                return recipe.id.clone();
+            }
+        }
+        // Fallback: serialize the key.
+        key.to_json()
+    }
+
+    // -----------------------------------------------------------------------
+    // Unified crafting command handlers
+    // -----------------------------------------------------------------------
+
+    /// Set the unified crafting toggle for a building. Validates the structure
+    /// exists and has a furnishing type. No-op for unfurnished structures.
+    fn set_crafting_enabled(&mut self, structure_id: StructureId, enabled: bool) {
         if self
             .db
             .structures
             .get(&structure_id)
-            .is_none_or(|s| s.furnishing != Some(FurnishingType::Workshop))
+            .is_none_or(|s| s.furnishing.is_none())
         {
             return;
         }
-
-        // Filter to valid recipe IDs only, preserving targets.
-        let valid_configs: Vec<crate::command::WorkshopRecipeEntry> = recipe_configs
-            .into_iter()
-            .filter(|rc| self.config.recipes.iter().any(|r| r.id == rc.recipe_id))
-            .collect();
-
-        let enabled = workshop_enabled;
-        let ids: Vec<String> = valid_configs
-            .iter()
-            .map(|rc| rc.recipe_id.clone())
-            .collect();
-        let targets: std::collections::BTreeMap<String, u32> = valid_configs
-            .iter()
-            .map(|rc| (rc.recipe_id.clone(), rc.target))
-            .collect();
-        let ids_clone = ids.clone();
         let _ = self.db.structures.modify_unchecked(&structure_id, |s| {
-            s.workshop_enabled = enabled;
-            s.workshop_recipe_ids = ids_clone;
-            s.workshop_recipe_targets = targets;
+            s.crafting_enabled = enabled;
         });
-
-        // Recompute logistics wants from configured recipes' inputs.
-        let inv_id = self.structure_inv(structure_id);
-        let wants = self.compute_recipe_wants(&ids);
-        self.set_inv_wants(inv_id, &wants);
     }
 
-    /// Compute logistics wants from a set of recipe IDs. Each input item kind
-    /// gets a want with quantity equal to the max needed by any single recipe.
-    /// Deduplicates on `(item_kind, material_filter)` pairs. All recipe wants
-    /// currently use `MaterialFilter::Any`.
-    fn compute_recipe_wants(&self, recipe_ids: &[String]) -> Vec<crate::building::LogisticsWant> {
-        let mut wants: Vec<crate::building::LogisticsWant> = Vec::new();
-        for rid in recipe_ids {
-            if let Some(recipe) = self.config.recipes.iter().find(|r| r.id == *rid) {
-                for input in &recipe.inputs {
-                    let filter = inventory::MaterialFilter::Any;
-                    if let Some(w) = wants
-                        .iter_mut()
-                        .find(|w| w.item_kind == input.item_kind && w.material_filter == filter)
-                    {
-                        w.target_quantity = w.target_quantity.max(input.quantity);
-                    } else {
-                        wants.push(crate::building::LogisticsWant {
-                            item_kind: input.item_kind,
-                            material_filter: filter,
-                            target_quantity: input.quantity,
-                        });
-                    }
-                }
+    /// Add a recipe to a building's active recipe list. Validates recipe exists
+    /// in catalog, building's FurnishingType matches, and recipe isn't already
+    /// active on this structure.
+    fn add_active_recipe(
+        &mut self,
+        structure_id: StructureId,
+        recipe_key: crate::recipe::RecipeKey,
+    ) {
+        let Some(structure) = self.db.structures.get(&structure_id) else {
+            return;
+        };
+        let Some(ft) = structure.furnishing else {
+            return;
+        };
+        let Some(recipe_def) = self.recipe_catalog.get(&recipe_key) else {
+            return;
+        };
+        if !recipe_def.furnishing_types.contains(&ft) {
+            return;
+        }
+
+        // Check for duplicate: same recipe_key already active on this structure.
+        let key_json = recipe_key.to_json();
+        let existing = self
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+        if existing.iter().any(|ar| ar.recipe_key_json == key_json) {
+            return;
+        }
+
+        // Compute next sort_order (globally unique).
+        let max_sort = self
+            .db
+            .active_recipes
+            .iter_all()
+            .map(|ar| ar.sort_order)
+            .max()
+            .unwrap_or(0);
+        let sort_order = max_sort + 1;
+
+        let display_name = recipe_def.display_name.clone();
+        let outputs: Vec<_> = recipe_def
+            .outputs
+            .iter()
+            .map(|o| (o.item_kind, o.material))
+            .collect();
+
+        // Insert the active recipe.
+        let ar_id = self
+            .db
+            .insert_active_recipe_auto(|id| crate::db::ActiveRecipe {
+                id,
+                structure_id,
+                recipe_key_json: key_json,
+                recipe_display_name: display_name,
+                enabled: true,
+                sort_order,
+                auto_logistics: true,
+                spare_iterations: 0,
+            })
+            .expect("ActiveRecipe insert should not violate FK");
+
+        // Create one target row per recipe output, all at 0.
+        for (item_kind, material) in outputs {
+            let _ = self
+                .db
+                .insert_active_recipe_target_auto(|id| crate::db::ActiveRecipeTarget {
+                    id,
+                    active_recipe_id: ar_id,
+                    output_item_kind: item_kind,
+                    output_material: material,
+                    target_quantity: 0,
+                });
+        }
+    }
+
+    /// Remove an active recipe. Interrupts any in-progress craft task for it.
+    fn remove_active_recipe(&mut self, active_recipe_id: ActiveRecipeId) {
+        let Some(ar) = self.db.active_recipes.get(&active_recipe_id) else {
+            return;
+        };
+
+        // Find and interrupt any in-progress craft task referencing this recipe.
+        for tcd in self
+            .db
+            .task_craft_data
+            .iter_all()
+            .filter(|tcd| tcd.active_recipe_id == Some(active_recipe_id))
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            // Find the creature assigned to this task.
+            let cid = self
+                .db
+                .creatures
+                .iter_all()
+                .find(|c| c.current_task == Some(tcd.task_id))
+                .map(|c| c.id);
+            if let Some(cid) = cid {
+                self.interrupt_task(cid, tcd.task_id);
             }
         }
-        wants
+
+        // Cascade-delete removes ActiveRecipeTarget rows too.
+        let _ = self.db.remove_active_recipe(&ar.id);
+    }
+
+    /// Set the target quantity for a specific recipe output.
+    fn set_recipe_output_target(&mut self, target_id: ActiveRecipeTargetId, target_quantity: u32) {
+        if self.db.active_recipe_targets.get(&target_id).is_none() {
+            return;
+        }
+        let _ = self
+            .db
+            .active_recipe_targets
+            .modify_unchecked(&target_id, |t| {
+                t.target_quantity = target_quantity;
+            });
+    }
+
+    /// Configure auto-logistics for an active recipe.
+    fn set_recipe_auto_logistics(
+        &mut self,
+        active_recipe_id: ActiveRecipeId,
+        auto_logistics: bool,
+        spare_iterations: u32,
+    ) {
+        if self.db.active_recipes.get(&active_recipe_id).is_none() {
+            return;
+        }
+        let _ = self
+            .db
+            .active_recipes
+            .modify_unchecked(&active_recipe_id, |ar| {
+                ar.auto_logistics = auto_logistics;
+                ar.spare_iterations = spare_iterations;
+            });
+    }
+
+    /// Toggle an individual active recipe.
+    fn set_recipe_enabled(&mut self, active_recipe_id: ActiveRecipeId, enabled: bool) {
+        if self.db.active_recipes.get(&active_recipe_id).is_none() {
+            return;
+        }
+        let _ = self
+            .db
+            .active_recipes
+            .modify_unchecked(&active_recipe_id, |ar| {
+                ar.enabled = enabled;
+            });
+    }
+
+    /// Move an active recipe up in priority (swap sort_order with the recipe
+    /// above it within the same structure).
+    fn move_active_recipe_up(&mut self, active_recipe_id: ActiveRecipeId) {
+        let Some(ar) = self.db.active_recipes.get(&active_recipe_id) else {
+            return;
+        };
+        // Find the recipe with the next-lower sort_order in the same structure.
+        let siblings = self.db.active_recipes.by_structure_sort(
+            &ar.structure_id,
+            tabulosity::MatchAll,
+            tabulosity::QueryOpts::ASC,
+        );
+        let mut prev: Option<ActiveRecipeId> = None;
+        for sib in &siblings {
+            if sib.id == active_recipe_id {
+                break;
+            }
+            prev = Some(sib.id);
+        }
+        if let Some(prev_id) = prev {
+            self.swap_active_recipe_sort_order(active_recipe_id, prev_id);
+        }
+    }
+
+    /// Move an active recipe down in priority (swap sort_order with the recipe
+    /// below it within the same structure).
+    fn move_active_recipe_down(&mut self, active_recipe_id: ActiveRecipeId) {
+        let Some(ar) = self.db.active_recipes.get(&active_recipe_id) else {
+            return;
+        };
+        let siblings = self.db.active_recipes.by_structure_sort(
+            &ar.structure_id,
+            tabulosity::MatchAll,
+            tabulosity::QueryOpts::ASC,
+        );
+        let mut found = false;
+        let mut next: Option<ActiveRecipeId> = None;
+        for sib in &siblings {
+            if found {
+                next = Some(sib.id);
+                break;
+            }
+            if sib.id == active_recipe_id {
+                found = true;
+            }
+        }
+        if let Some(next_id) = next {
+            self.swap_active_recipe_sort_order(active_recipe_id, next_id);
+        }
+    }
+
+    /// Swap sort_order values between two active recipes. Removes and
+    /// re-inserts both to avoid unique-index collision on the intermediate state.
+    fn swap_active_recipe_sort_order(&mut self, id_a: ActiveRecipeId, id_b: ActiveRecipeId) {
+        let mut row_a = self.db.active_recipes.get(&id_a).unwrap().clone();
+        let mut row_b = self.db.active_recipes.get(&id_b).unwrap().clone();
+        std::mem::swap(&mut row_a.sort_order, &mut row_b.sort_order);
+        // Remove both to clear the unique index entries, then re-insert.
+        let _ = self.db.active_recipes.remove_no_fk(&id_a);
+        let _ = self.db.active_recipes.remove_no_fk(&id_b);
+        let _ = self.db.active_recipes.insert_no_fk(row_a);
+        let _ = self.db.active_recipes.insert_no_fk(row_b);
     }
 
     /// Get the TaskCraftData for a task, if it exists.
@@ -4871,21 +5295,31 @@ impl SimState {
     /// harvest a specific species (determined by the voxel).
     fn process_harvest_tasks(&mut self) {
         // 1. Sum total fruit demand across logistics-enabled buildings.
+        // Uses compute_effective_wants which includes auto-logistics from
+        // active recipes, not just explicit LogisticsWantRow entries.
+        let logistics_sids: Vec<(StructureId, InventoryId)> = self
+            .db
+            .structures
+            .iter_all()
+            .filter(|s| s.logistics_priority.is_some())
+            .map(|s| (s.id, s.inventory_id))
+            .collect();
         let mut total_demand: u32 = 0;
-        for structure in self.db.structures.iter_all() {
-            if structure.logistics_priority.is_none() {
-                continue;
-            }
-            let fruit_target =
-                self.inv_want_target_total(structure.inventory_id, inventory::ItemKind::Fruit);
+        for (sid, inv_id) in &logistics_sids {
+            let wants = self.compute_effective_wants(*sid);
+            let fruit_target: u32 = wants
+                .iter()
+                .filter(|w| w.item_kind == inventory::ItemKind::Fruit)
+                .map(|w| w.target_quantity)
+                .sum();
             if fruit_target > 0 {
                 let current = self.inv_item_count(
-                    structure.inventory_id,
+                    *inv_id,
                     inventory::ItemKind::Fruit,
                     inventory::MaterialFilter::Any,
                 );
                 let in_transit = self.count_in_transit_items(
-                    structure.id,
+                    *sid,
                     inventory::ItemKind::Fruit,
                     inventory::MaterialFilter::Any,
                 );
@@ -5008,11 +5442,11 @@ impl SimState {
                 break;
             }
 
-            let inv_id = match self.db.structures.get(building_id) {
-                Some(s) => s.inventory_id,
-                None => continue,
-            };
-            let wants = self.inv_wants(inv_id);
+            if self.db.structures.get(building_id).is_none() {
+                continue;
+            }
+            // Merge explicit logistics wants with auto-logistics from active recipes.
+            let wants = self.compute_effective_wants(*building_id);
 
             for want in &wants {
                 if tasks_created >= max_tasks {
@@ -5097,104 +5531,8 @@ impl SimState {
             }
         }
 
-        self.process_kitchen_monitor();
-        self.process_workshop_monitor();
+        self.process_unified_crafting_monitor();
         self.process_greenhouse_monitor();
-    }
-
-    /// Scan kitchens and create Cook tasks when conditions are met.
-    /// Called at the end of each logistics heartbeat.
-    fn process_kitchen_monitor(&mut self) {
-        // Collect kitchen IDs to avoid borrowing self during iteration.
-        let kitchen_ids: Vec<StructureId> = self
-            .db
-            .structures
-            .iter_all()
-            .filter_map(|s| {
-                if s.furnishing == Some(FurnishingType::Kitchen) && s.cooking_enabled {
-                    Some(s.id)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let cook_fruit_input = self.config.cook_fruit_input;
-
-        for sid in kitchen_ids {
-            let structure = match self.db.structures.get(&sid) {
-                Some(s) => s,
-                None => continue,
-            };
-
-            // Skip if bread target reached.
-            let bread_count = self.inv_unreserved_item_count(
-                structure.inventory_id,
-                inventory::ItemKind::Bread,
-                inventory::MaterialFilter::Any,
-            );
-            if bread_count >= structure.cooking_bread_target {
-                continue;
-            }
-
-            // Skip if not enough unreserved fruit.
-            let fruit_count = self.inv_unreserved_item_count(
-                structure.inventory_id,
-                inventory::ItemKind::Fruit,
-                inventory::MaterialFilter::Any,
-            );
-            if fruit_count < cook_fruit_input {
-                continue;
-            }
-
-            // Skip if there's already an active (non-Complete) Cook task for this kitchen.
-            let has_active_cook = self
-                .db
-                .task_structure_refs
-                .by_structure_id(&sid, tabulosity::QueryOpts::ASC)
-                .iter()
-                .any(|r| {
-                    r.role == crate::db::TaskStructureRole::CookAt
-                        && self
-                            .db
-                            .tasks
-                            .get(&r.task_id)
-                            .is_some_and(|t| t.state != task::TaskState::Complete)
-                });
-            if has_active_cook {
-                continue;
-            }
-
-            // Find nav node inside the kitchen.
-            let interior_pos = self.db.structures.get(&sid).unwrap().anchor;
-            let location = match self.nav_graph.find_nearest_node(interior_pos) {
-                Some(n) => n,
-                None => continue,
-            };
-
-            // Create Cook task with reserved fruit (any species).
-            let task_id = TaskId::new(&mut self.rng);
-            self.inv_reserve_items(
-                self.structure_inv(sid),
-                inventory::ItemKind::Fruit,
-                inventory::MaterialFilter::Any,
-                cook_fruit_input,
-                task_id,
-            );
-
-            let new_task = task::Task {
-                id: task_id,
-                kind: task::TaskKind::Cook { structure_id: sid },
-                state: task::TaskState::Available,
-                location,
-                progress: 0.0,
-                total_cost: 1.0, // Single action per cook batch.
-                required_species: Some(Species::Elf),
-                origin: task::TaskOrigin::Automated,
-                target_creature: None,
-            };
-            self.insert_task(new_task);
-        }
     }
 
     /// Count items of the given kind that are in-transit to the given building
@@ -7808,6 +8146,7 @@ impl SimState {
                         id,
                         task_id,
                         recipe_id: rid,
+                        active_recipe_id: None,
                     });
             }
             task::TaskKind::AttackTarget { target } => {
@@ -8855,22 +9194,15 @@ impl SimState {
             }
             FurnishingType::Kitchen => {
                 structure.logistics_priority = Some(self.config.kitchen_default_priority);
-                structure.cooking_enabled = true;
-                structure.cooking_bread_target = self.config.kitchen_default_bread_target;
-                vec![building::LogisticsWant {
-                    item_kind: inventory::ItemKind::Fruit,
-                    material_filter: inventory::MaterialFilter::Any,
-                    target_quantity: self.config.kitchen_default_fruit_want,
-                }]
+                structure.crafting_enabled = true;
+                // No explicit wants — auto-logistics handles fruit input.
+                Vec::new()
             }
             FurnishingType::Workshop => {
-                structure.workshop_enabled = true;
-                let all_recipe_ids: Vec<String> =
-                    self.config.recipes.iter().map(|r| r.id.clone()).collect();
-                structure.workshop_recipe_ids = all_recipe_ids.clone();
                 structure.logistics_priority = Some(self.config.workshop_default_priority);
-
-                self.compute_recipe_wants(&all_recipe_ids)
+                structure.crafting_enabled = true;
+                // No explicit wants — auto-logistics handles recipe inputs.
+                Vec::new()
             }
             FurnishingType::Greenhouse => {
                 structure.greenhouse_species = greenhouse_species;
@@ -8886,6 +9218,10 @@ impl SimState {
         let task_pos = interior_pos.first().copied().unwrap_or(structure.anchor);
         let _ = self.db.structures.update_no_fk(structure);
         self.set_inv_wants(inv_id, &default_wants);
+
+        // Add default ActiveRecipe entries for crafting buildings.
+        self.add_default_active_recipes(structure_id, furnishing_type);
+
         let location = match self.nav_graph.find_nearest_node(task_pos) {
             Some(n) => n,
             None => return,
@@ -8906,6 +9242,51 @@ impl SimState {
             target_creature: None,
         };
         self.insert_task(new_task);
+    }
+
+    /// Add default `ActiveRecipe` entries when a building is furnished.
+    /// For kitchens: adds the bread recipe with the default bread target.
+    /// For workshops: adds all workshop recipes with zero targets (user must set).
+    fn add_default_active_recipes(
+        &mut self,
+        structure_id: StructureId,
+        furnishing_type: FurnishingType,
+    ) {
+        let recipes_to_add: Vec<crate::recipe::RecipeKey> = self
+            .recipe_catalog
+            .recipes_for_furnishing(furnishing_type)
+            .iter()
+            .map(|r| r.key.clone())
+            .collect();
+
+        for key in &recipes_to_add {
+            self.add_active_recipe(structure_id, key.clone());
+        }
+
+        // Set default output targets for kitchen (bread).
+        if furnishing_type == FurnishingType::Kitchen {
+            let bread_target = self.config.kitchen_default_bread_target;
+            let active_recipes = self
+                .db
+                .active_recipes
+                .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+            for ar in &active_recipes {
+                let targets = self
+                    .db
+                    .active_recipe_targets
+                    .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC);
+                for target in &targets {
+                    if target.output_item_kind == inventory::ItemKind::Bread {
+                        let _ = self
+                            .db
+                            .active_recipe_targets
+                            .modify_unchecked(&target.id, |t| {
+                                t.target_quantity = bread_target;
+                            });
+                    }
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -9386,6 +9767,7 @@ impl SimState {
         self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
         self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
+        self.recipe_catalog = crate::recipe::build_catalog(&self.config);
         self.lexicon = Some(elven_canopy_lang::default_lexicon());
 
         // Rebuild spatial_index from all living creatures. Must run after
@@ -9601,7 +9983,6 @@ impl SimState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::WorkshopRecipeEntry;
     use crate::db::{CompletedStructure, TaskKindTag};
     use crate::task::{Task, TaskKind, TaskOrigin, TaskState};
     use std::sync::LazyLock;
@@ -11623,11 +12004,7 @@ mod tests {
                 furnishing: Some(FurnishingType::Dormitory),
                 inventory_id: inv_id,
                 logistics_priority: None,
-                cooking_enabled: false,
-                cooking_bread_target: 0,
-                workshop_enabled: false,
-                workshop_recipe_ids: Vec::new(),
-                workshop_recipe_targets: std::collections::BTreeMap::new(),
+                crafting_enabled: false,
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -11750,11 +12127,7 @@ mod tests {
                 furnishing: Some(FurnishingType::Dormitory),
                 inventory_id: inv_id,
                 logistics_priority: None,
-                cooking_enabled: false,
-                cooking_bread_target: 0,
-                workshop_enabled: false,
-                workshop_recipe_ids: Vec::new(),
-                workshop_recipe_targets: std::collections::BTreeMap::new(),
+                crafting_enabled: false,
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -16268,11 +16641,7 @@ mod tests {
             furnishing: None,
             inventory_id: sim.create_inventory(crate::db::InventoryOwnerKind::Structure),
             logistics_priority: None,
-            cooking_enabled: false,
-            cooking_bread_target: 0,
-            workshop_enabled: false,
-            workshop_recipe_ids: Vec::new(),
-            workshop_recipe_targets: std::collections::BTreeMap::new(),
+            crafting_enabled: false,
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -16318,11 +16687,7 @@ mod tests {
             furnishing: None,
             inventory_id: InventoryId(0),
             logistics_priority: None,
-            cooking_enabled: false,
-            cooking_bread_target: 0,
-            workshop_enabled: false,
-            workshop_recipe_ids: Vec::new(),
-            workshop_recipe_targets: std::collections::BTreeMap::new(),
+            crafting_enabled: false,
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -16358,11 +16723,7 @@ mod tests {
             furnishing: None,
             inventory_id: InventoryId(0),
             logistics_priority: None,
-            cooking_enabled: false,
-            cooking_bread_target: 0,
-            workshop_enabled: false,
-            workshop_recipe_ids: Vec::new(),
-            workshop_recipe_targets: std::collections::BTreeMap::new(),
+            crafting_enabled: false,
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -16424,11 +16785,7 @@ mod tests {
             furnishing: Some(FurnishingType::Dormitory),
             inventory_id: InventoryId(0),
             logistics_priority: None,
-            cooking_enabled: false,
-            cooking_bread_target: 0,
-            workshop_enabled: false,
-            workshop_recipe_ids: Vec::new(),
-            workshop_recipe_targets: std::collections::BTreeMap::new(),
+            crafting_enabled: false,
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -16453,11 +16810,7 @@ mod tests {
             furnishing: Some(FurnishingType::Dormitory),
             inventory_id: InventoryId(0),
             logistics_priority: None,
-            cooking_enabled: false,
-            cooking_bread_target: 0,
-            workshop_enabled: false,
-            workshop_recipe_ids: Vec::new(),
-            workshop_recipe_targets: std::collections::BTreeMap::new(),
+            crafting_enabled: false,
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -16614,11 +16967,7 @@ mod tests {
             furnishing: None,
             inventory_id: sim.create_inventory(crate::db::InventoryOwnerKind::Structure),
             logistics_priority: None,
-            cooking_enabled: false,
-            cooking_bread_target: 0,
-            workshop_enabled: false,
-            workshop_recipe_ids: Vec::new(),
-            workshop_recipe_targets: std::collections::BTreeMap::new(),
+            crafting_enabled: false,
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -16895,11 +17244,7 @@ mod tests {
             furnishing: None,
             inventory_id: InventoryId(0),
             logistics_priority: None,
-            cooking_enabled: false,
-            cooking_bread_target: 0,
-            workshop_enabled: false,
-            workshop_recipe_ids: Vec::new(),
-            workshop_recipe_targets: std::collections::BTreeMap::new(),
+            crafting_enabled: false,
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -16928,11 +17273,7 @@ mod tests {
             furnishing: None,
             inventory_id: InventoryId(0),
             logistics_priority: None,
-            cooking_enabled: false,
-            cooking_bread_target: 0,
-            workshop_enabled: false,
-            workshop_recipe_ids: Vec::new(),
-            workshop_recipe_targets: std::collections::BTreeMap::new(),
+            crafting_enabled: false,
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
@@ -16979,11 +17320,7 @@ mod tests {
                 furnishing: Some(furnishing_type),
                 inventory_id: InventoryId(0),
                 logistics_priority: None,
-                cooking_enabled: false,
-                cooking_bread_target: 0,
-                workshop_enabled: false,
-                workshop_recipe_ids: Vec::new(),
-                workshop_recipe_targets: std::collections::BTreeMap::new(),
+                crafting_enabled: false,
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -18343,11 +18680,7 @@ mod tests {
                 furnishing: Some(FurnishingType::Dormitory),
                 inventory_id: inv_id,
                 logistics_priority: None,
-                cooking_enabled: false,
-                cooking_bread_target: 0,
-                workshop_enabled: false,
-                workshop_recipe_ids: Vec::new(),
-                workshop_recipe_targets: std::collections::BTreeMap::new(),
+                crafting_enabled: false,
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -18500,11 +18833,7 @@ mod tests {
                 furnishing: Some(FurnishingType::Home),
                 inventory_id: inv_id,
                 logistics_priority: None,
-                cooking_enabled: false,
-                cooking_bread_target: 0,
-                workshop_enabled: false,
-                workshop_recipe_ids: Vec::new(),
-                workshop_recipe_targets: std::collections::BTreeMap::new(),
+                crafting_enabled: false,
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -18624,11 +18953,7 @@ mod tests {
                 furnishing: Some(FurnishingType::Dormitory),
                 inventory_id: inv_id,
                 logistics_priority: None,
-                cooking_enabled: false,
-                cooking_bread_target: 0,
-                workshop_enabled: false,
-                workshop_recipe_ids: Vec::new(),
-                workshop_recipe_targets: std::collections::BTreeMap::new(),
+                crafting_enabled: false,
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -18881,11 +19206,7 @@ mod tests {
                 furnishing: Some(FurnishingType::Storehouse),
                 inventory_id: inv_id,
                 logistics_priority,
-                cooking_enabled: false,
-                cooking_bread_target: 0,
-                workshop_enabled: false,
-                workshop_recipe_ids: Vec::new(),
-                workshop_recipe_targets: std::collections::BTreeMap::new(),
+                crafting_enabled: false,
                 greenhouse_species: None,
                 greenhouse_enabled: false,
                 greenhouse_last_production_tick: 0,
@@ -19318,20 +19639,24 @@ mod tests {
     #[test]
     fn kitchen_monitor_creates_cook_task() {
         let mut sim = test_sim(42);
+        let sid = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
 
-        let tree_pos = sim.trees[&sim.player_tree_id].position;
-
-        // Insert a kitchen with 1 fruit, cooking enabled, bread target 50.
-        let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
-        let sid = insert_completed_building(&mut sim, anchor);
-        {
-            let mut s = sim.db.structures.get(&sid).unwrap();
-            s.furnishing = Some(FurnishingType::Kitchen);
-            s.cooking_enabled = true;
-            s.cooking_bread_target = 50;
-            s.logistics_priority = Some(8);
-            let _ = sim.db.structures.update_no_fk(s);
+        // Place all furniture so building is functional.
+        let furn_ids: Vec<_> = sim
+            .db
+            .furniture
+            .by_structure_id(&sid, tabulosity::QueryOpts::ASC)
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        for fid in furn_ids {
+            let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+                f.placed = true;
+            });
         }
+
+        // Furnishing auto-adds bread recipe with default target (50).
+        // Add fruit to the kitchen.
         sim.inv_add_simple_item(
             sim.structure_inv(sid),
             inventory::ItemKind::Fruit,
@@ -19340,18 +19665,25 @@ mod tests {
             None,
         );
 
-        sim.process_logistics_heartbeat();
+        sim.process_unified_crafting_monitor();
 
-        // Verify a Cook task was created.
-        let cook_tasks: Vec<_> = sim
+        // Verify a Craft task was created for the bread recipe.
+        let craft_tasks: Vec<_> = sim
             .db
-            .tasks
-            .iter_all()
-            .filter(|t| t.kind_tag == TaskKindTag::Cook)
+            .task_structure_refs
+            .by_structure_id(&sid, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|r| {
+                r.role == crate::db::TaskStructureRole::CraftAt
+                    && sim
+                        .db
+                        .tasks
+                        .get(&r.task_id)
+                        .is_some_and(|t| t.state != task::TaskState::Complete)
+            })
+            .map(|r| r.task_id)
             .collect();
-        assert_eq!(cook_tasks.len(), 1, "Should create 1 Cook task");
-        assert_eq!(cook_tasks[0].state, task::TaskState::Available);
-        assert_eq!(cook_tasks[0].required_species, Some(Species::Elf));
+        assert_eq!(craft_tasks.len(), 1, "Should create 1 Craft task for bread");
 
         // Verify fruit is reserved.
         let structure = sim.db.structures.get(&sid).unwrap();
@@ -19360,7 +19692,7 @@ mod tests {
             inventory::ItemKind::Fruit,
             inventory::MaterialFilter::Any,
         );
-        assert_eq!(unreserved, 0, "Fruit should be reserved for cook task");
+        assert_eq!(unreserved, 0, "Fruit should be reserved for craft task");
     }
 
     #[test]
@@ -19376,8 +19708,6 @@ mod tests {
         {
             let mut s = sim.db.structures.get(&sid).unwrap();
             s.furnishing = Some(FurnishingType::Kitchen);
-            s.cooking_enabled = true;
-            s.cooking_bread_target = 50;
             let _ = sim.db.structures.update_no_fk(s);
         }
 
@@ -19634,24 +19964,38 @@ mod tests {
             }],
         );
 
-        // Insert kitchen with reduced wants to keep test fast and focused.
+        // Insert kitchen via unified system.
         let sid_kitchen = insert_completed_building(&mut sim, site2);
         {
             let mut s = sim.db.structures.get(&sid_kitchen).unwrap();
             s.furnishing = Some(FurnishingType::Kitchen);
             s.logistics_priority = Some(sim.config.kitchen_default_priority);
-            s.cooking_enabled = true;
-            s.cooking_bread_target = 1;
+            s.crafting_enabled = true;
             let _ = sim.db.structures.update_no_fk(s);
         }
-        sim.set_inv_wants(
-            sim.structure_inv(sid_kitchen),
-            &[building::LogisticsWant {
-                item_kind: inventory::ItemKind::Fruit,
-                material_filter: inventory::MaterialFilter::Any,
-                target_quantity: 1,
-            }],
-        );
+        // Add bread recipe with a target of 1 bread.
+        sim.add_default_active_recipes(sid_kitchen, FurnishingType::Kitchen);
+        // Override bread target to 1 for faster test.
+        let bread_ar = sim
+            .db
+            .active_recipes
+            .by_structure_id(&sid_kitchen, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        let bread_target = sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&bread_ar.id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|t| t.output_item_kind == inventory::ItemKind::Bread)
+            .unwrap();
+        let _ = sim
+            .db
+            .active_recipe_targets
+            .modify_unchecked(&bread_target.id, |t| {
+                t.target_quantity = 1;
+            });
 
         // Spawn 1 elf near the tree.
         let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
@@ -19701,7 +20045,7 @@ mod tests {
             "Tree should have fruit voxels"
         );
 
-        // Insert kitchen (fruit_want=1, bread_target=1). No storehouse.
+        // Insert kitchen via unified system.
         let tree_pos = sim.trees[&sim.player_tree_id].position;
         let site = VoxelCoord::new(tree_pos.x + 3, 0, tree_pos.z);
         let sid_kitchen = insert_completed_building(&mut sim, site);
@@ -19709,18 +20053,31 @@ mod tests {
             let mut s = sim.db.structures.get(&sid_kitchen).unwrap();
             s.furnishing = Some(FurnishingType::Kitchen);
             s.logistics_priority = Some(sim.config.kitchen_default_priority);
-            s.cooking_enabled = true;
-            s.cooking_bread_target = 1;
+            s.crafting_enabled = true;
             let _ = sim.db.structures.update_no_fk(s);
         }
-        sim.set_inv_wants(
-            sim.structure_inv(sid_kitchen),
-            &[building::LogisticsWant {
-                item_kind: inventory::ItemKind::Fruit,
-                material_filter: inventory::MaterialFilter::Any,
-                target_quantity: 1,
-            }],
-        );
+        sim.add_default_active_recipes(sid_kitchen, FurnishingType::Kitchen);
+        // Override bread target to 1.
+        let bread_ar = sim
+            .db
+            .active_recipes
+            .by_structure_id(&sid_kitchen, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        let bread_target = sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&bread_ar.id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|t| t.output_item_kind == inventory::ItemKind::Bread)
+            .unwrap();
+        let _ = sim
+            .db
+            .active_recipe_targets
+            .modify_unchecked(&bread_target.id, |t| {
+                t.target_quantity = 1;
+            });
 
         // Spawn 1 elf.
         let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
@@ -21416,8 +21773,8 @@ mod tests {
     }
 
     #[test]
-    fn completed_structure_serde_backward_compat_workshop() {
-        // Old JSON without workshop fields should deserialize with defaults.
+    fn completed_structure_serde_backward_compat_crafting() {
+        // Old JSON without crafting_enabled field should deserialize with default.
         let mut rng = GameRng::new(42);
         let structure = CompletedStructure {
             id: StructureId(1),
@@ -21432,25 +21789,16 @@ mod tests {
             furnishing: None,
             inventory_id: InventoryId(0),
             logistics_priority: None,
-            cooking_enabled: false,
-            cooking_bread_target: 0,
-            workshop_enabled: false,
-            workshop_recipe_ids: Vec::new(),
-            workshop_recipe_targets: std::collections::BTreeMap::new(),
+            crafting_enabled: false,
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
         };
         let json = serde_json::to_string(&structure).unwrap();
-        // Remove workshop fields to simulate old save.
-        let json_old = json
-            .replace(r#","workshop_enabled":false"#, "")
-            .replace(r#","workshop_recipe_ids":[]"#, "")
-            .replace(r#","workshop_recipe_targets":{}"#, "");
+        // Remove crafting_enabled to simulate old save.
+        let json_old = json.replace(r#","crafting_enabled":false"#, "");
         let restored: CompletedStructure = serde_json::from_str(&json_old).unwrap();
-        assert!(!restored.workshop_enabled);
-        assert!(restored.workshop_recipe_ids.is_empty());
-        assert!(restored.workshop_recipe_targets.is_empty());
+        assert!(!restored.crafting_enabled);
     }
 
     #[test]
@@ -21501,11 +21849,9 @@ mod tests {
         sim.step(&[cmd], sim.tick + 1);
 
         let structure = sim.db.structures.get(&structure_id).unwrap();
-        assert!(structure.workshop_enabled, "Workshop should be enabled");
-        assert_eq!(
-            structure.workshop_recipe_ids.len(),
-            sim.config.recipes.len(),
-            "Workshop should have all recipes by default"
+        assert!(
+            structure.crafting_enabled,
+            "Workshop should have crafting_enabled"
         );
         assert_eq!(
             structure.logistics_priority,
@@ -21513,102 +21859,25 @@ mod tests {
             "Workshop should have default priority"
         );
 
-        // Should have logistics wants for recipe inputs.
-        let inv_id = structure.inventory_id;
-        let wants = sim
+        // Should have ActiveRecipe entries for all workshop recipes.
+        let active_recipes = sim
             .db
-            .logistics_want_rows
-            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
-        assert!(
-            !wants.is_empty(),
-            "Workshop should have logistics wants for recipe inputs"
-        );
-    }
-
-    #[test]
-    fn set_workshop_config_updates_fields() {
-        let mut sim = test_sim(42);
-        let anchor = find_building_site(&sim);
-        let structure_id = insert_completed_building(&mut sim, anchor);
-
-        // Furnish as workshop first.
-        let furnish_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::FurnishStructure {
-                structure_id,
-                furnishing_type: FurnishingType::Workshop,
-                greenhouse_species: None,
-            },
-        };
-        sim.step(&[furnish_cmd], sim.tick + 1);
-
-        // Disable workshop and set only arrow recipe.
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: false,
-                recipe_configs: vec![WorkshopRecipeEntry {
-                    recipe_id: "arrow".to_string(),
-                    target: 0,
-                }],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        let structure = sim.db.structures.get(&structure_id).unwrap();
-        assert!(!structure.workshop_enabled);
-        assert_eq!(structure.workshop_recipe_ids, vec!["arrow".to_string()]);
-    }
-
-    #[test]
-    fn set_workshop_config_rejects_invalid_recipe_ids() {
-        let mut sim = test_sim(42);
-        let anchor = find_building_site(&sim);
-        let structure_id = insert_completed_building(&mut sim, anchor);
-
-        // Furnish as workshop.
-        let furnish_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::FurnishStructure {
-                structure_id,
-                furnishing_type: FurnishingType::Workshop,
-                greenhouse_species: None,
-            },
-        };
-        sim.step(&[furnish_cmd], sim.tick + 1);
-
-        // Set with one valid and one invalid recipe ID.
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![
-                    WorkshopRecipeEntry {
-                        recipe_id: "arrow".to_string(),
-                        target: 0,
-                    },
-                    WorkshopRecipeEntry {
-                        recipe_id: "nonexistent".to_string(),
-                        target: 0,
-                    },
-                ],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        let structure = sim.db.structures.get(&structure_id).unwrap();
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+        let workshop_recipe_count = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .len();
         assert_eq!(
-            structure.workshop_recipe_ids,
-            vec!["arrow".to_string()],
-            "Invalid recipe IDs should be filtered out"
+            active_recipes.len(),
+            workshop_recipe_count,
+            "Workshop should have all workshop recipes as active recipes"
         );
     }
+
+    // Old workshop tests (set_workshop_config_*, workshop_monitor_*, setup_workshop)
+    // have been removed — all crafting is now tested via the unified ActiveRecipe system.
+    // See the "Unified crafting commands" section below.
 
     #[test]
     fn moping_creates_notification() {
@@ -21649,202 +21918,6 @@ mod tests {
     }
 
     #[test]
-    fn set_workshop_config_rejects_non_workshop() {
-        let mut sim = test_sim(42);
-        let anchor = find_building_site(&sim);
-        let structure_id = insert_completed_building(&mut sim, anchor);
-
-        // Furnish as kitchen, not workshop.
-        let furnish_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::FurnishStructure {
-                structure_id,
-                furnishing_type: FurnishingType::Kitchen,
-                greenhouse_species: None,
-            },
-        };
-        sim.step(&[furnish_cmd], sim.tick + 1);
-
-        // Try SetWorkshopConfig on a kitchen — should be silently ignored.
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![WorkshopRecipeEntry {
-                    recipe_id: "arrow".to_string(),
-                    target: 0,
-                }],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        let structure = sim.db.structures.get(&structure_id).unwrap();
-        assert!(
-            !structure.workshop_enabled,
-            "Kitchen should not become a workshop"
-        );
-    }
-
-    /// Helper: create a workshop with an elf, optionally stocking inputs.
-    fn setup_workshop(sim: &mut SimState) -> (StructureId, CreatureId) {
-        let anchor = find_building_site(sim);
-        let structure_id = insert_completed_building(sim, anchor);
-
-        // Furnish as workshop.
-        let furnish_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::FurnishStructure {
-                structure_id,
-                furnishing_type: FurnishingType::Workshop,
-                greenhouse_species: None,
-            },
-        };
-        sim.step(&[furnish_cmd], sim.tick + 1);
-
-        // Manually place furniture (skip furnish task flow).
-        let structure = sim.db.structures.get(&structure_id).unwrap();
-        let furn_ids: Vec<_> = sim
-            .db
-            .furniture
-            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
-            .iter()
-            .map(|f| f.id)
-            .collect();
-        for fid in furn_ids {
-            let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
-                f.placed = true;
-            });
-        }
-
-        // Spawn elf near building.
-        let elf_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SpawnCreature {
-                species: Species::Elf,
-                position: structure.anchor,
-            },
-        };
-        sim.step(&[elf_cmd], sim.tick + 1);
-        let elf_id = sim
-            .db
-            .creatures
-            .by_species(&Species::Elf, tabulosity::QueryOpts::ASC)
-            .last()
-            .unwrap()
-            .id;
-
-        // Make elf not hungry/tired so they don't generate autonomous tasks.
-        let food_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetCreatureFood {
-                creature_id: elf_id,
-                food: sim.species_table[&Species::Elf].food_max,
-            },
-        };
-        let rest_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetCreatureRest {
-                creature_id: elf_id,
-                rest: sim.species_table[&Species::Elf].rest_max,
-            },
-        };
-        sim.step(&[food_cmd, rest_cmd], sim.tick + 1);
-
-        // Set all recipes active with target 100 (tests that need different
-        // targets override with their own SetWorkshopConfig).
-        let all_configs: Vec<WorkshopRecipeEntry> = sim
-            .config
-            .recipes
-            .iter()
-            .map(|r| WorkshopRecipeEntry {
-                recipe_id: r.id.clone(),
-                target: 100,
-            })
-            .collect();
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: all_configs,
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        (structure_id, elf_id)
-    }
-
-    #[test]
-    fn workshop_monitor_creates_craft_task_when_inputs_available() {
-        let mut sim = test_sim(42);
-        let (structure_id, _elf_id) = setup_workshop(&mut sim);
-
-        // Stock workshop with Fruit (for bowstring recipe: 1 Fruit → 20 Bowstring).
-        let inv_id = sim.structure_inv(structure_id);
-        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
-
-        // Run logistics heartbeat to trigger workshop monitor.
-        sim.process_workshop_monitor();
-
-        let craft_tasks: Vec<_> = sim
-            .db
-            .tasks
-            .iter_all()
-            .filter(|t| t.kind_tag == TaskKindTag::Craft)
-            .collect();
-        assert_eq!(craft_tasks.len(), 1, "Should create 1 Craft task");
-        assert_eq!(craft_tasks[0].state, task::TaskState::Available);
-        assert_eq!(craft_tasks[0].required_species, Some(Species::Elf));
-
-        // Check craft data.
-        let craft_data = sim.task_craft_data(craft_tasks[0].id).unwrap();
-        assert_eq!(craft_data.recipe_id, "bowstring");
-    }
-
-    #[test]
-    fn workshop_monitor_skips_when_inputs_insufficient() {
-        let mut sim = test_sim(42);
-        let (structure_id, _elf_id) = setup_workshop(&mut sim);
-
-        // Set only bow recipe with target > 0 (needs 1 Bowstring). Don't stock any Bowstring.
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![WorkshopRecipeEntry {
-                    recipe_id: "bow".to_string(),
-                    target: 50,
-                }],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        sim.process_workshop_monitor();
-
-        let craft_tasks: Vec<_> = sim
-            .db
-            .tasks
-            .iter_all()
-            .filter(|t| t.kind_tag == TaskKindTag::Craft)
-            .collect();
-        assert_eq!(
-            craft_tasks.len(),
-            0,
-            "Should not create Craft task without sufficient inputs"
-        );
-    }
-
-    #[test]
     fn moping_notification_unnamed_elf_uses_generic_text() {
         let cfg = crate::config::MoodConsequencesConfig {
             mope_mean_ticks_unhappy: 1,
@@ -21874,492 +21947,6 @@ mod tests {
             "Unnamed elf notification should use generic text, got: {}",
             notif.message
         );
-    }
-
-    #[test]
-    fn workshop_monitor_skips_when_active_craft_exists() {
-        let mut sim = test_sim(42);
-        let (structure_id, _elf_id) = setup_workshop(&mut sim);
-
-        let inv_id = sim.structure_inv(structure_id);
-        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 5, None, None);
-
-        // First run creates a Craft task.
-        sim.process_workshop_monitor();
-        let craft_count = sim
-            .db
-            .tasks
-            .iter_all()
-            .filter(|t| t.kind_tag == TaskKindTag::Craft)
-            .count();
-        assert_eq!(craft_count, 1);
-
-        // Second run should skip (active task exists).
-        sim.process_workshop_monitor();
-        let craft_count = sim
-            .db
-            .tasks
-            .iter_all()
-            .filter(|t| t.kind_tag == TaskKindTag::Craft)
-            .count();
-        assert_eq!(craft_count, 1, "Should not create duplicate Craft task");
-    }
-
-    #[test]
-    fn workshop_monitor_skips_when_disabled() {
-        let mut sim = test_sim(42);
-        let (structure_id, _elf_id) = setup_workshop(&mut sim);
-
-        let inv_id = sim.structure_inv(structure_id);
-        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
-
-        // Disable the workshop (target > 0, but disabled flag prevents crafting).
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: false,
-                recipe_configs: vec![WorkshopRecipeEntry {
-                    recipe_id: "bowstring".to_string(),
-                    target: 50,
-                }],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        sim.process_workshop_monitor();
-
-        let craft_count = sim
-            .db
-            .tasks
-            .iter_all()
-            .filter(|t| t.kind_tag == TaskKindTag::Craft)
-            .count();
-        assert_eq!(
-            craft_count, 0,
-            "Disabled workshop should not create Craft tasks"
-        );
-    }
-
-    #[test]
-    fn do_craft_consumes_inputs_produces_outputs() {
-        let mut sim = test_sim(42);
-        let (structure_id, elf_id) = setup_workshop(&mut sim);
-
-        let inv_id = sim.structure_inv(structure_id);
-        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
-
-        // Create craft task manually (bowstring: 1 Fruit → 20 Bowstring).
-        sim.process_workshop_monitor();
-        let task_id = sim
-            .db
-            .tasks
-            .iter_all()
-            .find(|t| t.kind_tag == TaskKindTag::Craft)
-            .unwrap()
-            .id;
-
-        // Claim the task.
-        sim.claim_task(elf_id, task_id);
-
-        // Resolve craft action (single-action task).
-        sim.resolve_craft_action(elf_id);
-
-        // Verify: Fruit consumed, Bowstring produced.
-        let fruit_count = sim.inv_item_count(
-            inv_id,
-            inventory::ItemKind::Fruit,
-            inventory::MaterialFilter::Any,
-        );
-        assert_eq!(fruit_count, 0, "Fruit should be consumed");
-        let bowstring_count = sim.inv_item_count(
-            inv_id,
-            inventory::ItemKind::Bowstring,
-            inventory::MaterialFilter::Any,
-        );
-        assert_eq!(bowstring_count, 20, "Should produce 20 Bowstrings");
-
-        // Task should be complete.
-        let task = sim.db.tasks.get(&task_id).unwrap();
-        assert_eq!(task.state, task::TaskState::Complete);
-    }
-
-    #[test]
-    fn do_craft_records_subcomponents_bow() {
-        let mut sim = test_sim(42);
-        let (structure_id, elf_id) = setup_workshop(&mut sim);
-
-        // Configure for bow recipe only.
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![WorkshopRecipeEntry {
-                    recipe_id: "bow".to_string(),
-                    target: 100,
-                }],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        // Stock 1 Bowstring.
-        let inv_id = sim.structure_inv(structure_id);
-        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bowstring, 1, None, None);
-
-        sim.process_workshop_monitor();
-        let task_id = sim
-            .db
-            .tasks
-            .iter_all()
-            .find(|t| t.kind_tag == TaskKindTag::Craft)
-            .unwrap()
-            .id;
-
-        sim.claim_task(elf_id, task_id);
-
-        // Run to completion (8000 ticks for bow).
-        sim.resolve_craft_action(elf_id);
-
-        // Verify Bow produced.
-        let bow_count = sim.inv_item_count(
-            inv_id,
-            inventory::ItemKind::Bow,
-            inventory::MaterialFilter::Any,
-        );
-        assert_eq!(bow_count, 1, "Should produce 1 Bow");
-
-        // Verify subcomponent recorded.
-        let bow_stacks = sim
-            .db
-            .item_stacks
-            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
-        let bow_stack = bow_stacks
-            .iter()
-            .find(|s| s.kind == inventory::ItemKind::Bow)
-            .unwrap();
-        let subcomponents = sim
-            .db
-            .item_subcomponents
-            .by_item_stack_id(&bow_stack.id, tabulosity::QueryOpts::ASC);
-        assert_eq!(subcomponents.len(), 1, "Bow should have 1 subcomponent");
-        assert_eq!(
-            subcomponents[0].component_kind,
-            inventory::ItemKind::Bowstring
-        );
-        assert_eq!(subcomponents[0].quantity_per_item, 1);
-    }
-
-    #[test]
-    fn cleanup_craft_task_releases_reservations() {
-        let mut sim = test_sim(42);
-        let (structure_id, _elf_id) = setup_workshop(&mut sim);
-
-        let inv_id = sim.structure_inv(structure_id);
-        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
-
-        sim.process_workshop_monitor();
-        let task_id = sim
-            .db
-            .tasks
-            .iter_all()
-            .find(|t| t.kind_tag == TaskKindTag::Craft)
-            .unwrap()
-            .id;
-
-        // Verify fruit is reserved.
-        let reserved = sim
-            .db
-            .item_stacks
-            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
-            .iter()
-            .filter(|s| s.reserved_by == Some(task_id))
-            .count();
-        assert!(reserved > 0, "Fruit should be reserved");
-
-        // Clean up the task.
-        sim.cleanup_craft_task(task_id);
-
-        // Verify reservations cleared.
-        let still_reserved = sim
-            .db
-            .item_stacks
-            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
-            .iter()
-            .filter(|s| s.reserved_by == Some(task_id))
-            .count();
-        assert_eq!(still_reserved, 0, "Reservations should be cleared");
-
-        // Task should be complete.
-        let task = sim.db.tasks.get(&task_id).unwrap();
-        assert_eq!(task.state, task::TaskState::Complete);
-    }
-
-    #[test]
-    fn integration_bowstring_recipe() {
-        let mut sim = test_sim(42);
-        let (structure_id, elf_id) = setup_workshop(&mut sim);
-
-        // Stock Fruit, configure only bowstring recipe with target 100.
-        let inv_id = sim.structure_inv(structure_id);
-        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
-
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![WorkshopRecipeEntry {
-                    recipe_id: "bowstring".to_string(),
-                    target: 100,
-                }],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        sim.process_workshop_monitor();
-        let task_id = sim
-            .db
-            .tasks
-            .iter_all()
-            .find(|t| t.kind_tag == TaskKindTag::Craft)
-            .unwrap()
-            .id;
-        sim.claim_task(elf_id, task_id);
-
-        sim.resolve_craft_action(elf_id);
-
-        assert_eq!(
-            sim.inv_item_count(
-                inv_id,
-                inventory::ItemKind::Fruit,
-                inventory::MaterialFilter::Any
-            ),
-            0
-        );
-        assert_eq!(
-            sim.inv_item_count(
-                inv_id,
-                inventory::ItemKind::Bowstring,
-                inventory::MaterialFilter::Any
-            ),
-            20
-        );
-    }
-
-    #[test]
-    fn integration_arrow_recipe_no_inputs() {
-        let mut sim = test_sim(42);
-        let (structure_id, elf_id) = setup_workshop(&mut sim);
-
-        // Arrow recipe has no inputs — should create task immediately.
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![WorkshopRecipeEntry {
-                    recipe_id: "arrow".to_string(),
-                    target: 100,
-                }],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        sim.process_workshop_monitor();
-        let task_id = sim
-            .db
-            .tasks
-            .iter_all()
-            .find(|t| t.kind_tag == TaskKindTag::Craft)
-            .unwrap()
-            .id;
-        sim.claim_task(elf_id, task_id);
-
-        sim.resolve_craft_action(elf_id);
-
-        let inv_id = sim.structure_inv(structure_id);
-        assert_eq!(
-            sim.inv_item_count(
-                inv_id,
-                inventory::ItemKind::Arrow,
-                inventory::MaterialFilter::Any
-            ),
-            20
-        );
-    }
-
-    #[test]
-    fn workshop_monitor_skips_when_target_reached() {
-        let mut sim = test_sim(42);
-        let (structure_id, _creature_id) = setup_workshop(&mut sim);
-
-        // Configure arrow recipe with target 20.
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![WorkshopRecipeEntry {
-                    recipe_id: "arrow".to_string(),
-                    target: 20,
-                }],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        // Add 20 arrows to workshop inventory (meeting target).
-        let inv_id = sim.structure_inv(structure_id);
-        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 20, None, None);
-
-        // Run logistics heartbeat — should NOT create a Craft task.
-        sim.process_workshop_monitor();
-        let craft_tasks: Vec<_> = sim
-            .db
-            .tasks
-            .iter_all()
-            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
-            .collect();
-        assert!(
-            craft_tasks.is_empty(),
-            "Should not craft when target is reached"
-        );
-    }
-
-    #[test]
-    fn workshop_monitor_crafts_when_below_target() {
-        let mut sim = test_sim(42);
-        let (structure_id, _creature_id) = setup_workshop(&mut sim);
-
-        // Configure arrow recipe with target 40.
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![WorkshopRecipeEntry {
-                    recipe_id: "arrow".to_string(),
-                    target: 40,
-                }],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        // Add 10 arrows (below target of 40).
-        let inv_id = sim.structure_inv(structure_id);
-        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 10, None, None);
-
-        // Run workshop monitor — should create a Craft task.
-        sim.process_workshop_monitor();
-        let craft_tasks: Vec<_> = sim
-            .db
-            .tasks
-            .iter_all()
-            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
-            .collect();
-        assert_eq!(craft_tasks.len(), 1, "Should craft when below target");
-    }
-
-    #[test]
-    fn workshop_monitor_skips_when_target_zero() {
-        let mut sim = test_sim(42);
-        let (structure_id, _creature_id) = setup_workshop(&mut sim);
-
-        // Configure arrow recipe with target 0 (don't craft).
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![WorkshopRecipeEntry {
-                    recipe_id: "arrow".to_string(),
-                    target: 0,
-                }],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        sim.process_workshop_monitor();
-        let craft_tasks: Vec<_> = sim
-            .db
-            .tasks
-            .iter_all()
-            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
-            .collect();
-        assert_eq!(craft_tasks.len(), 0, "Should not craft when target is 0");
-    }
-
-    #[test]
-    fn workshop_monitor_skips_when_target_missing() {
-        let mut sim = test_sim(42);
-        let (structure_id, _creature_id) = setup_workshop(&mut sim);
-
-        // Clear all recipe configs so targets are missing (= don't craft).
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        sim.process_workshop_monitor();
-        let craft_tasks: Vec<_> = sim
-            .db
-            .tasks
-            .iter_all()
-            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
-            .collect();
-        assert_eq!(
-            craft_tasks.len(),
-            0,
-            "Should not craft when no targets are set"
-        );
-    }
-
-    #[test]
-    fn set_workshop_config_stores_targets() {
-        let mut sim = test_sim(42);
-        let (structure_id, _creature_id) = setup_workshop(&mut sim);
-
-        let config_cmd = SimCommand {
-            player_id: sim.player_id,
-            tick: sim.tick + 1,
-            action: SimAction::SetWorkshopConfig {
-                structure_id,
-                workshop_enabled: true,
-                recipe_configs: vec![
-                    WorkshopRecipeEntry {
-                        recipe_id: "bowstring".to_string(),
-                        target: 50,
-                    },
-                    WorkshopRecipeEntry {
-                        recipe_id: "arrow".to_string(),
-                        target: 0,
-                    },
-                ],
-            },
-        };
-        sim.step(&[config_cmd], sim.tick + 1);
-
-        let structure = sim.db.structures.get(&structure_id).unwrap();
-        // Target 50 should be stored.
-        assert_eq!(
-            structure.workshop_recipe_targets.get("bowstring"),
-            Some(&50)
-        );
-        // Target 0 means "don't craft" — stored as 0.
-        assert_eq!(structure.workshop_recipe_targets.get("arrow"), Some(&0));
     }
 
     #[test]
@@ -22398,6 +21985,1495 @@ mod tests {
             other => panic!("Expected Craft task, got {:?}", other),
         }
         assert_eq!(restored.origin, task::TaskOrigin::Automated);
+    }
+
+    // =========================================================================
+    // Unified crafting commands (ActiveRecipe / ActiveRecipeTarget)
+    // =========================================================================
+
+    /// Helper: furnish a building and create a workshop or kitchen via the new
+    /// unified crafting system. Returns the structure_id.
+    fn setup_crafting_building(sim: &mut SimState, furnishing_type: FurnishingType) -> StructureId {
+        let anchor = find_building_site(sim);
+        let structure_id = insert_completed_building(sim, anchor);
+        let furnish_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type,
+                greenhouse_species: None,
+            },
+        };
+        sim.step(&[furnish_cmd], sim.tick + 1);
+        structure_id
+    }
+
+    #[test]
+    fn add_active_recipe_creates_recipe_and_targets() {
+        let mut sim = test_sim(42);
+        // Use a Storehouse (which doesn't get default recipes) to test adding
+        // a recipe in isolation. The recipe won't match the furnishing type
+        // so we use a Home-furnished building instead.
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Workshop furnishing auto-adds all workshop recipes. Verify the arrow
+        // recipe was added with correct properties.
+        let arrow_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .into_iter()
+            .find(|r| r.display_name == "Arrow")
+            .unwrap()
+            .key
+            .clone();
+
+        let recipes = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+        let arrow_recipe = recipes
+            .iter()
+            .find(|r| r.recipe_key_json == arrow_key.to_json())
+            .expect("Arrow recipe should exist");
+        assert!(arrow_recipe.enabled);
+        assert!(arrow_recipe.auto_logistics);
+        assert_eq!(arrow_recipe.spare_iterations, 0);
+
+        // Should have target rows for each output (arrow has 1 output).
+        let targets = sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&arrow_recipe.id, tabulosity::QueryOpts::ASC);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].output_item_kind, inventory::ItemKind::Arrow);
+        assert_eq!(targets[0].target_quantity, 0);
+    }
+
+    #[test]
+    fn add_active_recipe_rejects_duplicate() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Arrow is already added by furnishing. Try to add it again.
+        let arrow_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Arrow")
+            .unwrap()
+            .key
+            .clone();
+
+        let initial_count = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .len();
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: arrow_key,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        // Count should not increase — duplicate was rejected.
+        let after_count = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .len();
+        assert_eq!(initial_count, after_count);
+    }
+
+    #[test]
+    fn add_active_recipe_rejects_wrong_furnishing() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
+
+        // Try to add a workshop recipe to a kitchen.
+        let workshop_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .next()
+            .unwrap()
+            .key
+            .clone();
+        let key_json = workshop_key.to_json();
+
+        let initial_count = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .len();
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: workshop_key,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        // Kitchen should only have its default bread recipe — no workshop recipes.
+        let recipes = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(recipes.len(), initial_count, "Count should not change");
+        assert!(
+            recipes.iter().all(|r| r.recipe_key_json != key_json),
+            "Workshop recipe should not be on a kitchen"
+        );
+    }
+
+    #[test]
+    fn remove_active_recipe_deletes_recipe_and_targets() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Arrow is added by furnishing. Find it and remove it.
+        let arrow_key_json = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Arrow")
+            .unwrap()
+            .key
+            .to_json();
+
+        let initial_count = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .len();
+
+        let ar_id = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == arrow_key_json)
+            .unwrap()
+            .id;
+
+        // Remove it.
+        let rm_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::RemoveActiveRecipe {
+                active_recipe_id: ar_id,
+            },
+        };
+        sim.step(&[rm_cmd], sim.tick + 1);
+
+        assert_eq!(
+            sim.db
+                .active_recipes
+                .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+                .len(),
+            initial_count - 1,
+        );
+        // Targets should be cascade-deleted.
+        assert_eq!(
+            sim.db
+                .active_recipe_targets
+                .by_active_recipe_id(&ar_id, tabulosity::QueryOpts::ASC)
+                .len(),
+            0,
+        );
+    }
+
+    #[test]
+    fn set_recipe_output_target_updates_quantity() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        let recipe_def = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .into_iter()
+            .find(|r| r.display_name == "Arrow")
+            .unwrap();
+
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: recipe_def.key.clone(),
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        let ar = &sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+
+        let set_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 42,
+            },
+        };
+        sim.step(&[set_cmd], sim.tick + 1);
+
+        let updated = sim.db.active_recipe_targets.get(&target.id).unwrap();
+        assert_eq!(updated.target_quantity, 42);
+    }
+
+    #[test]
+    fn set_crafting_enabled_toggles_building() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Workshop furnishing now auto-enables crafting.
+        assert!(
+            sim.db
+                .structures
+                .get(&structure_id)
+                .unwrap()
+                .crafting_enabled
+        );
+
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled: false,
+            },
+        };
+        sim.step(&[cmd2], sim.tick + 1);
+        assert!(
+            !sim.db
+                .structures
+                .get(&structure_id)
+                .unwrap()
+                .crafting_enabled
+        );
+    }
+
+    #[test]
+    fn set_recipe_enabled_toggles_recipe() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        let recipe_def = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .into_iter()
+            .find(|r| r.display_name == "Arrow")
+            .unwrap();
+
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: recipe_def.key.clone(),
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        let ar_id = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0]
+            .id;
+        assert!(sim.db.active_recipes.get(&ar_id).unwrap().enabled);
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeEnabled {
+                active_recipe_id: ar_id,
+                enabled: false,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+        assert!(!sim.db.active_recipes.get(&ar_id).unwrap().enabled);
+    }
+
+    #[test]
+    fn set_recipe_auto_logistics_updates_fields() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        let recipe_def = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .into_iter()
+            .find(|r| r.display_name == "Bowstring")
+            .unwrap();
+
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: recipe_def.key.clone(),
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        let ar_id = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0]
+            .id;
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeAutoLogistics {
+                active_recipe_id: ar_id,
+                auto_logistics: false,
+                spare_iterations: 5,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let ar = sim.db.active_recipes.get(&ar_id).unwrap();
+        assert!(!ar.auto_logistics);
+        assert_eq!(ar.spare_iterations, 5);
+    }
+
+    #[test]
+    fn move_active_recipe_up_down_swaps_sort_order() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Workshop furnishing adds all 3 recipes. Use the first two for
+        // testing move up/down.
+        let recipes = sim.db.active_recipes.by_structure_sort(
+            &structure_id,
+            tabulosity::MatchAll,
+            tabulosity::QueryOpts::ASC,
+        );
+        assert!(recipes.len() >= 2);
+        let first_id = recipes[0].id;
+        let second_id = recipes[1].id;
+        let first_sort = recipes[0].sort_order;
+        let second_sort = recipes[1].sort_order;
+        assert!(first_sort < second_sort);
+
+        // Move second up — should swap with first.
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::MoveActiveRecipeUp {
+                active_recipe_id: second_id,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let after = sim.db.active_recipes.by_structure_sort(
+            &structure_id,
+            tabulosity::MatchAll,
+            tabulosity::QueryOpts::ASC,
+        );
+        assert_eq!(after[0].id, second_id);
+        assert_eq!(after[1].id, first_id);
+
+        // Move second (now at top) up again — should be no-op.
+        let cmd2 = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::MoveActiveRecipeUp {
+                active_recipe_id: second_id,
+            },
+        };
+        sim.step(&[cmd2], sim.tick + 1);
+
+        let after2 = sim.db.active_recipes.by_structure_sort(
+            &structure_id,
+            tabulosity::MatchAll,
+            tabulosity::QueryOpts::ASC,
+        );
+        assert_eq!(after2[0].id, second_id);
+
+        // Move second down — should swap back.
+        let cmd3 = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::MoveActiveRecipeDown {
+                active_recipe_id: second_id,
+            },
+        };
+        sim.step(&[cmd3], sim.tick + 1);
+
+        let after3 = sim.db.active_recipes.by_structure_sort(
+            &structure_id,
+            tabulosity::MatchAll,
+            tabulosity::QueryOpts::ASC,
+        );
+        assert_eq!(after3[0].id, first_id);
+        assert_eq!(after3[1].id, second_id);
+    }
+
+    #[test]
+    fn add_active_recipe_to_kitchen_bread() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
+
+        let recipe_def = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Kitchen)
+            .into_iter()
+            .find(|r| r.display_name == "Bread")
+            .unwrap();
+        let key = recipe_def.key.clone();
+
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: key,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let recipes = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].recipe_display_name, "Bread");
+
+        let targets = sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&recipes[0].id, tabulosity::QueryOpts::ASC);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].output_item_kind, inventory::ItemKind::Bread);
+    }
+
+    #[test]
+    fn unified_crafting_monitor_creates_craft_task() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Place furniture so the building is functional.
+        let furn_ids: Vec<_> = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        for fid in furn_ids {
+            let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+                f.placed = true;
+            });
+        }
+
+        // Crafting is auto-enabled by furnishing. Arrow recipe is already added.
+        // Find the arrow ActiveRecipe and set its target.
+        let arrow_key_json = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Arrow")
+            .unwrap()
+            .key
+            .to_json();
+
+        let ar = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == arrow_key_json)
+            .unwrap();
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+        let set_target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 20,
+            },
+        };
+        sim.step(&[set_target_cmd], sim.tick + 1);
+
+        // Run the unified monitor.
+        sim.process_unified_crafting_monitor();
+
+        // Should have created a Craft task for the arrow recipe.
+        let craft_tasks: Vec<_> = sim
+            .db
+            .task_structure_refs
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|r| r.role == crate::db::TaskStructureRole::CraftAt)
+            .filter(|r| {
+                sim.db
+                    .tasks
+                    .get(&r.task_id)
+                    .is_some_and(|t| t.state != task::TaskState::Complete)
+            })
+            .map(|r| r.task_id)
+            .collect();
+        assert_eq!(craft_tasks.len(), 1, "Expected 1 craft task");
+
+        // Verify the TaskCraftData has the active_recipe_id set.
+        let tcd = sim.task_craft_data(craft_tasks[0]).unwrap();
+        assert_eq!(tcd.active_recipe_id, Some(ar.id));
+    }
+
+    #[test]
+    fn unified_crafting_monitor_skips_when_target_met() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        let furn_ids: Vec<_> = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        for fid in furn_ids {
+            let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+                f.placed = true;
+            });
+        }
+
+        let enable_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled: true,
+            },
+        };
+        sim.step(&[enable_cmd], sim.tick + 1);
+
+        let arrow_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Arrow")
+            .unwrap()
+            .key
+            .clone();
+
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: arrow_key,
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        let ar = &sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+
+        // Set target to 5 arrows, then add 5 arrows to the building's inventory.
+        let set_target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 5,
+            },
+        };
+        sim.step(&[set_target_cmd], sim.tick + 1);
+
+        let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+
+        // Run the unified monitor — should NOT create a task (target met).
+        sim.process_unified_crafting_monitor();
+
+        let craft_count = sim
+            .db
+            .task_structure_refs
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|r| r.role == crate::db::TaskStructureRole::CraftAt)
+            .filter(|r| {
+                sim.db
+                    .tasks
+                    .get(&r.task_id)
+                    .is_some_and(|t| t.state != task::TaskState::Complete)
+            })
+            .count();
+        assert_eq!(
+            craft_count, 0,
+            "Should not create a task when target is met"
+        );
+    }
+
+    #[test]
+    fn unified_crafting_monitor_skips_when_disabled() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        let furn_ids: Vec<_> = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        for fid in furn_ids {
+            let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+                f.placed = true;
+            });
+        }
+
+        // Do NOT enable crafting.
+        let arrow_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Arrow")
+            .unwrap()
+            .key
+            .clone();
+
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: arrow_key,
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        let ar = &sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+
+        let set_target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 20,
+            },
+        };
+        sim.step(&[set_target_cmd], sim.tick + 1);
+
+        sim.process_unified_crafting_monitor();
+
+        let craft_count = sim
+            .db
+            .task_structure_refs
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|r| r.role == crate::db::TaskStructureRole::CraftAt)
+            .filter(|r| {
+                sim.db
+                    .tasks
+                    .get(&r.task_id)
+                    .is_some_and(|t| t.state != task::TaskState::Complete)
+            })
+            .count();
+        assert_eq!(
+            craft_count, 0,
+            "Should not create tasks when crafting_enabled is false"
+        );
+    }
+
+    // =========================================================================
+    // Auto-logistics (unified crafting)
+    // =========================================================================
+
+    #[test]
+    fn auto_logistics_generates_wants_from_active_recipe() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Clear old workshop explicit wants and enable crafting.
+        let setup_cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetLogisticsWants {
+                    structure_id,
+                    wants: vec![],
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetCraftingEnabled {
+                    structure_id,
+                    enabled: true,
+                },
+            },
+        ];
+        sim.step(&setup_cmds, sim.tick + 1);
+
+        // Add bowstring recipe (1 Fruit → 20 Bowstring).
+        let bowstring_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Bowstring")
+            .unwrap()
+            .key
+            .clone();
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: bowstring_key,
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        // Set target: 20 bowstrings.
+        let ar = &sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+        let set_target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 20,
+            },
+        };
+        sim.step(&[set_target_cmd], sim.tick + 1);
+
+        // Auto-logistics is enabled by default. runs_needed = ceil(20/20) = 1.
+        // Input: 1 Fruit per run → auto_want = 1 * 1 = 1.
+        let wants = sim.compute_effective_wants(structure_id);
+        let fruit_want = wants
+            .iter()
+            .find(|w| w.item_kind == inventory::ItemKind::Fruit)
+            .expect("Should have a Fruit want from auto-logistics");
+        assert_eq!(fruit_want.target_quantity, 1);
+    }
+
+    #[test]
+    fn auto_logistics_spare_iterations_add_extra_wants() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Clear old workshop explicit wants and enable crafting.
+        let setup_cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetLogisticsWants {
+                    structure_id,
+                    wants: vec![],
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetCraftingEnabled {
+                    structure_id,
+                    enabled: true,
+                },
+            },
+        ];
+        sim.step(&setup_cmds, sim.tick + 1);
+
+        let bowstring_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Bowstring")
+            .unwrap()
+            .key
+            .clone();
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: bowstring_key,
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        let ar = &sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+
+        // Set target: 20 bowstrings, spare_iterations: 3.
+        let set_target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 20,
+            },
+        };
+        let set_spare_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeAutoLogistics {
+                active_recipe_id: ar.id,
+                auto_logistics: true,
+                spare_iterations: 3,
+            },
+        };
+        sim.step(&[set_target_cmd, set_spare_cmd], sim.tick + 1);
+
+        // runs_needed = 1 (ceil(20/20)), spare = 3, total = 4.
+        // auto_want = 1 * 4 = 4 Fruit.
+        let wants = sim.compute_effective_wants(structure_id);
+        let fruit_want = wants
+            .iter()
+            .find(|w| w.item_kind == inventory::ItemKind::Fruit)
+            .expect("Should have a Fruit want");
+        assert_eq!(fruit_want.target_quantity, 4);
+    }
+
+    #[test]
+    fn auto_logistics_sums_with_explicit_wants() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        let enable_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled: true,
+            },
+        };
+        sim.step(&[enable_cmd], sim.tick + 1);
+
+        // Enable logistics and set an explicit want of 5 Fruit.
+        let logistics_cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetLogisticsPriority {
+                    structure_id,
+                    priority: Some(5),
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetLogisticsWants {
+                    structure_id,
+                    wants: vec![crate::building::LogisticsWant {
+                        item_kind: inventory::ItemKind::Fruit,
+                        material_filter: inventory::MaterialFilter::Any,
+                        target_quantity: 5,
+                    }],
+                },
+            },
+        ];
+        sim.step(&logistics_cmds, sim.tick + 1);
+
+        // Add bowstring recipe with target 20.
+        let bowstring_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Bowstring")
+            .unwrap()
+            .key
+            .clone();
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: bowstring_key,
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        let ar = &sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+        let set_target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 20,
+            },
+        };
+        sim.step(&[set_target_cmd], sim.tick + 1);
+
+        // Explicit = 5, auto = 1 → merged = 6.
+        let wants = sim.compute_effective_wants(structure_id);
+        let fruit_want = wants
+            .iter()
+            .find(|w| w.item_kind == inventory::ItemKind::Fruit)
+            .expect("Should have Fruit want");
+        assert_eq!(fruit_want.target_quantity, 6);
+    }
+
+    #[test]
+    fn auto_logistics_disabled_when_crafting_disabled() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Disable crafting and clear explicit wants.
+        let setup_cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetCraftingEnabled {
+                    structure_id,
+                    enabled: false,
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetLogisticsWants {
+                    structure_id,
+                    wants: vec![],
+                },
+            },
+        ];
+        sim.step(&setup_cmds, sim.tick + 1);
+
+        // Bowstring is already added by furnishing. Find it and set target.
+        let bowstring_key_json = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Bowstring")
+            .unwrap()
+            .key
+            .to_json();
+
+        let ar = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == bowstring_key_json)
+            .unwrap();
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+        let set_target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 20,
+            },
+        };
+        sim.step(&[set_target_cmd], sim.tick + 1);
+
+        // crafting_enabled is false → no auto-logistics wants.
+        let wants = sim.compute_effective_wants(structure_id);
+        let fruit_want = wants
+            .iter()
+            .find(|w| w.item_kind == inventory::ItemKind::Fruit);
+        assert!(
+            fruit_want.is_none(),
+            "Should not generate auto-logistics when crafting is disabled"
+        );
+    }
+
+    #[test]
+    fn auto_logistics_disabled_per_recipe() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        let setup_cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetLogisticsWants {
+                    structure_id,
+                    wants: vec![],
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetCraftingEnabled {
+                    structure_id,
+                    enabled: true,
+                },
+            },
+        ];
+        sim.step(&setup_cmds, sim.tick + 1);
+
+        let bowstring_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Bowstring")
+            .unwrap()
+            .key
+            .clone();
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: bowstring_key,
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        let ar = &sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+
+        // Set target, then disable auto-logistics.
+        let cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetRecipeOutputTarget {
+                    active_recipe_target_id: target.id,
+                    target_quantity: 20,
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetRecipeAutoLogistics {
+                    active_recipe_id: ar.id,
+                    auto_logistics: false,
+                    spare_iterations: 0,
+                },
+            },
+        ];
+        sim.step(&cmds, sim.tick + 1);
+
+        let wants = sim.compute_effective_wants(structure_id);
+        let fruit_want = wants
+            .iter()
+            .find(|w| w.item_kind == inventory::ItemKind::Fruit);
+        assert!(
+            fruit_want.is_none(),
+            "Should not generate auto-logistics when recipe auto_logistics is false"
+        );
+    }
+
+    #[test]
+    fn auto_logistics_no_input_recipe_generates_no_wants() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        let setup_cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetLogisticsWants {
+                    structure_id,
+                    wants: vec![],
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetCraftingEnabled {
+                    structure_id,
+                    enabled: true,
+                },
+            },
+        ];
+        sim.step(&setup_cmds, sim.tick + 1);
+
+        // Arrow recipe has no inputs. It's already added by furnishing.
+        let arrow_key_json = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Arrow")
+            .unwrap()
+            .key
+            .to_json();
+
+        let ar = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == arrow_key_json)
+            .unwrap();
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+        let set_target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 100,
+            },
+        };
+        sim.step(&[set_target_cmd], sim.tick + 1);
+
+        // No inputs → no auto-logistics wants.
+        let wants = sim.compute_effective_wants(structure_id);
+        assert!(
+            wants.is_empty(),
+            "Arrow has no inputs, should generate no wants"
+        );
+    }
+
+    #[test]
+    fn auto_logistics_spare_iterations_when_target_met() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        let setup_cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetLogisticsWants {
+                    structure_id,
+                    wants: vec![],
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetCraftingEnabled {
+                    structure_id,
+                    enabled: true,
+                },
+            },
+        ];
+        sim.step(&setup_cmds, sim.tick + 1);
+
+        let bowstring_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Bowstring")
+            .unwrap()
+            .key
+            .clone();
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: bowstring_key,
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        let ar = &sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+        let target = &sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+
+        // Set target: 20, spare: 2.
+        let cmds = vec![
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetRecipeOutputTarget {
+                    active_recipe_target_id: target.id,
+                    target_quantity: 20,
+                },
+            },
+            SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetRecipeAutoLogistics {
+                    active_recipe_id: ar.id,
+                    auto_logistics: true,
+                    spare_iterations: 2,
+                },
+            },
+        ];
+        sim.step(&cmds, sim.tick + 1);
+
+        // Add 20 bowstrings to the building's inventory so target is met.
+        let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bowstring, 20, None, None);
+
+        // runs_needed = 0 (target met), spare = 2, total = 2.
+        // auto_want = 1 * 2 = 2 Fruit (stockpiling for spare iterations).
+        let wants = sim.compute_effective_wants(structure_id);
+        let fruit_want = wants
+            .iter()
+            .find(|w| w.item_kind == inventory::ItemKind::Fruit)
+            .expect("Spare iterations should still generate wants when target is met");
+        assert_eq!(fruit_want.target_quantity, 2);
+    }
+
+    #[test]
+    fn remove_active_recipe_cleans_up_pending_craft_task() {
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Place furniture so the building is functional.
+        let furn_ids: Vec<_> = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        for fid in furn_ids {
+            let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+                f.placed = true;
+            });
+        }
+
+        // Find the bowstring recipe (has inputs) and set a target.
+        let bowstring_key_json = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Bowstring")
+            .unwrap()
+            .key
+            .to_json();
+        let ar = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == bowstring_key_json)
+            .unwrap();
+        let target = sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        let target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 100,
+            },
+        };
+        sim.step(&[target_cmd], sim.tick + 1);
+
+        // Stock building with fruit and run monitor to create a craft task.
+        let inv_id = sim.structure_inv(structure_id);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
+        sim.process_unified_crafting_monitor();
+
+        // Verify craft task exists with reserved items.
+        let craft_tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
+            .collect();
+        assert_eq!(craft_tasks.len(), 1, "Should have 1 pending craft task");
+        let task_id = craft_tasks[0].id;
+
+        let reserved = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|s| s.reserved_by == Some(task_id))
+            .count();
+        assert!(reserved > 0, "Fruit should be reserved");
+
+        // Remove the active recipe.
+        let rm_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::RemoveActiveRecipe {
+                active_recipe_id: ar.id,
+            },
+        };
+        sim.step(&[rm_cmd], sim.tick + 1);
+
+        // The recipe and targets should be gone.
+        assert!(sim.db.active_recipes.get(&ar.id).is_none());
+        assert!(
+            sim.db
+                .active_recipe_targets
+                .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn resolve_craft_via_unified_catalog_path() {
+        // Test the (None, Some(def)) branch of resolve_craft_action by creating
+        // a craft task whose recipe_id doesn't match any config recipe.
+        let mut sim = test_sim(42);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+        // Place furniture.
+        let furn_ids: Vec<_> = sim
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        for fid in furn_ids {
+            let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+                f.placed = true;
+            });
+        }
+
+        // Find the bowstring recipe and set a nonzero target.
+        let bowstring_def = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .into_iter()
+            .find(|r| r.display_name == "Bowstring")
+            .unwrap()
+            .clone();
+        let ar = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == bowstring_def.key.to_json())
+            .unwrap();
+        let target = sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        let target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 100,
+            },
+        };
+        sim.step(&[target_cmd], sim.tick + 1);
+
+        // Stock with fruit and run monitor to create a craft task.
+        let inv_id = sim.structure_inv(structure_id);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
+        sim.process_unified_crafting_monitor();
+
+        let craft_task_id = sim
+            .db
+            .tasks
+            .iter_all()
+            .find(|t| t.kind_tag == TaskKindTag::Craft)
+            .unwrap()
+            .id;
+
+        // Mutate the TaskCraftData to use a non-config recipe_id so the
+        // config lookup fails and we hit the catalog path.
+        let tcd = sim.task_craft_data(craft_task_id).unwrap();
+        let _ = sim.db.task_craft_data.modify_unchecked(&tcd.id, |d| {
+            d.recipe_id = "__not_a_config_recipe__".to_string();
+        });
+
+        // Spawn elf and assign to the task.
+        let structure = sim.db.structures.get(&structure_id).unwrap();
+        let elf_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: structure.anchor,
+            },
+        };
+        sim.step(&[elf_cmd], sim.tick + 1);
+        let elf_id = sim
+            .db
+            .creatures
+            .by_species(&Species::Elf, tabulosity::QueryOpts::ASC)
+            .last()
+            .unwrap()
+            .id;
+        if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+            c.current_task = Some(craft_task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+        if let Some(mut t) = sim.db.tasks.get(&craft_task_id) {
+            t.state = TaskState::InProgress;
+            let _ = sim.db.tasks.update_no_fk(t);
+        }
+
+        // Resolve the craft action — should go through catalog path.
+        let completed = sim.resolve_craft_action(elf_id);
+        assert!(completed, "Craft should complete via catalog path");
+
+        // Fruit should be consumed, bowstring should be produced.
+        let fruit_count = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any,
+        );
+        assert_eq!(fruit_count, 0, "Fruit should be consumed");
+        let bowstring_count = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Bowstring,
+            inventory::MaterialFilter::Any,
+        );
+        assert_eq!(bowstring_count, 20, "Bowstring should be produced (qty 20)");
     }
 
     // =========================================================================
@@ -24747,12 +25823,65 @@ mod tests {
     #[test]
     fn interrupt_craft_clears_reservations() {
         let mut sim = test_sim(42);
-        let (structure_id, elf_id) = setup_workshop(&mut sim);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
+        // Spawn elf near building.
+        let structure = sim.db.structures.get(&structure_id).unwrap();
+        let elf_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: structure.anchor,
+            },
+        };
+        sim.step(&[elf_cmd], sim.tick + 1);
+        let elf_id = sim
+            .db
+            .creatures
+            .by_species(&Species::Elf, tabulosity::QueryOpts::ASC)
+            .last()
+            .unwrap()
+            .id;
+
+        // Find the bowstring recipe (1 Fruit → 20 Bowstring) and set a nonzero target.
+        let bowstring_key_json = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .into_iter()
+            .find(|r| r.display_name == "Bowstring")
+            .unwrap()
+            .key
+            .to_json();
+        let ar = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == bowstring_key_json)
+            .unwrap();
+        let target = sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        let target_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 100,
+            },
+        };
+        sim.step(&[target_cmd], sim.tick + 1);
+
+        // Stock workshop with Fruit and run the crafting monitor.
         let inv_id = sim.structure_inv(structure_id);
         sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
+        sim.process_unified_crafting_monitor();
 
-        sim.process_workshop_monitor();
         let task_id = sim
             .db
             .tasks

@@ -114,10 +114,11 @@
 //   `get_structure_info(id)` — returns a `VarDictionary` with detailed info
 //   including `name` (display name) and `has_custom_name` (bool) for the
 //   info panel. `rename_structure(id, name)` — set or clear (empty string)
-//   a structure's custom name. `set_cooking_config(id, enabled, bread_target)`
-//   — configure cooking on a kitchen building.
-//   `set_workshop_config(id, enabled, recipe_ids)` — configure workshop
-//   recipes. `get_recipes()` — returns all available recipe definitions.
+//   a structure's custom name. Unified crafting commands:
+//   `get_recipe_catalog_for_building(id)`, `set_crafting_enabled(id, enabled)`,
+//   `add_active_recipe(id, key_json)`, `remove_active_recipe(ar_id)`,
+//   `set_recipe_output_target(target_id, qty)`, `set_recipe_auto_logistics(...)`,
+//   `set_recipe_enabled(ar_id, enabled)`, `move_active_recipe_up/down(ar_id)`.
 //   `set_logistics_wants(id, wants_json)` — set building logistics wants
 //   (each want is an `{item_kind, material_filter, quantity}` triple).
 //   `get_logistics_item_kinds()` and `get_logistics_material_options(kind)`
@@ -170,9 +171,9 @@ use elven_canopy_sim::session::{
 use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
-    BuildType, CreatureId, FaceDirection, FruitSpeciesId, FurnishingType, FurnitureKind,
-    LadderKind, OverlapClassification, Priority, SimUuid, Species, StructureId, VitalStatus,
-    VoxelCoord, VoxelType,
+    ActiveRecipeId, ActiveRecipeTargetId, BuildType, CreatureId, FaceDirection, FruitSpeciesId,
+    FurnishingType, FurnitureKind, LadderKind, OverlapClassification, Priority, SimUuid, Species,
+    StructureId, VitalStatus, VoxelCoord, VoxelType,
 };
 use godot::prelude::*;
 
@@ -1626,89 +1627,108 @@ impl SimBridge {
         }
         dict.set("logistics_wants", wants_arr);
 
-        // Cooking data (for Kitchen buildings).
-        dict.set("cooking_enabled", structure.cooking_enabled);
-        dict.set(
-            "cooking_bread_target",
-            structure.cooking_bread_target as i64,
-        );
-        let cook_status = if structure.furnishing
-            == Some(elven_canopy_sim::types::FurnishingType::Kitchen)
-            && structure.cooking_enabled
-        {
-            // Check bread count vs target.
-            let bread_count: u32 = sim.inv_item_count(
-                structure.inventory_id,
-                elven_canopy_sim::inventory::ItemKind::Bread,
-                elven_canopy_sim::inventory::MaterialFilter::Any,
+        // Unified crafting data (for Kitchen, Workshop, and future building types).
+        dict.set("crafting_enabled", structure.crafting_enabled);
+
+        // Active recipes for this building.
+        let active_recipes = sim
+            .db
+            .active_recipes
+            .by_structure_id(&sid, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+        // Sort by sort_order (the compound index iterates by structure_id first).
+        let mut sorted_recipes = active_recipes;
+        sorted_recipes.sort_by_key(|r| r.sort_order);
+
+        let mut recipes_arr = VarArray::new();
+        let mut active_count = 0;
+        let mut satisfied_count = 0;
+        for ar in &sorted_recipes {
+            let mut recipe_dict = VarDictionary::new();
+            recipe_dict.set("active_recipe_id", ar.id.0 as i64);
+            recipe_dict.set(
+                "recipe_key_json",
+                GString::from(ar.recipe_key_json.as_str()),
             );
-            if bread_count >= structure.cooking_bread_target {
-                "Bread target reached"
-            } else {
-                // Check for active Cook task.
-                let has_cook_task = sim
-                    .db
-                    .task_structure_refs
-                    .by_structure_id(&sid, elven_canopy_sim::tabulosity::QueryOpts::ASC)
-                    .iter()
-                    .any(|r| {
-                        r.role == elven_canopy_sim::db::TaskStructureRole::CookAt
-                            && sim.db.tasks.get(&r.task_id).is_some_and(|t| {
-                                t.state != elven_canopy_sim::task::TaskState::Complete
-                            })
-                    });
-                if has_cook_task { "Cooking..." } else { "Idle" }
+            recipe_dict.set(
+                "recipe_display_name",
+                GString::from(ar.recipe_display_name.as_str()),
+            );
+            recipe_dict.set("enabled", ar.enabled);
+            recipe_dict.set("auto_logistics", ar.auto_logistics);
+            recipe_dict.set("spare_iterations", ar.spare_iterations as i64);
+
+            // Per-output targets with stock counts.
+            let targets = sim
+                .db
+                .active_recipe_targets
+                .by_active_recipe_id(&ar.id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+            let mut targets_arr = VarArray::new();
+            let mut all_satisfied = true;
+            let mut any_nonzero_target = false;
+            for target in &targets {
+                let mut target_dict = VarDictionary::new();
+                target_dict.set("target_id", target.id.0 as i64);
+                target_dict.set(
+                    "item_kind",
+                    GString::from(target.output_item_kind.display_name()),
+                );
+                if let Some(mat) = target.output_material {
+                    target_dict.set(
+                        "material",
+                        GString::from(
+                            sim.material_item_display_name(target.output_item_kind, mat)
+                                .as_str(),
+                        ),
+                    );
+                }
+                target_dict.set("target_quantity", target.target_quantity as i64);
+
+                // Stock count: total items (including reserved) for UI display.
+                // The crafting monitor uses unreserved counts to decide when to
+                // create tasks, so "satisfied" status and displayed stock may
+                // briefly disagree while a craft is in progress.
+                let mat_filter = match target.output_material {
+                    Some(m) => elven_canopy_sim::inventory::MaterialFilter::Specific(m),
+                    None => elven_canopy_sim::inventory::MaterialFilter::Any,
+                };
+                let stock =
+                    sim.inv_item_count(structure.inventory_id, target.output_item_kind, mat_filter);
+                target_dict.set("stock", stock as i64);
+
+                if target.target_quantity > 0 {
+                    any_nonzero_target = true;
+                    if stock < target.target_quantity {
+                        all_satisfied = false;
+                    }
+                }
+
+                targets_arr.push(&target_dict.to_variant());
             }
-        } else {
-            ""
-        };
-        dict.set("cook_status", GString::from(cook_status));
+            recipe_dict.set("targets", targets_arr);
 
-        // Workshop data (for Workshop buildings).
-        dict.set("workshop_enabled", structure.workshop_enabled);
-        let mut recipe_ids_arr = VarArray::new();
-        for rid in &structure.workshop_recipe_ids {
-            recipe_ids_arr.push(&GString::from(rid.as_str()).to_variant());
-        }
-        dict.set("workshop_recipe_ids", recipe_ids_arr);
-
-        // Per-recipe targets and stock counts.
-        let mut targets_dict = VarDictionary::new();
-        for (rid, target) in &structure.workshop_recipe_targets {
-            targets_dict.set(GString::from(rid.as_str()), *target as i64);
-        }
-        dict.set("workshop_recipe_targets", targets_dict);
-
-        let mut stocks_dict = VarDictionary::new();
-        for recipe in &sim.config.recipes {
-            if structure.workshop_recipe_ids.contains(&recipe.id) {
-                let stock: u32 = recipe
-                    .outputs
-                    .iter()
-                    .map(|o| {
-                        sim.inv_item_count(
-                            structure.inventory_id,
-                            o.item_kind,
-                            elven_canopy_sim::inventory::MaterialFilter::Any,
-                        )
-                    })
-                    .sum();
-                stocks_dict.set(GString::from(recipe.id.as_str()), stock as i64);
+            if ar.enabled && any_nonzero_target {
+                active_count += 1;
+                if all_satisfied {
+                    satisfied_count += 1;
+                }
             }
-        }
-        dict.set("workshop_recipe_stocks", stocks_dict);
 
-        let craft_status = if structure.furnishing
-            == Some(elven_canopy_sim::types::FurnishingType::Workshop)
-            && structure.workshop_enabled
-        {
+            recipes_arr.push(&recipe_dict.to_variant());
+        }
+        dict.set("active_recipes", recipes_arr);
+        dict.set("active_recipe_count", active_count as i64);
+        dict.set("satisfied_recipe_count", satisfied_count as i64);
+
+        // Craft status: check if there's an active craft task for this building.
+        let craft_status = if structure.crafting_enabled && !sorted_recipes.is_empty() {
             let has_craft_task =
                 sim.db
                     .task_structure_refs
                     .by_structure_id(&sid, elven_canopy_sim::tabulosity::QueryOpts::ASC)
                     .iter()
                     .any(|r| {
-                        r.role == elven_canopy_sim::db::TaskStructureRole::CraftAt
+                        (r.role == elven_canopy_sim::db::TaskStructureRole::CraftAt
+                            || r.role == elven_canopy_sim::db::TaskStructureRole::CookAt)
                             && sim.db.tasks.get(&r.task_id).is_some_and(|t| {
                                 t.state != elven_canopy_sim::task::TaskState::Complete
                             })
@@ -2033,64 +2053,30 @@ impl SimBridge {
         arr
     }
 
-    /// Set the cooking configuration for a kitchen building.
+    /// Get the recipe catalog for a building, filtered to recipes available
+    /// for its furnishing type. Returns a flat list of recipe dicts (hierarchy
+    /// is deferred to a future pass when category data is populated).
     #[func]
-    fn set_cooking_config(&mut self, structure_id: i64, cooking_enabled: bool, bread_target: i32) {
-        self.apply_or_send(SimAction::SetCookingConfig {
-            structure_id: StructureId(structure_id as u64),
-            cooking_enabled,
-            cooking_bread_target: bread_target.max(0) as u32,
-        });
-    }
-
-    /// Set the workshop configuration for a workshop building.
-    #[func]
-    fn set_workshop_config(
-        &mut self,
-        structure_id: i64,
-        enabled: bool,
-        recipe_configs_json: GString,
-    ) {
-        let json_str = recipe_configs_json.to_string();
-        let parsed: Vec<serde_json::Value> = match serde_json::from_str(&json_str) {
-            Ok(v) => v,
-            Err(e) => {
-                godot_error!("SimBridge: failed to parse workshop config JSON: {e}");
-                return;
-            }
-        };
-        let configs: Vec<elven_canopy_sim::command::WorkshopRecipeEntry> = parsed
-            .iter()
-            .filter_map(|v| {
-                let id = v.get("id")?.as_str()?.to_string();
-                let target = v.get("target").and_then(|t| t.as_u64()).unwrap_or(0) as u32;
-                Some(elven_canopy_sim::command::WorkshopRecipeEntry {
-                    recipe_id: id,
-                    target,
-                })
-            })
-            .collect();
-        self.apply_or_send(SimAction::SetWorkshopConfig {
-            structure_id: StructureId(structure_id as u64),
-            workshop_enabled: enabled,
-            recipe_configs: configs,
-        });
-    }
-
-    /// Get all available recipes as an array of dictionaries.
-    #[func]
-    fn get_recipes(&self) -> VarArray {
+    fn get_recipe_catalog_for_building(&self, structure_id: i64) -> VarArray {
         let Some(sim) = &self.session.sim else {
             return VarArray::new();
         };
+        let sid = StructureId(structure_id as u64);
+        let Some(structure) = sim.db.structures.get(&sid) else {
+            return VarArray::new();
+        };
+        let Some(ft) = structure.furnishing else {
+            return VarArray::new();
+        };
+        let recipes = sim.recipe_catalog.recipes_for_furnishing(ft);
         let mut arr = VarArray::new();
-        for recipe in &sim.config.recipes {
+        for def in &recipes {
             let mut d = VarDictionary::new();
-            d.set("id", GString::from(&recipe.id));
-            d.set("display_name", GString::from(&recipe.display_name));
-            d.set("work_ticks", recipe.work_ticks as i64);
+            d.set("key_json", GString::from(def.key.to_json().as_str()));
+            d.set("display_name", GString::from(def.display_name.as_str()));
+            d.set("work_ticks", def.work_ticks as i64);
             let mut inputs = VarArray::new();
-            for input in &recipe.inputs {
+            for input in &def.inputs {
                 let mut inp = VarDictionary::new();
                 inp.set("item_kind", GString::from(input.item_kind.display_name()));
                 inp.set("quantity", input.quantity as i64);
@@ -2098,16 +2084,105 @@ impl SimBridge {
             }
             d.set("inputs", inputs);
             let mut outputs = VarArray::new();
-            for output in &recipe.outputs {
+            for output in &def.outputs {
                 let mut out = VarDictionary::new();
                 out.set("item_kind", GString::from(output.item_kind.display_name()));
                 out.set("quantity", output.quantity as i64);
+                if let Some(mat) = output.material {
+                    out.set(
+                        "material",
+                        GString::from(
+                            sim.material_item_display_name(output.item_kind, mat)
+                                .as_str(),
+                        ),
+                    );
+                }
                 outputs.push(&out.to_variant());
             }
             d.set("outputs", outputs);
             arr.push(&d.to_variant());
         }
         arr
+    }
+
+    /// Set the unified crafting toggle for a building.
+    #[func]
+    fn set_crafting_enabled(&mut self, structure_id: i64, enabled: bool) {
+        self.apply_or_send(SimAction::SetCraftingEnabled {
+            structure_id: StructureId(structure_id as u64),
+            enabled,
+        });
+    }
+
+    /// Add an active recipe to a building by its RecipeKey JSON string.
+    #[func]
+    fn add_active_recipe(&mut self, structure_id: i64, recipe_key_json: GString) {
+        let json_str = recipe_key_json.to_string();
+        let Some(key) = elven_canopy_sim::recipe::RecipeKey::from_json(&json_str) else {
+            godot_error!("SimBridge: failed to parse recipe key JSON: {json_str}");
+            return;
+        };
+        self.apply_or_send(SimAction::AddActiveRecipe {
+            structure_id: StructureId(structure_id as u64),
+            recipe_key: key,
+        });
+    }
+
+    /// Remove an active recipe by its ActiveRecipeId.
+    #[func]
+    fn remove_active_recipe(&mut self, active_recipe_id: i64) {
+        self.apply_or_send(SimAction::RemoveActiveRecipe {
+            active_recipe_id: ActiveRecipeId(active_recipe_id as u64),
+        });
+    }
+
+    /// Set the target quantity for a specific recipe output.
+    #[func]
+    fn set_recipe_output_target(&mut self, active_recipe_target_id: i64, target_quantity: i32) {
+        self.apply_or_send(SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: ActiveRecipeTargetId(active_recipe_target_id as u64),
+            target_quantity: target_quantity.max(0) as u32,
+        });
+    }
+
+    /// Configure auto-logistics for an active recipe.
+    #[func]
+    fn set_recipe_auto_logistics(
+        &mut self,
+        active_recipe_id: i64,
+        auto_logistics: bool,
+        spare_iterations: i32,
+    ) {
+        self.apply_or_send(SimAction::SetRecipeAutoLogistics {
+            active_recipe_id: ActiveRecipeId(active_recipe_id as u64),
+            auto_logistics,
+            spare_iterations: spare_iterations.max(0) as u32,
+        });
+    }
+
+    /// Toggle an individual active recipe without removing it.
+    #[func]
+    fn set_recipe_enabled(&mut self, active_recipe_id: i64, enabled: bool) {
+        self.apply_or_send(SimAction::SetRecipeEnabled {
+            active_recipe_id: ActiveRecipeId(active_recipe_id as u64),
+            enabled,
+        });
+    }
+
+    /// Move an active recipe up in priority (lower sort_order).
+    #[func]
+    fn move_active_recipe_up(&mut self, active_recipe_id: i64) {
+        self.apply_or_send(SimAction::MoveActiveRecipeUp {
+            active_recipe_id: ActiveRecipeId(active_recipe_id as u64),
+        });
+    }
+
+    /// Move an active recipe down in priority (higher sort_order).
+    #[func]
+    fn move_active_recipe_down(&mut self, active_recipe_id: i64) {
+        self.apply_or_send(SimAction::MoveActiveRecipeDown {
+            active_recipe_id: ActiveRecipeId(active_recipe_id as u64),
+        });
     }
 
     /// Return positions for any species as a PackedVector3Array, interpolated

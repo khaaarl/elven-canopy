@@ -18,13 +18,19 @@
 use serde::{Deserialize, Serialize};
 
 /// The kind of item. Each variant is a distinct item type.
+///
+/// **STABLE ENUM:** Discriminant values are persisted in save files via
+/// `RecipeKey`. Never reorder, never reuse a number. Append new variants
+/// at the end with the next available discriminant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[repr(u16)]
 pub enum ItemKind {
-    Bread,
-    Fruit,
-    Bow,
-    Arrow,
-    Bowstring,
+    Bread = 0,
+    Fruit = 1,
+    Bow = 2,
+    Arrow = 3,
+    Bowstring = 4,
+    // Append new variants here with the next sequential number.
 }
 
 impl ItemKind {
@@ -44,15 +50,21 @@ impl ItemKind {
 ///
 /// Wood types are used for crafted items. `FruitSpecies` identifies which
 /// procedurally generated fruit species an item came from (see `fruit.rs`).
+///
+/// **STABLE ENUM:** Discriminant values are persisted in save files via
+/// `RecipeKey`. Never reorder, never reuse a number. Append new variants
+/// at the end with the next available discriminant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[repr(u16)]
 pub enum Material {
-    Oak,
-    Birch,
-    Willow,
-    Ash,
-    Yew,
+    Oak = 0,
+    Birch = 1,
+    Willow = 2,
+    Ash = 3,
+    Yew = 4,
     /// A procedurally generated fruit species, identified by worldgen ID.
-    FruitSpecies(crate::fruit::FruitSpeciesId),
+    FruitSpecies(crate::fruit::FruitSpeciesId) = 5,
+    // Append new variants here with the next sequential number.
 }
 
 impl Material {
@@ -74,15 +86,21 @@ impl Material {
 /// `Any` matches any material (or no material). `Specific(m)` matches only
 /// items with `material == Some(m)`. Derives `Default` (→ `Any`) for serde
 /// backward compatibility, and `Ord` for use as a BTreeMap key (determinism).
+///
+/// **STABLE ENUM:** Discriminant values are persisted in save files via
+/// `RecipeKey`. Never reorder, never reuse a number. Append new variants
+/// at the end with the next available discriminant.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
+#[repr(u16)]
 pub enum MaterialFilter {
     /// Any material or no material. "Give me any Fruit."
     #[default]
-    Any,
+    Any = 0,
     /// A specific material. "Give me Shinethúni Fruit."
-    Specific(Material),
+    Specific(Material) = 1,
+    // Append new variants here with the next sequential number.
 }
 
 impl MaterialFilter {
