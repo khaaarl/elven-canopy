@@ -110,6 +110,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-flying-nav           3D flight navigation system
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
+[ ] F-friendly-fire        Friendly-fire avoidance for ranged attacks
 [ ] F-fruit-extraction     Fruit extraction (hulling/separation into components)
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
@@ -1142,6 +1143,8 @@ Ranged attack as a creature ACTION. Uses the standard ActionKind / next_availabl
 
 **Draft:** docs/drafts/combat_military.md (§5)
 
+**Related:** F-friendly-fire
+
 #### F-task-interruption — Unified task interruption and cleanup
 **Status:** Done
 
@@ -1905,6 +1908,13 @@ Creatures with Flee response (civilian military group default, or FleeOnly comba
 
 **Draft:** docs/drafts/combat_military.md (§7)
 
+#### F-friendly-fire — Friendly-fire avoidance for ranged attacks
+**Status:** Todo
+
+Projectiles currently hit any alive creature in their path after the origin voxel, with no distinction between friendly and hostile targets. This feature adds friendly-fire avoidance so ranged attackers don't shoot when the arrow's arc would pass too close to a friendly creature. Details TBD: proximity threshold (voxel-level or sub-voxel), whether to block the shot entirely or pick an alternate target, whether to account for moving friendlies, and how this interacts with player-directed vs autonomous attacks (player-directed might allow riskier shots).
+
+**Related:** F-projectiles, F-shoot-action
+
 #### F-hostile-detection — Hostile detection and faction logic
 **Status:** Done
 
@@ -2005,7 +2015,7 @@ SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity t
 
 **Draft:** docs/drafts/combat_military.md (§4)
 
-**Related:** F-spatial-index
+**Related:** F-friendly-fire, F-spatial-index
 
 #### F-spatial-index — Creature spatial index for voxel-level position queries
 **Status:** Done
