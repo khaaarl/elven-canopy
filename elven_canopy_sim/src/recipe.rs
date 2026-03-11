@@ -4,8 +4,8 @@
 // workshop recipe list) with a single unified model. Recipes are identified
 // structurally by `RecipeKey` (verb + sorted inputs/outputs), not by string
 // names. The `RecipeCatalog` is built at startup from config recipes and
-// (future) dynamically generated fruit-variety recipes, then stored immutably
-// on `SimState`.
+// dynamically generated fruit extraction recipes (one per fruit species),
+// then stored immutably on `SimState`.
 //
 // Key types:
 // - `RecipeVerb` — stable enum distinguishing crafting methods (Cook, Assemble,
@@ -114,6 +114,10 @@ pub struct RecipeDef {
     pub subcomponent_records: Vec<RecipeSubcomponentRecord>,
     /// Species restriction. `None` = any species can craft.
     pub required_species: Option<Species>,
+    /// Whether this recipe is auto-added to buildings when they are furnished.
+    /// Config recipes (bread, weapons) are true; dynamic extraction recipes are
+    /// false (user adds them manually from the available catalog).
+    pub auto_add_on_furnish: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -160,15 +164,32 @@ impl RecipeCatalog {
             .filter(|r| r.furnishing_types.contains(&ft))
             .collect()
     }
+
+    /// Get recipes that should be auto-added when a building is furnished.
+    /// Filters by furnishing type AND `auto_add_on_furnish == true`.
+    pub fn default_recipes_for_furnishing(&self, ft: FurnishingType) -> Vec<&RecipeDef> {
+        self.recipes
+            .values()
+            .filter(|r| r.furnishing_types.contains(&ft) && r.auto_add_on_furnish)
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Catalog builder
 // ---------------------------------------------------------------------------
 
-/// Builds a `RecipeCatalog` from config recipes and the game config's
-/// cooking parameters.
-pub fn build_catalog(config: &crate::config::GameConfig) -> RecipeCatalog {
+/// Builds a `RecipeCatalog` from config recipes, cooking parameters, and
+/// fruit species (for extraction recipes).
+///
+/// `fruit_species` should be the full list of fruit species from the world.
+/// For each species, one extraction recipe is generated (1 fruit → N component
+/// items based on the species' parts). Pass an empty slice when fruit species
+/// are not yet available (e.g., during early initialization before worldgen).
+pub fn build_catalog(
+    config: &crate::config::GameConfig,
+    fruit_species: &[crate::fruit::FruitSpecies],
+) -> RecipeCatalog {
     let mut recipes = BTreeMap::new();
 
     // Convert the bread recipe (formerly hardcoded kitchen logic).
@@ -181,7 +202,81 @@ pub fn build_catalog(config: &crate::config::GameConfig) -> RecipeCatalog {
         recipes.insert(def.key.clone(), def);
     }
 
+    // Generate extraction recipes for each fruit species.
+    for species in fruit_species {
+        let def = build_extraction_recipe(config, species);
+        recipes.insert(def.key.clone(), def);
+    }
+
     RecipeCatalog { recipes }
+}
+
+/// Build an extraction recipe for a specific fruit species.
+///
+/// Input: 1 fruit of the given species.
+/// Outputs: one item stack per part, using `PartType::extracted_item_kind()`
+/// with quantity from `part.component_units`.
+fn build_extraction_recipe(
+    config: &crate::config::GameConfig,
+    species: &crate::fruit::FruitSpecies,
+) -> RecipeDef {
+    let material = Material::FruitSpecies(species.id);
+    let material_filter = MaterialFilter::Specific(material);
+
+    let inputs_key = vec![(ItemKind::Fruit, material_filter, 1)];
+
+    let mut outputs_key: Vec<(ItemKind, Option<Material>, u32)> = species
+        .parts
+        .iter()
+        .map(|part| {
+            (
+                part.part_type.extracted_item_kind(),
+                Some(material),
+                part.component_units as u32,
+            )
+        })
+        .collect();
+    outputs_key.sort();
+
+    let inputs = vec![crate::config::RecipeInput {
+        item_kind: ItemKind::Fruit,
+        quantity: 1,
+        material_filter,
+    }];
+
+    let outputs: Vec<crate::config::RecipeOutput> = species
+        .parts
+        .iter()
+        .map(|part| crate::config::RecipeOutput {
+            item_kind: part.part_type.extracted_item_kind(),
+            quantity: part.component_units as u32,
+            material: Some(material),
+            quality: 0,
+        })
+        .collect();
+
+    let display_name = if species.vaelith_name.is_empty() {
+        format!("Extract Fruit #{}", species.id.0)
+    } else {
+        format!("Extract {}", species.vaelith_name)
+    };
+
+    RecipeDef {
+        key: RecipeKey {
+            verb: RecipeVerb::Extract,
+            inputs: inputs_key,
+            outputs: outputs_key,
+        },
+        display_name,
+        category: vec!["Extraction".to_string()],
+        furnishing_types: vec![FurnishingType::Kitchen],
+        inputs,
+        outputs,
+        work_ticks: config.extract_work_ticks,
+        subcomponent_records: vec![],
+        required_species: Some(Species::Elf),
+        auto_add_on_furnish: false,
+    }
 }
 
 /// Build the bread recipe from kitchen config parameters.
@@ -220,6 +315,7 @@ fn build_bread_recipe(config: &crate::config::GameConfig) -> RecipeDef {
         work_ticks: config.cook_bread_work_ticks,
         subcomponent_records: vec![],
         required_species: Some(Species::Elf),
+        auto_add_on_furnish: true,
     }
 }
 
@@ -291,6 +387,7 @@ fn convert_config_recipe(recipe: &crate::config::Recipe) -> RecipeDef {
         work_ticks: recipe.work_ticks,
         subcomponent_records: recipe.subcomponent_records.clone(),
         required_species: Some(Species::Elf),
+        auto_add_on_furnish: true,
     }
 }
 
@@ -337,7 +434,7 @@ mod tests {
     #[test]
     fn build_catalog_contains_expected_recipes() {
         let config = GameConfig::default();
-        let catalog = build_catalog(&config);
+        let catalog = build_catalog(&config, &[]);
 
         // Should have bread + 3 workshop recipes = 4 total.
         assert_eq!(catalog.len(), 4);
@@ -355,7 +452,7 @@ mod tests {
     #[test]
     fn catalog_outputs_have_nonzero_quantity() {
         let config = GameConfig::default();
-        let catalog = build_catalog(&config);
+        let catalog = build_catalog(&config, &[]);
         for (_key, def) in catalog.iter() {
             for output in &def.outputs {
                 assert!(
@@ -371,7 +468,7 @@ mod tests {
     #[test]
     fn recipe_key_inputs_outputs_are_sorted() {
         let config = GameConfig::default();
-        let catalog = build_catalog(&config);
+        let catalog = build_catalog(&config, &[]);
         for (key, _def) in catalog.iter() {
             let mut sorted_inputs = key.inputs.clone();
             sorted_inputs.sort();
@@ -388,5 +485,78 @@ mod tests {
                 key.verb,
             );
         }
+    }
+
+    #[test]
+    fn extraction_recipes_generated_from_fruit_species() {
+        use crate::fruit::{
+            FruitAppearance, FruitColor, FruitPart, FruitShape, FruitSpecies, GrowthHabitat,
+            PartType, Rarity,
+        };
+        use std::collections::BTreeSet;
+
+        let config = GameConfig::default();
+        let species = vec![FruitSpecies {
+            id: crate::types::FruitSpeciesId(0),
+            vaelith_name: "Testaleth".to_string(),
+            english_gloss: "test-berry".to_string(),
+            parts: vec![
+                FruitPart {
+                    part_type: PartType::Flesh,
+                    properties: BTreeSet::new(),
+                    pigment: None,
+                    component_units: 40,
+                },
+                FruitPart {
+                    part_type: PartType::Seed,
+                    properties: BTreeSet::new(),
+                    pigment: None,
+                    component_units: 10,
+                },
+            ],
+            habitat: GrowthHabitat::Branch,
+            rarity: Rarity::Common,
+            greenhouse_cultivable: false,
+            appearance: FruitAppearance {
+                exterior_color: FruitColor {
+                    r: 200,
+                    g: 100,
+                    b: 50,
+                },
+                shape: FruitShape::Round,
+                size_percent: 100,
+                glows: false,
+            },
+        }];
+
+        let catalog = build_catalog(&config, &species);
+
+        // Should have bread (1) + workshop (3) + extraction (1) = 5.
+        assert_eq!(catalog.len(), 5);
+
+        // Kitchen should have bread + extraction = 2.
+        let kitchen_recipes = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
+        assert_eq!(kitchen_recipes.len(), 2);
+
+        let extract_def = kitchen_recipes
+            .iter()
+            .find(|r| r.display_name == "Extract Testaleth")
+            .expect("extraction recipe should exist");
+
+        assert_eq!(extract_def.key.verb, RecipeVerb::Extract);
+        assert_eq!(extract_def.outputs.len(), 2);
+        assert!(!extract_def.auto_add_on_furnish);
+        assert_eq!(extract_def.category, vec!["Extraction".to_string()]);
+        assert_eq!(extract_def.work_ticks, config.extract_work_ticks);
+
+        // Keys should be sorted.
+        let mut sorted_outputs = extract_def.key.outputs.clone();
+        sorted_outputs.sort();
+        assert_eq!(extract_def.key.outputs, sorted_outputs);
+
+        // Default recipes should NOT include extraction.
+        let defaults = catalog.default_recipes_for_furnishing(FurnishingType::Kitchen);
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults[0].display_name, "Bread");
     }
 }

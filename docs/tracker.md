@@ -110,7 +110,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-friendly-fire        Friendly-fire avoidance for ranged attacks
-[ ] F-fruit-extraction     Fruit extraction (hulling/separation into components)
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
@@ -210,6 +209,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-flee                 Flee behavior for civilians
 [x] F-food-gauge           Creature food gauge with decay
+[x] F-fruit-extraction     Fruit extraction (hulling/separation into components)
 [x] F-fruit-naming         Fruit naming overhaul
 [x] F-fruit-sprites        Procedural fruit sprites
 [x] F-fruit-yields         Fruit yield model overhaul
@@ -1250,7 +1250,6 @@ Later expansions (not in initial scope): dye pressing from pigmented
 parts, fermentation, medicinal brewing, luminous oil distillation,
 mana essence refinement.
 
-**Blocked by:** F-fruit-extraction
 **Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-recipes
 
 #### F-crafting — Non-construction jobs and crafting
@@ -1289,7 +1288,7 @@ creation, building input/output slots, and elf decision-making.
 **Related:** F-bldg-dining, F-bldg-kitchen, F-bldg-storehouse, F-bread, F-fruit-extraction, F-fruit-prod, F-fruit-variety, F-hauling, F-logistics, F-recipes
 
 #### F-fruit-extraction — Fruit extraction (hulling/separation into components)
-**Status:** Todo · **Phase:** 7
+**Status:** Done · **Phase:** 7
 
 Fruit extraction: the first processing step that converts a whole fruit
 into its constituent component item stacks. A kitchen takes one whole
@@ -1298,58 +1297,37 @@ carrying the source species as material. For example, hulling a
 Shinethuni fruit (37 pulp + 52 fiber + 15 seed) produces "37 Shinethuni
 Pulp", "52 Shinethuni Fiber", and "15 Shinethuni Seed".
 
-**Status: READY.** F-unified-craft-ui is complete — the unified recipe
-catalog and ActiveRecipe system are in place. The old branch
-`feature/F-fruit-extraction` has a partial implementation that predates
-the unified system; it is kept as reference for the design intent and
-tested behaviors, but the extraction logic should be reimplemented using
-the unified RecipeDef/RecipeCatalog/ActiveRecipe infrastructure.
+Implemented on `feature/F-fruit-extraction-v2` using the unified
+crafting system — no separate monitor, action kind, or structure fields.
+Each fruit species gets one dynamically generated Extract recipe in the
+RecipeCatalog (1 Fruit → N component items based on species parts).
 
-**What's done on branch** (4 commits on `feature/F-fruit-extraction`):
-
-Sim layer (working, tested — but may need rework for unified recipes):
+**What's done:**
 - 6 new ItemKind variants: Pulp, Husk, Seed, FruitFiber, FruitSap,
-  FruitResin. Each maps from a PartType via extracted_item_kind().
-- TaskKind::ExtractFruit, ActionKind::Extract with full action cycle:
-  start -> wait extract_work_ticks (3000) -> resolve (consume 1
-  reserved fruit, produce component items per species parts with
-  FruitSpecies material) -> complete.
-- Extraction monitor (process_extraction_monitor): runs each logistics
-  heartbeat, creates tasks when kitchen has extraction_enabled + fruit
-  of the configured species + at least one component target unmet + no
-  active extract task already.
-- Cleanup on interruption: releases reservations, marks task Complete.
-- Structure fields: extraction_enabled, extraction_species,
-  extraction_targets (BTreeMap<ItemKind, u32>).
-- SetExtractionConfig SimCommand (enabled + species).
-- Display names use Vaelith species name ("Shinethuni Pulp" not "Fruit
-  Pulp").
-- 8 tests: resolve produces correct components, monitor
-  creates/skips/deduplicates tasks, cleanup, serde roundtrip, command
-  processing, display names.
-- gdext bridge: set_extraction_config(), extraction data in
-  get_structure_info(), new ItemKinds in logistics picker.
+  FruitResin. PartType::extracted_item_kind() maps part types to items.
+- Dynamic extraction recipes generated per fruit species in
+  build_catalog(). RecipeVerb::Extract, category "Extraction", Kitchen
+  furnishing type, auto_add_on_furnish=false.
+- RecipeDef.auto_add_on_furnish flag + default_recipes_for_furnishing()
+  so extraction recipes don't clutter every new kitchen.
+- Species-aware display names ("Shinethuni Pulp", "Testaleth Fiber").
+- extract_work_ticks config parameter (default 3000).
+- Greenhouse logistics priority fix: greenhouses now get priority 1 so
+  the haul system can pull fruit from them.
+- Auto-logistics works via the unified crafting system's
+  compute_effective_wants().
+- gdext bridge: new ItemKinds in logistics picker and material options.
+- 11 tests covering recipe generation, catalog integration, monitor
+  task creation, full extraction resolution, display names, serde
+  roundtrip, target satisfaction, auto-add filtering, part mapping,
+  and greenhouse-to-kitchen haul.
 
-UI (broken, needs complete redo):
-- Kitchen info panel has an "Extraction" section with enable toggle,
-  species dropdown, status label. Doesn't work well — this difficulty
-  is what reprioritized F-unified-craft-ui.
-- extraction_targets not exposed in UI.
-- No auto-created logistics wants for hauling fruit to extraction
-  kitchens.
-
-**What still needs doing** (after F-unified-craft-ui):
-- Reimplement extraction using the unified recipe format — extraction
-  is a multi-output recipe where inputs/outputs depend on the fruit
-  species' part definitions
-- UI via the unified crafting panel
-- Auto-create logistics wants to pull fruit into extraction kitchens
-- Consider separation verb cosmetics (hull, press, crack, etc.)
+**Remaining (nice-to-have, not blocking merge):**
+- Separation verb cosmetics (hull, press, crack, etc.)
 
 Does NOT include downstream transformation recipes (bread, thread, etc.)
 — those belong in F-component-recipes.
 
-**Blocks:** F-component-recipes
 **Related:** F-bldg-kitchen, F-food-chain, F-fruit-variety
 
 #### F-fruit-prod — Basic fruit production and harvesting

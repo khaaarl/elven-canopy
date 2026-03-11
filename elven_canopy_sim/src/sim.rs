@@ -530,9 +530,10 @@ impl SimState {
         let mut trees = BTreeMap::new();
         trees.insert(player_tree_id, wg.home_tree);
 
-        // Build species table and recipe catalog from config.
+        // Build species table and recipe catalog from config + worldgen fruits.
         let species_table = config.species.clone();
-        let recipe_catalog = crate::recipe::build_catalog(&config);
+        let fruit_species: Vec<_> = wg.db.fruit_species.iter_all().cloned().collect();
+        let recipe_catalog = crate::recipe::build_catalog(&config, &fruit_species);
 
         let mut state = Self {
             tick: 0,
@@ -2847,32 +2848,43 @@ impl SimState {
 
     /// Return a human-readable display name for an item stack. For fruit with
     /// a known species, returns e.g. "Shinethúni Fruit" or "Révatórun Pod".
-    /// For all other items, returns the basic `ItemKind::display_name()`.
+    /// For extracted components with a fruit species material, returns e.g.
+    /// "Shinethúni Pulp". For all other items, returns the basic
+    /// `ItemKind::display_name()`.
     pub fn item_display_name(&self, stack: &crate::db::ItemStack) -> String {
-        if stack.kind == inventory::ItemKind::Fruit
-            && let Some(inventory::Material::FruitSpecies(id)) = stack.material
+        if let Some(inventory::Material::FruitSpecies(id)) = stack.material
             && let Some(species) = self.db.fruit_species.get(&id)
         {
-            let noun = species.appearance.shape.item_noun();
-            return format!("{} {}", species.vaelith_name, noun);
+            if stack.kind == inventory::ItemKind::Fruit {
+                let noun = species.appearance.shape.item_noun();
+                return format!("{} {}", species.vaelith_name, noun);
+            }
+            if stack.kind.is_extracted_component() {
+                return format!("{} {}", species.vaelith_name, stack.kind.display_name());
+            }
         }
         stack.kind.display_name().to_owned()
     }
 
     /// Display name for an item kind + specific material combination. For fruit
-    /// species, uses the Vaelith name + shape noun. For wood materials, uses
-    /// "Oak Bow" etc. Falls back to the item kind's display name.
+    /// species, uses the Vaelith name + shape noun. For extracted components,
+    /// uses "Shinethúni Pulp" etc. For wood materials, uses "Oak Bow" etc.
+    /// Falls back to the item kind's display name.
     pub fn material_item_display_name(
         &self,
         kind: inventory::ItemKind,
         material: inventory::Material,
     ) -> String {
-        if kind == inventory::ItemKind::Fruit
-            && let inventory::Material::FruitSpecies(id) = material
+        if let inventory::Material::FruitSpecies(id) = material
             && let Some(species) = self.db.fruit_species.get(&id)
         {
-            let noun = species.appearance.shape.item_noun();
-            return format!("{} {}", species.vaelith_name, noun);
+            if kind == inventory::ItemKind::Fruit {
+                let noun = species.appearance.shape.item_noun();
+                return format!("{} {}", species.vaelith_name, noun);
+            }
+            if kind.is_extracted_component() {
+                return format!("{} {}", species.vaelith_name, kind.display_name());
+            }
         }
         format!("{} {}", material.display_name(), kind.display_name())
     }
@@ -9309,6 +9321,7 @@ impl SimState {
                 Vec::new()
             }
             FurnishingType::Greenhouse => {
+                structure.logistics_priority = Some(self.config.greenhouse_default_priority);
                 structure.greenhouse_species = greenhouse_species;
                 structure.greenhouse_enabled = true;
                 structure.greenhouse_last_production_tick = self.tick;
@@ -9351,6 +9364,7 @@ impl SimState {
     /// Add default `ActiveRecipe` entries when a building is furnished.
     /// For kitchens: adds the bread recipe with the default bread target.
     /// For workshops: adds all workshop recipes with zero targets (user must set).
+    /// Extraction recipes are NOT auto-added (user adds them from the catalog).
     fn add_default_active_recipes(
         &mut self,
         structure_id: StructureId,
@@ -9358,7 +9372,7 @@ impl SimState {
     ) {
         let recipes_to_add: Vec<crate::recipe::RecipeKey> = self
             .recipe_catalog
-            .recipes_for_furnishing(furnishing_type)
+            .default_recipes_for_furnishing(furnishing_type)
             .iter()
             .map(|r| r.key.clone())
             .collect();
@@ -9871,7 +9885,8 @@ impl SimState {
         self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
         self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
-        self.recipe_catalog = crate::recipe::build_catalog(&self.config);
+        let fruit_species: Vec<_> = self.db.fruit_species.iter_all().cloned().collect();
+        self.recipe_catalog = crate::recipe::build_catalog(&self.config, &fruit_species);
         self.cleanup_orphaned_active_recipes();
         self.lexicon = Some(elven_canopy_lang::default_lexicon());
 
@@ -21653,7 +21668,17 @@ mod tests {
     #[test]
     fn new_item_kind_serde_roundtrip() {
         use crate::inventory::ItemKind;
-        for kind in [ItemKind::Bow, ItemKind::Arrow, ItemKind::Bowstring] {
+        for kind in [
+            ItemKind::Bow,
+            ItemKind::Arrow,
+            ItemKind::Bowstring,
+            ItemKind::Pulp,
+            ItemKind::Husk,
+            ItemKind::Seed,
+            ItemKind::FruitFiber,
+            ItemKind::FruitSap,
+            ItemKind::FruitResin,
+        ] {
             let json = serde_json::to_string(&kind).unwrap();
             let restored: ItemKind = serde_json::from_str(&json).unwrap();
             assert_eq!(kind, restored);
@@ -31898,6 +31923,611 @@ mod tests {
             sim.resolve_hostile_response(goblin_id),
             None,
             "Non-civ creature should return None"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fruit extraction tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: insert a test fruit species into the sim DB and rebuild the
+    /// recipe catalog to include its extraction recipe. Returns the species ID.
+    fn insert_test_fruit_species(sim: &mut SimState) -> crate::fruit::FruitSpeciesId {
+        use crate::fruit::{
+            FruitAppearance, FruitColor, FruitPart, FruitShape, FruitSpecies, GrowthHabitat,
+            PartType, Rarity,
+        };
+        use std::collections::BTreeSet;
+        let id = crate::types::FruitSpeciesId(999);
+        let species = FruitSpecies {
+            id,
+            vaelith_name: "Testaleth".to_string(),
+            english_gloss: "test-berry".to_string(),
+            parts: vec![
+                FruitPart {
+                    part_type: PartType::Flesh,
+                    properties: BTreeSet::new(),
+                    pigment: None,
+                    component_units: 37,
+                },
+                FruitPart {
+                    part_type: PartType::Fiber,
+                    properties: BTreeSet::new(),
+                    pigment: None,
+                    component_units: 52,
+                },
+                FruitPart {
+                    part_type: PartType::Seed,
+                    properties: BTreeSet::new(),
+                    pigment: None,
+                    component_units: 15,
+                },
+            ],
+            habitat: GrowthHabitat::Branch,
+            rarity: Rarity::Common,
+            greenhouse_cultivable: true,
+            appearance: FruitAppearance {
+                exterior_color: FruitColor {
+                    r: 200,
+                    g: 100,
+                    b: 50,
+                },
+                shape: FruitShape::Round,
+                size_percent: 100,
+                glows: false,
+            },
+        };
+        let _ = sim.db.fruit_species.insert_no_fk(species);
+        // Rebuild catalog so extraction recipe is included.
+        let fruits: Vec<_> = sim.db.fruit_species.iter_all().cloned().collect();
+        sim.recipe_catalog = crate::recipe::build_catalog(&sim.config, &fruits);
+        id
+    }
+
+    /// Helper: set up a kitchen with a test fruit species extraction recipe
+    /// enabled and targeted. Returns (structure_id, species_id).
+    fn setup_extraction_kitchen(sim: &mut SimState) -> (StructureId, crate::fruit::FruitSpeciesId) {
+        let species_id = insert_test_fruit_species(sim);
+        let structure_id = setup_crafting_building(sim, FurnishingType::Kitchen);
+
+        // Find the extraction recipe for our test species.
+        let extract_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Kitchen)
+            .into_iter()
+            .find(|r| r.display_name == "Extract Testaleth")
+            .expect("extraction recipe should exist")
+            .key
+            .clone();
+
+        // Add the extraction recipe to the kitchen.
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: extract_key.clone(),
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        // Set nonzero targets for the outputs so the monitor will schedule work.
+        let active_recipes = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+        let ar = active_recipes
+            .iter()
+            .find(|r| r.recipe_key_json == extract_key.to_json())
+            .expect("active recipe should exist");
+
+        let targets = sim
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC);
+        for target in &targets {
+            let set_cmd = SimCommand {
+                player_id: sim.player_id,
+                tick: sim.tick + 1,
+                action: SimAction::SetRecipeOutputTarget {
+                    active_recipe_target_id: target.id,
+                    target_quantity: 100,
+                },
+            };
+            sim.step(&[set_cmd], sim.tick + 1);
+        }
+
+        (structure_id, species_id)
+    }
+
+    #[test]
+    fn extraction_recipe_catalog_has_recipes_for_worldgen_species() {
+        let sim = test_sim(42);
+        let fruit_count = sim.db.fruit_species.iter_all().count();
+        assert!(fruit_count > 0, "worldgen should produce fruit species");
+
+        let kitchen_recipes = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Kitchen);
+        // Should have bread + one extraction recipe per species.
+        assert_eq!(
+            kitchen_recipes.len(),
+            1 + fruit_count,
+            "kitchen should have bread + extraction recipes"
+        );
+
+        // Verify extraction recipes are NOT auto-added.
+        let default_recipes = sim
+            .recipe_catalog
+            .default_recipes_for_furnishing(FurnishingType::Kitchen);
+        assert_eq!(default_recipes.len(), 1, "only bread should auto-add");
+        assert_eq!(default_recipes[0].display_name, "Bread");
+    }
+
+    #[test]
+    fn extraction_recipe_inputs_and_outputs_match_species() {
+        let mut sim = test_sim(42);
+        let species_id = insert_test_fruit_species(&mut sim);
+
+        let extract_def = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Kitchen)
+            .into_iter()
+            .find(|r| r.display_name == "Extract Testaleth")
+            .expect("extraction recipe should exist");
+
+        // Input: 1 Testaleth Fruit.
+        assert_eq!(extract_def.inputs.len(), 1);
+        assert_eq!(extract_def.inputs[0].item_kind, inventory::ItemKind::Fruit);
+        assert_eq!(extract_def.inputs[0].quantity, 1);
+        assert_eq!(
+            extract_def.inputs[0].material_filter,
+            inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id))
+        );
+
+        // Outputs: Pulp(37), FruitFiber(52), Seed(15) — 3 outputs.
+        assert_eq!(extract_def.outputs.len(), 3);
+
+        let pulp = extract_def
+            .outputs
+            .iter()
+            .find(|o| o.item_kind == inventory::ItemKind::Pulp);
+        assert!(pulp.is_some(), "should have Pulp output");
+        assert_eq!(pulp.unwrap().quantity, 37);
+
+        let fiber = extract_def
+            .outputs
+            .iter()
+            .find(|o| o.item_kind == inventory::ItemKind::FruitFiber);
+        assert!(fiber.is_some(), "should have FruitFiber output");
+        assert_eq!(fiber.unwrap().quantity, 52);
+
+        let seed = extract_def
+            .outputs
+            .iter()
+            .find(|o| o.item_kind == inventory::ItemKind::Seed);
+        assert!(seed.is_some(), "should have Seed output");
+        assert_eq!(seed.unwrap().quantity, 15);
+
+        // Verb should be Extract.
+        assert_eq!(extract_def.key.verb, crate::recipe::RecipeVerb::Extract);
+
+        // Work ticks should come from config.
+        assert_eq!(extract_def.work_ticks, sim.config.extract_work_ticks);
+    }
+
+    #[test]
+    fn extraction_monitor_creates_task_when_fruit_available() {
+        let mut sim = test_sim(42);
+        let (structure_id, species_id) = setup_extraction_kitchen(&mut sim);
+
+        // Add fruit of the correct species to the kitchen inventory.
+        let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            5,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        // Advance far enough for the logistics heartbeat to trigger the crafting
+        // monitor. The heartbeat interval is config.logistics_heartbeat_interval_ticks.
+        let target = sim.tick + sim.config.logistics_heartbeat_interval_ticks + 1;
+        while sim.tick < target {
+            sim.step(&[], sim.tick + 1);
+        }
+
+        // Should have created a Craft task for the kitchen.
+        let tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
+            .collect();
+        assert_eq!(tasks.len(), 1, "should create one craft task");
+    }
+
+    #[test]
+    fn extraction_produces_correct_component_items() {
+        let mut sim = test_sim(42);
+        let (structure_id, species_id) = setup_extraction_kitchen(&mut sim);
+
+        // Add fruit to kitchen.
+        let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            1,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        // Pre-fill bread so the bread recipe (auto-added with target 50)
+        // doesn't compete for the fruit or the elf's attention.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Bread,
+            200,
+            None,
+            None,
+            None,
+            0,
+            None,
+        );
+
+        // Spawn an elf near the kitchen and run until extraction completes.
+        let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
+        let mut events = Vec::new();
+        let elf_id = sim
+            .spawn_creature(Species::Elf, anchor, &mut events)
+            .expect("spawn elf");
+        // Make elf not hungry/sleepy so they'll pick up the task.
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.food = 10000;
+            c.rest = 10000;
+        });
+
+        // Run the sim forward: need heartbeat interval (5000) + walk time +
+        // extract_work_ticks (3000) + margin.
+        for _ in 0..15000 {
+            sim.step(&[], sim.tick + 1);
+        }
+
+        // Check that the fruit was consumed and components were produced.
+        let fruit_count = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+        );
+        assert_eq!(fruit_count, 0, "fruit should be consumed");
+
+        let pulp_count = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Pulp,
+            inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+        );
+        assert_eq!(pulp_count, 37, "should produce 37 Pulp");
+
+        let fiber_count = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::FruitFiber,
+            inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+        );
+        assert_eq!(fiber_count, 52, "should produce 52 FruitFiber");
+
+        let seed_count = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Seed,
+            inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+        );
+        assert_eq!(seed_count, 15, "should produce 15 Seed");
+    }
+
+    #[test]
+    fn extraction_display_names_use_vaelith_species() {
+        let mut sim = test_sim(42);
+        let species_id = insert_test_fruit_species(&mut sim);
+
+        // Use material_item_display_name which doesn't need an ItemStack.
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::Pulp,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Pulp"
+        );
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::FruitFiber,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Fiber"
+        );
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::Seed,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Seed"
+        );
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::Husk,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Husk"
+        );
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::FruitSap,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Sap"
+        );
+        assert_eq!(
+            sim.material_item_display_name(
+                inventory::ItemKind::FruitResin,
+                inventory::Material::FruitSpecies(species_id)
+            ),
+            "Testaleth Resin"
+        );
+
+        // Also test item_display_name by adding items to an inventory.
+        let anchor = find_building_site(&sim);
+        let structure_id = insert_completed_building(&mut sim, anchor);
+        let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Pulp,
+            10,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+        let stacks = sim.inv_items(inv_id);
+        let pulp_stack = stacks
+            .iter()
+            .find(|s| s.kind == inventory::ItemKind::Pulp)
+            .expect("should have pulp");
+        assert_eq!(sim.item_display_name(pulp_stack), "Testaleth Pulp");
+    }
+
+    #[test]
+    fn extraction_monitor_skips_when_targets_met() {
+        let mut sim = test_sim(42);
+        let (structure_id, species_id) = setup_extraction_kitchen(&mut sim);
+
+        // Add fruit to the kitchen.
+        let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            5,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        // Also add enough bread to satisfy the bread recipe target (auto-added
+        // with the kitchen), so the bread recipe doesn't fire either.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Bread,
+            200,
+            None,
+            None,
+            None,
+            0,
+            None,
+        );
+
+        // Pre-fill all outputs above their targets so the monitor sees no need.
+        // Targets are set to 100 each; add 200 of each.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Pulp,
+            200,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::FruitFiber,
+            200,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Seed,
+            200,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        // Advance far enough for the logistics heartbeat to trigger.
+        let target = sim.tick + sim.config.logistics_heartbeat_interval_ticks + 1;
+        while sim.tick < target {
+            sim.step(&[], sim.tick + 1);
+        }
+
+        // Should NOT create a task because all targets are met.
+        let tasks: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
+            .collect();
+        assert_eq!(tasks.len(), 0, "should not create task when targets met");
+    }
+
+    #[test]
+    fn extraction_recipe_key_json_roundtrip() {
+        let mut sim = test_sim(42);
+        let _species_id = insert_test_fruit_species(&mut sim);
+
+        let extract_def = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Kitchen)
+            .into_iter()
+            .find(|r| r.display_name == "Extract Testaleth")
+            .expect("extraction recipe should exist");
+
+        let json = extract_def.key.to_json();
+        let restored = crate::recipe::RecipeKey::from_json(&json).expect("should deserialize");
+        assert_eq!(extract_def.key, restored);
+    }
+
+    #[test]
+    fn kitchen_furnishing_does_not_auto_add_extraction_recipes() {
+        let mut sim = test_sim(42);
+        let _species_id = insert_test_fruit_species(&mut sim);
+        let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
+
+        // Kitchen should only have bread, not extraction recipes.
+        let active_recipes = sim
+            .db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(active_recipes.len(), 1, "only bread should be auto-added");
+        assert!(
+            active_recipes[0].recipe_display_name.contains("Bread"),
+            "auto-added recipe should be bread, got: {}",
+            active_recipes[0].recipe_display_name
+        );
+    }
+
+    #[test]
+    fn greenhouse_fruit_haul_to_extraction_kitchen() {
+        let mut sim = test_sim(42);
+        let (kitchen_id, species_id) = setup_extraction_kitchen(&mut sim);
+
+        // Pre-fill bread so the bread recipe doesn't interfere.
+        let kitchen_inv = sim.db.structures.get(&kitchen_id).unwrap().inventory_id;
+        sim.inv_add_item(
+            kitchen_inv,
+            inventory::ItemKind::Bread,
+            200,
+            None,
+            None,
+            None,
+            0,
+            None,
+        );
+
+        // Create a greenhouse with the same species.
+        let gh_anchor = find_building_site(&sim);
+        let gh_id = insert_completed_building(&mut sim, gh_anchor);
+        let furnish_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id: gh_id,
+                furnishing_type: FurnishingType::Greenhouse,
+                greenhouse_species: Some(species_id),
+            },
+        };
+        sim.step(&[furnish_cmd], sim.tick + 1);
+
+        // Verify greenhouse has a logistics priority set.
+        let gh = sim.db.structures.get(&gh_id).unwrap();
+        assert!(
+            gh.logistics_priority.is_some(),
+            "greenhouse should have logistics priority"
+        );
+        assert!(
+            gh.logistics_priority.unwrap() < sim.config.kitchen_default_priority,
+            "greenhouse priority should be lower than kitchen's"
+        );
+
+        // Put fruit in the greenhouse.
+        let gh_inv = gh.inventory_id;
+        sim.inv_add_item(
+            gh_inv,
+            inventory::ItemKind::Fruit,
+            5,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(species_id)),
+            0,
+            None,
+        );
+
+        // The extraction recipe auto-logistics should generate a want for
+        // this species' fruit. Verify the effective wants include it.
+        let wants = sim.compute_effective_wants(kitchen_id);
+        let fruit_want = wants.iter().find(|w| {
+            w.item_kind == inventory::ItemKind::Fruit
+                && w.material_filter
+                    == inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(
+                        species_id,
+                    ))
+        });
+        assert!(
+            fruit_want.is_some(),
+            "kitchen should want fruit of the extraction species"
+        );
+
+        // The haul source search should find the greenhouse fruit.
+        let source = sim.find_haul_source(
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+            1,
+            kitchen_id,
+            sim.config.kitchen_default_priority,
+        );
+        assert!(
+            source.is_some(),
+            "should find greenhouse as haul source for fruit"
+        );
+    }
+
+    #[test]
+    fn part_type_extracted_item_kind_mapping() {
+        use crate::fruit::PartType;
+        assert_eq!(
+            PartType::Flesh.extracted_item_kind(),
+            inventory::ItemKind::Pulp
+        );
+        assert_eq!(
+            PartType::Rind.extracted_item_kind(),
+            inventory::ItemKind::Husk
+        );
+        assert_eq!(
+            PartType::Seed.extracted_item_kind(),
+            inventory::ItemKind::Seed
+        );
+        assert_eq!(
+            PartType::Fiber.extracted_item_kind(),
+            inventory::ItemKind::FruitFiber
+        );
+        assert_eq!(
+            PartType::Sap.extracted_item_kind(),
+            inventory::ItemKind::FruitSap
+        );
+        assert_eq!(
+            PartType::Resin.extracted_item_kind(),
+            inventory::ItemKind::FruitResin
         );
     }
 }

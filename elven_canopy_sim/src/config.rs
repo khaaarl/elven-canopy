@@ -904,6 +904,10 @@ fn default_workshop_priority() -> u8 {
     8
 }
 
+fn default_greenhouse_default_priority() -> u8 {
+    1
+}
+
 fn default_greenhouse_base_production_ticks() -> u64 {
     60_000
 }
@@ -1265,6 +1269,10 @@ pub struct GameConfig {
     #[serde(default = "default_cook_bread_work_ticks", alias = "cook_work_ticks")]
     pub cook_bread_work_ticks: u64,
 
+    /// Ticks of work to complete one fruit extraction (3000 = 3 sim-seconds).
+    #[serde(default = "default_extract_work_ticks")]
+    pub extract_work_ticks: u64,
+
     /// Fruit consumed per cook cycle.
     #[serde(default = "default_cook_fruit_input")]
     pub cook_fruit_input: u32,
@@ -1289,6 +1297,11 @@ pub struct GameConfig {
     /// Default logistics priority for newly furnished workshops.
     #[serde(default = "default_workshop_priority")]
     pub workshop_default_priority: u8,
+
+    /// Default logistics priority for newly furnished greenhouses. Low so that
+    /// storehouses, kitchens, and workshops can pull fruit from them.
+    #[serde(default = "default_greenhouse_default_priority")]
+    pub greenhouse_default_priority: u8,
 
     /// Greenhouse base production interval in ticks for a single interior
     /// tile. Actual interval = base / max(1, interior_area). E.g., 60000
@@ -1434,6 +1447,10 @@ fn default_mope_action_ticks() -> u64 {
 
 fn default_cook_bread_work_ticks() -> u64 {
     5000
+}
+
+fn default_extract_work_ticks() -> u64 {
+    3000
 }
 
 fn default_cook_fruit_input() -> u32 {
@@ -1775,6 +1792,7 @@ impl Default for GameConfig {
             kitchen_default_fruit_want: 5,
             kitchen_default_bread_target: 50,
             cook_bread_work_ticks: 5000,
+            extract_work_ticks: 3000,
             cook_fruit_input: 1,
             cook_bread_output: 10,
             initial_creatures: vec![
@@ -1826,6 +1844,7 @@ impl Default for GameConfig {
             }],
             recipes: default_recipes(),
             workshop_default_priority: default_workshop_priority(),
+            greenhouse_default_priority: default_greenhouse_default_priority(),
             greenhouse_base_production_ticks: default_greenhouse_base_production_ticks(),
             worldgen: crate::worldgen::WorldgenConfig::default(),
             arrow_gravity: default_arrow_gravity(),

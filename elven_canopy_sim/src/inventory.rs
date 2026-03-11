@@ -1,7 +1,9 @@
 // Item type enum for the simulation.
 //
 // Provides `ItemKind` (the enum of distinct item types: Bread, Fruit, Bow,
-// Arrow, Bowstring), `Material` (wood species for crafted items),
+// Arrow, Bowstring, and extracted fruit components — Pulp, Husk, Seed,
+// FruitFiber, FruitSap, FruitResin), `Material` (wood species for crafted
+// items, `FruitSpecies` for fruits and extracted components),
 // `MaterialFilter` (logistics want constraint: `Any` or `Specific(Material)`),
 // and `EffectKind` (stubbed enchantment effect types for future use).
 // Item storage is now handled by the `db::ItemStack` and `db::Inventory`
@@ -30,6 +32,18 @@ pub enum ItemKind {
     Bow = 2,
     Arrow = 3,
     Bowstring = 4,
+    /// Extracted fruit flesh (from PartType::Flesh).
+    Pulp = 5,
+    /// Extracted fruit rind/shell (from PartType::Rind).
+    Husk = 6,
+    /// Extracted fruit seed (from PartType::Seed).
+    Seed = 7,
+    /// Extracted fruit fiber (from PartType::Fiber).
+    FruitFiber = 8,
+    /// Extracted fruit sap (from PartType::Sap).
+    FruitSap = 9,
+    /// Extracted fruit resin (from PartType::Resin).
+    FruitResin = 10,
     // Append new variants here with the next sequential number.
 }
 
@@ -42,7 +56,26 @@ impl ItemKind {
             ItemKind::Bow => "Bow",
             ItemKind::Arrow => "Arrow",
             ItemKind::Bowstring => "Bowstring",
+            ItemKind::Pulp => "Pulp",
+            ItemKind::Husk => "Husk",
+            ItemKind::Seed => "Seed",
+            ItemKind::FruitFiber => "Fiber",
+            ItemKind::FruitSap => "Sap",
+            ItemKind::FruitResin => "Resin",
         }
+    }
+
+    /// Whether this item kind is an extracted fruit component.
+    pub fn is_extracted_component(self) -> bool {
+        matches!(
+            self,
+            ItemKind::Pulp
+                | ItemKind::Husk
+                | ItemKind::Seed
+                | ItemKind::FruitFiber
+                | ItemKind::FruitSap
+                | ItemKind::FruitResin
+        )
     }
 }
 
