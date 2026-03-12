@@ -127,8 +127,10 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-military-equip       Military group equipment acquisition
 [ ] F-military-org         Squad management and organization
 [ ] F-minimap              Minimap with tree silhouette and creature positions
+[ ] F-mmb-pan              Middle-mouse-drag to pan camera horizontally
 [ ] F-modding              Scripting layer for modding support
 [ ] F-modifier-keybinds    Modifier key combinations in bindings
+[ ] F-mouse-elevation      Ctrl+mouse wheel to move camera elevation
 [ ] F-move-spread          Spread destinations for multi-creature move commands
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
@@ -2311,7 +2313,7 @@ button with "Controls" button.
 
 **Draft:** docs/drafts/controls_config.md
 
-**Related:** F-binding-conflicts, F-controls-config-A, F-controls-config-B, F-controls-config-C, F-keybind-help, F-modifier-keybinds
+**Related:** F-binding-conflicts, F-controls-config-A, F-controls-config-B, F-controls-config-C, F-keybind-help, F-mmb-pan, F-modifier-keybinds, F-mouse-elevation
 
 #### F-controls-config-A — ControlsConfig autoload and handler migration
 **Status:** Todo · **Phase:** 2
@@ -2544,6 +2546,11 @@ to that position. Pure rendering/UI — reads existing sim data.
 
 **Related:** F-zlevel-vis
 
+#### F-mmb-pan — Middle-mouse-drag to pan camera horizontally
+**Status:** Todo · **Phase:** 5
+
+**Related:** F-controls-config, F-mouse-elevation
+
 #### F-modifier-keybinds — Modifier key combinations in bindings
 **Status:** Todo · **Phase:** 2
 
@@ -2556,6 +2563,11 @@ Depends on F-controls-config-C (rebinding UI must exist first).
 
 **Blocked by:** F-controls-config-C
 **Related:** F-controls-config
+
+#### F-mouse-elevation — Ctrl+mouse wheel to move camera elevation
+**Status:** Todo · **Phase:** 5
+
+**Related:** F-controls-config, F-mmb-pan
 
 #### F-new-game-ui — New game screen with tree presets
 **Status:** Done · **Refs:** §26
