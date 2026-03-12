@@ -398,6 +398,35 @@ impl INode for SimBridge {
 
 #[godot_api]
 impl SimBridge {
+    /// Explicitly tear down all Rust state before Godot's shutdown sequence.
+    ///
+    /// Call this from GDScript before `get_tree().quit()` or on
+    /// `NOTIFICATION_WM_CLOSE_REQUEST` to avoid segfaults caused by Godot
+    /// freeing objects while Rust destructors still reference them.
+    /// Stops the elfcyclopedia HTTP server, joins multiplayer threads, and
+    /// drops sim state while the engine is still intact.
+    #[func]
+    fn shutdown(&mut self) {
+        // Stop the elfcyclopedia HTTP server thread.
+        let mut guard = ELFCYCLOPEDIA.lock().unwrap();
+        if let Some(mut server) = guard.take() {
+            server.stop();
+        }
+        drop(guard);
+
+        // Take and drop multiplayer state (RelayHandle::drop signals its thread).
+        drop(self.relay_handle.take());
+        drop(self.net_client.take());
+
+        // Clear sim state.
+        self.session = GameSession::new_singleplayer();
+        self.local_relay = None;
+        self.mesh_cache = None;
+        self.pending_compositions.clear();
+
+        godot_print!("SimBridge: shutdown complete");
+    }
+
     /// Initialize the simulation with the given seed and default config.
     #[func]
     fn init_sim(&mut self, seed: i64) {

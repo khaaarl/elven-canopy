@@ -83,7 +83,7 @@ func _ready() -> void:
 	var quit_btn := Button.new()
 	quit_btn.text = "Quit Game"
 	quit_btn.custom_minimum_size = Vector2(200, 50)
-	quit_btn.pressed.connect(func(): get_tree().quit())
+	quit_btn.pressed.connect(_quit_game)
 	vbox.add_child(quit_btn)
 
 	# Start hidden.
@@ -111,7 +111,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		and not event.echo
 	):
 		if event.keycode == KEY_Q:
-			get_tree().quit()
+			_quit_game()
 		elif event.keycode == KEY_S and not _save_btn.disabled:
 			_on_save_pressed()
 			get_viewport().set_input_as_handled()
@@ -171,6 +171,12 @@ func _do_save(save_name: String) -> void:
 	file.store_string(json)
 	file.close()
 	print("PauseMenu: saved game to %s" % path)
+
+
+func _quit_game() -> void:
+	if _bridge:
+		_bridge.shutdown()
+	get_tree().quit()
 
 
 func _on_main_menu_pressed() -> void:

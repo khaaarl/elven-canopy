@@ -80,7 +80,7 @@ func _ready() -> void:
 	var quit_btn := Button.new()
 	quit_btn.text = "Quit Game"
 	quit_btn.custom_minimum_size = Vector2(200, 50)
-	quit_btn.pressed.connect(func(): get_tree().quit())
+	quit_btn.pressed.connect(_quit_game)
 	vbox.add_child(quit_btn)
 
 
@@ -129,7 +129,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			_on_multiplayer_pressed()
 		elif event.keycode == KEY_Q:
-			get_tree().quit()
+			_quit_game()
+
+
+func _quit_game() -> void:
+	var bridge := SimBridge.new()
+	bridge.shutdown()
+	bridge.free()
+	get_tree().quit()
 
 
 func _on_new_game_pressed() -> void:

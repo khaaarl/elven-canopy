@@ -831,6 +831,11 @@ func _try_load_save(bridge: SimBridge, save_path: String) -> bool:
 	return ok
 
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		$SimBridge.shutdown()
+
+
 func _process(delta: float) -> void:
 	var bridge: SimBridge = $SimBridge
 	if not bridge.is_initialized():

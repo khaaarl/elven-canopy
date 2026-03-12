@@ -56,11 +56,22 @@ pub struct RelayHandle {
 
 impl RelayHandle {
     /// Signal the relay to stop and wait for it to shut down.
-    pub fn stop(self) {
+    pub fn stop(mut self) {
+        self.shutdown_inner();
+    }
+
+    /// Shared shutdown logic: signal the flag and join the thread.
+    fn shutdown_inner(&mut self) {
         self.keep_running.store(false, Ordering::SeqCst);
-        if let Some(handle) = self.thread {
+        if let Some(handle) = self.thread.take() {
             let _ = handle.join();
         }
+    }
+}
+
+impl Drop for RelayHandle {
+    fn drop(&mut self) {
+        self.shutdown_inner();
     }
 }
 

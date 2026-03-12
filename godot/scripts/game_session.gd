@@ -16,8 +16,14 @@
 ## HTTP server (runs on localhost, persists for the lifetime of the process).
 ## The URL is stored in `elfcyclopedia_url` for UI display.
 ##
+## Also handles graceful shutdown: disables auto-quit and intercepts
+## NOTIFICATION_WM_CLOSE_REQUEST (window close / Alt+F4) to call
+## SimBridge.shutdown() before exiting. This tears down Rust state
+## (elfcyclopedia server, relay threads, sim session) while Godot is still
+## intact, avoiding segfaults from gdext cleanup ordering.
+##
 ## See also: new_game_menu.gd, host_game_menu.gd, join_game_menu.gd, main.gd,
-## elfcyclopedia_server.rs.
+## elfcyclopedia_server.rs, sim_bridge.rs (shutdown method).
 
 extends Node
 
@@ -56,6 +62,10 @@ var elfcyclopedia_url: String = ""
 
 
 func _ready() -> void:
+	# Disable auto-quit so we can run Rust cleanup before exiting.
+	# Handled centrally here (autoload) so every scene is covered.
+	get_tree().set_auto_accept_quit(false)
+
 	# Create a temporary SimBridge to trigger the global elfcyclopedia server
 	# start. The server lives in a Rust static and persists after the bridge
 	# is freed. This runs as soon as the autoload initializes (before the
@@ -65,3 +75,13 @@ func _ready() -> void:
 	bridge.free()
 	if not elfcyclopedia_url.is_empty():
 		print("Elfcyclopedia server: %s" % elfcyclopedia_url)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		# Shut down Rust state (elfcyclopedia server, relay threads, sim)
+		# before Godot tears down the process.
+		var bridge := SimBridge.new()
+		bridge.shutdown()
+		bridge.free()
+		get_tree().quit()
