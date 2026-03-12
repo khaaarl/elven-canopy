@@ -939,6 +939,56 @@ pub struct ComponentRecipeConfig {
     /// Cord → bowstring: bowstrings produced.
     #[serde(default = "default_cord_bowstring_output")]
     pub cord_bowstring_output: u32,
+
+    /// Weave: thread → cloth. Work ticks per batch.
+    #[serde(default = "default_weave_work_ticks")]
+    pub weave_work_ticks: u64,
+    /// Weave: units of thread consumed per cloth.
+    #[serde(default = "default_weave_input")]
+    pub weave_input: u32,
+    /// Weave: units of cloth produced per batch.
+    #[serde(default = "default_weave_output")]
+    pub weave_output: u32,
+
+    /// Sew tunic: cloth → tunic. Work ticks.
+    #[serde(default = "default_sew_tunic_work_ticks")]
+    pub sew_tunic_work_ticks: u64,
+    /// Sew tunic: units of cloth consumed.
+    #[serde(default = "default_sew_tunic_input")]
+    pub sew_tunic_input: u32,
+    /// Sew tunic: tunics produced.
+    #[serde(default = "default_sew_tunic_output")]
+    pub sew_tunic_output: u32,
+
+    /// Sew leggings: cloth → leggings. Work ticks.
+    #[serde(default = "default_sew_leggings_work_ticks")]
+    pub sew_leggings_work_ticks: u64,
+    /// Sew leggings: units of cloth consumed.
+    #[serde(default = "default_sew_leggings_input")]
+    pub sew_leggings_input: u32,
+    /// Sew leggings: leggings produced.
+    #[serde(default = "default_sew_leggings_output")]
+    pub sew_leggings_output: u32,
+
+    /// Sew boots: cloth → pair of boots. Work ticks.
+    #[serde(default = "default_sew_boots_work_ticks")]
+    pub sew_boots_work_ticks: u64,
+    /// Sew boots: units of cloth consumed.
+    #[serde(default = "default_sew_boots_input")]
+    pub sew_boots_input: u32,
+    /// Sew boots: pairs of boots produced.
+    #[serde(default = "default_sew_boots_output")]
+    pub sew_boots_output: u32,
+
+    /// Sew hat: cloth → hat. Work ticks.
+    #[serde(default = "default_sew_hat_work_ticks")]
+    pub sew_hat_work_ticks: u64,
+    /// Sew hat: units of cloth consumed.
+    #[serde(default = "default_sew_hat_input")]
+    pub sew_hat_input: u32,
+    /// Sew hat: hats produced.
+    #[serde(default = "default_sew_hat_output")]
+    pub sew_hat_output: u32,
 }
 
 impl Default for ComponentRecipeConfig {
@@ -962,6 +1012,21 @@ impl Default for ComponentRecipeConfig {
             cord_bowstring_work_ticks: default_cord_bowstring_work_ticks(),
             cord_bowstring_input: default_cord_bowstring_input(),
             cord_bowstring_output: default_cord_bowstring_output(),
+            weave_work_ticks: default_weave_work_ticks(),
+            weave_input: default_weave_input(),
+            weave_output: default_weave_output(),
+            sew_tunic_work_ticks: default_sew_tunic_work_ticks(),
+            sew_tunic_input: default_sew_tunic_input(),
+            sew_tunic_output: default_sew_tunic_output(),
+            sew_leggings_work_ticks: default_sew_leggings_work_ticks(),
+            sew_leggings_input: default_sew_leggings_input(),
+            sew_leggings_output: default_sew_leggings_output(),
+            sew_boots_work_ticks: default_sew_boots_work_ticks(),
+            sew_boots_input: default_sew_boots_input(),
+            sew_boots_output: default_sew_boots_output(),
+            sew_hat_work_ticks: default_sew_hat_work_ticks(),
+            sew_hat_input: default_sew_hat_input(),
+            sew_hat_output: default_sew_hat_output(),
         }
     }
 }
@@ -1018,6 +1083,51 @@ fn default_cord_bowstring_input() -> u32 {
     5
 }
 fn default_cord_bowstring_output() -> u32 {
+    1
+}
+fn default_weave_work_ticks() -> u64 {
+    5000
+}
+fn default_weave_input() -> u32 {
+    10
+}
+fn default_weave_output() -> u32 {
+    1
+}
+fn default_sew_tunic_work_ticks() -> u64 {
+    6000
+}
+fn default_sew_tunic_input() -> u32 {
+    3
+}
+fn default_sew_tunic_output() -> u32 {
+    1
+}
+fn default_sew_leggings_work_ticks() -> u64 {
+    5000
+}
+fn default_sew_leggings_input() -> u32 {
+    2
+}
+fn default_sew_leggings_output() -> u32 {
+    1
+}
+fn default_sew_boots_work_ticks() -> u64 {
+    5000
+}
+fn default_sew_boots_input() -> u32 {
+    2
+}
+fn default_sew_boots_output() -> u32 {
+    1
+}
+fn default_sew_hat_work_ticks() -> u64 {
+    4000
+}
+fn default_sew_hat_input() -> u32 {
+    1
+}
+fn default_sew_hat_output() -> u32 {
     1
 }
 

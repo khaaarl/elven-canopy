@@ -97,6 +97,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-dblclick-select      Double-click to select all of same military group
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
+[ ] F-dye-crafting         Dye pressing and fabric dyeing recipes
 [ ] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
@@ -306,6 +307,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-task-interruption    Unified task interruption and cleanup
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
 [x] F-task-proximity       Proximity-based task assignment (Dijkstra nearest)
+[x] F-textile-crafting     Textile and clothing crafting recipes
 [x] F-thoughts             Creature thoughts (DF-style event reactions)
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
@@ -1288,7 +1290,7 @@ Later expansions (not in initial scope): dye pressing from pigmented
 parts, fermentation, medicinal brewing, luminous oil distillation,
 mana essence refinement.
 
-**Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-recipe-hierarchy, F-recipes
+**Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-recipe-hierarchy, F-recipes, F-textile-crafting
 
 #### F-crafting — Non-construction jobs and crafting
 **Status:** Todo · **Phase:** 8+ · **Refs:** §11
@@ -1298,6 +1300,18 @@ Crafting system for tools, furniture, and magical items.
 
 **Blocks:** F-elf-weapons
 **Related:** F-bldg-workshop, F-items, F-magic-items, F-recipes
+
+#### F-dye-crafting — Dye pressing and fabric dyeing recipes
+**Status:** Todo · **Phase:** 7
+
+Dye pressing from pigmented fruit components and fabric dyeing recipes.
+Fruits with pigmented parts (which already have a DyeColor field) can be
+pressed into dye items. Dye can then be applied to cloth or finished
+clothing to change their color. Requires F-textile-crafting for the
+textile items to dye. Details TBD: dye item representation, dyeing
+recipe structure, how dye color is tracked on items, color mixing.
+
+**Related:** F-fruit-variety, F-textile-crafting
 
 #### F-elf-acquire — Elf personal item acquisition
 **Status:** Done · **Phase:** 4
@@ -1402,14 +1416,15 @@ UI (Vaelith name + shape noun, e.g. "Shinethúni Fruit x3"). Material
 enum with FruitSpecies variant and serde support. Fruit extraction
 (hull fruit → component items). Property-based component recipe
 generation (starchy→flour→bread, fine fiber→thread→bowstring, coarse
-fiber→cord→bowstring).
+fiber→cord→bowstring). Textile chain (fine fiber→thread→cloth→clothing
+via Weave/Sew verbs).
 
 **Still TODO:** Wild-only species restrictions, fruit part
 rendering/visual differentiation, deeper integration with food chain
 and cooking.
 
 **Blocks:** F-civ-knowledge
-**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-greenhouse-revamp, F-logistics-filter, F-recipes
+**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-dye-crafting, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-greenhouse-revamp, F-logistics-filter, F-recipes, F-textile-crafting
 
 #### F-greenhouse-revamp — Greenhouse planter growth cycle and pluck tasks
 **Status:** Todo
@@ -1573,6 +1588,30 @@ Supersedes F-task-proximity (pull-side Dijkstra nearest, already implemented).
 **Status:** Done · **Phase:** 4
 
 **Related:** F-task-assign-opt
+
+#### F-textile-crafting — Textile and clothing crafting recipes
+**Status:** Done · **Phase:** 7
+
+Textile and clothing crafting recipe chain for fine-fibrous fruit
+species. Extends the component recipe system (F-component-recipes) with
+weaving and sewing steps:
+
+- Thread → Cloth (Weave, Workshop) — 10 thread → 1 cloth
+- Cloth → Tunic (Sew, Workshop) — 3 cloth → 1 tunic
+- Cloth → Leggings (Sew, Workshop) — 2 cloth → 1 leggings
+- Cloth → Boots (Sew, Workshop) — 2 cloth → 1 pair of boots
+- Cloth → Hat (Sew, Workshop) — 1 cloth → 1 hat
+
+New ItemKind variants: Cloth, Tunic, Leggings, Boots, Hat.
+New RecipeVerb variants: Weave, Sew.
+All recipes are material-specific (per fruit species) and data-driven
+via ComponentRecipeConfig. Clothing items are created but elves don't
+wear them yet (that's F-clothing).
+
+Coarse fiber textile paths (cord → canvas/burlap) deferred to future work.
+Dye integration deferred to F-dye-crafting.
+
+**Related:** F-component-recipes, F-dye-crafting, F-fruit-variety
 
 #### F-tree-capacity — Per-tree carrying capacity limits
 **Status:** Todo · **Phase:** 7 · **Refs:** §13

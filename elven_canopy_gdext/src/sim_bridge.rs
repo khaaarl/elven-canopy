@@ -1978,6 +1978,11 @@ impl SimBridge {
                 "Flour" => elven_canopy_sim::inventory::ItemKind::Flour,
                 "Thread" => elven_canopy_sim::inventory::ItemKind::Thread,
                 "Cord" => elven_canopy_sim::inventory::ItemKind::Cord,
+                "Cloth" => elven_canopy_sim::inventory::ItemKind::Cloth,
+                "Tunic" => elven_canopy_sim::inventory::ItemKind::Tunic,
+                "Leggings" => elven_canopy_sim::inventory::ItemKind::Leggings,
+                "Boots" => elven_canopy_sim::inventory::ItemKind::Boots,
+                "Hat" => elven_canopy_sim::inventory::ItemKind::Hat,
                 other => {
                     godot_error!("SimBridge: unknown item kind in logistics wants: '{other}'");
                     continue;
@@ -2020,6 +2025,11 @@ impl SimBridge {
             ItemKind::Flour,
             ItemKind::Thread,
             ItemKind::Cord,
+            ItemKind::Cloth,
+            ItemKind::Tunic,
+            ItemKind::Leggings,
+            ItemKind::Boots,
+            ItemKind::Hat,
         ] {
             let mut d = VarDictionary::new();
             d.set("kind", GString::from(kind.display_name()));
@@ -2057,6 +2067,11 @@ impl SimBridge {
             "Flour" => ItemKind::Flour,
             "Thread" => ItemKind::Thread,
             "Cord" => ItemKind::Cord,
+            "Cloth" => ItemKind::Cloth,
+            "Tunic" => ItemKind::Tunic,
+            "Leggings" => ItemKind::Leggings,
+            "Boots" => ItemKind::Boots,
+            "Hat" => ItemKind::Hat,
             _ => return arr,
         };
 
@@ -2082,7 +2097,12 @@ impl SimBridge {
             | ItemKind::FruitResin
             | ItemKind::Flour
             | ItemKind::Thread
-            | ItemKind::Cord => {
+            | ItemKind::Cord
+            | ItemKind::Cloth
+            | ItemKind::Tunic
+            | ItemKind::Leggings
+            | ItemKind::Boots
+            | ItemKind::Hat => {
                 // Add each fruit species from the DB.
                 for species in sim.db.fruit_species.iter_all() {
                     let mat = Material::FruitSpecies(species.id);

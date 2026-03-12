@@ -4,9 +4,9 @@
 // workshop recipe list) with a single unified model. Recipes are identified
 // structurally by `RecipeKey` (verb + sorted inputs/outputs), not by string
 // names. The `RecipeCatalog` is built at startup from config recipes and
-// dynamically generated fruit recipes (extraction and component processing —
-// flour, thread, cord, and their downstream products), then stored immutably
-// on `SimState`.
+// dynamically generated fruit recipes (extraction, component processing —
+// flour, thread, cord, cloth — and clothing — tunic, leggings, boots, hat),
+// then stored immutably on `SimState`.
 //
 // Key types:
 // - `RecipeVerb` — stable enum distinguishing crafting methods (Cook, Assemble,
@@ -54,6 +54,10 @@ pub enum RecipeVerb {
     Spin = 7,
     Twist = 8,
     Bake = 9,
+    /// Weave thread into cloth on a loom.
+    Weave = 10,
+    /// Sew cloth into a garment.
+    Sew = 11,
     // Append new variants here with the next sequential number.
 }
 
@@ -295,7 +299,8 @@ fn build_extraction_recipe(
 /// properties. Each recipe-relevant property on a part generates a chain:
 ///
 /// - **Starchy**: component → flour (Mill, Kitchen), flour → bread (Bake, Kitchen)
-/// - **FibrousFine**: component → thread (Spin, Workshop), thread → bowstring (Assemble, Workshop)
+/// - **FibrousFine**: component → thread (Spin, Workshop), thread → bowstring (Assemble, Workshop),
+///   thread → cloth (Weave, Workshop), cloth → tunic/leggings/boots/hat (Sew, Workshop)
 /// - **FibrousCoarse**: component → cord (Twist, Workshop), cord → bowstring (Assemble, Workshop)
 ///
 /// The dedup constraint in `generate_parts()` guarantees each recipe-relevant
@@ -378,6 +383,67 @@ fn build_component_recipes(
                 cr.thread_bowstring_output,
                 cr.thread_bowstring_work_ticks,
             ));
+
+            // Thread → cloth (weave)
+            recipes.push(build_simple_recipe(
+                RecipeVerb::Weave,
+                &format!("Weave {name} Cloth"),
+                vec!["Processing".to_string(), "Weaving".to_string()],
+                vec![FurnishingType::Workshop],
+                ItemKind::Thread,
+                material_filter,
+                cr.weave_input,
+                ItemKind::Cloth,
+                Some(material),
+                cr.weave_output,
+                cr.weave_work_ticks,
+            ));
+
+            // Cloth → clothing (sew)
+            for (item, label, input, output, ticks) in [
+                (
+                    ItemKind::Tunic,
+                    "Tunic",
+                    cr.sew_tunic_input,
+                    cr.sew_tunic_output,
+                    cr.sew_tunic_work_ticks,
+                ),
+                (
+                    ItemKind::Leggings,
+                    "Leggings",
+                    cr.sew_leggings_input,
+                    cr.sew_leggings_output,
+                    cr.sew_leggings_work_ticks,
+                ),
+                (
+                    ItemKind::Boots,
+                    "Boots",
+                    cr.sew_boots_input,
+                    cr.sew_boots_output,
+                    cr.sew_boots_work_ticks,
+                ),
+                (
+                    ItemKind::Hat,
+                    "Hat",
+                    cr.sew_hat_input,
+                    cr.sew_hat_output,
+                    cr.sew_hat_work_ticks,
+                ),
+            ] {
+                recipes.push(build_simple_recipe(
+                    RecipeVerb::Sew,
+                    &format!("Sew {name} {label}"),
+                    vec!["Processing".to_string(), "Tailoring".to_string()],
+                    vec![FurnishingType::Workshop],
+                    ItemKind::Cloth,
+                    material_filter,
+                    input,
+                    item,
+                    Some(material),
+                    output,
+                    ticks,
+                ));
+            }
         }
 
         if part.properties.contains(&PartProperty::FibrousCoarse) {
@@ -920,8 +986,9 @@ mod tests {
 
         let catalog = build_catalog(&config, &species);
 
-        // Base (4) + extraction (1) + mill + bake + spin + thread bowstring = 9.
-        assert_eq!(catalog.len(), 9);
+        // Base (4) + extraction (1) + mill + bake + spin + thread bowstring
+        // + weave + sew tunic + sew leggings + sew boots + sew hat = 14.
+        assert_eq!(catalog.len(), 14);
 
         // Starchy chain in kitchen.
         let kitchen = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
@@ -1150,6 +1217,297 @@ mod tests {
                 "Seed {}: twist recipe count mismatch",
                 seed
             );
+        }
+    }
+
+    // --- Textile and clothing recipe tests ---
+
+    #[test]
+    fn fibrous_fine_generates_weave_and_clothing_recipes() {
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Silkweed",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
+        )];
+
+        let catalog = build_catalog(&config, &species);
+
+        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
+
+        // Weave: thread → cloth
+        let weave = workshop
+            .iter()
+            .find(|r| r.key.verb == RecipeVerb::Weave)
+            .expect("weave recipe should exist");
+        assert_eq!(weave.inputs[0].item_kind, ItemKind::Thread);
+        assert_eq!(weave.outputs[0].item_kind, ItemKind::Cloth);
+        assert_eq!(
+            weave.inputs[0].quantity,
+            config.component_recipes.weave_input
+        );
+        assert_eq!(
+            weave.outputs[0].quantity,
+            config.component_recipes.weave_output
+        );
+        assert_eq!(weave.display_name, "Weave Silkweed Cloth");
+        assert!(!weave.auto_add_on_furnish);
+
+        // Sew: cloth → tunic
+        let tunic = workshop
+            .iter()
+            .find(|r| r.display_name == "Sew Silkweed Tunic")
+            .expect("tunic recipe should exist");
+        assert_eq!(tunic.key.verb, RecipeVerb::Sew);
+        assert_eq!(tunic.inputs[0].item_kind, ItemKind::Cloth);
+        assert_eq!(tunic.outputs[0].item_kind, ItemKind::Tunic);
+        assert_eq!(
+            tunic.inputs[0].quantity,
+            config.component_recipes.sew_tunic_input
+        );
+
+        // Sew: cloth → leggings
+        let leggings = workshop
+            .iter()
+            .find(|r| r.display_name == "Sew Silkweed Leggings")
+            .expect("leggings recipe should exist");
+        assert_eq!(leggings.key.verb, RecipeVerb::Sew);
+        assert_eq!(leggings.inputs[0].item_kind, ItemKind::Cloth);
+        assert_eq!(leggings.outputs[0].item_kind, ItemKind::Leggings);
+        assert_eq!(
+            leggings.inputs[0].quantity,
+            config.component_recipes.sew_leggings_input
+        );
+
+        // Sew: cloth → boots
+        let boots = workshop
+            .iter()
+            .find(|r| r.display_name == "Sew Silkweed Boots")
+            .expect("boots recipe should exist");
+        assert_eq!(boots.key.verb, RecipeVerb::Sew);
+        assert_eq!(boots.inputs[0].item_kind, ItemKind::Cloth);
+        assert_eq!(boots.outputs[0].item_kind, ItemKind::Boots);
+        assert_eq!(
+            boots.inputs[0].quantity,
+            config.component_recipes.sew_boots_input
+        );
+
+        // Sew: cloth → hat
+        let hat = workshop
+            .iter()
+            .find(|r| r.display_name == "Sew Silkweed Hat")
+            .expect("hat recipe should exist");
+        assert_eq!(hat.key.verb, RecipeVerb::Sew);
+        assert_eq!(hat.inputs[0].item_kind, ItemKind::Cloth);
+        assert_eq!(hat.outputs[0].item_kind, ItemKind::Hat);
+        assert_eq!(
+            hat.inputs[0].quantity,
+            config.component_recipes.sew_hat_input
+        );
+    }
+
+    #[test]
+    fn textile_recipes_carry_species_material() {
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            5,
+            "Lintberry",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
+        )];
+
+        let catalog = build_catalog(&config, &species);
+        let mat = Material::FruitSpecies(FruitSpeciesId(5));
+        let mat_filter = MaterialFilter::Specific(mat);
+
+        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
+
+        // Weave input/output carry material.
+        let weave = workshop
+            .iter()
+            .find(|r| r.key.verb == RecipeVerb::Weave)
+            .expect("weave recipe");
+        assert_eq!(weave.inputs[0].material_filter, mat_filter);
+        assert_eq!(weave.outputs[0].material, Some(mat));
+
+        // Sew tunic input/output carry material.
+        let tunic = workshop
+            .iter()
+            .find(|r| r.outputs[0].item_kind == ItemKind::Tunic)
+            .expect("tunic recipe");
+        assert_eq!(tunic.inputs[0].material_filter, mat_filter);
+        assert_eq!(tunic.outputs[0].material, Some(mat));
+    }
+
+    #[test]
+    fn textile_recipe_categories() {
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Silkweed",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
+        )];
+
+        let catalog = build_catalog(&config, &species);
+        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
+
+        let weave = workshop
+            .iter()
+            .find(|r| r.key.verb == RecipeVerb::Weave)
+            .unwrap();
+        assert_eq!(
+            weave.category,
+            vec!["Processing".to_string(), "Weaving".to_string()]
+        );
+
+        let tunic = workshop
+            .iter()
+            .find(|r| r.outputs[0].item_kind == ItemKind::Tunic)
+            .unwrap();
+        assert_eq!(
+            tunic.category,
+            vec!["Processing".to_string(), "Tailoring".to_string()]
+        );
+    }
+
+    #[test]
+    fn multi_property_fruit_generates_textile_chain_too() {
+        let config = GameConfig::default();
+        // Fruit with starchy flesh AND fine fiber — textile chain should generate.
+        let species = vec![test_species(
+            0,
+            "Allberry",
+            vec![
+                part(PartType::Flesh, &[PartProperty::Starchy], 40),
+                part(PartType::Fiber, &[PartProperty::FibrousFine], 30),
+            ],
+        )];
+
+        let catalog = build_catalog(&config, &species);
+
+        // Base (4) + extraction (1) + mill + bake + spin + thread bowstring
+        // + weave + sew tunic + sew leggings + sew boots + sew hat = 14.
+        assert_eq!(catalog.len(), 14);
+
+        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
+        assert!(
+            workshop
+                .iter()
+                .any(|r| r.display_name == "Weave Allberry Cloth")
+        );
+        assert!(
+            workshop
+                .iter()
+                .any(|r| r.display_name == "Sew Allberry Tunic")
+        );
+        assert!(
+            workshop
+                .iter()
+                .any(|r| r.display_name == "Sew Allberry Leggings")
+        );
+        assert!(
+            workshop
+                .iter()
+                .any(|r| r.display_name == "Sew Allberry Boots")
+        );
+        assert!(
+            workshop
+                .iter()
+                .any(|r| r.display_name == "Sew Allberry Hat")
+        );
+    }
+
+    #[test]
+    fn coarse_fiber_does_not_generate_textile_recipes() {
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Ropevine",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousCoarse], 50)],
+        )];
+
+        let catalog = build_catalog(&config, &species);
+
+        // No weave or sew recipes for coarse fiber.
+        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
+        assert!(
+            !workshop.iter().any(|r| r.key.verb == RecipeVerb::Weave),
+            "coarse fiber should not generate weave recipes"
+        );
+        assert!(
+            !workshop.iter().any(|r| r.key.verb == RecipeVerb::Sew),
+            "coarse fiber should not generate sew recipes"
+        );
+    }
+
+    #[test]
+    fn textile_recipes_with_generated_fruits() {
+        // Test with actual procedurally generated fruits across multiple seeds.
+        use crate::fruit::generate_fruit_species;
+        use elven_canopy_prng::GameRng;
+
+        let config = GameConfig::default();
+
+        for seed in 0..10 {
+            let mut rng = GameRng::new(seed);
+            let fruit_config = crate::config::FruitConfig::default();
+            let fruits = generate_fruit_species(&mut rng, &fruit_config);
+            let catalog = build_catalog(&config, &fruits);
+
+            // Count expected textile recipe sets (one per FibrousFine species).
+            let mut expected_fine = 0;
+            for fruit in &fruits {
+                for p in &fruit.parts {
+                    if p.properties.contains(&PartProperty::FibrousFine) {
+                        expected_fine += 1;
+                    }
+                }
+            }
+
+            let weave_count = catalog
+                .iter()
+                .filter(|(_, d)| d.key.verb == RecipeVerb::Weave)
+                .count();
+            let sew_count = catalog
+                .iter()
+                .filter(|(_, d)| d.key.verb == RecipeVerb::Sew)
+                .count();
+
+            assert_eq!(
+                weave_count, expected_fine,
+                "Seed {}: weave recipe count mismatch",
+                seed
+            );
+            // 4 sew recipes per FibrousFine species (tunic, leggings, boots, hat).
+            assert_eq!(
+                sew_count,
+                expected_fine * 4,
+                "Seed {}: sew recipe count mismatch",
+                seed
+            );
+        }
+    }
+
+    #[test]
+    fn new_textile_verb_serde_roundtrip() {
+        for verb in [RecipeVerb::Weave, RecipeVerb::Sew] {
+            let json = serde_json::to_string(&verb).unwrap();
+            let parsed: RecipeVerb = serde_json::from_str(&json).unwrap();
+            assert_eq!(verb, parsed);
+        }
+    }
+
+    #[test]
+    fn new_textile_item_kind_serde_roundtrip() {
+        for kind in [
+            ItemKind::Cloth,
+            ItemKind::Tunic,
+            ItemKind::Leggings,
+            ItemKind::Boots,
+            ItemKind::Hat,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            let parsed: ItemKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind, parsed);
         }
     }
 

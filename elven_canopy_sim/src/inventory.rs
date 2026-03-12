@@ -2,8 +2,9 @@
 //
 // Provides `ItemKind` (the enum of distinct item types: Bread, Fruit, Bow,
 // Arrow, Bowstring, extracted fruit components — Pulp, Husk, Seed,
-// FruitFiber, FruitSap, FruitResin — and processed products — Flour, Thread,
-// Cord), `Material` (wood species for crafted items, `FruitSpecies` for
+// FruitFiber, FruitSap, FruitResin — processed products — Flour, Thread,
+// Cord, Cloth — and clothing — Tunic, Leggings, Boots, Hat),
+// `Material` (wood species for crafted items, `FruitSpecies` for
 // fruits, extracted components, and processed products),
 // `MaterialFilter` (logistics want constraint: `Any` or `Specific(Material)`),
 // and `EffectKind` (stubbed enchantment effect types for future use).
@@ -51,6 +52,16 @@ pub enum ItemKind {
     Thread = 12,
     /// Twisted cord from a coarse-fibrous fruit component.
     Cord = 13,
+    /// Woven cloth from fine thread.
+    Cloth = 14,
+    /// Sewn tunic (torso garment).
+    Tunic = 15,
+    /// Sewn leggings (leg garment).
+    Leggings = 16,
+    /// Sewn pair of boots (foot garment).
+    Boots = 17,
+    /// Sewn hat (head garment).
+    Hat = 18,
     // Append new variants here with the next sequential number.
 }
 
@@ -72,6 +83,11 @@ impl ItemKind {
             ItemKind::Flour => "Flour",
             ItemKind::Thread => "Thread",
             ItemKind::Cord => "Cord",
+            ItemKind::Cloth => "Cloth",
+            ItemKind::Tunic => "Tunic",
+            ItemKind::Leggings => "Leggings",
+            ItemKind::Boots => "Boots",
+            ItemKind::Hat => "Hat",
         }
     }
 
@@ -88,9 +104,20 @@ impl ItemKind {
         )
     }
 
-    /// Whether this item kind is a processed fruit product (flour, thread, cord).
+    /// Whether this item kind is a processed fruit product (flour, thread, cord, cloth).
     pub fn is_processed_component(self) -> bool {
-        matches!(self, ItemKind::Flour | ItemKind::Thread | ItemKind::Cord)
+        matches!(
+            self,
+            ItemKind::Flour | ItemKind::Thread | ItemKind::Cord | ItemKind::Cloth
+        )
+    }
+
+    /// Whether this item kind is a clothing garment.
+    pub fn is_clothing(self) -> bool {
+        matches!(
+            self,
+            ItemKind::Tunic | ItemKind::Leggings | ItemKind::Boots | ItemKind::Hat
+        )
     }
 }
 
