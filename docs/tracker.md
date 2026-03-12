@@ -139,7 +139,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
-[ ] F-recipe-hierarchy     Recipe catalog UI hierarchy and organization
+[ ] F-recipe-search        Recipe catalog search/filter
 [ ] F-relay-multi-game     Relay server supports multiple simultaneous games
 [ ] F-relay-release        Standalone relay server release build
 [ ] F-roof-click-select    Roof click selects building, not elf underneath
@@ -260,6 +260,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-placement-ui         Revamp construction placement UX
 [x] F-preemption           Task priority and preemption system
 [x] F-projectiles          Projectile physics system (arrows)
+[x] F-recipe-hierarchy     Recipe catalog UI hierarchy and organization
 [x] F-recipes              Recipe system for crafting/cooking
 [x] F-rts-selection        RTS box selection and multi-creature commands
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
@@ -1509,7 +1510,7 @@ surface. If a falling pile lands on a voxel that already has a ground pile,
 the two piles merge their inventories into one.
 
 #### F-recipe-hierarchy — Recipe catalog UI hierarchy and organization
-**Status:** Todo · **Phase:** 4
+**Status:** Done · **Phase:** 4
 
 The recipe catalog now generates many per-species recipes (extraction,
 milling, baking, spinning, twisting, bowstring assembly). With 20-40
@@ -1527,7 +1528,7 @@ Scope:
 - Possibly a search/filter box for quick lookup
 - No sim changes needed — category data is already populated
 
-**Related:** F-component-recipes, F-recipes
+**Related:** F-component-recipes, F-recipe-search, F-recipes
 
 #### F-recipes — Recipe system for crafting/cooking
 **Status:** Done · **Phase:** 3
@@ -2571,6 +2572,21 @@ Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 **Status:** Done · **Refs:** §26
 
 ESC-triggered pause menu with Resume, Save, Load, and Quit options.
+
+#### F-recipe-search — Recipe catalog search/filter
+**Status:** Todo · **Phase:** 4
+
+Add a search/filter text box to the recipe catalog picker so players
+can quickly find recipes by name without browsing the category tree.
+
+Scope:
+- GDScript UI: text input at the top of the recipe picker that filters
+  the visible tree as the player types
+- No sim changes needed — display_name is already available
+
+Split out from F-recipe-hierarchy which handles the tree/hierarchy UI.
+
+**Related:** F-recipe-hierarchy
 
 #### F-roof-click-select — Roof click selects building, not elf underneath
 **Status:** Todo · **Phase:** 2

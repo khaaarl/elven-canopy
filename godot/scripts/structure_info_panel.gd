@@ -37,7 +37,8 @@
 ## a unified Crafting section is shown with a summary and "Details..." button.
 ## The detail panel (sibling PanelContainer) contains:
 ## - A "Crafting Enabled" toggle
-## - An "Add Recipe..." button that expands an inline recipe picker
+## - An "Add Recipe..." button that expands a hierarchical recipe picker
+##   organized as a collapsible tree by category (e.g. Processing > Milling)
 ## - Active recipe list with per-output target controls, auto-logistics toggle,
 ##   reorder/remove buttons, and per-recipe enable toggles
 ## Emits crafting_enabled_changed, add_recipe_requested, remove_recipe_requested,
@@ -122,6 +123,11 @@ var _crafting_details_status_label: Label
 var _recipe_picker_visible: bool = false
 ## Cached recipe catalog for the current building (from bridge).
 var _cached_building_recipes: Array = []
+## Collapsed state per top-level category in the recipe picker tree.
+## Keys are category name strings, values are bools (true = collapsed).
+var _recipe_category_collapsed: Dictionary = {}
+## Cached active recipe key JSONs for re-applying availability after tree rebuild.
+var _cached_active_recipe_keys: Array = []
 ## Per-active-recipe widget references, rebuilt each frame when details visible.
 ## Stored to preserve focus state on LineEdits.
 var _active_recipe_widgets: Dictionary = {}
@@ -1035,41 +1041,153 @@ func _on_add_recipe_pressed() -> void:
 func _populate_recipe_picker() -> void:
 	for child in _crafting_recipe_picker.get_children():
 		child.queue_free()
+
+	# Group recipes by top-level category.
+	var categorized: Dictionary = {}  # category_name -> Array of recipes
+	var root_recipes: Array = []  # recipes with empty category
 	for recipe in _cached_building_recipes:
-		var key_json: String = recipe.get("key_json", "")
-		var display_name: String = recipe.get("display_name", "?")
-		var inputs: Array = recipe.get("inputs", [])
-		var outputs: Array = recipe.get("outputs", [])
+		var category: Array = recipe.get("category", [])
+		if category.size() == 0:
+			root_recipes.append(recipe)
+		else:
+			var top_cat: String = category[0]
+			if not categorized.has(top_cat):
+				categorized[top_cat] = []
+			categorized[top_cat].append(recipe)
 
-		# Build input → output description.
-		var parts: PackedStringArray = []
-		for inp in inputs:
-			parts.append("%d %s" % [inp.get("quantity", 0), inp.get("item_kind", "?")])
-		var input_str := " + ".join(parts) if parts.size() > 0 else "(nothing)"
-		parts = []
-		for out in outputs:
-			parts.append("%d %s" % [out.get("quantity", 0), out.get("item_kind", "?")])
-		var output_str := " + ".join(parts)
+	# Auto-expand if all recipes share a single top-level category.
+	var auto_expand := root_recipes.size() == 0 and categorized.size() == 1
 
-		var btn := Button.new()
-		btn.text = "%s  (%s → %s)" % [display_name, input_str, output_str]
-		btn.set_meta("key_json", key_json)
-		btn.pressed.connect(_on_recipe_picker_selected.bind(key_json))
-		_crafting_recipe_picker.add_child(btn)
+	# Initialize collapsed state for any new categories (default collapsed).
+	for cat_name: String in categorized:
+		if not _recipe_category_collapsed.has(cat_name):
+			_recipe_category_collapsed[cat_name] = not auto_expand
+
+	# Add root-level recipes (no category) first.
+	for recipe in root_recipes:
+		_crafting_recipe_picker.add_child(_make_recipe_button(recipe))
+
+	# Add categorized recipes as collapsible groups.
+	var sorted_cats: Array = categorized.keys()
+	sorted_cats.sort()
+	for cat_name: String in sorted_cats:
+		var recipes: Array = categorized[cat_name]
+		var is_collapsed: bool = _recipe_category_collapsed.get(cat_name, true)
+
+		# Subcategorize within this top-level category.
+		var subcategorized: Dictionary = {}  # subcat_name -> Array of recipes
+		var direct_recipes: Array = []  # recipes with only the top-level category
+		for recipe in recipes:
+			var category: Array = recipe.get("category", [])
+			if category.size() >= 2:
+				var sub_cat: String = category[1]
+				if not subcategorized.has(sub_cat):
+					subcategorized[sub_cat] = []
+				subcategorized[sub_cat].append(recipe)
+			else:
+				direct_recipes.append(recipe)
+
+		# Category header button with expand/collapse indicator.
+		var header := Button.new()
+		var arrow := "▶" if is_collapsed else "▼"
+		header.text = "%s %s (%d)" % [arrow, cat_name, recipes.size()]
+		header.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		header.pressed.connect(_on_recipe_category_toggled.bind(cat_name))
+		_crafting_recipe_picker.add_child(header)
+
+		# Container for this category's recipes, hidden when collapsed.
+		var cat_vbox := VBoxContainer.new()
+		cat_vbox.visible = not is_collapsed
+		cat_vbox.add_theme_constant_override("separation", 2)
+		cat_vbox.set_meta("category", cat_name)
+		_crafting_recipe_picker.add_child(cat_vbox)
+
+		# Indent the contents.
+		var margin := MarginContainer.new()
+		margin.add_theme_constant_override("margin_left", 16)
+		cat_vbox.add_child(margin)
+
+		var inner_vbox := VBoxContainer.new()
+		inner_vbox.add_theme_constant_override("separation", 2)
+		margin.add_child(inner_vbox)
+
+		# Direct recipes (single-level category) first.
+		for recipe in direct_recipes:
+			inner_vbox.add_child(_make_recipe_button(recipe))
+
+		# Subcategory groups.
+		var sorted_subcats: Array = subcategorized.keys()
+		sorted_subcats.sort()
+		for sub_name: String in sorted_subcats:
+			var sub_recipes: Array = subcategorized[sub_name]
+			var sub_label := Label.new()
+			sub_label.text = "%s (%d)" % [sub_name, sub_recipes.size()]
+			sub_label.add_theme_font_size_override("font_size", 13)
+			inner_vbox.add_child(sub_label)
+			var sub_margin := MarginContainer.new()
+			sub_margin.add_theme_constant_override("margin_left", 12)
+			inner_vbox.add_child(sub_margin)
+			var sub_vbox := VBoxContainer.new()
+			sub_vbox.add_theme_constant_override("separation", 2)
+			sub_margin.add_child(sub_vbox)
+			for recipe in sub_recipes:
+				sub_vbox.add_child(_make_recipe_button(recipe))
+
+
+## Build a recipe button with input → output description and key_json metadata.
+func _make_recipe_button(recipe: Dictionary) -> Button:
+	var key_json: String = recipe.get("key_json", "")
+	var display_name: String = recipe.get("display_name", "?")
+	var inputs: Array = recipe.get("inputs", [])
+	var outputs: Array = recipe.get("outputs", [])
+	var parts: PackedStringArray = []
+	for inp in inputs:
+		parts.append("%d %s" % [inp.get("quantity", 0), inp.get("item_kind", "?")])
+	var input_str := " + ".join(parts) if parts.size() > 0 else "(nothing)"
+	parts = []
+	for out in outputs:
+		parts.append("%d %s" % [out.get("quantity", 0), out.get("item_kind", "?")])
+	var output_str := " + ".join(parts)
+	var btn := Button.new()
+	btn.text = "%s  (%s → %s)" % [display_name, input_str, output_str]
+	btn.set_meta("key_json", key_json)
+	btn.pressed.connect(_on_recipe_picker_selected.bind(key_json))
+	return btn
+
+
+## Toggle a recipe category's collapsed state and rebuild the picker.
+func _on_recipe_category_toggled(cat_name: String) -> void:
+	_recipe_category_collapsed[cat_name] = not _recipe_category_collapsed.get(cat_name, true)
+	_populate_recipe_picker()
+	# Re-apply availability graying after rebuild.
+	if _crafting_recipe_picker.visible:
+		_refresh_recipe_picker_availability()
 
 
 func _update_recipe_picker_availability(active_recipes: Array) -> void:
 	if not _crafting_recipe_picker.visible:
 		return
-	# Collect active recipe key JSONs.
-	var active_keys: Array = []
+	# Collect and cache active recipe key JSONs.
+	_cached_active_recipe_keys = []
 	for ar in active_recipes:
-		active_keys.append(ar.get("recipe_key_json", ""))
-	# Gray out recipes already active.
-	for child in _crafting_recipe_picker.get_children():
+		_cached_active_recipe_keys.append(ar.get("recipe_key_json", ""))
+	# Gray out recipes already active (recurse into category containers).
+	_disable_active_recipe_buttons(_crafting_recipe_picker, _cached_active_recipe_keys)
+
+
+## Re-apply recipe availability using cached active keys (after tree rebuild).
+func _refresh_recipe_picker_availability() -> void:
+	_disable_active_recipe_buttons(_crafting_recipe_picker, _cached_active_recipe_keys)
+
+
+## Recursively find recipe buttons in the picker tree and disable active ones.
+func _disable_active_recipe_buttons(node: Node, active_keys: Array) -> void:
+	for child in node.get_children():
 		if child is Button and child.has_meta("key_json"):
 			var key: String = child.get_meta("key_json")
 			child.disabled = active_keys.has(key)
+		elif child is Container:
+			_disable_active_recipe_buttons(child, active_keys)
 
 
 func _on_recipe_picker_selected(key_json: String) -> void:

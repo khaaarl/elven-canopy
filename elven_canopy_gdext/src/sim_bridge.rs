@@ -2146,8 +2146,8 @@ impl SimBridge {
     }
 
     /// Get the recipe catalog for a building, filtered to recipes available
-    /// for its furnishing type. Returns a flat list of recipe dicts (hierarchy
-    /// is deferred to a future pass when category data is populated).
+    /// for its furnishing type. Returns a flat list of recipe dicts, each with
+    /// a `category` array that the GDScript side renders as a collapsible tree.
     #[func]
     fn get_recipe_catalog_for_building(&self, structure_id: i64) -> VarArray {
         let Some(sim) = &self.session.sim else {
