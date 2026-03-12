@@ -28,6 +28,9 @@ __pycache__/
 # Claude stuff
 .claude/settings.local.json
 
+# Tracker lock file
+docs/tracker.md.lock
+
 # temporary files (directory kept via .gitkeep)
 .tmp/*
 !.tmp/.gitkeep

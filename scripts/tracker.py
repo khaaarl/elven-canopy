@@ -7,6 +7,14 @@ edit-title, edit-description, block, unblock, relate, unrelate, fix) for
 targeted edits. Mutation commands auto-run ``fix`` at the end to normalize
 ordering and relationship symmetry.
 
+Mutation commands acquire an exclusive file lock (``tracker.md.lock``) to
+prevent concurrent writes from clobbering each other.
+
+Blocking relationships are preserved across state changes. When an item is
+marked Done, its active **Blocks/Blocked by** fields convert to
+**Unblocked/Unblocked by** — preserving the relationship history.  If the
+item later moves back from Done, the relationships restore automatically.
+
 Subsumes the functionality of the former ``fix_tracker.py``.
 
 Run from repo root: python3 scripts/tracker.py <command> [args]
@@ -14,6 +22,7 @@ Run from repo root: python3 scripts/tracker.py <command> [args]
 
 import argparse
 import difflib
+import fcntl
 import os
 import re
 import sys
@@ -33,7 +42,9 @@ H2_HEADING_RE = re.compile(r"^## ")
 STATUS_LINE_RE = re.compile(r"^\*\*Status:\*\* (Done|Todo|In Progress)")
 
 # Field lines like: **Blocks:** F-foo, F-bar
-FIELD_RE = re.compile(r"^\*\*(Blocks|Blocked by|Related):\*\*\s*(.*)")
+FIELD_RE = re.compile(
+    r"^\*\*(Blocks|Blocked by|Unblocked|Unblocked by|Related):\*\*\s*(.*)"
+)
 
 # Info field lines (not relationship fields)
 INFO_FIELD_RE = re.compile(
@@ -78,6 +89,8 @@ class Item:
         self.title = ""
         self.blocks = []
         self.blocked_by = []
+        self.unblocked = []
+        self.unblocked_by = []
         self.related = []
         self.phase = ""
         self.refs = ""
@@ -180,6 +193,10 @@ def collect_items(lines):
                 items[current_id].blocks = ids
             elif field == "Blocked by":
                 items[current_id].blocked_by = ids
+            elif field == "Unblocked":
+                items[current_id].unblocked = ids
+            elif field == "Unblocked by":
+                items[current_id].unblocked_by = ids
             elif field == "Related":
                 items[current_id].related = ids
 
@@ -212,41 +229,81 @@ def get_groups(lines):
 
 
 def compute_symmetric(items):
-    """Compute corrected Blocks/Blocked-by/Related fields with symmetry."""
+    """Compute corrected Blocks/Blocked-by/Unblocked/Unblocked-by/Related fields.
+
+    Active blocking relationships (Blocks/Blocked by) exist only between two
+    non-Done items.  When either party is Done, the relationship moves to
+    Unblocked/Unblocked by — preserving the information so that undoing a
+    Done status restores the blocking relationship automatically.
+    """
     done = {iid for iid, item in items.items() if item.status == "Done"}
 
     blocks = {}
     blocked_by = {}
+    unblocked = {}
+    unblocked_by = {}
     related = {}
-    for iid, item in items.items():
-        if item.status == "Done":
-            blocks[iid] = []
-            blocked_by[iid] = []
-            related[iid] = list(item.related)
-        else:
-            blocks[iid] = [x for x in item.blocks if x not in done and x in items]
-            blocked_by[iid] = [
-                x for x in item.blocked_by if x not in done and x in items
-            ]
-            related[iid] = list(item.related)
 
-    # Blocks/Blocked-by symmetry
+    # Seed from existing fields (both active and inactive).  We'll sort out
+    # which bucket each reference belongs to after enforcing symmetry.
+    for iid, item in items.items():
+        all_blocks = list(item.blocks) + list(item.unblocked)
+        all_blocked_by = list(item.blocked_by) + list(item.unblocked_by)
+        # Deduplicate while preserving order, drop unknown IDs
+        seen_b = set()
+        combined_blocks = []
+        for x in all_blocks:
+            if x in items and x not in seen_b:
+                combined_blocks.append(x)
+                seen_b.add(x)
+        seen_bb = set()
+        combined_blocked_by = []
+        for x in all_blocked_by:
+            if x in items and x not in seen_bb:
+                combined_blocked_by.append(x)
+                seen_bb.add(x)
+        blocks[iid] = combined_blocks
+        blocked_by[iid] = combined_blocked_by
+        unblocked[iid] = []
+        unblocked_by[iid] = []
+        related[iid] = list(item.related)
+
+    # Enforce Blocks/Blocked-by symmetry on the combined sets
     changed = True
     while changed:
         changed = False
         for iid in items:
-            if items[iid].status == "Done":
-                continue
             for target in list(blocks[iid]):
-                if target in items and items[target].status != "Done":
-                    if iid not in blocked_by[target]:
-                        blocked_by[target].append(iid)
-                        changed = True
+                if iid not in blocked_by[target]:
+                    blocked_by[target].append(iid)
+                    changed = True
             for source in list(blocked_by[iid]):
-                if source in items and items[source].status != "Done":
-                    if iid not in blocks[source]:
-                        blocks[source].append(iid)
-                        changed = True
+                if iid not in blocks[source]:
+                    blocks[source].append(iid)
+                    changed = True
+
+    # Now split into active vs unblocked based on Done status.
+    # A relationship is active only when BOTH parties are non-Done.
+    for iid in items:
+        active_blocks = []
+        inactive_blocks = []
+        for target in blocks[iid]:
+            if iid in done or target in done:
+                inactive_blocks.append(target)
+            else:
+                active_blocks.append(target)
+        blocks[iid] = active_blocks
+        unblocked[iid] = inactive_blocks
+
+        active_bb = []
+        inactive_bb = []
+        for source in blocked_by[iid]:
+            if iid in done or source in done:
+                inactive_bb.append(source)
+            else:
+                active_bb.append(source)
+        blocked_by[iid] = active_bb
+        unblocked_by[iid] = inactive_bb
 
     # Related symmetry: if A lists B as related, B should list A
     for iid in items:
@@ -254,11 +311,11 @@ def compute_symmetric(items):
             if target in items and iid not in related.get(target, []):
                 related.setdefault(target, []).append(iid)
 
-    return blocks, blocked_by, related
+    return blocks, blocked_by, unblocked, unblocked_by, related
 
 
-def rewrite_detail_fields(lines, blocks, blocked_by, related):
-    """Rewrite Blocks/Blocked-by/Related field lines in the detailed section."""
+def rewrite_detail_fields(lines, blocks, blocked_by, unblocked, unblocked_by, related):
+    """Rewrite Blocks/Blocked-by/Unblocked/Unblocked-by/Related field lines."""
     out = []
     current_id = None
     item_buf = []
@@ -270,6 +327,8 @@ def rewrite_detail_fields(lines, blocks, blocked_by, related):
 
         new_blocks = sorted(set(blocks.get(item_id, [])))
         new_blocked_by = sorted(set(blocked_by.get(item_id, [])))
+        new_unblocked = sorted(set(unblocked.get(item_id, [])))
+        new_unblocked_by = sorted(set(unblocked_by.get(item_id, [])))
         new_related = related.get(item_id, [])
 
         non_field_lines = []
@@ -286,6 +345,12 @@ def rewrite_detail_fields(lines, blocks, blocked_by, related):
             field_lines.append(f"**Blocked by:** {format_id_list(new_blocked_by)}\n")
         if new_blocks:
             field_lines.append(f"**Blocks:** {format_id_list(new_blocks)}\n")
+        if new_unblocked_by:
+            field_lines.append(
+                f"**Unblocked by:** {format_id_list(new_unblocked_by)}\n"
+            )
+        if new_unblocked:
+            field_lines.append(f"**Unblocked:** {format_id_list(new_unblocked)}\n")
         if new_related:
             field_lines.append(f"**Related:** {format_id_list(new_related)}\n")
 
@@ -463,8 +528,10 @@ def sort_detail_sections(lines):
 def run_fix(lines):
     """Apply all fix passes to lines. Returns new list of lines."""
     items = collect_items(lines)
-    blocks, blocked_by, related = compute_symmetric(items)
-    lines = rewrite_detail_fields(lines, blocks, blocked_by, related)
+    blocks, blocked_by, unblocked, unblocked_by, related = compute_symmetric(items)
+    lines = rewrite_detail_fields(
+        lines, blocks, blocked_by, unblocked, unblocked_by, related
+    )
     lines = normalize_summary_lines(lines)
     lines = sort_summary_section(lines)
     lines = sort_detail_sections(lines)
@@ -576,8 +643,27 @@ def cmd_search(args):
 # ---------------------------------------------------------------------------
 
 
-def write_tracker(original, lines, dry_run):
-    """Write lines back to tracker, showing diff in dry-run mode."""
+LOCK_PATH = TRACKER_PATH + ".lock"
+
+
+def acquire_lock():
+    """Acquire an exclusive lock for tracker mutations. Returns the lock fd."""
+    fd = open(LOCK_PATH, "w")
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def release_lock(fd):
+    """Release the tracker lock."""
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    fd.close()
+
+
+def write_tracker(original, lines, dry_run, lock_fd=None):
+    """Write lines back to tracker, showing diff in dry-run mode.
+
+    If lock_fd is provided, the caller holds the exclusive lock and the write
+    happens while the lock is still held."""
     result = "".join(lines)
     if dry_run:
         if result == original:
@@ -633,8 +719,10 @@ def make_summary_line(item_id, title, status):
 
 
 def set_relationship_field(lines, item, field_name, new_ids):
-    """Set a relationship field (Blocks/Blocked by/Related) on an item's
-    detail entry. Adds, updates, or removes the field line as needed.
+    """Set a relationship field on an item's detail entry.
+
+    Supported field_name values: Blocks, Blocked by, Unblocked, Unblocked by,
+    Related.  Adds, updates, or removes the field line as needed.
     Returns the modified lines list."""
     if item.detail_start < 0:
         return lines
@@ -670,6 +758,14 @@ def set_relationship_field(lines, item, field_name, new_ids):
 
 
 def cmd_change_state(args):
+    lock_fd = acquire_lock()
+    try:
+        _cmd_change_state_locked(args, lock_fd)
+    finally:
+        release_lock(lock_fd)
+
+
+def _cmd_change_state_locked(args, lock_fd):
     original = read_tracker()
     lines = original.splitlines(keepends=True)
     items = collect_items(lines)
@@ -756,6 +852,14 @@ def cmd_change_state(args):
 
 
 def cmd_add(args):
+    lock_fd = acquire_lock()
+    try:
+        _cmd_add_locked(args, lock_fd)
+    finally:
+        release_lock(lock_fd)
+
+
+def _cmd_add_locked(args, lock_fd):
     original = read_tracker()
     lines = original.splitlines(keepends=True)
     items = collect_items(lines)
@@ -877,6 +981,14 @@ def cmd_add(args):
 
 
 def cmd_edit_title(args):
+    lock_fd = acquire_lock()
+    try:
+        _cmd_edit_title_locked(args, lock_fd)
+    finally:
+        release_lock(lock_fd)
+
+
+def _cmd_edit_title_locked(args, lock_fd):
     original = read_tracker()
     lines = original.splitlines(keepends=True)
     items = collect_items(lines)
@@ -905,6 +1017,14 @@ def cmd_edit_title(args):
 
 
 def cmd_edit_description(args):
+    lock_fd = acquire_lock()
+    try:
+        _cmd_edit_description_locked(args, lock_fd)
+    finally:
+        release_lock(lock_fd)
+
+
+def _cmd_edit_description_locked(args, lock_fd):
     original = read_tracker()
     lines = original.splitlines(keepends=True)
     items = collect_items(lines)
@@ -973,6 +1093,14 @@ def cmd_edit_description(args):
 
 
 def cmd_block(args):
+    lock_fd = acquire_lock()
+    try:
+        _cmd_block_locked(args, lock_fd)
+    finally:
+        release_lock(lock_fd)
+
+
+def _cmd_block_locked(args, lock_fd):
     original = read_tracker()
     lines = original.splitlines(keepends=True)
     items = collect_items(lines)
@@ -986,11 +1114,11 @@ def cmd_block(args):
             sys.exit(1)
 
     item = items[item_id]
-    if blocker_id in item.blocked_by:
+    if blocker_id in item.blocked_by or blocker_id in item.unblocked_by:
         print(f"No change needed — {item_id} is already blocked by {blocker_id}.")
         return
 
-    # Add to blocked_by (fix will handle symmetry)
+    # Add to blocked_by (fix will handle symmetry and active/inactive split)
     new_blocked_by = item.blocked_by + [blocker_id]
     lines = set_relationship_field(lines, item, "Blocked by", new_blocked_by)
 
@@ -999,6 +1127,14 @@ def cmd_block(args):
 
 
 def cmd_unblock(args):
+    lock_fd = acquire_lock()
+    try:
+        _cmd_unblock_locked(args, lock_fd)
+    finally:
+        release_lock(lock_fd)
+
+
+def _cmd_unblock_locked(args, lock_fd):
     original = read_tracker()
     lines = original.splitlines(keepends=True)
     items = collect_items(lines)
@@ -1011,14 +1147,21 @@ def cmd_unblock(args):
         sys.exit(1)
 
     item = items[item_id]
-    if blocker_id not in item.blocked_by:
+    in_active = blocker_id in item.blocked_by
+    in_inactive = blocker_id in item.unblocked_by
+    if not in_active and not in_inactive:
         print(f"No change needed — {item_id} is not blocked by {blocker_id}.")
         return
 
-    new_blocked_by = [x for x in item.blocked_by if x != blocker_id]
-    lines = set_relationship_field(lines, item, "Blocked by", new_blocked_by)
+    # Remove from whichever field(s) it appears in
+    if in_active:
+        new_blocked_by = [x for x in item.blocked_by if x != blocker_id]
+        lines = set_relationship_field(lines, item, "Blocked by", new_blocked_by)
+    if in_inactive:
+        new_unblocked_by = [x for x in item.unblocked_by if x != blocker_id]
+        lines = set_relationship_field(lines, item, "Unblocked by", new_unblocked_by)
 
-    # Also remove from blocker's Blocks field
+    # Also remove from blocker's Blocks/Unblocked fields
     if blocker_id in items:
         # Re-parse since lines changed
         items2 = collect_items(lines)
@@ -1026,12 +1169,22 @@ def cmd_unblock(args):
             blocker = items2[blocker_id]
             new_blocks = [x for x in blocker.blocks if x != item_id]
             lines = set_relationship_field(lines, blocker, "Blocks", new_blocks)
+            new_unblocked = [x for x in blocker.unblocked if x != item_id]
+            lines = set_relationship_field(lines, blocker, "Unblocked", new_unblocked)
 
     lines = run_fix(lines)
     write_tracker(original, lines, args.dry_run)
 
 
 def cmd_relate(args):
+    lock_fd = acquire_lock()
+    try:
+        _cmd_relate_locked(args, lock_fd)
+    finally:
+        release_lock(lock_fd)
+
+
+def _cmd_relate_locked(args, lock_fd):
     original = read_tracker()
     lines = original.splitlines(keepends=True)
     items = collect_items(lines)
@@ -1067,6 +1220,14 @@ def cmd_relate(args):
 
 
 def cmd_unrelate(args):
+    lock_fd = acquire_lock()
+    try:
+        _cmd_unrelate_locked(args, lock_fd)
+    finally:
+        release_lock(lock_fd)
+
+
+def _cmd_unrelate_locked(args, lock_fd):
     original = read_tracker()
     lines = original.splitlines(keepends=True)
     items = collect_items(lines)
@@ -1100,10 +1261,14 @@ def cmd_unrelate(args):
 
 
 def cmd_fix(args):
-    original = read_tracker()
-    lines = original.splitlines(keepends=True)
-    lines = run_fix(lines)
-    write_tracker(original, lines, args.dry_run)
+    lock_fd = acquire_lock()
+    try:
+        original = read_tracker()
+        lines = original.splitlines(keepends=True)
+        lines = run_fix(lines)
+        write_tracker(original, lines, args.dry_run)
+    finally:
+        release_lock(lock_fd)
 
 
 # ---------------------------------------------------------------------------
