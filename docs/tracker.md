@@ -59,6 +59,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
+[ ] F-alt-deselect         Alt+click to remove from selection
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-armor                Wearable armor system
 [ ] F-arrow-durability     Arrow durability and recovery
@@ -84,6 +85,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
 [ ] F-clothing             Wearable clothing system
 [ ] F-combat               Combat and invader threat system
+[ ] F-command-queue        Shift+right-click to queue commands
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
@@ -92,8 +94,10 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-creature-death       Basic creature death (starvation)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
+[ ] F-dblclick-select      Double-click to select all of same military group
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
+[ ] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
@@ -108,13 +112,16 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fire-structure       Fire x structural integrity cascades
 [ ] F-flying-nav           3D flight navigation system
 [ ] F-fog-of-war           Visibility via tree and root network
+[ ] F-follow-multi         Camera zoom-to and follow for multi-selections
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-friendly-fire        Friendly-fire avoidance for ranged attacks
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
+[ ] F-game-speed-fkeys     Move game speed controls to F1/F2/F3
 [ ] F-ghost-above          Ghost out voxels above camera focus height
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
+[ ] F-home-camera          Home key to center camera on tree
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
@@ -127,7 +134,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-military-equip       Military group equipment acquisition
 [ ] F-military-org         Squad management and organization
 [ ] F-minimap              Minimap with tree silhouette and creature positions
-[ ] F-mmb-pan              Middle-mouse-drag to pan camera horizontally
+[ ] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
 [ ] F-modding              Scripting layer for modding support
 [ ] F-modifier-keybinds    Modifier key combinations in bindings
 [ ] F-mouse-elevation      Ctrl+mouse wheel to move camera elevation
@@ -137,6 +144,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-narrative-log        Events and narrative log
 [ ] F-partial-struct       Structural checks on incomplete builds
+[ ] F-patrol               Patrol command for military groups
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
@@ -150,6 +158,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
 [ ] F-rust-sprites         Investigate moving sprite generation to Rust
 [ ] F-seasons              Seasonal visual and gameplay effects
+[ ] F-selection-bar        Bottom-of-screen selection bar (SC2-style)
+[ ] F-selection-groups     Ctrl+number selection groups with double-tap zoom/follow
 [ ] F-skirmish             Ranged skirmish/kite behavior (shoot-retreat loop)
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
@@ -158,6 +168,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
+[ ] F-tab-cycle            Tab to cycle focus through units in selection
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
@@ -2028,7 +2039,7 @@ UI: Military panel opened via separate Military [M] toolbar button. Summary page
 
 **Draft:** docs/drafts/combat_military.md (§1)
 
-**Related:** F-engagement-style, F-military-armor, F-military-equip
+**Related:** F-engagement-style, F-military-armor, F-military-equip, F-patrol
 
 #### F-military-org — Squad management and organization
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
@@ -2050,6 +2061,16 @@ outward from the target. Applies to both regular move and attack-move
 commands for military groups and ad-hoc selections.
 
 **Related:** F-rts-selection
+
+#### F-patrol — Patrol command for military groups
+**Status:** Todo · **Phase:** 5
+
+Patrol command for military groups. Select a group and issue a patrol
+between two or more waypoints; the group walks the route repeatedly,
+engaging hostiles encountered along the way. Useful for guarding
+perimeters and trade routes.
+
+**Related:** F-military-groups
 
 #### F-projectiles — Projectile physics system (arrows)
 **Status:** Done
@@ -2250,6 +2271,14 @@ soul-powered constructs (golems, animated defenses).
 Replace placeholder sprites with AI-generated layered art: base body
 templates + composited clothing/hair/face layers for visual variety.
 
+#### F-alt-deselect — Alt+click to remove from selection
+**Status:** Todo · **Phase:** 5
+
+Alt+click a unit to remove it from the current selection. Counterpart
+to Shift+click to add. Standard RTS modifier pattern.
+
+**Related:** F-rts-selection
+
 #### F-binding-conflicts — Binding conflict detection
 **Status:** Todo · **Phase:** 2
 
@@ -2295,6 +2324,19 @@ overview of the construction pipeline. Small overlay or sidebar panel.
 Lock camera focal point to a selected creature. Toggled via creature info
 panel button.
 
+**Related:** F-follow-multi
+
+#### F-command-queue — Shift+right-click to queue commands
+**Status:** Todo · **Phase:** 5
+
+Shift+right-click appends a command to the selected units' queue
+instead of replacing it. An unshifted right-click replaces the queue
+as it does today. Queued commands execute sequentially as each one
+completes (move: arrived, attack: target dead, attack-move: arrived
+at destination).
+
+**Related:** F-rts-selection
+
 #### F-controls-config — Centralized controls config with rebinding and persistence
 **Status:** Todo · **Phase:** 2
 
@@ -2313,7 +2355,7 @@ button with "Controls" button.
 
 **Draft:** docs/drafts/controls_config.md
 
-**Related:** F-binding-conflicts, F-controls-config-A, F-controls-config-B, F-controls-config-C, F-keybind-help, F-mmb-pan, F-modifier-keybinds, F-mouse-elevation
+**Related:** F-binding-conflicts, F-controls-config-A, F-controls-config-B, F-controls-config-C, F-edge-scroll, F-game-speed-fkeys, F-home-camera, F-keybind-help, F-mmb-pan, F-modifier-keybinds, F-mouse-elevation, F-selection-groups
 
 #### F-controls-config-A — ControlsConfig autoload and handler migration
 **Status:** Todo · **Phase:** 2
@@ -2409,6 +2451,16 @@ Broadened from creature-only tooltip to cover all hoverable world objects.
 
 **Related:** F-creature-info, F-elf-names, F-selection, F-status-bar
 
+#### F-dblclick-select — Double-click to select all of same military group
+**Status:** Todo · **Phase:** 5
+
+Double-click a creature to select all visible creatures in the same
+military group. Civilians (no military group) are treated as their
+own implicit group. This lets players quickly grab "all archers" or
+"all spearelves" based on groups they've defined.
+
+**Related:** F-rts-selection, F-selection-groups
+
 #### F-debug-menu — Move spawn/summon into debug menu
 **Status:** Done · **Phase:** 2
 
@@ -2429,6 +2481,20 @@ structure) to reflect that it's no longer spawn-centric.
 The debug menu should be easy to hide entirely for non-dev builds later.
 
 **Related:** F-spawn-toolbar
+
+#### F-edge-scroll — Configurable edge scrolling (pan, rotate, or off)
+**Status:** Todo · **Phase:** 5
+
+Moving the mouse to screen edges moves the camera. Three configurable
+modes:
+- Pan: edges scroll the camera horizontally (classic RTS)
+- Rotate: edges rotate/tilt the camera
+- Off: disabled (default)
+
+Edge scrolling auto-disables when the mouse is over a UI panel to
+prevent accidental camera movement while using menus.
+
+**Related:** F-controls-config
 
 #### F-elfcyclopedia-know — Elfcyclopedia civ/fruit knowledge pages
 **Status:** Todo
@@ -2472,6 +2538,16 @@ system (F-clothing) to provide the item data.
 
 **Blocked by:** F-clothing, F-rust-sprites
 
+#### F-follow-multi — Camera zoom-to and follow for multi-selections
+**Status:** Todo · **Phase:** 5
+
+Camera zoom-to and follow mode for multi-unit selections. The camera
+tracks the centroid of the selected group, updating each frame.
+Zoom level stays at the player's current setting (no auto-zoom to
+bounding box). WASD breaks follow as with single-unit follow.
+
+**Related:** F-cam-follow, F-selection-groups
+
 #### F-fruit-sprite-ui — Fruit sprites in inventory/logistics/selection UI
 **Status:** Todo
 
@@ -2498,6 +2574,16 @@ Follows the existing sprite_factory.gd pattern used for creature sprites.
 
 **Related:** F-fruit-sprite-ui, F-fruit-variety, F-rust-sprites
 
+#### F-game-speed-fkeys — Move game speed controls to F1/F2/F3
+**Status:** Todo · **Phase:** 5
+
+Move game speed controls from 1/2/3 to F1/F2/F3, freeing the number
+keys for selection groups (F-selection-groups). Space remains
+pause/resume.
+
+**Blocks:** F-selection-groups
+**Related:** F-controls-config
+
 #### F-ghost-above — Ghost out voxels above camera focus height
 **Status:** Todo · **Phase:** 2
 
@@ -2515,6 +2601,15 @@ focus.
 **Status:** Done · **Phase:** 0 · **Refs:** §3
 
 Godot 4 project with GDExtension configuration.
+
+#### F-home-camera — Home key to center camera on tree
+**Status:** Todo · **Phase:** 5
+
+Press Home to snap the camera focal point to the center of the
+player's tree. Keeps current zoom and pitch — only repositions the
+focal point.
+
+**Related:** F-controls-config
 
 #### F-keybind-help — Keyboard shortcuts help overlay
 **Status:** Done · **Phase:** 2
@@ -2546,8 +2641,13 @@ to that position. Pure rendering/UI — reads existing sim data.
 
 **Related:** F-zlevel-vis
 
-#### F-mmb-pan — Middle-mouse-drag to pan camera horizontally
+#### F-mmb-pan — Ctrl+MMB drag to pan camera horizontally
 **Status:** Todo · **Phase:** 5
+
+Ctrl+middle-mouse-button drag to pan the camera horizontally.
+Mirrors Ctrl+scroll wheel for vertical movement (F-mouse-elevation),
+making Ctrl the consistent "alternate axis" modifier for mouse controls.
+Plain MMB drag remains orbit/tilt as before.
 
 **Related:** F-controls-config, F-mouse-elevation
 
@@ -2625,7 +2725,7 @@ Godot-side UI work. Box selection (click-drag rectangle) in selection_controller
 
 **Draft:** docs/drafts/combat_military.md (§2)
 
-**Related:** F-move-spread
+**Related:** F-alt-deselect, F-command-queue, F-dblclick-select, F-move-spread, F-selection-bar, F-tab-cycle
 
 #### F-rust-mesh-complex — Rust mesh gen for buildings/ladders
 **Status:** Todo · **Phase:** 3
@@ -2684,6 +2784,37 @@ Input precedence chain with placement and pause systems.
 
 **Related:** F-creature-tooltip, F-select-struct
 
+#### F-selection-bar — Bottom-of-screen selection bar (SC2-style)
+**Status:** Todo · **Phase:** 5
+
+Replace the right-side selection panel with a persistent bottom-of-screen
+selection bar (SC2-style). Shows portraits/icons for each selected unit
+and structure icons, with info on hover and group commands. Unifies
+creature and structure selection into a single consistent UI element.
+
+Speculative — larger UI rearchitecture touching creature_info_panel.gd,
+structure_info_panel.gd, selection_controller.gd, and overall layout.
+
+**Related:** F-rts-selection
+
+#### F-selection-groups — Ctrl+number selection groups with double-tap zoom/follow
+**Status:** Todo · **Phase:** 5
+
+SC2-style selection groups using number keys 1-9:
+- Ctrl+number: save current selection as group N
+- Shift+number: add current selection to group N
+- Number: recall group N
+- Double-tap number: recall group N and zoom camera to it / follow
+
+Groups can contain both creatures and structures. Configurable camera
+locations (SC2 camera hotkeys) may share the same system or use a
+parallel binding set.
+
+Requires F-game-speed-fkeys to free the number keys.
+
+**Blocked by:** F-game-speed-fkeys
+**Related:** F-controls-config, F-dblclick-select, F-follow-multi
+
 #### F-sim-speed — Simulation speed controls UI
 **Status:** Done · **Phase:** 4
 
@@ -2726,6 +2857,15 @@ for zoom-to-location.
 **New files:** `structure_list_panel.gd`
 
 **Related:** F-building, F-construction, F-select-struct, F-struct-names
+
+#### F-tab-cycle — Tab to cycle focus through units in selection
+**Status:** Todo · **Phase:** 5
+
+When multiple units are selected, Tab cycles focus through individual
+creatures, showing their info panel without deselecting the rest.
+Shift+Tab cycles in reverse.
+
+**Related:** F-rts-selection
 
 #### F-task-panel-groups — Task panel grouped by origin + creature names
 **Status:** Done · **Phase:** 2
