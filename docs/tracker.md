@@ -66,6 +66,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
 [ ] F-batch-construct      Batch construction mode with ensemble validation
+[ ] F-batch-craft          Workstation-driven batch crafting with time discount
 [ ] F-binding-conflicts    Binding conflict detection
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
@@ -112,6 +113,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-ghost-above          Ghost out voxels above camera focus height
+[ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
@@ -513,7 +515,7 @@ floor area (density varies by type). Auto-renames the building to e.g.
 
 **New files:** `furniture_renderer.gd`
 
-**Related:** F-bldg-dormitory, F-building, F-unfurnish
+**Related:** F-batch-craft, F-bldg-dormitory, F-building, F-greenhouse-revamp, F-unfurnish
 
 #### F-ladders — Rope/wood ladders as cheap connectors
 **Status:** Done · **Phase:** 3 · **Refs:** §11
@@ -1223,6 +1225,23 @@ also needs this function as a prerequisite.
 
 ### Economy & Logistics
 
+#### F-batch-craft — Workstation-driven batch crafting with time discount
+**Status:** Todo
+
+Crafting buildings (workshops, kitchens, mills, bakeries) contain
+workstation furniture (tables, counters, etc.) whose count scales with
+building size. Workstation count governs crafting capacity: more
+workstations enable larger batch sizes or more elves working in parallel
+on different stations. Some recipes are batch-able in the appropriate
+building type — the player configures batch size in the UI (limited by
+available workstations). A single batch task reserves that many
+workstations and that many multiples of the inputs, and a single elf
+completes the batch in less total time than individual tasks would take
+(configurable time discount). Examples: milling in a mill, baking in a
+bakery.
+
+**Related:** F-furnish, F-manufacturing, F-recipes, F-unified-craft-ui
+
 #### F-clothing — Wearable clothing system
 **Status:** Todo
 
@@ -1345,7 +1364,7 @@ random Leaf-adjacent positions, elves pathfind to harvest. Bridges the gap
 between the existing food decay mechanic (F-food-gauge) and the advanced
 food system (F-fruit-variety).
 
-**Related:** F-branch-growth, F-elf-needs, F-food-chain, F-food-gauge, F-fruit-variety, F-population
+**Related:** F-branch-growth, F-elf-needs, F-food-chain, F-food-gauge, F-fruit-variety, F-greenhouse-revamp, F-population
 
 #### F-fruit-variety — Procedural fruit variety and processing
 **Status:** In Progress · **Phase:** 7 · **Refs:** §13
@@ -1376,7 +1395,21 @@ rendering/visual differentiation, deeper integration with food chain
 and cooking.
 
 **Blocks:** F-civ-knowledge
-**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-logistics-filter, F-recipes
+**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-greenhouse-revamp, F-logistics-filter, F-recipes
+
+#### F-greenhouse-revamp — Greenhouse planter growth cycle and pluck tasks
+**Status:** Todo
+
+Revamp greenhouse internals: greenhouses contain individual planters as
+furniture, each growing a single fruit on a visible growth schedule.
+Planters show visual progress (sprout → mature → ripe). Fruits aren't
+available until ripe, at which point an elf must come pluck them (a
+task) to move them into the greenhouse's inventory. Replaces the current
+autonomous production-during-heartbeat model with a more tactile,
+visually rich loop. Number of planters scales with building floor area
+(like other furnishing types).
+
+**Related:** F-fruit-prod, F-fruit-variety, F-furnish
 
 #### F-hauling — Item hauling task type
 **Status:** Done · **Phase:** 3
@@ -1465,7 +1498,7 @@ fields), SetWorkshopConfig command, logistics wants from recipes.
 workshop_enabled, recipe list, craft_status — mirrors kitchen cooking
 section).
 
-**Related:** F-bldg-kitchen, F-bread, F-items
+**Related:** F-batch-craft, F-bldg-kitchen, F-bread, F-items
 
 #### F-pile-gravity — Ground pile gravity and merging
 **Status:** Done · **Phase:** 4
@@ -1505,7 +1538,7 @@ to bread; workshops use recipes to convert wood to bows. Data-driven
 via GameConfig so recipes can be added/tuned without code changes.
 Avoids hardcoding conversion logic per building type.
 
-**Related:** F-bldg-kitchen, F-bldg-workshop, F-component-recipes, F-crafting, F-food-chain, F-fruit-variety, F-recipe-hierarchy
+**Related:** F-batch-craft, F-bldg-kitchen, F-bldg-workshop, F-component-recipes, F-crafting, F-food-chain, F-fruit-variety, F-recipe-hierarchy
 
 #### F-task-assign-opt — Event-driven bidirectional task assignment
 **Status:** Todo · **Phase:** 4
@@ -1541,6 +1574,8 @@ support. Encourages distributed village design across multiple trees.
 Replace per-building-type crafting UIs (kitchen cooking toggle, workshop recipe list, extraction settings) with a single unified data-driven crafting panel. Buildings expose available recipes based on their furnishing type; the UI dynamically renders recipe selection, material pickers, and output targets from recipe metadata. Reduces code duplication and makes adding new recipe types trivial.
 
 **Draft:** docs/drafts/unified_craft_ui.md
+
+**Related:** F-batch-craft
 
 ### Social & Emotional
 
