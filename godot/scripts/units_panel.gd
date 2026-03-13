@@ -50,6 +50,8 @@ const ACTIVITY_LABELS = {
 	"AcquireItem": "Fetching",
 	"Moping": "Moping",
 	"Craft": "Crafting",
+	"AttackMove": "Attack Moving",
+	"Attack": "Attacking",
 }
 
 ## Map species names to plural section titles.

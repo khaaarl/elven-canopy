@@ -2667,6 +2667,7 @@ impl SimState {
                     .is_some_and(|c| c.vital_status == VitalStatus::Alive);
                 if !target_alive {
                     self.complete_task(task_id);
+                    self.schedule_reactivation(creature_id);
                     return;
                 }
             }
@@ -2909,6 +2910,17 @@ impl SimState {
                 let _ = self.db.creatures.update_no_fk(creature);
             }
         }
+    }
+
+    /// Schedule a creature reactivation on the next tick so it enters the
+    /// decision cascade (picks up a new task or wanders). Use this after
+    /// `complete_task` in code paths that `return` before reaching the
+    /// cascade in `process_creature_activation`.
+    fn schedule_reactivation(&mut self, creature_id: CreatureId) {
+        self.event_queue.schedule(
+            self.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
     }
 
     /// Find the nearest reachable fruit for a creature, using Dijkstra over the
@@ -5031,6 +5043,7 @@ impl SimState {
             Some(d) => d,
             None => {
                 self.complete_task(task_id);
+                self.schedule_reactivation(creature_id);
                 return;
             }
         };
@@ -5041,6 +5054,7 @@ impl SimState {
             Some(n) => n,
             None => {
                 self.complete_task(task_id);
+                self.schedule_reactivation(creature_id);
                 return;
             }
         };
@@ -5144,6 +5158,7 @@ impl SimState {
         if current == dest_nav_node {
             // At destination with no target — complete.
             self.complete_task(task_id);
+            self.schedule_reactivation(creature_id);
             return;
         }
 
@@ -5411,6 +5426,7 @@ impl SimState {
             Some(d) => d.target,
             None => {
                 self.complete_task(task_id);
+                self.schedule_reactivation(creature_id);
                 return;
             }
         };
@@ -5422,6 +5438,7 @@ impl SimState {
             .is_some_and(|c| c.vital_status == VitalStatus::Alive);
         if !target_alive {
             self.complete_task(task_id);
+            self.schedule_reactivation(creature_id);
             return;
         }
         self.execute_combat_at_location(creature_id, target_id, events);
@@ -36172,6 +36189,190 @@ mod tests {
             sim.count_pending_activations_for(elf),
             1,
             "Should still have exactly 1 pending activation after AttackMove on wandering creature"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Reactivation after combat task completion
+    // -----------------------------------------------------------------------
+    // These tests verify that creatures are not left permanently inert after
+    // combat tasks complete. The bug: complete_task() clears the creature's
+    // task but several code paths return without scheduling a follow-up
+    // activation, leaving the creature with no pending events.
+
+    #[test]
+    fn attack_move_creature_reactivates_after_arriving_at_destination() {
+        // An elf attack-moves to a location with no hostiles. After arriving
+        // and completing the task, the elf must still have a pending activation
+        // so it can wander or pick up new work.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let dest = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackMove {
+                creature_id: elf,
+                destination: dest,
+            },
+        };
+        // Run long enough for the elf to arrive.
+        sim.step(&[cmd], tick + 20_000);
+
+        // Task should be complete.
+        let creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(
+            creature.current_task.is_none(),
+            "Elf should have no task after attack-move completion"
+        );
+
+        // The creature must still have a pending activation — it should not
+        // be permanently inert.
+        assert!(
+            sim.count_pending_activations_for(elf) >= 1,
+            "Elf must have a pending activation after attack-move completion, \
+             otherwise it will never act again"
+        );
+    }
+
+    #[test]
+    fn attack_move_creature_wanders_after_arriving_at_destination() {
+        // After attack-move completes, advance the sim and verify the elf
+        // actually moves (wanders), proving it didn't get stuck.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let dest = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackMove {
+                creature_id: elf,
+                destination: dest,
+            },
+        };
+        // Run long enough for the elf to arrive and complete.
+        sim.step(&[cmd], tick + 20_000);
+
+        let creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(creature.current_task.is_none(), "Task should be complete");
+
+        // Record position, then advance more ticks.
+        let pos_after_arrival = sim.db.creatures.get(&elf).unwrap().position;
+        sim.step(&[], tick + 25_000);
+
+        let pos_later = sim.db.creatures.get(&elf).unwrap().position;
+        assert_ne!(
+            pos_after_arrival, pos_later,
+            "Elf should have wandered after attack-move completion, but it stayed at {:?}",
+            pos_after_arrival
+        );
+    }
+
+    #[test]
+    fn attack_target_creature_reactivates_after_target_dies() {
+        // An elf is ordered to attack a goblin. The goblin is killed (via
+        // debug command). The elf's task completes, and it must still have
+        // a pending activation so it doesn't become permanently inert.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        let tick = sim.tick;
+        let attack_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackCreature {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        };
+        sim.step(&[attack_cmd], tick + 2);
+
+        // Elf should have an AttackTarget task.
+        let creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(
+            creature.current_task.is_some(),
+            "Elf should have attack task"
+        );
+
+        // Kill the goblin.
+        let kill_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 3,
+            action: SimAction::DebugKillCreature {
+                creature_id: goblin,
+            },
+        };
+        sim.step(&[kill_cmd], tick + 5_000);
+
+        // Task should be complete.
+        let creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(
+            creature.current_task.is_none(),
+            "Elf should have no task after target dies"
+        );
+
+        // Must still have a pending activation.
+        assert!(
+            sim.count_pending_activations_for(elf) >= 1,
+            "Elf must have a pending activation after attack-target completion, \
+             otherwise it will never act again"
+        );
+    }
+
+    #[test]
+    fn attack_target_creature_wanders_after_target_dies() {
+        // After the attack target dies and the task completes, the elf should
+        // actually do something (wander) rather than sitting frozen.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        let tick = sim.tick;
+        let attack_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackCreature {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        };
+        sim.step(&[attack_cmd], tick + 2);
+
+        // Kill the goblin.
+        let kill_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 3,
+            action: SimAction::DebugKillCreature {
+                creature_id: goblin,
+            },
+        };
+        sim.step(&[kill_cmd], tick + 5_000);
+
+        let creature = sim.db.creatures.get(&elf).unwrap();
+        assert!(creature.current_task.is_none(), "Task should be complete");
+
+        // Record position, then advance.
+        let pos_after_kill = sim.db.creatures.get(&elf).unwrap().position;
+        sim.step(&[], tick + 10_000);
+
+        let pos_later = sim.db.creatures.get(&elf).unwrap().position;
+        assert_ne!(
+            pos_after_kill, pos_later,
+            "Elf should have wandered after target died, but it stayed at {:?}",
+            pos_after_kill
         );
     }
 }

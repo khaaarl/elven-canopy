@@ -57,6 +57,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
+[ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-alt-deselect         Alt+click to remove from selection
@@ -1614,7 +1615,7 @@ better than the current first-found pull model.
 Supersedes F-task-proximity (pull-side Dijkstra nearest, already implemented).
 
 **Blocked by:** F-task-priority
-**Related:** F-task-priority, F-task-proximity
+**Related:** F-activation-revamp, F-task-priority, F-task-proximity
 
 #### F-task-proximity — Proximity-based task assignment (Dijkstra nearest)
 **Status:** Done · **Phase:** 4
@@ -3022,6 +3023,13 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 #### B-tab-serde-tests — Fix tabulosity test compilation under feature unification
 **Status:** Done
 
+#### F-activation-revamp — Replace manual event scheduling with automatic reactivation
+**Status:** Todo · **Phase:** 5
+
+Revamp the creature activation/event system so that creatures do not need to manually schedule their next activation event. The current pattern — where every code path in execute_task_behavior, execute_attack_move, execute_attack_target_at_location, etc. must explicitly call event_queue.schedule() or risk leaving the creature permanently inert — is a persistent source of bugs. Any new return path that forgets to schedule a reactivation silently kills the creature's AI. Design a system where creatures are automatically reactivated unless explicitly suspended (e.g., waiting on an action timer). Related: F-event-loop, F-task-assign-opt.
+
+**Related:** F-event-loop, F-task-assign-opt
+
 #### F-adventure-mode — Control individual elf (RPG-like)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §26
 
@@ -3064,7 +3072,7 @@ Open design question (§27).
 Discrete event simulation with priority queue. Empty ticks are free.
 1000 ticks per simulated second.
 
-**Related:** F-sim-speed
+**Related:** F-activation-revamp, F-sim-speed
 
 #### F-fog-of-war — Visibility via tree and root network
 **Status:** Todo · **Phase:** 8+ · **Refs:** §17

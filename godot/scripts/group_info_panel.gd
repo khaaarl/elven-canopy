@@ -35,6 +35,8 @@ const ACTIVITY_LABELS = {
 	"AcquireItem": "Fetching",
 	"Moping": "Moping",
 	"Craft": "Crafting",
+	"AttackMove": "Attack Moving",
+	"Attack": "Attacking",
 }
 
 var _bridge: SimBridge
