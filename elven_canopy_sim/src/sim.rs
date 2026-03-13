@@ -4680,6 +4680,10 @@ impl SimState {
                 return;
             }
             mid_move = self.preempt_task(attacker_id, current_task_id);
+        } else if attacker.action_kind == ActionKind::Move && attacker.next_available_tick.is_some()
+        {
+            // Mid-wander-move — let the step finish (B-erratic-movement-2).
+            mid_move = true;
         }
 
         // Create and immediately assign the AttackTarget task.
@@ -4751,6 +4755,12 @@ impl SimState {
             // Preempt: for mid-Move, let the step complete naturally; for
             // other actions, abort them (B-erratic-movement).
             mid_move = self.preempt_task(creature_id, current_task_id);
+        } else if creature.action_kind == ActionKind::Move && creature.next_available_tick.is_some()
+        {
+            // Creature is mid-wander-move (no task). Let the step finish
+            // naturally — the existing activation will resolve the move and
+            // pick up the new task (B-erratic-movement-2).
+            mid_move = true;
         }
 
         let task_id = TaskId::new(&mut self.rng);
@@ -4819,6 +4829,10 @@ impl SimState {
                 return;
             }
             mid_move = self.preempt_task(creature_id, current_task_id);
+        } else if creature.action_kind == ActionKind::Move && creature.next_available_tick.is_some()
+        {
+            // Mid-wander-move — let the step finish (B-erratic-movement-2).
+            mid_move = true;
         }
 
         let task_id = TaskId::new(&mut self.rng);
@@ -35553,6 +35567,254 @@ mod tests {
         assert!(
             near_hp < goblin_max,
             "Hostile near origin should be hit by arrow"
+        );
+    }
+
+    #[test]
+    fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
+        // B-erratic-movement-2: issuing a DirectedGoTo while a creature is
+        // mid-wander-move (no task, action_kind == Move) should NOT schedule
+        // an extra CreatureActivation. The existing wander activation should
+        // resolve the move, then the creature picks up the new GoTo task.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        // Put the elf into a wander state: no task, mid-Move.
+        let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+        let mut events = Vec::new();
+        sim.wander(elf, elf_node, &mut events);
+
+        // Verify the elf is now mid-wander-move with no task.
+        let c = sim.db.creatures.get(&elf).unwrap();
+        assert_eq!(c.action_kind, ActionKind::Move, "Should be mid-wander-move");
+        assert!(c.current_task.is_none(), "Wander has no task");
+        let activations_before = sim.count_pending_activations_for(elf);
+        assert_eq!(
+            activations_before, 1,
+            "Should have exactly 1 pending activation from wander"
+        );
+
+        // Issue a DirectedGoTo while mid-wander-move.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DirectedGoTo {
+                    creature_id: elf,
+                    position: target,
+                },
+            }],
+            tick + 1,
+        );
+
+        // Should still have exactly 1 pending activation — the existing wander
+        // activation — not 2 (which would cause the wander move to resolve early).
+        let activations_after = sim.count_pending_activations_for(elf);
+        assert_eq!(
+            activations_after, 1,
+            "Should still have exactly 1 pending activation after DirectedGoTo on wandering \
+             creature (was {activations_after})"
+        );
+    }
+
+    #[test]
+    fn directed_goto_on_wandering_creature_preserves_move_action() {
+        // B-erratic-movement-2: issuing a DirectedGoTo while a creature is
+        // mid-wander-move should preserve the in-progress Move action.
+        // The move should complete at its original next_available_tick, then
+        // the creature starts walking toward the new GoTo destination.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        // Put the elf into a wander state.
+        let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+        let mut events = Vec::new();
+        sim.wander(elf, elf_node, &mut events);
+
+        let c = sim.db.creatures.get(&elf).unwrap();
+        assert_eq!(c.action_kind, ActionKind::Move);
+        assert!(c.current_task.is_none());
+        let nat_before = c.next_available_tick;
+        assert!(nat_before.is_some(), "Should have a next_available_tick");
+        let move_action_before = sim.db.move_actions.get(&elf).unwrap();
+        let move_to_before = move_action_before.move_to;
+
+        // Issue DirectedGoTo.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DirectedGoTo {
+                    creature_id: elf,
+                    position: target,
+                },
+            }],
+            tick + 1,
+        );
+
+        // Move action should still be in-flight with original timing.
+        let c = sim.db.creatures.get(&elf).unwrap();
+        assert_eq!(
+            c.action_kind,
+            ActionKind::Move,
+            "Move action should be preserved"
+        );
+        assert_eq!(
+            c.next_available_tick, nat_before,
+            "next_available_tick should be unchanged"
+        );
+        let move_action_after = sim.db.move_actions.get(&elf).unwrap();
+        assert_eq!(
+            move_action_after.move_to, move_to_before,
+            "MoveAction destination should be unchanged"
+        );
+
+        // New GoTo task should be assigned.
+        assert!(c.current_task.is_some(), "Should have the new GoTo task");
+        let task = sim.db.tasks.get(&c.current_task.unwrap()).unwrap();
+        assert_eq!(task.kind_tag, crate::db::TaskKindTag::GoTo);
+
+        // Advance past the original next_available_tick — elf should resolve
+        // the wander move and then start walking toward the GoTo destination.
+        let completion_tick = nat_before.unwrap();
+        sim.step(&[], completion_tick + 1);
+        let c = sim.db.creatures.get(&elf).unwrap();
+        assert!(
+            c.current_task.is_some(),
+            "Should still have the GoTo task after wander move resolves"
+        );
+    }
+
+    #[test]
+    fn directed_goto_spam_does_not_accumulate_activations() {
+        // B-erratic-movement-2: rapidly issuing multiple DirectedGoTo commands
+        // while the creature is mid-move should never accumulate multiple
+        // pending activations. Each command should recognize the in-flight
+        // move and skip scheduling.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        // Start the elf walking via first DirectedGoTo.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DirectedGoTo {
+                    creature_id: elf,
+                    position: target_a,
+                },
+            }],
+            tick + 2,
+        );
+
+        // Advance until mid-walk.
+        for t in (sim.tick + 1)..=(sim.tick + 50) {
+            sim.step(&[], t);
+            if sim
+                .db
+                .creatures
+                .get(&elf)
+                .is_some_and(|c| c.action_kind == ActionKind::Move)
+            {
+                break;
+            }
+        }
+        assert!(
+            sim.db
+                .creatures
+                .get(&elf)
+                .is_some_and(|c| c.action_kind == ActionKind::Move),
+            "Elf should be mid-walk"
+        );
+        assert_eq!(sim.count_pending_activations_for(elf), 1);
+
+        // Spam 5 DirectedGoTo commands on successive ticks.
+        for i in 0..5 {
+            let target = VoxelCoord::new(tree_pos.x + 3 + i, 1, tree_pos.z + i);
+            let t = sim.tick;
+            sim.step(
+                &[SimCommand {
+                    player_id: sim.player_id,
+                    tick: t + 1,
+                    action: SimAction::DirectedGoTo {
+                        creature_id: elf,
+                        position: target,
+                    },
+                }],
+                t + 1,
+            );
+        }
+
+        // Should still have exactly 1 pending activation.
+        assert_eq!(
+            sim.count_pending_activations_for(elf),
+            1,
+            "Spamming DirectedGoTo should not accumulate activations"
+        );
+
+        // Let the sim run for a while — creature should move smoothly
+        // without double-activations.
+        let nat = sim
+            .db
+            .creatures
+            .get(&elf)
+            .unwrap()
+            .next_available_tick
+            .unwrap();
+        sim.step(&[], nat + 200);
+
+        // Creature should be alive and functional.
+        let c = sim.db.creatures.get(&elf).unwrap();
+        assert_eq!(c.vital_status, VitalStatus::Alive);
+    }
+
+    #[test]
+    fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
+        // B-erratic-movement-2: same issue as DirectedGoTo but for AttackMove.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+        let mut events = Vec::new();
+        sim.wander(elf, elf_node, &mut events);
+
+        let c = sim.db.creatures.get(&elf).unwrap();
+        assert_eq!(c.action_kind, ActionKind::Move);
+        assert!(c.current_task.is_none());
+        assert_eq!(sim.count_pending_activations_for(elf), 1);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::AttackMove {
+                    creature_id: elf,
+                    destination: target,
+                },
+            }],
+            tick + 1,
+        );
+
+        assert_eq!(
+            sim.count_pending_activations_for(elf),
+            1,
+            "Should still have exactly 1 pending activation after AttackMove on wandering creature"
         );
     }
 }
