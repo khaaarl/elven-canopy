@@ -61,9 +61,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-alt-deselect         Alt+click to remove from selection
 [ ] F-apprentice           Skill transfer via proximity
-[ ] F-armor-durability     Armor durability and repair
-[ ] F-armor-penalties      Armor movement speed penalties
-[ ] F-armor-species        Species-specific armor availability
+[ ] F-armor                Wearable armor system
 [ ] F-arrow-durability     Arrow durability and recovery
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
@@ -126,7 +124,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
-[ ] F-item-quality         Item quality system affecting stats and value
+[ ] F-item-durability      Item durability system (current/max HP on items)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -174,6 +172,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-cycle            Tab to cycle focus through units in selection
 [ ] F-tab-joins            Join iterators across tables
+[ ] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-priority        Priority queue and auto-assignment
@@ -200,7 +199,6 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
-[x] F-armor                Wearable armor system
 [x] F-attack-move          Attack-move task (walk + fight en route)
 [x] F-attack-task          AttackCreature task (player-directed target pursuit)
 [x] F-audio-synth          Waveform synthesis for audio rendering
@@ -306,7 +304,6 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-compound-idx     Compound indexes with prefix queries
 [x] F-tab-filter-idx       Filtered/partial indexes
 [x] F-tab-modify-unchk     Closure-based row mutation (modify_unchecked)
-[x] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [x] F-tab-query-opts       Query options struct for index queries
 [x] F-tab-schema-ver       Schema versioning fundamentals
 [x] F-tab-unique-idx       Unique index enforcement
@@ -1270,6 +1267,7 @@ bakery.
 Creatures can wear clothing items in defined body slots (e.g., head, torso, legs, feet). Clothing is crafted at workshops, stored in inventories, and equipped by creatures. Many details TBD: slot system design (fixed slots vs. layering), how clothing affects mood/comfort/thoughts, crafting recipes and material requirements, visual representation (sprite overlays? color tinting?), clothing durability and wear, species-specific clothing (elf vs. other species body plans), and whether clothing provides any mechanical benefits beyond mood. This is the base wearable-item infrastructure that armor builds on.
 
 **Unblocked:** F-armor, F-equipment-sprites
+**Related:** F-item-durability
 
 #### F-component-recipes — Component-based crafting recipes (bread, thread, bowstring)
 **Status:** Done · **Phase:** 7
@@ -1456,10 +1454,31 @@ task abandonment (clear reservations or drop carried items as ground pile).
 
 **Related:** F-elf-acquire, F-food-chain, F-logistics
 
-#### F-item-quality — Item quality system affecting stats and value
+#### F-item-durability — Item durability system (current/max HP on items)
 **Status:** Todo
 
-**Related:** F-armor
+General item durability system: items have a current HP and max HP pair
+(not just a single counter). When something damages an item (arrow
+impact, armor absorbing a hit, tool use, clothing wear over time), its
+current HP decreases. At 0 the item breaks and is removed. Max HP is
+set at creation time based on config/recipe and represents the item's
+baseline sturdiness. Current HP can potentially be restored via repair.
+
+Needs: new fields on ItemStack (or a companion table) for current_hp
+and max_hp, config for per-ItemKind base max HP, degradation hooks at
+each use site (combat impact, tool use, wear-over-time heartbeat),
+item breakage removal + event, and display of item condition in UI.
+
+This is the foundational system that arrow durability, armor wear,
+clothing wear, and weapon degradation all build on.
+
+**Branch:** `feature/F-arrow-durability` has a partial implementation
+using the `quality` field as a single durability counter. The test
+scenarios cover the right impact paths but will need updating to check
+current_hp/max_hp fields instead.
+
+**Blocks:** F-armor, F-arrow-durability
+**Related:** F-clothing
 
 #### F-items — Items and inventory system
 **Status:** Done · **Phase:** 3
@@ -1897,37 +1916,32 @@ infrastructure.
 ### Combat & Defense
 
 #### F-armor — Wearable armor system
-**Status:** Done
+**Status:** Todo
 
-Wearable armor grown from the home tree's wood at workshops. Armor competes with clothing for body slots (head: hat vs helmet, torso: tunic vs breastplate, legs: leggings vs greaves, feet: cloth boots vs wood boots, hands: gauntlets — no clothing glove equivalent yet). First pass uses flat damage reduction per piece (sum of all worn armor), minimum 1 damage per hit (Starcraft-style). Armor value is a function of ItemKind and Material — wood materials give protection, cloth/fruit materials don't. Quality will factor into the calculation later (F-item-quality).
+Armor items that can be worn in clothing slots, providing damage reduction in combat. Builds on the clothing/wearable system (F-clothing) for slot mechanics and equip/unequip flow. Many details TBD: armor types and their stats (leather, chain, plate?), how damage reduction is calculated (flat reduction? percentage? per-damage-type?), armor durability and repair, crafting recipes and material requirements, how armor interacts with movement speed or other stats, visual representation, whether armor and clothing can be worn simultaneously (layering), and species-specific armor availability.
 
-Crafting recipes use a new Grow verb and are generated per wood type at catalog build time (like fruit-species recipes). Zero inputs — the tree grows armor from its own wood. Five pieces: Helmet, Breastplate, Greaves, Gauntlets, Boots (Boots reuses the existing ItemKind, distinguished by material). Bow and arrow recipes also moved to per-wood-type Grow generation.
-
-Deferred to future features: armor durability/repair (F-armor-durability), movement speed penalties (F-armor-penalties), species-specific armor (F-armor-species), layering armor over clothing, per-damage-type reduction, more complex DF-style armor simulation.
-
+**Blocked by:** F-item-durability
+**Blocks:** F-military-armor
 **Unblocked by:** F-clothing
-**Unblocked:** F-armor-durability, F-armor-penalties, F-armor-species, F-military-armor
-**Related:** F-item-quality
-
-#### F-armor-durability — Armor durability and repair
-**Status:** Todo
-
-**Unblocked by:** F-armor
-
-#### F-armor-penalties — Armor movement speed penalties
-**Status:** Todo
-
-**Unblocked by:** F-armor
-
-#### F-armor-species — Species-specific armor availability
-**Status:** Todo
-
-**Unblocked by:** F-armor
 
 #### F-arrow-durability — Arrow durability and recovery
 **Status:** Todo · **Phase:** 3
 
-Arrow durability system: arrows lose durability on impact and may break. Recoverable arrows that survive impact are placed on the ground for pickup. Extracted from F-projectiles as a separate concern — not needed for the first pass at combat.
+Arrow durability system: arrows lose durability on impact and may break.
+Recoverable arrows that survive impact are placed on the ground for
+pickup. Extracted from F-projectiles as a separate concern — not needed
+for the first pass at combat.
+
+Depends on F-item-durability for the general current/max HP item health
+system. Arrow impacts are one of the degradation hooks.
+
+**Branch:** `feature/F-arrow-durability` has a partial implementation
+using the `quality` field as a single durability counter. Many of its
+test scenarios (surface hit, creature hit, breakage, serde roundtrip,
+durability carry-through on shoot) can be reused but will need updating
+to check the general item HP fields instead.
+
+**Blocked by:** F-item-durability
 
 #### F-attack-move — Attack-move task (walk + fight en route)
 **Status:** Done
@@ -2103,8 +2117,7 @@ A per-species `FleeInstinct` struct on `SpeciesData` that defines involuntary pa
 
 Military groups can specify an armor policy — what armor, if any, members should wear. Extends the military group equipment system (F-military-equip) to handle armor specifically, using the wearable armor system (F-armor) for the actual equip mechanics. Many details TBD: how armor policy is specified (any available armor? specific armor type? minimum protection level?), how the policy interacts with armor availability (wait for crafting? use whatever's available?), priority of armor acquisition vs. weapon acquisition, UI for armor policy configuration within the military group detail panel, and how armor status is displayed per creature and per group.
 
-**Blocked by:** F-military-equip
-**Unblocked by:** F-armor
+**Blocked by:** F-armor, F-military-equip
 **Related:** F-military-groups
 
 #### F-military-campaign — Send elves on world expeditions
@@ -3344,7 +3357,7 @@ closure call. Database-level wrappers delegate to the table methods.
 **Related:** F-sim-db-impl, F-tab-query-opts
 
 #### F-tab-parent-pk — Tabulosity: allow parent PK as child table PK for 1:1 relations
-**Status:** Done
+**Status:** Todo
 
 #### F-tab-query-opts — Query options struct for index queries
 **Status:** Done
