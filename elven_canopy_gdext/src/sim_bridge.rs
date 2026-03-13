@@ -68,9 +68,10 @@
 // - **Commands:** `spawn_creature(species_name, x,y,z)` — generic creature
 //   spawner replacing `spawn_elf()` / `spawn_capybara()` (which remain as
 //   thin wrappers). Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
-//   `designate_build_rect(x,y,z,width,depth)`, etc. All commands are
-//   buffered and execute on the next `frame_update()`, with identical
-//   behavior in SP and MP. Build/carve validation is done upfront by the
+//   `designate_build_rect(x,y,z,width,depth)`, etc. In single-player,
+//   commands are applied immediately to the sim at the current tick. In
+//   multiplayer, they are sent to the relay and applied on receipt.
+//   Build/carve validation is done upfront by the
 //   `validate_*_preview()` query methods — the designation commands
 //   themselves are fire-and-forget.
 //   `furnish_structure(structure_id, furnishing_type)` begins furnishing a
@@ -790,20 +791,19 @@ impl SimBridge {
     }
 
     /// Route a build/carve action through the session (SP) or relay (MP).
-    /// The command is buffered and executes on the next `frame_update()`,
-    /// identical in both modes. Returns empty — validation feedback comes
-    /// from the `validate_*_preview()` methods that GDScript calls before
-    /// confirming placement.
+    /// In single-player, the command is applied immediately to the sim.
+    /// Returns empty — validation feedback comes from the
+    /// `validate_*_preview()` methods that GDScript calls before confirming
+    /// placement.
     fn apply_build_action(&mut self, action: SimAction) -> GString {
         self.apply_or_send(action);
         GString::new()
     }
 
     /// Apply a SimAction locally (single-player) or send it to the relay
-    /// (multiplayer). In single-player, the command is buffered in the
-    /// session and executed on the next `frame_update()` call (tick
-    /// pacing is driven by `LocalRelay`). In multiplayer, the action is
-    /// sent over the network and applied when it comes back in a Turn.
+    /// (multiplayer). In single-player, the command is applied immediately
+    /// to the sim at the current tick. In multiplayer, the action is sent
+    /// over the network and applied when it comes back in a Turn.
     fn apply_or_send(&mut self, action: SimAction) {
         if self.is_multiplayer_mode {
             if let Some(client) = &mut self.net_client

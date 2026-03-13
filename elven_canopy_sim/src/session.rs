@@ -1,7 +1,7 @@
 // Session management — the message-driven game session struct.
 //
 // `GameSession` encapsulates all session-level state: connected players, the
-// optional simulation, pause/speed settings, and a pending command buffer. All
+// optional simulation, and pause/speed settings. All
 // mutation goes through `process(msg)`, which takes a `SessionMessage` and
 // returns `Vec<SessionEvent>`.
 //
@@ -13,10 +13,11 @@
 // Key design decisions:
 // - **Message-driven mutation.** No direct field writes from outside. Want to
 //   change speed? Send `SetSpeed`. Want to start a game? Send `StartGame`.
-// - **Command buffering.** Player commands are buffered in `pending_commands`
-//   and flushed on the next `AdvanceTo`, receiving their tick from the
-//   AdvanceTo target. This matches multiplayer semantics where the relay
-//   batches commands into turns.
+// - **Immediate command application.** Player commands are applied to the sim
+//   immediately on receipt via `SimState::apply_command()`, at the current tick.
+//   `AdvanceTo` advances time and processes scheduled events with an empty
+//   command slice. This ensures UI actions take effect instantly, even while
+//   paused.
 // - **Pause is a boolean, not a state.** A paused session rejects `AdvanceTo`
 //   but is otherwise identical. No duplicated fields or variants needed.
 // - **Deterministic.** Two sessions processing identical message streams from
@@ -27,9 +28,8 @@
 //
 // The design follows `docs/drafts/session_state_machine_v4.md`.
 //
-// **Critical constraint: determinism.** `pending_commands` is a `Vec` —
-// insertion order matters. All collections use `BTreeMap` for deterministic
-// iteration.
+// **Critical constraint: determinism.** All collections use `BTreeMap` for
+// deterministic iteration.
 
 use crate::command::{SimAction, SimCommand};
 use crate::config::GameConfig;
@@ -67,13 +67,6 @@ pub enum SessionSpeed {
     VeryFast,
 }
 
-/// A buffered action waiting for flush. Carries the session player ID for
-/// attribution and the sim action to apply.
-pub struct PendingAction {
-    pub from: SessionPlayerId,
-    pub action: SimAction,
-}
-
 /// A connected player's session-level information.
 pub struct PlayerSlot {
     pub id: SessionPlayerId,
@@ -100,12 +93,12 @@ pub enum SessionMessage {
     LoadSim { json: String },
     /// Unload the current sim.
     UnloadSim,
-    /// A simulation command from a player. Buffered until the next AdvanceTo.
+    /// A simulation command from a player. Applied immediately to the sim.
     SimCommand {
         from: SessionPlayerId,
         action: SimAction,
     },
-    /// Advance the simulation to the given tick, flushing all buffered commands.
+    /// Advance the simulation to the given tick, processing scheduled events.
     AdvanceTo { tick: u64 },
     /// Change the simulation speed.
     SetSpeed { speed: SessionSpeed },
@@ -194,8 +187,10 @@ pub fn ticks_per_turn_to_speed(tpt: u32) -> SessionSpeed {
 /// A game session: the shared context among players. Contains zero or one
 /// simulators, player information, and session-level settings.
 ///
-/// All mutation goes through `process()`. Networking, rendering, and I/O are
-/// external concerns that feed messages in and read fields out.
+/// All mutation goes through `process()`. Commands are applied immediately
+/// to the sim on receipt (not buffered). `AdvanceTo` advances time and
+/// processes scheduled events. Networking, rendering, and I/O are external
+/// concerns that feed messages in and read fields out.
 pub struct GameSession {
     /// Connected players. Always non-empty (at least the local player in
     /// single-player). BTreeMap for deterministic iteration.
@@ -210,9 +205,6 @@ pub struct GameSession {
     paused_by: Option<SessionPlayerId>,
     /// Current sim speed.
     speed: SessionSpeed,
-    /// Commands received but not yet applied to the sim. Flushed on the next
-    /// `AdvanceTo`. Insertion order matters for determinism.
-    pub pending_commands: Vec<PendingAction>,
 }
 
 impl GameSession {
@@ -235,7 +227,6 @@ impl GameSession {
             paused: false,
             paused_by: None,
             speed: SessionSpeed::Normal,
-            pending_commands: Vec::new(),
         }
     }
 
@@ -258,7 +249,6 @@ impl GameSession {
             paused: false,
             paused_by: None,
             speed: SessionSpeed::Normal,
-            pending_commands: Vec::new(),
         }
     }
 
@@ -296,7 +286,6 @@ impl GameSession {
                 sim.spawn_initial_creatures(&mut spawn_events);
                 self.sim = Some(sim);
                 self.paused = false;
-                self.pending_commands.clear();
                 events.push(SessionEvent::GameStarted);
                 for se in spawn_events {
                     events.push(SessionEvent::Sim(se));
@@ -310,7 +299,6 @@ impl GameSession {
                     }
                     self.sim = Some(sim);
                     self.paused = false;
-                    self.pending_commands.clear();
                     events.push(SessionEvent::SimLoaded);
                 }
                 Err(e) => {
@@ -323,13 +311,21 @@ impl GameSession {
             SessionMessage::UnloadSim => {
                 self.sim = None;
                 self.paused = false;
-                self.pending_commands.clear();
                 events.push(SessionEvent::SimUnloaded);
             }
 
-            SessionMessage::SimCommand { from, action } => {
-                if self.sim.is_some() {
-                    self.pending_commands.push(PendingAction { from, action });
+            SessionMessage::SimCommand { from: _, action } => {
+                if let Some(sim) = &mut self.sim {
+                    let cmd = SimCommand {
+                        player_id: sim.player_id,
+                        tick: sim.tick,
+                        action,
+                    };
+                    let mut sim_events = Vec::new();
+                    sim.apply_command(&cmd, &mut sim_events);
+                    for se in sim_events {
+                        events.push(SessionEvent::Sim(se));
+                    }
                 }
             }
 
@@ -341,17 +337,7 @@ impl GameSession {
                     if tick <= sim.tick {
                         return events;
                     }
-                    let sim_player_id = sim.player_id;
-                    let commands: Vec<SimCommand> = self
-                        .pending_commands
-                        .drain(..)
-                        .map(|pa| SimCommand {
-                            player_id: sim_player_id,
-                            tick,
-                            action: pa.action,
-                        })
-                        .collect();
-                    let result = sim.step(&commands, tick);
+                    let result = sim.step(&[], tick);
                     for sim_event in result.events {
                         events.push(SessionEvent::Sim(sim_event));
                     }
@@ -563,28 +549,12 @@ mod tests {
         assert_eq!(events, vec![SessionEvent::SimLoaded]);
     }
 
-    #[test]
-    fn unload_clears_pending() {
-        let mut session = test_session_with_loaded_sim();
-        session.process(SessionMessage::SimCommand {
-            from: SessionPlayerId::LOCAL,
-            action: SimAction::SpawnCreature {
-                species: Species::Elf,
-                position: TEST_SPAWN_POS,
-            },
-        });
-        assert_eq!(session.pending_commands.len(), 1);
-
-        session.process(SessionMessage::UnloadSim);
-        assert!(session.pending_commands.is_empty());
-    }
-
     // -----------------------------------------------------------------------
-    // 15.2 Command buffering and tick advancement
+    // 15.2 Immediate command application
     // -----------------------------------------------------------------------
 
     #[test]
-    fn commands_dont_apply_until_advance_to() {
+    fn commands_apply_immediately() {
         let mut session = test_session_with_loaded_sim();
         let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
 
@@ -595,13 +565,7 @@ mod tests {
                 position: TEST_SPAWN_POS,
             },
         });
-        // Command is buffered, not applied.
-        assert_eq!(
-            session.sim.as_ref().unwrap().db.creatures.len(),
-            initial_count
-        );
-
-        session.process(SessionMessage::AdvanceTo { tick: 1 });
+        // Command applied immediately, no buffering.
         assert_eq!(
             session.sim.as_ref().unwrap().db.creatures.len(),
             initial_count + 1
@@ -609,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_commands_flush() {
+    fn multiple_commands_apply_immediately() {
         let mut session = test_session_with_loaded_sim();
         let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
 
@@ -628,7 +592,6 @@ mod tests {
             },
         });
 
-        session.process(SessionMessage::AdvanceTo { tick: 1 });
         assert_eq!(
             session.sim.as_ref().unwrap().db.creatures.len(),
             initial_count + 2
@@ -636,10 +599,13 @@ mod tests {
     }
 
     #[test]
-    fn commands_get_tick_from_advance_to() {
+    fn commands_get_current_tick() {
         let mut session = test_session_with_loaded_sim();
 
-        session.process(SessionMessage::SimCommand {
+        // Advance to tick 500 first.
+        session.process(SessionMessage::AdvanceTo { tick: 500 });
+
+        let events = session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
                 species: Species::Elf,
@@ -647,9 +613,7 @@ mod tests {
             },
         });
 
-        let events = session.process(SessionMessage::AdvanceTo { tick: 500 });
-
-        // The spawn event should have tick 500 (assigned from AdvanceTo target).
+        // The spawn event should have tick 500 (the current sim tick).
         let spawn_events: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
@@ -700,7 +664,7 @@ mod tests {
             },
         });
 
-        session.process(SessionMessage::AdvanceTo { tick: 1 });
+        // Both commands applied immediately, no AdvanceTo needed.
         assert_eq!(
             session.sim.as_ref().unwrap().db.creatures.len(),
             initial_count + 2
@@ -731,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn commands_buffer_while_paused() {
+    fn commands_apply_while_paused() {
         let mut session = test_session_with_loaded_sim();
         let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
 
@@ -745,12 +709,7 @@ mod tests {
                 position: TEST_SPAWN_POS,
             },
         });
-        assert_eq!(session.pending_commands.len(), 1);
-
-        session.process(SessionMessage::Resume {
-            by: SessionPlayerId::LOCAL,
-        });
-        session.process(SessionMessage::AdvanceTo { tick: 1 });
+        // Command applied immediately even while paused.
         assert_eq!(
             session.sim.as_ref().unwrap().db.creatures.len(),
             initial_count + 1
@@ -758,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn pause_command_reject_resume_accept() {
+    fn pause_blocks_advance_but_not_commands() {
         let mut session = test_session_with_loaded_sim();
         let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
 
@@ -773,24 +732,21 @@ mod tests {
             },
         });
 
-        // AdvanceTo while paused — rejected.
+        // AdvanceTo while paused — rejected (tick doesn't advance).
         session.process(SessionMessage::AdvanceTo { tick: 100 });
         assert_eq!(session.current_tick(), 0);
+        // But the command was already applied.
         assert_eq!(
             session.sim.as_ref().unwrap().db.creatures.len(),
-            initial_count
+            initial_count + 1
         );
 
-        // Resume, then AdvanceTo — accepted.
+        // Resume, then AdvanceTo — tick advances now.
         session.process(SessionMessage::Resume {
             by: SessionPlayerId::LOCAL,
         });
         session.process(SessionMessage::AdvanceTo { tick: 100 });
         assert_eq!(session.current_tick(), 100);
-        assert_eq!(
-            session.sim.as_ref().unwrap().db.creatures.len(),
-            initial_count + 1
-        );
     }
 
     #[test]
@@ -825,20 +781,10 @@ mod tests {
     fn same_tick_rejected() {
         let mut session = test_session_with_loaded_sim();
 
-        // Buffer a command to verify it survives rejection.
-        session.process(SessionMessage::SimCommand {
-            from: SessionPlayerId::LOCAL,
-            action: SimAction::SpawnCreature {
-                species: Species::Elf,
-                position: TEST_SPAWN_POS,
-            },
-        });
-
         // Sim starts at tick 0. AdvanceTo { tick: 0 } is tick <= sim.tick.
         let events = session.process(SessionMessage::AdvanceTo { tick: 0 });
         assert!(events.is_empty());
         assert_eq!(session.current_tick(), 0);
-        assert_eq!(session.pending_commands.len(), 1);
     }
 
     #[test]
@@ -847,45 +793,9 @@ mod tests {
         session.process(SessionMessage::AdvanceTo { tick: 100 });
         assert_eq!(session.current_tick(), 100);
 
-        // Buffer a command to verify it survives rejection.
-        session.process(SessionMessage::SimCommand {
-            from: SessionPlayerId::LOCAL,
-            action: SimAction::SpawnCreature {
-                species: Species::Elf,
-                position: TEST_SPAWN_POS,
-            },
-        });
-
         let events = session.process(SessionMessage::AdvanceTo { tick: 50 });
         assert!(events.is_empty());
         assert_eq!(session.current_tick(), 100);
-        assert_eq!(session.pending_commands.len(), 1);
-    }
-
-    #[test]
-    fn guard_preserves_pending() {
-        let mut session = test_session_with_loaded_sim();
-        let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
-
-        session.process(SessionMessage::SimCommand {
-            from: SessionPlayerId::LOCAL,
-            action: SimAction::SpawnCreature {
-                species: Species::Elf,
-                position: TEST_SPAWN_POS,
-            },
-        });
-
-        // Rejected — tick 0 <= sim.tick 0.
-        session.process(SessionMessage::AdvanceTo { tick: 0 });
-        assert_eq!(session.pending_commands.len(), 1);
-
-        // Accepted.
-        session.process(SessionMessage::AdvanceTo { tick: 1 });
-        assert_eq!(
-            session.sim.as_ref().unwrap().db.creatures.len(),
-            initial_count + 1
-        );
-        assert!(session.pending_commands.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1135,15 +1045,15 @@ mod tests {
         let mut session = GameSession::new_singleplayer();
         assert!(!session.has_sim());
 
-        session.process(SessionMessage::SimCommand {
+        let events = session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
         });
-        // Silently dropped — no pending commands since there's no sim.
-        assert!(session.pending_commands.is_empty());
+        // Silently dropped — no sim to apply to.
+        assert!(events.is_empty());
     }
 
     #[test]
@@ -1183,6 +1093,292 @@ mod tests {
         assert_eq!(speed_to_ticks_per_turn(SessionSpeed::Normal), 50);
         assert_eq!(speed_to_ticks_per_turn(SessionSpeed::Fast), 100);
         assert_eq!(speed_to_ticks_per_turn(SessionSpeed::VeryFast), 250);
+    }
+
+    // -----------------------------------------------------------------------
+    // 15.13 Immediate command application corner cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn commands_use_current_tick_not_advance_to_target() {
+        let mut session = test_session_with_loaded_sim();
+
+        // Spawn at tick 0 — event should have tick 0.
+        let events_0 = session.process(SessionMessage::SimCommand {
+            from: SessionPlayerId::LOCAL,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: TEST_SPAWN_POS,
+            },
+        });
+        let spawns_0: Vec<_> = events_0
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::Sim(se) => Some(se),
+                _ => None,
+            })
+            .filter(|se| matches!(se.kind, SimEventKind::CreatureArrived { .. }))
+            .collect();
+        assert_eq!(spawns_0.len(), 1);
+        assert_eq!(spawns_0[0].tick, 0);
+
+        // Advance to tick 500, then spawn again — event should have tick 500.
+        session.process(SessionMessage::AdvanceTo { tick: 500 });
+
+        let events_500 = session.process(SessionMessage::SimCommand {
+            from: SessionPlayerId::LOCAL,
+            action: SimAction::SpawnCreature {
+                species: Species::Capybara,
+                position: TEST_SPAWN_POS,
+            },
+        });
+        let spawns_500: Vec<_> = events_500
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::Sim(se) => Some(se),
+                _ => None,
+            })
+            .filter(|se| matches!(se.kind, SimEventKind::CreatureArrived { .. }))
+            .collect();
+        assert_eq!(spawns_500.len(), 1);
+        assert_eq!(spawns_500[0].tick, 500);
+    }
+
+    #[test]
+    fn advance_to_does_not_duplicate_command_events() {
+        let mut session = test_session_with_loaded_sim();
+
+        // Apply command — events come back immediately.
+        let cmd_events = session.process(SessionMessage::SimCommand {
+            from: SessionPlayerId::LOCAL,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: TEST_SPAWN_POS,
+            },
+        });
+        let cmd_spawns = cmd_events
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::Sim(se) if matches!(se.kind, SimEventKind::CreatureArrived { .. })))
+            .count();
+        assert_eq!(cmd_spawns, 1);
+
+        // AdvanceTo should NOT re-emit the spawn event.
+        let advance_events = session.process(SessionMessage::AdvanceTo { tick: 1 });
+        let advance_spawns = advance_events
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::Sim(se) if matches!(se.kind, SimEventKind::CreatureArrived { .. })))
+            .count();
+        assert_eq!(advance_spawns, 0);
+    }
+
+    #[test]
+    fn command_events_returned_from_process() {
+        let mut session = test_session_with_loaded_sim();
+
+        let events = session.process(SessionMessage::SimCommand {
+            from: SessionPlayerId::LOCAL,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: TEST_SPAWN_POS,
+            },
+        });
+
+        // process() must return the sim events, not swallow them.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SessionEvent::Sim(se) if matches!(se.kind, SimEventKind::CreatureArrived { .. }))),
+            "SimCommand process() should return CreatureArrived event"
+        );
+    }
+
+    #[test]
+    fn commands_while_paused_schedule_events_correctly() {
+        let mut session = test_session_with_loaded_sim();
+
+        // Advance to tick 100, then pause.
+        session.process(SessionMessage::AdvanceTo { tick: 100 });
+        session.process(SessionMessage::Pause {
+            by: SessionPlayerId::LOCAL,
+        });
+
+        let events_before = session.sim.as_ref().unwrap().event_queue.len();
+
+        // Spawn while paused — should schedule activation at tick 101
+        // and heartbeat at tick 100 + heartbeat_interval.
+        session.process(SessionMessage::SimCommand {
+            from: SessionPlayerId::LOCAL,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: TEST_SPAWN_POS,
+            },
+        });
+
+        // Creature exists immediately.
+        let sim = session.sim.as_ref().unwrap();
+        let events_after = sim.event_queue.len();
+        assert!(
+            events_after > events_before,
+            "Spawn should schedule activation and heartbeat events"
+        );
+
+        // Resume and advance — the scheduled events should fire.
+        session.process(SessionMessage::Resume {
+            by: SessionPlayerId::LOCAL,
+        });
+        session.process(SessionMessage::AdvanceTo { tick: 200 });
+
+        // Creature should have been activated (activation at tick 101).
+        assert_eq!(session.current_tick(), 200);
+    }
+
+    #[test]
+    fn multiple_commands_while_paused_then_resume() {
+        let mut session = test_session_with_loaded_sim();
+        let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
+
+        session.process(SessionMessage::Pause {
+            by: SessionPlayerId::LOCAL,
+        });
+
+        // Send 3 spawn commands while paused.
+        for species in [Species::Elf, Species::Capybara, Species::Elf] {
+            session.process(SessionMessage::SimCommand {
+                from: SessionPlayerId::LOCAL,
+                action: SimAction::SpawnCreature {
+                    species,
+                    position: TEST_SPAWN_POS,
+                },
+            });
+        }
+
+        // All 3 applied immediately despite pause.
+        assert_eq!(
+            session.sim.as_ref().unwrap().db.creatures.len(),
+            initial_count + 3
+        );
+
+        // Resume and advance — should not panic or double-apply.
+        session.process(SessionMessage::Resume {
+            by: SessionPlayerId::LOCAL,
+        });
+        session.process(SessionMessage::AdvanceTo { tick: 200 });
+
+        assert_eq!(session.current_tick(), 200);
+        assert_eq!(
+            session.sim.as_ref().unwrap().db.creatures.len(),
+            initial_count + 3
+        );
+    }
+
+    #[test]
+    fn command_then_load_discards_old_effects() {
+        let mut session = test_session_with_loaded_sim();
+        let initial_count = session.sim.as_ref().unwrap().db.creatures.len();
+
+        // Apply command to current sim.
+        session.process(SessionMessage::SimCommand {
+            from: SessionPlayerId::LOCAL,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: TEST_SPAWN_POS,
+            },
+        });
+        assert_eq!(
+            session.sim.as_ref().unwrap().db.creatures.len(),
+            initial_count + 1
+        );
+
+        // Load a fresh sim — old effects should be gone.
+        session.process(SessionMessage::LoadSim {
+            json: CACHED_SIM_JSON.clone(),
+        });
+        assert_eq!(
+            session.sim.as_ref().unwrap().db.creatures.len(),
+            initial_count
+        );
+    }
+
+    #[test]
+    fn immediate_application_determinism() {
+        // Two sessions applying the same commands at the same ticks should
+        // produce identical state, regardless of AdvanceTo grouping.
+        let mut session_a = test_session_with_loaded_sim();
+        let mut session_b = test_session_with_loaded_sim();
+
+        // Session A: command, advance, command, advance.
+        session_a.process(SessionMessage::SimCommand {
+            from: SessionPlayerId::LOCAL,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: TEST_SPAWN_POS,
+            },
+        });
+        session_a.process(SessionMessage::AdvanceTo { tick: 500 });
+        session_a.process(SessionMessage::SimCommand {
+            from: SessionPlayerId::LOCAL,
+            action: SimAction::SpawnCreature {
+                species: Species::Capybara,
+                position: TEST_SPAWN_POS,
+            },
+        });
+        session_a.process(SessionMessage::AdvanceTo { tick: 1000 });
+
+        // Session B: same commands, same ticks, different AdvanceTo grouping.
+        session_b.process(SessionMessage::SimCommand {
+            from: SessionPlayerId::LOCAL,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: TEST_SPAWN_POS,
+            },
+        });
+        session_b.process(SessionMessage::AdvanceTo { tick: 200 });
+        session_b.process(SessionMessage::AdvanceTo { tick: 500 });
+        session_b.process(SessionMessage::SimCommand {
+            from: SessionPlayerId::LOCAL,
+            action: SimAction::SpawnCreature {
+                species: Species::Capybara,
+                position: TEST_SPAWN_POS,
+            },
+        });
+        session_b.process(SessionMessage::AdvanceTo { tick: 700 });
+        session_b.process(SessionMessage::AdvanceTo { tick: 1000 });
+
+        assert_eq!(
+            session_a.sim.as_ref().unwrap().state_checksum(),
+            session_b.sim.as_ref().unwrap().state_checksum(),
+        );
+    }
+
+    #[test]
+    fn command_at_tick_zero_determinism() {
+        // Commands applied at tick 0 (before any advance) should produce
+        // deterministic results across two sessions from the same seed.
+        let mut session_a = test_session_with_loaded_sim();
+        let mut session_b = test_session_with_loaded_sim();
+
+        for session in [&mut session_a, &mut session_b] {
+            session.process(SessionMessage::SimCommand {
+                from: SessionPlayerId::LOCAL,
+                action: SimAction::SpawnCreature {
+                    species: Species::Elf,
+                    position: TEST_SPAWN_POS,
+                },
+            });
+            session.process(SessionMessage::SimCommand {
+                from: SessionPlayerId::LOCAL,
+                action: SimAction::SpawnCreature {
+                    species: Species::Capybara,
+                    position: TEST_SPAWN_POS,
+                },
+            });
+            session.process(SessionMessage::AdvanceTo { tick: 1000 });
+        }
+
+        assert_eq!(
+            session_a.sim.as_ref().unwrap().state_checksum(),
+            session_b.sim.as_ref().unwrap().state_checksum(),
+        );
     }
 
     #[test]

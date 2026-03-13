@@ -38,7 +38,7 @@ Things that are non-obvious or surprising about the Elven Canopy codebase. Read 
 
 ## SimBridge Command Flow
 
-- All commands (spawn, goto, build, carve, etc.) are buffered and execute on the next `frame_update()` (~16ms at 60fps), with identical behavior in SP and MP. No command auto-steps the sim.
+- All commands (spawn, goto, build, carve, etc.) are applied immediately to the sim at the current tick in single-player. In multiplayer, commands are sent to the relay and applied when they come back in a Turn. `AdvanceTo` / `frame_update()` drives tick advancement and scheduled event processing but carries no commands.
 - Build/carve validation is done upfront by the `validate_*_preview()` query methods that GDScript calls before confirming placement. The designation commands themselves are fire-and-forget.
 
 ## Sprite Rendering and Movement Interpolation

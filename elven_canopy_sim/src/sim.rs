@@ -642,7 +642,10 @@ impl SimState {
     }
 
     /// Apply a single command to the simulation.
-    fn apply_command(&mut self, cmd: &SimCommand, events: &mut Vec<SimEvent>) {
+    ///
+    /// This is `pub(crate)` so that `GameSession` can apply commands
+    /// immediately on receipt, without waiting for the next `step()` call.
+    pub(crate) fn apply_command(&mut self, cmd: &SimCommand, events: &mut Vec<SimEvent>) {
         match &cmd.action {
             SimAction::SpawnCreature { species, position } => {
                 self.spawn_creature(*species, *position, events);

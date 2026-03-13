@@ -123,7 +123,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
-[ ] F-immediate-commands   Immediate command application (zero-tick updates)
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
@@ -244,6 +243,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-hostile-species      Goblin, Orc, and Troll species
 [x] F-hp-death             HP, VitalStatus, and creature death handling
 [x] F-hp-ui                HP bars in creature UI
+[x] F-immediate-commands   Immediate command application (zero-tick updates)
 [x] F-items                Items and inventory system
 [x] F-keybind-help         Keyboard shortcuts help overlay
 [x] F-ladders              Rope/wood ladders as cheap connectors
@@ -3002,7 +3002,7 @@ GDExtension bridge crate exposing sim to Godot. SimBridge node with
 methods for commands, queries, and rendering data.
 
 #### F-immediate-commands — Immediate command application (zero-tick updates)
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 Currently, all SimCommands are buffered in `GameSession.pending_commands` and
 only applied when an `AdvanceTo` message flushes them through `SimState.step()`.
