@@ -123,6 +123,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
+[ ] F-immediate-commands   Immediate command application (zero-tick updates)
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
@@ -3000,6 +3001,48 @@ Godot autoload persisting seed and tree config across scene transitions.
 GDExtension bridge crate exposing sim to Godot. SimBridge node with
 methods for commands, queries, and rendering data.
 
+#### F-immediate-commands — Immediate command application (zero-tick updates)
+**Status:** Todo · **Phase:** 2
+
+Currently, all SimCommands are buffered in `GameSession.pending_commands` and
+only applied when an `AdvanceTo` message flushes them through `SimState.step()`.
+This means that while paused, UI actions (changing recipes, toggling crafting,
+renaming structures, issuing move commands, etc.) have no visible effect until
+the player unpauses. This is awkward and unintuitive.
+
+**Goal:** Make all commands apply immediately when they arrive, regardless of
+pause state. The game session should apply commands to the sim as soon as they
+are received via `SessionMessage::SimCommand`, not buffer them for the next
+tick advance. `AdvanceTo` continues to drive scheduled event processing and
+tick advancement, but with an empty command list (commands already applied).
+
+**Key architectural insight:** The `GameSession` layer sits between the relay
+and the simulator. Commands queue through the relay to the session, which
+updates the sim (and any internal version numbering) without changing the
+sim's tick number. The UI sees changes at next redraw, even while paused.
+
+**What needs to change (session layer, not sim):**
+
+- `GameSession.process(SimCommand)` should call `sim.apply_command()` directly
+  instead of pushing to `pending_commands`. Assign current tick to the command.
+- Events produced by `apply_command()` must be returned from `process()` — this
+  already returns `Vec<SessionEvent>`, so the plumbing exists.
+- `step()` called from `AdvanceTo` receives an empty command slice; it still
+  processes scheduled events and advances ticks normally.
+- `pending_commands` buffer may be removable entirely (or retained only for
+  multiplayer's relay-ordered path).
+
+**Multiplayer consideration:** In multiplayer, commands arrive with the relay's
+canonical tick via `Turn` messages. The relay-ordered buffering model must be
+preserved there — immediate application is for the single-player `apply_or_send`
+path. The SP/MP branch already exists in `SimBridge.apply_or_send()`.
+
+**Scope:** This is a session/bridge-layer change. `SimState.apply_command()` is
+already a standalone pure mutation method with no dependency on `step()` or tick
+state. The sim crate itself should need no changes.
+
+**Related:** F-multiplayer, F-multiplayer (relay ordering)., F-session-sm, F-session-sm (session architecture)
+
 #### F-modding — Scripting layer for modding support
 **Status:** Todo · **Refs:** §27
 
@@ -3081,7 +3124,7 @@ trees) deferred to F-multi-tree. Draft doc covers relay architecture,
 session management, and UI design (main menu flow, lobby, in-game controls,
 ESC menu behavior, save/load semantics, sim speed policy).
 
-**Related:** F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
+**Related:** F-immediate-commands, F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
 
 #### F-relay-multi-game — Relay server supports multiple simultaneous games
 **Status:** Todo · **Phase:** 8
@@ -3135,7 +3178,7 @@ GDScript simplified to call `bridge.frame_update(delta)`. SimSpeed removed
 from sim crate (speed is session-layer only). Initial creatures spawn from
 GameConfig.
 
-**Related:** F-multiplayer
+**Related:** F-immediate-commands, F-multiplayer
 
 #### F-shared-prng — Shared PRNG crate across all Rust crates
 **Status:** Done · **Phase:** 6
