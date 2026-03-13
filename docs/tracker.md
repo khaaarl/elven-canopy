@@ -76,6 +76,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-workshop        Craftself's workshop
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
+[ ] F-bridge-integ-tests   Integration tests for gdext bridge functions
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-building-door        Player-controlled building door orientation
@@ -118,6 +119,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-game-speed-fkeys     Move game speed controls to F1/F2/F3
+[ ] F-gdscript-tests       GDScript unit tests (GUT or built-in)
 [ ] F-ghost-above          Ghost out voxels above camera focus height
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
@@ -139,7 +141,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-modding              Scripting layer for modding support
 [ ] F-modifier-keybinds    Modifier key combinations in bindings
 [ ] F-mouse-elevation      Ctrl+mouse wheel to move camera elevation
-[ ] F-move-spread          Spread destinations for multi-creature move commands
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
@@ -260,6 +261,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-military-groups      Military group data model and configuration
 [x] F-mood-system          Mood with escalating consequences
 [x] F-move-interp          Smooth creature movement interpolation
+[x] F-move-spread          Spread destinations for multi-creature move commands
 [x] F-mp-checksums         Multiplayer state checksums for desync detection
 [x] F-mp-integ-test        Multiplayer integration test harness
 [x] F-mp-mid-join          Mid-game join with state snapshot
@@ -2159,7 +2161,7 @@ positions, and alert levels.
 **Blocks:** F-military-campaign
 
 #### F-move-spread — Spread destinations for multi-creature move commands
-**Status:** Todo
+**Status:** Done
 
 When a move or attack-move command targets a single location with multiple
 selected creatures, automatically spread their destinations to nearby
@@ -3026,6 +3028,19 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 Control a single elf in first/third-person perspective within the
 same simulation. RPG-like exploration mode.
 
+#### F-bridge-integ-tests — Integration tests for gdext bridge functions
+**Status:** Todo
+
+Integration tests that exercise gdext bridge functions from GDScript in a
+running Godot instance. These catch type mismatches at the FFI boundary
+(e.g. Array<GString> vs VarArray), argument passing bugs, and
+GDScript-to-Rust round-trip issues that pure Rust tests can't detect.
+Heavier than unit tests — requires launching Godot headless. Add a CI
+job and a `scripts/build.sh integtest` target. Motivated by the
+F-move-spread segfault where an Array type mismatch crashed at runtime.
+
+**Related:** F-gdscript-tests
+
 #### F-core-types — VoxelCoord, IDs, SimCommand, GameConfig
 **Status:** Done · **Phase:** 0 · **Refs:** §5, §7
 
@@ -3069,6 +3084,17 @@ Godot autoload persisting seed and tree config across scene transitions.
 
 GDExtension bridge crate exposing sim to Godot. SimBridge node with
 methods for commands, queries, and rendering data.
+
+#### F-gdscript-tests — GDScript unit tests (GUT or built-in)
+**Status:** Todo
+
+Set up a lightweight GDScript unit testing framework (GUT or Godot 4.6's
+built-in test runner). Cover pure GDScript logic: UI state machines,
+coordinate math, selection helpers, input mode transitions. Add a
+`scripts/build.sh gdtest` target and a CI job. These tests don't need
+the sim or bridge — just GDScript in isolation.
+
+**Related:** F-bridge-integ-tests
 
 #### F-immediate-commands — Immediate command application (zero-tick updates)
 **Status:** Done · **Phase:** 2

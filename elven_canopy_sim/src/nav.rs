@@ -260,6 +260,47 @@ impl NavGraph {
             .collect()
     }
 
+    /// Find up to `count` distinct nav nodes near `center`, expanding outward
+    /// via BFS. The center node is always the first result. Used by group move
+    /// commands to spread creatures across nearby positions instead of stacking
+    /// them all on the same voxel.
+    ///
+    /// Returns at most `count` node IDs. If the graph has fewer reachable nodes
+    /// than requested, returns as many as it can find.
+    pub fn spread_destinations(&self, center: NavNodeId, count: usize) -> Vec<NavNodeId> {
+        if count == 0 || !self.is_node_alive(center) {
+            return Vec::new();
+        }
+        let mut result = Vec::with_capacity(count);
+        result.push(center);
+        if count == 1 {
+            return result;
+        }
+
+        // BFS outward from center.
+        let mut visited = vec![false; self.nodes.len()];
+        visited[center.0 as usize] = true;
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(center);
+
+        while let Some(node_id) = queue.pop_front() {
+            for &edge_idx in self.neighbors(node_id) {
+                let neighbor = self.edges[edge_idx].to;
+                let slot = neighbor.0 as usize;
+                if !visited[slot] && self.is_node_alive(neighbor) {
+                    visited[slot] = true;
+                    result.push(neighbor);
+                    if result.len() >= count {
+                        return result;
+                    }
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        result
+    }
+
     /// Number of edges in the graph.
     pub fn edge_count(&self) -> usize {
         self.edges.len()
@@ -1647,6 +1688,89 @@ mod tests {
             .map(|&idx| graph.edge(idx).to)
             .collect();
         assert_eq!(b_edges, vec![a]);
+    }
+
+    #[test]
+    fn spread_destinations_returns_center_for_single() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
+        graph.add_edge(a, b, EdgeType::ForestFloor, 1.0);
+
+        let result = graph.spread_destinations(a, 1);
+        assert_eq!(result, vec![a]);
+    }
+
+    #[test]
+    fn spread_destinations_bfs_order() {
+        // Build a linear chain: A -- B -- C -- D
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::ForestFloor);
+        let d = graph.add_node(VoxelCoord::new(3, 0, 0), VoxelType::ForestFloor);
+        graph.add_edge(a, b, EdgeType::ForestFloor, 1.0);
+        graph.add_edge(b, c, EdgeType::ForestFloor, 1.0);
+        graph.add_edge(c, d, EdgeType::ForestFloor, 1.0);
+
+        // Spread from B, requesting 3 destinations.
+        let result = graph.spread_destinations(b, 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], b); // Center is always first.
+        // A and C are both 1 edge from B; order depends on edge_indices order.
+        assert!(result.contains(&a));
+        assert!(result.contains(&c));
+    }
+
+    #[test]
+    fn spread_destinations_limits_to_count() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::ForestFloor);
+        graph.add_edge(a, b, EdgeType::ForestFloor, 1.0);
+        graph.add_edge(b, c, EdgeType::ForestFloor, 1.0);
+
+        let result = graph.spread_destinations(b, 2);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], b);
+    }
+
+    #[test]
+    fn spread_destinations_handles_fewer_nodes_than_requested() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
+        graph.add_edge(a, b, EdgeType::ForestFloor, 1.0);
+
+        // Request 5 but only 2 nodes exist.
+        let result = graph.spread_destinations(a, 5);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], a);
+        assert_eq!(result[1], b);
+    }
+
+    #[test]
+    fn spread_destinations_empty_on_zero_count() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        assert!(graph.spread_destinations(a, 0).is_empty());
+    }
+
+    #[test]
+    fn spread_destinations_skips_dead_nodes() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::ForestFloor);
+        graph.add_edge(a, b, EdgeType::ForestFloor, 1.0);
+        graph.add_edge(b, c, EdgeType::ForestFloor, 1.0);
+
+        // Kill node B — A can't reach C.
+        graph.kill_node(b);
+        let result = graph.spread_destinations(a, 3);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], a);
     }
 
     #[test]

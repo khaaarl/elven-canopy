@@ -971,6 +971,43 @@ impl SimBridge {
         });
     }
 
+    /// Group move: spread multiple creatures across nearby nav nodes around
+    /// the destination. `creature_uuids` is an untyped GDScript `Array` of
+    /// UUID strings (GDScript arrays are untyped by default, so we must accept
+    /// `VarArray` and convert each element).
+    #[func]
+    fn group_directed_goto(&mut self, creature_uuids: VarArray, x: i32, y: i32, z: i32) {
+        let creature_ids: Vec<CreatureId> = creature_uuids
+            .iter_shared()
+            .filter_map(|v| parse_creature_id(&v.to_string()))
+            .collect();
+        if creature_ids.is_empty() {
+            return;
+        }
+        self.apply_or_send(SimAction::GroupGoTo {
+            creature_ids,
+            position: VoxelCoord::new(x, y, z),
+        });
+    }
+
+    /// Group attack-move: spread multiple creatures across nearby nav nodes
+    /// around the destination. `creature_uuids` is an untyped GDScript `Array`
+    /// of UUID strings.
+    #[func]
+    fn group_attack_move(&mut self, creature_uuids: VarArray, x: i32, y: i32, z: i32) {
+        let creature_ids: Vec<CreatureId> = creature_uuids
+            .iter_shared()
+            .filter_map(|v| parse_creature_id(&v.to_string()))
+            .collect();
+        if creature_ids.is_empty() {
+            return;
+        }
+        self.apply_or_send(SimAction::GroupAttackMove {
+            creature_ids,
+            destination: VoxelCoord::new(x, y, z),
+        });
+    }
+
     /// Order a creature to attack a target creature. Creates an AttackTarget
     /// task with PlayerCombat preemption.
     #[func]

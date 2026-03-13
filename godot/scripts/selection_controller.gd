@@ -10,11 +10,14 @@
 ## On right-click (when a creature is selected), issues context-sensitive
 ## commands: attack if the target is hostile, move-to if it's a friendly
 ## creature or ground location. Uses bridge.is_hostile_by_id(),
-## bridge.attack_creature(), and bridge.directed_goto() with UUID strings.
+## bridge.attack_creature(), and bridge.group_directed_goto() with UUID strings.
+## Multi-creature moves use group commands (group_directed_goto,
+## group_attack_move) that spread destinations across nearby nav nodes so
+## creatures don't stack on the same voxel.
 ##
-## F key toggles attack-move mode: the next left-click dispatches an
-## AttackMove command (walk to destination, fight hostiles en route) for
-## each selected creature. ESC or F again cancels the mode.
+## F key toggles attack-move mode: the next left-click dispatches a
+## GroupAttackMove command (walk to destination, fight hostiles en route) for
+## all selected creatures. ESC or F again cancels the mode.
 ##
 ## Selection state: tracks a set of selected creature IDs (stable UUIDs), or
 ## a single structure_id, or a single ground pile position. Selecting creatures
@@ -452,16 +455,19 @@ func _try_right_click_command(mouse_pos: Vector2) -> void:
 
 	# If we clicked on a creature, issue commands to each selected creature.
 	if target_id != "":
+		var move_ids: Array = []
 		for attacker_uuid in _selected_creature_ids:
 			if attacker_uuid == target_id:
 				continue
 			if _bridge.is_hostile_by_id(attacker_uuid, target_id):
 				_bridge.attack_creature(attacker_uuid, target_id)
 			else:
-				# Friendly creature — move to their location.
-				_bridge.directed_goto(
-					attacker_uuid, int(target_pos.x), int(target_pos.y), int(target_pos.z)
-				)
+				# Friendly creature — collect for group move.
+				move_ids.append(attacker_uuid)
+		if not move_ids.is_empty():
+			_bridge.group_directed_goto(
+				move_ids, int(target_pos.x), int(target_pos.y), int(target_pos.z)
+			)
 		get_viewport().set_input_as_handled()
 		return
 
@@ -485,15 +491,14 @@ func _try_right_click_command(mouse_pos: Vector2) -> void:
 			nav_found = true
 
 	if nav_found:
-		for attacker_uuid in _selected_creature_ids:
-			_bridge.directed_goto(
-				attacker_uuid, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z)
-			)
+		_bridge.group_directed_goto(
+			_selected_creature_ids, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z)
+		)
 		get_viewport().set_input_as_handled()
 
 
-## Execute attack-move: dispatch AttackMove command for each selected creature
-## to the clicked location (ground or creature position).
+## Execute attack-move: dispatch a GroupAttackMove command for all selected
+## creatures to the clicked location (ground or creature position).
 func _execute_attack_move(mouse_pos: Vector2) -> void:
 	if _selected_creature_ids.is_empty():
 		return
@@ -520,8 +525,9 @@ func _execute_attack_move(mouse_pos: Vector2) -> void:
 				found_creature = true
 
 	if found_creature:
-		for cid in _selected_creature_ids:
-			_bridge.attack_move(cid, int(target_pos.x), int(target_pos.y), int(target_pos.z))
+		_bridge.group_attack_move(
+			_selected_creature_ids, int(target_pos.x), int(target_pos.y), int(target_pos.z)
+		)
 		return
 
 	# No creature clicked — snap to nearest nav node.
@@ -544,8 +550,9 @@ func _execute_attack_move(mouse_pos: Vector2) -> void:
 			nav_found = true
 
 	if nav_found:
-		for cid in _selected_creature_ids:
-			_bridge.attack_move(cid, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z))
+		_bridge.group_attack_move(
+			_selected_creature_ids, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z)
+		)
 
 
 ## Create the CanvasLayer + ColorRect used for the box selection overlay.

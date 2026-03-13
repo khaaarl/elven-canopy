@@ -888,6 +888,18 @@ impl SimState {
             } => {
                 self.command_attack_move(*creature_id, *destination, events);
             }
+            SimAction::GroupGoTo {
+                creature_ids,
+                position,
+            } => {
+                self.command_group_goto(creature_ids, *position, events);
+            }
+            SimAction::GroupAttackMove {
+                creature_ids,
+                destination,
+            } => {
+                self.command_group_attack_move(creature_ids, *destination, events);
+            }
         }
     }
 
@@ -4873,6 +4885,127 @@ impl SimState {
                 ScheduledEventKind::CreatureActivation { creature_id },
             );
         }
+    }
+
+    /// Process a `GroupGoTo` command: spread multiple creatures across nearby
+    /// nav nodes around the destination. Assigns creatures to destinations
+    /// greedily — the closest creature-destination pair is matched first,
+    /// then the next closest, and so on.
+    fn command_group_goto(
+        &mut self,
+        creature_ids: &[CreatureId],
+        position: VoxelCoord,
+        events: &mut Vec<SimEvent>,
+    ) {
+        if creature_ids.len() <= 1 {
+            // Single creature — just delegate to the normal handler.
+            if let Some(&cid) = creature_ids.first() {
+                self.command_directed_goto(cid, position, events);
+            }
+            return;
+        }
+        let destinations = self.compute_spread_assignments(creature_ids, position);
+        for (cid, dest) in destinations {
+            self.command_directed_goto(cid, dest, events);
+        }
+    }
+
+    /// Process a `GroupAttackMove` command: spread multiple creatures across
+    /// nearby nav nodes around the destination. Each creature attack-moves to
+    /// its assigned spread position.
+    fn command_group_attack_move(
+        &mut self,
+        creature_ids: &[CreatureId],
+        destination: VoxelCoord,
+        events: &mut Vec<SimEvent>,
+    ) {
+        if creature_ids.len() <= 1 {
+            if let Some(&cid) = creature_ids.first() {
+                self.command_attack_move(cid, destination, events);
+            }
+            return;
+        }
+        let destinations = self.compute_spread_assignments(creature_ids, destination);
+        for (cid, dest) in destinations {
+            self.command_attack_move(cid, dest, events);
+        }
+    }
+
+    /// Compute spread destination assignments for a group of creatures moving
+    /// to the same target. Uses BFS to find nearby nav nodes, then greedily
+    /// assigns each creature to the nearest available destination.
+    ///
+    /// Returns `(creature_id, voxel_destination)` pairs. Creatures that are
+    /// dead or missing are silently excluded.
+    fn compute_spread_assignments(
+        &self,
+        creature_ids: &[CreatureId],
+        target: VoxelCoord,
+    ) -> Vec<(CreatureId, VoxelCoord)> {
+        let center = match self.nav_graph.find_nearest_node(target) {
+            Some(n) => n,
+            None => return Vec::new(),
+        };
+
+        // Collect alive creature positions.
+        let creatures: Vec<(CreatureId, VoxelCoord)> = creature_ids
+            .iter()
+            .filter_map(|&cid| {
+                let c = self.db.creatures.get(&cid)?;
+                if c.vital_status != VitalStatus::Alive {
+                    return None;
+                }
+                let pos = self.nav_graph.node(c.current_node?).position;
+                Some((cid, pos))
+            })
+            .collect();
+
+        if creatures.is_empty() {
+            return Vec::new();
+        }
+
+        // Get spread destinations via BFS.
+        let dest_nodes = self.nav_graph.spread_destinations(center, creatures.len());
+        let dest_positions: Vec<(usize, VoxelCoord)> = dest_nodes
+            .iter()
+            .enumerate()
+            .map(|(i, &nid)| (i, self.nav_graph.node(nid).position))
+            .collect();
+
+        // Greedy assignment: build all (creature, dest) pairs sorted by
+        // distance, then assign closest first.
+        let mut assignments = Vec::with_capacity(creatures.len());
+        let mut used_creatures = vec![false; creatures.len()];
+        let mut used_dests = vec![false; dest_positions.len()];
+
+        // Build a sorted list of (distance, creature_idx, dest_idx).
+        let mut pairs: Vec<(u32, usize, usize)> = Vec::new();
+        for (ci, &(_, cpos)) in creatures.iter().enumerate() {
+            for (di, &(_, dpos)) in dest_positions.iter().enumerate() {
+                pairs.push((cpos.manhattan_distance(dpos), ci, di));
+            }
+        }
+        pairs.sort();
+
+        for (_, ci, di) in pairs {
+            if used_creatures[ci] || used_dests[di] {
+                continue;
+            }
+            used_creatures[ci] = true;
+            used_dests[di] = true;
+            assignments.push((creatures[ci].0, dest_positions[di].1));
+        }
+
+        // Any creatures that didn't get a unique destination (more creatures
+        // than available nav nodes) get the center.
+        let center_pos = self.nav_graph.node(center).position;
+        for (ci, &(cid, _)) in creatures.iter().enumerate() {
+            if !used_creatures[ci] {
+                assignments.push((cid, center_pos));
+            }
+        }
+
+        assignments
     }
 
     /// Execute the AttackMove task behavior. Called from `execute_task_behavior`
@@ -30771,6 +30904,230 @@ mod tests {
             activations_after, 1,
             "Should still have exactly 1 pending activation after redirect (was {activations_after})"
         );
+    }
+
+    #[test]
+    fn group_goto_spreads_creatures_to_different_nodes() {
+        // Three elves given a GroupGoTo to the same destination should each
+        // end up with a GoTo task at a different nav node.
+        let mut sim = test_sim(42);
+        let elf_a = spawn_elf(&mut sim);
+        let elf_b = spawn_elf(&mut sim);
+        let elf_c = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf_a);
+        force_idle_and_cancel_activations(&mut sim, elf_b);
+        force_idle_and_cancel_activations(&mut sim, elf_c);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::GroupGoTo {
+                    creature_ids: vec![elf_a, elf_b, elf_c],
+                    position: dest,
+                },
+            }],
+            tick + 2,
+        );
+
+        // All three should have GoTo tasks.
+        let task_a = sim.db.creatures.get(&elf_a).unwrap().current_task.unwrap();
+        let task_b = sim.db.creatures.get(&elf_b).unwrap().current_task.unwrap();
+        let task_c = sim.db.creatures.get(&elf_c).unwrap().current_task.unwrap();
+        let loc_a = sim.db.tasks.get(&task_a).unwrap().location;
+        let loc_b = sim.db.tasks.get(&task_b).unwrap().location;
+        let loc_c = sim.db.tasks.get(&task_c).unwrap().location;
+
+        // At least two of the three should have different locations (spread).
+        let locs = [loc_a, loc_b, loc_c];
+        let unique: std::collections::BTreeSet<_> = locs.iter().collect();
+        assert!(
+            unique.len() >= 2,
+            "GroupGoTo should spread creatures to different nav nodes, got {:?}",
+            locs
+        );
+    }
+
+    #[test]
+    fn group_goto_single_creature_delegates_to_normal() {
+        // A single-element GroupGoTo should work identically to DirectedGoTo.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::GroupGoTo {
+                    creature_ids: vec![elf],
+                    position: dest,
+                },
+            }],
+            tick + 2,
+        );
+
+        let task_id = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert!(task.kind_tag == TaskKindTag::GoTo);
+    }
+
+    #[test]
+    fn group_attack_move_spreads_creatures() {
+        // GroupAttackMove should create AttackMove tasks at spread destinations.
+        let mut sim = test_sim(42);
+        let elf_a = spawn_elf(&mut sim);
+        let elf_b = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf_a);
+        force_idle_and_cancel_activations(&mut sim, elf_b);
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::GroupAttackMove {
+                    creature_ids: vec![elf_a, elf_b],
+                    destination: dest,
+                },
+            }],
+            tick + 2,
+        );
+
+        // Both should have AttackMove tasks.
+        let task_a = sim.db.creatures.get(&elf_a).unwrap().current_task.unwrap();
+        let task_b = sim.db.creatures.get(&elf_b).unwrap().current_task.unwrap();
+        assert_eq!(
+            sim.db.tasks.get(&task_a).unwrap().kind_tag,
+            TaskKindTag::AttackMove
+        );
+        assert_eq!(
+            sim.db.tasks.get(&task_b).unwrap().kind_tag,
+            TaskKindTag::AttackMove
+        );
+
+        // Their task locations should differ (spread).
+        let loc_a = sim.db.tasks.get(&task_a).unwrap().location;
+        let loc_b = sim.db.tasks.get(&task_b).unwrap().location;
+        assert_ne!(
+            loc_a, loc_b,
+            "GroupAttackMove should spread to different nav nodes"
+        );
+    }
+
+    #[test]
+    fn group_goto_empty_list_is_noop() {
+        let mut sim = test_sim(42);
+        let tick = sim.tick;
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+        // Should not panic or create any tasks.
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::GroupGoTo {
+                    creature_ids: vec![],
+                    position: dest,
+                },
+            }],
+            tick + 2,
+        );
+    }
+
+    #[test]
+    fn group_goto_skips_dead_creatures() {
+        // Dead creatures in the list should be silently skipped.
+        let mut sim = test_sim(42);
+        let elf_alive = spawn_elf(&mut sim);
+        let elf_dead = spawn_elf(&mut sim);
+        force_idle_and_cancel_activations(&mut sim, elf_alive);
+        force_idle_and_cancel_activations(&mut sim, elf_dead);
+
+        // Kill one elf.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugKillCreature {
+                    creature_id: elf_dead,
+                },
+            }],
+            tick + 2,
+        );
+
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+        let tick2 = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick2 + 1,
+                action: SimAction::GroupGoTo {
+                    creature_ids: vec![elf_alive, elf_dead],
+                    position: dest,
+                },
+            }],
+            tick2 + 2,
+        );
+
+        // Only the alive elf should have a task.
+        assert!(
+            sim.db
+                .creatures
+                .get(&elf_alive)
+                .unwrap()
+                .current_task
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn group_goto_serialization_roundtrip() {
+        let mut rng = crate::prng::GameRng::new(42);
+        let cmd = SimCommand {
+            player_id: PlayerId::new(&mut rng),
+            tick: 100,
+            action: SimAction::GroupGoTo {
+                creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
+                position: VoxelCoord::new(10, 1, 5),
+            },
+        };
+
+        let json = serde_json::to_string(&cmd).unwrap();
+        let restored: SimCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&restored).unwrap());
+    }
+
+    #[test]
+    fn group_attack_move_serialization_roundtrip() {
+        let mut rng = crate::prng::GameRng::new(42);
+        let cmd = SimCommand {
+            player_id: PlayerId::new(&mut rng),
+            tick: 100,
+            action: SimAction::GroupAttackMove {
+                creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
+                destination: VoxelCoord::new(10, 1, 5),
+            },
+        };
+
+        let json = serde_json::to_string(&cmd).unwrap();
+        let restored: SimCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&restored).unwrap());
     }
 
     #[test]

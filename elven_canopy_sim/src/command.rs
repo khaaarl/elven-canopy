@@ -51,6 +51,10 @@
 // - `AttackMove` — player-directed attack-move: creature walks toward a
 //   destination, engaging hostiles en route. Creates an AttackMove task with
 //   PlayerCombat preemption.
+// - `GroupGoTo` — like `DirectedGoTo` but for multiple creatures. Spreads
+//   destinations across nearby nav nodes via BFS so creatures don't stack.
+// - `GroupAttackMove` — like `AttackMove` but for multiple creatures with
+//   spread destinations.
 //
 // See also: `sim.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -278,6 +282,19 @@ pub enum SimAction {
     /// PlayerCombat preemption level.
     AttackMove {
         creature_id: CreatureId,
+        destination: VoxelCoord,
+    },
+    /// Group move: spread multiple creatures across nearby nav nodes around the
+    /// destination instead of stacking them all on the same voxel. Each creature
+    /// gets a unique nearby destination assigned via BFS outward from the target.
+    GroupGoTo {
+        creature_ids: Vec<CreatureId>,
+        position: VoxelCoord,
+    },
+    /// Group attack-move: like `GroupGoTo` but each creature attack-moves to its
+    /// assigned spread destination, engaging hostiles en route.
+    GroupAttackMove {
+        creature_ids: Vec<CreatureId>,
         destination: VoxelCoord,
     },
     /// Create a new military group for the player's civ.
