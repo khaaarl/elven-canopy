@@ -45,6 +45,7 @@
       "Bash(echo:*)",
       "Bash(find:*)",
       "Bash(git:*)",
+      "Bash(GIT_EDITOR=true git:*)",
       "Bash(godot:*)",
       "Bash(godot4:*)",
       "Bash(godot-4:*)",
