@@ -166,6 +166,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
+[ ] F-split-sim            Break up sim.rs into focused modules
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
@@ -3317,6 +3318,23 @@ as `SimDb` (16 tables) — see F-sim-tab-migrate.
 
 #### F-sim-tab-migrate — Migrate sim entity storage to tabulosity SimDb
 **Status:** Done
+
+#### F-split-sim — Break up sim.rs into focused modules
+**Status:** Todo
+
+sim.rs is 36,560 lines (~11,100 sim code + ~25,400 tests). Split into focused `impl SimState` blocks in separate modules. Proposed modules:
+
+- **sim.rs** (~1,500 lines): struct definition, `new`/`with_config`, `step`/`process_event`, serialization, core helpers (`find_surface_position`, `abort_current_action`, `schedule_reactivation`)
+- **activation.rs** (~800): `process_creature_activation`, `find_available_task`, `claim_task`, `execute_task_behavior`, `execute_task_at_location`, `check_creature_wants`, `check_mope`
+- **construction.rs** (~1,200): `designate_build`, `designate_building`, `designate_ladder`, `designate_carve`, `cancel_build`, `create_task`
+- **combat.rs** (~1,500): `command_attack_creature`, `command_attack_move`, `command_group_attack_move`, `execute_attack_move`, `execute_combat_at_location`, `try_combat_against_target`, `walk_toward_attack_target`, `in_melee_range`, friendly-fire
+- **movement.rs** (~500): `command_directed_goto`, `command_group_goto`, `compute_spread_assignments`, `walk_toward_task`
+- **crafting.rs** (~1,200): all `*_craft_*`/`*_cook_*`, `process_unified_crafting_monitor`, `compute_runs_needed`, `compute_effective_wants`, active recipe management
+- **logistics.rs** (~800): `process_logistics_heartbeat`, `process_harvest_tasks`, `find_haul_source`, `reserve_haul_items`, `find_item_source`, `count_in_transit_items`, pickup/dropoff/haul
+- **needs.rs** (~600): sleep, eating, moping, `resolve_acquire_item_action`
+- **greenhouse.rs** (~200): `process_greenhouse_monitor`, fruit helpers
+
+Tests follow their corresponding module. Schedule when no other sim branches are in flight.
 
 #### F-tab-auto-pk — Auto-generated primary keys
 **Status:** Done
