@@ -36,6 +36,14 @@
 //! The `?` suffix on FK field names (e.g., `fks(assignee? = "creatures")`)
 //! signals that the field is `Option<T>`, so the restrict check wraps the
 //! target PK in `Some(...)` when querying the index.
+//!
+//! ## Parent-PK FK (`pk` keyword)
+//!
+//! The `pk` keyword (e.g., `fks(id = "creatures" pk)`) marks an FK field as
+//! also being the child table's primary key, creating a 1:1 relationship.
+//! On delete, restrict/cascade checks use `contains()` instead of
+//! `count_by_{field}()` since there is no secondary index on the PK.
+//! The `pk` keyword is incompatible with `?` (optional) and `on_delete nullify`.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -53,10 +61,14 @@ enum OnDeleteAction {
     Nullify,
 }
 
-/// A parsed FK declaration from `fks(field = "target_table" on_delete ...)`.
+/// A parsed FK declaration from `fks(field = "target_table" [pk] [on_delete ...])`.
 struct FkDecl {
     field_name: Ident,
     is_optional: bool,
+    /// When true, this FK field is also the child table's primary key,
+    /// creating a 1:1 relationship. Delete checks use `contains()` instead
+    /// of `count_by_{field}()`, since there is no secondary index on the PK.
+    is_pk: bool,
     target_table: String,
     on_delete: OnDeleteAction,
 }
@@ -72,6 +84,16 @@ struct TableAttr {
 struct TableField {
     field_ident: Ident,
     attr: TableAttr,
+}
+
+/// An inbound FK reference from a source table to a target table.
+/// Used during delete codegen to generate restrict/cascade/nullify logic.
+struct InboundFk<'a> {
+    src_table: &'a Ident,
+    fk_field: &'a Ident,
+    is_optional: bool,
+    is_pk: bool,
+    on_delete: OnDeleteAction,
 }
 
 /// Parse the contents of `fks(...)`.
@@ -90,6 +112,21 @@ impl Parse for FkList {
             }
             let _: Token![=] = input.parse()?;
             let target: LitStr = input.parse()?;
+
+            // Parse optional `pk` keyword.
+            let is_pk = if input.peek(Ident) && !input.peek2(Token![?]) && !input.peek2(Token![=]) {
+                // Peek at the identifier to check if it's "pk".
+                let fork = input.fork();
+                let kw: Ident = fork.parse()?;
+                if kw == "pk" {
+                    let _: Ident = input.parse()?; // consume
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
 
             // Parse optional `on_delete cascade|nullify|restrict`.
             let on_delete = if input.peek(Ident)
@@ -122,6 +159,7 @@ impl Parse for FkList {
             fks.push(FkDecl {
                 field_name,
                 is_optional,
+                is_pk,
                 target_table: target.value(),
                 on_delete,
             });
@@ -233,7 +271,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
         });
     }
 
-    // Validate: nullify requires optional FK.
+    // Validate FK attribute combinations.
     for tf in &table_fields {
         for fk in &tf.attr.fks {
             if fk.on_delete == OnDeleteAction::Nullify && !fk.is_optional {
@@ -243,6 +281,26 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                         "on_delete nullify requires an optional FK field (`{}?`), \
                          but `{}` is a bare FK",
                         fk.field_name, fk.field_name
+                    ),
+                )
+                .to_compile_error();
+            }
+            if fk.is_pk && fk.is_optional {
+                return syn::Error::new_spanned(
+                    &fk.field_name,
+                    format!(
+                        "`pk` FK cannot be optional (`{}?`): a primary key is never null",
+                        fk.field_name,
+                    ),
+                )
+                .to_compile_error();
+            }
+            if fk.is_pk && fk.on_delete == OnDeleteAction::Nullify {
+                return syn::Error::new_spanned(
+                    &fk.field_name,
+                    format!(
+                        "`pk` FK `{}` cannot use on_delete nullify: a primary key cannot be set to None",
+                        fk.field_name,
                     ),
                 )
                 .to_compile_error();
@@ -275,22 +333,21 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     }
 
     // Build inverse FK map: for each target table, collect all inbound FK refs.
-    let mut inbound_fks: std::collections::BTreeMap<
-        String,
-        Vec<(&Ident, &Ident, bool, OnDeleteAction)>,
-    > = std::collections::BTreeMap::new();
+    let mut inbound_fks: std::collections::BTreeMap<String, Vec<InboundFk<'_>>> =
+        std::collections::BTreeMap::new();
 
     for tf in &table_fields {
         for fk in &tf.attr.fks {
             inbound_fks
                 .entry(fk.target_table.clone())
                 .or_default()
-                .push((
-                    &tf.field_ident,
-                    &fk.field_name,
-                    fk.is_optional,
-                    fk.on_delete,
-                ));
+                .push(InboundFk {
+                    src_table: &tf.field_ident,
+                    fk_field: &fk.field_name,
+                    is_optional: fk.is_optional,
+                    is_pk: fk.is_pk,
+                    on_delete: fk.on_delete,
+                });
         }
     }
 
@@ -371,13 +428,22 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             let restrict_checks: Vec<TokenStream> = inbound
                 .map(|refs| {
                     refs.iter()
-                        .filter(|(_, _, _, action)| *action == OnDeleteAction::Restrict)
-                        .map(|(src_table_ident, fk_field, is_optional, _)| {
-                            let count_fn = format_ident!("count_by_{}", fk_field);
+                        .filter(|ifk| ifk.on_delete == OnDeleteAction::Restrict)
+                        .map(|ifk| {
+                            let src_table_ident = ifk.src_table;
+                            let fk_field = ifk.fk_field;
                             let src_table_str = src_table_ident.to_string();
                             let fk_field_str = fk_field.to_string();
 
-                            if *is_optional {
+                            if ifk.is_pk {
+                                // PK FK: use contains() — at most one child row.
+                                quote! {
+                                    if self.#src_table_ident.contains(id) {
+                                        violations.push((#src_table_str, #fk_field_str, 1));
+                                    }
+                                }
+                            } else if ifk.is_optional {
+                                let count_fn = format_ident!("count_by_{}", fk_field);
                                 quote! {
                                     let count = self.#src_table_ident.#count_fn(&::std::option::Option::Some(id.clone()), ::tabulosity::QueryOpts::ASC);
                                     if count > 0 {
@@ -385,6 +451,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                                     }
                                 }
                             } else {
+                                let count_fn = format_ident!("count_by_{}", fk_field);
                                 quote! {
                                     let count = self.#src_table_ident.#count_fn(id, ::tabulosity::QueryOpts::ASC);
                                     if count > 0 {
@@ -401,34 +468,46 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             let cascade_stmts: Vec<TokenStream> = inbound
                 .map(|refs| {
                     refs.iter()
-                        .filter(|(_, _, _, action)| *action == OnDeleteAction::Cascade)
-                        .map(|(src_table_ident, fk_field, is_optional, _)| {
-                            let iter_fn = format_ident!("iter_by_{}", fk_field);
+                        .filter(|ifk| ifk.on_delete == OnDeleteAction::Cascade)
+                        .map(|ifk| {
+                            let src_table_ident = ifk.src_table;
+                            let fk_field = ifk.fk_field;
                             let src_tf = table_fields
                                 .iter()
-                                .find(|t| t.field_ident == **src_table_ident)
+                                .find(|t| t.field_ident == *src_table_ident)
                                 .unwrap();
                             let src_remove_fn = format_ident!("remove_{}", src_tf.attr.singular);
-                            let src_table_ty = &raw_fields
-                                .iter()
-                                .find(|f| f.ident.as_ref() == Some(src_table_ident))
-                                .unwrap()
-                                .ty;
 
-                            let query_val = if *is_optional {
-                                quote! { &::std::option::Option::Some(id.clone()) }
+                            if ifk.is_pk {
+                                // PK FK: at most one child row — delete directly by PK.
+                                quote! {
+                                    if self.#src_table_ident.contains(id) {
+                                        self.#src_remove_fn(id)?;
+                                    }
+                                }
                             } else {
-                                quote! { id }
-                            };
+                                let iter_fn = format_ident!("iter_by_{}", fk_field);
+                                let src_table_ty = &raw_fields
+                                    .iter()
+                                    .find(|f| f.ident.as_ref() == Some(src_table_ident))
+                                    .unwrap()
+                                    .ty;
 
-                            quote! {
-                                {
-                                    let __cascade_pks: ::std::vec::Vec<<#src_table_ty as ::tabulosity::TableMeta>::Key> =
-                                        self.#src_table_ident.#iter_fn(#query_val, ::tabulosity::QueryOpts::ASC)
-                                            .map(|__r| __r.pk_ref().clone())
-                                            .collect();
-                                    for __cpk in __cascade_pks {
-                                        self.#src_remove_fn(&__cpk)?;
+                                let query_val = if ifk.is_optional {
+                                    quote! { &::std::option::Option::Some(id.clone()) }
+                                } else {
+                                    quote! { id }
+                                };
+
+                                quote! {
+                                    {
+                                        let __cascade_pks: ::std::vec::Vec<<#src_table_ty as ::tabulosity::TableMeta>::Key> =
+                                            self.#src_table_ident.#iter_fn(#query_val, ::tabulosity::QueryOpts::ASC)
+                                                .map(|__r| __r.pk_ref().clone())
+                                                .collect();
+                                        for __cpk in __cascade_pks {
+                                            self.#src_remove_fn(&__cpk)?;
+                                        }
                                     }
                                 }
                             }
@@ -441,8 +520,10 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             let nullify_stmts: Vec<TokenStream> = inbound
                 .map(|refs| {
                     refs.iter()
-                        .filter(|(_, _, _, action)| *action == OnDeleteAction::Nullify)
-                        .map(|(src_table_ident, fk_field, _is_optional, _)| {
+                        .filter(|ifk| ifk.on_delete == OnDeleteAction::Nullify)
+                        .map(|ifk| {
+                            let src_table_ident = ifk.src_table;
+                            let fk_field = ifk.fk_field;
                             let iter_fn = format_ident!("iter_by_{}", fk_field);
                             let src_table_ty = &raw_fields
                                 .iter()

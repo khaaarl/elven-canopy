@@ -174,7 +174,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-cycle            Tab to cycle focus through units in selection
 [ ] F-tab-joins            Join iterators across tables
-[ ] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-priority        Priority queue and auto-assignment
@@ -307,6 +306,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-compound-idx     Compound indexes with prefix queries
 [x] F-tab-filter-idx       Filtered/partial indexes
 [x] F-tab-modify-unchk     Closure-based row mutation (modify_unchecked)
+[x] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [x] F-tab-query-opts       Query options struct for index queries
 [x] F-tab-schema-ver       Schema versioning fundamentals
 [x] F-tab-unique-idx       Unique index enforcement
@@ -3344,7 +3344,7 @@ closure call. Database-level wrappers delegate to the table methods.
 **Related:** F-sim-db-impl, F-tab-query-opts
 
 #### F-tab-parent-pk — Tabulosity: allow parent PK as child table PK for 1:1 relations
-**Status:** Todo
+**Status:** Done
 
 #### F-tab-query-opts — Query options struct for index queries
 **Status:** Done

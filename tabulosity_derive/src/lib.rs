@@ -47,6 +47,8 @@ pub fn derive_table(input: TokenStream) -> TokenStream {
 ///
 /// Every field must have a `#[table(singular = "...", fks(...), auto)]`
 /// attribute. The `auto` flag generates an `insert_{singular}_auto` method.
+/// Within `fks(...)`, the `pk` keyword marks an FK field as also being the
+/// child table's primary key, enabling 1:1 parent-child relationships.
 /// An optional struct-level `#[schema_version(N)]` attribute enables schema
 /// versioning: the version number is included in serialized output and
 /// checked on deserialization.
