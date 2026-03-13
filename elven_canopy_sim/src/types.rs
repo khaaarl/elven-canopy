@@ -18,7 +18,7 @@
 //   (not UUIDs) since nav nodes are rebuilt from world geometry and never
 //   persisted across sessions.
 // - **Simulation enums:** `Species`, `Priority`, `BuildType`.
-// - **Vital status:** `VitalStatus` (Alive/Dead), `DeathCause` (Debug/Damage).
+// - **Vital status:** `VitalStatus` (Alive/Dead), `DeathCause` (Debug/Damage/Starvation).
 //   Dead creatures remain in the DB; all live-creature queries filter by status.
 // - **Thought system:** `ThoughtKind` — event-driven creature thoughts with
 //   per-kind dedup and expiry. `Thought` — a timestamped thought instance.
@@ -704,7 +704,9 @@ pub enum DeathCause {
     Debug,
     /// HP reduced to zero by damage.
     Damage,
-    // Future: Starvation, Fire, Falling, etc.
+    /// Food gauge reached zero.
+    Starvation,
+    // Future: Fire, Falling, etc.
 }
 
 // ---------------------------------------------------------------------------

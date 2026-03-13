@@ -92,7 +92,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
 [ ] F-crafting             Non-construction jobs and crafting
-[ ] F-creature-death       Basic creature death (starvation)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-dblclick-select      Double-click to select all of same military group
@@ -219,6 +218,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crate-structure      Two-crate sim/gdext structure
 [x] F-creature-actions     Creature action system: typed duration-bearing actions
+[x] F-creature-death       Basic creature death (starvation)
 [x] F-creature-info        Creature info panel with follow button
 [x] F-creature-tooltip     Hover tooltips for world objects
 [x] F-debug-menu           Move spawn/summon into debug menu
@@ -1024,7 +1024,7 @@ Remaining: additional test coverage audit per design doc.
 **Related:** F-dynamic-pursuit, F-preemption, F-task-interruption
 
 #### F-creature-death — Basic creature death (starvation)
-**Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
+**Status:** Done · **Phase:** 3 · **Refs:** §13, §15
 
 When a creature's food gauge reaches zero, it dies (vital_status → Dead,
 creature row kept in DB). Basic death mechanic without the spiritual
