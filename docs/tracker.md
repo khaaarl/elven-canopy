@@ -47,6 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
+[~] F-arrow-durability     Arrow durability and recovery
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
@@ -62,7 +63,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-alt-deselect         Alt+click to remove from selection
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-armor                Wearable armor system
-[ ] F-arrow-durability     Arrow durability and recovery
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
@@ -1896,7 +1896,7 @@ Armor items that can be worn in clothing slots, providing damage reduction in co
 **Unblocked by:** F-clothing
 
 #### F-arrow-durability — Arrow durability and recovery
-**Status:** Todo · **Phase:** 3
+**Status:** In Progress · **Phase:** 3
 
 Arrow durability system: arrows lose durability on impact and may break. Recoverable arrows that survive impact are placed on the ground for pickup. Extracted from F-projectiles as a separate concern — not needed for the first pass at combat.
 

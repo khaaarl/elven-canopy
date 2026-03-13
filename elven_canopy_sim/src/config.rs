@@ -1240,6 +1240,10 @@ fn default_attack_path_retry_limit() -> u32 {
     3
 }
 
+fn default_arrow_starting_durability() -> i32 {
+    3
+}
+
 // ---------------------------------------------------------------------------
 // Civilization config
 // ---------------------------------------------------------------------------
@@ -1657,6 +1661,13 @@ pub struct GameConfig {
     /// the target later if it moves to a reachable location.
     #[serde(default = "default_attack_path_retry_limit")]
     pub attack_path_retry_limit: u32,
+
+    /// Starting durability for newly created arrows. Each impact (surface or
+    /// creature) decrements durability by 1; at 0 the arrow breaks and is not
+    /// recoverable. A value of 0 means arrows are infinitely durable (legacy
+    /// behavior). Stored in the `quality` field of `ItemStack`.
+    #[serde(default = "default_arrow_starting_durability")]
+    pub arrow_starting_durability: i32,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -2223,6 +2234,7 @@ impl Default for GameConfig {
             arrow_damage_multiplier: default_arrow_damage_multiplier(),
             shoot_cooldown_ticks: default_shoot_cooldown_ticks(),
             attack_path_retry_limit: default_attack_path_retry_limit(),
+            arrow_starting_durability: default_arrow_starting_durability(),
         }
     }
 }

@@ -2060,11 +2060,15 @@ impl SimState {
                 );
             }
             if self.config.elf_starting_arrows > 0 {
-                self.inv_add_simple_item(
+                self.inv_add_item(
                     inv_id,
                     inventory::ItemKind::Arrow,
                     self.config.elf_starting_arrows,
                     Some(creature_id),
+                    None,
+                    None,
+                    self.config.arrow_starting_durability,
+                    None,
                     None,
                 );
             }
@@ -3933,6 +3937,7 @@ impl SimState {
                     );
                 }
                 for output in &recipe.outputs {
+                    let quality = self.arrow_crafting_quality(output.item_kind, output.quality);
                     self.inv_add_item(
                         inv_id,
                         output.item_kind,
@@ -3940,7 +3945,7 @@ impl SimState {
                         None,
                         None,
                         output.material,
-                        output.quality,
+                        quality,
                         None,
                         None,
                     );
@@ -3958,6 +3963,7 @@ impl SimState {
                     );
                 }
                 for output in &def.outputs {
+                    let quality = self.arrow_crafting_quality(output.item_kind, output.quality);
                     self.inv_add_item(
                         inv_id,
                         output.item_kind,
@@ -3965,7 +3971,7 @@ impl SimState {
                         None,
                         None,
                         output.material,
-                        output.quality,
+                        quality,
                         None,
                         None,
                     );
@@ -6822,11 +6828,29 @@ impl SimState {
         }
 
         // 6. All checks passed — consume arrow and fire.
+        // Peek at the arrow's durability (quality) before removing, so we can
+        // carry it to the projectile inventory.
+        let arrow_quality = self
+            .inv_items(inv_id)
+            .iter()
+            .find(|s| s.kind == ItemKind::Arrow)
+            .map(|s| s.quality)
+            .unwrap_or(0);
         self.inv_remove_item_with_material(inv_id, ItemKind::Arrow, None, 1);
 
-        // Create projectile inventory with one arrow (projectile carries its payload).
+        // Create projectile inventory with one arrow carrying its durability.
         let proj_inv_id = self.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
-        self.inv_add_simple_item(proj_inv_id, ItemKind::Arrow, 1, None, None);
+        self.inv_add_item(
+            proj_inv_id,
+            ItemKind::Arrow,
+            1,
+            None,
+            None,
+            None,
+            arrow_quality,
+            None,
+            None,
+        );
 
         let was_empty = self.db.projectiles.is_empty();
 
@@ -6882,9 +6906,19 @@ impl SimState {
 
         let was_empty = self.db.projectiles.is_empty();
 
-        // Create inventory with a single arrow.
+        // Create inventory with a single arrow carrying config durability.
         let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
-        self.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
+        self.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            1,
+            None,
+            None,
+            None,
+            self.config.arrow_starting_durability,
+            None,
+            None,
+        );
 
         // Compute aim velocity.
         let origin_sub = SubVoxelCoord::from_voxel_center(origin);
@@ -7024,8 +7058,51 @@ impl SimState {
         }
     }
 
-    /// Resolve a projectile hitting a solid surface. Transfers the arrow from
-    /// the projectile inventory to a ground pile at `prev_voxel`.
+    /// For crafted arrows: if the recipe specifies quality 0 (the default),
+    /// substitute `config.arrow_starting_durability` so newly crafted arrows
+    /// get the same durability as starting arrows. Non-arrow items or arrows
+    /// with an explicit non-zero recipe quality pass through unchanged.
+    fn arrow_crafting_quality(&self, item_kind: inventory::ItemKind, recipe_quality: i32) -> i32 {
+        if item_kind == inventory::ItemKind::Arrow && recipe_quality == 0 {
+            self.config.arrow_starting_durability
+        } else {
+            recipe_quality
+        }
+    }
+
+    /// Degrade arrow durability in a projectile's inventory after impact.
+    /// Returns `true` if the arrow survives (should be placed on the ground),
+    /// `false` if it broke (durability reached zero). Quality 0 means infinite
+    /// durability (legacy/backward-compat behavior).
+    fn degrade_projectile_arrow(&mut self, proj_inv: InventoryId) -> bool {
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&proj_inv, tabulosity::QueryOpts::ASC);
+        for stack in &stacks {
+            if stack.kind == inventory::ItemKind::Arrow {
+                if stack.quality <= 0 {
+                    // Legacy arrow (quality 0) or already at 0 — infinite durability.
+                    return true;
+                }
+                let new_quality = stack.quality - 1;
+                if new_quality <= 0 {
+                    // Arrow broke — remove it.
+                    let _ = self.db.item_stacks.remove_no_fk(&stack.id);
+                    return false;
+                }
+                // Survived — update durability.
+                let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                    s.quality = new_quality;
+                });
+                return true;
+            }
+        }
+        true // No arrow found (shouldn't happen), treat as survived.
+    }
+
+    /// Resolve a projectile hitting a solid surface. Degrades arrow durability;
+    /// if the arrow survives, transfers it to a ground pile at `prev_voxel`.
     fn resolve_projectile_surface_hit(
         &mut self,
         proj_id: ProjectileId,
@@ -7038,10 +7115,21 @@ impl SimState {
         };
         let proj_inv = proj.inventory_id;
 
-        // Create/join ground pile at prev_voxel and merge items.
-        let pile_id = self.ensure_ground_pile(prev_voxel);
-        let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
-        self.inv_merge(proj_inv, pile_inv);
+        let arrow_survived = self.degrade_projectile_arrow(proj_inv);
+
+        if arrow_survived {
+            // Transfer surviving arrow to ground pile.
+            let pile_id = self.ensure_ground_pile(prev_voxel);
+            let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+            self.inv_merge(proj_inv, pile_inv);
+        } else {
+            events.push(SimEvent {
+                tick: self.tick,
+                kind: SimEventKind::ArrowBroke {
+                    position: prev_voxel,
+                },
+            });
+        }
 
         events.push(SimEvent {
             tick: self.tick,
@@ -7097,10 +7185,20 @@ impl SimState {
             },
         });
 
-        // Transfer arrow to ground pile at the creature's position.
-        let pile_id = self.ensure_ground_pile(hit_voxel);
-        let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
-        self.inv_merge(proj_inv, pile_inv);
+        // Degrade arrow durability; transfer to ground pile only if it survived.
+        let arrow_survived = self.degrade_projectile_arrow(proj_inv);
+        if arrow_survived {
+            let pile_id = self.ensure_ground_pile(hit_voxel);
+            let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+            self.inv_merge(proj_inv, pile_inv);
+        } else {
+            events.push(SimEvent {
+                tick: self.tick,
+                kind: SimEventKind::ArrowBroke {
+                    position: hit_voxel,
+                },
+            });
+        }
 
         self.remove_projectile(proj_id);
     }
@@ -29273,6 +29371,327 @@ mod tests {
         );
 
         assert_eq!(sim.db.projectiles.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Arrow durability tests (F-arrow-durability)
+    // -----------------------------------------------------------------------
+
+    /// Helper: run projectile ticks until all projectiles resolve (max 500 ticks).
+    /// Returns all events emitted during the run.
+    fn run_projectiles_to_completion(sim: &mut SimState) -> Vec<SimEvent> {
+        let mut all_events = Vec::new();
+        for _ in 0..500 {
+            if sim.db.projectiles.is_empty() {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+            all_events.extend(events);
+            if !sim.db.projectiles.is_empty() {
+                sim.event_queue
+                    .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+            }
+        }
+        all_events
+    }
+
+    #[test]
+    fn arrow_durability_decrements_on_surface_hit() {
+        let mut sim = test_sim(42);
+        sim.config.arrow_starting_durability = 3;
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+        // Place a solid wall.
+        for y in 1..=5 {
+            sim.world
+                .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+        }
+
+        sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+        let events = run_projectiles_to_completion(&mut sim);
+
+        assert!(sim.db.projectiles.is_empty(), "Projectile should resolve");
+
+        // Arrow should survive with durability 2 (3 - 1).
+        let mut found = false;
+        for pile in sim.db.ground_piles.iter_all() {
+            let stacks = sim.inv_items(pile.inventory_id);
+            for s in &stacks {
+                if s.kind == inventory::ItemKind::Arrow {
+                    assert_eq!(s.quality, 2, "Arrow durability should be 3 - 1 = 2");
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "Arrow should land in ground pile");
+
+        // No ArrowBroke event.
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e.kind, SimEventKind::ArrowBroke { .. })),
+            "Arrow should not break at durability 2"
+        );
+    }
+
+    #[test]
+    fn arrow_breaks_when_durability_reaches_zero() {
+        let mut sim = test_sim(42);
+        sim.config.arrow_starting_durability = 1; // Breaks on first impact.
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+        for y in 1..=5 {
+            sim.world
+                .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+        }
+
+        sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+        let events = run_projectiles_to_completion(&mut sim);
+
+        assert!(sim.db.projectiles.is_empty());
+
+        // No arrow should be on the ground — it broke.
+        let mut found_arrow = false;
+        for pile in sim.db.ground_piles.iter_all() {
+            let stacks = sim.inv_items(pile.inventory_id);
+            for s in &stacks {
+                if s.kind == inventory::ItemKind::Arrow {
+                    found_arrow = true;
+                }
+            }
+        }
+        assert!(
+            !found_arrow,
+            "Broken arrow should not appear in ground pile"
+        );
+
+        // Should have ArrowBroke event.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e.kind, SimEventKind::ArrowBroke { .. })),
+            "Should emit ArrowBroke event"
+        );
+    }
+
+    #[test]
+    fn arrow_durability_zero_means_infinite() {
+        let mut sim = test_sim(42);
+        sim.config.arrow_starting_durability = 0; // Legacy: infinite durability.
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+        for y in 1..=5 {
+            sim.world
+                .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+        }
+
+        sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+        run_projectiles_to_completion(&mut sim);
+
+        // Arrow should always survive with quality 0 (infinite).
+        let mut found = false;
+        for pile in sim.db.ground_piles.iter_all() {
+            let stacks = sim.inv_items(pile.inventory_id);
+            for s in &stacks {
+                if s.kind == inventory::ItemKind::Arrow {
+                    assert_eq!(s.quality, 0);
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "Legacy arrow should always survive");
+    }
+
+    #[test]
+    fn arrow_durability_decrements_on_creature_hit() {
+        let mut sim = test_sim(42);
+        sim.config.arrow_starting_durability = 3;
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+        let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
+        sim.spawn_projectile(origin, goblin_pos, None);
+        let events = run_projectiles_to_completion(&mut sim);
+
+        assert!(sim.db.projectiles.is_empty());
+
+        // Arrow should survive with durability 2.
+        let mut found = false;
+        for pile in sim.db.ground_piles.iter_all() {
+            let stacks = sim.inv_items(pile.inventory_id);
+            for s in &stacks {
+                if s.kind == inventory::ItemKind::Arrow {
+                    assert_eq!(
+                        s.quality, 2,
+                        "Arrow durability should decrement on creature hit"
+                    );
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "Arrow should land in ground pile after creature hit");
+
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e.kind, SimEventKind::ArrowBroke { .. })),
+            "Arrow should not break at durability 2"
+        );
+    }
+
+    #[test]
+    fn arrow_breaks_on_creature_hit_at_durability_one() {
+        let mut sim = test_sim(42);
+        sim.config.arrow_starting_durability = 1;
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+        let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
+        sim.spawn_projectile(origin, goblin_pos, None);
+        let events = run_projectiles_to_completion(&mut sim);
+
+        assert!(sim.db.projectiles.is_empty());
+
+        // Arrow should be gone — it broke.
+        let mut found_arrow = false;
+        for pile in sim.db.ground_piles.iter_all() {
+            let stacks = sim.inv_items(pile.inventory_id);
+            for s in &stacks {
+                if s.kind == inventory::ItemKind::Arrow {
+                    found_arrow = true;
+                }
+            }
+        }
+        assert!(
+            !found_arrow,
+            "Broken arrow should not appear in ground pile"
+        );
+
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e.kind, SimEventKind::ArrowBroke { .. })),
+            "Should emit ArrowBroke on creature hit"
+        );
+    }
+
+    #[test]
+    fn spawn_projectile_uses_config_durability() {
+        let mut sim = test_sim(42);
+        sim.config.arrow_starting_durability = 5;
+        sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+
+        let proj = sim.db.projectiles.iter_all().next().unwrap();
+        let stacks = sim.inv_items(proj.inventory_id);
+        assert_eq!(stacks.len(), 1);
+        assert_eq!(stacks[0].kind, inventory::ItemKind::Arrow);
+        assert_eq!(
+            stacks[0].quality, 5,
+            "Debug projectile should use config durability"
+        );
+    }
+
+    #[test]
+    fn elf_starting_arrows_use_config_durability() {
+        let mut sim = test_sim(42);
+        sim.config.arrow_starting_durability = 4;
+        let elf = spawn_elf(&mut sim);
+        let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+
+        let stacks = sim.inv_items(inv_id);
+        let arrow_stack = stacks
+            .iter()
+            .find(|s| s.kind == inventory::ItemKind::Arrow)
+            .expect("Elf should have arrows");
+        assert_eq!(
+            arrow_stack.quality, 4,
+            "Starting arrows should use config durability"
+        );
+    }
+
+    #[test]
+    fn try_shoot_arrow_carries_durability_to_projectile() {
+        let mut sim = test_sim(42);
+        sim.config.arrow_starting_durability = 5;
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place them in LOS range.
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let target_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+        force_position(&mut sim, goblin, target_pos);
+        force_idle(&mut sim, elf);
+
+        let mut events = Vec::new();
+        let fired = sim.try_shoot_arrow(elf, goblin, &mut events);
+        assert!(fired, "Elf should be able to shoot");
+
+        // Projectile's arrow should carry the durability from the elf's inventory.
+        let proj = sim.db.projectiles.iter_all().next().unwrap();
+        let stacks = sim.inv_items(proj.inventory_id);
+        assert_eq!(stacks.len(), 1);
+        assert_eq!(
+            stacks[0].quality, 5,
+            "Projectile arrow should carry elf's arrow durability"
+        );
+    }
+
+    #[test]
+    fn arrow_durability_serde_roundtrip() {
+        let mut sim = test_sim(42);
+        sim.config.arrow_starting_durability = 7;
+        sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+
+        let json = sim.to_json().unwrap();
+        let sim2 = SimState::from_json(&json).unwrap();
+
+        let proj = sim2.db.projectiles.iter_all().next().unwrap();
+        let stacks = sim2.inv_items(proj.inventory_id);
+        assert_eq!(
+            stacks[0].quality, 7,
+            "Durability should survive serde roundtrip"
+        );
+        assert_eq!(
+            sim2.config.arrow_starting_durability, 7,
+            "Config durability should survive serde roundtrip"
+        );
+    }
+
+    #[test]
+    fn arrow_crafting_applies_config_durability() {
+        let sim = test_sim(42);
+        // When recipe quality is 0 and item is Arrow, should substitute config value.
+        assert_eq!(
+            sim.arrow_crafting_quality(inventory::ItemKind::Arrow, 0),
+            3,
+            "Arrow with recipe quality 0 should get config durability"
+        );
+        // Non-arrow items pass through.
+        assert_eq!(
+            sim.arrow_crafting_quality(inventory::ItemKind::Bread, 0),
+            0,
+            "Non-arrow items should keep recipe quality"
+        );
+        // Explicit non-zero recipe quality is respected.
+        assert_eq!(
+            sim.arrow_crafting_quality(inventory::ItemKind::Arrow, 10),
+            10,
+            "Explicit recipe quality should be preserved"
+        );
     }
 
     // -----------------------------------------------------------------------
