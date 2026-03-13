@@ -107,6 +107,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-engagement-style     Unified engagement style (species + military group combat tactics)
 [ ] F-equipment-sprites    Dynamic sprite customization for equipment
+[ ] F-ff-vertical-arc      Vertical arc awareness for friendly-fire checks
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
@@ -1983,6 +1984,13 @@ Supersedes `CombatAI` enum on `SpeciesData` and `HostileResponse` on `MilitaryGr
 **Blocks:** F-instinctual-flee, F-skirmish
 **Related:** F-combat, F-enemy-ai, F-military-groups
 
+#### F-ff-vertical-arc — Vertical arc awareness for friendly-fire checks
+**Status:** Todo
+
+Currently, friendly-fire checks use the projectile's 2D column (XZ) to detect friendlies in the flight path. A high-arc shot that passes over a friendly's head is treated as blocked even though it would be safe. This feature adds vertical (Y) awareness to the friendly-fire check, allowing shots whose arc clears friendlies vertically. This would let archers on higher platforms or at longer ranges (higher arcs) shoot over intervening friendlies.
+
+**Related:** F-friendly-fire
+
 #### F-flee — Flee behavior for civilians
 **Status:** Done
 
@@ -1997,9 +2005,26 @@ Creatures with Flee response (civilian military group default, or FleeOnly comba
 #### F-friendly-fire — Friendly-fire avoidance for ranged attacks
 **Status:** Todo
 
-Projectiles currently hit any alive creature in their path after the origin voxel, with no distinction between friendly and hostile targets. This feature adds friendly-fire avoidance so ranged attackers don't shoot when the arrow's arc would pass too close to a friendly creature. Details TBD: proximity threshold (voxel-level or sub-voxel), whether to block the shot entirely or pick an alternate target, whether to account for moving friendlies, and how this interacts with player-directed vs autonomous attacks (player-directed might allow riskier shots).
+Projectiles currently hit any alive creature in their path after the origin voxel, with no distinction between friendly and hostile targets. This feature adds friendly-fire avoidance so ranged attackers don't shoot through friendly creatures, and actively reposition to find a clear shot.
 
-**Related:** F-projectiles, F-shoot-action
+**Detection:** Voxel-level checks along the projectile's 2D column flight path (vertical arc awareness is a separate future feature, F-ff-vertical-arc). The origin voxel and its immediate neighbors are excluded from the check for non-hostile creatures, so squads can stand together and fire, and elves can shoot point-blank at hostiles in adjacent voxels.
+
+**In-flight arrows:** No retroactive avoidance. If a friendly walks into an arrow's path mid-flight, they get hit. This is intentional — unlucky shots hurt, and future features may introduce trait-based carelessness or other effects.
+
+**When blocked (no clear shot to current target):**
+
+1. **Redirect:** Try other hostiles already in range/awareness that have a clear flight path. Pick the best alternate target.
+2. **Reposition:** If no hostile has a clear path, move to a neighboring nav node. Score candidates by: (a) clear shot available (primary), (b) doesn't block nearby elves' lines of fire, (c) distance to target (prefer not moving further away). Commit to the move before re-evaluating to prevent oscillation between two elves shuffling back and forth.
+3. **Fallback reposition:** If no candidate scores well, pick a direction that at least doesn't block other nearby elves' lines of fire.
+4. **Hold fire:** If truly stuck, hold position and wait.
+
+**Attack-move when blocked:** Use repositioning logic if available; otherwise keep advancing toward the target (closing to melee range).
+
+**Player-directed vs autonomous:** No distinction. Elves always respect friendly-fire avoidance regardless of how the attack was ordered.
+
+**Emergent formation:** The repositioning behavior naturally produces firing-line-like formations as elves spread out to find clear angles, without explicit formation code.
+
+**Related:** F-ff-vertical-arc, F-projectiles, F-shoot-action
 
 #### F-hostile-detection — Hostile detection and faction logic
 **Status:** Done
