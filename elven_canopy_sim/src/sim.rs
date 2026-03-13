@@ -2283,10 +2283,14 @@ impl SimState {
             let pos = self.find_surface_position(pile_spec.position.x, pile_spec.position.z);
             let pile_id = self.ensure_ground_pile(pos);
             let pile = self.db.ground_piles.get(&pile_id).unwrap();
-            self.inv_add_simple_item(
+            self.inv_add_item(
                 pile.inventory_id,
                 pile_spec.item_kind,
                 pile_spec.quantity,
+                None,
+                None,
+                pile_spec.material,
+                0,
                 None,
                 None,
             );
@@ -20723,6 +20727,7 @@ mod tests {
             position: VoxelCoord::new(32, 1, 34),
             item_kind: crate::inventory::ItemKind::Bread,
             quantity: 5,
+            material: None,
         }];
         config
     }
@@ -22256,10 +22261,8 @@ mod tests {
         use crate::species::CombatAI;
         let config_json = std::fs::read_to_string("../default_config.json").unwrap();
         let config: crate::config::GameConfig = serde_json::from_str(&config_json).unwrap();
-        assert_eq!(config.recipes.len(), 3);
+        assert_eq!(config.recipes.len(), 1);
         assert_eq!(config.recipes[0].id, "bowstring");
-        assert_eq!(config.recipes[1].id, "bow");
-        assert_eq!(config.recipes[2].id, "arrow");
         // CombatAI and detection range survive JSON roundtrip.
         assert_eq!(
             config.species[&Species::Goblin].combat_ai,
@@ -22277,7 +22280,7 @@ mod tests {
     fn game_config_without_recipes_gets_defaults() {
         // Minimal valid config JSON — no recipes field.
         let config = crate::config::GameConfig::default();
-        assert_eq!(config.recipes.len(), 3);
+        assert_eq!(config.recipes.len(), 1);
         assert_eq!(config.workshop_default_priority, 8);
     }
 
@@ -22508,18 +22511,15 @@ mod tests {
     #[test]
     fn add_active_recipe_creates_recipe_and_targets() {
         let mut sim = test_sim(42);
-        // Use a Storehouse (which doesn't get default recipes) to test adding
-        // a recipe in isolation. The recipe won't match the furnishing type
-        // so we use a Home-furnished building instead.
         let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
-        // Workshop furnishing auto-adds all workshop recipes. Verify the arrow
-        // recipe was added with correct properties.
-        let arrow_key = sim
+        // Workshop furnishing auto-adds the bowstring config recipe. Verify it
+        // was added with correct properties.
+        let bowstring_key = sim
             .recipe_catalog
             .recipes_for_furnishing(FurnishingType::Workshop)
             .into_iter()
-            .find(|r| r.display_name == "Arrow")
+            .find(|r| r.display_name == "Bowstring")
             .unwrap()
             .key
             .clone();
@@ -22528,21 +22528,21 @@ mod tests {
             .db
             .active_recipes
             .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
-        let arrow_recipe = recipes
+        let bowstring_recipe = recipes
             .iter()
-            .find(|r| r.recipe_key_json == arrow_key.to_json())
-            .expect("Arrow recipe should exist");
-        assert!(arrow_recipe.enabled);
-        assert!(arrow_recipe.auto_logistics);
-        assert_eq!(arrow_recipe.spare_iterations, 0);
+            .find(|r| r.recipe_key_json == bowstring_key.to_json())
+            .expect("Bowstring recipe should exist");
+        assert!(bowstring_recipe.enabled);
+        assert!(bowstring_recipe.auto_logistics);
+        assert_eq!(bowstring_recipe.spare_iterations, 0);
 
-        // Should have target rows for each output (arrow has 1 output).
+        // Should have target rows for each output (bowstring has 1 output).
         let targets = sim
             .db
             .active_recipe_targets
-            .by_active_recipe_id(&arrow_recipe.id, tabulosity::QueryOpts::ASC);
+            .by_active_recipe_id(&bowstring_recipe.id, tabulosity::QueryOpts::ASC);
         assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].output_item_kind, inventory::ItemKind::Arrow);
+        assert_eq!(targets[0].output_item_kind, inventory::ItemKind::Bowstring);
         assert_eq!(targets[0].target_quantity, 0);
     }
 
@@ -22551,12 +22551,12 @@ mod tests {
         let mut sim = test_sim(42);
         let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
-        // Arrow is already added by furnishing. Try to add it again.
-        let arrow_key = sim
+        // Bowstring is already added by furnishing. Try to add it again.
+        let bowstring_key = sim
             .recipe_catalog
             .recipes_for_furnishing(FurnishingType::Workshop)
             .iter()
-            .find(|r| r.display_name == "Arrow")
+            .find(|r| r.display_name == "Bowstring")
             .unwrap()
             .key
             .clone();
@@ -22572,7 +22572,7 @@ mod tests {
             tick: sim.tick + 1,
             action: SimAction::AddActiveRecipe {
                 structure_id,
-                recipe_key: arrow_key,
+                recipe_key: bowstring_key,
             },
         };
         sim.step(&[cmd], sim.tick + 1);
@@ -22635,15 +22635,25 @@ mod tests {
         let mut sim = test_sim(42);
         let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
-        // Arrow is added by furnishing. Find it and remove it.
-        let arrow_key_json = sim
+        // Add a grow recipe (not auto-added), then remove it.
+        let arrow_key = sim
             .recipe_catalog
             .recipes_for_furnishing(FurnishingType::Workshop)
             .iter()
-            .find(|r| r.display_name == "Arrow")
+            .find(|r| r.display_name == "Grow Oak Arrows")
             .unwrap()
             .key
-            .to_json();
+            .clone();
+
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: arrow_key.clone(),
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
 
         let initial_count = sim
             .db
@@ -22656,7 +22666,7 @@ mod tests {
             .active_recipes
             .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
             .into_iter()
-            .find(|r| r.recipe_key_json == arrow_key_json)
+            .find(|r| r.recipe_key_json == arrow_key.to_json())
             .unwrap()
             .id;
 
@@ -22696,8 +22706,9 @@ mod tests {
             .recipe_catalog
             .recipes_for_furnishing(FurnishingType::Workshop)
             .into_iter()
-            .find(|r| r.display_name == "Arrow")
+            .find(|r| r.display_name == "Grow Oak Arrows")
             .unwrap();
+        let recipe_key_json = recipe_def.key.to_json();
 
         let add_cmd = SimCommand {
             player_id: sim.player_id,
@@ -22709,10 +22720,13 @@ mod tests {
         };
         sim.step(&[add_cmd], sim.tick + 1);
 
-        let ar = &sim
+        let ar = sim
             .db
             .active_recipes
-            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == recipe_key_json)
+            .unwrap();
         let target = &sim
             .db
             .active_recipe_targets
@@ -22773,8 +22787,9 @@ mod tests {
             .recipe_catalog
             .recipes_for_furnishing(FurnishingType::Workshop)
             .into_iter()
-            .find(|r| r.display_name == "Arrow")
+            .find(|r| r.display_name == "Grow Oak Arrows")
             .unwrap();
+        let recipe_key_json = recipe_def.key.to_json();
 
         let add_cmd = SimCommand {
             player_id: sim.player_id,
@@ -22789,7 +22804,10 @@ mod tests {
         let ar_id = sim
             .db
             .active_recipes
-            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0]
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == recipe_key_json)
+            .unwrap()
             .id;
         assert!(sim.db.active_recipes.get(&ar_id).unwrap().enabled);
 
@@ -22854,7 +22872,26 @@ mod tests {
         let mut sim = test_sim(42);
         let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
-        // Workshop furnishing adds all 3 recipes. Use the first two for
+        // Add a second recipe (bowstring is auto-added, add arrows manually).
+        let arrow_key = sim
+            .recipe_catalog
+            .recipes_for_furnishing(FurnishingType::Workshop)
+            .iter()
+            .find(|r| r.display_name == "Grow Oak Arrows")
+            .unwrap()
+            .key
+            .clone();
+        let add_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: arrow_key,
+            },
+        };
+        sim.step(&[add_cmd], sim.tick + 1);
+
+        // Now have at least 2 active recipes. Use the first two for
         // testing move up/down.
         let recipes = sim.db.active_recipes.by_structure_sort(
             &structure_id,
@@ -22979,16 +23016,25 @@ mod tests {
             });
         }
 
-        // Crafting is auto-enabled by furnishing. Arrow recipe is already added.
-        // Find the arrow ActiveRecipe and set its target.
-        let arrow_key_json = sim
+        // Crafting is auto-enabled by furnishing. Add arrow recipe manually.
+        let arrow_key = sim
             .recipe_catalog
             .recipes_for_furnishing(FurnishingType::Workshop)
             .iter()
-            .find(|r| r.display_name == "Arrow")
+            .find(|r| r.display_name == "Grow Oak Arrows")
             .unwrap()
             .key
-            .to_json();
+            .clone();
+        let arrow_key_json = arrow_key.to_json();
+        let add_arrow_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: arrow_key,
+            },
+        };
+        sim.step(&[add_arrow_cmd], sim.tick + 1);
 
         let ar = sim
             .db
@@ -23068,10 +23114,11 @@ mod tests {
             .recipe_catalog
             .recipes_for_furnishing(FurnishingType::Workshop)
             .iter()
-            .find(|r| r.display_name == "Arrow")
+            .find(|r| r.display_name == "Grow Oak Arrows")
             .unwrap()
             .key
             .clone();
+        let arrow_key_json = arrow_key.to_json();
 
         let add_cmd = SimCommand {
             player_id: sim.player_id,
@@ -23083,14 +23130,20 @@ mod tests {
         };
         sim.step(&[add_cmd], sim.tick + 1);
 
-        let ar = &sim
+        let ar = sim
             .db
             .active_recipes
-            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
-        let target = &sim
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == arrow_key_json)
+            .unwrap();
+        let target = sim
             .db
             .active_recipe_targets
-            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
 
         // Set target to 5 arrows, then add 5 arrows to the building's inventory.
         let set_target_cmd = SimCommand {
@@ -23104,7 +23157,17 @@ mod tests {
         sim.step(&[set_target_cmd], sim.tick + 1);
 
         let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
-        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            5,
+            None,
+            None,
+            Some(inventory::Material::Oak),
+            0,
+            None,
+            None,
+        );
 
         // Run the unified monitor — should NOT create a task (target met).
         sim.process_unified_crafting_monitor();
@@ -23146,15 +23209,26 @@ mod tests {
             });
         }
 
-        // Do NOT enable crafting.
+        // Disable crafting (furnishing auto-enables it).
+        let disable_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled: false,
+            },
+        };
+        sim.step(&[disable_cmd], sim.tick + 1);
+
         let arrow_key = sim
             .recipe_catalog
             .recipes_for_furnishing(FurnishingType::Workshop)
             .iter()
-            .find(|r| r.display_name == "Arrow")
+            .find(|r| r.display_name == "Grow Oak Arrows")
             .unwrap()
             .key
             .clone();
+        let arrow_key_json = arrow_key.to_json();
 
         let add_cmd = SimCommand {
             player_id: sim.player_id,
@@ -23166,14 +23240,20 @@ mod tests {
         };
         sim.step(&[add_cmd], sim.tick + 1);
 
-        let ar = &sim
+        let ar = sim
             .db
             .active_recipes
-            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
-        let target = &sim
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.recipe_key_json == arrow_key_json)
+            .unwrap();
+        let target = sim
             .db
             .active_recipe_targets
-            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
 
         let set_target_cmd = SimCommand {
             player_id: sim.player_id,
@@ -23630,15 +23710,25 @@ mod tests {
         ];
         sim.step(&setup_cmds, sim.tick + 1);
 
-        // Arrow recipe has no inputs. It's already added by furnishing.
-        let arrow_key_json = sim
+        // Arrow recipe has no inputs. Add it manually (not auto-added).
+        let arrow_key = sim
             .recipe_catalog
             .recipes_for_furnishing(FurnishingType::Workshop)
             .iter()
-            .find(|r| r.display_name == "Arrow")
+            .find(|r| r.display_name == "Grow Oak Arrows")
             .unwrap()
             .key
-            .to_json();
+            .clone();
+        let arrow_key_json = arrow_key.to_json();
+        let add_arrow_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::AddActiveRecipe {
+                structure_id,
+                recipe_key: arrow_key,
+            },
+        };
+        sim.step(&[add_arrow_cmd], sim.tick + 1);
 
         let ar = sim
             .db
@@ -34240,6 +34330,105 @@ mod tests {
         assert!(has_boots, "Should want Boots");
         assert!(has_hat, "Should want Hat");
         assert!(has_gloves, "Should want Gloves");
+
+        // Boots want should use NonWood filter so elves avoid wood boots (armor).
+        let boots_want = wants
+            .iter()
+            .find(|w| w.item_kind == inventory::ItemKind::Boots)
+            .unwrap();
+        assert_eq!(
+            boots_want.material_filter,
+            inventory::MaterialFilter::NonWood,
+            "Boots want should use NonWood filter to avoid picking up armor"
+        );
+    }
+
+    #[test]
+    fn elf_does_not_acquire_wood_boots_as_clothing() {
+        // Wood boots are armor, not clothing. Elves seeking boots should
+        // skip them (NonWood filter on the Boots want).
+        let mut sim = test_sim(42);
+
+        // Set up elf wants: only boots, NonWood filter.
+        sim.config.elf_default_wants = vec![crate::building::LogisticsWant {
+            item_kind: inventory::ItemKind::Boots,
+            material_filter: inventory::MaterialFilter::NonWood,
+            target_quantity: 1,
+        }];
+        sim.config.elf_starting_bread = 0;
+
+        // Spawn elf (gets wants from config).
+        let elf_id = spawn_elf(&mut sim);
+
+        // Place wood boots on the ground near the tree.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+        sim.inv_add_item(
+            pile_inv,
+            inventory::ItemKind::Boots,
+            1,
+            None,
+            None,
+            Some(inventory::Material::Oak),
+            0,
+            None,
+            None,
+        );
+
+        // Run heartbeat — elf should NOT create an AcquireItem task for
+        // wood boots because the NonWood filter rejects them.
+        sim.check_creature_wants(elf_id);
+
+        let creature = sim.db.creatures.get(&elf_id).unwrap();
+        assert!(
+            creature.current_task.is_none(),
+            "Elf should not acquire wood boots (armor) as clothing"
+        );
+    }
+
+    #[test]
+    fn elf_acquires_non_wood_boots_as_clothing() {
+        // Non-wood boots (e.g., fruit-material) are clothing, not armor.
+        let mut sim = test_sim(42);
+
+        sim.config.elf_default_wants = vec![crate::building::LogisticsWant {
+            item_kind: inventory::ItemKind::Boots,
+            material_filter: inventory::MaterialFilter::NonWood,
+            target_quantity: 1,
+        }];
+        sim.config.elf_starting_bread = 0;
+
+        let elf_id = spawn_elf(&mut sim);
+
+        // Place fruit-material boots on the ground.
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+        let fruit_mat = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(0));
+        sim.inv_add_item(
+            pile_inv,
+            inventory::ItemKind::Boots,
+            1,
+            None,
+            None,
+            Some(fruit_mat),
+            0,
+            None,
+            None,
+        );
+
+        // Run heartbeat — elf should create an AcquireItem task for
+        // fruit-material boots (passes NonWood filter).
+        sim.check_creature_wants(elf_id);
+
+        let creature = sim.db.creatures.get(&elf_id).unwrap();
+        assert!(
+            creature.current_task.is_some(),
+            "Elf should acquire non-wood boots as clothing"
+        );
     }
 
     #[test]

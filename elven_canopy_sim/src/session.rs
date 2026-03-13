@@ -919,6 +919,7 @@ mod tests {
             position: VoxelCoord::new(32, 1, 34),
             item_kind: crate::inventory::ItemKind::Bread,
             quantity: 5,
+            material: None,
         }];
 
         let mut session_a = GameSession::new_singleplayer();

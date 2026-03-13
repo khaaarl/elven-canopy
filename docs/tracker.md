@@ -61,7 +61,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-alt-deselect         Alt+click to remove from selection
 [ ] F-apprentice           Skill transfer via proximity
-[ ] F-armor                Wearable armor system
+[ ] F-armor-durability     Armor durability and repair
+[ ] F-armor-penalties      Armor movement speed penalties
+[ ] F-armor-species        Species-specific armor availability
 [ ] F-arrow-durability     Arrow durability and recovery
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
@@ -124,6 +126,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
+[ ] F-item-quality         Item quality system affecting stats and value
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -198,6 +201,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
+[x] F-armor                Wearable armor system
 [x] F-attack-move          Attack-move task (walk + fight en route)
 [x] F-attack-task          AttackCreature task (player-directed target pursuit)
 [x] F-audio-synth          Waveform synthesis for audio rendering
@@ -1452,6 +1456,11 @@ task abandonment (clear reservations or drop carried items as ground pile).
 
 **Related:** F-elf-acquire, F-food-chain, F-logistics
 
+#### F-item-quality — Item quality system affecting stats and value
+**Status:** Todo
+
+**Related:** F-armor
+
 #### F-items — Items and inventory system
 **Status:** Done · **Phase:** 3
 
@@ -1888,12 +1897,32 @@ infrastructure.
 ### Combat & Defense
 
 #### F-armor — Wearable armor system
+**Status:** Done
+
+Wearable armor grown from the home tree's wood at workshops. Armor competes with clothing for body slots (head: hat vs helmet, torso: tunic vs breastplate, legs: leggings vs greaves, feet: cloth boots vs wood boots, hands: gauntlets — no clothing glove equivalent yet). First pass uses flat damage reduction per piece (sum of all worn armor), minimum 1 damage per hit (Starcraft-style). Armor value is a function of ItemKind and Material — wood materials give protection, cloth/fruit materials don't. Quality will factor into the calculation later (F-item-quality).
+
+Crafting recipes use a new Grow verb and are generated per wood type at catalog build time (like fruit-species recipes). Zero inputs — the tree grows armor from its own wood. Five pieces: Helmet, Breastplate, Greaves, Gauntlets, Boots (Boots reuses the existing ItemKind, distinguished by material). Bow and arrow recipes also moved to per-wood-type Grow generation.
+
+Deferred to future features: armor durability/repair (F-armor-durability), movement speed penalties (F-armor-penalties), species-specific armor (F-armor-species), layering armor over clothing, per-damage-type reduction, more complex DF-style armor simulation.
+
+**Unblocked by:** F-clothing
+**Unblocked:** F-armor-durability, F-armor-penalties, F-armor-species, F-military-armor
+**Related:** F-item-quality
+
+#### F-armor-durability — Armor durability and repair
 **Status:** Todo
 
-Armor items that can be worn in clothing slots, providing damage reduction in combat. Builds on the clothing/wearable system (F-clothing) for slot mechanics and equip/unequip flow. Many details TBD: armor types and their stats (leather, chain, plate?), how damage reduction is calculated (flat reduction? percentage? per-damage-type?), armor durability and repair, crafting recipes and material requirements, how armor interacts with movement speed or other stats, visual representation, whether armor and clothing can be worn simultaneously (layering), and species-specific armor availability.
+**Unblocked by:** F-armor
 
-**Blocks:** F-military-armor
-**Unblocked by:** F-clothing
+#### F-armor-penalties — Armor movement speed penalties
+**Status:** Todo
+
+**Unblocked by:** F-armor
+
+#### F-armor-species — Species-specific armor availability
+**Status:** Todo
+
+**Unblocked by:** F-armor
 
 #### F-arrow-durability — Arrow durability and recovery
 **Status:** Todo · **Phase:** 3
@@ -2074,7 +2103,8 @@ A per-species `FleeInstinct` struct on `SpeciesData` that defines involuntary pa
 
 Military groups can specify an armor policy — what armor, if any, members should wear. Extends the military group equipment system (F-military-equip) to handle armor specifically, using the wearable armor system (F-armor) for the actual equip mechanics. Many details TBD: how armor policy is specified (any available armor? specific armor type? minimum protection level?), how the policy interacts with armor availability (wait for crafting? use whatever's available?), priority of armor acquisition vs. weapon acquisition, UI for armor policy configuration within the military group detail panel, and how armor status is displayed per creature and per group.
 
-**Blocked by:** F-armor, F-military-equip
+**Blocked by:** F-military-equip
+**Unblocked by:** F-armor
 **Related:** F-military-groups
 
 #### F-military-campaign — Send elves on world expeditions

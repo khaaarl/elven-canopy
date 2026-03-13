@@ -821,6 +821,9 @@ pub struct InitialGroundPileSpec {
     pub position: VoxelCoord,
     pub item_kind: ItemKind,
     pub quantity: u32,
+    /// Optional material for the spawned items (e.g., Oak for wood armor).
+    #[serde(default)]
+    pub material: Option<crate::inventory::Material>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,6 +1047,88 @@ impl Default for ComponentRecipeConfig {
     }
 }
 
+/// Parameters for wood-type Grow recipes generated per wood material.
+///
+/// Armor pieces, bows, and arrows are grown from the home tree's wood at
+/// workshops. One recipe per wood type per item is generated at catalog build
+/// time. Armor has zero inputs; bows consume one bowstring; arrows have zero
+/// inputs.
+///
+/// See `recipe.rs` `build_wood_type_recipes()` for the generation logic.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GrowRecipeConfig {
+    /// Grow bow: work ticks.
+    #[serde(default = "default_grow_bow_work_ticks")]
+    pub grow_bow_work_ticks: u64,
+
+    /// Grow arrow: work ticks.
+    #[serde(default = "default_grow_arrow_work_ticks")]
+    pub grow_arrow_work_ticks: u64,
+    /// Grow arrow: quantity produced per batch.
+    #[serde(default = "default_grow_arrow_output")]
+    pub grow_arrow_output: u32,
+
+    /// Grow helmet: work ticks.
+    #[serde(default = "default_grow_helmet_work_ticks")]
+    pub grow_helmet_work_ticks: u64,
+
+    /// Grow breastplate: work ticks.
+    #[serde(default = "default_grow_breastplate_work_ticks")]
+    pub grow_breastplate_work_ticks: u64,
+
+    /// Grow greaves: work ticks.
+    #[serde(default = "default_grow_greaves_work_ticks")]
+    pub grow_greaves_work_ticks: u64,
+
+    /// Grow gauntlets: work ticks.
+    #[serde(default = "default_grow_gauntlets_work_ticks")]
+    pub grow_gauntlets_work_ticks: u64,
+
+    /// Grow boots: work ticks.
+    #[serde(default = "default_grow_boots_work_ticks")]
+    pub grow_boots_work_ticks: u64,
+}
+
+impl Default for GrowRecipeConfig {
+    fn default() -> Self {
+        Self {
+            grow_bow_work_ticks: default_grow_bow_work_ticks(),
+            grow_arrow_work_ticks: default_grow_arrow_work_ticks(),
+            grow_arrow_output: default_grow_arrow_output(),
+            grow_helmet_work_ticks: default_grow_helmet_work_ticks(),
+            grow_breastplate_work_ticks: default_grow_breastplate_work_ticks(),
+            grow_greaves_work_ticks: default_grow_greaves_work_ticks(),
+            grow_gauntlets_work_ticks: default_grow_gauntlets_work_ticks(),
+            grow_boots_work_ticks: default_grow_boots_work_ticks(),
+        }
+    }
+}
+
+fn default_grow_bow_work_ticks() -> u64 {
+    8000
+}
+fn default_grow_arrow_work_ticks() -> u64 {
+    3000
+}
+fn default_grow_arrow_output() -> u32 {
+    20
+}
+fn default_grow_helmet_work_ticks() -> u64 {
+    7000
+}
+fn default_grow_breastplate_work_ticks() -> u64 {
+    10000
+}
+fn default_grow_greaves_work_ticks() -> u64 {
+    8000
+}
+fn default_grow_gauntlets_work_ticks() -> u64 {
+    6000
+}
+fn default_grow_boots_work_ticks() -> u64 {
+    6000
+}
+
 fn default_mill_work_ticks() -> u64 {
     4000
 }
@@ -1154,58 +1239,23 @@ fn default_sew_gloves_output() -> u32 {
 }
 
 fn default_recipes() -> Vec<Recipe> {
-    vec![
-        Recipe {
-            id: "bowstring".to_string(),
-            display_name: "Bowstring".to_string(),
-            inputs: vec![RecipeInput {
-                item_kind: ItemKind::Fruit,
-                quantity: 1,
-                material_filter: MaterialFilter::Any,
-            }],
-            outputs: vec![RecipeOutput {
-                item_kind: ItemKind::Bowstring,
-                quantity: 20,
-                material: None,
-                quality: 0,
-            }],
-            work_ticks: 5000,
-            subcomponent_records: vec![],
-        },
-        Recipe {
-            id: "bow".to_string(),
-            display_name: "Bow".to_string(),
-            inputs: vec![RecipeInput {
-                item_kind: ItemKind::Bowstring,
-                quantity: 1,
-                material_filter: MaterialFilter::Any,
-            }],
-            outputs: vec![RecipeOutput {
-                item_kind: ItemKind::Bow,
-                quantity: 1,
-                material: None,
-                quality: 0,
-            }],
-            work_ticks: 8000,
-            subcomponent_records: vec![RecipeSubcomponentRecord {
-                input_kind: ItemKind::Bowstring,
-                quantity_per_item: 1,
-            }],
-        },
-        Recipe {
-            id: "arrow".to_string(),
-            display_name: "Arrow".to_string(),
-            inputs: vec![],
-            outputs: vec![RecipeOutput {
-                item_kind: ItemKind::Arrow,
-                quantity: 20,
-                material: None,
-                quality: 0,
-            }],
-            work_ticks: 3000,
-            subcomponent_records: vec![],
-        },
-    ]
+    vec![Recipe {
+        id: "bowstring".to_string(),
+        display_name: "Bowstring".to_string(),
+        inputs: vec![RecipeInput {
+            item_kind: ItemKind::Fruit,
+            quantity: 1,
+            material_filter: MaterialFilter::Any,
+        }],
+        outputs: vec![RecipeOutput {
+            item_kind: ItemKind::Bowstring,
+            quantity: 20,
+            material: None,
+            quality: 0,
+        }],
+        work_ticks: 5000,
+        subcomponent_records: vec![],
+    }]
 }
 
 fn default_workshop_priority() -> u8 {
@@ -1595,6 +1645,11 @@ pub struct GameConfig {
     #[serde(default)]
     pub component_recipes: ComponentRecipeConfig,
 
+    /// Parameters for wood-type Grow recipes (armor, bows, arrows). Recipes
+    /// are dynamically generated per wood material at catalog build time.
+    #[serde(default)]
+    pub grow_recipes: GrowRecipeConfig,
+
     /// Creatures to spawn when a new game starts. Each spec describes a group
     /// of one species with optional per-creature food/rest/bread overrides.
     #[serde(default)]
@@ -1720,7 +1775,7 @@ fn default_elf_default_wants() -> Vec<crate::building::LogisticsWant> {
         },
         LogisticsWant {
             item_kind: ItemKind::Boots,
-            material_filter: MaterialFilter::Any,
+            material_filter: MaterialFilter::NonWood,
             target_quantity: 1,
         },
         LogisticsWant {
@@ -2139,6 +2194,7 @@ impl Default for GameConfig {
             cook_fruit_input: 1,
             cook_bread_output: 10,
             component_recipes: ComponentRecipeConfig::default(),
+            grow_recipes: GrowRecipeConfig::default(),
             initial_creatures: vec![
                 InitialCreatureSpec {
                     species: Species::Elf,
@@ -2186,31 +2242,37 @@ impl Default for GameConfig {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Bread,
                     quantity: 5,
+                    material: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Tunic,
                     quantity: 2,
+                    material: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Leggings,
                     quantity: 2,
+                    material: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Boots,
                     quantity: 2,
+                    material: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Hat,
                     quantity: 2,
+                    material: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Gloves,
                     quantity: 2,
+                    material: None,
                 },
             ],
             recipes: default_recipes(),

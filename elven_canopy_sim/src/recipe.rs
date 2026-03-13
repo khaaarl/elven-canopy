@@ -3,10 +3,11 @@
 // Replaces the per-building-type crafting systems (kitchen bread baking,
 // workshop recipe list) with a single unified model. Recipes are identified
 // structurally by `RecipeKey` (verb + sorted inputs/outputs), not by string
-// names. The `RecipeCatalog` is built at startup from config recipes and
+// names. The `RecipeCatalog` is built at startup from config recipes,
 // dynamically generated fruit recipes (extraction, component processing —
 // flour, thread, cord, cloth — and clothing — tunic, leggings, boots, hat),
-// then stored immutably on `SimState`.
+// and per-wood-type Grow recipes (bows, arrows, armor — helmet, breastplate,
+// greaves, gauntlets, boots), then stored immutably on `SimState`.
 //
 // Key types:
 // - `RecipeVerb` — stable enum distinguishing crafting methods (Cook, Assemble,
@@ -58,6 +59,8 @@ pub enum RecipeVerb {
     Weave = 10,
     /// Sew cloth into a garment.
     Sew = 11,
+    /// Grow an item from the home tree's wood at a workshop.
+    Grow = 12,
     // Append new variants here with the next sequential number.
 }
 
@@ -222,6 +225,11 @@ pub fn build_catalog(
         for def in build_component_recipes(config, species) {
             recipes.insert(def.key.clone(), def);
         }
+    }
+
+    // Generate per-wood-type Grow recipes (bows, arrows, armor).
+    for def in build_wood_type_recipes(config) {
+        recipes.insert(def.key.clone(), def);
     }
 
     RecipeCatalog { recipes }
@@ -489,6 +497,124 @@ fn build_component_recipes(
     recipes
 }
 
+/// Build per-wood-type Grow recipes for bows, arrows, and armor pieces.
+///
+/// For each of the 5 wood materials (Oak, Birch, Willow, Ash, Yew), generates:
+/// - Grow {Wood} Bow (1 Bowstring input → 1 Bow output)
+/// - Grow {Wood} Arrow (zero inputs → N arrows)
+/// - Grow {Wood} Helmet/Breastplate/Greaves/Gauntlets/Boots (zero inputs → 1 armor piece)
+///
+/// All recipes use `RecipeVerb::Grow`, target `FurnishingType::Workshop`,
+/// require `Species::Elf`, and are not auto-added on furnish (player selects
+/// which wood-type recipes to activate based on their home tree).
+fn build_wood_type_recipes(config: &crate::config::GameConfig) -> Vec<RecipeDef> {
+    let gr = &config.grow_recipes;
+    let mut recipes = Vec::new();
+
+    for &wood in &Material::WOOD_TYPES {
+        let name = wood.display_name();
+        let material_filter = MaterialFilter::Specific(wood);
+
+        // Bow: 1 Bowstring → 1 Bow
+        recipes.push(build_simple_recipe(
+            RecipeVerb::Grow,
+            &format!("Grow {name} Bow"),
+            vec!["Woodcraft".to_string(), "Weapons".to_string()],
+            vec![FurnishingType::Workshop],
+            ItemKind::Bowstring,
+            MaterialFilter::Any,
+            1,
+            ItemKind::Bow,
+            Some(wood),
+            1,
+            gr.grow_bow_work_ticks,
+        ));
+
+        // Arrow: zero inputs → N arrows
+        recipes.push(build_no_input_recipe(
+            RecipeVerb::Grow,
+            &format!("Grow {name} Arrows"),
+            vec!["Woodcraft".to_string(), "Weapons".to_string()],
+            vec![FurnishingType::Workshop],
+            ItemKind::Arrow,
+            Some(wood),
+            gr.grow_arrow_output,
+            gr.grow_arrow_work_ticks,
+        ));
+
+        // Armor pieces: zero inputs → 1 piece each
+        for (item, label, ticks) in [
+            (ItemKind::Helmet, "Helmet", gr.grow_helmet_work_ticks),
+            (
+                ItemKind::Breastplate,
+                "Breastplate",
+                gr.grow_breastplate_work_ticks,
+            ),
+            (ItemKind::Greaves, "Greaves", gr.grow_greaves_work_ticks),
+            (
+                ItemKind::Gauntlets,
+                "Gauntlets",
+                gr.grow_gauntlets_work_ticks,
+            ),
+            (ItemKind::Boots, "Boots", gr.grow_boots_work_ticks),
+        ] {
+            recipes.push(build_no_input_recipe(
+                RecipeVerb::Grow,
+                &format!("Grow {name} {label}"),
+                vec!["Woodcraft".to_string(), "Armor".to_string()],
+                vec![FurnishingType::Workshop],
+                item,
+                Some(wood),
+                1,
+                ticks,
+            ));
+        }
+
+        // Suppress unused variable warning — material_filter is available for
+        // future recipes that need wood-specific inputs.
+        let _ = material_filter;
+    }
+
+    recipes
+}
+
+/// Build a zero-input recipe (e.g., arrows grown from the tree, armor pieces).
+#[allow(clippy::too_many_arguments)]
+fn build_no_input_recipe(
+    verb: RecipeVerb,
+    display_name: &str,
+    category: Vec<String>,
+    furnishing_types: Vec<FurnishingType>,
+    output_kind: ItemKind,
+    output_material: Option<Material>,
+    output_qty: u32,
+    work_ticks: u64,
+) -> RecipeDef {
+    let outputs_key = vec![(output_kind, output_material, output_qty)];
+
+    RecipeDef {
+        key: RecipeKey {
+            verb,
+            inputs: vec![],
+            outputs: outputs_key,
+        },
+        display_name: display_name.to_string(),
+        category,
+        furnishing_types,
+        inputs: vec![],
+        outputs: vec![RecipeOutput {
+            item_kind: output_kind,
+            quantity: output_qty,
+            material: output_material,
+            quality: 0,
+        }],
+        work_ticks,
+        subcomponent_records: vec![],
+        required_species: Some(Species::Elf),
+        auto_add_on_furnish: false,
+    }
+}
+
 /// Helper to build a simple 1-input → 1-output recipe. Used by the component
 /// recipe generator to avoid repetitive struct construction.
 #[allow(clippy::too_many_arguments)]
@@ -584,8 +710,6 @@ fn build_bread_recipe(config: &crate::config::GameConfig) -> RecipeDef {
 pub fn convert_config_recipe_key(recipe: &crate::config::Recipe) -> RecipeKey {
     let verb = match recipe.id.as_str() {
         "bowstring" => RecipeVerb::Assemble,
-        "bow" => RecipeVerb::Assemble,
-        "arrow" => RecipeVerb::Fletch,
         _ => RecipeVerb::Assemble,
     };
     let mut inputs_key: Vec<(ItemKind, MaterialFilter, u32)> = recipe
@@ -609,12 +733,10 @@ pub fn convert_config_recipe_key(recipe: &crate::config::Recipe) -> RecipeKey {
 
 /// Convert an old-style `Recipe` to a `RecipeDef`.
 fn convert_config_recipe(recipe: &crate::config::Recipe) -> RecipeDef {
-    // Determine verb from the recipe ID. Existing recipes are all workshop
-    // assembly operations.
+    // Determine verb from the recipe ID. Remaining config recipe is bowstring
+    // (assembly); bow and arrow moved to per-wood-type Grow generation.
     let verb = match recipe.id.as_str() {
         "bowstring" => RecipeVerb::Assemble,
-        "bow" => RecipeVerb::Assemble,
-        "arrow" => RecipeVerb::Fletch,
         _ => RecipeVerb::Assemble,
     };
 
@@ -695,17 +817,18 @@ mod tests {
         let config = GameConfig::default();
         let catalog = build_catalog(&config, &[]);
 
-        // Should have bread + 3 workshop recipes = 4 total.
-        assert_eq!(catalog.len(), 4);
+        // bread (1) + bowstring config (1) + wood-type grow recipes
+        // (5 woods × 7 items = 35) = 37 total.
+        assert_eq!(catalog.len(), 37);
 
         // Kitchen should have exactly 1 recipe (bread).
         let kitchen_recipes = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
         assert_eq!(kitchen_recipes.len(), 1);
         assert_eq!(kitchen_recipes[0].display_name, "Bread");
 
-        // Workshop should have 3 recipes.
+        // Workshop should have bowstring (1) + wood-type grow recipes (35) = 36.
         let workshop_recipes = catalog.recipes_for_furnishing(FurnishingType::Workshop);
-        assert_eq!(workshop_recipes.len(), 3);
+        assert_eq!(workshop_recipes.len(), 36);
     }
 
     #[test]
@@ -790,8 +913,8 @@ mod tests {
 
         let catalog = build_catalog(&config, &species);
 
-        // Should have bread (1) + workshop (3) + extraction (1) = 5.
-        assert_eq!(catalog.len(), 5);
+        // bread (1) + bowstring (1) + wood-type (35) + extraction (1) = 38.
+        assert_eq!(catalog.len(), 38);
 
         // Kitchen should have bread + extraction = 2.
         let kitchen_recipes = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
@@ -974,8 +1097,8 @@ mod tests {
 
         let catalog = build_catalog(&config, &species);
 
-        // Only base recipes (4) + 1 extraction = 5. No component recipes.
-        assert_eq!(catalog.len(), 5);
+        // Base (37) + 1 extraction = 38. No component recipes.
+        assert_eq!(catalog.len(), 38);
     }
 
     #[test]
@@ -993,10 +1116,10 @@ mod tests {
 
         let catalog = build_catalog(&config, &species);
 
-        // Base (4) + extraction (1) + mill + bake + spin + thread bowstring
+        // Base (37) + extraction (1) + mill + bake + spin + thread bowstring
         // + weave + sew tunic + sew leggings + sew boots + sew hat
-        // + sew gloves = 15.
-        assert_eq!(catalog.len(), 15);
+        // + sew gloves = 48.
+        assert_eq!(catalog.len(), 48);
 
         // Starchy chain in kitchen.
         let kitchen = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
@@ -1089,9 +1212,9 @@ mod tests {
         assert_eq!(defaults.len(), 1);
         assert_eq!(defaults[0].display_name, "Bread");
 
-        // Default workshop recipes should only include the 3 config recipes.
+        // Default workshop recipes should only include the bowstring config recipe.
         let defaults = catalog.default_recipes_for_furnishing(FurnishingType::Workshop);
-        assert_eq!(defaults.len(), 3);
+        assert_eq!(defaults.len(), 1);
     }
 
     #[test]
@@ -1392,10 +1515,10 @@ mod tests {
 
         let catalog = build_catalog(&config, &species);
 
-        // Base (4) + extraction (1) + mill + bake + spin + thread bowstring
+        // Base (37) + extraction (1) + mill + bake + spin + thread bowstring
         // + weave + sew tunic + sew leggings + sew boots + sew hat
-        // + sew gloves = 15.
-        assert_eq!(catalog.len(), 15);
+        // + sew gloves = 48.
+        assert_eq!(catalog.len(), 48);
 
         let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
         assert!(
@@ -1535,6 +1658,213 @@ mod tests {
             let json = serde_json::to_string(&kind).unwrap();
             let parsed: ItemKind = serde_json::from_str(&json).unwrap();
             assert_eq!(kind, parsed);
+        }
+    }
+
+    // --- Wood-type Grow recipe tests ---
+
+    #[test]
+    fn grow_verb_serde_roundtrip() {
+        let json = serde_json::to_string(&RecipeVerb::Grow).unwrap();
+        let parsed: RecipeVerb = serde_json::from_str(&json).unwrap();
+        assert_eq!(RecipeVerb::Grow, parsed);
+    }
+
+    #[test]
+    fn armor_item_kind_serde_roundtrip() {
+        for kind in [
+            ItemKind::Helmet,
+            ItemKind::Breastplate,
+            ItemKind::Greaves,
+            ItemKind::Gauntlets,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            let parsed: ItemKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind, parsed);
+        }
+    }
+
+    #[test]
+    fn wood_type_recipes_generated_for_all_materials() {
+        let config = GameConfig::default();
+        let catalog = build_catalog(&config, &[]);
+
+        let grow_recipes: Vec<_> = catalog
+            .iter()
+            .filter(|(_, d)| d.key.verb == RecipeVerb::Grow)
+            .map(|(_, d)| d)
+            .collect();
+
+        // 5 wood types × 7 items (bow, arrow, helmet, breastplate, greaves,
+        // gauntlets, boots) = 35 total.
+        assert_eq!(grow_recipes.len(), 35);
+
+        // Each wood type should have exactly 7 recipes.
+        for wood in &Material::WOOD_TYPES {
+            let name = wood.display_name();
+            let wood_recipes: Vec<_> = grow_recipes
+                .iter()
+                .filter(|r| r.display_name.starts_with(&format!("Grow {name}")))
+                .collect();
+            assert_eq!(
+                wood_recipes.len(),
+                7,
+                "{name} should have 7 grow recipes, got {}",
+                wood_recipes.len()
+            );
+        }
+    }
+
+    #[test]
+    fn grow_bow_recipe_has_bowstring_input() {
+        let config = GameConfig::default();
+        let catalog = build_catalog(&config, &[]);
+
+        let oak_bow = catalog
+            .iter()
+            .find(|(_, d)| d.display_name == "Grow Oak Bow")
+            .map(|(_, d)| d)
+            .expect("Grow Oak Bow recipe should exist");
+
+        assert_eq!(oak_bow.key.verb, RecipeVerb::Grow);
+        assert_eq!(oak_bow.inputs.len(), 1);
+        assert_eq!(oak_bow.inputs[0].item_kind, ItemKind::Bowstring);
+        assert_eq!(oak_bow.inputs[0].quantity, 1);
+        assert_eq!(oak_bow.inputs[0].material_filter, MaterialFilter::Any);
+        assert_eq!(oak_bow.outputs.len(), 1);
+        assert_eq!(oak_bow.outputs[0].item_kind, ItemKind::Bow);
+        assert_eq!(oak_bow.outputs[0].quantity, 1);
+        assert_eq!(oak_bow.outputs[0].material, Some(Material::Oak));
+        assert_eq!(oak_bow.work_ticks, config.grow_recipes.grow_bow_work_ticks);
+    }
+
+    #[test]
+    fn grow_arrow_recipe_has_no_inputs() {
+        let config = GameConfig::default();
+        let catalog = build_catalog(&config, &[]);
+
+        let oak_arrows = catalog
+            .iter()
+            .find(|(_, d)| d.display_name == "Grow Oak Arrows")
+            .map(|(_, d)| d)
+            .expect("Grow Oak Arrows recipe should exist");
+
+        assert_eq!(oak_arrows.inputs.len(), 0);
+        assert_eq!(oak_arrows.outputs.len(), 1);
+        assert_eq!(oak_arrows.outputs[0].item_kind, ItemKind::Arrow);
+        assert_eq!(
+            oak_arrows.outputs[0].quantity,
+            config.grow_recipes.grow_arrow_output
+        );
+        assert_eq!(oak_arrows.outputs[0].material, Some(Material::Oak));
+    }
+
+    #[test]
+    fn grow_armor_recipes_have_no_inputs() {
+        let config = GameConfig::default();
+        let catalog = build_catalog(&config, &[]);
+
+        for (name, item_kind) in [
+            ("Grow Oak Helmet", ItemKind::Helmet),
+            ("Grow Oak Breastplate", ItemKind::Breastplate),
+            ("Grow Oak Greaves", ItemKind::Greaves),
+            ("Grow Oak Gauntlets", ItemKind::Gauntlets),
+            ("Grow Oak Boots", ItemKind::Boots),
+        ] {
+            let recipe = catalog
+                .iter()
+                .find(|(_, d)| d.display_name == name)
+                .map(|(_, d)| d)
+                .unwrap_or_else(|| panic!("{name} recipe should exist"));
+
+            assert_eq!(recipe.key.verb, RecipeVerb::Grow);
+            assert!(recipe.inputs.is_empty(), "{name} should have no inputs");
+            assert_eq!(recipe.outputs.len(), 1);
+            assert_eq!(recipe.outputs[0].item_kind, item_kind);
+            assert_eq!(recipe.outputs[0].quantity, 1);
+            assert_eq!(recipe.outputs[0].material, Some(Material::Oak));
+        }
+    }
+
+    #[test]
+    fn grow_armor_recipes_carry_wood_material() {
+        let config = GameConfig::default();
+        let catalog = build_catalog(&config, &[]);
+
+        // Check that each wood type produces armor with that material.
+        for wood in &Material::WOOD_TYPES {
+            let name = wood.display_name();
+            let helmet = catalog
+                .iter()
+                .find(|(_, d)| d.display_name == format!("Grow {name} Helmet"))
+                .map(|(_, d)| d)
+                .unwrap_or_else(|| panic!("Grow {name} Helmet should exist"));
+            assert_eq!(helmet.outputs[0].material, Some(*wood));
+        }
+    }
+
+    #[test]
+    fn grow_recipes_not_auto_added_on_furnish() {
+        let config = GameConfig::default();
+        let catalog = build_catalog(&config, &[]);
+
+        let defaults = catalog.default_recipes_for_furnishing(FurnishingType::Workshop);
+        // Only the bowstring config recipe should be auto-added.
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults[0].display_name, "Bowstring");
+
+        // No grow recipes should be auto-added.
+        assert!(
+            !defaults.iter().any(|r| r.key.verb == RecipeVerb::Grow),
+            "Grow recipes should not be auto-added on furnish"
+        );
+    }
+
+    #[test]
+    fn grow_recipe_categories() {
+        let config = GameConfig::default();
+        let catalog = build_catalog(&config, &[]);
+
+        let bow = catalog
+            .iter()
+            .find(|(_, d)| d.display_name == "Grow Oak Bow")
+            .map(|(_, d)| d)
+            .unwrap();
+        assert_eq!(
+            bow.category,
+            vec!["Woodcraft".to_string(), "Weapons".to_string()]
+        );
+
+        let helmet = catalog
+            .iter()
+            .find(|(_, d)| d.display_name == "Grow Oak Helmet")
+            .map(|(_, d)| d)
+            .unwrap();
+        assert_eq!(
+            helmet.category,
+            vec!["Woodcraft".to_string(), "Armor".to_string()]
+        );
+    }
+
+    #[test]
+    fn grow_recipe_keys_sorted_and_roundtrip() {
+        let config = GameConfig::default();
+        let catalog = build_catalog(&config, &[]);
+
+        for (key, _def) in catalog
+            .iter()
+            .filter(|(_, d)| d.key.verb == RecipeVerb::Grow)
+        {
+            let mut sorted_inputs = key.inputs.clone();
+            sorted_inputs.sort();
+            assert_eq!(key.inputs, sorted_inputs);
+            let mut sorted_outputs = key.outputs.clone();
+            sorted_outputs.sort();
+            assert_eq!(key.outputs, sorted_outputs);
+
+            let json = key.to_json();
+            let restored = RecipeKey::from_json(&json).expect("should deserialize");
+            assert_eq!(*key, restored);
         }
     }
 }

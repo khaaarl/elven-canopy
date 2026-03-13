@@ -535,6 +535,36 @@
       "position": { "x": 128, "y": 1, "z": 138 },
       "item_kind": "Bread",
       "quantity": 5
+    },
+    {
+      "position": { "x": 130, "y": 1, "z": 138 },
+      "item_kind": "Helmet",
+      "quantity": 1,
+      "material": "Oak"
+    },
+    {
+      "position": { "x": 130, "y": 1, "z": 138 },
+      "item_kind": "Breastplate",
+      "quantity": 1,
+      "material": "Oak"
+    },
+    {
+      "position": { "x": 130, "y": 1, "z": 138 },
+      "item_kind": "Greaves",
+      "quantity": 1,
+      "material": "Oak"
+    },
+    {
+      "position": { "x": 130, "y": 1, "z": 138 },
+      "item_kind": "Gauntlets",
+      "quantity": 1,
+      "material": "Oak"
+    },
+    {
+      "position": { "x": 130, "y": 1, "z": 138 },
+      "item_kind": "Boots",
+      "quantity": 1,
+      "material": "Oak"
     }
   ],
   "recipes": [
@@ -544,21 +574,6 @@
       "inputs": [{ "item_kind": "Fruit", "quantity": 1 }],
       "outputs": [{ "item_kind": "Bowstring", "quantity": 20 }],
       "work_ticks": 5000
-    },
-    {
-      "id": "bow",
-      "display_name": "Bow",
-      "inputs": [{ "item_kind": "Bowstring", "quantity": 1 }],
-      "outputs": [{ "item_kind": "Bow", "quantity": 1 }],
-      "work_ticks": 8000,
-      "subcomponent_records": [{ "input_kind": "Bowstring", "quantity_per_item": 1 }]
-    },
-    {
-      "id": "arrow",
-      "display_name": "Arrow",
-      "inputs": [],
-      "outputs": [{ "item_kind": "Arrow", "quantity": 20 }],
-      "work_ticks": 3000
     }
   ],
   "workshop_default_priority": 8,

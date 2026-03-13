@@ -1654,6 +1654,9 @@ impl SimBridge {
                 elven_canopy_sim::inventory::MaterialFilter::Specific(mat) => {
                     sim.material_item_display_name(want.item_kind, mat)
                 }
+                elven_canopy_sim::inventory::MaterialFilter::NonWood => {
+                    format!("Non-wood {}", want.item_kind.display_name())
+                }
             };
             want_dict.set("label", GString::from(label.as_str()));
             want_dict.set("target_quantity", want.target_quantity as i64);
@@ -1881,6 +1884,9 @@ impl SimBridge {
         if v == "Any" {
             return MaterialFilter::Any;
         }
+        if v == "NonWood" {
+            return MaterialFilter::NonWood;
+        }
         if let Some(obj) = v.as_object()
             && let Some(specific) = obj.get("Specific")
             && let Some(mat) = Self::parse_material_value(specific)
@@ -1943,6 +1949,7 @@ impl SimBridge {
                 };
                 json!({"Specific": mat_val})
             }
+            MaterialFilter::NonWood => Value::String("NonWood".into()),
         }
     }
 
@@ -1986,6 +1993,10 @@ impl SimBridge {
                 "Leggings" => elven_canopy_sim::inventory::ItemKind::Leggings,
                 "Boots" => elven_canopy_sim::inventory::ItemKind::Boots,
                 "Hat" => elven_canopy_sim::inventory::ItemKind::Hat,
+                "Helmet" => elven_canopy_sim::inventory::ItemKind::Helmet,
+                "Breastplate" => elven_canopy_sim::inventory::ItemKind::Breastplate,
+                "Greaves" => elven_canopy_sim::inventory::ItemKind::Greaves,
+                "Gauntlets" => elven_canopy_sim::inventory::ItemKind::Gauntlets,
                 other => {
                     godot_error!("SimBridge: unknown item kind in logistics wants: '{other}'");
                     continue;
@@ -2033,6 +2044,10 @@ impl SimBridge {
             ItemKind::Leggings,
             ItemKind::Boots,
             ItemKind::Hat,
+            ItemKind::Helmet,
+            ItemKind::Breastplate,
+            ItemKind::Greaves,
+            ItemKind::Gauntlets,
         ] {
             let mut d = VarDictionary::new();
             d.set("kind", GString::from(kind.display_name()));
@@ -2075,6 +2090,10 @@ impl SimBridge {
             "Leggings" => ItemKind::Leggings,
             "Boots" => ItemKind::Boots,
             "Hat" => ItemKind::Hat,
+            "Helmet" => ItemKind::Helmet,
+            "Breastplate" => ItemKind::Breastplate,
+            "Greaves" => ItemKind::Greaves,
+            "Gauntlets" => ItemKind::Gauntlets,
             _ => return arr,
         };
 
@@ -2119,7 +2138,13 @@ impl SimBridge {
                     arr.push(&d.to_variant());
                 }
             }
-            ItemKind::Bow | ItemKind::Arrow | ItemKind::Bowstring => {
+            ItemKind::Bow
+            | ItemKind::Arrow
+            | ItemKind::Bowstring
+            | ItemKind::Helmet
+            | ItemKind::Breastplate
+            | ItemKind::Greaves
+            | ItemKind::Gauntlets => {
                 // Add each wood material.
                 for mat in [
                     Material::Oak,
