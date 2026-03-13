@@ -989,6 +989,16 @@ pub struct ComponentRecipeConfig {
     /// Sew hat: hats produced.
     #[serde(default = "default_sew_hat_output")]
     pub sew_hat_output: u32,
+
+    /// Sew gloves: cloth → gloves. Work ticks.
+    #[serde(default = "default_sew_gloves_work_ticks")]
+    pub sew_gloves_work_ticks: u64,
+    /// Sew gloves: units of cloth consumed.
+    #[serde(default = "default_sew_gloves_input")]
+    pub sew_gloves_input: u32,
+    /// Sew gloves: gloves produced.
+    #[serde(default = "default_sew_gloves_output")]
+    pub sew_gloves_output: u32,
 }
 
 impl Default for ComponentRecipeConfig {
@@ -1027,6 +1037,9 @@ impl Default for ComponentRecipeConfig {
             sew_hat_work_ticks: default_sew_hat_work_ticks(),
             sew_hat_input: default_sew_hat_input(),
             sew_hat_output: default_sew_hat_output(),
+            sew_gloves_work_ticks: default_sew_gloves_work_ticks(),
+            sew_gloves_input: default_sew_gloves_input(),
+            sew_gloves_output: default_sew_gloves_output(),
         }
     }
 }
@@ -1128,6 +1141,15 @@ fn default_sew_hat_input() -> u32 {
     1
 }
 fn default_sew_hat_output() -> u32 {
+    1
+}
+fn default_sew_gloves_work_ticks() -> u64 {
+    4000
+}
+fn default_sew_gloves_input() -> u32 {
+    1
+}
+fn default_sew_gloves_output() -> u32 {
     1
 }
 
@@ -1678,11 +1700,40 @@ fn default_elf_starting_arrows() -> u32 {
 }
 
 fn default_elf_default_wants() -> Vec<crate::building::LogisticsWant> {
-    vec![crate::building::LogisticsWant {
-        item_kind: crate::inventory::ItemKind::Bread,
-        material_filter: crate::inventory::MaterialFilter::Any,
-        target_quantity: 2,
-    }]
+    use crate::building::LogisticsWant;
+    use crate::inventory::{ItemKind, MaterialFilter};
+    vec![
+        LogisticsWant {
+            item_kind: ItemKind::Bread,
+            material_filter: MaterialFilter::Any,
+            target_quantity: 2,
+        },
+        LogisticsWant {
+            item_kind: ItemKind::Tunic,
+            material_filter: MaterialFilter::Any,
+            target_quantity: 1,
+        },
+        LogisticsWant {
+            item_kind: ItemKind::Leggings,
+            material_filter: MaterialFilter::Any,
+            target_quantity: 1,
+        },
+        LogisticsWant {
+            item_kind: ItemKind::Boots,
+            material_filter: MaterialFilter::Any,
+            target_quantity: 1,
+        },
+        LogisticsWant {
+            item_kind: ItemKind::Hat,
+            material_filter: MaterialFilter::Any,
+            target_quantity: 1,
+        },
+        LogisticsWant {
+            item_kind: ItemKind::Gloves,
+            material_filter: MaterialFilter::Any,
+            target_quantity: 1,
+        },
+    ]
 }
 
 fn default_storehouse_default_priority() -> u8 {
@@ -2130,11 +2181,38 @@ impl Default for GameConfig {
                     bread_counts: vec![],
                 },
             ],
-            initial_ground_piles: vec![InitialGroundPileSpec {
-                position: VoxelCoord::new(128, 1, 138),
-                item_kind: ItemKind::Bread,
-                quantity: 5,
-            }],
+            initial_ground_piles: vec![
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Bread,
+                    quantity: 5,
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Tunic,
+                    quantity: 2,
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Leggings,
+                    quantity: 2,
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Boots,
+                    quantity: 2,
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Hat,
+                    quantity: 2,
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Gloves,
+                    quantity: 2,
+                },
+            ],
             recipes: default_recipes(),
             workshop_default_priority: default_workshop_priority(),
             greenhouse_default_priority: default_greenhouse_default_priority(),

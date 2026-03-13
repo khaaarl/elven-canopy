@@ -83,7 +83,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
-[ ] F-clothing             Wearable clothing system
 [ ] F-combat               Combat and invader threat system
 [ ] F-command-queue        Shift+right-click to queue commands
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
@@ -212,6 +211,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-capybara             Capybara species
 [x] F-carve-holes          Remove material (doors, storage hollows)
 [x] F-civilizations        Procedural civilization generation and diplomacy
+[x] F-clothing             Wearable clothing system
 [x] F-component-recipes    Component-based crafting recipes (bread, thread, bowstring)
 [x] F-construction         Platform construction (designate/build/cancel)
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
@@ -1261,11 +1261,11 @@ bakery.
 **Related:** F-furnish, F-manufacturing, F-recipes, F-unified-craft-ui
 
 #### F-clothing — Wearable clothing system
-**Status:** Todo
+**Status:** Done
 
 Creatures can wear clothing items in defined body slots (e.g., head, torso, legs, feet). Clothing is crafted at workshops, stored in inventories, and equipped by creatures. Many details TBD: slot system design (fixed slots vs. layering), how clothing affects mood/comfort/thoughts, crafting recipes and material requirements, visual representation (sprite overlays? color tinting?), clothing durability and wear, species-specific clothing (elf vs. other species body plans), and whether clothing provides any mechanical benefits beyond mood. This is the base wearable-item infrastructure that armor builds on.
 
-**Blocks:** F-armor, F-equipment-sprites
+**Unblocked:** F-armor, F-equipment-sprites
 
 #### F-component-recipes — Component-based crafting recipes (bread, thread, bowstring)
 **Status:** Done · **Phase:** 7
@@ -1892,8 +1892,8 @@ infrastructure.
 
 Armor items that can be worn in clothing slots, providing damage reduction in combat. Builds on the clothing/wearable system (F-clothing) for slot mechanics and equip/unequip flow. Many details TBD: armor types and their stats (leather, chain, plate?), how damage reduction is calculated (flat reduction? percentage? per-damage-type?), armor durability and repair, crafting recipes and material requirements, how armor interacts with movement speed or other stats, visual representation, whether armor and clothing can be worn simultaneously (layering), and species-specific armor availability.
 
-**Blocked by:** F-clothing
 **Blocks:** F-military-armor
+**Unblocked by:** F-clothing
 
 #### F-arrow-durability — Arrow durability and recovery
 **Status:** Todo · **Phase:** 3
@@ -2601,7 +2601,8 @@ regeneration. Requires sprite generation in Rust (F-rust-sprites) so
 overlays can be composited efficiently, and the clothing/equipment
 system (F-clothing) to provide the item data.
 
-**Blocked by:** F-clothing, F-rust-sprites
+**Blocked by:** F-rust-sprites
+**Unblocked by:** F-clothing
 
 #### F-follow-multi — Camera zoom-to and follow for multi-selections
 **Status:** Todo · **Phase:** 5

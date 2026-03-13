@@ -314,6 +314,9 @@ fn build_creature_info_dict(
             GString::from(sim.item_display_name(&stack).as_str()),
         );
         item_dict.set("quantity", stack.quantity as i64);
+        if let Some(slot) = stack.equipped_slot {
+            item_dict.set("equipped_slot", GString::from(slot.display_name()));
+        }
         inv_arr.push(&item_dict.to_variant());
     }
     dict.set("inventory", inv_arr);
@@ -2102,7 +2105,8 @@ impl SimBridge {
             | ItemKind::Tunic
             | ItemKind::Leggings
             | ItemKind::Boots
-            | ItemKind::Hat => {
+            | ItemKind::Hat
+            | ItemKind::Gloves => {
                 // Add each fruit species from the DB.
                 for species in sim.db.fruit_species.iter_all() {
                     let mat = Material::FruitSpecies(species.id);

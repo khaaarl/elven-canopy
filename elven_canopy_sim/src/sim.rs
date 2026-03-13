@@ -2958,17 +2958,24 @@ impl SimState {
     /// "SpeciesName ItemType". For all other items, returns the basic
     /// `ItemKind::display_name()`.
     pub fn item_display_name(&self, stack: &crate::db::ItemStack) -> String {
-        if let Some(inventory::Material::FruitSpecies(id)) = stack.material
+        let base = if let Some(inventory::Material::FruitSpecies(id)) = stack.material
             && let Some(species) = self.db.fruit_species.get(&id)
         {
             if stack.kind == inventory::ItemKind::Fruit {
                 let noun = species.appearance.shape.item_noun();
-                return format!("{} {}", species.vaelith_name, noun);
+                format!("{} {}", species.vaelith_name, noun)
+            } else {
+                // All other fruit-species items: "SpeciesName ItemType".
+                format!("{} {}", species.vaelith_name, stack.kind.display_name())
             }
-            // All other fruit-species items: "SpeciesName ItemType".
-            return format!("{} {}", species.vaelith_name, stack.kind.display_name());
+        } else {
+            stack.kind.display_name().to_owned()
+        };
+        if stack.equipped_slot.is_some() {
+            format!("{base} (equipped)")
+        } else {
+            base
         }
-        stack.kind.display_name().to_owned()
     }
 
     /// Display name for an item kind + specific material combination. For fruit
@@ -3070,6 +3077,7 @@ impl SimState {
                     material, // fruit species
                     0,        // quality
                     None,     // enchantment
+                    None,     // equipped_slot
                 );
             }
         }
@@ -3078,8 +3086,9 @@ impl SimState {
         true
     }
 
-    /// Resolve a completed AcquireItem action: pick up reserved items from
-    /// source, add to creature inventory with ownership. Always returns true.
+    /// Resolve a completed AcquireItem action: split reserved items from
+    /// source inventory, move to creature inventory preserving all properties
+    /// (material, quality, etc.), set ownership, and auto-equip clothing.
     fn resolve_acquire_item_action(&mut self, creature_id: CreatureId, task_id: TaskId) -> bool {
         let acquire = match self.task_acquire_data(task_id) {
             Some(a) => a,
@@ -3092,34 +3101,81 @@ impl SimState {
         let item_kind = acquire.item_kind;
         let quantity = acquire.quantity;
 
-        // Remove reserved items from source.
-        let picked_up = match &source {
-            task::HaulSource::GroundPile(pos) => {
-                if let Some(pile) = self
-                    .db
-                    .ground_piles
-                    .by_position(pos, tabulosity::QueryOpts::ASC)
-                    .into_iter()
-                    .next()
-                {
-                    self.inv_remove_reserved_items(pile.inventory_id, item_kind, quantity, task_id)
-                } else {
-                    0
-                }
-            }
-            task::HaulSource::Building(sid) => {
-                if let Some(structure) = self.db.structures.get(sid) {
-                    self.inv_remove_reserved_items(
-                        structure.inventory_id,
-                        item_kind,
-                        quantity,
-                        task_id,
-                    )
-                } else {
-                    0
-                }
+        // Find the source inventory.
+        let source_inv = match &source {
+            task::HaulSource::GroundPile(pos) => self
+                .db
+                .ground_piles
+                .by_position(pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .map(|pile| pile.inventory_id),
+            task::HaulSource::Building(sid) => self.db.structures.get(sid).map(|s| s.inventory_id),
+        };
+        let source_inv = match source_inv {
+            Some(inv) => inv,
+            None => {
+                self.complete_task(task_id);
+                return true;
             }
         };
+
+        // Find reserved stacks and split+move them to creature inventory.
+        let creature_inv = self.creature_inv(creature_id);
+        let stacks: Vec<crate::db::ItemStack> = self
+            .db
+            .item_stacks
+            .by_inventory_id(&source_inv, tabulosity::QueryOpts::ASC);
+        let mut remaining = quantity;
+        let mut moved_ids: Vec<ItemStackId> = Vec::new();
+        for stack in &stacks {
+            if stack.kind != item_kind || stack.reserved_by != Some(task_id) || remaining == 0 {
+                continue;
+            }
+            let take = remaining.min(stack.quantity);
+            if let Some(split_id) = self.inv_split_stack(stack.id, take) {
+                // Move the split stack to creature inventory (uses update_no_fk
+                // because inventory_id is an indexed field).
+                if let Some(mut moved) = self.db.item_stacks.get(&split_id) {
+                    moved.inventory_id = creature_inv;
+                    moved.owner = Some(creature_id);
+                    moved.reserved_by = None;
+                    let _ = self.db.item_stacks.update_no_fk(moved);
+                }
+                moved_ids.push(split_id);
+                remaining -= take;
+            }
+        }
+
+        // Auto-equip clothing if slot is unoccupied.
+        let equip_slot = item_kind.equip_slot();
+        if let Some(slot) = equip_slot {
+            let slot_occupied = self.inv_equipped_in_slot(creature_inv, slot).is_some();
+            if !slot_occupied {
+                // Equip the first moved stack (split to qty 1 if needed).
+                if let Some(&first_id) = moved_ids.first() {
+                    let equip_target = if let Some(stack) = self.db.item_stacks.get(&first_id) {
+                        if stack.quantity == 1 {
+                            Some(first_id)
+                        } else {
+                            self.inv_split_stack(first_id, 1)
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(equip_id) = equip_target
+                        && let Some(mut s) = self.db.item_stacks.get(&equip_id)
+                    {
+                        s.equipped_slot = Some(slot);
+                        let _ = self.db.item_stacks.update_no_fk(s);
+                    }
+                }
+            }
+        }
+
+        // Normalize both inventories.
+        self.inv_normalize(source_inv);
+        self.inv_normalize(creature_inv);
 
         // Clean up empty ground piles.
         if let task::HaulSource::GroundPile(pos) = &source
@@ -3132,12 +3188,6 @@ impl SimState {
             && self.inv_items(pile.inventory_id).is_empty()
         {
             let _ = self.db.ground_piles.remove_no_fk(&pile.id);
-        }
-
-        // Add to creature inventory with ownership.
-        if picked_up > 0 {
-            let inv_id = self.creature_inv(creature_id);
-            self.inv_add_simple_item(inv_id, item_kind, picked_up, Some(creature_id), None);
         }
 
         self.complete_task(task_id);
@@ -3555,6 +3605,7 @@ impl SimState {
             haul.hauled_material,
             0,
             None,
+            None,
         );
 
         // Switch to GoingToDestination phase.
@@ -3632,6 +3683,7 @@ impl SimState {
             material,
             0,
             None,
+            None,
         );
         self.complete_task(task_id);
         true
@@ -3698,6 +3750,7 @@ impl SimState {
                             None,
                             material,
                             0,
+                            None,
                             None,
                         );
                     }
@@ -3889,6 +3942,7 @@ impl SimState {
                         output.material,
                         output.quality,
                         None,
+                        None,
                     );
                     self.record_subcomponents(inv_id, output, &recipe.subcomponent_records);
                 }
@@ -3912,6 +3966,7 @@ impl SimState {
                         None,
                         output.material,
                         output.quality,
+                        None,
                         None,
                     );
                     self.record_subcomponents(inv_id, output, &def.subcomponent_records);
@@ -5807,6 +5862,7 @@ impl SimState {
                 Some(inventory::Material::FruitSpecies(species_id)),
                 0,
                 None,
+                None,
             );
 
             // Update last production tick.
@@ -7510,6 +7566,7 @@ impl SimState {
         material: Option<inventory::Material>,
         quality: i32,
         enchantment_id: Option<crate::types::EnchantmentId>,
+        equipped_slot: Option<inventory::EquipSlot>,
     ) {
         let _ = self
             .db
@@ -7524,6 +7581,7 @@ impl SimState {
                 enchantment_id,
                 owner,
                 reserved_by,
+                equipped_slot,
             });
         self.inv_normalize(inv_id);
     }
@@ -7537,7 +7595,17 @@ impl SimState {
         owner: Option<CreatureId>,
         reserved_by: Option<TaskId>,
     ) {
-        self.inv_add_item(inv_id, kind, quantity, owner, reserved_by, None, 0, None)
+        self.inv_add_item(
+            inv_id,
+            kind,
+            quantity,
+            owner,
+            reserved_by,
+            None,
+            0,
+            None,
+            None,
+        )
     }
 
     /// Move all item stacks from `src` into `dst`, then normalize `dst` to
@@ -7733,6 +7801,7 @@ impl SimState {
                         enchantment_id: ench,
                         owner: own,
                         reserved_by: Some(task_id),
+                        equipped_slot: None,
                     });
             }
             remaining -= take;
@@ -7868,6 +7937,7 @@ impl SimState {
                         enchantment_id: ench,
                         owner: None,
                         reserved_by: Some(task_id),
+                        equipped_slot: None,
                     });
             }
             remaining -= take;
@@ -7880,7 +7950,7 @@ impl SimState {
     /// mergeable when they agree on all properties: kind, material, quality,
     /// enchantment_id, owner, and reserved_by. This is the single source of
     /// truth for stack-merging criteria — called by `inv_add_item` and
-    /// `inv_merge`.
+    /// `inv_merge`. Equipped items never merge with unequipped items.
     fn inv_normalize(&mut self, inv_id: InventoryId) {
         let stacks = self
             .db
@@ -7894,6 +7964,7 @@ impl SimState {
             Option<crate::types::EnchantmentId>,
             Option<CreatureId>,
             Option<TaskId>,
+            Option<inventory::EquipSlot>,
         );
         type MergeVal = (ItemStackId, u32, Vec<ItemStackId>);
         let mut groups: BTreeMap<MergeKey, MergeVal> = BTreeMap::new();
@@ -7905,6 +7976,7 @@ impl SimState {
                 stack.enchantment_id,
                 stack.owner,
                 stack.reserved_by,
+                stack.equipped_slot,
             );
             let entry = groups.entry(key).or_insert((stack.id, 0, Vec::new()));
             entry.1 += stack.quantity;
@@ -7923,6 +7995,119 @@ impl SimState {
                 }
             }
         }
+    }
+
+    /// Split `quantity` items off an existing stack, preserving all properties
+    /// (material, quality, enchantment, owner, reserved_by) except
+    /// `equipped_slot` which is always `None` on the new stack.
+    ///
+    /// - If `quantity == 0`: returns `None`.
+    /// - If `quantity >= stack.quantity`: returns `Some(stack_id)` (whole stack,
+    ///   equipped_slot unchanged).
+    /// - Otherwise: decrements the original stack's quantity and inserts a new
+    ///   stack with the split quantity. Returns the new stack's ID. Does NOT
+    ///   normalize — the caller may want to modify the split stack first.
+    fn inv_split_stack(&mut self, stack_id: ItemStackId, quantity: u32) -> Option<ItemStackId> {
+        if quantity == 0 {
+            return None;
+        }
+        let stack = self.db.item_stacks.get(&stack_id)?;
+        if quantity >= stack.quantity {
+            return Some(stack_id);
+        }
+        let new_qty = stack.quantity - quantity;
+        // Capture properties before mutating.
+        let inv_id = stack.inventory_id;
+        let kind = stack.kind;
+        let material = stack.material;
+        let quality = stack.quality;
+        let enchantment_id = stack.enchantment_id;
+        let owner = stack.owner;
+        let reserved_by = stack.reserved_by;
+        // Shrink original stack.
+        let _ = self
+            .db
+            .item_stacks
+            .modify_unchecked(&stack_id, |s| s.quantity = new_qty);
+        // Insert new stack with split quantity.
+        let new_id = self
+            .db
+            .item_stacks
+            .insert_auto_no_fk(|id| crate::db::ItemStack {
+                id,
+                inventory_id: inv_id,
+                kind,
+                quantity,
+                material,
+                quality,
+                enchantment_id,
+                owner,
+                reserved_by,
+                equipped_slot: None,
+            })
+            .unwrap();
+        Some(new_id)
+    }
+
+    /// Query the item equipped in a specific slot of an inventory.
+    /// Uses the filtered unique compound index `equipped_inv_slot` for O(1) lookup.
+    fn inv_equipped_in_slot(
+        &self,
+        inv_id: InventoryId,
+        slot: inventory::EquipSlot,
+    ) -> Option<crate::db::ItemStack> {
+        self.db
+            .item_stacks
+            .by_equipped_inv_slot(&inv_id, &Some(slot), tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+    }
+
+    /// Equip a quantity-1 clothing item by setting its `equipped_slot`.
+    ///
+    /// Returns `false` if: the item is not clothing, the slot is already
+    /// occupied, or the stack has quantity > 1 (must split first).
+    #[allow(dead_code)] // Used by tests and future manual equip commands
+    fn inv_equip_item(&mut self, stack_id: ItemStackId) -> bool {
+        let stack = match self.db.item_stacks.get(&stack_id) {
+            Some(s) => s,
+            None => return false,
+        };
+        let slot = match stack.kind.equip_slot() {
+            Some(s) => s,
+            None => return false,
+        };
+        if stack.quantity > 1 {
+            return false;
+        }
+        if self
+            .inv_equipped_in_slot(stack.inventory_id, slot)
+            .is_some()
+        {
+            return false;
+        }
+        let mut updated = stack;
+        updated.equipped_slot = Some(slot);
+        let _ = self.db.item_stacks.update_no_fk(updated);
+        true
+    }
+
+    /// Unequip the item in a slot, clearing `equipped_slot` and normalizing
+    /// the inventory (the unequipped item may merge with an existing stack).
+    /// Returns the stack ID of the now-unequipped item, if any.
+    #[allow(dead_code)] // Used by tests and future manual equip commands
+    fn inv_unequip_slot(
+        &mut self,
+        inv_id: InventoryId,
+        slot: inventory::EquipSlot,
+    ) -> Option<ItemStackId> {
+        let stack = self.inv_equipped_in_slot(inv_id, slot)?;
+        let stack_id = stack.id;
+        let mut updated = stack;
+        updated.equipped_slot = None;
+        let _ = self.db.item_stacks.update_no_fk(updated);
+        self.inv_normalize(inv_id);
+        Some(stack_id)
     }
 
     /// Get the inventory_id for a creature, or return a sentinel. Panics in debug
@@ -21878,6 +22063,7 @@ mod tests {
             Some(inventory::Material::Oak),
             0,
             None,
+            None,
         );
         sim.inv_add_item(
             inv_id,
@@ -21887,6 +22073,7 @@ mod tests {
             None,
             Some(inventory::Material::Yew),
             0,
+            None,
             None,
         );
         let stacks = sim
@@ -21909,6 +22096,7 @@ mod tests {
             None,
             0,
             None,
+            None,
         );
         sim.inv_add_item(
             inv_id,
@@ -21918,6 +22106,7 @@ mod tests {
             None,
             None,
             3,
+            None,
             None,
         );
         let stacks = sim
@@ -21941,6 +22130,7 @@ mod tests {
             None,
             0,
             None,
+            None,
         );
         sim.inv_add_item(
             inv_id,
@@ -21950,6 +22140,7 @@ mod tests {
             None,
             None,
             1,
+            None,
             None,
         );
         sim.inv_normalize(inv_id);
@@ -30117,6 +30308,7 @@ mod tests {
             Some(species_a),
             0,
             None,
+            None,
         );
         sim.inv_add_item(
             inv_id,
@@ -30126,6 +30318,7 @@ mod tests {
             None,
             Some(species_b),
             0,
+            None,
             None,
         );
         sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 2, None, None);
@@ -30187,6 +30380,7 @@ mod tests {
             Some(species_a),
             0,
             None,
+            None,
         );
         sim.inv_add_item(
             inv_id,
@@ -30196,6 +30390,7 @@ mod tests {
             None,
             Some(species_b),
             0,
+            None,
             None,
         );
 
@@ -30238,6 +30433,7 @@ mod tests {
             Some(species_a),
             0,
             None,
+            None,
         );
         sim.inv_add_item(
             inv_id,
@@ -30247,6 +30443,7 @@ mod tests {
             None,
             Some(species_b),
             0,
+            None,
             None,
         );
 
@@ -30408,6 +30605,7 @@ mod tests {
             Some(species_a),
             0,
             None,
+            None,
         );
 
         // Any want: current=12 (all fruit), target=5 → gap=0.
@@ -30461,6 +30659,7 @@ mod tests {
             None,
             Some(species_b),
             0,
+            None,
             None,
         );
 
@@ -30550,6 +30749,7 @@ mod tests {
                 Some(species_a),
                 0,
                 None,
+                None,
             );
             sim.inv_add_item(
                 pile.inventory_id,
@@ -30559,6 +30759,7 @@ mod tests {
                 None,
                 Some(species_b),
                 0,
+                None,
                 None,
             );
         }
@@ -30946,6 +31147,7 @@ mod tests {
                 Some(species_a),
                 0,
                 None,
+                None,
             );
             sim.inv_add_item(
                 pile.inventory_id,
@@ -30955,6 +31157,7 @@ mod tests {
                 None,
                 Some(species_b),
                 0,
+                None,
                 None,
             );
         }
@@ -31047,6 +31250,7 @@ mod tests {
             None,
             Some(species_a),
             0,
+            None,
             None,
         );
 
@@ -32262,6 +32466,7 @@ mod tests {
             Some(inventory::Material::FruitSpecies(species_id)),
             0,
             None,
+            None,
         );
 
         // Advance far enough for the logistics heartbeat to trigger the crafting
@@ -32297,6 +32502,7 @@ mod tests {
             Some(inventory::Material::FruitSpecies(species_id)),
             0,
             None,
+            None,
         );
 
         // Pre-fill bread so the bread recipe (auto-added with target 50)
@@ -32309,6 +32515,7 @@ mod tests {
             None,
             None,
             0,
+            None,
             None,
         );
 
@@ -32459,6 +32666,7 @@ mod tests {
             Some(inventory::Material::FruitSpecies(species_id)),
             0,
             None,
+            None,
         );
         let stacks = sim.inv_items(inv_id);
         let pulp_stack = stacks
@@ -32484,6 +32692,7 @@ mod tests {
             Some(inventory::Material::FruitSpecies(species_id)),
             0,
             None,
+            None,
         );
 
         // Also add enough bread to satisfy the bread recipe target (auto-added
@@ -32496,6 +32705,7 @@ mod tests {
             None,
             None,
             0,
+            None,
             None,
         );
 
@@ -32510,6 +32720,7 @@ mod tests {
             Some(inventory::Material::FruitSpecies(species_id)),
             0,
             None,
+            None,
         );
         sim.inv_add_item(
             inv_id,
@@ -32520,6 +32731,7 @@ mod tests {
             Some(inventory::Material::FruitSpecies(species_id)),
             0,
             None,
+            None,
         );
         sim.inv_add_item(
             inv_id,
@@ -32529,6 +32741,7 @@ mod tests {
             None,
             Some(inventory::Material::FruitSpecies(species_id)),
             0,
+            None,
             None,
         );
 
@@ -32600,6 +32813,7 @@ mod tests {
             None,
             0,
             None,
+            None,
         );
 
         // Create a greenhouse with the same species.
@@ -32637,6 +32851,7 @@ mod tests {
             None,
             Some(inventory::Material::FruitSpecies(species_id)),
             0,
+            None,
             None,
         );
 
@@ -33333,5 +33548,741 @@ mod tests {
                 coord
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Clothing / equip system tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn equip_slot_mapping() {
+        use inventory::EquipSlot;
+        assert_eq!(inventory::ItemKind::Hat.equip_slot(), Some(EquipSlot::Head));
+        assert_eq!(
+            inventory::ItemKind::Tunic.equip_slot(),
+            Some(EquipSlot::Torso)
+        );
+        assert_eq!(
+            inventory::ItemKind::Leggings.equip_slot(),
+            Some(EquipSlot::Legs)
+        );
+        assert_eq!(
+            inventory::ItemKind::Boots.equip_slot(),
+            Some(EquipSlot::Feet)
+        );
+        assert_eq!(
+            inventory::ItemKind::Gloves.equip_slot(),
+            Some(EquipSlot::Hands)
+        );
+        // Non-clothing items return None.
+        assert_eq!(inventory::ItemKind::Bread.equip_slot(), None);
+        assert_eq!(inventory::ItemKind::Bow.equip_slot(), None);
+        assert_eq!(inventory::ItemKind::Arrow.equip_slot(), None);
+        assert_eq!(inventory::ItemKind::Cloth.equip_slot(), None);
+    }
+
+    #[test]
+    fn inv_split_stack_preserves_properties() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            3,
+            None,
+            None,
+            Some(inventory::Material::FruitSpecies(
+                crate::fruit::FruitSpeciesId(0),
+            )),
+            5,
+            None,
+            None,
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 1);
+        let orig_id = stacks[0].id;
+
+        let new_id = sim.inv_split_stack(orig_id, 1).unwrap();
+        assert_ne!(new_id, orig_id, "Split should create a new stack");
+
+        let orig = sim.db.item_stacks.get(&orig_id).unwrap();
+        let split = sim.db.item_stacks.get(&new_id).unwrap();
+        assert_eq!(orig.quantity, 2);
+        assert_eq!(split.quantity, 1);
+        // Properties preserved.
+        assert_eq!(split.material, orig.material);
+        assert_eq!(split.quality, orig.quality);
+        assert_eq!(split.kind, orig.kind);
+    }
+
+    #[test]
+    fn inv_split_stack_whole_stack() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            2,
+            None,
+            None,
+            None,
+            0,
+            None,
+            None,
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let orig_id = stacks[0].id;
+
+        // Splitting >= quantity returns the original stack.
+        let result = sim.inv_split_stack(orig_id, 2).unwrap();
+        assert_eq!(result, orig_id);
+        let result = sim.inv_split_stack(orig_id, 5).unwrap();
+        assert_eq!(result, orig_id);
+
+        // Splitting 0 returns None.
+        assert!(sim.inv_split_stack(orig_id, 0).is_none());
+    }
+
+    #[test]
+    fn inv_equip_item_sets_slot() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            1,
+            None,
+            None,
+            None,
+            0,
+            None,
+            None,
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let stack_id = stacks[0].id;
+
+        assert!(sim.inv_equip_item(stack_id));
+        let stack = sim.db.item_stacks.get(&stack_id).unwrap();
+        assert_eq!(stack.equipped_slot, Some(inventory::EquipSlot::Torso));
+    }
+
+    #[test]
+    fn inv_equip_rejects_duplicate_slot() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        // Add two Tunics (qty 1 each).
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            1,
+            None,
+            None,
+            Some(inventory::Material::Oak),
+            0,
+            None,
+            None,
+        );
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            1,
+            None,
+            None,
+            Some(inventory::Material::Yew),
+            0,
+            None,
+            None,
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 2);
+
+        assert!(sim.inv_equip_item(stacks[0].id));
+        assert!(!sim.inv_equip_item(stacks[1].id), "Slot already occupied");
+    }
+
+    #[test]
+    fn inv_equip_rejects_quantity_gt_1() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            3,
+            None,
+            None,
+            None,
+            0,
+            None,
+            None,
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert!(
+            !sim.inv_equip_item(stacks[0].id),
+            "qty > 1 should be rejected"
+        );
+    }
+
+    #[test]
+    fn inv_equip_rejects_non_clothing() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 1, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert!(
+            !sim.inv_equip_item(stacks[0].id),
+            "Non-clothing items should be rejected"
+        );
+    }
+
+    #[test]
+    fn acquire_item_auto_equips_one_from_multi_qty() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+
+        // Create a ground pile with 3 Hats.
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Hat, 3, None, None);
+        }
+
+        // Position elf at the pile.
+        let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+        let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.current_node = Some(pile_nav);
+            c.position = pile_nav_pos;
+        });
+
+        // Create AcquireItem task for 3 Hats.
+        let task_id = TaskId::new(&mut sim.rng);
+        let source = task::HaulSource::GroundPile(pile_pos);
+        {
+            let pile = sim
+                .db
+                .ground_piles
+                .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .unwrap();
+            sim.inv_reserve_unowned_items(
+                pile.inventory_id,
+                inventory::ItemKind::Hat,
+                inventory::MaterialFilter::Any,
+                3,
+                task_id,
+            );
+        }
+        let acquire_task = Task {
+            id: task_id,
+            kind: TaskKind::AcquireItem {
+                source,
+                item_kind: inventory::ItemKind::Hat,
+                quantity: 3,
+            },
+            state: TaskState::InProgress,
+            location: pile_nav,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+            target_creature: None,
+        };
+        sim.insert_task(acquire_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        sim.resolve_acquire_item_action(elf_id, task_id);
+
+        // Should have 3 Hats total: 1 equipped, 2 unequipped.
+        let elf_inv = sim.creature_inv(elf_id);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&elf_inv, tabulosity::QueryOpts::ASC);
+        let hats: Vec<_> = stacks
+            .iter()
+            .filter(|s| s.kind == inventory::ItemKind::Hat)
+            .collect();
+        let total_qty: u32 = hats.iter().map(|s| s.quantity).sum();
+        assert_eq!(total_qty, 3, "Should have 3 hats total");
+        let equipped_count = hats.iter().filter(|s| s.equipped_slot.is_some()).count();
+        assert_eq!(equipped_count, 1, "Exactly one hat should be equipped");
+        let equipped = hats.iter().find(|s| s.equipped_slot.is_some()).unwrap();
+        assert_eq!(equipped.quantity, 1, "Equipped hat should be qty 1");
+    }
+
+    #[test]
+    fn equipped_items_dont_merge() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        // Add equipped Tunic.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            1,
+            None,
+            None,
+            None,
+            0,
+            None,
+            Some(inventory::EquipSlot::Torso),
+        );
+        // Add unequipped Tunic.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            1,
+            None,
+            None,
+            None,
+            0,
+            None,
+            None,
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 2, "Equipped and unequipped should not merge");
+        let equipped = stacks.iter().find(|s| s.equipped_slot.is_some()).unwrap();
+        let unequipped = stacks.iter().find(|s| s.equipped_slot.is_none()).unwrap();
+        assert_eq!(equipped.quantity, 1);
+        assert_eq!(unequipped.quantity, 1);
+    }
+
+    #[test]
+    fn inv_unequip_slot_clears_and_normalizes() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        // Add equipped Tunic + unequipped Tunic (same properties).
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            1,
+            None,
+            None,
+            None,
+            0,
+            None,
+            Some(inventory::EquipSlot::Torso),
+        );
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            1,
+            None,
+            None,
+            None,
+            0,
+            None,
+            None,
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 2);
+
+        // Unequip.
+        let unequipped_id = sim.inv_unequip_slot(inv_id, inventory::EquipSlot::Torso);
+        assert!(unequipped_id.is_some());
+
+        // After normalize, should merge into a single stack of qty 2.
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 1, "Should merge after unequip");
+        assert_eq!(stacks[0].quantity, 2);
+        assert_eq!(stacks[0].equipped_slot, None);
+    }
+
+    #[test]
+    fn acquire_item_preserves_material() {
+        // Test that acquiring an item via resolve_acquire_item_action
+        // preserves material and quality (bug fix verification).
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+
+        // Create a ground pile with material-bearing Cloth.
+        let mat = Some(inventory::Material::FruitSpecies(
+            crate::fruit::FruitSpeciesId(0),
+        ));
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_item(
+                pile.inventory_id,
+                inventory::ItemKind::Cloth,
+                2,
+                None,
+                None,
+                mat,
+                3,
+                None,
+                None,
+            );
+        }
+
+        // Position elf at the pile.
+        let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+        let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.current_node = Some(pile_nav);
+            c.position = pile_nav_pos;
+        });
+
+        // Create AcquireItem task with reservation.
+        let task_id = TaskId::new(&mut sim.rng);
+        let source = task::HaulSource::GroundPile(pile_pos);
+        {
+            let pile = sim
+                .db
+                .ground_piles
+                .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .unwrap();
+            sim.inv_reserve_items(
+                pile.inventory_id,
+                inventory::ItemKind::Cloth,
+                inventory::MaterialFilter::Any,
+                1,
+                task_id,
+            );
+        }
+        let acquire_task = Task {
+            id: task_id,
+            kind: TaskKind::AcquireItem {
+                source,
+                item_kind: inventory::ItemKind::Cloth,
+                quantity: 1,
+            },
+            state: TaskState::InProgress,
+            location: pile_nav,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+            target_creature: None,
+        };
+        sim.insert_task(acquire_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        sim.resolve_acquire_item_action(elf_id, task_id);
+
+        // Verify material/quality preserved in creature inventory.
+        let elf_inv = sim.creature_inv(elf_id);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&elf_inv, tabulosity::QueryOpts::ASC);
+        let cloth = stacks
+            .iter()
+            .find(|s| s.kind == inventory::ItemKind::Cloth)
+            .expect("Cloth should be in elf inventory");
+        assert_eq!(cloth.material, mat, "Material should be preserved");
+        assert_eq!(cloth.quality, 3, "Quality should be preserved");
+    }
+
+    #[test]
+    fn acquire_item_auto_equips_clothing() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+
+        // Create a ground pile with a Tunic.
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Tunic, 1, None, None);
+        }
+
+        // Position elf at the pile.
+        let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+        let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.current_node = Some(pile_nav);
+            c.position = pile_nav_pos;
+        });
+
+        // Create AcquireItem task with reservation.
+        let task_id = TaskId::new(&mut sim.rng);
+        let source = task::HaulSource::GroundPile(pile_pos);
+        {
+            let pile = sim
+                .db
+                .ground_piles
+                .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .unwrap();
+            sim.inv_reserve_unowned_items(
+                pile.inventory_id,
+                inventory::ItemKind::Tunic,
+                inventory::MaterialFilter::Any,
+                1,
+                task_id,
+            );
+        }
+        let acquire_task = Task {
+            id: task_id,
+            kind: TaskKind::AcquireItem {
+                source,
+                item_kind: inventory::ItemKind::Tunic,
+                quantity: 1,
+            },
+            state: TaskState::InProgress,
+            location: pile_nav,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+            target_creature: None,
+        };
+        sim.insert_task(acquire_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        sim.resolve_acquire_item_action(elf_id, task_id);
+
+        // Verify the Tunic is equipped in the Torso slot.
+        let elf_inv = sim.creature_inv(elf_id);
+        let equipped = sim.inv_equipped_in_slot(elf_inv, inventory::EquipSlot::Torso);
+        assert!(equipped.is_some(), "Tunic should be auto-equipped");
+        assert_eq!(equipped.unwrap().kind, inventory::ItemKind::Tunic);
+    }
+
+    #[test]
+    fn acquire_item_does_not_equip_if_slot_occupied() {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        let tree_pos = sim.trees[&sim.player_tree_id].position;
+        let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+
+        // Pre-equip a Tunic in the elf's inventory.
+        let elf_inv = sim.creature_inv(elf_id);
+        sim.inv_add_item(
+            elf_inv,
+            inventory::ItemKind::Tunic,
+            1,
+            Some(elf_id),
+            None,
+            None,
+            0,
+            None,
+            Some(inventory::EquipSlot::Torso),
+        );
+
+        // Create a ground pile with another Tunic.
+        {
+            let pile_id = sim.ensure_ground_pile(pile_pos);
+            let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+            sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Tunic, 1, None, None);
+        }
+
+        // Position elf at the pile.
+        let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+        let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.current_node = Some(pile_nav);
+            c.position = pile_nav_pos;
+        });
+
+        // Create AcquireItem task with reservation.
+        let task_id = TaskId::new(&mut sim.rng);
+        let source = task::HaulSource::GroundPile(pile_pos);
+        {
+            let pile = sim
+                .db
+                .ground_piles
+                .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .unwrap();
+            sim.inv_reserve_unowned_items(
+                pile.inventory_id,
+                inventory::ItemKind::Tunic,
+                inventory::MaterialFilter::Any,
+                1,
+                task_id,
+            );
+        }
+        let acquire_task = Task {
+            id: task_id,
+            kind: TaskKind::AcquireItem {
+                source,
+                item_kind: inventory::ItemKind::Tunic,
+                quantity: 1,
+            },
+            state: TaskState::InProgress,
+            location: pile_nav,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+            target_creature: None,
+        };
+        sim.insert_task(acquire_task);
+        {
+            let mut c = sim.db.creatures.get(&elf_id).unwrap();
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        sim.resolve_acquire_item_action(elf_id, task_id);
+
+        // Should have 2 Tunics: 1 equipped, 1 not.
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&elf_inv, tabulosity::QueryOpts::ASC);
+        let tunics: Vec<_> = stacks
+            .iter()
+            .filter(|s| s.kind == inventory::ItemKind::Tunic)
+            .collect();
+        assert_eq!(tunics.len(), 2, "Should have 2 separate tunic stacks");
+        let equipped_count = tunics.iter().filter(|s| s.equipped_slot.is_some()).count();
+        assert_eq!(equipped_count, 1, "Only one should be equipped");
+    }
+
+    #[test]
+    fn serde_roundtrip_equipped_slot() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Hat,
+            1,
+            None,
+            None,
+            None,
+            0,
+            None,
+            Some(inventory::EquipSlot::Head),
+        );
+
+        let json = serde_json::to_string(&sim).unwrap();
+        let restored: SimState = serde_json::from_str(&json).unwrap();
+        let stacks = restored
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 1);
+        assert_eq!(stacks[0].equipped_slot, Some(inventory::EquipSlot::Head));
+    }
+
+    #[test]
+    fn serde_backward_compat_no_equipped_slot() {
+        // Simulate old save format: ItemStack JSON without equipped_slot field.
+        let json = r#"{"id":1,"inventory_id":1,"kind":"Hat","quantity":1,"material":null,"quality":0,"enchantment_id":null,"owner":null,"reserved_by":null}"#;
+        let stack: crate::db::ItemStack = serde_json::from_str(json).unwrap();
+        assert_eq!(stack.equipped_slot, None);
+    }
+
+    #[test]
+    fn clothing_wants_in_default_config() {
+        let config = crate::config::GameConfig::default();
+        let wants = &config.elf_default_wants;
+        assert!(wants.len() >= 6, "Should have bread + 5 clothing wants");
+
+        let has_tunic = wants
+            .iter()
+            .any(|w| w.item_kind == inventory::ItemKind::Tunic);
+        let has_leggings = wants
+            .iter()
+            .any(|w| w.item_kind == inventory::ItemKind::Leggings);
+        let has_boots = wants
+            .iter()
+            .any(|w| w.item_kind == inventory::ItemKind::Boots);
+        let has_hat = wants
+            .iter()
+            .any(|w| w.item_kind == inventory::ItemKind::Hat);
+        let has_gloves = wants
+            .iter()
+            .any(|w| w.item_kind == inventory::ItemKind::Gloves);
+        assert!(has_tunic, "Should want Tunic");
+        assert!(has_leggings, "Should want Leggings");
+        assert!(has_boots, "Should want Boots");
+        assert!(has_hat, "Should want Hat");
+        assert!(has_gloves, "Should want Gloves");
+    }
+
+    #[test]
+    fn item_display_name_shows_equipped_suffix() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        // Unequipped item.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Tunic,
+            1,
+            None,
+            None,
+            None,
+            0,
+            None,
+            None,
+        );
+        // Equipped item.
+        sim.inv_add_item(
+            inv_id,
+            inventory::ItemKind::Hat,
+            1,
+            None,
+            None,
+            None,
+            0,
+            None,
+            Some(inventory::EquipSlot::Head),
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let tunic = stacks
+            .iter()
+            .find(|s| s.kind == inventory::ItemKind::Tunic)
+            .unwrap();
+        let hat = stacks
+            .iter()
+            .find(|s| s.kind == inventory::ItemKind::Hat)
+            .unwrap();
+        assert_eq!(sim.item_display_name(tunic), "Tunic");
+        assert_eq!(sim.item_display_name(hat), "Hat (equipped)");
     }
 }

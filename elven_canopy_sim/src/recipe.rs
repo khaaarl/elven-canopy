@@ -429,6 +429,13 @@ fn build_component_recipes(
                     cr.sew_hat_output,
                     cr.sew_hat_work_ticks,
                 ),
+                (
+                    ItemKind::Gloves,
+                    "Gloves",
+                    cr.sew_gloves_input,
+                    cr.sew_gloves_output,
+                    cr.sew_gloves_work_ticks,
+                ),
             ] {
                 recipes.push(build_simple_recipe(
                     RecipeVerb::Sew,
@@ -987,8 +994,9 @@ mod tests {
         let catalog = build_catalog(&config, &species);
 
         // Base (4) + extraction (1) + mill + bake + spin + thread bowstring
-        // + weave + sew tunic + sew leggings + sew boots + sew hat = 14.
-        assert_eq!(catalog.len(), 14);
+        // + weave + sew tunic + sew leggings + sew boots + sew hat
+        // + sew gloves = 15.
+        assert_eq!(catalog.len(), 15);
 
         // Starchy chain in kitchen.
         let kitchen = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
@@ -1385,8 +1393,9 @@ mod tests {
         let catalog = build_catalog(&config, &species);
 
         // Base (4) + extraction (1) + mill + bake + spin + thread bowstring
-        // + weave + sew tunic + sew leggings + sew boots + sew hat = 14.
-        assert_eq!(catalog.len(), 14);
+        // + weave + sew tunic + sew leggings + sew boots + sew hat
+        // + sew gloves = 15.
+        assert_eq!(catalog.len(), 15);
 
         let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
         assert!(
@@ -1477,10 +1486,10 @@ mod tests {
                 "Seed {}: weave recipe count mismatch",
                 seed
             );
-            // 4 sew recipes per FibrousFine species (tunic, leggings, boots, hat).
+            // 5 sew recipes per FibrousFine species (tunic, leggings, boots, hat, gloves).
             assert_eq!(
                 sew_count,
-                expected_fine * 4,
+                expected_fine * 5,
                 "Seed {}: sew recipe count mismatch",
                 seed
             );

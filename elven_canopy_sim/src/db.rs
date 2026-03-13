@@ -52,7 +52,7 @@
 // BTreeMap order. No hash-based collections.
 
 use crate::fruit::{FruitSpecies, FruitSpeciesTable};
-use crate::inventory::{EffectKind, ItemKind, Material};
+use crate::inventory::{EffectKind, EquipSlot, ItemKind, Material};
 use crate::projectile::{SubVoxelCoord, SubVoxelVec};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
@@ -763,8 +763,20 @@ pub struct Inventory {
     pub owner_kind: InventoryOwnerKind,
 }
 
+/// Filter predicate for the `equipped_inv_slot` compound index — only index
+/// stacks that actually have an equipped slot set.
+fn is_equipped(stack: &ItemStack) -> bool {
+    stack.equipped_slot.is_some()
+}
+
 /// A stack of items within an inventory.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[index(
+    name = "equipped_inv_slot",
+    fields("inventory_id", "equipped_slot"),
+    filter = "is_equipped",
+    unique
+)]
 pub struct ItemStack {
     #[primary_key(auto_increment)]
     pub id: ItemStackId,
@@ -784,6 +796,8 @@ pub struct ItemStack {
     pub owner: Option<CreatureId>,
     #[indexed]
     pub reserved_by: Option<TaskId>,
+    #[serde(default)]
+    pub equipped_slot: Option<EquipSlot>,
 }
 
 /// A pile of items on the ground at a specific voxel position.

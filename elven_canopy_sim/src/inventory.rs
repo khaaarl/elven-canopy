@@ -3,18 +3,23 @@
 // Provides `ItemKind` (the enum of distinct item types: Bread, Fruit, Bow,
 // Arrow, Bowstring, extracted fruit components — Pulp, Husk, Seed,
 // FruitFiber, FruitSap, FruitResin — processed products — Flour, Thread,
-// Cord, Cloth — and clothing — Tunic, Leggings, Boots, Hat),
+// Cord, Cloth — and clothing — Tunic, Leggings, Boots, Hat, Gloves),
 // `Material` (wood species for crafted items, `FruitSpecies` for
 // fruits, extracted components, and processed products),
 // `MaterialFilter` (logistics want constraint: `Any` or `Specific(Material)`),
+// `EquipSlot` (body slot for wearable clothing: Head, Torso, Legs, Feet, Hands),
 // and `EffectKind` (stubbed enchantment effect types for future use).
 // Item storage is now handled by the `db::ItemStack` and `db::Inventory`
 // tabulosity tables. `SimState` has `inv_*` methods (in `sim.rs`) for all
-// inventory operations (add, remove, count, reserve, etc.).
+// inventory operations (add, remove, count, reserve, equip, etc.).
 //
 // `MaterialFilter` is used by building logistics wants and creature personal
 // wants to constrain which materials satisfy a request. `Any` matches all
 // materials; `Specific(m)` matches only items with that exact material.
+//
+// `EquipSlot` maps clothing `ItemKind` variants to body slots via
+// `ItemKind::equip_slot()`. Used by the `equipped_slot` field on
+// `db::ItemStack` to track which items a creature is wearing.
 //
 // See also: `db.rs` for the tabulosity table definitions, `sim.rs` for the
 // `inv_*` methods on `SimState`, `building.rs` for `LogisticsWant` DTO.
@@ -62,6 +67,8 @@ pub enum ItemKind {
     Boots = 17,
     /// Sewn hat (head garment).
     Hat = 18,
+    /// Sewn pair of gloves (hand garment).
+    Gloves = 19,
     // Append new variants here with the next sequential number.
 }
 
@@ -88,6 +95,7 @@ impl ItemKind {
             ItemKind::Leggings => "Leggings",
             ItemKind::Boots => "Boots",
             ItemKind::Hat => "Hat",
+            ItemKind::Gloves => "Gloves",
         }
     }
 
@@ -116,8 +124,24 @@ impl ItemKind {
     pub fn is_clothing(self) -> bool {
         matches!(
             self,
-            ItemKind::Tunic | ItemKind::Leggings | ItemKind::Boots | ItemKind::Hat
+            ItemKind::Tunic
+                | ItemKind::Leggings
+                | ItemKind::Boots
+                | ItemKind::Hat
+                | ItemKind::Gloves
         )
+    }
+
+    /// Which body slot this item occupies when equipped, if any.
+    pub fn equip_slot(self) -> Option<EquipSlot> {
+        match self {
+            ItemKind::Hat => Some(EquipSlot::Head),
+            ItemKind::Tunic => Some(EquipSlot::Torso),
+            ItemKind::Leggings => Some(EquipSlot::Legs),
+            ItemKind::Boots => Some(EquipSlot::Feet),
+            ItemKind::Gloves => Some(EquipSlot::Hands),
+            _ => None,
+        }
     }
 }
 
@@ -184,6 +208,34 @@ impl MaterialFilter {
         match self {
             MaterialFilter::Any => true,
             MaterialFilter::Specific(m) => material == Some(m),
+        }
+    }
+}
+
+/// Body slot for wearable clothing items.
+///
+/// Each clothing `ItemKind` maps to exactly one slot via `ItemKind::equip_slot()`.
+/// A creature can equip at most one item per slot. Future armor items will
+/// share these slots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum EquipSlot {
+    Head = 0,
+    Torso = 1,
+    Legs = 2,
+    Feet = 3,
+    Hands = 4,
+}
+
+impl EquipSlot {
+    /// Human-readable display name for this slot.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            EquipSlot::Head => "Head",
+            EquipSlot::Torso => "Torso",
+            EquipSlot::Legs => "Legs",
+            EquipSlot::Feet => "Feet",
+            EquipSlot::Hands => "Hands",
         }
     }
 }
