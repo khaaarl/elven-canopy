@@ -115,7 +115,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-follow-multi         Camera zoom-to and follow for multi-selections
 [ ] F-food-chain           Food production/distribution pipeline
-[ ] F-friendly-fire        Friendly-fire avoidance for ranged attacks
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-game-speed-fkeys     Move game speed controls to F1/F2/F3
@@ -231,6 +230,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-flee                 Flee behavior for civilians
 [x] F-food-gauge           Creature food gauge with decay
+[x] F-friendly-fire        Friendly-fire avoidance for ranged attacks
 [x] F-fruit-extraction     Fruit extraction (hulling/separation into components)
 [x] F-fruit-naming         Fruit naming overhaul
 [x] F-fruit-sprites        Procedural fruit sprites
@@ -2046,7 +2046,7 @@ Creatures with Flee response (civilian military group default, or FleeOnly comba
 **Draft:** docs/drafts/combat_military.md (§7)
 
 #### F-friendly-fire — Friendly-fire avoidance for ranged attacks
-**Status:** Todo
+**Status:** Done
 
 Projectiles currently hit any alive creature in their path after the origin voxel, with no distinction between friendly and hostile targets. This feature adds friendly-fire avoidance so ranged attackers don't shoot through friendly creatures, and actively reposition to find a clear shot.
 

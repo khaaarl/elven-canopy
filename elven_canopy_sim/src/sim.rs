@@ -4916,6 +4916,16 @@ impl SimState {
                     return;
                 }
 
+                // Combat failed — try repositioning for a clear ranged shot.
+                if let Some(creature) = self.db.creatures.get(&creature_id) {
+                    let species = creature.species;
+                    if let Some(edge_idx) = self.find_ranged_reposition_edge(creature_id, target_id)
+                    {
+                        self.move_one_step(creature_id, species, edge_idx);
+                        return;
+                    }
+                }
+
                 // Not in combat range — walk toward target.
                 if current_node != task_location {
                     self.walk_toward_attack_move_target(
@@ -5218,6 +5228,21 @@ impl SimState {
             return;
         }
 
+        // Ranged failed (possibly friendly-fire blocked) — try alternate targets.
+        if self.try_shoot_any_clear_target(creature_id, events) {
+            return;
+        }
+
+        // All shots blocked — try repositioning to a neighboring nav node
+        // that provides a clear shot.
+        if let Some(creature) = self.db.creatures.get(&creature_id) {
+            let species = creature.species;
+            if let Some(edge_idx) = self.find_ranged_reposition_edge(creature_id, target_id) {
+                self.move_one_step(creature_id, species, edge_idx);
+                return;
+            }
+        }
+
         // If we're at the same node but out of melee range (shouldn't happen
         // normally), re-activate next tick — the dynamic pursuit system in
         // execute_task_behavior will update the location.
@@ -5314,8 +5339,14 @@ impl SimState {
             return true;
         }
 
-        // Try ranged.
+        // Try ranged at primary target.
         if self.try_shoot_arrow(creature_id, target_id, events) {
+            return true;
+        }
+
+        // Primary target blocked (possibly by friendly-fire) — try any other
+        // hostile target with a clear flight path.
+        if self.try_shoot_any_clear_target(creature_id, events) {
             return true;
         }
 
@@ -6825,6 +6856,20 @@ impl SimState {
             return false;
         }
 
+        // 5b. Friendly-fire check — reject if a non-hostile creature is in
+        // the flight path between the shooter and the target.
+        if self
+            .flight_path_blocked_by_friendly(
+                attacker_id,
+                attacker_pos,
+                los_target_voxel,
+                aim.velocity,
+            )
+            .is_some()
+        {
+            return false;
+        }
+
         // 6. All checks passed — consume arrow and fire.
         self.inv_remove_item_with_material(inv_id, ItemKind::Arrow, None, 1);
 
@@ -6972,29 +7017,46 @@ impl SimState {
             }
 
             // Step 6: creature check via spatial index.
-            // Skip the origin voxel — projectiles don't hit creatures at their
-            // launch site (prevents friendly-fire on the shooter and allies
-            // sharing the same voxel).
-            let is_origin = self
+            // Near the origin (Chebyshev distance ≤ 1), skip non-hostile
+            // creatures — projectiles don't hit squad-mates standing next to
+            // the shooter. Hostile creatures near origin are still valid hits
+            // (point-blank shots). Beyond origin area, all alive creatures
+            // are candidates.
+            let (origin_voxel, shooter_id) = self
                 .db
                 .projectiles
                 .get(&proj_id)
-                .is_some_and(|p| new_voxel == p.origin_voxel);
-            let creatures_here = if is_origin {
-                Vec::new()
-            } else {
-                self.creatures_at_voxel(new_voxel).to_vec()
+                .map(|p| (p.origin_voxel, p.shooter))
+                .unwrap_or((new_voxel, None));
+            let near_origin = {
+                let dx = (new_voxel.x - origin_voxel.x).abs();
+                let dy = (new_voxel.y - origin_voxel.y).abs();
+                let dz = (new_voxel.z - origin_voxel.z).abs();
+                dx <= 1 && dy <= 1 && dz <= 1
             };
+            let creatures_here = self.creatures_at_voxel(new_voxel).to_vec();
             if !creatures_here.is_empty() {
-                // Filter to alive creatures. Sort is preserved from spatial
-                // index for determinism.
+                // Filter to alive creatures, skipping non-hostiles near origin.
+                // Sort is preserved from spatial index for determinism.
                 let candidates: Vec<CreatureId> = creatures_here
                     .into_iter()
                     .filter(|cid| {
-                        self.db
+                        let alive = self
+                            .db
                             .creatures
                             .get(cid)
-                            .is_some_and(|c| c.vital_status == VitalStatus::Alive)
+                            .is_some_and(|c| c.vital_status == VitalStatus::Alive);
+                        if !alive {
+                            return false;
+                        }
+                        // Near origin: skip non-hostile creatures (squad-mates).
+                        if near_origin
+                            && let Some(sid) = shooter_id
+                            && self.is_non_hostile(sid, *cid)
+                        {
+                            return false;
+                        }
+                        true
                     })
                     .collect();
 
@@ -9023,6 +9085,460 @@ impl SimState {
             .into_iter()
             .map(|(cid, node, _)| (cid, node))
             .collect()
+    }
+
+    /// Check whether two creatures are non-hostile to each other. This is the
+    /// inverse of the hostility logic in `detect_hostile_targets` and is used
+    /// for friendly-fire avoidance — an archer should not shoot through a
+    /// non-hostile creature.
+    ///
+    /// Returns `true` (non-hostile) for:
+    /// - Same creature
+    /// - Same civ
+    /// - Both civ, different civs, unless CivRelationship is Hostile
+    /// - Attacker has civ, target doesn't — non-hostile unless target species
+    ///   has aggressive combat_ai
+    /// - Both non-civ — non-hostile if same species
+    fn is_non_hostile(&self, a: CreatureId, b: CreatureId) -> bool {
+        if a == b {
+            return true;
+        }
+        let creature_a = match self.db.creatures.get(&a) {
+            Some(c) => c,
+            None => return false,
+        };
+        let creature_b = match self.db.creatures.get(&b) {
+            Some(c) => c,
+            None => return false,
+        };
+
+        match (creature_a.civ_id, creature_b.civ_id) {
+            // Both have civs.
+            (Some(civ_a), Some(civ_b)) => {
+                if civ_a == civ_b {
+                    return true;
+                }
+                // Different civs — hostile only if CivRelationship says Hostile.
+                !self
+                    .db
+                    .civ_relationships
+                    .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
+                    .into_iter()
+                    .any(|r| r.to_civ == civ_b && r.opinion == CivOpinion::Hostile)
+            }
+            // A has civ, B doesn't — non-hostile unless B's species is aggressive.
+            (Some(_), None) => {
+                use crate::species::CombatAI;
+                !matches!(
+                    self.species_table[&creature_b.species].combat_ai,
+                    CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+                )
+            }
+            // A doesn't have civ, B does — mirror of above.
+            (None, Some(_)) => {
+                use crate::species::CombatAI;
+                !matches!(
+                    self.species_table[&creature_a.species].combat_ai,
+                    CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+                )
+            }
+            // Neither has a civ — always non-hostile. Non-civ aggressive
+            // creatures only target civ creatures (see detect_hostile_targets).
+            (None, None) => true,
+        }
+    }
+
+    /// Check whether a ballistic flight path from `origin_sub` with `velocity`
+    /// would pass through a voxel occupied by a creature that is non-hostile to
+    /// `shooter_id`. Used for pre-shot friendly-fire avoidance.
+    ///
+    /// Simulates the trajectory tick-by-tick (same physics as
+    /// `process_projectile_tick`) and checks the spatial index at each new
+    /// voxel. Skips the origin voxel and its immediate neighbors for
+    /// non-hostile creatures (so squads can stand together), but does NOT
+    /// skip them for hostile creatures (point-blank shots are allowed).
+    ///
+    /// Returns `Some(blocking_id)` if a friendly creature blocks the path,
+    /// or `None` if the path is clear.
+    fn flight_path_blocked_by_friendly(
+        &self,
+        shooter_id: CreatureId,
+        origin_voxel: VoxelCoord,
+        target_voxel: VoxelCoord,
+        velocity: crate::projectile::SubVoxelVec,
+    ) -> Option<CreatureId> {
+        use crate::projectile::{SubVoxelCoord, ballistic_step};
+
+        let gravity = self.config.arrow_gravity;
+        let (world_sx, world_sy, world_sz) = self.config.world_size;
+        let max_ticks: u32 = 5000;
+
+        let origin_sub = SubVoxelCoord::from_voxel_center(origin_voxel);
+        let mut pos = origin_sub;
+        let mut vel = velocity;
+        let mut prev_voxel = origin_voxel;
+
+        for _tick in 1..=max_ticks {
+            (pos, vel) = ballistic_step(pos, vel, gravity);
+
+            // Bounds check (same as process_projectile_tick).
+            let vx = pos.x >> crate::projectile::SUB_VOXEL_SHIFT;
+            let vy = pos.y >> crate::projectile::SUB_VOXEL_SHIFT;
+            let vz = pos.z >> crate::projectile::SUB_VOXEL_SHIFT;
+            if vx < 0
+                || vy < 0
+                || vz < 0
+                || vx >= world_sx as i64
+                || vy >= world_sy as i64
+                || vz >= world_sz as i64
+            {
+                return None; // Out of bounds — no friendly hit.
+            }
+
+            let current_voxel = pos.to_voxel();
+
+            // Solid voxel — stop (arrow would hit surface).
+            if self.world.in_bounds(current_voxel) && self.world.get(current_voxel).is_solid() {
+                return None;
+            }
+
+            // Check creatures at this voxel.
+            if current_voxel != prev_voxel {
+                let creatures_here = self.creatures_at_voxel(current_voxel);
+                for &cid in creatures_here {
+                    if cid == shooter_id {
+                        continue;
+                    }
+                    let alive = self
+                        .db
+                        .creatures
+                        .get(&cid)
+                        .is_some_and(|c| c.vital_status == VitalStatus::Alive);
+                    if !alive {
+                        continue;
+                    }
+
+                    // Near origin: skip non-hostile (squad members standing
+                    // together), but don't skip hostile (point-blank OK).
+                    let near_origin = {
+                        let dx = (current_voxel.x - origin_voxel.x).abs();
+                        let dy = (current_voxel.y - origin_voxel.y).abs();
+                        let dz = (current_voxel.z - origin_voxel.z).abs();
+                        dx <= 1 && dy <= 1 && dz <= 1
+                    };
+
+                    if self.is_non_hostile(shooter_id, cid) {
+                        if near_origin {
+                            continue; // Skip friendlies near origin.
+                        }
+                        return Some(cid); // Friendly in the flight path!
+                    }
+                    // Hostile creature — the arrow would hit them (good), stop.
+                    // But only if this is at or past the target, otherwise keep going.
+                    // Actually, any hostile hit before the target means the arrow
+                    // reaches a valid target, so the path is "not blocked by friendly."
+                    return None;
+                }
+            }
+
+            prev_voxel = current_voxel;
+
+            // Reached target voxel — path is clear.
+            if current_voxel == target_voxel {
+                return None;
+            }
+
+            // Early exit: fell well below target.
+            if current_voxel.y < target_voxel.y - 5 && vel.y < 0 {
+                return None;
+            }
+        }
+
+        None // Max ticks — assume clear.
+    }
+
+    /// Try to shoot any hostile target that has a clear (no friendly-fire)
+    /// flight path. Called when the primary target is blocked by a friendly.
+    /// Returns `true` if a shot was taken.
+    fn try_shoot_any_clear_target(
+        &mut self,
+        creature_id: CreatureId,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return false,
+        };
+        let species = creature.species;
+        let pos = creature.position;
+        let civ_id = creature.civ_id;
+        let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
+
+        if detection_range_sq <= 0 {
+            return false;
+        }
+
+        let targets =
+            self.detect_hostile_targets(creature_id, species, pos, civ_id, detection_range_sq);
+
+        for (target_id, _node) in targets {
+            if self.try_shoot_arrow(creature_id, target_id, events) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check whether a candidate position would block any nearby friendly
+    /// archer's line of fire. Uses a straight-line approximation (cross-product
+    /// distance-from-line) since full ballistic trajectory simulation per
+    /// friendly would be too expensive.
+    ///
+    /// Returns `true` if the candidate position is roughly on the firing line
+    /// of at least one nearby friendly archer.
+    fn position_blocks_friendly_archers(
+        &self,
+        creature_id: CreatureId,
+        candidate_pos: VoxelCoord,
+    ) -> bool {
+        use crate::inventory::ItemKind;
+
+        if self.db.creatures.get(&creature_id).is_none() {
+            return false;
+        }
+
+        // Check creatures within a 10-voxel radius (dist_sq <= 100).
+        let check_range_sq: i64 = 100;
+        let mut seen = std::collections::BTreeSet::new();
+
+        for (&_voxel, creature_ids) in &self.spatial_index {
+            for &cid in creature_ids {
+                if cid == creature_id || !seen.insert(cid) {
+                    continue;
+                }
+                let other = match self.db.creatures.get(&cid) {
+                    Some(c) if c.vital_status == VitalStatus::Alive => c,
+                    _ => continue,
+                };
+
+                // Must be non-hostile (friendly).
+                if !self.is_non_hostile(creature_id, cid) {
+                    continue;
+                }
+
+                // Must be within check range of the candidate position.
+                let dx = candidate_pos.x as i64 - other.position.x as i64;
+                let dy = candidate_pos.y as i64 - other.position.y as i64;
+                let dz = candidate_pos.z as i64 - other.position.z as i64;
+                if dx * dx + dy * dy + dz * dz > check_range_sq {
+                    continue;
+                }
+
+                // Must have a bow (is an archer).
+                let has_bow = self.inv_item_count(
+                    other.inventory_id,
+                    ItemKind::Bow,
+                    crate::inventory::MaterialFilter::Any,
+                ) > 0;
+                if !has_bow {
+                    continue;
+                }
+
+                // Must have a target.
+                let target_id = match other
+                    .current_task
+                    .and_then(|tid| self.db.tasks.get(&tid).and_then(|t| t.target_creature))
+                {
+                    Some(tid) => tid,
+                    None => continue,
+                };
+                let target = match self.db.creatures.get(&target_id) {
+                    Some(c) if c.vital_status == VitalStatus::Alive => c,
+                    _ => continue,
+                };
+
+                // Check if candidate_pos is on the line from other to target.
+                // Use cross product: if |AB × AC| / |AB| < threshold, the
+                // point C is close to the line AB. We use squared distances
+                // to avoid sqrt, and check |AB × AC|² < threshold² * |AB|².
+                let ax = other.position.x as i64;
+                let ay = other.position.y as i64;
+                let az = other.position.z as i64;
+                let bx = target.position.x as i64;
+                let by = target.position.y as i64;
+                let bz = target.position.z as i64;
+                let cx = candidate_pos.x as i64;
+                let cy = candidate_pos.y as i64;
+                let cz = candidate_pos.z as i64;
+
+                let abx = bx - ax;
+                let aby = by - ay;
+                let abz = bz - az;
+                let acx = cx - ax;
+                let acy = cy - ay;
+                let acz = cz - az;
+
+                // Cross product AB × AC.
+                let cross_x = aby * acz - abz * acy;
+                let cross_y = abz * acx - abx * acz;
+                let cross_z = abx * acy - aby * acx;
+                let cross_sq = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
+                let ab_sq = abx * abx + aby * aby + abz * abz;
+
+                if ab_sq == 0 {
+                    continue;
+                }
+
+                // Distance from line = |cross| / |AB|.
+                // Check: cross_sq < threshold² * ab_sq → within threshold
+                // voxels of the line. Use threshold = 1.5 → threshold² = 2.25
+                // → cross_sq * 4 < 9 * ab_sq (multiply to stay integer).
+                if cross_sq * 4 > 9 * ab_sq {
+                    continue;
+                }
+
+                // Also check that the candidate is between A and B (not behind
+                // or past). Dot product AB · AC should be > 0 and < |AB|².
+                let dot = abx * acx + aby * acy + abz * acz;
+                if dot > 0 && dot < ab_sq {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Find a neighboring nav node from which the creature has a clear ranged
+    /// shot to the target (no friendly-fire blocking). Scores candidates by:
+    /// (a) has clear shot (primary), (b) doesn't block nearby elves' lines of
+    /// fire (secondary), (c) distance to target. Returns the edge index to
+    /// move along, or falls back to a non-blocking position without a clear
+    /// shot if no clear-shot candidate exists.
+    fn find_ranged_reposition_edge(
+        &self,
+        creature_id: CreatureId,
+        target_id: CreatureId,
+    ) -> Option<usize> {
+        use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+
+        let creature = self.db.creatures.get(&creature_id)?;
+        let current_node = creature.current_node?;
+        let species = creature.species;
+
+        let target = self.db.creatures.get(&target_id)?;
+        if target.vital_status != VitalStatus::Alive {
+            return None;
+        }
+        let target_pos = target.position;
+        let target_species = target.species;
+        let target_footprint = self.species_table[&target_species].footprint;
+
+        let graph = self.graph_for_species(species);
+        let node = graph.node(current_node);
+        let speed = self.config.arrow_base_speed;
+        let gravity = self.config.arrow_gravity;
+
+        // Score: (has_clear_shot, doesn't_block_others, -dist_sq)
+        // Higher is better for the first two, lower dist is better.
+        // best_clear: best candidate with a clear shot.
+        // best_fallback: best candidate without a clear shot but not blocking.
+        let mut best_clear: Option<(usize, bool, i64)> = None; // (edge, non_blocking, dist_sq)
+        let mut best_fallback: Option<(usize, i64)> = None; // (edge, dist_sq)
+
+        for &edge_idx in &node.edge_indices {
+            let edge = graph.edge(edge_idx);
+            let neighbor_node = graph.node(edge.to);
+            let neighbor_pos = neighbor_node.position;
+
+            let blocks_others = self.position_blocks_friendly_archers(creature_id, neighbor_pos);
+
+            // Score by distance to target.
+            let ddx = neighbor_pos.x as i64 - target_pos.x as i64;
+            let ddy = neighbor_pos.y as i64 - target_pos.y as i64;
+            let ddz = neighbor_pos.z as i64 - target_pos.z as i64;
+            let dist_sq = ddx * ddx + ddy * ddy + ddz * ddz;
+
+            // Check LOS from neighbor position to any target footprint voxel.
+            let mut has_los = false;
+            let mut los_target = target_pos;
+            for dy in 0..target_footprint[1] as i32 {
+                for dx in 0..target_footprint[0] as i32 {
+                    for dz in 0..target_footprint[2] as i32 {
+                        let tv = VoxelCoord::new(
+                            target_pos.x + dx,
+                            target_pos.y + dy,
+                            target_pos.z + dz,
+                        );
+                        if self.world.has_los(neighbor_pos, tv) {
+                            has_los = true;
+                            los_target = tv;
+                            break;
+                        }
+                    }
+                    if has_los {
+                        break;
+                    }
+                }
+                if has_los {
+                    break;
+                }
+            }
+
+            if has_los {
+                // Check aim feasibility from the neighbor position.
+                let origin_sub = SubVoxelCoord::from_voxel_center(neighbor_pos);
+                let aim = compute_aim_velocity(origin_sub, los_target, speed, gravity, 5, 5000);
+                if aim.hit_tick.is_some() {
+                    // Check flight path for friendly-fire.
+                    let ff_clear = self
+                        .flight_path_blocked_by_friendly(
+                            creature_id,
+                            neighbor_pos,
+                            los_target,
+                            aim.velocity,
+                        )
+                        .is_none();
+
+                    if ff_clear {
+                        // This candidate has a clear shot.
+                        let non_blocking = !blocks_others;
+                        let dominated = best_clear.is_some_and(|(_, best_nb, best_d)| {
+                            // Better if: non_blocking and best isn't, or same
+                            // blocking status but closer.
+                            if non_blocking && !best_nb {
+                                false // new is better
+                            } else if !non_blocking && best_nb {
+                                true // old is better
+                            } else {
+                                dist_sq >= best_d // prefer closer
+                            }
+                        });
+                        if !dominated {
+                            best_clear = Some((edge_idx, non_blocking, dist_sq));
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            // No clear shot from this position — consider as fallback if it
+            // doesn't block other archers.
+            if !blocks_others {
+                let is_better = best_fallback.is_none_or(|(_, best_d)| dist_sq < best_d);
+                if is_better {
+                    best_fallback = Some((edge_idx, dist_sq));
+                }
+            }
+        }
+
+        // Prefer clear-shot candidates; fall back to non-blocking position.
+        if let Some((edge_idx, _, _)) = best_clear {
+            Some(edge_idx)
+        } else {
+            best_fallback.map(|(edge_idx, _)| edge_idx)
+        }
     }
 
     /// Move a creature one step along the given nav graph edge: update position,
@@ -34343,6 +34859,330 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Friendly-fire avoidance (F-friendly-fire)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_non_hostile_same_creature() {
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let elf = spawn_elf(&mut sim);
+        assert!(sim.is_non_hostile(elf, elf));
+    }
+
+    #[test]
+    fn is_non_hostile_same_civ() {
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let elf_a = spawn_elf(&mut sim);
+        let elf_b = spawn_elf(&mut sim);
+        // Both elves belong to the player civ.
+        assert!(sim.is_non_hostile(elf_a, elf_b));
+    }
+
+    #[test]
+    fn is_non_hostile_civ_vs_passive_non_civ() {
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let elf = spawn_elf(&mut sim);
+        // Deer has Passive combat AI — should be non-hostile.
+        let deer = spawn_species(&mut sim, Species::Deer);
+        assert!(sim.is_non_hostile(elf, deer));
+    }
+
+    #[test]
+    fn is_non_hostile_civ_vs_aggressive_non_civ() {
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let elf = spawn_elf(&mut sim);
+        // Goblin has AggressiveMelee combat AI — should be hostile.
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        assert!(!sim.is_non_hostile(elf, goblin));
+    }
+
+    #[test]
+    fn is_non_hostile_non_civ_same_species() {
+        let mut sim = test_sim(42);
+        let goblin_a = spawn_species(&mut sim, Species::Goblin);
+        let goblin_b = spawn_species(&mut sim, Species::Goblin);
+        assert!(sim.is_non_hostile(goblin_a, goblin_b));
+    }
+
+    #[test]
+    fn is_non_hostile_non_civ_different_species() {
+        // Non-civ creatures are always non-hostile to each other, even across
+        // species. This matches detect_hostile_targets: non-civ aggressors
+        // only target civ creatures.
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let deer = spawn_species(&mut sim, Species::Deer);
+        assert!(sim.is_non_hostile(goblin, deer));
+    }
+
+    #[test]
+    fn is_non_hostile_different_civs_neutral() {
+        // Two creatures from different civs with no Hostile relationship
+        // should be non-hostile.
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+
+        // Use two existing civs from worldgen.
+        let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
+        assert!(civs.len() >= 2, "Need at least 2 civs");
+        let civ_a = civs[0].id;
+        let civ_b = civs[1].id;
+
+        // Remove any existing relationships so we have a clean slate.
+        let existing: Vec<_> = sim
+            .db
+            .civ_relationships
+            .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .filter(|r| r.to_civ == civ_b)
+            .map(|r| r.id)
+            .collect();
+        for id in existing {
+            let _ = sim.db.civ_relationships.remove_no_fk(&id);
+        }
+
+        let elf_a = spawn_elf(&mut sim);
+        let elf_b = spawn_elf(&mut sim);
+        if let Some(mut c) = sim.db.creatures.get(&elf_b) {
+            c.civ_id = Some(civ_b);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        // No Hostile relationship → non-hostile.
+        assert!(
+            sim.is_non_hostile(elf_a, elf_b),
+            "Different civs with no Hostile relationship should be non-hostile"
+        );
+    }
+
+    #[test]
+    fn is_non_hostile_different_civs_hostile() {
+        // Two creatures from different civs with a Hostile relationship
+        // should be hostile.
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+
+        let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
+        assert!(civs.len() >= 2, "Need at least 2 civs");
+        let civ_a = civs[0].id;
+        let civ_b = civs[1].id;
+
+        let elf_a = spawn_elf(&mut sim);
+        let elf_b = spawn_elf(&mut sim);
+
+        // Assign elf_a to civ_a (it should already be the player civ).
+        let elf_a_civ = sim.db.creatures.get(&elf_a).unwrap().civ_id.unwrap();
+        // Assign elf_b to civ_b.
+        if let Some(mut c) = sim.db.creatures.get(&elf_b) {
+            c.civ_id = Some(civ_b);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        // Discover civ_b as Hostile.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DiscoverCiv {
+                    civ_id: elf_a_civ,
+                    discovered_civ: civ_b,
+                    initial_opinion: CivOpinion::Hostile,
+                },
+            }],
+            tick + 1,
+        );
+
+        assert!(
+            !sim.is_non_hostile(elf_a, elf_b),
+            "Different civs with Hostile relationship should be hostile"
+        );
+    }
+
+    #[test]
+    fn flight_path_clear_no_creatures() {
+        // Arrow through empty space should not be blocked.
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let target_voxel = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
+
+        use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+        let origin_sub = SubVoxelCoord::from_voxel_center(elf_pos);
+        let speed = sim.config.arrow_base_speed;
+        let gravity = sim.config.arrow_gravity;
+        let aim = compute_aim_velocity(origin_sub, target_voxel, speed, gravity, 5, 5000);
+        assert!(aim.hit_tick.is_some());
+
+        let blocked = sim.flight_path_blocked_by_friendly(elf, elf_pos, target_voxel, aim.velocity);
+        assert!(
+            blocked.is_none(),
+            "Should not be blocked with no creatures in path"
+        );
+    }
+
+    #[test]
+    fn flight_path_blocked_by_friendly_creature() {
+        // An elf between the shooter and the target should block the shot.
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let shooter = spawn_elf(&mut sim);
+        let blocker = spawn_elf(&mut sim);
+
+        let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+        // Place blocker 5 voxels away (in the flight path).
+        let blocker_pos = VoxelCoord::new(shooter_pos.x + 5, shooter_pos.y, shooter_pos.z);
+        force_position(&mut sim, blocker, blocker_pos);
+        // Target 10 voxels away (past the blocker).
+        let target_voxel = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
+
+        use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+        let origin_sub = SubVoxelCoord::from_voxel_center(shooter_pos);
+        let speed = sim.config.arrow_base_speed;
+        let gravity = sim.config.arrow_gravity;
+        let aim = compute_aim_velocity(origin_sub, target_voxel, speed, gravity, 5, 5000);
+        assert!(aim.hit_tick.is_some());
+
+        let blocked =
+            sim.flight_path_blocked_by_friendly(shooter, shooter_pos, target_voxel, aim.velocity);
+        assert_eq!(blocked, Some(blocker), "Should be blocked by friendly elf");
+    }
+
+    #[test]
+    fn flight_path_origin_area_excluded_for_friendlies() {
+        // A friendly creature at the origin voxel (immediate neighbor) should
+        // NOT block the shot — squads can stand together.
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let shooter = spawn_elf(&mut sim);
+        let buddy = spawn_elf(&mut sim);
+
+        let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+        // Place buddy right next to shooter (adjacent voxel).
+        let buddy_pos = VoxelCoord::new(shooter_pos.x + 1, shooter_pos.y, shooter_pos.z);
+        force_position(&mut sim, buddy, buddy_pos);
+        // Target far away.
+        let target_voxel = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
+
+        use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+        let origin_sub = SubVoxelCoord::from_voxel_center(shooter_pos);
+        let speed = sim.config.arrow_base_speed;
+        let gravity = sim.config.arrow_gravity;
+        let aim = compute_aim_velocity(origin_sub, target_voxel, speed, gravity, 5, 5000);
+        assert!(aim.hit_tick.is_some());
+
+        let blocked =
+            sim.flight_path_blocked_by_friendly(shooter, shooter_pos, target_voxel, aim.velocity);
+        assert!(blocked.is_none(), "Friendly near origin should not block");
+    }
+
+    #[test]
+    fn shoot_arrow_blocked_by_friendly_in_path() {
+        // Full integration: elf should NOT shoot through a friendly elf.
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let shooter = spawn_elf(&mut sim);
+        let blocker = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+        let blocker_pos = VoxelCoord::new(shooter_pos.x + 5, shooter_pos.y, shooter_pos.z);
+        let goblin_pos = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
+        force_position(&mut sim, blocker, blocker_pos);
+        force_position(&mut sim, goblin, goblin_pos);
+        force_idle(&mut sim, shooter);
+
+        arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: shooter,
+                    target_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+
+        // No projectile should have been spawned.
+        assert_eq!(
+            sim.db.projectiles.iter_all().count(),
+            0,
+            "Should not shoot through friendly elf"
+        );
+        // Arrow should NOT have been consumed.
+        let inv_id = sim.db.creatures.get(&shooter).unwrap().inventory_id;
+        assert_eq!(
+            sim.inv_item_count(
+                inv_id,
+                inventory::ItemKind::Arrow,
+                inventory::MaterialFilter::Any
+            ),
+            5,
+            "Arrow should not be consumed when shot is blocked"
+        );
+    }
+
+    #[test]
+    fn shoot_arrow_hostile_in_path_does_not_block() {
+        // A hostile creature in the flight path should NOT block the shot
+        // (they're a valid target the arrow can hit).
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let shooter = spawn_elf(&mut sim);
+        let goblin_near = spawn_species(&mut sim, Species::Goblin);
+        let goblin_far = spawn_species(&mut sim, Species::Goblin);
+
+        let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+        let near_pos = VoxelCoord::new(shooter_pos.x + 5, shooter_pos.y, shooter_pos.z);
+        let far_pos = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
+        force_position(&mut sim, goblin_near, near_pos);
+        force_position(&mut sim, goblin_far, far_pos);
+        force_idle(&mut sim, shooter);
+
+        arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: shooter,
+                    target_id: goblin_far,
+                },
+            }],
+            tick + 1,
+        );
+
+        // Projectile should be spawned — hostile in path doesn't block.
+        assert_eq!(
+            sim.db.projectiles.iter_all().count(),
+            1,
+            "Should shoot past hostile creature"
+        );
+    }
+
     #[test]
     fn elf_does_not_acquire_wood_boots_as_clothing() {
         // Wood boots are armor, not clothing. Elves seeking boots should
@@ -34432,6 +35272,60 @@ mod tests {
     }
 
     #[test]
+    fn try_combat_redirects_to_alternate_target() {
+        // When primary target is blocked by friendly, the attacker should
+        // redirect to an alternate hostile target with a clear path.
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let shooter = spawn_elf(&mut sim);
+        let blocker = spawn_elf(&mut sim);
+        let goblin_blocked = spawn_species(&mut sim, Species::Goblin);
+        let goblin_clear = spawn_species(&mut sim, Species::Goblin);
+
+        // Place everyone on the forest floor away from the tree to avoid
+        // LOS issues with the trunk. Y=1 is walking height on flat floor.
+        let base = VoxelCoord::new(5, 1, 32);
+        force_position(&mut sim, shooter, base);
+
+        // Place blocker between shooter and goblin_blocked (on X axis).
+        let blocker_pos = VoxelCoord::new(base.x + 5, base.y, base.z);
+        let blocked_pos = VoxelCoord::new(base.x + 10, base.y, base.z);
+        force_position(&mut sim, blocker, blocker_pos);
+        force_position(&mut sim, goblin_blocked, blocked_pos);
+
+        // Place goblin_clear on the opposite X side with no blocker.
+        let clear_pos = VoxelCoord::new(base.x - 8, base.y, base.z);
+        force_position(&mut sim, goblin_clear, clear_pos);
+
+        force_idle(&mut sim, shooter);
+        arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+        let mut events = Vec::new();
+        let result = sim.try_combat_against_target(shooter, goblin_blocked, &mut events);
+
+        assert!(
+            result,
+            "Should have redirected and fired at alternate target"
+        );
+        assert_eq!(
+            sim.db.projectiles.iter_all().count(),
+            1,
+            "Should have spawned a projectile at alternate target"
+        );
+
+        // Verify the projectile was launched at the clear goblin.
+        let launched_event = events.iter().find(|e| {
+            matches!(&e.kind, SimEventKind::ProjectileLaunched { target_id, .. }
+                if *target_id == goblin_clear)
+        });
+        assert!(
+            launched_event.is_some(),
+            "ProjectileLaunched should target the clear goblin"
+        );
+    }
+
+    #[test]
     fn item_display_name_shows_equipped_suffix() {
         let mut sim = test_sim(42);
         let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
@@ -34473,5 +35367,192 @@ mod tests {
             .unwrap();
         assert_eq!(sim.item_display_name(tunic), "Tunic");
         assert_eq!(sim.item_display_name(hat), "Hat (equipped)");
+    }
+
+    #[test]
+    fn in_flight_arrow_passes_through_friendly_near_origin() {
+        // An arrow should pass through a friendly creature standing adjacent
+        // to the shooter (origin neighbor) and hit a hostile further away.
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let shooter = spawn_elf(&mut sim);
+        let buddy = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place on flat ground away from the tree.
+        let base = VoxelCoord::new(5, 1, 32);
+        force_position(&mut sim, shooter, base);
+        // Buddy adjacent (origin+1 on X axis).
+        let buddy_pos = VoxelCoord::new(base.x + 1, base.y, base.z);
+        force_position(&mut sim, buddy, buddy_pos);
+        // Goblin further along the same axis.
+        let goblin_pos = VoxelCoord::new(base.x + 10, base.y, base.z);
+        force_position(&mut sim, goblin, goblin_pos);
+
+        force_idle(&mut sim, shooter);
+        arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+        // Fire the arrow.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: shooter,
+                    target_id: goblin,
+                },
+            }],
+            tick + 1,
+        );
+        assert_eq!(
+            sim.db.projectiles.iter_all().count(),
+            1,
+            "Arrow should launch"
+        );
+
+        // Advance until the projectile resolves (hits goblin or despawns).
+        let max_tick = sim.tick + 10_000;
+        while sim.tick < max_tick && sim.db.projectiles.iter_all().count() > 0 {
+            sim.step(&[], sim.tick + 10);
+        }
+
+        // Buddy should be alive and at full HP (arrow passed through, not hit).
+        let buddy_creature = sim.db.creatures.get(&buddy).unwrap();
+        assert_eq!(
+            buddy_creature.vital_status,
+            VitalStatus::Alive,
+            "Friendly near origin should not be hit by arrow"
+        );
+        let buddy_max_hp = sim.species_table[&Species::Elf].hp_max;
+        assert_eq!(
+            buddy_creature.hp, buddy_max_hp,
+            "Friendly near origin should be at full HP"
+        );
+        // Goblin should have taken damage (arrow hit them).
+        let goblin_hp = sim.db.creatures.get(&goblin).unwrap().hp;
+        let goblin_max = sim.species_table[&Species::Goblin].hp_max;
+        assert!(
+            goblin_hp < goblin_max,
+            "Goblin should have been hit by the arrow"
+        );
+    }
+
+    #[test]
+    fn position_blocks_friendly_archer_on_line() {
+        // A candidate position directly between a friendly archer and their
+        // target should be detected as blocking.
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let mover = spawn_elf(&mut sim);
+        let archer = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place on flat ground away from tree.
+        let base = VoxelCoord::new(5, 1, 32);
+        force_position(&mut sim, mover, base);
+
+        // Archer at x=5, goblin at x=15, candidate at x=10 — directly in line.
+        let archer_pos = VoxelCoord::new(base.x, base.y, base.z + 3);
+        force_position(&mut sim, archer, archer_pos);
+        let goblin_pos = VoxelCoord::new(base.x, base.y, base.z + 13);
+        force_position(&mut sim, goblin, goblin_pos);
+
+        // Give archer a bow so they count as an archer.
+        arm_with_bow_and_arrows(&mut sim, archer, 5);
+
+        // Give archer an attack task targeting the goblin.
+        let goblin_node = sim.nav_graph.find_nearest_node(goblin_pos);
+        if let Some(node) = goblin_node {
+            let task_id = TaskId::new(&mut sim.rng);
+            let task = Task {
+                id: task_id,
+                kind: TaskKind::AttackTarget { target: goblin },
+                state: TaskState::InProgress,
+                location: node,
+                progress: 0.0,
+                total_cost: 0.0,
+                required_species: Some(Species::Elf),
+                origin: TaskOrigin::PlayerDirected,
+                target_creature: Some(goblin),
+            };
+            sim.insert_task(task);
+            if let Some(mut c) = sim.db.creatures.get(&archer) {
+                c.current_task = Some(task_id);
+                let _ = sim.db.creatures.update_no_fk(c);
+            }
+        }
+
+        // Candidate position between archer and goblin (on the Z-axis line).
+        let candidate = VoxelCoord::new(base.x, base.y, base.z + 8);
+        assert!(
+            sim.position_blocks_friendly_archers(mover, candidate),
+            "Candidate between archer and target should block"
+        );
+
+        // Candidate position off the line should not block.
+        let off_line = VoxelCoord::new(base.x + 5, base.y, base.z + 8);
+        assert!(
+            !sim.position_blocks_friendly_archers(mover, off_line),
+            "Candidate far off the line should not block"
+        );
+    }
+
+    #[test]
+    fn in_flight_arrow_hits_hostile_at_origin_neighbor() {
+        // Point-blank: a hostile creature adjacent to the shooter (origin
+        // neighbor) should still be hit by the arrow.
+        let mut sim = test_sim(42);
+        sim.config.elf_starting_bows = 0;
+        sim.config.elf_starting_arrows = 0;
+        let shooter = spawn_elf(&mut sim);
+        let goblin_near = spawn_species(&mut sim, Species::Goblin);
+        let goblin_far = spawn_species(&mut sim, Species::Goblin);
+
+        // Place on flat ground away from the tree.
+        let base = VoxelCoord::new(5, 1, 32);
+        force_position(&mut sim, shooter, base);
+        // Hostile adjacent (origin+1).
+        let near_pos = VoxelCoord::new(base.x + 1, base.y, base.z);
+        force_position(&mut sim, goblin_near, near_pos);
+        // Target further away (we shoot at this one, but arrow should hit
+        // the near goblin first since it's in the path).
+        let far_pos = VoxelCoord::new(base.x + 10, base.y, base.z);
+        force_position(&mut sim, goblin_far, far_pos);
+
+        force_idle(&mut sim, shooter);
+        arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+        // Fire at the far goblin.
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: tick + 1,
+                action: SimAction::DebugShootAction {
+                    attacker_id: shooter,
+                    target_id: goblin_far,
+                },
+            }],
+            tick + 1,
+        );
+        assert_eq!(sim.db.projectiles.iter_all().count(), 1);
+
+        // Advance until the projectile resolves.
+        let max_tick = sim.tick + 10_000;
+        while sim.tick < max_tick && sim.db.projectiles.iter_all().count() > 0 {
+            sim.step(&[], sim.tick + 10);
+        }
+
+        // Near hostile should have been hit (arrow doesn't skip hostiles
+        // even near origin).
+        let near_hp = sim.db.creatures.get(&goblin_near).unwrap().hp;
+        let goblin_max = sim.species_table[&Species::Goblin].hp_max;
+        assert!(
+            near_hp < goblin_max,
+            "Hostile near origin should be hit by arrow"
+        );
     }
 }
