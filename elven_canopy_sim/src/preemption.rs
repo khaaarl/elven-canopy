@@ -8,7 +8,9 @@
 // The `PreemptionLevel` enum has 8 levels from Idle(0) to Flee(7). The mapping
 // function `preemption_level()` uses exhaustive matches on both `TaskKindTag`
 // and `TaskOrigin` — adding a new variant to either enum causes a compile error
-// here, forcing the developer to assign the correct level.
+// here, forcing the developer to assign the correct level. Note: AcquireItem
+// (stocking up on bread, fetching clothing) is Autonomous, not Survival —
+// it's about carrying spares, not immediate self-care like eating or sleeping.
 //
 // Preemption rules are encoded in `can_preempt()`:
 // - Standard: new level > current level → preempt.
@@ -34,11 +36,11 @@ use serde::{Deserialize, Serialize};
 pub enum PreemptionLevel {
     /// 0 — no task, wandering.
     Idle,
-    /// 1 — background work: haul, cook, craft, harvest.
+    /// 1 — background work: haul, cook, craft, harvest, acquire items.
     Autonomous,
     /// 2 — player-directed non-combat: GoTo, Build, Furnish.
     PlayerDirected,
-    /// 3 — self-care: eat, sleep, acquire items.
+    /// 3 — self-care: eat, sleep.
     Survival,
     /// 4 — mood crisis: mope.
     Mood,
@@ -73,13 +75,17 @@ impl PreemptionLevel {
 pub fn preemption_level(kind: TaskKindTag, origin: TaskOrigin) -> PreemptionLevel {
     match kind {
         // Background work — Autonomous(1) regardless of origin.
-        TaskKindTag::Haul | TaskKindTag::Cook | TaskKindTag::Craft | TaskKindTag::Harvest => {
-            match origin {
-                TaskOrigin::PlayerDirected | TaskOrigin::Autonomous | TaskOrigin::Automated => {
-                    PreemptionLevel::Autonomous
-                }
+        // AcquireItem is stocking up (carrying spare bread, fetching clothing),
+        // not immediate self-care — it belongs here, not at Survival level.
+        TaskKindTag::Haul
+        | TaskKindTag::Cook
+        | TaskKindTag::Craft
+        | TaskKindTag::Harvest
+        | TaskKindTag::AcquireItem => match origin {
+            TaskOrigin::PlayerDirected | TaskOrigin::Autonomous | TaskOrigin::Automated => {
+                PreemptionLevel::Autonomous
             }
-        }
+        },
 
         // Player-directed non-combat — PlayerDirected(2).
         TaskKindTag::GoTo | TaskKindTag::Build | TaskKindTag::Furnish => match origin {
@@ -89,10 +95,7 @@ pub fn preemption_level(kind: TaskKindTag, origin: TaskOrigin) -> PreemptionLeve
         },
 
         // Self-care — Survival(3).
-        TaskKindTag::EatBread
-        | TaskKindTag::EatFruit
-        | TaskKindTag::Sleep
-        | TaskKindTag::AcquireItem => match origin {
+        TaskKindTag::EatBread | TaskKindTag::EatFruit | TaskKindTag::Sleep => match origin {
             TaskOrigin::PlayerDirected | TaskOrigin::Autonomous | TaskOrigin::Automated => {
                 PreemptionLevel::Survival
             }
@@ -245,11 +248,25 @@ mod tests {
             TaskKindTag::EatBread,
             TaskKindTag::EatFruit,
             TaskKindTag::Sleep,
-            TaskKindTag::AcquireItem,
         ] {
             assert_eq!(
                 preemption_level(kind, TaskOrigin::Autonomous),
                 PreemptionLevel::Survival,
+            );
+        }
+    }
+
+    #[test]
+    fn acquire_item_maps_to_autonomous() {
+        for origin in [
+            TaskOrigin::Autonomous,
+            TaskOrigin::Automated,
+            TaskOrigin::PlayerDirected,
+        ] {
+            assert_eq!(
+                preemption_level(TaskKindTag::AcquireItem, origin),
+                PreemptionLevel::Autonomous,
+                "AcquireItem/{origin:?} should be Autonomous (stocking up, not self-care)"
             );
         }
     }
