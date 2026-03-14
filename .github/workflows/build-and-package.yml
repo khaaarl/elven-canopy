@@ -1,7 +1,9 @@
-# CI workflow: Build the Rust GDExtension library and package the game via
-# Godot's export pipeline for Linux, Windows, macOS, Android, and iOS.
+# Build & Package workflow: Build the Rust GDExtension library and package the
+# game via Godot's export pipeline for Linux, Windows, macOS, Android, and iOS.
 #
-# Triggered manually via workflow_dispatch.
+# Triggered manually via workflow_dispatch. Requires a passing CI run (ci.yml)
+# for the same commit before any builds start. If no CI run exists, one is
+# triggered automatically. Waits up to 15 minutes for CI to complete.
 #
 # Caveats:
 # - Android: Exports a debug/unsigned APK. For release, add ANDROID_KEYSTORE_* secrets.
@@ -30,7 +32,7 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Resolve version tag (runs in parallel with test)
+  # Resolve version tag (runs in parallel with require-ci)
   # ---------------------------------------------------------------------------
   prepare:
     runs-on: ubuntu-latest
@@ -48,22 +50,63 @@ jobs:
           echo "Resolved tag: $(grep tag= "$GITHUB_OUTPUT" | tail -1)"
 
   # ---------------------------------------------------------------------------
-  # Run sim tests before any builds
+  # Require a passing CI run for this commit before building
   # ---------------------------------------------------------------------------
-  test:
+  require-ci:
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Run sim tests
-        run: cargo test -p elven_canopy_sim
+      - name: Wait for CI to pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA="${{ github.sha }}"
+          REPO="${{ github.repository }}"
+          TIMEOUT=900
+          INTERVAL=30
+          ELAPSED=0
+          TRIGGERED=false
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            # Query all CI runs for this commit that have completed
+            CONCLUSION=$(gh run list --repo "$REPO" --workflow ci.yml \
+              --commit "$SHA" --status completed --json conclusion \
+              -q '.[0].conclusion')
+
+            if [ "$CONCLUSION" = "success" ]; then
+              echo "CI passed for $SHA"
+              exit 0
+            elif [ -n "$CONCLUSION" ]; then
+              # Any completed non-success conclusion (failure, cancelled, timed_out, etc.)
+              echo "::error::CI finished with conclusion '$CONCLUSION' for $SHA — aborting build"
+              exit 1
+            fi
+
+            # If no CI run exists at all (no completed, no in-progress), trigger one
+            if [ "$TRIGGERED" = "false" ]; then
+              ANY=$(gh run list --repo "$REPO" --workflow ci.yml \
+                --commit "$SHA" --json status -q '.[0].status')
+              if [ -z "$ANY" ]; then
+                echo "No CI run found for $SHA — triggering one"
+                gh workflow run ci.yml --repo "$REPO" --ref "${{ github.ref_name }}"
+                TRIGGERED=true
+              fi
+            fi
+
+            echo "Waiting for CI... (${ELAPSED}s / ${TIMEOUT}s)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          echo "::error::Timed out waiting for CI to pass on $SHA (${TIMEOUT}s)"
+          exit 1
 
   # ---------------------------------------------------------------------------
   # Linux (x86_64)
   # ---------------------------------------------------------------------------
   build-linux:
-    needs: [test, prepare]
+    needs: [require-ci, prepare]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -109,7 +152,7 @@ jobs:
   # Windows (x86_64)
   # ---------------------------------------------------------------------------
   build-windows:
-    needs: [test, prepare]
+    needs: [require-ci, prepare]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -159,7 +202,7 @@ jobs:
   # macOS (universal: aarch64 + x86_64)
   # ---------------------------------------------------------------------------
   build-macos:
-    needs: [test, prepare]
+    needs: [require-ci, prepare]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -218,7 +261,7 @@ jobs:
   # Android (arm64-v8a) — debug/unsigned APK
   # ---------------------------------------------------------------------------
   build-android:
-    needs: [test, prepare]
+    needs: [require-ci, prepare]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -306,7 +349,7 @@ jobs:
   # fully succeed. Marked continue-on-error so it doesn't block releases.
   # ---------------------------------------------------------------------------
   build-ios:
-    needs: [test, prepare]
+    needs: [require-ci, prepare]
     runs-on: macos-latest
     continue-on-error: true
     steps:
@@ -387,7 +430,7 @@ jobs:
   # Relay server (Linux x86_64) — standalone multiplayer relay binary
   # ---------------------------------------------------------------------------
   build-relay-linux:
-    needs: [test, prepare]
+    needs: [require-ci, prepare]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

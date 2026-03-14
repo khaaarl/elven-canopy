@@ -8,11 +8,13 @@
 # - gdscript: gdformat --check + gdlint
 # - gdscript-parse-check: build gdext + launch Godot to check all scripts load
 #
-# Triggers on pushes and pull requests that touch relevant files.
+# Triggers on pushes and pull requests that touch relevant files, and on
+# workflow_dispatch (used by Build & Package to ensure CI passes before building).
 
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - "**.rs"
