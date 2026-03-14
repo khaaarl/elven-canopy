@@ -60,6 +60,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
+[ ] F-ai-test-harness      Headless test harness for AI-driven manual testing
 [ ] F-alt-deselect         Alt+click to remove from selection
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-armor                Wearable armor system
@@ -3037,6 +3038,30 @@ Revamp the creature activation/event system so that creatures do not need to man
 Control a single elf in first/third-person perspective within the
 same simulation. RPG-like exploration mode.
 
+#### F-ai-test-harness — Headless test harness for AI-driven manual testing
+**Status:** Todo
+
+Build a headless "screen reader" harness that lets Claude (or automated
+scripts) play the game without eyes. Three components:
+
+1. **State observation layer** — dump visible UI state as text/JSON: open
+   panels, label text, button states, inventory contents, creature lists.
+   Activated via command-line flag or autoload.
+
+2. **Command interface** — high-level actions ("select workshop at 5,3,1",
+   "activate Wooden Bowl recipe", "wait 100 ticks") translated into real
+   UI interactions (input events or direct bridge calls).
+
+3. **Assertion helpers** — check observable state against expectations
+   ("workshop inventory contains 1 Wooden Bowl with material Oak").
+
+Catches full-vertical-slice bugs (Rust sim → bridge serialization →
+GDScript display) that unit tests miss, like inventories showing items
+without material info. Same infrastructure supports both AI-driven
+exploratory testing and deterministic regression scripts.
+
+**Related:** F-bridge-integ-tests, F-gdscript-tests
+
 #### F-bridge-integ-tests — Integration tests for gdext bridge functions
 **Status:** Todo
 
@@ -3048,7 +3073,7 @@ Heavier than unit tests — requires launching Godot headless. Add a CI
 job and a `scripts/build.sh integtest` target. Motivated by the
 F-move-spread segfault where an Array type mismatch crashed at runtime.
 
-**Related:** F-gdscript-tests
+**Related:** F-ai-test-harness, F-gdscript-tests
 
 #### F-core-types — VoxelCoord, IDs, SimCommand, GameConfig
 **Status:** Done · **Phase:** 0 · **Refs:** §5, §7
@@ -3103,7 +3128,7 @@ coordinate math, selection helpers, input mode transitions. Add a
 `scripts/build.sh gdtest` target and a CI job. These tests don't need
 the sim or bridge — just GDScript in isolation.
 
-**Related:** F-bridge-integ-tests
+**Related:** F-ai-test-harness, F-bridge-integ-tests
 
 #### F-immediate-commands — Immediate command application (zero-tick updates)
 **Status:** Done · **Phase:** 2
