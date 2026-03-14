@@ -287,8 +287,38 @@ case "$MODE" in
         echo "Checking Rust formatting..."
         cargo fmt --all --check
         echo ""
-        echo "Running Clippy..."
-        cargo clippy --workspace -- -D warnings
+        # Scope clippy to changed crates when on a feature branch.
+        # On main (or if git diff fails), fall back to full workspace.
+        # If no Rust crates changed, skip clippy entirely.
+        CLIPPY_SCOPE="--workspace"
+        SKIP_CLIPPY=""
+        CURRENT_BRANCH="$(git branch --show-current 2>/dev/null || true)"
+        if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ]; then
+            BRANCH_CHANGES="$(git diff --name-only main...HEAD 2>/dev/null || true)"
+            STAGED_CHANGES="$(git diff --name-only --cached 2>/dev/null || true)"
+            UNSTAGED_CHANGES="$(git diff --name-only 2>/dev/null || true)"
+            CHANGED_FILES="$(printf '%s\n%s\n%s' "$BRANCH_CHANGES" "$STAGED_CHANGES" "$UNSTAGED_CHANGES" | sort -u)"
+            CLIPPY_PACKAGES=""
+            for CRATE_DIR in elven_canopy_prng elven_canopy_lang elven_canopy_sim elven_canopy_protocol elven_canopy_relay elven_canopy_music elven_canopy_gdext tabulosity tabulosity_derive multiplayer_tests; do
+                if printf '%s' "$CHANGED_FILES" | grep -q "^${CRATE_DIR}/"; then
+                    CLIPPY_PACKAGES="$CLIPPY_PACKAGES -p $CRATE_DIR"
+                fi
+            done
+            if [ -n "$CLIPPY_PACKAGES" ]; then
+                CLIPPY_SCOPE="$CLIPPY_PACKAGES"
+            elif printf '%s' "$CHANGED_FILES" | grep -q '\.rs$\|Cargo\.toml$'; then
+                # Rust files changed outside crate dirs (e.g., workspace Cargo.toml)
+                CLIPPY_SCOPE="--workspace"
+            else
+                SKIP_CLIPPY="1"
+            fi
+        fi
+        if [ -n "$SKIP_CLIPPY" ]; then
+            echo "No Rust changes detected, skipping Clippy."
+        else
+            echo "Running Clippy ($CLIPPY_SCOPE)..."
+            cargo clippy $CLIPPY_SCOPE -- -D warnings
+        fi
         echo ""
         # Ensure gdformat/gdlint are available, set up venv if not
         GDFORMAT="$REPO_ROOT/python/.venv/bin/gdformat"
