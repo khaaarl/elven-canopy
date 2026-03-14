@@ -343,8 +343,6 @@ func _position_tooltip() -> void:
 
 ## Perpendicular distance squared from a point to an infinite ray.
 ## Clamps t >= 0 so points behind the camera are handled correctly.
+## Delegates to GeometryUtils (geometry_utils.gd) — the single source of truth.
 func _point_to_ray_dist_sq(point: Vector3, ray_origin: Vector3, ray_dir: Vector3) -> float:
-	var to_point := point - ray_origin
-	var t := maxf(0.0, to_point.dot(ray_dir))
-	var closest := ray_origin + ray_dir * t
-	return (point - closest).length_squared()
+	return GeometryUtils.point_to_ray_dist_sq(point, ray_origin, ray_dir)

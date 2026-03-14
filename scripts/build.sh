@@ -11,6 +11,7 @@
 #   scripts/build.sh quicktest  # test only crates changed vs main
 #   scripts/build.sh run        # debug build then launch the game
 #   scripts/build.sh relay       # optimized standalone relay binary (LTO, stripped)
+#   scripts/build.sh gdtest     # run GDScript unit tests (GUT)
 #   scripts/build.sh check      # run fmt, clippy, gdformat, gdlint checks
 #   scripts/build.sh coverage  # generate HTML code coverage report (requires cargo-llvm-cov)
 #   scripts/build.sh run-branch NAME  # fetch, checkout branch, sync to remote, build+run
@@ -81,7 +82,7 @@ godot_script_check() {
     cargo build -p elven_canopy_gdext
     ensure_godot_imported
     echo "Checking GDScript parse validity..."
-    OUTPUT="$(xvfb-run "$GODOT" --path "$REPO_ROOT/godot" --quit 2>&1)" || true
+    OUTPUT="$(xvfb-run -a "$GODOT" --path "$REPO_ROOT/godot" --quit 2>&1)" || true
     if printf '%s' "$OUTPUT" | grep -q "SCRIPT ERROR"; then
         echo "$OUTPUT" >&2
         echo "" >&2
@@ -89,6 +90,30 @@ godot_script_check() {
         exit 1
     fi
     echo "GDScript parse check passed."
+}
+
+# --- GDScript unit tests (GUT) ------------------------------------------------
+# Runs the GUT (Godot Unit Test) test suite headlessly. Requires Godot and
+# xvfb-run (for headless rendering). Tests live in godot/test/test_*.gd.
+
+gdscript_unit_tests() {
+    if [ -z "$GODOT" ]; then
+        echo "Error: Godot not found (tried godot-4, godot4, godot)" >&2
+        exit 1
+    fi
+    ensure_godot_imported
+    echo "Running GDScript unit tests (GUT)..."
+    GUT_TIMEOUT="${GUT_TIMEOUT:-60}"
+    GUT_EXIT_CODE=0
+    timeout "$GUT_TIMEOUT" xvfb-run -a "$GODOT" --path "$REPO_ROOT/godot" --headless --script res://test/gut_runner.gd || GUT_EXIT_CODE=$?
+    if [ "$GUT_EXIT_CODE" -eq 124 ]; then
+        echo "GDScript unit tests timed out after ${GUT_TIMEOUT}s!" >&2
+        exit 1
+    elif [ "$GUT_EXIT_CODE" -ne 0 ]; then
+        echo "GDScript unit tests failed!" >&2
+        exit 1
+    fi
+    echo "GDScript unit tests passed."
 }
 
 # --- Build --------------------------------------------------------------------
@@ -173,6 +198,9 @@ case "$MODE" in
             echo ""
         fi
         echo "All tests passed."
+        ;;
+    gdtest)
+        gdscript_unit_tests
         ;;
     run)
         echo "Building elven_canopy_gdext (debug)..."
@@ -329,15 +357,15 @@ case "$MODE" in
             "$REPO_ROOT/python/.venv/bin/pip" install -r "$REPO_ROOT/python/requirements-dev.txt"
         fi
         echo "Checking GDScript formatting..."
-        "$GDFORMAT" --check --line-length 100 godot/scripts/*.gd
+        "$GDFORMAT" --check --line-length 100 godot/scripts/*.gd godot/test/*.gd
         echo ""
         echo "Running GDScript linter..."
-        "$GDLINT" godot/scripts/*.gd
+        "$GDLINT" godot/scripts/*.gd godot/test/*.gd
         echo ""
         echo "All checks passed."
         ;;
     *)
-        echo "Usage: scripts/build.sh [debug|release|relay|test|quicktest|run|run-branch|check|coverage]" >&2
+        echo "Usage: scripts/build.sh [debug|release|relay|test|quicktest|gdtest|run|run-branch|check|coverage]" >&2
         exit 1
         ;;
 esac

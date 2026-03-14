@@ -1,12 +1,13 @@
 # CI workflow: Formatting, linting, tests, and coverage for Rust and GDScript.
 #
-# Six independent jobs:
+# Seven independent jobs:
 # - rust-lint: cargo fmt --check + cargo clippy (no Godot needed, fast)
 # - gdext-build: compile-check elven_canopy_gdext (Godot binding crate)
 # - rust-test: unit tests + multiplayer integration tests (high thread count)
 # - coverage: code coverage via cargo-llvm-cov, uploaded to Codecov
 # - gdscript: gdformat --check + gdlint
 # - gdscript-parse-check: build gdext + launch Godot to check all scripts load
+# - gdscript-unit-tests: GUT-based GDScript unit tests (no Rust/bridge needed)
 #
 # Triggers on pushes and pull requests that touch relevant files, and on
 # workflow_dispatch (used by Build & Package to ensure CI passes before building).
@@ -26,6 +27,9 @@ on:
       - "tabulosity_derive/**"
       - "multiplayer_tests/**"
       - "godot/scripts/**.gd"
+      - "godot/test/**.gd"
+      - "godot/addons/gut/**"
+      - "godot/.gutconfig.json"
       - ".gdlintrc"
       - "python/requirements-dev.txt"
       - ".github/workflows/ci.yml"
@@ -40,6 +44,9 @@ on:
       - "tabulosity_derive/**"
       - "multiplayer_tests/**"
       - "godot/scripts/**.gd"
+      - "godot/test/**.gd"
+      - "godot/addons/gut/**"
+      - "godot/.gutconfig.json"
       - ".gdlintrc"
       - "python/requirements-dev.txt"
       - ".github/workflows/ci.yml"
@@ -134,10 +141,10 @@ jobs:
         run: pip install -r python/requirements-dev.txt
 
       - name: Check GDScript formatting
-        run: gdformat --check --line-length 100 godot/scripts/*.gd
+        run: gdformat --check --line-length 100 godot/scripts/*.gd godot/test/*.gd
 
       - name: Run GDScript linter
-        run: gdlint godot/scripts/*.gd
+        run: gdlint godot/scripts/*.gd godot/test/*.gd
 
   gdscript-parse-check:
     runs-on: ubuntu-latest
@@ -164,10 +171,31 @@ jobs:
 
       - name: Check GDScript parse validity
         run: |
-          OUTPUT="$(xvfb-run godot --path godot --quit 2>&1)" || true
+          OUTPUT="$(xvfb-run -a godot --path godot --quit 2>&1)" || true
           if printf '%s' "$OUTPUT" | grep -q "SCRIPT ERROR"; then
             echo "$OUTPUT" >&2
             echo "GDScript parse check failed!" >&2
             exit 1
           fi
           echo "GDScript parse check passed."
+
+  gdscript-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot
+        run: |
+          wget -q https://github.com/godotengine/godot-builds/releases/download/4.6.1-stable/Godot_v4.6.1-stable_linux.x86_64.zip
+          unzip -q Godot_v4.6.1-stable_linux.x86_64.zip
+          sudo mv Godot_v4.6.1-stable_linux.x86_64 /usr/local/bin/godot
+          chmod +x /usr/local/bin/godot
+
+      - name: Ensure godot/target symlink
+        run: ln -sf ../target godot/target
+
+      - name: Import Godot project
+        run: godot --path godot --headless --import --quit 2>/dev/null || true
+
+      - name: Run GDScript unit tests (GUT)
+        run: timeout 60 xvfb-run -a godot --path godot --headless --script res://test/gut_runner.gd

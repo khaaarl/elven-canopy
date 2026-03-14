@@ -415,11 +415,9 @@ func _deselect_pile_only() -> void:
 
 ## Perpendicular distance squared from a point to an infinite ray.
 ## Clamps t >= 0 so points behind the camera are handled correctly.
+## Delegates to GeometryUtils (geometry_utils.gd) — the single source of truth.
 func _point_to_ray_dist_sq(point: Vector3, ray_origin: Vector3, ray_dir: Vector3) -> float:
-	var to_point := point - ray_origin
-	var t := maxf(0.0, to_point.dot(ray_dir))
-	var closest := ray_origin + ray_dir * t
-	return (point - closest).length_squared()
+	return GeometryUtils.point_to_ray_dist_sq(point, ray_origin, ray_dir)
 
 
 ## Right-click command: if a creature is selected, right-clicking on the world
@@ -577,7 +575,6 @@ func _update_box_rect(current_pos: Vector2) -> void:
 
 
 ## Build a Rect2 from two corner points, handling any drag direction.
+## Delegates to GeometryUtils (geometry_utils.gd) — the single source of truth.
 func _make_screen_rect(a: Vector2, b: Vector2) -> Rect2:
-	var top_left := Vector2(minf(a.x, b.x), minf(a.y, b.y))
-	var bottom_right := Vector2(maxf(a.x, b.x), maxf(a.y, b.y))
-	return Rect2(top_left, bottom_right - top_left)
+	return GeometryUtils.make_screen_rect(a, b)

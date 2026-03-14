@@ -120,7 +120,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-game-speed-fkeys     Move game speed controls to F1/F2/F3
-[ ] F-gdscript-tests       GDScript unit tests (GUT or built-in)
 [ ] F-ghost-above          Ghost out voxels above camera focus height
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
@@ -239,6 +238,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-furnish              Building furnishing framework (dormitories)
 [x] F-game-session         Game session autoload singleton
 [x] F-gdext-bridge         gdext compilation and Rust bridge
+[x] F-gdscript-tests       GDScript unit tests (GUT or built-in)
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
@@ -3095,7 +3095,7 @@ GDExtension bridge crate exposing sim to Godot. SimBridge node with
 methods for commands, queries, and rendering data.
 
 #### F-gdscript-tests — GDScript unit tests (GUT or built-in)
-**Status:** Todo
+**Status:** Done
 
 Set up a lightweight GDScript unit testing framework (GUT or Godot 4.6's
 built-in test runner). Cover pure GDScript logic: UI state machines,

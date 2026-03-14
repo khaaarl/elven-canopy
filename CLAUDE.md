@@ -39,6 +39,7 @@ scripts/build.sh            # Debug build
 scripts/build.sh release    # Release build
 scripts/build.sh test       # Run all crate tests
 scripts/build.sh quicktest  # Test only crates changed vs main
+scripts/build.sh gdtest     # Run GDScript unit tests (GUT)
 scripts/build.sh relay      # Optimized standalone relay binary (LTO, stripped)
 scripts/build.sh run        # Debug build, then launch the game
 scripts/build.sh run-branch NAME  # Fetch, checkout branch, sync to remote, build+run
@@ -110,7 +111,7 @@ The only exception is editing `CLAUDE.md` itself, which can be done on `main` if
 
 ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FEATURE BRANCHES DOES NOT REQUIRE PERMISSION. When committing to a feature branch, always push to origin immediately after committing (`git push`).
 
-**Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.sh check` and fix any issues. Do NOT commit code that fails formatting or linting. For commits that change Rust code, also run `scripts/build.sh quicktest` and ensure all tests pass. Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
+**Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.sh check` and fix any issues. Do NOT commit code that fails formatting or linting. For commits that change Rust code, also run `scripts/build.sh quicktest` and ensure all tests pass. For commits that change GDScript code, also run `scripts/build.sh gdtest` and ensure all GDScript unit tests pass. Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
 
 **Commit message procedure:** Always write the commit message to `.tmp/commit-msg.txt` using the Write tool, then commit with `-F`:
 
@@ -163,6 +164,16 @@ When the user asks to merge a feature branch to main, use the `/merge-to-main` s
     - Do not count on shared infrastructure being "tested elsewhere" as a reason to skip testing a specific feature's use of that infrastructure. The test proves *this feature's* integration works, not that the infrastructure works in general.
 
 When tests fail unexpectedly, diagnose the root cause. Do not bypass, skip, or work around failing checks (validators, lints, assertions). Never increase retry counts, disable validation, or add #[ignore] to make a test pass. Do not ever take the "easy" route; do the right thing. If the user has not requested that you operate on your own, you may ask the user for guidance after thoroughly examining the problem.
+
+## GDScript: Unit Testing with GUT
+
+GDScript unit tests use the [GUT](https://github.com/bitwes/Gut) (Godot Unit Test) framework. Tests live in `godot/test/test_*.gd` and extend `GutTest`. Run them with `scripts/build.sh gdtest`.
+
+**When to write GDScript tests:** When adding or modifying pure GDScript logic — coordinate math, UI state machines, formatting helpers, selection logic, input mode transitions. If a function doesn't need the sim bridge or a full scene tree, it should have a GDScript unit test. Extract testable logic into utility classes (e.g., `geometry_utils.gd`) when it's embedded in scene-dependent code.
+
+**Test file naming:** `godot/test/test_<module>.gd` — mirrors the source file in `godot/scripts/`.
+
+**Pre-commit:** For commits that change `.gd` files, `scripts/build.sh check` already covers formatting and linting. Also run `scripts/build.sh gdtest` to verify GDScript tests pass (analogous to `quicktest` for Rust).
 
 ## Project Tracker (`docs/tracker.md`)
 
