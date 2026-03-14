@@ -41,6 +41,8 @@ and anything that would be embarrassing to merge.
    - Check that CLAUDE.md sections (especially "Implementation Status" and
      "Project Structure") are still accurate after the changes.
    - Check that tracker.md entries for related features are up to date.
+   - Check that `docs/project_structure.md` is still accurate — especially
+     if files were added, removed, renamed, or restructured.
 
    ### Consistency
    - If the feature adds new protocol messages, config fields, or public API,
