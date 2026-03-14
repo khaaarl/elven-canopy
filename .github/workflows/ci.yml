@@ -48,6 +48,7 @@ on:
 # the optimization compile-time cost in CI, where cold builds are common.
 env:
   CARGO_PROFILE_DEV_OPT_LEVEL: 0
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   rust-lint:
