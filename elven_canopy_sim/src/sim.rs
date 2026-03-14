@@ -76,6 +76,23 @@
 // Wandering is intentionally local and aimless — no pathfinding, just 1 random
 // neighbor per activation. This creates natural-looking milling about.
 //
+// ## Voxel exclusion (F-voxel-exclusion)
+//
+// Creatures cannot move into voxels occupied by hostile creatures. This is
+// enforced at **move time** (not pathfind time) via `destination_blocked_by_hostile()`,
+// which checks all voxels in the mover's destination footprint against the
+// spatial index. Multi-voxel creatures (e.g. 2x2x2 elephants) check all
+// destination footprint voxels. When blocked, the creature stays put and
+// schedules a retry after `config.voxel_exclusion_retry_ticks`.
+//
+// Enforcement points: `move_one_step()` (safety net for all callers),
+// `random_wander()` (pre-filters edges), `flee_step()` (pre-filters with
+// fallback if cornered), and the three `walk_toward_*()` inline movers.
+//
+// Pathfinding (`pathfinding.rs`) intentionally knows nothing about occupancy —
+// creature positions are dynamic and would make paths stale instantly. The
+// move-time check is simpler and handles transient blocking naturally.
+//
 // ## Task system
 //
 // Tasks are the core assignment mechanism. The sim's `db.tasks` table stores
@@ -5286,6 +5303,25 @@ impl SimState {
         // Move one edge.
         let graph = self.graph_for_species(species);
         let edge = graph.edge(edge_idx);
+        let dest_pos = graph.node(dest_node).position;
+
+        // Voxel exclusion: reject move if destination is hostile-occupied.
+        let footprint = self.species_table[&species].footprint;
+        if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
+            // Invalidate cached path so we repath on retry.
+            let _ = self
+                .db
+                .creatures
+                .modify_unchecked(&creature_id, |creature| {
+                    creature.path = None;
+                });
+            self.event_queue.schedule(
+                self.tick + self.config.voxel_exclusion_retry_ticks,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return;
+        }
+
         let tpv = match edge.edge_type {
             crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
                 climb_tpv.unwrap_or(walk_tpv)
@@ -5295,7 +5331,6 @@ impl SimState {
             _ => walk_tpv,
         };
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
-        let dest_pos = graph.node(dest_node).position;
 
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
@@ -5676,6 +5711,24 @@ impl SimState {
         // Move one edge.
         let graph = self.graph_for_species(species);
         let edge = graph.edge(edge_idx);
+        let dest_pos = graph.node(dest_node).position;
+
+        // Voxel exclusion: reject move if destination is hostile-occupied.
+        let footprint = self.species_table[&species].footprint;
+        if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
+            let _ = self
+                .db
+                .creatures
+                .modify_unchecked(&creature_id, |creature| {
+                    creature.path = None;
+                });
+            self.event_queue.schedule(
+                self.tick + self.config.voxel_exclusion_retry_ticks,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return;
+        }
+
         let tpv = match edge.edge_type {
             crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
                 climb_tpv.unwrap_or(walk_tpv)
@@ -5685,7 +5738,6 @@ impl SimState {
             _ => walk_tpv,
         };
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
-        let dest_pos = graph.node(dest_node).position;
 
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
@@ -6536,6 +6588,24 @@ impl SimState {
         // Move one edge. Compute traversal time from distance * ticks-per-voxel.
         let graph = self.graph_for_species(species);
         let edge = graph.edge(edge_idx);
+        let dest_pos = graph.node(dest_node).position;
+
+        // Voxel exclusion: reject move if destination is hostile-occupied.
+        let footprint = self.species_table[&species].footprint;
+        if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
+            let _ = self
+                .db
+                .creatures
+                .modify_unchecked(&creature_id, |creature| {
+                    creature.path = None;
+                });
+            self.event_queue.schedule(
+                self.tick + self.config.voxel_exclusion_retry_ticks,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return;
+        }
+
         let tpv = match edge.edge_type {
             crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
                 climb_tpv.unwrap_or(walk_tpv)
@@ -6545,7 +6615,6 @@ impl SimState {
             _ => walk_tpv,
         };
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
-        let dest_pos = graph.node(dest_node).position;
 
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
@@ -8982,9 +9051,28 @@ impl SimState {
             return true;
         }
 
+        // Voxel exclusion: prefer edges not blocked by hostiles. If ALL are
+        // blocked, fall back to the full set — a fleeing creature shouldn't
+        // freeze in place when completely surrounded.
+        let footprint = self.species_table[&species].footprint;
+        let unblocked_edges: Vec<usize> = eligible_edges
+            .iter()
+            .copied()
+            .filter(|&idx| {
+                let dest_pos = graph.node(graph.edge(idx).to).position;
+                !self.destination_blocked_by_hostile(creature_id, dest_pos, footprint)
+            })
+            .collect();
+        let all_blocked = unblocked_edges.is_empty();
+        let flee_edges = if all_blocked {
+            &eligible_edges
+        } else {
+            &unblocked_edges
+        };
+
         // Pick the edge whose destination maximizes squared distance from threat.
         // Ties broken by NavNodeId (higher = preferred for determinism).
-        let best_edge_idx = eligible_edges
+        let best_edge_idx = flee_edges
             .iter()
             .copied()
             .max_by_key(|&idx| {
@@ -8997,7 +9085,10 @@ impl SimState {
             })
             .unwrap();
 
-        self.move_one_step(creature_id, species, best_edge_idx);
+        // When all exits are hostile-occupied, skip the exclusion check in
+        // move_one_step — a cornered creature should force through rather
+        // than freeze in place.
+        self.move_one_step_inner(creature_id, species, best_edge_idx, all_blocked);
         true
     }
 
@@ -9325,6 +9416,39 @@ impl SimState {
             // creatures only target civ creatures (see detect_hostile_targets).
             (None, None) => true,
         }
+    }
+
+    /// Check whether any voxel in the destination footprint is occupied by a
+    /// living hostile creature. Used for voxel exclusion — creatures cannot
+    /// move into voxels occupied by hostiles. The moving creature itself is
+    /// excluded from the check (so a creature doesn't block itself when its
+    /// source and destination footprints overlap).
+    fn destination_blocked_by_hostile(
+        &self,
+        creature_id: CreatureId,
+        dest_pos: VoxelCoord,
+        footprint: [u8; 3],
+    ) -> bool {
+        for dx in 0..footprint[0] as i32 {
+            for dy in 0..footprint[1] as i32 {
+                for dz in 0..footprint[2] as i32 {
+                    let voxel = VoxelCoord::new(dest_pos.x + dx, dest_pos.y + dy, dest_pos.z + dz);
+                    for &occupant_id in self.creatures_at_voxel(voxel) {
+                        if occupant_id != creature_id
+                            && !self.is_non_hostile(creature_id, occupant_id)
+                            && self
+                                .db
+                                .creatures
+                                .get(&occupant_id)
+                                .is_some_and(|c| c.vital_status == VitalStatus::Alive)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Check whether a ballistic flight path from `origin_sub` with `velocity`
@@ -9723,11 +9847,50 @@ impl SimState {
     /// Move a creature one step along the given nav graph edge: update position,
     /// spatial index, action state, render interpolation, and schedule the next
     /// activation. Shared by random wander, hostile pursuit, and flee.
-    fn move_one_step(&mut self, creature_id: CreatureId, species: Species, edge_idx: usize) {
+    ///
+    /// Returns `true` if the move succeeded. Returns `false` if the destination
+    /// is blocked by a hostile creature (voxel exclusion) — in that case the
+    /// creature stays put and a short retry activation is scheduled.
+    ///
+    /// `skip_exclusion`: if `true`, the voxel exclusion check is bypassed.
+    /// Used by `flee_step()` when a cornered creature has no unblocked exit
+    /// and must force through a hostile-occupied voxel.
+    fn move_one_step(
+        &mut self,
+        creature_id: CreatureId,
+        species: Species,
+        edge_idx: usize,
+    ) -> bool {
+        self.move_one_step_inner(creature_id, species, edge_idx, false)
+    }
+
+    /// Inner implementation of `move_one_step` with an optional exclusion bypass.
+    fn move_one_step_inner(
+        &mut self,
+        creature_id: CreatureId,
+        species: Species,
+        edge_idx: usize,
+        skip_exclusion: bool,
+    ) -> bool {
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
         let edge = graph.edge(edge_idx);
         let dest_node = edge.to;
+
+        // Voxel exclusion: reject the move if any destination footprint voxel
+        // is occupied by a living hostile creature.
+        let dest_pos = graph.node(dest_node).position;
+        if !skip_exclusion {
+            let footprint = species_data.footprint;
+            if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
+                let retry_delay = self.config.voxel_exclusion_retry_ticks;
+                self.event_queue.schedule(
+                    self.tick + retry_delay,
+                    ScheduledEventKind::CreatureActivation { creature_id },
+                );
+                return false;
+            }
+        }
 
         // Compute traversal time from distance * species ticks-per-voxel.
         let tpv = match edge.edge_type {
@@ -9745,7 +9908,6 @@ impl SimState {
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
 
         // Move creature to the destination.
-        let dest_pos = graph.node(dest_node).position;
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
         let _ = self
@@ -9777,6 +9939,7 @@ impl SimState {
             self.tick + delay,
             ScheduledEventKind::CreatureActivation { creature_id },
         );
+        true
     }
 
     /// Random wander: pick a random eligible edge and move one step.
@@ -9817,9 +9980,34 @@ impl SimState {
             return;
         }
 
+        // Voxel exclusion: filter out edges leading to hostile-occupied voxels.
+        let footprint = self.species_table[&species].footprint;
+        let unblocked_edges: Vec<usize> = {
+            let graph = self.graph_for_species(species);
+            eligible_edges
+                .iter()
+                .copied()
+                .filter(|&idx| {
+                    let dest_pos = graph.node(graph.edge(idx).to).position;
+                    !self.destination_blocked_by_hostile(creature_id, dest_pos, footprint)
+                })
+                .collect()
+        };
+
+        let edges_to_pick = if unblocked_edges.is_empty() {
+            // All neighbors hostile-occupied — wait rather than walk into a hostile.
+            self.event_queue.schedule(
+                self.tick + self.config.voxel_exclusion_retry_ticks,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return;
+        } else {
+            &unblocked_edges
+        };
+
         // Pick a random eligible edge.
-        let chosen_idx = self.rng.range_u64(0, eligible_edges.len() as u64) as usize;
-        let edge_idx = eligible_edges[chosen_idx];
+        let chosen_idx = self.rng.range_u64(0, edges_to_pick.len() as u64) as usize;
+        let edge_idx = edges_to_pick[chosen_idx];
 
         self.move_one_step(creature_id, species, edge_idx);
     }
@@ -36555,6 +36743,1054 @@ mod tests {
             pos_after_kill, pos_later,
             "Elf should have wandered after target died, but it stayed at {:?}",
             pos_after_kill
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Voxel exclusion (F-voxel-exclusion): creatures cannot enter voxels
+    // occupied by hostile creatures.
+    // -----------------------------------------------------------------------
+
+    /// Helper: place a creature at a specific nav node, updating position,
+    /// current_node, and spatial index.
+    fn force_to_node(sim: &mut SimState, creature_id: CreatureId, node_id: NavNodeId) {
+        let node_pos = sim.nav_graph.node(node_id).position;
+        force_position(sim, creature_id, node_pos);
+        let _ = sim
+            .db
+            .creatures
+            .modify_unchecked(&creature_id, |c| c.current_node = Some(node_id));
+    }
+
+    /// Find two connected nav nodes (A has an edge to B). Returns (node_a, node_b).
+    fn find_connected_pair(sim: &SimState) -> (NavNodeId, NavNodeId) {
+        for node in sim.nav_graph.live_nodes() {
+            if !node.edge_indices.is_empty() {
+                let edge = sim.nav_graph.edge(node.edge_indices[0]);
+                return (node.id, edge.to);
+            }
+        }
+        panic!("No connected nav nodes found in test sim");
+    }
+
+    /// Find three connected nav nodes in a chain: A->B->C where B has edges
+    /// to both A and C. Returns (node_a, node_b, node_c).
+    fn find_chain_of_three(sim: &SimState) -> (NavNodeId, NavNodeId, NavNodeId) {
+        for node_b in sim.nav_graph.live_nodes() {
+            if node_b.edge_indices.len() >= 2 {
+                let edge_0 = sim.nav_graph.edge(node_b.edge_indices[0]);
+                let edge_1 = sim.nav_graph.edge(node_b.edge_indices[1]);
+                if edge_0.to != edge_1.to {
+                    return (edge_0.to, node_b.id, edge_1.to);
+                }
+            }
+        }
+        panic!("No chain of 3 connected nav nodes found in test sim");
+    }
+
+    #[test]
+    fn voxel_exclusion_hostile_blocks_movement() {
+        // A goblin at node B should prevent an elf from moving to node B.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+
+        let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
+
+        // Schedule only the elf to activate (goblin stays idle).
+        sim.event_queue.cancel_creature_activations(elf);
+        sim.event_queue.cancel_creature_activations(goblin);
+        sim.event_queue.schedule(
+            sim.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: elf },
+        );
+
+        // Run a few ticks — elf should NOT move to goblin's voxel.
+        sim.step(&[], sim.tick + 200);
+
+        let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+        // Elf must not be at the goblin's position.
+        assert_ne!(
+            elf_pos_after, goblin_pos,
+            "Elf should not move into voxel occupied by hostile goblin"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_non_hostile_does_not_block() {
+        // Two elves (same civ) should be able to share a voxel.
+        let mut sim = test_sim(42);
+        let elf_a = spawn_elf(&mut sim);
+        let elf_b = spawn_elf(&mut sim);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf_a, node_a);
+        force_to_node(&mut sim, elf_b, node_b);
+        force_idle(&mut sim, elf_a);
+        force_idle(&mut sim, elf_b);
+
+        // Verify they are non-hostile.
+        assert!(
+            sim.is_non_hostile(elf_a, elf_b),
+            "Two elves should be non-hostile"
+        );
+
+        // The exclusion check should return false (not blocked).
+        let elf_b_pos = sim.db.creatures.get(&elf_b).unwrap().position;
+        let elf_footprint = sim.species_table[&Species::Elf].footprint;
+        assert!(
+            !sim.destination_blocked_by_hostile(elf_a, elf_b_pos, elf_footprint),
+            "Non-hostile creature should not block destination"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_self_does_not_block() {
+        // A creature should not block itself (e.g., when source and dest
+        // footprints overlap for large creatures).
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let elf_footprint = sim.species_table[&Species::Elf].footprint;
+
+        assert!(
+            !sim.destination_blocked_by_hostile(elf, elf_pos, elf_footprint),
+            "Creature should not block itself"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_dead_hostile_does_not_block() {
+        // A dead goblin should not block an elf's movement.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+
+        // Kill the goblin (vital_status is indexed, so use update).
+        if let Some(mut c) = sim.db.creatures.get(&goblin) {
+            c.vital_status = VitalStatus::Dead;
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+        let elf_footprint = sim.species_table[&Species::Elf].footprint;
+        assert!(
+            !sim.destination_blocked_by_hostile(elf, goblin_pos, elf_footprint),
+            "Dead hostile should not block destination"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_bidirectional_blocking() {
+        // Both elf and goblin should be blocked from entering each other's
+        // voxels — exclusion is symmetric.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+        let elf_fp = sim.species_table[&Species::Elf].footprint;
+        let goblin_fp = sim.species_table[&Species::Goblin].footprint;
+
+        assert!(
+            sim.destination_blocked_by_hostile(elf, goblin_pos, elf_fp),
+            "Goblin should block elf from entering its voxel"
+        );
+        assert!(
+            sim.destination_blocked_by_hostile(goblin, elf_pos, goblin_fp),
+            "Elf should block goblin from entering its voxel"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_hostile_pursue_blocked() {
+        // A goblin pursuing an elf should be blocked when the elf occupies
+        // the destination voxel (but the goblin can still attack from range).
+        let mut sim = test_sim(42);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+        let elf = spawn_elf(&mut sim);
+
+        // Place them on adjacent nodes.
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, goblin, node_a);
+        force_to_node(&mut sim, elf, node_b);
+        force_idle(&mut sim, goblin);
+        force_idle(&mut sim, elf);
+
+        let goblin_pos_before = sim.db.creatures.get(&goblin).unwrap().position;
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+        // Only activate the goblin, freeze the elf.
+        sim.event_queue.cancel_creature_activations(goblin);
+        sim.event_queue.cancel_creature_activations(elf);
+        sim.event_queue.schedule(
+            sim.tick + 1,
+            ScheduledEventKind::CreatureActivation {
+                creature_id: goblin,
+            },
+        );
+
+        sim.step(&[], sim.tick + 200);
+
+        let goblin_pos_after = sim.db.creatures.get(&goblin).unwrap().position;
+
+        // Goblin should NOT have moved onto the elf's exact voxel.
+        assert_ne!(
+            goblin_pos_after, elf_pos,
+            "Goblin should not move into elf's voxel (hostile exclusion)"
+        );
+
+        // Goblin should either stay put or have dealt damage (melee from
+        // adjacent position).
+        let elf_hp = sim.db.creatures.get(&elf).unwrap().hp;
+        let elf_max_hp = sim.species_table[&Species::Elf].hp_max;
+        let goblin_moved = goblin_pos_before != goblin_pos_after;
+        let dealt_damage = elf_hp < elf_max_hp;
+        assert!(
+            !goblin_moved || dealt_damage,
+            "Goblin should either stay put (blocked) or attack; \
+             moved={goblin_moved}, dealt_damage={dealt_damage}"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_wander_avoids_hostile_voxels() {
+        // An elf wandering should not pick an edge leading to a hostile's voxel.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Place elf at node_b, goblin at node_c. Elf should not wander to node_c.
+        let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+        force_to_node(&mut sim, elf, node_b);
+        force_to_node(&mut sim, goblin, node_c);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+
+        // Cancel goblin activations so it stays put.
+        sim.event_queue.cancel_creature_activations(goblin);
+        sim.event_queue.cancel_creature_activations(elf);
+
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+        // Run many activations and verify the elf never lands on goblin's voxel.
+        for i in 0..20 {
+            force_idle(&mut sim, elf);
+            force_to_node(&mut sim, elf, node_b);
+            sim.event_queue.schedule(
+                sim.tick + 1,
+                ScheduledEventKind::CreatureActivation { creature_id: elf },
+            );
+            sim.step(&[], sim.tick + 200);
+
+            let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+            assert_ne!(
+                elf_pos, goblin_pos,
+                "Elf should not wander into hostile voxel (iteration {i})"
+            );
+        }
+    }
+
+    #[test]
+    fn voxel_exclusion_flee_avoids_hostile_voxels() {
+        // A fleeing elf should prefer edges not occupied by hostiles.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Set up: elf at node_b (middle), goblin at node_a (nearby threatening).
+        // Node_c should be unoccupied — elf should flee toward node_c, not node_a.
+        let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+        force_to_node(&mut sim, elf, node_b);
+        force_to_node(&mut sim, goblin, node_a);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+
+        sim.event_queue.cancel_creature_activations(elf);
+        sim.event_queue.cancel_creature_activations(goblin);
+
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+        // Activate only the elf — it should detect the goblin and flee.
+        sim.event_queue.schedule(
+            sim.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: elf },
+        );
+        sim.step(&[], sim.tick + 200);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        // Elf should NOT have fled into the goblin's voxel.
+        assert_ne!(
+            elf_pos, goblin_pos,
+            "Fleeing elf should not enter hostile voxel"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_flee_cornered_still_moves() {
+        // If ALL neighboring voxels have hostiles, the fleeing creature should
+        // still be allowed to move (flee fallback — better to move through a
+        // hostile than freeze).
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+
+        // Find a node with at least 2 neighbors and place goblins on ALL neighbors.
+        let elf_node = sim
+            .nav_graph
+            .live_nodes()
+            .find(|n| n.edge_indices.len() >= 2)
+            .map(|n| n.id)
+            .expect("Need a node with >= 2 neighbors");
+
+        force_to_node(&mut sim, elf, elf_node);
+        force_idle(&mut sim, elf);
+
+        let neighbor_positions: Vec<(NavNodeId, VoxelCoord)> = sim
+            .nav_graph
+            .neighbors(elf_node)
+            .iter()
+            .map(|&edge_idx| {
+                let edge = sim.nav_graph.edge(edge_idx);
+                let pos = sim.nav_graph.node(edge.to).position;
+                (edge.to, pos)
+            })
+            .collect();
+
+        // Spawn a goblin at each neighbor.
+        let mut goblins = Vec::new();
+        for &(neighbor_node, _) in &neighbor_positions {
+            let g = spawn_species(&mut sim, Species::Goblin);
+            force_to_node(&mut sim, g, neighbor_node);
+            force_idle(&mut sim, g);
+            sim.event_queue.cancel_creature_activations(g);
+            goblins.push(g);
+        }
+
+        // Also make sure the elf is still at the right node (spawning moves
+        // things around).
+        force_to_node(&mut sim, elf, elf_node);
+        force_idle(&mut sim, elf);
+        sim.event_queue.cancel_creature_activations(elf);
+
+        // Verify that all neighbors are indeed hostile-blocked.
+        let elf_fp = sim.species_table[&Species::Elf].footprint;
+        for &(_, pos) in &neighbor_positions {
+            assert!(
+                sim.destination_blocked_by_hostile(elf, pos, elf_fp),
+                "Expected neighbor at {pos:?} to be hostile-blocked"
+            );
+        }
+
+        let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
+
+        // Now activate the elf — it should be cornered but flee should still
+        // use the fallback (allow movement through hostile).
+        sim.event_queue.schedule(
+            sim.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: elf },
+        );
+        sim.step(&[], sim.tick + 200);
+
+        // The elf has hostile_detection_range_sq=225 (15 voxels) and the
+        // goblins are on adjacent nav nodes — well within range. The elf
+        // should detect the threat and flee. Since all exits are hostile-
+        // occupied, the flee fallback should allow movement through a hostile.
+        let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+        assert_ne!(
+            elf_pos_before, elf_pos_after,
+            "Cornered elf should flee (using fallback through hostile-occupied voxel)"
+        );
+        // Elf moved — verify it went to one of the neighbor positions
+        // (which are all hostile-occupied, confirming fallback worked).
+        let moved_to_neighbor = neighbor_positions.iter().any(|&(_, p)| p == elf_pos_after);
+        assert!(
+            moved_to_neighbor,
+            "Cornered elf should flee to a neighbor (even hostile-occupied)"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_move_one_step_returns_false_when_blocked() {
+        // Directly test move_one_step returns false when destination is hostile.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+
+        // Find the edge from node_a to node_b.
+        let edge_idx = sim
+            .nav_graph
+            .neighbors(node_a)
+            .iter()
+            .copied()
+            .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+            .expect("Should have edge from A to B");
+
+        let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
+        let result = sim.move_one_step(elf, Species::Elf, edge_idx);
+
+        assert!(!result, "move_one_step should return false when blocked");
+        let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+        assert_eq!(
+            elf_pos_before, elf_pos_after,
+            "Elf position should not change when move is blocked"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
+        // move_one_step_inner with skip_exclusion=true should succeed even
+        // when the destination is hostile-occupied. This is the mechanism
+        // used by flee_step's cornered fallback.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+
+        let edge_idx = sim
+            .nav_graph
+            .neighbors(node_a)
+            .iter()
+            .copied()
+            .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+            .expect("Should have edge from A to B");
+
+        // Without skip_exclusion: blocked.
+        let result_blocked = sim.move_one_step(elf, Species::Elf, edge_idx);
+        assert!(
+            !result_blocked,
+            "move_one_step should block when hostile present"
+        );
+
+        // Cancel the retry activation scheduled by the failed move.
+        sim.event_queue.cancel_creature_activations(elf);
+
+        // With skip_exclusion: allowed.
+        let result_forced = sim.move_one_step_inner(elf, Species::Elf, edge_idx, true);
+        assert!(
+            result_forced,
+            "move_one_step_inner with skip_exclusion should succeed"
+        );
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let node_b_pos = sim.nav_graph.node(node_b).position;
+        assert_eq!(
+            elf_pos, node_b_pos,
+            "Elf should have moved to goblin's voxel with skip_exclusion"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_move_one_step_returns_true_when_clear() {
+        // move_one_step should return true when destination is clear.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_idle(&mut sim, elf);
+
+        let edge_idx = sim
+            .nav_graph
+            .neighbors(node_a)
+            .iter()
+            .copied()
+            .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+            .expect("Should have edge from A to B");
+
+        let result = sim.move_one_step(elf, Species::Elf, edge_idx);
+        assert!(
+            result,
+            "move_one_step should return true when path is clear"
+        );
+
+        let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+        let node_b_pos = sim.nav_graph.node(node_b).position;
+        assert_eq!(elf_pos_after, node_b_pos, "Elf should have moved to node B");
+    }
+
+    #[test]
+    fn voxel_exclusion_blocked_schedules_retry() {
+        // When movement is blocked, a retry activation should be scheduled.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+
+        sim.event_queue.cancel_creature_activations(elf);
+        sim.event_queue.cancel_creature_activations(goblin);
+
+        let edge_idx = sim
+            .nav_graph
+            .neighbors(node_a)
+            .iter()
+            .copied()
+            .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+            .expect("Should have edge from A to B");
+
+        let activations_before = sim.count_pending_activations_for(elf);
+        sim.move_one_step(elf, Species::Elf, edge_idx);
+        let activations_after = sim.count_pending_activations_for(elf);
+
+        assert_eq!(
+            activations_after,
+            activations_before + 1,
+            "Blocked move should schedule a retry activation"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_already_overlapping_allowed() {
+        // If two hostile creatures are already in the same voxel (e.g., both
+        // spawned there), they should be allowed to stay — the check only
+        // prevents MOVING into a hostile's voxel.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, _) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_a);
+
+        // Both are now at the same position — this should be fine.
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+        assert_eq!(
+            elf_pos, goblin_pos,
+            "Test setup: both should be at same position"
+        );
+
+        // The sim should not crash when processing these creatures.
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+        sim.event_queue.cancel_creature_activations(elf);
+        sim.event_queue.cancel_creature_activations(goblin);
+        sim.event_queue.schedule(
+            sim.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: elf },
+        );
+        sim.event_queue.schedule(
+            sim.tick + 1,
+            ScheduledEventKind::CreatureActivation {
+                creature_id: goblin,
+            },
+        );
+
+        // Just verify no panic. Creatures should separate on their next moves.
+        sim.step(&[], sim.tick + 500);
+    }
+
+    #[test]
+    fn voxel_exclusion_different_hostile_civs_block() {
+        // Two creatures from different hostile civs should block each other.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let orc = spawn_species(&mut sim, Species::Orc);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, orc, node_b);
+
+        let orc_pos = sim.db.creatures.get(&orc).unwrap().position;
+        let elf_fp = sim.species_table[&Species::Elf].footprint;
+
+        // Orc is aggressive non-civ — should be hostile to elf.
+        assert!(
+            !sim.is_non_hostile(elf, orc),
+            "Elf and orc should be hostile"
+        );
+        assert!(
+            sim.destination_blocked_by_hostile(elf, orc_pos, elf_fp),
+            "Orc should block elf destination"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_two_non_civ_same_species_share() {
+        // Two non-civ goblins should NOT block each other (they're non-hostile).
+        let mut sim = test_sim(42);
+        let g1 = spawn_species(&mut sim, Species::Goblin);
+        let g2 = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, g1, node_a);
+        force_to_node(&mut sim, g2, node_b);
+
+        let g2_pos = sim.db.creatures.get(&g2).unwrap().position;
+        let goblin_fp = sim.species_table[&Species::Goblin].footprint;
+
+        // Non-civ same-species are non-hostile.
+        assert!(
+            sim.is_non_hostile(g1, g2),
+            "Two goblins should be non-hostile"
+        );
+        assert!(
+            !sim.destination_blocked_by_hostile(g1, g2_pos, goblin_fp),
+            "Same-species non-civ creatures should not block each other"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_large_creature_blocked_by_small_hostile_in_footprint() {
+        // An elephant (2x2x2) should be blocked if a goblin occupies any
+        // voxel within the elephant's destination footprint.
+        let mut sim = test_sim(42);
+        let elephant = spawn_species(&mut sim, Species::Elephant);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let elephant_fp = sim.species_table[&Species::Elephant].footprint;
+        assert_eq!(
+            elephant_fp,
+            [2, 2, 2],
+            "Elephant should have 2x2x2 footprint"
+        );
+
+        // Place the goblin at a position that would be inside the elephant's
+        // destination footprint. If elephant anchor is at (x,y,z), the
+        // footprint covers (x..x+2, y..y+2, z..z+2).
+        let elephant_pos = sim.db.creatures.get(&elephant).unwrap().position;
+        // Place goblin at elephant_pos + (1, 0, 0) — inside the footprint.
+        let goblin_pos = VoxelCoord::new(elephant_pos.x + 1, elephant_pos.y, elephant_pos.z);
+        force_position(&mut sim, goblin, goblin_pos);
+
+        // Elephant is passive non-civ, goblin is aggressive non-civ — both
+        // non-civ means non-hostile by default. Give the elephant a civ so the
+        // goblin's AggressiveMelee AI makes them hostile.
+        let player_civ = sim.player_civ_id.unwrap();
+        if let Some(mut c) = sim.db.creatures.get(&elephant) {
+            c.civ_id = Some(player_civ);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        assert!(
+            !sim.is_non_hostile(elephant, goblin),
+            "Civ elephant and aggressive goblin should be hostile"
+        );
+
+        assert!(
+            sim.destination_blocked_by_hostile(elephant, elephant_pos, elephant_fp),
+            "Goblin inside elephant's footprint should block it"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_small_creature_blocked_by_large_hostile_footprint() {
+        // A 1x1x1 elf should be blocked if a troll (2x2x2, aggressive) has
+        // a footprint covering the elf's destination voxel.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+
+        let troll_fp = sim.species_table[&Species::Troll].footprint;
+        assert_eq!(
+            troll_fp,
+            [2, 2, 2],
+            "Troll must have 2x2x2 footprint for this test"
+        );
+
+        let troll = spawn_species(&mut sim, Species::Troll);
+
+        let troll_pos = sim.db.creatures.get(&troll).unwrap().position;
+        // Troll footprint covers troll_pos to troll_pos + (1,1,1).
+        // Test a position inside the footprint but not the anchor.
+        let blocked_pos = VoxelCoord::new(troll_pos.x + 1, troll_pos.y, troll_pos.z);
+
+        let elf_fp = sim.species_table[&Species::Elf].footprint;
+
+        // Troll is aggressive non-civ, elf has civ — they should be hostile.
+        assert!(
+            !sim.is_non_hostile(elf, troll),
+            "Elf and troll should be hostile"
+        );
+
+        assert!(
+            sim.destination_blocked_by_hostile(elf, blocked_pos, elf_fp),
+            "Troll's extended footprint should block elf at ({}, {}, {})",
+            blocked_pos.x,
+            blocked_pos.y,
+            blocked_pos.z
+        );
+
+        // The anchor position should also be blocked.
+        assert!(
+            sim.destination_blocked_by_hostile(elf, troll_pos, elf_fp),
+            "Troll's anchor voxel should also block elf"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_config_retry_ticks_respected() {
+        // Verify that the retry delay uses the configured value. Set a large
+        // retry delay (500 ticks), block a move, then step to 499 — the elf
+        // should still be at the original position. Step to 501 — the retry
+        // activation fires (elf attempts to move or re-evaluates).
+        let mut sim = test_sim(42);
+        sim.config.voxel_exclusion_retry_ticks = 500;
+
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+
+        sim.event_queue.cancel_creature_activations(elf);
+        sim.event_queue.cancel_creature_activations(goblin);
+
+        let edge_idx = sim
+            .nav_graph
+            .neighbors(node_a)
+            .iter()
+            .copied()
+            .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+            .expect("Should have edge from A to B");
+
+        let tick_at_block = sim.tick;
+        sim.move_one_step(elf, Species::Elf, edge_idx);
+
+        // Step to just before the retry — activation should NOT have fired.
+        let activations_before = sim.count_pending_activations_for(elf);
+        assert_eq!(
+            activations_before, 1,
+            "Should have exactly one retry scheduled"
+        );
+
+        sim.step(&[], tick_at_block + 499);
+        // Elf should still be at node_a (retry not yet fired).
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let node_a_pos = sim.nav_graph.node(node_a).position;
+        assert_eq!(
+            elf_pos, node_a_pos,
+            "Elf should not have moved before retry delay expires"
+        );
+
+        // Step past the retry tick — activation fires.
+        sim.step(&[], tick_at_block + 501);
+        let activations_after = sim.count_pending_activations_for(elf);
+        // The retry activation should have been consumed (though a new one
+        // may have been scheduled if the elf is still blocked).
+        assert!(
+            activations_after <= 1,
+            "Retry activation should have fired by tick {}",
+            tick_at_block + 501
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_walk_toward_task_blocked() {
+        // An elf walking toward a task should be blocked by a hostile in its path.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Find a chain so elf can walk from A through B (goblin) to C (task).
+        let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+
+        sim.event_queue.cancel_creature_activations(goblin);
+        sim.event_queue.cancel_creature_activations(elf);
+
+        // Create a GoTo task at node_c and assign the elf.
+        let task_id = insert_goto_task(&mut sim, node_c);
+        if let Some(mut t) = sim.db.tasks.get(&task_id) {
+            t.state = TaskState::InProgress;
+            let _ = sim.db.tasks.update_no_fk(t);
+        }
+        if let Some(mut c) = sim.db.creatures.get(&elf) {
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        // Activate elf.
+        sim.event_queue.schedule(
+            sim.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: elf },
+        );
+        sim.step(&[], sim.tick + 200);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+        assert_ne!(
+            elf_pos, goblin_pos,
+            "Elf walking toward task should not enter goblin's voxel"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_serde_config_roundtrip() {
+        // Verify the new config field survives serialization.
+        let config = GameConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let config2: GameConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            config.voxel_exclusion_retry_ticks, config2.voxel_exclusion_retry_ticks,
+            "voxel_exclusion_retry_ticks should survive serde roundtrip"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_serde_config_default() {
+        // Verify that loading old configs without the new field uses the default.
+        // Serialize default config, strip the new field, and re-deserialize.
+        let config = GameConfig::default();
+        let mut json_val: serde_json::Value = serde_json::to_value(&config).unwrap();
+        json_val
+            .as_object_mut()
+            .unwrap()
+            .remove("voxel_exclusion_retry_ticks");
+        let config2: GameConfig = serde_json::from_value(json_val).unwrap();
+        assert_eq!(
+            config2.voxel_exclusion_retry_ticks, 50,
+            "Default voxel_exclusion_retry_ticks should be 50"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_walk_toward_task_clears_cached_path() {
+        // When walk_toward_task is blocked by a hostile, the creature's
+        // cached path should be invalidated (set to None) so a fresh
+        // path is computed on retry.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+        sim.event_queue.cancel_creature_activations(goblin);
+        sim.event_queue.cancel_creature_activations(elf);
+
+        // Give the elf a cached path through the goblin's node.
+        let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+            c.path = Some(CreaturePath {
+                remaining_nodes: vec![node_b, node_c],
+                remaining_edge_indices: vec![0, 0], // dummy indices
+            });
+        });
+        assert!(
+            sim.db.creatures.get(&elf).unwrap().path.is_some(),
+            "Test setup: elf should have a cached path"
+        );
+
+        // Create a GoTo task at node_c and assign the elf.
+        let task_id = insert_goto_task(&mut sim, node_c);
+        if let Some(mut t) = sim.db.tasks.get(&task_id) {
+            t.state = TaskState::InProgress;
+            let _ = sim.db.tasks.update_no_fk(t);
+        }
+        if let Some(mut c) = sim.db.creatures.get(&elf) {
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+
+        // Activate the elf — it should try to follow the cached path,
+        // hit the hostile, and clear the path.
+        sim.event_queue.schedule(
+            sim.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: elf },
+        );
+        sim.step(&[], sim.tick + 10);
+
+        assert!(
+            sim.db.creatures.get(&elf).unwrap().path.is_none(),
+            "Cached path should be cleared when blocked by hostile"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
+        // A creature blocked by a hostile should successfully move once
+        // the hostile dies and the retry activation fires.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b) = find_connected_pair(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+        sim.event_queue.cancel_creature_activations(goblin);
+        sim.event_queue.cancel_creature_activations(elf);
+
+        let node_a_pos = sim.nav_graph.node(node_a).position;
+        let node_b_pos = sim.nav_graph.node(node_b).position;
+
+        // Try to move — should be blocked.
+        let edge_idx = sim
+            .nav_graph
+            .neighbors(node_a)
+            .iter()
+            .copied()
+            .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+            .expect("Should have edge from A to B");
+
+        let result = sim.move_one_step(elf, Species::Elf, edge_idx);
+        assert!(!result, "Should be blocked while goblin is alive");
+        assert_eq!(
+            sim.db.creatures.get(&elf).unwrap().position,
+            node_a_pos,
+            "Elf should still be at node A"
+        );
+
+        // Kill the goblin.
+        let tick = sim.tick;
+        let kill_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: goblin,
+            },
+        };
+        sim.step(&[kill_cmd], tick + 2);
+
+        // The retry activation should fire after voxel_exclusion_retry_ticks.
+        // The goblin is dead, so the voxel should now be clear.
+        let goblin_fp = sim.species_table[&Species::Goblin].footprint;
+        assert!(
+            !sim.destination_blocked_by_hostile(elf, node_b_pos, goblin_fp),
+            "Dead goblin should not block"
+        );
+
+        // Now manually retry the move — should succeed.
+        let result2 = sim.move_one_step(elf, Species::Elf, edge_idx);
+        assert!(result2, "Move should succeed after goblin dies");
+        assert_eq!(
+            sim.db.creatures.get(&elf).unwrap().position,
+            node_b_pos,
+            "Elf should have moved to node B"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_attack_target_task_blocked_by_hostile() {
+        // An elf with a player-directed AttackTarget task walking toward
+        // its target should be blocked by a different hostile in the path.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let target_goblin = spawn_species(&mut sim, Species::Goblin);
+        let blocking_goblin = spawn_species(&mut sim, Species::Goblin);
+
+        // Set up: elf at A, blocking_goblin at B, target_goblin at C.
+        // Elf must walk through B to reach C.
+        let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, blocking_goblin, node_b);
+        force_to_node(&mut sim, target_goblin, node_c);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, blocking_goblin);
+        force_idle(&mut sim, target_goblin);
+        sim.event_queue.cancel_creature_activations(blocking_goblin);
+        sim.event_queue.cancel_creature_activations(target_goblin);
+        sim.event_queue.cancel_creature_activations(elf);
+
+        // Issue AttackCreature command — this creates an AttackTarget task.
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackCreature {
+                attacker_id: elf,
+                target_id: target_goblin,
+            },
+        };
+        sim.step(&[cmd], tick + 2);
+
+        // Verify elf has an attack task.
+        assert!(
+            sim.db.creatures.get(&elf).unwrap().current_task.is_some(),
+            "Elf should have an attack task"
+        );
+
+        // Run for a bit — elf should NOT move onto blocking_goblin's voxel.
+        let blocking_pos = sim.db.creatures.get(&blocking_goblin).unwrap().position;
+        sim.step(&[], tick + 500);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        assert_ne!(
+            elf_pos, blocking_pos,
+            "Elf should not walk through blocking goblin to reach attack target"
+        );
+    }
+
+    #[test]
+    fn voxel_exclusion_attack_move_task_blocked_by_hostile() {
+        // An elf with an AttackMove task walking toward a destination
+        // should be blocked by a hostile in the path.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let goblin = spawn_species(&mut sim, Species::Goblin);
+
+        let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+        force_to_node(&mut sim, elf, node_a);
+        force_to_node(&mut sim, goblin, node_b);
+        force_idle(&mut sim, elf);
+        force_idle(&mut sim, goblin);
+        sim.event_queue.cancel_creature_activations(goblin);
+        sim.event_queue.cancel_creature_activations(elf);
+
+        let dest_pos = sim.nav_graph.node(node_c).position;
+
+        // Issue AttackMove command toward node_c.
+        let tick = sim.tick;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackMove {
+                creature_id: elf,
+                destination: dest_pos,
+            },
+        };
+        sim.step(&[cmd], tick + 2);
+
+        // Run for a bit — elf should NOT move onto goblin's voxel.
+        let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+        sim.step(&[], tick + 500);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        assert_ne!(
+            elf_pos, goblin_pos,
+            "Elf on attack-move should not walk through hostile goblin"
         );
     }
 }

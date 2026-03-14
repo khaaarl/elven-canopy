@@ -1290,6 +1290,10 @@ fn default_attack_path_retry_limit() -> u32 {
     3
 }
 
+fn default_voxel_exclusion_retry_ticks() -> u64 {
+    50
+}
+
 // ---------------------------------------------------------------------------
 // Civilization config
 // ---------------------------------------------------------------------------
@@ -1712,6 +1716,11 @@ pub struct GameConfig {
     /// the target later if it moves to a reachable location.
     #[serde(default = "default_attack_path_retry_limit")]
     pub attack_path_retry_limit: u32,
+
+    /// Ticks to wait before retrying movement when a creature's destination
+    /// voxel is occupied by a hostile creature (voxel exclusion).
+    #[serde(default = "default_voxel_exclusion_retry_ticks")]
+    pub voxel_exclusion_retry_ticks: u64,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -2285,6 +2294,7 @@ impl Default for GameConfig {
             arrow_damage_multiplier: default_arrow_damage_multiplier(),
             shoot_cooldown_ticks: default_shoot_cooldown_ticks(),
             attack_path_retry_limit: default_attack_path_retry_limit(),
+            voxel_exclusion_retry_ticks: default_voxel_exclusion_retry_ticks(),
         }
     }
 }

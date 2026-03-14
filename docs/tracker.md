@@ -184,7 +184,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-unfurnish            Unfurnish/refurnish a building
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-visual-smooth        Smooth voxel surface rendering
-[ ] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
@@ -320,6 +319,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tree-info            Tree stats/info panel
 [x] F-tree-overlap         Construction overlap with tree geometry
 [x] F-unified-craft-ui     Unified data-driven building crafting UI
+[x] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [x] F-voxel-fem            Voxel FEM structural analysis
 [x] F-voxel-textures       Per-face Perlin noise voxel textures
 [x] F-worldgen-framework   Worldgen generator framework
@@ -2222,7 +2222,7 @@ BTreeMap<VoxelCoord, Vec<CreatureId>> on SimState, #[serde(skip)], rebuilt on lo
 **Related:** F-projectiles
 
 #### F-voxel-exclusion — Creatures cannot enter voxels occupied by hostile creatures
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
 Creatures should not be able to enter a voxel already occupied by a hostile creature (and vice versa). Currently multiple creatures freely share voxels regardless of faction. Needs pathfinding and/or movement-step checks to enforce. Edge case: if creatures are already sharing a voxel when hostility begins, behavior is TBD (push apart, allow temporary overlap, etc.).
 
