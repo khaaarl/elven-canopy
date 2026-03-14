@@ -1100,11 +1100,10 @@ impl SimBridge {
                     .any(|r| r.to_civ == their_civ && r.opinion == CivOpinion::Hostile)
             }
         } else {
-            // Attacker has civ, target doesn't — check if target's species has aggressive AI.
-            use elven_canopy_sim::species::CombatAI;
+            // Attacker has civ, target doesn't — check if target's species has aggressive initiative.
             matches!(
-                sim.species_table[&t.species].combat_ai,
-                CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+                sim.species_table[&t.species].engagement_style.initiative,
+                elven_canopy_sim::species::EngagementInitiative::Aggressive
             )
         }
     }
@@ -1152,11 +1151,10 @@ impl SimBridge {
                     .any(|r| r.to_civ == their_civ && r.opinion == CivOpinion::Hostile)
             }
         } else {
-            // Attacker has civ, target doesn't — check if target's species has aggressive AI.
-            use elven_canopy_sim::species::CombatAI;
+            // Attacker has civ, target doesn't — check if target's species has aggressive initiative.
             matches!(
-                sim.species_table[&t.species].combat_ai,
-                CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+                sim.species_table[&t.species].engagement_style.initiative,
+                elven_canopy_sim::species::EngagementInitiative::Aggressive
             )
         }
     }
@@ -2884,7 +2882,8 @@ impl SimBridge {
     /// Returns an array of dicts describing the player civ's military groups.
     ///
     /// Each dict: `{ id: int, name: String, is_civilian: bool,
-    /// hostile_response: String ("Fight"/"Flee"), member_count: int }`.
+    /// weapon_preference: String, ammo_exhausted: String,
+    /// initiative: String, disengage_threshold_pct: int, member_count: int }`.
     /// The civilian group's member_count is the computed leftover count
     /// (total alive civ creatures minus those explicitly assigned).
     /// All counts only include `vital_status = Alive` creatures.
@@ -2930,11 +2929,37 @@ impl SimBridge {
             dict.set("id", g.id.0 as i64);
             dict.set("name", GString::from(g.name.as_str()));
             dict.set("is_civilian", g.is_default_civilian);
-            let response_str = match g.hostile_response {
-                elven_canopy_sim::db::HostileResponse::Fight => "Fight",
-                elven_canopy_sim::db::HostileResponse::Flee => "Flee",
+            // Expose engagement style fields as individual dict entries.
+            use elven_canopy_sim::species::{
+                AmmoExhaustedBehavior, EngagementInitiative, WeaponPreference,
             };
-            dict.set("hostile_response", GString::from(response_str));
+            let style = &g.engagement_style;
+            dict.set(
+                "weapon_preference",
+                GString::from(match style.weapon_preference {
+                    WeaponPreference::PreferRanged => "PreferRanged",
+                    WeaponPreference::PreferMelee => "PreferMelee",
+                }),
+            );
+            dict.set(
+                "ammo_exhausted",
+                GString::from(match style.ammo_exhausted {
+                    AmmoExhaustedBehavior::SwitchToMelee => "SwitchToMelee",
+                    AmmoExhaustedBehavior::Flee => "Flee",
+                }),
+            );
+            dict.set(
+                "initiative",
+                GString::from(match style.initiative {
+                    EngagementInitiative::Aggressive => "Aggressive",
+                    EngagementInitiative::Defensive => "Defensive",
+                    EngagementInitiative::Passive => "Passive",
+                }),
+            );
+            dict.set(
+                "disengage_threshold_pct",
+                style.disengage_threshold_pct as i64,
+            );
 
             let member_count = if g.is_default_civilian {
                 // Implicit civilians = total alive civ - explicitly assigned.
@@ -3053,17 +3078,50 @@ impl SimBridge {
         });
     }
 
-    /// Change a military group's hostile response ("Fight" or "Flee").
+    /// Change a military group's engagement style.
+    ///
+    /// Parameters are passed as individual fields:
+    /// - `weapon_preference`: "PreferRanged" or "PreferMelee"
+    /// - `ammo_exhausted`: "SwitchToMelee" or "Flee"
+    /// - `initiative`: "Aggressive", "Defensive", or "Passive"
+    /// - `disengage_threshold_pct`: 0–100
     #[func]
-    fn set_group_hostile_response(&mut self, group_id: i64, response: GString) {
-        let hostile_response = match response.to_string().as_str() {
-            "Fight" => elven_canopy_sim::db::HostileResponse::Fight,
-            "Flee" => elven_canopy_sim::db::HostileResponse::Flee,
+    fn set_group_engagement_style(
+        &mut self,
+        group_id: i64,
+        weapon_preference: GString,
+        ammo_exhausted: GString,
+        initiative: GString,
+        disengage_threshold_pct: i64,
+    ) {
+        use elven_canopy_sim::species::{
+            AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
+        };
+        let wp = match weapon_preference.to_string().as_str() {
+            "PreferRanged" => WeaponPreference::PreferRanged,
+            "PreferMelee" => WeaponPreference::PreferMelee,
             _ => return,
         };
-        self.apply_or_send(SimAction::SetGroupHostileResponse {
+        let ae = match ammo_exhausted.to_string().as_str() {
+            "SwitchToMelee" => AmmoExhaustedBehavior::SwitchToMelee,
+            "Flee" => AmmoExhaustedBehavior::Flee,
+            _ => return,
+        };
+        let init = match initiative.to_string().as_str() {
+            "Aggressive" => EngagementInitiative::Aggressive,
+            "Defensive" => EngagementInitiative::Defensive,
+            "Passive" => EngagementInitiative::Passive,
+            _ => return,
+        };
+        let pct = disengage_threshold_pct.clamp(0, 100) as u8;
+        self.apply_or_send(SimAction::SetGroupEngagementStyle {
             group_id: elven_canopy_sim::types::MilitaryGroupId(group_id as u64),
-            hostile_response,
+            engagement_style: EngagementStyle {
+                weapon_preference: wp,
+                ammo_exhausted: ae,
+                initiative: init,
+                disengage_threshold_pct: pct,
+            },
         });
     }
 

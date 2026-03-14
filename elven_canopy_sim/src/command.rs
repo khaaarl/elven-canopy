@@ -65,9 +65,9 @@
 // `event.rs`).
 
 use crate::building::LogisticsWant;
-use crate::db::HostileResponse;
 use crate::inventory::ItemKind;
 use crate::recipe::RecipeKey;
+use crate::species::EngagementStyle;
 use crate::task::TaskKind;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
@@ -313,10 +313,10 @@ pub enum SimAction {
         group_id: MilitaryGroupId,
         name: String,
     },
-    /// Change a military group's hostile response setting.
-    SetGroupHostileResponse {
+    /// Change a military group's engagement style settings.
+    SetGroupEngagementStyle {
         group_id: MilitaryGroupId,
-        hostile_response: HostileResponse,
+        engagement_style: EngagementStyle,
     },
     /// Spawn a projectile at a position with a given velocity (debug/testing).
     /// Creates a projectile with an arrow item in its inventory.

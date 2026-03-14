@@ -353,9 +353,9 @@ impl SimState {
 
     /// Wander: pick a random adjacent nav node and move there.
     ///
-    /// Aggressive non-civ creatures and Fight-group civ creatures auto-engage
-    /// detected hostiles via `hostile_pursue()` before falling back to random
-    /// wandering.
+    /// Creatures with aggressive or defensive initiative auto-engage detected
+    /// hostiles via `hostile_pursue()` before falling back to random wandering.
+    /// Passive creatures never pursue.
     pub(crate) fn wander(
         &mut self,
         creature_id: CreatureId,
@@ -367,25 +367,17 @@ impl SimState {
             None => return,
         };
         let species = creature.species;
-        let civ_id = creature.civ_id;
-        let combat_ai = self.species_table[&species].combat_ai;
 
-        // Aggressive non-civ creatures pursue detected hostile targets instead
-        // of wandering randomly. Falls through to random wander if no target
+        let style = self.resolve_engagement_style(creature_id);
+
+        // Non-passive creatures pursue detected hostile targets instead of
+        // wandering randomly. Falls through to random wander if no target
         // is within detection range or reachable.
-        use crate::species::CombatAI;
+        use crate::species::EngagementInitiative;
         if matches!(
-            combat_ai,
-            CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+            style.initiative,
+            EngagementInitiative::Aggressive | EngagementInitiative::Defensive
         ) && self.hostile_pursue(creature_id, current_node, species, events)
-        {
-            return;
-        }
-
-        // Fight-group civ creatures also auto-engage hostiles.
-        if civ_id.is_some()
-            && self.resolve_hostile_response(creature_id) == Some(crate::db::HostileResponse::Fight)
-            && self.hostile_pursue(creature_id, current_node, species, events)
         {
             return;
         }

@@ -94,8 +94,13 @@
       "rest_decay_per_tick": 3333333333,
       "rest_tired_threshold_pct": 50,
       "rest_per_sleep_tick": 60000000000,
-      "combat_ai": "Passive",
-      "hostile_detection_range_sq": 0
+      "engagement_style": {
+        "weapon_preference": "PreferRanged",
+        "ammo_exhausted": "Flee",
+        "initiative": "Defensive",
+        "disengage_threshold_pct": 100
+      },
+      "hostile_detection_range_sq": 225
     },
     "Capybara": {
       "walk_ticks_per_voxel": 800,
@@ -123,7 +128,6 @@
       "melee_damage": 0,
       "melee_interval_ticks": 1000,
       "melee_range_sq": 2,
-      "combat_ai": "Passive",
       "hostile_detection_range_sq": 0
     },
     "Boar": {
@@ -152,7 +156,6 @@
       "melee_damage": 0,
       "melee_interval_ticks": 1000,
       "melee_range_sq": 2,
-      "combat_ai": "Passive",
       "hostile_detection_range_sq": 0
     },
     "Deer": {
@@ -181,7 +184,6 @@
       "melee_damage": 0,
       "melee_interval_ticks": 1000,
       "melee_range_sq": 2,
-      "combat_ai": "Passive",
       "hostile_detection_range_sq": 0
     },
     "Elephant": {
@@ -210,7 +212,6 @@
       "melee_damage": 0,
       "melee_interval_ticks": 1000,
       "melee_range_sq": 2,
-      "combat_ai": "Passive",
       "hostile_detection_range_sq": 0
     },
     "Goblin": {
@@ -237,7 +238,12 @@
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
       "rest_per_sleep_tick": 60000000000,
-      "combat_ai": "AggressiveMelee",
+      "engagement_style": {
+        "weapon_preference": "PreferMelee",
+        "ammo_exhausted": "SwitchToMelee",
+        "initiative": "Aggressive",
+        "disengage_threshold_pct": 0
+      },
       "hostile_detection_range_sq": 225
     },
     "Monkey": {
@@ -264,7 +270,6 @@
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
       "rest_per_sleep_tick": 60000000000,
-      "combat_ai": "Passive",
       "hostile_detection_range_sq": 0
     },
     "Orc": {
@@ -291,7 +296,12 @@
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
       "rest_per_sleep_tick": 60000000000,
-      "combat_ai": "AggressiveMelee",
+      "engagement_style": {
+        "weapon_preference": "PreferMelee",
+        "ammo_exhausted": "SwitchToMelee",
+        "initiative": "Aggressive",
+        "disengage_threshold_pct": 0
+      },
       "hostile_detection_range_sq": 400
     },
     "Squirrel": {
@@ -318,7 +328,6 @@
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
       "rest_per_sleep_tick": 60000000000,
-      "combat_ai": "Passive",
       "hostile_detection_range_sq": 0
     },
     "Troll": {
@@ -345,7 +354,12 @@
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
       "rest_per_sleep_tick": 60000000000,
-      "combat_ai": "AggressiveMelee",
+      "engagement_style": {
+        "weapon_preference": "PreferMelee",
+        "ammo_exhausted": "SwitchToMelee",
+        "initiative": "Aggressive",
+        "disengage_threshold_pct": 0
+      },
       "hostile_detection_range_sq": 144
     }
   },

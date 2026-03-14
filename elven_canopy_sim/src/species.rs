@@ -3,8 +3,8 @@
 // Most behavioral differences between creature species (elves, capybaras, etc.)
 // are expressed as data in `SpeciesData`, keyed by `Species` in the game config.
 // The sim code uses a single `Creature` type and reads species-specific values
-// from the species table at runtime, including `combat_ai` for hostility and
-// `hostile_detection_range_sq` for detection range.
+// from the species table at runtime, including `engagement_style` for combat
+// behavior and `hostile_detection_range_sq` for detection range.
 //
 // Current parameters:
 // - `walk_ticks_per_voxel` — ticks to traverse 1.0 units of euclidean distance
@@ -44,11 +44,11 @@
 //   idle creature will seek sleep (default 50).
 // - `rest_per_sleep_tick` — rest restored per sim tick of sleeping, applied
 //   at each sleep task activation.
-// - `combat_ai` — `CombatAI` enum controlling combat behavior: `Passive`
-//   (default, no combat), `FleeOnly` (flee from hostiles), `AggressiveMelee`
-//   (pursue and melee), `AggressiveRanged` (ranged + melee fallback). Replaces
-//   the hardcoded `Species::is_hostile()` discriminator with a data-driven
-//   approach.
+// - `engagement_style` — `EngagementStyle` struct controlling combat behavior:
+//   weapon preference (melee/ranged), engagement initiative (aggressive/
+//   defensive/passive), ammo exhaustion behavior (switch to melee/flee), and
+//   disengage threshold (HP% below which the creature flees). For civ creatures,
+//   the military group's `engagement_style` overrides the species default.
 // - `hostile_detection_range_sq` — maximum squared 3D euclidean distance at
 //   which a creature can detect hostiles. 0 = no detection (passive species).
 //   E.g. 225 = 15-voxel radius, 400 = 20-voxel radius. Height is included,
@@ -67,23 +67,70 @@
 use crate::nav::EdgeType;
 use serde::{Deserialize, Serialize};
 
-/// Combat behavior for a species. Determines how the creature reacts to
-/// hostiles detected within its `hostile_detection_range_sq`.
-///
-/// For non-civ creatures, `combat_ai` directly drives behavior. For civ
-/// creatures, the military group's `hostile_response` overrides this;
-/// `combat_ai` is the fallback if the creature loses its civ.
+/// Weapon preference for combat engagement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CombatAI {
-    /// No combat behavior. Will not attack or flee. (Wildlife default.)
+pub enum WeaponPreference {
+    /// Shoot at range, close to melee when out of range or no ranged option.
+    PreferRanged,
+    /// Close to melee distance; only shoot if no path to target exists.
+    PreferMelee,
+}
+
+/// What to do when ranged ammo is exhausted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AmmoExhaustedBehavior {
+    /// Switch to melee combat.
+    SwitchToMelee,
+    /// Disengage and flee.
+    Flee,
+}
+
+/// How eagerly a creature initiates combat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EngagementInitiative {
+    /// Pursue hostiles on detection, willing to chase long distances.
+    Aggressive,
+    /// Counter-attack when hit and fight within ~5 voxels of the position
+    /// where combat started, but don't chase beyond that tether radius.
+    Defensive,
+    /// Never initiate combat, never counter-attack. Completely passive.
     Passive,
-    /// Flee from hostiles within detection range. (Prey animals.)
-    FleeOnly,
-    /// Attack hostiles within detection range using melee.
-    AggressiveMelee,
-    /// Attack hostiles within detection range using ranged if possible,
-    /// melee as fallback. (Future: ranged hostiles.)
-    AggressiveRanged,
+}
+
+/// Unified combat behavior struct. Replaces the former `CombatAI` enum
+/// (species-level) and the former `HostileResponse` enum (military group-level).
+///
+/// Lives on both `SpeciesData` (species defaults for non-civ creatures)
+/// and `MilitaryGroup` (player-configurable per-group overrides for civ
+/// creatures). The combat decision logic (`should_flee`, `hostile_pursue`,
+/// `wander`, `flee_step`) reads from a single resolved `EngagementStyle`.
+///
+/// See also: `sim/combat.rs` for the combat decision cascade,
+/// `config.rs` for per-species defaults, `db.rs` for `MilitaryGroup`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngagementStyle {
+    /// Whether the creature prefers ranged or melee combat.
+    pub weapon_preference: WeaponPreference,
+    /// What to do when ranged ammo runs out.
+    pub ammo_exhausted: AmmoExhaustedBehavior,
+    /// How eagerly the creature initiates combat.
+    pub initiative: EngagementInitiative,
+    /// HP percentage (0–100) at or below which the creature rationally
+    /// disengages and flees. 100 = always flee (civilian default).
+    /// 0 = never disengage. Distinct from instinctual flee (panic).
+    pub disengage_threshold_pct: u8,
+}
+
+impl Default for EngagementStyle {
+    /// Default: passive, no combat.
+    fn default() -> Self {
+        Self {
+            weapon_preference: WeaponPreference::PreferMelee,
+            ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
+            initiative: EngagementInitiative::Passive,
+            disengage_threshold_pct: 0,
+        }
+    }
 }
 
 /// Data-driven behavioral parameters for a creature species.
@@ -171,11 +218,14 @@ pub struct SpeciesData {
     #[serde(default = "default_melee_range_sq")]
     pub melee_range_sq: i64,
 
-    /// Combat behavior for this species. Determines whether the creature
-    /// attacks, flees, or ignores hostiles within detection range.
-    /// Default: `Passive` (no combat behavior).
-    #[serde(default = "default_combat_ai")]
-    pub combat_ai: CombatAI,
+    /// Combat engagement style for this species. Determines weapon preference,
+    /// initiative (aggressive/defensive/passive), ammo exhaustion behavior,
+    /// and disengage threshold. For civ creatures, the military group's
+    /// `engagement_style` overrides this; for non-civ creatures, this is
+    /// the authoritative combat configuration.
+    /// Default: passive (no combat behavior).
+    #[serde(default)]
+    pub engagement_style: EngagementStyle,
 
     /// Maximum squared 3D euclidean distance at which this creature can
     /// detect hostiles. Uses `i64` intermediates: `dx*dx + dy*dy + dz*dz`.
@@ -241,10 +291,6 @@ fn default_melee_interval_ticks() -> u64 {
 
 fn default_melee_range_sq() -> i64 {
     2
-}
-
-fn default_combat_ai() -> CombatAI {
-    CombatAI::Passive
 }
 
 fn default_rest_max() -> i64 {

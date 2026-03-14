@@ -31,7 +31,9 @@
 
 use crate::inventory::{ItemKind, Material, MaterialFilter};
 use crate::nav::EdgeType;
-use crate::species::{CombatAI, SpeciesData};
+use crate::species::{
+    AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, SpeciesData, WeaponPreference,
+};
 use crate::types::{CivSpecies, FaceType, MoodTier, Species, ThoughtKind, VoxelCoord, VoxelType};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -1290,6 +1292,10 @@ fn default_attack_path_retry_limit() -> u32 {
     3
 }
 
+fn default_defensive_pursuit_range_sq() -> i64 {
+    25 // ~5 voxels
+}
+
 fn default_voxel_exclusion_retry_ticks() -> u64 {
     50
 }
@@ -1737,6 +1743,12 @@ pub struct GameConfig {
     #[serde(default = "default_attack_path_retry_limit")]
     pub attack_path_retry_limit: u32,
 
+    /// Maximum squared distance a defensive creature will pursue targets.
+    /// Defensive creatures only chase within this radius of their current
+    /// position — they won't cross the map to engage. Default 25 (~5 voxels).
+    #[serde(default = "default_defensive_pursuit_range_sq")]
+    pub defensive_pursuit_range_sq: i64,
+
     /// Ticks to wait before retrying movement when a creature's destination
     /// voxel is occupied by a hostile creature (voxel exclusion).
     #[serde(default = "default_voxel_exclusion_retry_ticks")]
@@ -1922,8 +1934,13 @@ impl Default for GameConfig {
                 melee_damage: 10,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
-                combat_ai: CombatAI::Passive,
-                hostile_detection_range_sq: 225, // 15-voxel detection radius (flee)
+                engagement_style: EngagementStyle {
+                    weapon_preference: WeaponPreference::PreferRanged,
+                    ammo_exhausted: AmmoExhaustedBehavior::Flee,
+                    initiative: EngagementInitiative::Defensive,
+                    disengage_threshold_pct: 100,
+                },
+                hostile_detection_range_sq: 225, // 15-voxel detection radius
             },
         );
         species.insert(
@@ -1950,7 +1967,7 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
-                combat_ai: CombatAI::Passive,
+                engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
             },
         );
@@ -1978,7 +1995,7 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
-                combat_ai: CombatAI::Passive,
+                engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
             },
         );
@@ -2006,7 +2023,7 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
-                combat_ai: CombatAI::Passive,
+                engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
             },
         );
@@ -2034,7 +2051,7 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
-                combat_ai: CombatAI::Passive,
+                engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
             },
         );
@@ -2062,7 +2079,12 @@ impl Default for GameConfig {
                 melee_damage: 15,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
-                combat_ai: CombatAI::AggressiveMelee,
+                engagement_style: EngagementStyle {
+                    weapon_preference: WeaponPreference::PreferMelee,
+                    ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
+                    initiative: EngagementInitiative::Aggressive,
+                    disengage_threshold_pct: 0,
+                },
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
             },
         );
@@ -2090,7 +2112,7 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
-                combat_ai: CombatAI::Passive,
+                engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
             },
         );
@@ -2118,7 +2140,12 @@ impl Default for GameConfig {
                 melee_damage: 25,
                 melee_interval_ticks: 1200,
                 melee_range_sq: 2,
-                combat_ai: CombatAI::AggressiveMelee,
+                engagement_style: EngagementStyle {
+                    weapon_preference: WeaponPreference::PreferMelee,
+                    ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
+                    initiative: EngagementInitiative::Aggressive,
+                    disengage_threshold_pct: 0,
+                },
                 hostile_detection_range_sq: 400, // 20-voxel detection radius
             },
         );
@@ -2146,7 +2173,7 @@ impl Default for GameConfig {
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
                 melee_range_sq: 2,
-                combat_ai: CombatAI::Passive,
+                engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
             },
         );
@@ -2174,7 +2201,12 @@ impl Default for GameConfig {
                 melee_damage: 50,
                 melee_interval_ticks: 1500,
                 melee_range_sq: 2,
-                combat_ai: CombatAI::AggressiveMelee,
+                engagement_style: EngagementStyle {
+                    weapon_preference: WeaponPreference::PreferMelee,
+                    ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
+                    initiative: EngagementInitiative::Aggressive,
+                    disengage_threshold_pct: 0,
+                },
                 hostile_detection_range_sq: 144, // 12-voxel detection radius
             },
         );
@@ -2321,6 +2353,7 @@ impl Default for GameConfig {
             arrow_damage_multiplier: default_arrow_damage_multiplier(),
             shoot_cooldown_ticks: default_shoot_cooldown_ticks(),
             attack_path_retry_limit: default_attack_path_retry_limit(),
+            defensive_pursuit_range_sq: default_defensive_pursuit_range_sq(),
             voxel_exclusion_retry_ticks: default_voxel_exclusion_retry_ticks(),
             item_durability: default_item_durability(),
         }

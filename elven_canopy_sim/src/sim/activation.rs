@@ -248,13 +248,89 @@ impl SimState {
 
         // --- Flee check (F-flee) ---
         // Before the decision cascade, check if this creature should flee from
-        // a nearby hostile. Civ creatures flee by default (no military groups
-        // yet). Non-civ creatures with CombatAI::FleeOnly also flee. If a flee
-        // step is taken, skip the normal decision cascade entirely.
+        // a nearby hostile (based on engagement style: passive initiative or
+        // disengage threshold exceeded). If a flee step is taken, skip the
+        // normal decision cascade entirely.
         if self.should_flee(creature_id, species)
             && self.flee_step(creature_id, current_node, species)
         {
             return;
+        }
+
+        // --- Autonomous combat check (F-engagement-style) ---
+        // Non-passive creatures with detection range should interrupt
+        // low-priority tasks to engage hostiles. This check runs before
+        // the task execution so that an elf fetching clothes will stop
+        // to shoot at a charging orc.
+        {
+            let style = self.resolve_engagement_style(creature_id);
+            let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
+            if detection_range_sq > 0
+                && matches!(
+                    style.initiative,
+                    crate::species::EngagementInitiative::Aggressive
+                        | crate::species::EngagementInitiative::Defensive
+                )
+            {
+                // Check if the current task (if any) can be preempted by
+                // autonomous combat. Only preempts Autonomous-level tasks
+                // (haul, cook, craft, harvest, acquire items). Player-directed
+                // commands and survival tasks are NOT interrupted — the player's
+                // explicit orders take priority over autonomous behavior.
+                let should_try_combat = if let Some(task_id) = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .and_then(|c| c.current_task)
+                    && let Some(task) = self.db.tasks.get(&task_id)
+                {
+                    let current_level = preemption::preemption_level(task.kind_tag, task.origin);
+                    current_level == preemption::PreemptionLevel::Autonomous
+                } else {
+                    // No task — try combat before find_available_task claims
+                    // a new one (otherwise the creature might pick up a
+                    // non-preemptable task and stop fighting).
+                    true
+                };
+
+                if should_try_combat {
+                    // Check if there are actually hostiles to fight before
+                    // interrupting the current task. Uses full detection range
+                    // — defensive creatures can shoot at targets beyond their
+                    // pursuit range. detect_hostile_targets is a read-only scan.
+                    let creature = self.db.creatures.get(&creature_id).unwrap();
+                    let has_targets = !self
+                        .detect_hostile_targets(
+                            creature_id,
+                            species,
+                            creature.position,
+                            creature.civ_id,
+                            detection_range_sq,
+                        )
+                        .is_empty();
+
+                    if has_targets {
+                        // Interrupt the task BEFORE calling hostile_pursue.
+                        // hostile_pursue may schedule a new activation (via
+                        // start_simple_action), and interrupt_task calls
+                        // abort_current_action which cancels all scheduled
+                        // activations — doing it after would wipe the new one.
+                        if let Some(task_id) = self
+                            .db
+                            .creatures
+                            .get(&creature_id)
+                            .and_then(|c| c.current_task)
+                        {
+                            self.interrupt_task(creature_id, task_id);
+                        }
+                        if self.hostile_pursue(creature_id, current_node, species, events) {
+                            return;
+                        }
+                        // hostile_pursue failed despite targets detected
+                        // (e.g., no path). Fall through to decision cascade.
+                    }
+                }
+            }
         }
 
         // --- Step 2: Decision cascade ---

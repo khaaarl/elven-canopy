@@ -104,7 +104,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-emotions             Multi-dimensional emotional state
-[ ] F-engagement-style     Unified engagement style (species + military group combat tactics)
 [ ] F-equipment-sprites    Dynamic sprite customization for equipment
 [ ] F-ff-vertical-arc      Vertical arc awareness for friendly-fire checks
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
@@ -224,6 +223,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-elf-sprite           Billboard elf sprite rendering
 [x] F-elfcyclopedia-srv    Embedded localhost HTTP elfcyclopedia server
 [x] F-emotions-basic       Mood score from thought weights
+[x] F-engagement-style     Unified engagement style (species + military group combat tactics)
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-flee                 Flee behavior for civilians
 [x] F-food-gauge           Creature food gauge with decay
@@ -1998,7 +1998,7 @@ Weapon types with different ranges, damage, and crafting requirements.
 
 Simple aggression AI for non-civ hostile creatures. This is the first "it all comes together" milestone — debug-spawn a goblin and watch it chase and attack an elf.
 
-**Done so far:** Simplified hostile AI via the wander path (no tasks, no formal detection/preemption). `Species::is_hostile()` gates behavior for Goblin/Orc/Troll. On each activation with no task, `hostile_pursue()` collects living elf nav nodes, runs Dijkstra to find the nearest reachable elf, A* to get a path, and moves one edge toward it. When in melee range, auto-calls `try_melee_strike()`. On cooldown, waits in place and re-activates when cooldown expires. Falls back to random wander if no elf reachable. Events threaded through the activation chain so combat events (CreatureDamaged, CreatureDied) are properly emitted. Refactored `wander()` into `hostile_pursue()`, `random_wander()`, and shared `move_one_step()`. Formal hostile detection system (F-hostile-detection) with configurable detection range, CombatAI enum on SpeciesData, and faction-based hostility. Task-driven attack (F-attack-task) with AttackTarget task kind and dynamic pursuit. Preemption system (F-preemption) so combat can interrupt lower-priority tasks.
+**Done so far:** Simplified hostile AI via the wander path (no tasks, no formal detection/preemption). `Species::is_hostile()` gates behavior for Goblin/Orc/Troll. On each activation with no task, `hostile_pursue()` collects living elf nav nodes, runs Dijkstra to find the nearest reachable elf, A* to get a path, and moves one edge toward it. When in melee range, auto-calls `try_melee_strike()`. On cooldown, waits in place and re-activates when cooldown expires. Falls back to random wander if no elf reachable. Events threaded through the activation chain so combat events (CreatureDamaged, CreatureDied) are properly emitted. Refactored `wander()` into `hostile_pursue()`, `random_wander()`, and shared `move_one_step()`. Formal hostile detection system (F-hostile-detection) with configurable detection range, `EngagementStyle` on SpeciesData (supersedes old CombatAI enum), and faction-based hostility. Task-driven attack (F-attack-task) with AttackTarget task kind and dynamic pursuit. Preemption system (F-preemption) so combat can interrupt lower-priority tasks.
 
 **Not yet done:** Two-phase proximity optimization (squared distance filter before pathfinding). Target selection by closest distance rather than first-by-ID. Path caching to avoid Dijkstra+A* on every activation.
 
@@ -2010,23 +2010,24 @@ Simple aggression AI for non-civ hostile creatures. This is the first "it all co
 **Related:** F-engagement-style
 
 #### F-engagement-style — Unified engagement style (species + military group combat tactics)
-**Status:** Todo
+**Status:** Done
 
 A single `EngagementStyle` struct that governs how a creature uses its weapons in combat. Replaces the current split between `CombatAI` (species-level, coarse) and `HostileResponse` (military group, binary Fight/Flee). The same struct lives on both `SpeciesData` (species defaults for non-civ creatures) and `MilitaryGroup` (player-configurable per-group overrides for civ creatures), using identical code paths.
 
-**Fields (draft — refine during design):**
+**Fields:**
 
-- **Weapon preference:** Prefer ranged / prefer melee / mixed (ranged at distance, melee when close).
-- **Ammo exhaustion behavior:** Switch to melee / flee / hold position and wait.
-- **Engagement initiative:** Aggressive (pursue on detection) / defensive (fight only when attacked or when hostiles enter short range) / passive (never initiate).
-- **Melee confidence:** Willing to melee / reluctant (flee if forced into melee). Captures "I'm an archer, don't make me swing a sword."
-- **Disengage threshold:** Optional HP% below which the creature breaks off and flees (distinct from F-instinctual-flee which is involuntary panic).
+- **Weapon preference:** Prefer ranged / prefer melee. "Prefer ranged" behaves like current hostile_pursue (shoot, close to melee when out of range). "Prefer melee" skips ranged unless no path to target exists (or future: can shoot while moving without penalty).
+- **Ammo exhaustion behavior:** Switch to melee / flee.
+- **Engagement initiative:** Aggressive (pursue on detection, willing to chase long distances) / defensive (counter-attack and fight within ~5 voxels of position when combat started, but don't chase beyond that) / passive (never initiate, never counter-attack).
+- **Disengage threshold:** HP% at or below which the creature rationally breaks off combat and flees (distinct from F-instinctual-flee which is involuntary panic). At 100%, creature always flees (default for civilians). At 0%, creature never disengages.
 
-Species defaults should make intuitive sense (goblins: aggressive melee; orc archers: prefer ranged, switch to melee on ammo out; deer: passive). Military group config lets the player override for their civ creatures ("Archers" group: prefer ranged, flee on ammo out; "Vanguard": prefer melee, aggressive).
+Species defaults should make intuitive sense (goblins: aggressive melee; orc archers: prefer ranged, switch to melee on ammo out; deer: passive; elves: defensive, prefer ranged, flee on ammo out, disengage 100%). Military group config lets the player override for their civ creatures ("Archers" group: prefer ranged, flee on ammo out; "Vanguard": prefer melee, aggressive). No per-creature overrides — always group-level for civ creatures, species-level for non-civ.
 
-Supersedes `CombatAI` enum on `SpeciesData` and `HostileResponse` on `MilitaryGroup` — both collapse into `EngagementStyle`. The `should_flee()` / `hostile_pursue()` / `wander()` combat decision logic is rewritten against the unified struct.
+Supersedes `CombatAI` enum on `SpeciesData` and `HostileResponse` on `MilitaryGroup` — both collapse into `EngagementStyle`. All existing combat decision logic (`should_flee()`, `hostile_pursue()`, `wander()`, `flee_step()`, `detect_hostile_targets()`) is rewritten against the unified struct.
 
-**Blocks:** F-instinctual-flee, F-skirmish
+**UI scope:** The military groups screen replaces the current Fight/Flee toggle with fields for each `EngagementStyle` option.
+
+**Unblocked:** F-instinctual-flee, F-skirmish
 **Related:** F-combat, F-enemy-ai, F-military-groups
 
 #### F-ff-vertical-arc — Vertical arc awareness for friendly-fire checks
@@ -2039,11 +2040,11 @@ Currently, friendly-fire checks use the projectile's 2D column (XZ) to detect fr
 #### F-flee — Flee behavior for civilians
 **Status:** Done
 
-Creatures with Flee response (civilian military group default, or FleeOnly combat_ai) detect hostile within range, preempt current task, and perform greedy retreat. At each activation, pick nav neighbor maximizing squared euclidean distance from threat (anchor voxel for multi-voxel threats). Ties broken by NavNodeId. Continue fleeing while hostile is in detection range. Dead-end trapping is acceptable (mirrors panic behavior, motivates escape route construction). Future: cornered behavior, bounded A* instead of greedy.
+Creatures with passive initiative or HP below disengage threshold detect hostiles within range, preempt current task, and perform greedy retreat. At each activation, pick nav neighbor maximizing squared euclidean distance from threat (anchor voxel for multi-voxel threats). Ties broken by NavNodeId. Continue fleeing while hostile is in detection range. Dead-end trapping is acceptable (mirrors panic behavior, motivates escape route construction). Future: cornered behavior, bounded A* instead of greedy.
 
-**Done so far:** Flee behavior implemented in `sim.rs` via `should_flee()` / `flee_step()`. Civ creatures (elves) flee by default — no military groups yet, so all civ creatures are treated as civilians. Non-civ creatures with `CombatAI::FleeOnly` also flee. Elf `hostile_detection_range_sq` set to 225 (15-voxel radius). Flee check runs before the decision cascade in `process_creature_activation` — detects threats via existing `detect_hostile_targets()`, interrupts current task, then greedy retreat (maximize squared distance from nearest threat, NavNodeId tie-breaking). Cornered creatures (no eligible edges) reschedule activation and wait. Flee stops immediately when threat leaves detection range. 8 tests covering: flee direction, task interruption, threat removal, FleeOnly species, passive species, multiple threats, cornered case, aggressive-doesn't-flee.
+**Done so far:** Flee behavior implemented via `should_flee()` / `flee_step()`. Controlled by `EngagementStyle`: passive initiative always flees, disengage threshold (HP%) triggers flee when HP is low (100% = always flee, used for civilians). Military group engagement style overrides species defaults for civ creatures. Elf `hostile_detection_range_sq` set to 225 (15-voxel radius). Flee check runs before the decision cascade in `process_creature_activation` — detects threats via existing `detect_hostile_targets()`, interrupts current task, then greedy retreat (maximize squared distance from nearest threat, NavNodeId tie-breaking). Cornered creatures (no eligible edges) reschedule activation and wait. Flee stops immediately when threat leaves detection range.
 
-**Not yet done:** Military group hostile_response gating (depends on F-military-groups). `flee_cooldown_ticks` for persistence after threat leaves range. Bounded A* instead of greedy. Cornered behavior (desperate fighting). Flee toward friendly soldiers. Panic/fear thoughts.
+**Not yet done:** `flee_cooldown_ticks` for persistence after threat leaves range. Bounded A* instead of greedy. Cornered behavior (desperate fighting). Flee toward friendly soldiers. Panic/fear thoughts.
 
 **Draft:** docs/drafts/combat_military.md (§7)
 
@@ -2082,7 +2083,7 @@ Projectiles currently hit any alive creature in their path after the origin voxe
 #### F-hostile-detection — Hostile detection and faction logic
 **Status:** Done
 
-Activation-driven hostile scanning. On each creature activation, scan for hostiles within hostile_detection_range_sq (SpeciesData, squared euclidean voxels). Hostility determination: per-direction (not mutual). Civ creatures check CivOpinion::Hostile toward other civ. Non-civ creatures with combat_ai: AggressiveMelee/AggressiveRanged treat all civ creatures as hostile (except same-species exemption). Non-civ aggressors don't attack each other. CombatAI enum on SpeciesData (Passive, FleeOnly, AggressiveMelee, AggressiveRanged). Auto-escalation when attacked (design question: no target civ for non-civ attackers — may only apply to civ-vs-civ). Detection is O(n) scan over all creatures with squared-distance filter (BTreeMap spatial index doesn't support 3D range queries). Height makes detection range ineffective across tree levels — design decision needed on whether this is intentional.
+Activation-driven hostile scanning. On each creature activation, scan for hostiles within hostile_detection_range_sq (SpeciesData, squared euclidean voxels). Hostility determination: per-direction (not mutual). Civ creatures check CivOpinion::Hostile toward other civ. Non-civ creatures with aggressive `EngagementStyle` initiative treat all civ creatures as hostile (except same-species exemption). Non-civ aggressors don't attack each other. `EngagementStyle` struct on SpeciesData governs initiative (Aggressive/Defensive/Passive), weapon preference, ammo exhaustion, and disengage threshold. Auto-escalation when attacked (design question: no target civ for non-civ attackers — may only apply to civ-vs-civ). Detection is O(n) scan over all creatures with squared-distance filter (BTreeMap spatial index doesn't support 3D range queries). Height makes detection range ineffective across tree levels — design decision needed on whether this is intentional.
 
 **Draft:** docs/drafts/combat_military.md (§6, §7)
 
@@ -2122,7 +2123,7 @@ A per-species `FleeInstinct` struct on `SpeciesData` that defines involuntary pa
 
 **Distinct from EngagementStyle's disengage threshold:** The disengage threshold in EngagementStyle is a tactical, voluntary "I should retreat." FleeInstinct is involuntary panic — different movement behavior (possibly ignoring pathing efficiency, running in a random direction away from threat), different visual feedback (panic animation/particles), and cannot be overridden by orders.
 
-**Blocked by:** F-engagement-style
+**Unblocked by:** F-engagement-style
 
 #### F-los-tuning — Line-of-sight tuning (terrain tolerance, tall creature bonus)
 **Status:** Todo
@@ -2172,9 +2173,9 @@ The player configures equipment policies on military groups (e.g., "members shou
 #### F-military-groups — Military group data model and configuration
 **Status:** Done
 
-MilitaryGroup table in SimDb with civ_id FK (cascade on civ delete). Auto-increment PK. Fields: name, is_default_civilian (bool, invariant: exactly one per civ), hostile_response (Fight/Flee). Two default groups per civ during worldgen (Civilians with Flee, Soldiers with Fight). Implicit civilian membership: creature `military_group: None` means civilian (governed by civ's default civilian group settings), `Some(group_id)` means explicitly assigned. Civilian count computed as total civ creatures minus assigned creatures. Commands: CreateMilitaryGroup, DeleteMilitaryGroup (reject for civilian group, nullify members), ReassignMilitaryGroup, RenameMilitaryGroup, SetGroupHostileResponse. `should_flee()` updated to check group hostile_response.
+MilitaryGroup table in SimDb with civ_id FK (cascade on civ delete). Auto-increment PK. Fields: name, is_default_civilian (bool, invariant: exactly one per civ), engagement_style (`EngagementStyle` struct with weapon preference, ammo exhaustion, initiative, and disengage threshold — replaces old Fight/Flee `HostileResponse`). Two default groups per civ during worldgen (Civilians with passive/100% disengage, Soldiers with aggressive/0% disengage). Implicit civilian membership: creature `military_group: None` means civilian (governed by civ's default civilian group settings), `Some(group_id)` means explicitly assigned. Civilian count computed as total civ creatures minus assigned creatures. Commands: CreateMilitaryGroup, DeleteMilitaryGroup (reject for civilian group, nullify members), ReassignMilitaryGroup, RenameMilitaryGroup, SetGroupEngagementStyle. `should_flee()` updated to check engagement style.
 
-UI: Military panel opened via separate Military [M] toolbar button. Summary page lists groups with member counts, click to navigate to detail. Detail page: hostile_response toggle (Fight/Flee), rename, delete (non-civilian only), scrollable member list with reassign buttons. Reassignment overlay (modal) lists groups for quick reassignment. Creature info panel shows military group name as clickable link to the group's detail view.
+UI: Military panel opened via separate Military [M] toolbar button. Summary page lists groups with member counts and initiative, click to navigate to detail. Detail page: engagement style controls (initiative/weapon preference/ammo exhaustion cycle buttons, disengage threshold slider), rename, delete (non-civilian only), scrollable member list with reassign buttons. Reassignment overlay (modal) lists groups for quick reassignment. Creature info panel shows military group name as clickable link to the group's detail view.
 
 **Draft:** docs/drafts/military_groups.md
 
@@ -2236,7 +2237,7 @@ to re-establish range before firing again. Requires F-engagement-style
 to provide the configuration knobs (weapon preference, disengage
 threshold) that determine when a creature uses this tactic.
 
-**Blocked by:** F-engagement-style
+**Unblocked by:** F-engagement-style
 **Related:** F-shoot-action
 
 #### F-spatial-index — Creature spatial index for voxel-level position queries

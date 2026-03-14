@@ -3,8 +3,9 @@
 ## Two-page panel opened via the Military [M] button:
 ## - **Summary page:** Lists all military groups with member counts. Click a row
 ##   to navigate to the group detail page. "New Group" button at the bottom.
-## - **Detail page:** Shows group members, hostile response toggle (Fight/Flee),
-##   rename button, delete button (non-civilian only), and per-member reassign.
+## - **Detail page:** Shows group members, engagement style controls (weapon
+##   preference, ammo exhaustion, initiative, disengage threshold), rename
+##   button, delete button (non-civilian only), and per-member reassign.
 ##
 ## Toggle behavior: [M] opens/closes the panel. ESC from detail navigates back
 ## to summary; ESC from summary closes. Opening this panel closes the creature
@@ -44,8 +45,11 @@ var _detail_back_btn: Button
 var _is_renaming: bool = false
 var _detail_scroll: ScrollContainer
 var _detail_member_list: VBoxContainer
-var _fight_btn: Button
-var _flee_btn: Button
+var _initiative_btn: Button
+var _weapon_btn: Button
+var _ammo_btn: Button
+var _disengage_label: Label
+var _disengage_slider: HSlider
 var _delete_btn: Button
 
 
@@ -144,26 +148,69 @@ func _ready() -> void:
 
 	_detail_vbox.add_child(HSeparator.new())
 
-	# Hostile response toggles.
-	var response_row := HBoxContainer.new()
-	response_row.add_theme_constant_override("separation", 6)
-	_detail_vbox.add_child(response_row)
+	# Engagement style controls.
+	var style_vbox := VBoxContainer.new()
+	style_vbox.add_theme_constant_override("separation", 4)
+	_detail_vbox.add_child(style_vbox)
 
-	var response_label := Label.new()
-	response_label.text = "Response:"
-	response_row.add_child(response_label)
+	# Initiative (cycle button: Aggressive / Defensive / Passive).
+	var init_row := HBoxContainer.new()
+	init_row.add_theme_constant_override("separation", 6)
+	style_vbox.add_child(init_row)
+	var init_label := Label.new()
+	init_label.text = "Initiative:"
+	init_label.custom_minimum_size.x = 100
+	init_row.add_child(init_label)
+	_initiative_btn = Button.new()
+	_initiative_btn.text = "Aggressive"
+	_initiative_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_initiative_btn.pressed.connect(_cycle_initiative)
+	init_row.add_child(_initiative_btn)
 
-	_fight_btn = Button.new()
-	_fight_btn.text = "Fight"
-	_fight_btn.toggle_mode = true
-	_fight_btn.pressed.connect(func(): _set_response("Fight"))
-	response_row.add_child(_fight_btn)
+	# Weapon preference (cycle button: PreferRanged / PreferMelee).
+	var weapon_row := HBoxContainer.new()
+	weapon_row.add_theme_constant_override("separation", 6)
+	style_vbox.add_child(weapon_row)
+	var weapon_label := Label.new()
+	weapon_label.text = "Weapon:"
+	weapon_label.custom_minimum_size.x = 100
+	weapon_row.add_child(weapon_label)
+	_weapon_btn = Button.new()
+	_weapon_btn.text = "Prefer Ranged"
+	_weapon_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_weapon_btn.pressed.connect(_cycle_weapon)
+	weapon_row.add_child(_weapon_btn)
 
-	_flee_btn = Button.new()
-	_flee_btn.text = "Flee"
-	_flee_btn.toggle_mode = true
-	_flee_btn.pressed.connect(func(): _set_response("Flee"))
-	response_row.add_child(_flee_btn)
+	# Ammo exhaustion (cycle button: SwitchToMelee / Flee).
+	var ammo_row := HBoxContainer.new()
+	ammo_row.add_theme_constant_override("separation", 6)
+	style_vbox.add_child(ammo_row)
+	var ammo_label := Label.new()
+	ammo_label.text = "No Ammo:"
+	ammo_label.custom_minimum_size.x = 100
+	ammo_row.add_child(ammo_label)
+	_ammo_btn = Button.new()
+	_ammo_btn.text = "Switch to Melee"
+	_ammo_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ammo_btn.pressed.connect(_cycle_ammo)
+	ammo_row.add_child(_ammo_btn)
+
+	# Disengage threshold slider (0–100).
+	var disengage_row := HBoxContainer.new()
+	disengage_row.add_theme_constant_override("separation", 6)
+	style_vbox.add_child(disengage_row)
+	_disengage_label = Label.new()
+	_disengage_label.text = "Disengage: 0%"
+	_disengage_label.custom_minimum_size.x = 100
+	disengage_row.add_child(_disengage_label)
+	_disengage_slider = HSlider.new()
+	_disengage_slider.min_value = 0
+	_disengage_slider.max_value = 100
+	_disengage_slider.step = 5
+	_disengage_slider.value = 0
+	_disengage_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_disengage_slider.value_changed.connect(_on_disengage_changed)
+	disengage_row.add_child(_disengage_slider)
 
 	# Delete button.
 	_delete_btn = Button.new()
@@ -331,8 +378,8 @@ func _update_summary_row(row: HBoxContainer, g: Dictionary) -> void:
 	var display_name: String = g.get("name", "")
 	if g.get("is_civilian", false):
 		display_name += " (default)"
-	var response: String = g.get("hostile_response", "")
-	name_btn.text = "%s [%s]" % [display_name, response]
+	var initiative: String = g.get("initiative", "Passive")
+	name_btn.text = "%s [%s]" % [display_name, _initiative_display(initiative)]
 
 	var group_id: int = g.get("id", -1)
 	# Reconnect the button signal.
@@ -375,9 +422,20 @@ func _refresh_detail() -> void:
 
 	if not _is_renaming:
 		_detail_name_label.text = group_data.get("name", "")
-	var response: String = group_data.get("hostile_response", "Flee")
-	_fight_btn.button_pressed = (response == "Fight")
-	_flee_btn.button_pressed = (response == "Flee")
+
+	# Update engagement style controls from group data.
+	var initiative: String = group_data.get("initiative", "Passive")
+	_initiative_btn.text = _initiative_display(initiative)
+
+	var weapon: String = group_data.get("weapon_preference", "PreferRanged")
+	_weapon_btn.text = _weapon_display(weapon)
+
+	var ammo: String = group_data.get("ammo_exhausted", "SwitchToMelee")
+	_ammo_btn.text = _ammo_display(ammo)
+
+	var disengage: int = group_data.get("disengage_threshold_pct", 0)
+	_disengage_slider.set_value_no_signal(disengage)
+	_disengage_label.text = "Disengage: %d%%" % disengage
 
 	# Hide delete for civilian group.
 	_delete_btn.visible = not group_data.get("is_civilian", false)
@@ -431,14 +489,118 @@ func _update_member_row(row: HBoxContainer, m: Dictionary) -> void:
 	reassign_btn.pressed.connect(func(): _open_reassign_overlay(creature_id, creature_name))
 
 
-# --- Hostile response ---
+# --- Engagement style ---
 
 
-func _set_response(response: String) -> void:
+func _send_style_field(field: String, value: String) -> void:
 	if not _bridge or _detail_group_id < 0:
 		return
-	_bridge.set_group_hostile_response(_detail_group_id, response)
+	# Read current values, override the changed field, then send.
+	var groups: Array = _bridge.get_military_groups()
+	var group_data: Dictionary = {}
+	for g in groups:
+		if g.get("id", -1) == _detail_group_id:
+			group_data = g
+			break
+	if group_data.is_empty():
+		return
+	var wp: String = group_data.get("weapon_preference", "PreferRanged")
+	var ae: String = group_data.get("ammo_exhausted", "SwitchToMelee")
+	var init: String = group_data.get("initiative", "Passive")
+	var dis: int = int(group_data.get("disengage_threshold_pct", 0))
+	match field:
+		"weapon_preference":
+			wp = value
+		"ammo_exhausted":
+			ae = value
+		"initiative":
+			init = value
+	_bridge.set_group_engagement_style(_detail_group_id, wp, ae, init, dis)
 	_refresh_timer = 0.4
+
+
+func _cycle_initiative() -> void:
+	var current: String = _initiative_btn.text
+	var next: String
+	match current:
+		"Aggressive":
+			next = "Defensive"
+		"Defensive":
+			next = "Passive"
+		_:
+			next = "Aggressive"
+	_initiative_btn.text = next
+	_send_style_field("initiative", next)
+
+
+func _cycle_weapon() -> void:
+	var current: String = _weapon_btn.text
+	var next_val: String
+	if current == "Prefer Ranged":
+		next_val = "PreferMelee"
+	else:
+		next_val = "PreferRanged"
+	_weapon_btn.text = _weapon_display(next_val)
+	_send_style_field("weapon_preference", next_val)
+
+
+func _cycle_ammo() -> void:
+	var current: String = _ammo_btn.text
+	var next_val: String
+	if current == "Switch to Melee":
+		next_val = "Flee"
+	else:
+		next_val = "SwitchToMelee"
+	_ammo_btn.text = _ammo_display(next_val)
+	_send_style_field("ammo_exhausted", next_val)
+
+
+func _on_disengage_changed(value: float) -> void:
+	if not _bridge or _detail_group_id < 0:
+		return
+	_disengage_label.text = "Disengage: %d%%" % int(value)
+	# Read current values and send with new threshold.
+	var groups: Array = _bridge.get_military_groups()
+	var group_data: Dictionary = {}
+	for g in groups:
+		if g.get("id", -1) == _detail_group_id:
+			group_data = g
+			break
+	if group_data.is_empty():
+		return
+	_bridge.set_group_engagement_style(
+		_detail_group_id,
+		group_data.get("weapon_preference", "PreferRanged"),
+		group_data.get("ammo_exhausted", "SwitchToMelee"),
+		group_data.get("initiative", "Passive"),
+		int(value)
+	)
+	_refresh_timer = 0.4
+
+
+## Display helpers for engagement style values.
+func _initiative_display(val: String) -> String:
+	return val
+
+
+func _weapon_display(val: String) -> String:
+	match val:
+		"PreferRanged":
+			return "Prefer Ranged"
+		"PreferMelee":
+			return "Prefer Melee"
+		_:
+			return val
+
+
+func _ammo_display(val: String) -> String:
+	match val:
+		"SwitchToMelee":
+			return "Switch to Melee"
+		"Flee":
+			return "Flee"
+		_:
+			return val
 
 
 # --- Rename ---
@@ -537,7 +699,7 @@ func _open_reassign_overlay(creature_id: String, creature_name: String) -> void:
 		if g.get("is_civilian", false):
 			continue
 		var btn := Button.new()
-		btn.text = "%s [%s]" % [g.get("name", ""), g.get("hostile_response", "")]
+		btn.text = "%s [%s]" % [g.get("name", ""), _initiative_display(g.get("initiative", ""))]
 		var gid: int = g.get("id", -1)
 		btn.pressed.connect(
 			func():

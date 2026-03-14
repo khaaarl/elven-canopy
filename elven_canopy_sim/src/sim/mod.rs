@@ -63,8 +63,8 @@
 // The activation loop (`process_creature_activation`) runs this logic:
 //
 //   0. **Flee check** (F-flee): before the decision cascade, if the creature
-//      should flee (civ creatures, or `FleeOnly` combat_ai) and detects a
-//      hostile within `hostile_detection_range_sq`, interrupt any current task
+//      should flee (based on `engagement_style` disengage threshold) and detects
+//      a hostile within `hostile_detection_range_sq`, interrupt any current task
 //      and perform a greedy retreat step (pick the nav neighbor that maximizes
 //      squared distance from the nearest threat). Ties broken by `NavNodeId`.
 //   1. If the creature has no task (`current_task == None`), check for an
@@ -912,11 +912,11 @@ impl SimState {
             SimAction::RenameMilitaryGroup { group_id, name } => {
                 self.rename_military_group(*group_id, name.clone());
             }
-            SimAction::SetGroupHostileResponse {
+            SimAction::SetGroupEngagementStyle {
                 group_id,
-                hostile_response,
+                engagement_style,
             } => {
-                self.set_group_hostile_response(*group_id, *hostile_response);
+                self.set_group_engagement_style(*group_id, *engagement_style);
             }
             SimAction::DebugSpawnProjectile {
                 origin,

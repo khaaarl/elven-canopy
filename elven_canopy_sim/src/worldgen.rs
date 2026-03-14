@@ -317,9 +317,12 @@ fn generate_civilizations(
 }
 
 /// Create the two default military groups for a newly created civilization:
-/// - "Civilians" (default, Flee)
-/// - "Soldiers" (non-default, Fight)
+/// - "Civilians" (default, passive with 100% disengage = always flee)
+/// - "Soldiers" (non-default, aggressive with prefer ranged)
 fn create_default_military_groups(db: &mut SimDb, civ_id: CivId) {
+    use crate::species::{
+        AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
+    };
     let _ = db
         .military_groups
         .insert_auto_no_fk(|id| crate::db::MilitaryGroup {
@@ -327,7 +330,12 @@ fn create_default_military_groups(db: &mut SimDb, civ_id: CivId) {
             civ_id,
             name: "Civilians".to_string(),
             is_default_civilian: true,
-            hostile_response: crate::db::HostileResponse::Flee,
+            engagement_style: EngagementStyle {
+                weapon_preference: WeaponPreference::PreferRanged,
+                ammo_exhausted: AmmoExhaustedBehavior::Flee,
+                initiative: EngagementInitiative::Defensive,
+                disengage_threshold_pct: 100,
+            },
         });
     let _ = db
         .military_groups
@@ -336,7 +344,12 @@ fn create_default_military_groups(db: &mut SimDb, civ_id: CivId) {
             civ_id,
             name: "Soldiers".to_string(),
             is_default_civilian: false,
-            hostile_response: crate::db::HostileResponse::Fight,
+            engagement_style: EngagementStyle {
+                weapon_preference: WeaponPreference::PreferRanged,
+                ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
+                initiative: EngagementInitiative::Aggressive,
+                disengage_threshold_pct: 0,
+            },
         });
 }
 

@@ -1701,34 +1701,40 @@ impl SimState {
         }
     }
 
-    /// Resolve the effective `HostileResponse` for a civ creature.
+    /// Resolve the effective `EngagementStyle` for a creature.
     ///
-    /// - If explicitly assigned to a group, returns that group's response.
-    /// - If implicit civilian (`military_group = None`), returns the civ's
-    ///   default civilian group's response.
-    /// - Returns `None` for non-civ creatures (caller should use `CombatAI`).
-    pub(crate) fn resolve_hostile_response(
+    /// - **Civ creatures**: returns the military group's `engagement_style`
+    ///   (explicit group or default civilian group).
+    /// - **Non-civ creatures**: returns the species' `engagement_style`.
+    pub(crate) fn resolve_engagement_style(
         &self,
         creature_id: CreatureId,
-    ) -> Option<crate::db::HostileResponse> {
-        let creature = self.db.creatures.get(&creature_id)?;
-        let civ_id = creature.civ_id?;
+    ) -> crate::species::EngagementStyle {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return crate::species::EngagementStyle::default(),
+        };
 
-        if let Some(group_id) = creature.military_group {
-            return self
+        if let Some(civ_id) = creature.civ_id {
+            if let Some(group_id) = creature.military_group
+                && let Some(group) = self.db.military_groups.get(&group_id)
+            {
+                return group.engagement_style;
+            }
+            // Implicit civilian — look up the civ's default civilian group.
+            if let Some(group) = self
                 .db
                 .military_groups
-                .get(&group_id)
-                .map(|g| g.hostile_response);
+                .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .find(|g| g.is_default_civilian)
+            {
+                return group.engagement_style;
+            }
         }
 
-        // Implicit civilian — look up the civ's default civilian group.
-        self.db
-            .military_groups
-            .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .find(|g| g.is_default_civilian)
-            .map(|g| g.hostile_response)
+        // Non-civ or fallback: use species default.
+        self.species_table[&creature.species].engagement_style
     }
 
     /// Look up the player's civ id from the cached field on `SimState`.
@@ -1750,7 +1756,12 @@ impl SimState {
                 civ_id,
                 name,
                 is_default_civilian: false,
-                hostile_response: crate::db::HostileResponse::Fight,
+                engagement_style: crate::species::EngagementStyle {
+                    weapon_preference: crate::species::WeaponPreference::PreferRanged,
+                    ammo_exhausted: crate::species::AmmoExhaustedBehavior::SwitchToMelee,
+                    initiative: crate::species::EngagementInitiative::Aggressive,
+                    disengage_threshold_pct: 0,
+                },
             });
         if let Ok(group_id) = result {
             self.add_notification(format!("Military group '{group_name}' created."));
@@ -1863,11 +1874,11 @@ impl SimState {
             .modify_unchecked(&group_id, |g| g.name = name);
     }
 
-    /// Change a military group's hostile response.
-    pub(crate) fn set_group_hostile_response(
+    /// Change a military group's engagement style.
+    pub(crate) fn set_group_engagement_style(
         &mut self,
         group_id: MilitaryGroupId,
-        hostile_response: crate::db::HostileResponse,
+        engagement_style: crate::species::EngagementStyle,
     ) {
         let Some(group) = self.db.military_groups.get(&group_id) else {
             return;
@@ -1881,17 +1892,16 @@ impl SimState {
         let _ = self
             .db
             .military_groups
-            .modify_unchecked(&group_id, |g| g.hostile_response = hostile_response);
+            .modify_unchecked(&group_id, |g| g.engagement_style = engagement_style);
     }
 
     /// Determine whether a creature should flee from nearby hostiles.
     ///
-    /// Two categories of creatures flee:
-    /// - **Civ creatures**: gated by their military group's `hostile_response`
-    ///   (Flee = flee, Fight = don't flee). Implicit civilians use the civ's
-    ///   default civilian group settings.
-    /// - **Non-civ creatures with `CombatAI::FleeOnly`**: data-driven flee
-    ///   behavior (e.g., prey animals).
+    /// A creature flees when its resolved `EngagementStyle` says so:
+    /// - **Passive initiative**: always flees (never fights).
+    /// - **Disengage threshold**: if current HP% ≤ threshold, flee.
+    ///   A threshold of 100 means always flee (civilian default).
+    ///   A threshold of 0 means never disengage on HP.
     ///
     /// Creatures with a `PlayerCombat`-level task never flee (player override).
     pub(crate) fn should_flee(&self, creature_id: CreatureId, species: Species) -> bool {
@@ -1917,36 +1927,44 @@ impl SimState {
             }
         }
 
-        if creature.civ_id.is_some() {
-            // Civ creatures: check military group hostile_response.
-            // Debug-assert the one-civilian-per-civ invariant.
-            #[cfg(debug_assertions)]
-            if let Some(civ_id) = creature.civ_id {
-                let civilian_count = self
-                    .db
-                    .military_groups
-                    .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
-                    .iter()
-                    .filter(|g| g.is_default_civilian)
-                    .count();
-                debug_assert!(
-                    civilian_count == 1,
-                    "Expected exactly 1 civilian group for {civ_id}, found {civilian_count}"
-                );
-            }
-
-            match self.resolve_hostile_response(creature_id) {
-                Some(crate::db::HostileResponse::Flee) => true,
-                Some(crate::db::HostileResponse::Fight) => false,
-                // Fallback: no group found (shouldn't happen for civ creatures).
-                None => true,
-            }
-        } else {
-            // Non-civ creatures: only FleeOnly flees.
-            let combat_ai = species_data.combat_ai;
-            use crate::species::CombatAI;
-            matches!(combat_ai, CombatAI::FleeOnly)
+        // Debug-assert the one-civilian-per-civ invariant for civ creatures.
+        #[cfg(debug_assertions)]
+        if let Some(civ_id) = creature.civ_id {
+            let civilian_count = self
+                .db
+                .military_groups
+                .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+                .iter()
+                .filter(|g| g.is_default_civilian)
+                .count();
+            debug_assert!(
+                civilian_count == 1,
+                "Expected exactly 1 civilian group for {civ_id}, found {civilian_count}"
+            );
         }
+
+        let style = self.resolve_engagement_style(creature_id);
+
+        // Passive creatures always flee (they never initiate or counter-attack).
+        if style.initiative == crate::species::EngagementInitiative::Passive {
+            return true;
+        }
+
+        // Check disengage threshold.
+        if style.disengage_threshold_pct >= 100 {
+            return true;
+        }
+        if style.disengage_threshold_pct > 0 {
+            let hp_max = species_data.hp_max;
+            if hp_max > 0 {
+                let hp_pct = (creature.hp * 100 / hp_max) as u8;
+                if hp_pct <= style.disengage_threshold_pct {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Perform one greedy retreat step away from the nearest detected threat.
@@ -2075,9 +2093,18 @@ impl SimState {
         true
     }
 
-    /// Hostile AI: if a target is in melee range, strike it. Otherwise find
-    /// the nearest reachable hostile target within detection range via Dijkstra
-    /// and take one step toward it.
+    /// Hostile AI: detect targets, then attack or pursue based on the
+    /// creature's resolved `EngagementStyle`.
+    ///
+    /// **Weapon preference:**
+    /// - `PreferRanged`: try melee if in range, then ranged, then close distance.
+    /// - `PreferMelee`: try melee if in range, then close distance; only try
+    ///   ranged as a last resort when no path exists.
+    ///
+    /// **Ammo exhaustion:** if `PreferRanged` and no ammo, either switch to
+    /// melee pursuit (`SwitchToMelee`) or disengage (`Flee` — returns false
+    /// so the caller falls through to flee/wander).
+    ///
     /// Returns `true` if an action was taken (strike or move), `false` if no
     /// target is reachable (caller should fall back to random wander).
     pub(crate) fn hostile_pursue(
@@ -2097,10 +2124,11 @@ impl SimState {
         let attacker_footprint = self.species_table[&species].footprint;
         let melee_range_sq = self.species_table[&species].melee_range_sq;
 
-        // Collect hostile targets within detection range.
-        // For non-civ aggressive creatures: all civ creatures of different
-        // species are targets. For civ creatures: creatures whose civ we
-        // consider Hostile. Non-civ aggressives don't attack each other.
+        let style = self.resolve_engagement_style(creature_id);
+
+        // Detect targets at full detection range — defensive creatures can
+        // see (and shoot at) hostiles across the full range. The defensive
+        // pursuit limit only restricts movement/chasing, not detection.
         let targets = self.detect_hostile_targets(
             creature_id,
             species,
@@ -2113,7 +2141,7 @@ impl SimState {
             return false;
         }
 
-        // Check if any target is in melee range — if so, strike instead of moving.
+        // --- Always try melee if a target is in range (both preferences). ---
         let melee_target = targets.iter().find(|&&(target_id, _)| {
             let target = match self.db.creatures.get(&target_id) {
                 Some(c) => c,
@@ -2133,8 +2161,7 @@ impl SimState {
             if self.try_melee_strike(creature_id, target_id, events) {
                 return true;
             }
-            // Strike failed (cooldown). Wait here instead of wandering away —
-            // schedule re-activation for when the cooldown expires.
+            // Strike failed (cooldown). Wait for cooldown.
             if let Some(next_tick) = self
                 .db
                 .creatures
@@ -2146,7 +2173,6 @@ impl SimState {
                     ScheduledEventKind::CreatureActivation { creature_id },
                 );
             } else {
-                // No cooldown tracked — retry shortly.
                 self.event_queue.schedule(
                     self.tick + 100,
                     ScheduledEventKind::CreatureActivation { creature_id },
@@ -2155,18 +2181,125 @@ impl SimState {
             return true;
         }
 
-        // No target in melee range — try shooting if the attacker has a bow + arrow.
-        for &(target_id, _) in &targets {
-            if self.try_shoot_arrow(creature_id, target_id, events) {
-                return true;
+        // --- Weapon preference diverges here. ---
+        use crate::species::WeaponPreference;
+
+        // For defensive creatures, limit pursuit (movement) to the short
+        // defensive range. Melee and ranged attacks use the full target list.
+        let pursuit_targets: Vec<(CreatureId, NavNodeId)> =
+            if style.initiative == crate::species::EngagementInitiative::Defensive {
+                let pursuit_range_sq = self.config.defensive_pursuit_range_sq;
+                targets
+                    .iter()
+                    .filter(|&&(tid, _)| {
+                        let tpos = match self.db.creatures.get(&tid) {
+                            Some(c) => c.position,
+                            None => return false,
+                        };
+                        let dx = attacker_pos.x as i64 - tpos.x as i64;
+                        let dy = attacker_pos.y as i64 - tpos.y as i64;
+                        let dz = attacker_pos.z as i64 - tpos.z as i64;
+                        dx * dx + dy * dy + dz * dz <= pursuit_range_sq
+                    })
+                    .copied()
+                    .collect()
+            } else {
+                targets.clone()
+            };
+
+        match style.weapon_preference {
+            WeaponPreference::PreferRanged => {
+                // Try ranged first (full detection range).
+                for &(target_id, _) in &targets {
+                    if self.try_shoot_arrow(creature_id, target_id, events) {
+                        return true;
+                    }
+                }
+
+                // Ranged failed — check if out of ammo.
+                let inv_id = self.db.creatures.get(&creature_id).unwrap().inventory_id;
+                let has_bow = self.inv_item_count(
+                    inv_id,
+                    crate::inventory::ItemKind::Bow,
+                    crate::inventory::MaterialFilter::Any,
+                ) > 0;
+                let has_ammo = self.inv_item_count(
+                    inv_id,
+                    crate::inventory::ItemKind::Arrow,
+                    crate::inventory::MaterialFilter::Any,
+                ) > 0;
+
+                if has_bow && !has_ammo {
+                    // Ammo exhausted — check behavior.
+                    use crate::species::AmmoExhaustedBehavior;
+                    match style.ammo_exhausted {
+                        AmmoExhaustedBehavior::SwitchToMelee => {
+                            // Fall through to close distance (same as melee path).
+                        }
+                        AmmoExhaustedBehavior::Flee => {
+                            // Disengage — return false so caller falls to flee/wander.
+                            return false;
+                        }
+                    }
+                }
+
+                // Close distance to nearest target (pursuit range only).
+                if pursuit_targets.is_empty() {
+                    return false;
+                }
+                self.pursue_closest_target(creature_id, current_node, species, &pursuit_targets)
+            }
+            WeaponPreference::PreferMelee => {
+                // Try to close distance first (pursuit range only).
+                if !pursuit_targets.is_empty()
+                    && self.pursue_closest_target(
+                        creature_id,
+                        current_node,
+                        species,
+                        &pursuit_targets,
+                    )
+                {
+                    return true;
+                }
+
+                // No path or beyond pursuit range — try ranged as last resort.
+                for &(target_id, _) in &targets {
+                    if self.try_shoot_arrow(creature_id, target_id, events) {
+                        return true;
+                    }
+                }
+
+                false
             }
         }
+    }
 
-        // No melee or ranged option — pathfind toward nearest detected target.
-        let target_nodes: Vec<NavNodeId> = targets.iter().map(|&(_, n)| n).collect();
-
+    /// Pathfind toward the nearest detected target and take one step.
+    /// Returns `true` if a step was taken.
+    fn pursue_closest_target(
+        &mut self,
+        creature_id: CreatureId,
+        current_node: NavNodeId,
+        species: Species,
+        targets: &[(CreatureId, NavNodeId)],
+    ) -> bool {
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
+
+        // Resolve target positions on the attacker's nav graph. Targets may
+        // be on a different graph (e.g., 1x1 elf on standard graph vs 2x2
+        // troll on large graph). We look up the nearest node on the
+        // attacker's graph for each target's world position.
+        let target_nodes: Vec<NavNodeId> = targets
+            .iter()
+            .filter_map(|&(tid, _)| {
+                let pos = self.db.creatures.get(&tid)?.position;
+                graph.find_nearest_node(pos)
+            })
+            .collect();
+        if target_nodes.is_empty() {
+            return false;
+        }
 
         let nearest = crate::pathfinding::dijkstra_nearest(
             graph,
@@ -2185,7 +2318,7 @@ impl SimState {
             None => return false,
         };
 
-        // A* to get the path, then take the first step.
+        let graph = self.graph_for_species(species);
         let path = crate::pathfinding::astar(
             graph,
             current_node,
@@ -2275,11 +2408,12 @@ impl SimState {
                     }
                 } else {
                     // Attacker has civ, target doesn't — check if target's
-                    // species has aggressive combat_ai.
-                    use crate::species::CombatAI;
+                    // species has aggressive engagement initiative.
                     matches!(
-                        self.species_table[&creature.species].combat_ai,
-                        CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
+                        self.species_table[&creature.species]
+                            .engagement_style
+                            .initiative,
+                        crate::species::EngagementInitiative::Aggressive
                     )
                 };
 
@@ -2308,7 +2442,7 @@ impl SimState {
     /// - Same civ
     /// - Both civ, different civs, unless CivRelationship is Hostile
     /// - Attacker has civ, target doesn't — non-hostile unless target species
-    ///   has aggressive combat_ai
+    ///   has aggressive engagement initiative
     /// - Both non-civ — non-hostile if same species
     pub(crate) fn is_non_hostile(&self, a: CreatureId, b: CreatureId) -> bool {
         if a == b {
@@ -2338,21 +2472,19 @@ impl SimState {
                     .any(|r| r.to_civ == civ_b && r.opinion == CivOpinion::Hostile)
             }
             // A has civ, B doesn't — non-hostile unless B's species is aggressive.
-            (Some(_), None) => {
-                use crate::species::CombatAI;
-                !matches!(
-                    self.species_table[&creature_b.species].combat_ai,
-                    CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
-                )
-            }
+            (Some(_), None) => !matches!(
+                self.species_table[&creature_b.species]
+                    .engagement_style
+                    .initiative,
+                crate::species::EngagementInitiative::Aggressive
+            ),
             // A doesn't have civ, B does — mirror of above.
-            (None, Some(_)) => {
-                use crate::species::CombatAI;
-                !matches!(
-                    self.species_table[&creature_a.species].combat_ai,
-                    CombatAI::AggressiveMelee | CombatAI::AggressiveRanged
-                )
-            }
+            (None, Some(_)) => !matches!(
+                self.species_table[&creature_a.species]
+                    .engagement_style
+                    .initiative,
+                crate::species::EngagementInitiative::Aggressive
+            ),
             // Neither has a civ — always non-hostile. Non-civ aggressive
             // creatures only target civ creatures (see detect_hostile_targets).
             (None, None) => true,

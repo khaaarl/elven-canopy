@@ -266,9 +266,9 @@ pub struct Creature {
     pub civ_id: Option<CivId>,
     /// Military group assignment. For civ creatures (`civ_id` is `Some`),
     /// `None` means civilian — governed by the civ's default civilian group
-    /// settings (notably `hostile_response`). For non-civ creatures (`civ_id`
+    /// settings (notably `engagement_style`). For non-civ creatures (`civ_id`
     /// is `None`), this is always `None` and behavior comes from the species'
-    /// `combat_ai` instead. Group assignment is preserved on death.
+    /// `engagement_style` instead. Group assignment is preserved on death.
     #[serde(default)]
     #[indexed]
     pub military_group: Option<MilitaryGroupId>,
@@ -1029,19 +1029,6 @@ pub struct Civilization {
     pub player_controlled: bool,
 }
 
-/// How a military group responds when hostiles are detected.
-///
-/// Cross-reference: `CombatAI` in `species.rs` determines non-civ creature
-/// behavior; `HostileResponse` determines civ creature behavior via military
-/// group membership.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HostileResponse {
-    /// Group members fight detected hostiles (auto-engage via `hostile_pursue`).
-    Fight,
-    /// Group members flee from detected hostiles (greedy retreat via `flee_step`).
-    Flee,
-}
-
 /// A military group within a civilization. Every civ has at least one group
 /// with `is_default_civilian = true` (the implicit home for unassigned
 /// creatures). Additional groups can be created by the player.
@@ -1049,6 +1036,10 @@ pub enum HostileResponse {
 /// **Invariant:** Exactly one group per civ has `is_default_civilian = true`.
 /// This is enforced at creation time (reject duplicates) and the civilian
 /// group cannot be deleted or have its flag changed.
+///
+/// Combat behavior is configured via `engagement_style`, which controls
+/// weapon preference, initiative, ammo exhaustion, and disengage threshold.
+/// See `species.rs` for the `EngagementStyle` struct definition.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct MilitaryGroup {
     #[primary_key(auto_increment)]
@@ -1060,7 +1051,10 @@ pub struct MilitaryGroup {
     /// `military_group = None` are governed by this group's settings.
     /// Write-once: set at creation, immutable thereafter.
     pub is_default_civilian: bool,
-    pub hostile_response: HostileResponse,
+    /// Combat engagement style for this group's members. Overrides the
+    /// species-level `engagement_style` for civ creatures in this group.
+    #[serde(default)]
+    pub engagement_style: crate::species::EngagementStyle,
 }
 
 /// Directed relationship: `from_civ`'s opinion of `to_civ`.
