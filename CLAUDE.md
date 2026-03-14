@@ -169,7 +169,7 @@ When tests fail unexpectedly, diagnose the root cause. Do not bypass, skip, or w
 
 GDScript unit tests use the [GUT](https://github.com/bitwes/Gut) (Godot Unit Test) framework. Tests live in `godot/test/test_*.gd` and extend `GutTest`. Run them with `scripts/build.sh gdtest`.
 
-**When to write GDScript tests:** When adding or modifying pure GDScript logic — coordinate math, UI state machines, formatting helpers, selection logic, input mode transitions. If a function doesn't need the sim bridge or a full scene tree, it should have a GDScript unit test. Extract testable logic into utility classes (e.g., `geometry_utils.gd`) when it's embedded in scene-dependent code.
+**GDScript work requires unit tests.** When adding or modifying GDScript logic, write tests for any behavior that can be tested without a running game — coordinate math, UI state machines, formatting helpers, selection logic, input mode transitions, data transformations. If testable logic is embedded in scene-dependent code, extract it into a utility class (e.g., `geometry_utils.gd`) so it can be tested in isolation. The bar is the same as for Rust: if you're adding behavior, prove it works with a test.
 
 **Test file naming:** `godot/test/test_<module>.gd` — mirrors the source file in `godot/scripts/`.
 
