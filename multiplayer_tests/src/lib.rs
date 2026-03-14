@@ -22,7 +22,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use elven_canopy_protocol::message::ServerMessage;
-use elven_canopy_relay::client::NetClient;
+use elven_canopy_relay::client::{NetClient, RelayConnection};
 use elven_canopy_sim::command::SimAction;
 use elven_canopy_sim::config::GameConfig;
 use elven_canopy_sim::sim::SimState;
@@ -42,10 +42,35 @@ pub struct TestGameClient {
 
 impl TestGameClient {
     /// Connect to a relay server and perform the Hello handshake.
+    /// For joiners connecting to an embedded relay (SessionId(0)).
     pub fn connect(addr: std::net::SocketAddr, name: &str) -> Self {
         let addr_str = addr.to_string();
         let (client, info) = NetClient::connect(&addr_str, name, 1, 0, None)
             .expect("TestGameClient::connect failed");
+        Self {
+            client,
+            sim: None,
+            ticks_per_turn: info.ticks_per_turn,
+        }
+    }
+
+    /// Connect to an embedded relay, create a session, and join it.
+    /// For hosts that need to set up the session before joiners connect.
+    pub fn connect_and_create(
+        addr: std::net::SocketAddr,
+        name: &str,
+        ticks_per_turn: u32,
+        max_players: u32,
+    ) -> Self {
+        let addr_str = addr.to_string();
+        let mut conn =
+            RelayConnection::connect(&addr_str).expect("TestGameClient::connect_and_create failed");
+        let session_id = conn
+            .create_session(name, None, ticks_per_turn, max_players)
+            .expect("create_session failed");
+        let (client, info) = conn
+            .join_session(session_id, name, 1, 0, None)
+            .expect("join_session failed");
         Self {
             client,
             sim: None,

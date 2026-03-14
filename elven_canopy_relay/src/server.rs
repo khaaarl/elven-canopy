@@ -3,24 +3,32 @@
 // Architecture: thread-per-reader with a central `mpsc` channel.
 //
 // - **Listener thread** (`TcpListener::accept()` loop): accepts new TCP
-//   connections and sends `InternalEvent::NewConnection` to the main thread.
-// - **Reader threads** (one per client): call `framing::read_message()` in a
-//   loop, deserialize `ClientMessage`, and send `InternalEvent::MessageFrom`
+//   connections and spawns a **handshake thread** for each.
+// - **Handshake threads** (one per pending connection): handle the pre-handshake
+//   phase (`ListSessions` / `CreateSession`) and then the `Hello` handshake.
+//   Pre-handshake messages that need relay state (list/create) are forwarded to
+//   the main thread via events. The `Hello` is also forwarded so the main thread
+//   can add the player to the session.
+// - **Reader threads** (one per joined client): call `framing::read_message()`
+//   in a loop, deserialize `ClientMessage`, and send `InternalEvent::MessageFrom`
 //   to the main thread. On error/EOF, send `InternalEvent::Disconnected`.
-// - **Main thread**: owns the `Session`, receives events from the channel,
-//   and dispatches them. Uses `recv_timeout` with the turn cadence as the
-//   timeout — when the timeout fires (no events waiting), it flushes the
-//   current turn. This gives us a simple timer without a separate timer thread.
+// - **Main thread**: owns the `RelayState` (all sessions), receives events from
+//   the channel, and dispatches them. Uses `recv_timeout` with a short cadence —
+//   when the timeout fires, it flushes turns on all active sessions.
 //
-// The main thread is the only writer to client TCP streams (via
-// `Session::broadcast`/`send_to`). Reader threads only read from streams.
-// This avoids concurrent read/write on the same `TcpStream`, which is safe
-// on most platforms but fragile.
+// The main thread is the only writer to client TCP streams owned by sessions
+// (via `Session::broadcast`/`send_to`). Handshake threads write directly to
+// their own streams (before the session owns them). Reader threads only read.
+//
+// **Multi-session support:** A relay can host multiple simultaneous game
+// sessions. Embedded (player-hosted) relays set `embedded = true`, which
+// restricts session creation to the well-known `SessionId(0)`.
 //
 // Shutdown: the main thread checks a `keep_running` flag (set to false by
 // `stop_relay`) and breaks out of the event loop.
 
-use std::io::BufReader;
+use std::collections::BTreeMap;
+use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,23 +37,50 @@ use std::thread;
 use std::time::Duration;
 
 use elven_canopy_protocol::framing::{read_message, write_message};
-use elven_canopy_protocol::message::{ClientMessage, ServerMessage, TurnCommand};
-use elven_canopy_protocol::types::RelayPlayerId;
+use elven_canopy_protocol::message::{ClientMessage, ServerMessage, SessionInfo, TurnCommand};
+use elven_canopy_protocol::types::{RelayPlayerId, SessionId};
 
 use crate::session::Session;
 
-/// Events sent from listener/reader threads to the main thread.
+/// Events sent from listener/handshake/reader threads to the main thread.
 enum InternalEvent {
-    NewConnection {
-        stream: TcpStream,
+    /// A client wants a list of sessions.
+    RequestListSessions {
+        reply_tx: mpsc::Sender<ServerMessage>,
     },
+    /// A client wants to create a new session.
+    RequestCreateSession {
+        session_name: String,
+        password: Option<String>,
+        ticks_per_turn: u32,
+        max_players: u32,
+        reply_tx: mpsc::Sender<ServerMessage>,
+    },
+    /// A client has sent Hello and wants to join a session.
+    RequestJoin {
+        session_id: SessionId,
+        player_name: String,
+        sim_version_hash: u64,
+        config_hash: u64,
+        session_password: Option<String>,
+        stream: TcpStream,
+        reader: BufReader<TcpStream>,
+        reply_tx: mpsc::Sender<Result<RelayPlayerId, String>>,
+    },
+    /// A joined client sent a gameplay message.
     MessageFrom {
+        session_id: SessionId,
         player_id: RelayPlayerId,
         message: ClientMessage,
     },
+    /// A joined client disconnected.
     Disconnected {
+        session_id: SessionId,
         player_id: RelayPlayerId,
     },
+    /// A handshake thread created a session but the client disconnected before
+    /// joining. The session may be empty and should be cleaned up.
+    CleanupOrphanedSession { session_id: SessionId },
 }
 
 /// Handle returned by `start_relay` to control the running server.
@@ -78,20 +113,120 @@ impl Drop for RelayHandle {
 /// Configuration for starting a relay server.
 pub struct RelayConfig {
     pub port: u16,
-    pub session_name: String,
-    pub password: Option<String>,
-    pub ticks_per_turn: u32,
-    pub max_players: u32,
+    /// Bind address. Embedded relays use `127.0.0.1` (localhost only);
+    /// dedicated relays default to `0.0.0.0` (all interfaces) so remote
+    /// clients can connect.
+    pub bind_address: String,
+    /// If true, this is an embedded relay (player-hosted). Only `SessionId(0)`
+    /// can be created, and only one session is allowed. Joiners skip session
+    /// discovery and go straight to `Hello` with `SessionId(0)`.
+    pub embedded: bool,
+    /// Default turn cadence used for the event loop timeout. Individual sessions
+    /// may have different `ticks_per_turn` values.
+    pub turn_cadence_ms: u64,
 }
 
 impl Default for RelayConfig {
     fn default() -> Self {
         Self {
             port: 7878,
-            session_name: "elven-canopy-session".into(),
-            password: None,
-            ticks_per_turn: 50,
-            max_players: 4,
+            bind_address: "0.0.0.0".into(),
+            embedded: false,
+            turn_cadence_ms: 50,
+        }
+    }
+}
+
+/// State for all sessions managed by this relay.
+struct RelayState {
+    sessions: BTreeMap<SessionId, Session>,
+    next_session_id: u64,
+    embedded: bool,
+}
+
+impl RelayState {
+    fn new(embedded: bool) -> Self {
+        Self {
+            sessions: BTreeMap::new(),
+            // Dedicated relays start IDs at 1 to leave 0 for embedded use.
+            next_session_id: 1,
+            embedded,
+        }
+    }
+
+    /// Maximum number of sessions a dedicated relay will host.
+    const MAX_SESSIONS: usize = 100;
+
+    /// Create a new session. Returns the assigned `SessionId` on success.
+    fn create_session(
+        &mut self,
+        session_name: String,
+        password: Option<String>,
+        ticks_per_turn: u32,
+        max_players: u32,
+    ) -> Result<SessionId, String> {
+        // Input validation.
+        if session_name.is_empty() {
+            return Err("session name must not be empty".into());
+        }
+        if session_name.len() > 128 {
+            return Err("session name too long (max 128 bytes)".into());
+        }
+        if max_players == 0 {
+            return Err("max_players must be at least 1".into());
+        }
+        if max_players > 64 {
+            return Err("max_players cannot exceed 64".into());
+        }
+        if ticks_per_turn == 0 {
+            return Err("ticks_per_turn must be at least 1".into());
+        }
+        if !self.embedded && self.sessions.len() >= Self::MAX_SESSIONS {
+            return Err("relay has reached the maximum number of sessions".into());
+        }
+
+        if self.embedded {
+            let sid = SessionId(0);
+            if self.sessions.contains_key(&sid) {
+                return Err("embedded relay already has a session".into());
+            }
+            self.sessions.insert(
+                sid,
+                Session::new(session_name, password, ticks_per_turn, max_players),
+            );
+            return Ok(sid);
+        }
+
+        let sid = SessionId(self.next_session_id);
+        self.next_session_id += 1;
+        self.sessions.insert(
+            sid,
+            Session::new(session_name, password, ticks_per_turn, max_players),
+        );
+        Ok(sid)
+    }
+
+    /// Build a list of session summaries for `SessionList`.
+    fn session_list(&self) -> Vec<SessionInfo> {
+        self.sessions
+            .iter()
+            .map(|(sid, session)| SessionInfo {
+                session_id: *sid,
+                name: session.name.clone(),
+                player_count: session.player_count() as u32,
+                max_players: session.max_players(),
+                has_password: session.has_password(),
+                game_started: session.is_game_started(),
+            })
+            .collect()
+    }
+
+    /// Remove a session if it has no players remaining.
+    fn cleanup_empty_session(&mut self, session_id: SessionId) {
+        if let Some(session) = self.sessions.get(&session_id)
+            && session.player_count() == 0
+        {
+            self.sessions.remove(&session_id);
         }
     }
 }
@@ -100,7 +235,7 @@ impl Default for RelayConfig {
 /// stopping it and the actual bound address (useful when port 0 is used
 /// to let the OS pick a free port).
 pub fn start_relay(config: RelayConfig) -> std::io::Result<(RelayHandle, std::net::SocketAddr)> {
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", config.port))?;
+    let listener = TcpListener::bind(format!("{}:{}", config.bind_address, config.port))?;
     let addr = listener.local_addr()?;
     let keep_running = Arc::new(AtomicBool::new(true));
     let keep_running_clone = keep_running.clone();
@@ -120,12 +255,7 @@ pub fn start_relay(config: RelayConfig) -> std::io::Result<(RelayHandle, std::ne
 
 /// Main relay loop. Runs until `keep_running` is set to false.
 fn run_relay(listener: TcpListener, config: RelayConfig, keep_running: Arc<AtomicBool>) {
-    let mut session = Session::new(
-        config.session_name,
-        config.password,
-        config.ticks_per_turn,
-        config.max_players,
-    );
+    let mut state = RelayState::new(config.embedded);
 
     let (tx, rx): (Sender<InternalEvent>, Receiver<InternalEvent>) = mpsc::channel();
 
@@ -133,7 +263,7 @@ fn run_relay(listener: TcpListener, config: RelayConfig, keep_running: Arc<Atomi
     // keep_running periodically.
     listener.set_nonblocking(true).ok();
 
-    // Listener thread: accepts new connections.
+    // Listener thread: accepts new connections and spawns handshake threads.
     let keep_running_listener = keep_running.clone();
     let tx_listener = tx.clone();
     thread::spawn(move || {
@@ -141,7 +271,11 @@ fn run_relay(listener: TcpListener, config: RelayConfig, keep_running: Arc<Atomi
             match listener.accept() {
                 Ok((stream, _addr)) => {
                     stream.set_nonblocking(false).ok();
-                    let _ = tx_listener.send(InternalEvent::NewConnection { stream });
+                    let tx_handshake = tx_listener.clone();
+                    let kr = keep_running_listener.clone();
+                    thread::spawn(move || {
+                        handshake_thread(stream, tx_handshake, kr);
+                    });
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(50));
@@ -151,88 +285,218 @@ fn run_relay(listener: TcpListener, config: RelayConfig, keep_running: Arc<Atomi
         }
     });
 
-    let turn_duration = Duration::from_millis(u64::from(config.ticks_per_turn));
+    let turn_duration = Duration::from_millis(config.turn_cadence_ms);
+    let mut last_flush = std::time::Instant::now();
 
     // Main event loop.
     while keep_running.load(Ordering::SeqCst) {
-        match rx.recv_timeout(turn_duration) {
+        // Calculate remaining time until next turn flush.
+        let elapsed = last_flush.elapsed();
+        let wait = turn_duration.saturating_sub(elapsed);
+
+        match rx.recv_timeout(wait) {
             Ok(event) => {
-                handle_event(&mut session, event, &tx, &keep_running);
+                handle_event(&mut state, event, &tx, &keep_running);
                 // Drain any additional events that arrived during handling.
                 while let Ok(event) = rx.try_recv() {
-                    handle_event(&mut session, event, &tx, &keep_running);
+                    handle_event(&mut state, event, &tx, &keep_running);
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Turn timer fired — flush even if no commands arrived.
+                // Turn timer fired.
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        // Flush turns only when the cadence interval has elapsed.
+        if last_flush.elapsed() >= turn_duration {
+            for session in state.sessions.values_mut() {
                 if !session.paused && session.player_count() > 0 {
                     session.flush_turn();
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            last_flush = std::time::Instant::now();
         }
     }
 }
 
-/// Dispatch a single event to the session.
-fn handle_event(
-    session: &mut Session,
-    event: InternalEvent,
-    tx: &Sender<InternalEvent>,
-    keep_running: &Arc<AtomicBool>,
-) {
-    match event {
-        InternalEvent::NewConnection { stream } => {
-            handle_new_connection(session, stream, tx, keep_running);
-        }
-        InternalEvent::MessageFrom { player_id, message } => {
-            handle_message(session, player_id, message);
-        }
-        InternalEvent::Disconnected { player_id } => {
-            session.remove_player(player_id);
-        }
-    }
-}
+/// Handshake thread: runs the pre-handshake loop (ListSessions, CreateSession)
+/// and then forwards the Hello to the main thread for session joining.
+fn handshake_thread(stream: TcpStream, tx: Sender<InternalEvent>, keep_running: Arc<AtomicBool>) {
+    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
 
-/// Handle a new TCP connection: read the Hello handshake, add the player to
-/// the session, and spawn a reader thread.
-fn handle_new_connection(
-    session: &mut Session,
-    stream: TcpStream,
-    tx: &Sender<InternalEvent>,
-    keep_running: &Arc<AtomicBool>,
-) {
-    // Set a read timeout so the handshake doesn't block forever.
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-
-    // Read the Hello message.
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
     });
 
-    let hello_bytes = match read_message(&mut reader) {
-        Ok(bytes) => bytes,
-        Err(_) => return,
-    };
+    // Track all sessions this client created. If the client disconnects
+    // without joining, we send cleanup events so the main thread can remove
+    // any that are still empty.
+    let mut created_sessions: Vec<SessionId> = Vec::new();
 
-    let hello: ClientMessage = match serde_json::from_slice(&hello_bytes) {
-        Ok(msg) => msg,
-        Err(_) => return,
-    };
+    loop {
+        if !keep_running.load(Ordering::SeqCst) {
+            break;
+        }
 
-    match hello {
-        ClientMessage::Hello {
-            protocol_version: _,
+        let bytes = match read_message(&mut reader) {
+            Ok(b) => b,
+            Err(_) => break,
+        };
+        let msg: ClientMessage = match serde_json::from_slice(&bytes) {
+            Ok(m) => m,
+            Err(_) => break,
+        };
+
+        match msg {
+            ClientMessage::ListSessions => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                if tx
+                    .send(InternalEvent::RequestListSessions { reply_tx })
+                    .is_err()
+                {
+                    break;
+                }
+                if let Ok(response) = reply_rx.recv() {
+                    send_server_msg(&stream, &response);
+                }
+            }
+            ClientMessage::CreateSession {
+                session_name,
+                password,
+                ticks_per_turn,
+                max_players,
+            } => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                if tx
+                    .send(InternalEvent::RequestCreateSession {
+                        session_name,
+                        password,
+                        ticks_per_turn,
+                        max_players,
+                        reply_tx,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                if let Ok(response) = reply_rx.recv() {
+                    if let ServerMessage::SessionCreated { session_id } = &response {
+                        // Track all sessions this client created. On disconnect,
+                        // all empty ones will be cleaned up.
+                        created_sessions.push(*session_id);
+                    }
+                    send_server_msg(&stream, &response);
+                }
+            }
+            ClientMessage::Hello {
+                protocol_version: _,
+                session_id,
+                player_name,
+                sim_version_hash,
+                config_hash,
+                session_password,
+            } => {
+                // Forward the join request to the main thread.
+                let write_stream = match stream.try_clone() {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+
+                let (reply_tx, reply_rx) = mpsc::channel();
+                if tx
+                    .send(InternalEvent::RequestJoin {
+                        session_id,
+                        player_name,
+                        sim_version_hash,
+                        config_hash,
+                        session_password,
+                        stream: write_stream,
+                        reader,
+                        reply_tx,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+
+                // Wait for the main thread to process the join.
+                match reply_rx.recv() {
+                    Ok(Ok(_player_id)) => {
+                        // Success — the main thread added us to the session and
+                        // sent Welcome. The main thread spawns the reader loop
+                        // using the `reader` we gave it. Remove the joined
+                        // session from cleanup tracking (it's no longer orphaned).
+                        created_sessions.retain(|s| *s != session_id);
+                    }
+                    Ok(Err(reason)) => {
+                        // Rejected — main thread sent Rejected. We're done.
+                        send_server_msg(&stream, &ServerMessage::Rejected { reason });
+                    }
+                    Err(_) => {
+                        // Main thread dropped — shutting down.
+                    }
+                }
+                // Hello terminates the pre-handshake phase regardless of outcome.
+                break;
+            }
+            _ => {
+                // Unexpected message during pre-handshake — drop connection.
+                break;
+            }
+        }
+    }
+
+    // Clean up any sessions this client created but never joined. Each one
+    // may be empty (no players) and should be removed.
+    for session_id in created_sessions {
+        let _ = tx.send(InternalEvent::CleanupOrphanedSession { session_id });
+    }
+}
+
+/// Dispatch a single event.
+fn handle_event(
+    state: &mut RelayState,
+    event: InternalEvent,
+    tx: &Sender<InternalEvent>,
+    keep_running: &Arc<AtomicBool>,
+) {
+    match event {
+        InternalEvent::RequestListSessions { reply_tx } => {
+            let list = state.session_list();
+            let _ = reply_tx.send(ServerMessage::SessionList { sessions: list });
+        }
+        InternalEvent::RequestCreateSession {
+            session_name,
+            password,
+            ticks_per_turn,
+            max_players,
+            reply_tx,
+        } => {
+            let response =
+                match state.create_session(session_name, password, ticks_per_turn, max_players) {
+                    Ok(sid) => ServerMessage::SessionCreated { session_id: sid },
+                    Err(reason) => ServerMessage::Rejected { reason },
+                };
+            let _ = reply_tx.send(response);
+        }
+        InternalEvent::RequestJoin {
+            session_id,
             player_name,
             sim_version_hash,
             config_hash,
             session_password,
+            stream,
+            reader,
+            reply_tx,
         } => {
-            // Try to clone the stream for the session's write half.
-            let write_stream = match stream.try_clone() {
-                Ok(s) => s,
-                Err(_) => return,
+            let session = match state.sessions.get_mut(&session_id) {
+                Some(s) => s,
+                None => {
+                    let _ = reply_tx.send(Err("session not found".into()));
+                    return;
+                }
             };
 
             match session.add_player(
@@ -240,31 +504,63 @@ fn handle_new_connection(
                 sim_version_hash,
                 config_hash,
                 session_password,
-                write_stream,
+                stream,
             ) {
                 Ok(player_id) => {
-                    // Clear read timeout for the long-lived reader loop.
-                    stream.set_read_timeout(None).ok();
+                    let _ = reply_tx.send(Ok(player_id));
 
-                    // Spawn a reader thread for this client.
+                    // Clear read timeout and spawn reader thread.
+                    if let Ok(inner) = reader.get_ref().try_clone() {
+                        inner.set_read_timeout(None).ok();
+                    }
                     let tx_reader = tx.clone();
                     let keep_running_reader = keep_running.clone();
                     thread::spawn(move || {
-                        reader_loop(reader, player_id, tx_reader, keep_running_reader);
+                        reader_loop(
+                            reader,
+                            session_id,
+                            player_id,
+                            tx_reader,
+                            keep_running_reader,
+                        );
                     });
                 }
                 Err(reason) => {
-                    // Send Rejected and close the connection.
-                    let rejected = ServerMessage::Rejected { reason };
-                    if let Ok(json) = serde_json::to_vec(&rejected) {
-                        let mut writer = std::io::BufWriter::new(stream);
-                        let _ = write_message(&mut writer, &json);
-                    }
+                    let _ = reply_tx.send(Err(reason));
                 }
             }
         }
-        _ => {
-            // Expected Hello as first message — drop the connection.
+        InternalEvent::MessageFrom {
+            session_id,
+            player_id,
+            message,
+        } => {
+            if let Some(session) = state.sessions.get_mut(&session_id) {
+                handle_message(session, player_id, message);
+            }
+        }
+        InternalEvent::Disconnected {
+            session_id,
+            player_id,
+        } => {
+            if let Some(session) = state.sessions.get_mut(&session_id) {
+                session.remove_player(player_id);
+            }
+            state.cleanup_empty_session(session_id);
+        }
+        InternalEvent::CleanupOrphanedSession { session_id } => {
+            state.cleanup_empty_session(session_id);
+        }
+    }
+}
+
+/// Send a `ServerMessage` directly on a TCP stream.
+fn send_server_msg(stream: &TcpStream, msg: &ServerMessage) {
+    use std::io::Write;
+    if let Ok(json) = serde_json::to_vec(msg) {
+        let mut writer = BufWriter::new(stream);
+        if write_message(&mut writer, &json).is_ok() {
+            let _ = writer.flush();
         }
     }
 }
@@ -272,6 +568,7 @@ fn handle_new_connection(
 /// Reader loop for a single client. Runs in its own thread.
 fn reader_loop(
     mut reader: BufReader<TcpStream>,
+    session_id: SessionId,
     player_id: RelayPlayerId,
     tx: Sender<InternalEvent>,
     keep_running: Arc<AtomicBool>,
@@ -280,29 +577,39 @@ fn reader_loop(
         match read_message(&mut reader) {
             Ok(bytes) => match serde_json::from_slice::<ClientMessage>(&bytes) {
                 Ok(ClientMessage::Goodbye) => {
-                    let _ = tx.send(InternalEvent::Disconnected { player_id });
+                    let _ = tx.send(InternalEvent::Disconnected {
+                        session_id,
+                        player_id,
+                    });
                     break;
                 }
                 Ok(message) => {
-                    let _ = tx.send(InternalEvent::MessageFrom { player_id, message });
+                    let _ = tx.send(InternalEvent::MessageFrom {
+                        session_id,
+                        player_id,
+                        message,
+                    });
                 }
                 Err(_) => {
-                    // Malformed message — disconnect.
-                    let _ = tx.send(InternalEvent::Disconnected { player_id });
+                    let _ = tx.send(InternalEvent::Disconnected {
+                        session_id,
+                        player_id,
+                    });
                     break;
                 }
             },
             Err(_) => {
-                // Read error or EOF — disconnect.
-                let _ = tx.send(InternalEvent::Disconnected { player_id });
+                let _ = tx.send(InternalEvent::Disconnected {
+                    session_id,
+                    player_id,
+                });
                 break;
             }
         }
     }
 }
 
-/// Handle a client message that isn't Hello or Goodbye (those are handled
-/// during connection setup and in the reader loop respectively).
+/// Handle a client message from a reader thread.
 fn handle_message(session: &mut Session, player_id: RelayPlayerId, message: ClientMessage) {
     match message {
         ClientMessage::Command { sequence, payload } => {
@@ -333,8 +640,11 @@ fn handle_message(session: &mut Session, player_id: RelayPlayerId, message: Clie
         ClientMessage::SnapshotResponse { data } => {
             session.handle_snapshot_response(player_id, data);
         }
-        ClientMessage::Hello { .. } | ClientMessage::Goodbye => {
-            // Hello is handled during connection setup, Goodbye in the reader loop.
+        ClientMessage::Hello { .. }
+        | ClientMessage::Goodbye
+        | ClientMessage::ListSessions
+        | ClientMessage::CreateSession { .. } => {
+            // These are handled during connection setup / reader loop.
         }
     }
 }

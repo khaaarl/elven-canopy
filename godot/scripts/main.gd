@@ -151,6 +151,7 @@ func _ready() -> void:
 				GameSession.mp_relay_address,
 				GameSession.mp_player_name,
 				GameSession.mp_password,
+				GameSession.mp_session_id,
 			)
 		)
 		if not ok:

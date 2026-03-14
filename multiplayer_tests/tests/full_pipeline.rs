@@ -45,15 +45,14 @@ fn start_test_session() -> (
 ) {
     let config = RelayConfig {
         port: 0,
-        session_name: "integration-test".into(),
-        password: None,
-        ticks_per_turn: TEST_TICKS_PER_TURN,
-        max_players: 4,
+        bind_address: "127.0.0.1".into(),
+        embedded: true,
+        turn_cadence_ms: u64::from(TEST_TICKS_PER_TURN),
     };
     let (handle, addr) = start_relay(config).unwrap();
     thread::sleep(Duration::from_millis(50));
 
-    let host = TestGameClient::connect(addr, "Host");
+    let host = TestGameClient::connect_and_create(addr, "Host", TEST_TICKS_PER_TURN, 4);
     let joiner = TestGameClient::connect(addr, "Joiner");
 
     // Drain host's PlayerJoined notification for the joiner.

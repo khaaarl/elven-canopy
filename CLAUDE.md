@@ -20,13 +20,13 @@ For full details, see `docs/design_doc.md`. Note that the design doc is an aspir
 
 ## Implementation Status
 
-Phase 0–1 complete (foundations, tree, 10 species with procedural sprites). Phase 2 partial (construction loop, save/load, chunk mesh rendering, diagonal support struts — no mana economy). Phase 3 complete (projectiles, melee, ranged, HP/death, hostile AI, flee, attack-move, RTS selection, military groups, friendly-fire avoidance, voxel exclusion). Phase 4 partial (cooking, manufacturing, mood, notifications, logistics, proximity tasks). Phase 6 complete (music crate, lang crate, elfcyclopedia). Phase 7 partial (fruit sprites/generation/cultivation, extraction, component recipes). Phases 5, 8 not started. Tabulosity (sim DB) complete and integrated (31-table SimDb).
+Phase 0–1 complete (foundations, tree, 10 species with procedural sprites). Phase 2 partial (construction loop, save/load, chunk mesh rendering, diagonal support struts — no mana economy). Phase 3 complete (projectiles, melee, ranged, HP/death, hostile AI, flee, attack-move, RTS selection, military groups, friendly-fire avoidance, voxel exclusion). Phase 4 partial (cooking, manufacturing, mood, notifications, logistics, proximity tasks). Phase 6 complete (music crate, lang crate, elfcyclopedia). Phase 7 partial (fruit sprites/generation/cultivation, extraction, component recipes). Phase 5 not started. Phase 8 partial (multi-session relay). Tabulosity (sim DB) complete and integrated (31-table SimDb).
 
 For detailed per-feature status, see `docs/implementation_status.md` and `docs/tracker.md`.
 
 ## Project Structure
 
-Top-level crates: `elven_canopy_sim` (pure Rust sim), `elven_canopy_gdext` (GDExtension bridge), `elven_canopy_music` (polyphonic music generator), `elven_canopy_lang` (Vaelith conlang), `elven_canopy_prng` (shared PRNG), `tabulosity`/`tabulosity_derive` (in-memory relational store). Godot project in `godot/` (scenes + scripts). Data files in `data/`. Python offline tools in `python/`. Docs in `docs/`. Build scripts in `scripts/`.
+Top-level crates: `elven_canopy_sim` (pure Rust sim), `elven_canopy_gdext` (GDExtension bridge), `elven_canopy_music` (polyphonic music generator), `elven_canopy_lang` (Vaelith conlang), `elven_canopy_prng` (shared PRNG), `elven_canopy_protocol` (multiplayer wire protocol), `elven_canopy_relay` (multiplayer relay server + client), `multiplayer_tests` (integration tests for relay pipeline), `tabulosity`/`tabulosity_derive` (in-memory relational store). Godot project in `godot/` (scenes + scripts). Data files in `data/`. Python offline tools in `python/`. Docs in `docs/`. Build scripts in `scripts/`.
 
 For the full annotated directory tree, see `docs/project_structure.md`.
 
@@ -39,6 +39,7 @@ scripts/build.sh            # Debug build
 scripts/build.sh release    # Release build
 scripts/build.sh test       # Run all crate tests
 scripts/build.sh quicktest  # Test only crates changed vs main
+scripts/build.sh relay      # Optimized standalone relay binary (LTO, stripped)
 scripts/build.sh run        # Debug build, then launch the game
 scripts/build.sh run-branch NAME  # Fetch, checkout branch, sync to remote, build+run
 ```

@@ -16,6 +16,9 @@
 // - `sim_bridge.rs`:  The `SimBridge` Godot node — sole interface between
 //                     GDScript and Rust. Handles both single-player (direct
 //                     sim) and multiplayer (relay-routed) command paths.
+// - `session_browser.rs`: `SessionBrowser` RefCounted class for browsing
+//                     relay sessions from menu scenes (before `SimBridge`
+//                     exists). Used by `join_game_menu.gd`.
 // - `mesh_cache.rs`:  Chunk mesh cache — caches `ChunkMesh` data per 16x16x16
 //                     chunk and tracks dirty chunks for incremental updates.
 //                     Used by `sim_bridge.rs` to serve chunk ArrayMesh data.
@@ -32,6 +35,7 @@
 
 mod elfcyclopedia_server;
 mod mesh_cache;
+mod session_browser;
 mod sim_bridge;
 
 use godot::prelude::*;

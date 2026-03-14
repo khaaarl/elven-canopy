@@ -18,3 +18,9 @@ pub struct TurnNumber(pub u64);
 /// Per-player monotonic command sequence number, preserving local ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActionSequence(pub u64);
+
+/// Identifies a game session within a relay. The relay assigns session IDs
+/// when sessions are created. Embedded (player-hosted) relays use
+/// `SessionId(0)` as a fixed well-known ID for their single session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SessionId(pub u64);

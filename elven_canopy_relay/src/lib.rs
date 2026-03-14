@@ -7,18 +7,24 @@
 // connected clients. It never runs the sim — all game logic stays on the
 // clients.
 //
+// A relay can host multiple simultaneous game sessions (F-relay-multi-game).
+// Clients go through a two-phase connection: first, session discovery/creation
+// (`ListSessions` / `CreateSession`), then the `Hello` handshake to join a
+// specific session. Embedded (player-hosted) relays create a single session
+// with the well-known `SessionId(0)`.
+//
 // Module overview:
-// - `client.rs`:   TCP client for connecting to the relay. Background reader
-//                  thread + non-blocking `poll()` for the main thread. Has
-//                  zero Godot dependency — lives here so integration tests
-//                  and the gdext crate can both use it.
+// - `client.rs`:   TCP client for connecting to the relay. Two-phase API:
+//                  `RelayConnection` for session discovery/creation, then
+//                  `NetClient` for gameplay after joining a session. Background
+//                  reader thread + non-blocking `poll()`. Zero Godot dependency.
 // - `session.rs`:  Session state — player roster, turn batching, command
 //                  queuing, checksum-based desync detection. The core data
 //                  structure that `server.rs` drives.
 // - `server.rs`:   TCP listener, reader threads (one per client), and the
-//                  main event loop. Uses `std::net` with a thread-per-reader
-//                  architecture and an `mpsc` channel to funnel events into
-//                  the single-threaded `Session`.
+//                  main event loop. Manages a `BTreeMap<SessionId, Session>`
+//                  for multi-session support. Uses `std::net` with a
+//                  thread-per-reader architecture and an `mpsc` channel.
 //
 // Dependencies: `elven_canopy_protocol` (shared message types and framing).
 // No dependency on the sim crate or Godot.

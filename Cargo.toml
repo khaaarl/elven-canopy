@@ -16,5 +16,14 @@ resolver = "2"
 [profile.dev]
 opt-level = 0
 
+# Optimized release profile for the standalone relay binary.
+# LTO + single codegen unit for minimal binary size and maximum performance.
+# strip = true removes debug symbols for deployment.
+[profile.relay-release]
+inherits = "release"
+lto = true
+codegen-units = 1
+strip = true
+
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

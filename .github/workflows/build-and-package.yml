@@ -384,11 +384,35 @@ jobs:
           path: "elven-canopy-${{ needs.prepare.outputs.version_tag }}-ios-arm64.zip"
 
   # ---------------------------------------------------------------------------
+  # Relay server (Linux x86_64) — standalone multiplayer relay binary
+  # ---------------------------------------------------------------------------
+  build-relay-linux:
+    needs: [test, prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: relay-linux
+
+      - name: Build relay binary
+        run: cargo build -p elven_canopy_relay --profile relay-release --bin relay
+
+      - name: Rename binary
+        run: cp target/relay-release/relay "elven-canopy-relay-${{ needs.prepare.outputs.version_tag }}-linux-x86_64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elven-canopy-relay-${{ needs.prepare.outputs.version_tag }}-linux-x86_64
+          path: "elven-canopy-relay-${{ needs.prepare.outputs.version_tag }}-linux-x86_64"
+
+  # ---------------------------------------------------------------------------
   # Create GitHub Release (optional)
   # ---------------------------------------------------------------------------
   release:
     if: ${{ inputs.create_release }}
-    needs: [prepare, build-linux, build-windows, build-macos, build-android]
+    needs: [prepare, build-linux, build-windows, build-macos, build-android, build-relay-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write

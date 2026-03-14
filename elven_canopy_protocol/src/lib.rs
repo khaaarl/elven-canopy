@@ -25,8 +25,8 @@ pub mod message;
 pub mod types;
 
 pub use framing::{MAX_MESSAGE_SIZE, read_message, write_message};
-pub use message::{ClientMessage, PlayerInfo, ServerMessage, TurnCommand};
-pub use types::{ActionSequence, RelayPlayerId, TurnNumber};
+pub use message::{ClientMessage, PlayerInfo, ServerMessage, SessionInfo, TurnCommand};
+pub use types::{ActionSequence, RelayPlayerId, SessionId, TurnNumber};
 
 #[cfg(test)]
 mod tests {
@@ -59,9 +59,35 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_list_sessions() {
+        client_roundtrip(&ClientMessage::ListSessions);
+    }
+
+    #[test]
+    fn roundtrip_create_session() {
+        client_roundtrip(&ClientMessage::CreateSession {
+            session_name: "my-game".into(),
+            password: Some("secret".into()),
+            ticks_per_turn: 50,
+            max_players: 4,
+        });
+    }
+
+    #[test]
+    fn roundtrip_create_session_no_password() {
+        client_roundtrip(&ClientMessage::CreateSession {
+            session_name: "open-game".into(),
+            password: None,
+            ticks_per_turn: 100,
+            max_players: 2,
+        });
+    }
+
+    #[test]
     fn roundtrip_hello() {
         client_roundtrip(&ClientMessage::Hello {
             protocol_version: 1,
+            session_id: types::SessionId(42),
             player_name: "TestElf".into(),
             sim_version_hash: 0xDEAD_BEEF,
             config_hash: 0xCAFE_BABE,
@@ -73,6 +99,7 @@ mod tests {
     fn roundtrip_hello_no_password() {
         client_roundtrip(&ClientMessage::Hello {
             protocol_version: 1,
+            session_id: types::SessionId(0),
             player_name: "TestElf".into(),
             sim_version_hash: 0xDEAD_BEEF,
             config_hash: 0xCAFE_BABE,
@@ -156,6 +183,42 @@ mod tests {
                 },
             ],
             ticks_per_turn: 50,
+        });
+    }
+
+    #[test]
+    fn roundtrip_session_list() {
+        server_roundtrip(&ServerMessage::SessionList {
+            sessions: vec![
+                message::SessionInfo {
+                    session_id: types::SessionId(1),
+                    name: "amber-willow-42".into(),
+                    player_count: 2,
+                    max_players: 4,
+                    has_password: false,
+                    game_started: true,
+                },
+                message::SessionInfo {
+                    session_id: types::SessionId(2),
+                    name: "secret-game".into(),
+                    player_count: 1,
+                    max_players: 2,
+                    has_password: true,
+                    game_started: false,
+                },
+            ],
+        });
+    }
+
+    #[test]
+    fn roundtrip_session_list_empty() {
+        server_roundtrip(&ServerMessage::SessionList { sessions: vec![] });
+    }
+
+    #[test]
+    fn roundtrip_session_created() {
+        server_roundtrip(&ServerMessage::SessionCreated {
+            session_id: types::SessionId(7),
         });
     }
 

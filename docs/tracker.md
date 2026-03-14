@@ -152,8 +152,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-recipe-search        Recipe catalog search/filter
-[ ] F-relay-multi-game     Relay server supports multiple simultaneous games
-[ ] F-relay-release        Standalone relay server release build
 [ ] F-roof-click-select    Roof click selects building, not elf underneath
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
@@ -282,6 +280,8 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-projectiles          Projectile physics system (arrows)
 [x] F-recipe-hierarchy     Recipe catalog UI hierarchy and organization
 [x] F-recipes              Recipe system for crafting/cooking
+[x] F-relay-multi-game     Relay server supports multiple simultaneous games
+[x] F-relay-release        Standalone relay server release build
 [x] F-rts-selection        RTS box selection and multi-creature commands
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
 [x] F-save-load            Save/load to JSON with versioning
@@ -3231,7 +3231,7 @@ ESC menu behavior, save/load semantics, sim speed policy).
 **Related:** F-immediate-commands, F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
 
 #### F-relay-multi-game — Relay server supports multiple simultaneous games
-**Status:** Todo · **Phase:** 8
+**Status:** Done · **Phase:** 8
 
 Extend the relay server to host multiple simultaneous game sessions.
 Each session has its own independent lobby, command queue, turn counter,
@@ -3245,7 +3245,7 @@ protocol).
 **Related:** F-multiplayer, F-relay-release
 
 #### F-relay-release — Standalone relay server release build
-**Status:** Todo · **Phase:** 8
+**Status:** Done · **Phase:** 8
 
 Build the `elven_canopy_relay` crate as a standalone headless binary
 with a release profile. Add a `scripts/build.sh relay` (or similar)

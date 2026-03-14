@@ -56,6 +56,9 @@ var mp_ticks_per_turn: int = 50
 ## Multiplayer join config (join mode).
 var mp_relay_address: String = ""
 var mp_player_name: String = ""
+## Session ID to join. 0 for embedded relays, or the ID picked from the
+## session browser for dedicated relays.
+var mp_session_id: int = 0
 
 ## Elfcyclopedia server URL (set at startup, persists across scenes).
 var elfcyclopedia_url: String = ""

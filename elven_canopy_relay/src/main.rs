@@ -1,17 +1,18 @@
 // CLI entry point for the Elven Canopy multiplayer relay.
 //
-// Starts a standalone relay server that game clients connect to. The relay
-// orders commands into turns and broadcasts them — it never runs the sim.
+// Starts a standalone (dedicated) relay server that game clients connect to.
+// Clients create and join sessions dynamically via the `CreateSession` /
+// `ListSessions` protocol messages. The relay orders commands into turns and
+// broadcasts them — it never runs the sim.
+//
 // See `server.rs` for the networking architecture and `session.rs` for the
 // session state.
 //
 // Usage:
 //   relay [OPTIONS]
+//     --bind <ADDR>           Bind address (default: 0.0.0.0)
 //     --port <PORT>           Listen port (default: 7878)
-//     --name <NAME>           Session name (default: elven-canopy-session)
-//     --password <PASS>       Session password (optional)
-//     --ticks-per-turn <N>    Sim ticks per turn (default: 50)
-//     --max-players <N>       Max players (default: 4)
+//     --turn-cadence <MS>     Event loop turn cadence in ms (default: 50)
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,8 +35,7 @@ fn main() {
 
     // Wait for Ctrl+C.
     let running = Arc::new(AtomicBool::new(true));
-    let running_clone = running.clone();
-    ctrlc_wait(running_clone);
+    install_signal_handler(running.clone());
 
     while running.load(Ordering::SeqCst) {
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -43,6 +43,7 @@ fn main() {
 
     println!("\nShutting down...");
     handle.stop();
+    println!("Relay stopped.");
 }
 
 /// Parse command-line arguments into a `RelayConfig`. Uses simple
@@ -54,6 +55,13 @@ fn parse_args() -> RelayConfig {
 
     while i < args.len() {
         match args[i].as_str() {
+            "--bind" => {
+                i += 1;
+                config.bind_address = args.get(i).cloned().unwrap_or_else(|| {
+                    eprintln!("--bind requires an address (e.g. 0.0.0.0 or 127.0.0.1)");
+                    std::process::exit(1);
+                });
+            }
             "--port" => {
                 i += 1;
                 config.port = args.get(i).and_then(|s| s.parse().ok()).unwrap_or_else(|| {
@@ -61,33 +69,11 @@ fn parse_args() -> RelayConfig {
                     std::process::exit(1);
                 });
             }
-            "--name" => {
+            "--turn-cadence" => {
                 i += 1;
-                config.session_name = args.get(i).cloned().unwrap_or_else(|| {
-                    eprintln!("--name requires a value");
-                    std::process::exit(1);
-                });
-            }
-            "--password" => {
-                i += 1;
-                config.password = args.get(i).cloned().or_else(|| {
-                    eprintln!("--password requires a value");
-                    std::process::exit(1);
-                });
-            }
-            "--ticks-per-turn" => {
-                i += 1;
-                config.ticks_per_turn =
+                config.turn_cadence_ms =
                     args.get(i).and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-                        eprintln!("--ticks-per-turn requires a valid number");
-                        std::process::exit(1);
-                    });
-            }
-            "--max-players" => {
-                i += 1;
-                config.max_players =
-                    args.get(i).and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-                        eprintln!("--max-players requires a valid number");
+                        eprintln!("--turn-cadence requires a valid number");
                         std::process::exit(1);
                     });
             }
@@ -111,25 +97,42 @@ fn print_usage() {
     println!("Usage: relay [OPTIONS]");
     println!();
     println!("Options:");
+    println!("  --bind <ADDR>           Bind address (default: 0.0.0.0)");
     println!("  --port <PORT>           Listen port (default: 7878)");
-    println!("  --name <NAME>           Session name (default: elven-canopy-session)");
-    println!("  --password <PASS>       Session password (optional)");
-    println!("  --ticks-per-turn <N>    Sim ticks per turn (default: 50)");
-    println!("  --max-players <N>       Max players (default: 4)");
+    println!("  --turn-cadence <MS>     Event loop cadence in ms (default: 50)");
     println!("  --help, -h              Show this help");
 }
 
-/// Block until Ctrl+C is pressed, then set the flag to false.
-fn ctrlc_wait(running: Arc<AtomicBool>) {
-    // Use a simple signal handler approach: spawn a thread that blocks on
-    // reading a line from stdin, or use the fact that the main loop already
-    // checks the flag. For a standalone binary, we rely on the user killing
-    // the process — the relay threads will be torn down on exit.
-    //
-    // A proper signal handler would use `signal_hook` or `ctrlc` crate, but
-    // to keep dependencies minimal we just let the main loop spin. The process
-    // exits on SIGINT/SIGTERM by default, which is fine for a relay.
-    //
-    // If more graceful shutdown is needed later, add the `ctrlc` crate.
+/// Install a signal handler that sets `running` to false on SIGINT/SIGTERM.
+/// This allows graceful shutdown: the main loop detects the flag change,
+/// calls `handle.stop()`, and the relay threads wind down cleanly.
+#[cfg(unix)]
+fn install_signal_handler(running: Arc<AtomicBool>) {
+    // Global flag set by the C signal handler (must be a static AtomicBool
+    // since signal handlers can't capture state).
+    static SIGNAL_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn handler(_sig: libc::c_int) {
+        SIGNAL_RECEIVED.store(true, Ordering::SeqCst);
+    }
+
+    unsafe {
+        libc::signal(libc::SIGINT, handler as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, handler as *const () as libc::sighandler_t);
+    }
+
+    // Spawn a thread that polls the global flag and propagates to `running`.
+    std::thread::spawn(move || {
+        while !SIGNAL_RECEIVED.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        running.store(false, Ordering::SeqCst);
+    });
+}
+
+#[cfg(not(unix))]
+fn install_signal_handler(running: Arc<AtomicBool>) {
+    // On non-Unix platforms, the default SIGINT behavior (process exit)
+    // is acceptable — the OS cleans up TCP sockets on process termination.
     let _ = running;
 }

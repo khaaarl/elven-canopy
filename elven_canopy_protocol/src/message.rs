@@ -4,9 +4,17 @@
 // - `ClientMessage`: sent by game clients to the relay coordinator.
 // - `ServerMessage`: sent by the relay coordinator to game clients.
 //
-// Supporting structs (`TurnCommand`, `PlayerInfo`) are shared by both
-// directions. All types derive `Serialize`/`Deserialize` for JSON framing
-// (see `framing.rs`).
+// The protocol has two phases:
+// 1. **Pre-handshake (session selection):** The client sends `ListSessions`
+//    or `CreateSession` to discover/create a session. The relay responds with
+//    `SessionList`, `SessionCreated`, or `Rejected`.
+// 2. **Handshake + gameplay:** The client sends `Hello` with a `session_id`
+//    to join a specific session. Post-handshake messages (`Command`, `Turn`,
+//    etc.) are implicitly scoped to the joined session.
+//
+// Supporting structs (`TurnCommand`, `PlayerInfo`, `SessionInfo`) are shared
+// by both directions. All types derive `Serialize`/`Deserialize` for JSON
+// framing (see `framing.rs`).
 //
 // Commands are opaque byte payloads (`Vec<u8>`) — the relay never inspects
 // them. This keeps the protocol crate independent of the sim crate. The client
@@ -15,14 +23,27 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{ActionSequence, RelayPlayerId, TurnNumber};
+use crate::types::{ActionSequence, RelayPlayerId, SessionId, TurnNumber};
 
 /// Messages sent by a client to the relay.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ClientMessage {
-    /// Join a session (handshake).
+    /// Request a list of active sessions on this relay. Sent before Hello,
+    /// during the pre-handshake session-selection phase.
+    ListSessions,
+    /// Create a new session on this relay. Sent before Hello. The relay
+    /// responds with `SessionCreated` on success or `Rejected` on failure.
+    CreateSession {
+        session_name: String,
+        password: Option<String>,
+        ticks_per_turn: u32,
+        max_players: u32,
+    },
+    /// Join a session (handshake). Must include the `session_id` of the
+    /// session to join (obtained from `SessionList` or `SessionCreated`).
     Hello {
         protocol_version: u32,
+        session_id: SessionId,
         player_name: String,
         sim_version_hash: u64,
         config_hash: u64,
@@ -54,6 +75,10 @@ pub enum ClientMessage {
 /// Messages sent by the relay to a client.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServerMessage {
+    /// Response to `ListSessions` — lists all active sessions on this relay.
+    SessionList { sessions: Vec<SessionInfo> },
+    /// Response to `CreateSession` — the session was created successfully.
+    SessionCreated { session_id: SessionId },
     /// Handshake accepted.
     Welcome {
         player_id: RelayPlayerId,
@@ -61,7 +86,7 @@ pub enum ServerMessage {
         players: Vec<PlayerInfo>,
         ticks_per_turn: u32,
     },
-    /// Handshake rejected.
+    /// Handshake rejected (or CreateSession rejected).
     Rejected { reason: String },
     /// A batch of commands for one turn.
     Turn {
@@ -111,4 +136,15 @@ pub struct TurnCommand {
 pub struct PlayerInfo {
     pub id: RelayPlayerId,
     pub name: String,
+}
+
+/// Summary of a session, returned in `SessionList`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub session_id: SessionId,
+    pub name: String,
+    pub player_count: u32,
+    pub max_players: u32,
+    pub has_password: bool,
+    pub game_started: bool,
 }

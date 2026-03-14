@@ -10,6 +10,7 @@
 #   scripts/build.sh test       # run all crate tests
 #   scripts/build.sh quicktest  # test only crates changed vs main
 #   scripts/build.sh run        # debug build then launch the game
+#   scripts/build.sh relay       # optimized standalone relay binary (LTO, stripped)
 #   scripts/build.sh check      # run fmt, clippy, gdformat, gdlint checks
 #   scripts/build.sh coverage  # generate HTML code coverage report (requires cargo-llvm-cov)
 #   scripts/build.sh run-branch NAME  # fetch, checkout branch, sync to remote, build+run
@@ -248,6 +249,18 @@ case "$MODE" in
         echo "Launching Elven Canopy..."
         RUST_BACKTRACE=1 "$GODOT" --path "$REPO_ROOT/godot"
         ;;
+    relay)
+        echo "Building standalone relay (release, LTO, stripped)..."
+        cargo build -p elven_canopy_relay --profile relay-release --bin relay
+        RELAY_BIN="target/relay-release/relay"
+        if [ -f "$RELAY_BIN" ]; then
+            SIZE=$(du -h "$RELAY_BIN" | cut -f1)
+            echo "Done. Binary: $RELAY_BIN ($SIZE)"
+            echo "Run:  $RELAY_BIN --help"
+        else
+            echo "Done. Binary: $RELAY_BIN"
+        fi
+        ;;
     coverage)
         if ! command -v cargo-llvm-cov &>/dev/null; then
             echo "cargo-llvm-cov not found. Install with: cargo install cargo-llvm-cov" >&2
@@ -294,7 +307,7 @@ case "$MODE" in
         echo "All checks passed."
         ;;
     *)
-        echo "Usage: scripts/build.sh [debug|release|test|quicktest|run|run-branch|check|coverage]" >&2
+        echo "Usage: scripts/build.sh [debug|release|relay|test|quicktest|run|run-branch|check|coverage]" >&2
         exit 1
         ;;
 esac

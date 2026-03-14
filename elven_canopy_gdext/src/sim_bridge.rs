@@ -178,7 +178,8 @@ use elven_canopy_sim::types::{
 };
 use godot::prelude::*;
 
-use elven_canopy_relay::client::NetClient;
+use elven_canopy_protocol::types::SessionId;
+use elven_canopy_relay::client::{NetClient, RelayConnection};
 
 use crate::mesh_cache::MeshCache;
 
@@ -4540,8 +4541,9 @@ impl SimBridge {
     // Multiplayer methods
     // ========================================================================
 
-    /// Host a multiplayer game: start an embedded relay server and connect
-    /// as the first client. Returns true on success.
+    /// Host a multiplayer game: start an embedded relay server, create a
+    /// session with `SessionId(0)`, and connect as the first client.
+    /// Returns true on success.
     #[func]
     fn host_game(
         &mut self,
@@ -4558,10 +4560,9 @@ impl SimBridge {
         };
         let config = RelayConfig {
             port: port as u16,
-            session_name: session_name.to_string(),
-            password: pw.clone(),
-            ticks_per_turn: ticks_per_turn as u32,
-            max_players: max_players as u32,
+            bind_address: "127.0.0.1".into(),
+            embedded: true,
+            turn_cadence_ms: u64::from(ticks_per_turn as u32),
         };
 
         let (handle, addr) = match start_relay(config) {
@@ -4577,7 +4578,27 @@ impl SimBridge {
 
         let addr_str = format!("{addr}");
         let config_hash = fnv1a_hash("{}");
-        match NetClient::connect(&addr_str, "Host", SIM_VERSION_HASH, config_hash, pw) {
+
+        // Connect, create the embedded session, and join it.
+        let mut conn = match RelayConnection::connect(&addr_str) {
+            Ok(c) => c,
+            Err(e) => {
+                godot_error!("SimBridge: failed to connect to own relay: {e}");
+                handle.stop();
+                return false;
+            }
+        };
+        if let Err(e) = conn.create_session(
+            &session_name.to_string(),
+            pw.clone(),
+            ticks_per_turn as u32,
+            max_players as u32,
+        ) {
+            godot_error!("SimBridge: failed to create session: {e}");
+            handle.stop();
+            return false;
+        }
+        match conn.join_session(SessionId(0), "Host", SIM_VERSION_HASH, config_hash, pw) {
             Ok((client, info)) => {
                 let pid = SessionPlayerId(info.player_id.0);
                 self.local_player_id = pid;
@@ -4594,24 +4615,46 @@ impl SimBridge {
                 true
             }
             Err(e) => {
-                godot_error!("SimBridge: failed to connect to own relay: {e}");
+                godot_error!("SimBridge: failed to join own relay: {e}");
                 handle.stop();
                 false
             }
         }
     }
 
-    /// Join a remote multiplayer game. Returns true on success.
+    /// Join a remote multiplayer game. `session_id` is the relay session to
+    /// join — use 0 for embedded relays, or the ID from session browsing for
+    /// dedicated relays. Returns true on success.
     #[func]
-    fn join_game(&mut self, address: GString, player_name: GString, password: GString) -> bool {
+    fn join_game(
+        &mut self,
+        address: GString,
+        player_name: GString,
+        password: GString,
+        session_id: i64,
+    ) -> bool {
         let pw = if password.to_string().is_empty() {
             None
         } else {
             Some(password.to_string())
         };
         let config_hash = fnv1a_hash("{}");
-        match NetClient::connect(
-            &address.to_string(),
+        if session_id < 0 {
+            godot_error!("SimBridge: invalid session_id {session_id}");
+            return false;
+        }
+        let sid = SessionId(session_id as u64);
+
+        let conn = match RelayConnection::connect(&address.to_string()) {
+            Ok(c) => c,
+            Err(e) => {
+                godot_error!("SimBridge: join_game connect failed: {e}");
+                return false;
+            }
+        };
+
+        match conn.join_session(
+            sid,
             &player_name.to_string(),
             SIM_VERSION_HASH,
             config_hash,
@@ -4628,8 +4671,9 @@ impl SimBridge {
                 self.is_multiplayer_mode = true;
                 self.local_relay = None;
                 godot_print!(
-                    "SimBridge: joined '{}' as player {}",
+                    "SimBridge: joined '{}' (session {}) as player {}",
                     info.session_name,
+                    session_id,
                     info.player_id.0
                 );
                 true
@@ -4724,7 +4768,6 @@ impl SimBridge {
         // net_client while mutating session).
         let messages: Vec<_> = client.poll();
         let mut turns_applied = 0;
-        let pid = self.local_player_id;
 
         for msg in messages {
             match msg {
@@ -4756,8 +4799,10 @@ impl SimBridge {
                     // Route each command through session, then advance.
                     for tc in &commands {
                         if let Ok(action) = serde_json::from_slice::<SimAction>(&tc.payload) {
-                            self.session
-                                .process(SessionMessage::SimCommand { from: pid, action });
+                            self.session.process(SessionMessage::SimCommand {
+                                from: SessionPlayerId(tc.player_id.0),
+                                action,
+                            });
                         }
                     }
                     self.session.process(SessionMessage::AdvanceTo {
@@ -4850,8 +4895,7 @@ impl SimBridge {
                 }
                 ServerMessage::SnapshotLoad { tick: _, data } => {
                     if let Ok(json) = String::from_utf8(data) {
-                        self.session
-                            .process(SessionMessage::LoadSim { json: json.clone() });
+                        self.session.process(SessionMessage::LoadSim { json });
                         self.mp_events.push(
                             serde_json::to_string(&serde_json::json!({
                                 "type": "snapshot_loaded",

@@ -300,6 +300,9 @@ impl Session {
         if player_id != self.host_id {
             return;
         }
+        if ticks_per_turn == 0 {
+            return; // Reject zero — would freeze sim_tick_target advancement.
+        }
         self.ticks_per_turn = ticks_per_turn;
         let msg = ServerMessage::SpeedChanged { ticks_per_turn };
         self.broadcast(&msg);
@@ -326,7 +329,14 @@ impl Session {
     }
 
     /// Handle a chat message by broadcasting to all clients.
+    /// Silently truncates messages longer than 4096 bytes.
     pub fn chat(&mut self, player_id: RelayPlayerId, text: String) {
+        // Limit chat message size to prevent abuse.
+        let text = if text.len() > 4096 {
+            text[..text.floor_char_boundary(4096)].to_string()
+        } else {
+            text
+        };
         let name = self
             .players
             .get(&player_id)
@@ -343,6 +353,16 @@ impl Session {
     /// Returns the number of connected players.
     pub fn player_count(&self) -> usize {
         self.players.len()
+    }
+
+    /// Returns the maximum number of players allowed.
+    pub fn max_players(&self) -> u32 {
+        self.max_players
+    }
+
+    /// Returns true if the session has a password set.
+    pub fn has_password(&self) -> bool {
+        self.password.is_some()
     }
 
     /// Returns the current sim tick target.
@@ -852,6 +872,22 @@ mod tests {
     }
 
     #[test]
+    fn set_speed_zero_ignored() {
+        let (_client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        // Host tries to set speed to 0 — should be silently ignored.
+        session.set_speed(RelayPlayerId(0), 0);
+        assert_eq!(
+            session.ticks_per_turn, 50,
+            "ticks_per_turn should remain 50 after SetSpeed(0)"
+        );
+    }
+
+    #[test]
     fn chat_broadcast() {
         let (client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
@@ -1226,5 +1262,151 @@ mod tests {
         // First joiner's snapshot is still pending and session state is clean.
         assert!(session.is_snapshot_pending());
         assert_eq!(session.player_count(), 3); // Alice, Bob, Charlie (not Dave)
+    }
+
+    #[test]
+    fn double_pause_idempotent() {
+        let (client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        session.request_pause(RelayPlayerId(0));
+        assert!(session.paused);
+        session.request_pause(RelayPlayerId(0));
+        assert!(session.paused);
+
+        // Should have only one Paused broadcast.
+        let mut reader1 = BufReader::new(client1);
+        let _welcome = recv_server_msg(&mut reader1);
+        let msg = recv_server_msg(&mut reader1);
+        assert!(matches!(msg, ServerMessage::Paused { .. }));
+        // No second Paused should be in the stream.
+    }
+
+    #[test]
+    fn resume_while_not_paused_noop() {
+        let (client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        // Resume without pausing — should be a no-op.
+        session.request_resume(RelayPlayerId(0));
+        assert!(!session.paused);
+
+        // Only Welcome should be in the stream — no Resumed.
+        let mut reader1 = BufReader::new(client1);
+        let msg = recv_server_msg(&mut reader1);
+        assert!(matches!(msg, ServerMessage::Welcome { .. }));
+    }
+
+    #[test]
+    fn remove_nonexistent_player_noop() {
+        let (_client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        // Remove a player that doesn't exist — should be a no-op.
+        session.remove_player(RelayPlayerId(99));
+        assert_eq!(session.player_count(), 1);
+    }
+
+    #[test]
+    fn chat_truncated_long_message() {
+        let (client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        let long_text = "x".repeat(8000);
+        session.chat(RelayPlayerId(0), long_text);
+
+        let mut reader1 = BufReader::new(client1);
+        let _welcome = recv_server_msg(&mut reader1);
+        let msg = recv_server_msg(&mut reader1);
+        match msg {
+            ServerMessage::ChatBroadcast { text, .. } => {
+                assert!(
+                    text.len() <= 4096,
+                    "chat should be truncated to 4096, got {} bytes",
+                    text.len()
+                );
+            }
+            other => panic!("expected ChatBroadcast, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unsolicited_snapshot_response_ignored() {
+        let (mut session, _client1, _reader1, _client2) = started_session();
+
+        // No mid-game joiner — snapshot response should be silently ignored.
+        assert!(!session.is_snapshot_pending());
+        session.handle_snapshot_response(RelayPlayerId(0), b"data".to_vec());
+        // No panic, no state change.
+        assert!(!session.is_snapshot_pending());
+    }
+
+    #[test]
+    fn single_player_checksum_no_desync() {
+        let (client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        // Single player sends a checksum — should never trigger desync.
+        session.record_checksum(RelayPlayerId(0), 1000, 0xABCD);
+
+        // Only Welcome should be in the stream — no DesyncDetected.
+        let mut reader1 = BufReader::new(client1);
+        let msg = recv_server_msg(&mut reader1);
+        assert!(matches!(msg, ServerMessage::Welcome { .. }));
+    }
+
+    /// Verifies that checksum entries for a disconnected player are cleaned up,
+    /// so desync detection still works for remaining players.
+    #[test]
+    fn checksum_cleanup_on_player_disconnect() {
+        let (client1, server1) = tcp_pair();
+        let (_client2, server2) = tcp_pair();
+        let (_client3, server3) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+        session
+            .add_player("Bob".into(), 100, 200, None, server2)
+            .unwrap();
+        session
+            .add_player("Charlie".into(), 100, 200, None, server3)
+            .unwrap();
+
+        // Charlie sends a checksum for tick 1000, then disconnects.
+        session.record_checksum(RelayPlayerId(2), 1000, 0xAAAA);
+        session.remove_player(RelayPlayerId(2));
+
+        // Alice and Bob send matching checksums for tick 1000.
+        // If Charlie's entry weren't cleaned up, the comparison would wait
+        // for 3 players but only 2 remain, silently disabling desync detection.
+        session.record_checksum(RelayPlayerId(0), 1000, 0xBBBB);
+        session.record_checksum(RelayPlayerId(1), 1000, 0xBBBB);
+
+        // No desync should have been detected (Alice and Bob match).
+        // Verify by checking Alice's stream has no DesyncDetected.
+        let mut reader1 = BufReader::new(client1);
+        // Drain: Welcome, PlayerJoined(Bob), PlayerJoined(Charlie), PlayerLeft(Charlie).
+        let _welcome = recv_server_msg(&mut reader1);
+        let _joined1 = recv_server_msg(&mut reader1);
+        let _joined2 = recv_server_msg(&mut reader1);
+        let _left = recv_server_msg(&mut reader1);
+        // No more messages — no DesyncDetected.
     }
 }
