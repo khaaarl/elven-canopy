@@ -11,7 +11,7 @@
 // `EquipSlot` (body slot for wearable clothing: Head, Torso, Legs, Feet, Hands),
 // and `EffectKind` (stubbed enchantment effect types for future use).
 // Item storage is now handled by the `db::ItemStack` and `db::Inventory`
-// tabulosity tables. `SimState` has `inv_*` methods (in `sim.rs`) for all
+// tabulosity tables. `SimState` has `inv_*` methods (in `sim/inventory_mgmt.rs`) for all
 // inventory operations (add, remove, count, reserve, equip, etc.).
 //
 // `MaterialFilter` is used by building logistics wants and creature personal
@@ -22,7 +22,7 @@
 // `ItemKind::equip_slot()`. Used by the `equipped_slot` field on
 // `db::ItemStack` to track which items a creature is wearing.
 //
-// See also: `db.rs` for the tabulosity table definitions, `sim.rs` for the
+// See also: `db.rs` for the tabulosity table definitions, `sim/inventory_mgmt.rs` for the
 // `inv_*` methods on `SimState`, `building.rs` for `LogisticsWant` DTO.
 
 use serde::{Deserialize, Serialize};

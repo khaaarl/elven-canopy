@@ -33,7 +33,7 @@
 // state transfer.
 //
 // See also: `elven_canopy_prng` for the PRNG that generates entity IDs,
-// `sim.rs` for the `SimState` that owns entities keyed by these IDs,
+// `sim/mod.rs` for the `SimState` that owns entities keyed by these IDs,
 // `world.rs` for the voxel grid indexed by `VoxelCoord`.
 //
 // **Critical constraint: determinism.** Entity IDs are generated from the sim's

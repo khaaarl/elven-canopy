@@ -6,7 +6,7 @@
 // in a defined order:
 //
 //   1. **Tree generation** — produces the player's home tree geometry (existing
-//      logic extracted from `sim.rs`).
+//      logic extracted from the sim module).
 //   2. **Fruit generation** — creates 20-40+ unique fruit species with
 //      composable parts, properties, coverage constraints, and Vaelith names
 //      (see `fruit.rs`).
@@ -627,7 +627,7 @@ fn species_default_opinion(from: CivSpecies, to: CivSpecies) -> CivOpinion {
 mod tests {
     use super::*;
 
-    /// Small-world config for fast tests (matches sim.rs test_config pattern).
+    /// Small-world config for fast tests (matches sim/mod.rs test_config pattern).
     fn test_config() -> GameConfig {
         let mut config = GameConfig {
             world_size: (64, 64, 64),

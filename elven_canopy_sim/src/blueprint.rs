@@ -8,7 +8,7 @@
 // ## Lifecycle
 //
 // 1. Player issues a `DesignateBuild` command (see `command.rs`).
-// 2. `sim.rs` validates the designation (in-bounds, Air, adjacent to solid)
+// 2. `sim/construction.rs` validates the designation (in-bounds, Air, adjacent to solid)
 //    and creates a `Blueprint` in `Designated` state, plus a `Build` task
 //    (linked via `task_id`).
 // 3. An idle elf claims the Build task, pathfinds to the site, and does work.
@@ -17,9 +17,9 @@
 // 4. When all voxels are placed, the blueprint transitions to `Complete`.
 //
 // Cancellation removes the blueprint, reverts any materialized voxels to Air,
-// unassigns workers, and removes the Build task (see `cancel_build` in `sim.rs`).
+// unassigns workers, and removes the Build task (see `cancel_build` in `sim/construction.rs`).
 //
-// See also: `sim.rs` for the `blueprints` map and command handlers,
+// See also: `sim/mod.rs` for the `blueprints` map, `sim/construction.rs` for command handlers,
 // `command.rs` for `DesignateBuild` / `CancelBuild`, `event.rs` for
 // `BlueprintDesignated`, `types.rs` for `ProjectId`, `BuildType`, `Priority`.
 //

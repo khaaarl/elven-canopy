@@ -36,7 +36,7 @@
 // `has_node_at()` queries.
 //
 // The full `build_nav_graph()` is used at startup and save/load. During
-// gameplay, `materialize_next_build_voxel()` in `sim.rs` calls
+// gameplay, `materialize_next_build_voxel()` in `sim/construction.rs` calls
 // `update_after_voxel_solidified()` which touches only ~7 positions and their
 // 26-neighbor edges — O(1) instead of O(world_size).
 //
@@ -47,14 +47,14 @@
 // highest ground point. Edges connect 8-neighbors with union-footprint
 // clearance checks, allowing up to 1 voxel of height change between adjacent
 // nodes. The large graph uses the same `NavGraph` struct so all existing
-// pathfinding code works unchanged. `sim.rs` stores both graphs and dispatches
+// pathfinding code works unchanged. `sim/mod.rs` stores both graphs and dispatches
 // via `graph_for_species()` based on the species' footprint.
 //
 // All storage uses `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
 // and deterministic iteration order. No `HashMap`.
 //
 // See also: `world.rs` for the voxel grid, `tree_gen.rs` for tree geometry,
-// `pathfinding.rs` for A* search over this graph, `sim.rs` which owns the
+// `pathfinding.rs` for A* search over this graph, `sim/mod.rs` which owns the
 // `NavGraph` as part of `SimState`, `species.rs` for the `footprint` field.
 //
 // **Critical constraint: determinism.** The graph is built by iterating voxels

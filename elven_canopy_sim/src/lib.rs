@@ -6,7 +6,9 @@
 // headless.
 //
 // Module overview:
-// - `sim.rs`:         Top-level SimState, tick loop, command/event processing.
+// - `sim/`:           SimState and all simulation logic, split into focused sub-modules
+//                     (mod.rs, activation, combat, construction, crafting, creature,
+//                     greenhouse, inventory_mgmt, logistics, movement, needs, task_helpers).
 // - `world.rs`:       Dense 3D voxel grid (the world's spatial truth).
 // - `tree_gen.rs`:    Energy-based recursive tree generation (trunk, branches, roots, leaves).
 // - `mesh_gen.rs`:    Chunk-based voxel mesh generation with per-face culling.

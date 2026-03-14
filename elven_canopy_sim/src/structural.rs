@@ -29,7 +29,7 @@
 // - `validate_blueprint()`: Full blueprint validation with tiered enforcement
 //   (OK / Warning / Blocked).
 // - `validate_blueprint_fast()`: Lightweight blueprint validation using BFS +
-//   weight-flow-only analysis (~700x faster). Used by `sim.rs` for interactive
+//   weight-flow-only analysis (~700x faster). Used by `sim/construction.rs` for interactive
 //   placement; the full solver is reserved for tree validation at startup.
 // - `validate_carve_fast()`: Like `validate_blueprint_fast()` but checks whether
 //   *removing* voxels would compromise remaining structure. Seeds BFS from
@@ -56,7 +56,7 @@
 //
 // - `worldgen.rs`: `generate_tree()` wraps tree generation in a retry loop
 //   using `validate_tree()`.
-// - `sim.rs`: `designate_build()` and `designate_building()` call
+// - `sim/construction.rs`: `designate_build()` and `designate_building()` call
 //   `validate_blueprint_fast()` to gate construction. `designate_carve()` calls
 //   `validate_carve_fast()` to block or warn on structurally dangerous carves.
 //   All designation handlers build a `BlueprintOverlay` via

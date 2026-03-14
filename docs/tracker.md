@@ -297,6 +297,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-sim-tab-migrate      Migrate sim entity storage to tabulosity SimDb
 [x] F-spatial-index        Creature spatial index for voxel-level position queries
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
+[x] F-split-sim            Split monolithic sim.rs into domain sub-modules
 [x] F-status-bar           Persistent status bar (population, idle count, active tasks)
 [x] F-struct-basic         Basic structural integrity (flood fill)
 [x] F-struct-names         User-editable structure names
@@ -3316,6 +3317,9 @@ as `SimDb` (16 tables) — see F-sim-tab-migrate.
 **Related:** F-tab-auto-pk, F-tab-cascade-del, F-tab-change-track, F-tab-compound-idx, F-tab-filter-idx, F-tab-joins, F-tab-modify-unchk, F-tab-query-opts, F-tab-schema-evol, F-tab-schema-ver, F-tab-unique-idx
 
 #### F-sim-tab-migrate — Migrate sim entity storage to tabulosity SimDb
+**Status:** Done
+
+#### F-split-sim — Split monolithic sim.rs into domain sub-modules
 **Status:** Done
 
 #### F-tab-auto-pk — Auto-generated primary keys

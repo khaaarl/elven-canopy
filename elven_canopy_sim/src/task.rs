@@ -7,7 +7,7 @@
 // variant-specific data lives in extension tables (`task_blueprint_refs`,
 // `task_structure_refs`, `task_voxel_refs`, `task_haul_data`,
 // `task_sleep_data`, `task_acquire_data`). See `db.rs` for the table
-// definitions and `sim.rs` `insert_task()` for the decomposition logic.
+// definitions and `sim/task_helpers.rs` `insert_task()` for the decomposition logic.
 //
 // The `Task` struct here serves as a **creation DTO**: callers construct a
 // `task::Task` with the full `TaskKind` enum, pass it to `insert_task()`,
@@ -33,14 +33,14 @@
 // ## Task kinds and behavior scripts
 //
 // Each `TaskKind` defines a per-activation behavior script, dispatched via
-// match in `sim.rs` `execute_task_behavior()`:
+// match in `sim/activation.rs` `execute_task_behavior()`:
 //
 // - `GoTo` — walk toward `location`; complete instantly on arrival. Used by
 //   the "Summon Elf" UI button to direct an elf to a clicked location.
 // - `Build { project_id }` — walk to the build site, then do incremental
 //   work. Each activation adds 1.0 to progress; every
 //   `build_work_ticks_per_voxel` units, one blueprint voxel materializes.
-//   Linked to a `Blueprint` via `project_id`. See `sim.rs` `do_build_work()`.
+//   Linked to a `Blueprint` via `project_id`. See `sim/construction.rs` `do_build_work()`.
 // - `EatBread` — eat bread from inventory, restoring food. Created
 //   automatically by the heartbeat hunger check when a creature has owned
 //   bread. Completes instantly at the creature's current node (no travel).
@@ -99,12 +99,12 @@
 // - `Available` — no creature is working on it yet. Idle creatures check for
 //   these during their activation loop.
 // - `InProgress` — at least one creature has claimed it and is walking toward
-//   it or doing work. `find_available_task()` in `sim.rs` skips these, so
+//   it or doing work. `find_available_task()` in `sim/activation.rs` skips these, so
 //   only one creature transitions a task out of `Available`.
 // - `Complete` — finished. All assigned creatures have their `current_task`
 //   cleared and return to wandering.
 //
-// See also: `sim.rs` for the activation loop that executes task behavior and
+// See also: `sim/activation.rs` for the activation loop that executes task behavior and
 // handles assignment/completion, `types.rs` for `TaskId`, `command.rs` for
 // the `CreateTask` command that adds tasks, `sim_bridge.rs` (in the gdext
 // crate) for the GDScript-facing `create_goto_task()` wrapper.
@@ -143,7 +143,7 @@ pub enum SleepLocation {
 }
 
 /// The type of work a task represents. Each variant carries kind-specific data
-/// and defines a behavior script (see `sim.rs` activation loop).
+/// and defines a behavior script (see `sim/activation.rs` activation loop).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum TaskKind {
     /// Walk to a location. Completes instantly on arrival (total_cost = 0).

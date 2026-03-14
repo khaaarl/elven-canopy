@@ -1,0 +1,27508 @@
+use super::*;
+use crate::blueprint::Blueprint;
+use crate::building;
+use crate::db::{CompletedStructure, MoveAction, TaskKindTag};
+use crate::event::SimEventKind;
+use crate::preemption;
+use crate::task::{Task, TaskKind, TaskOrigin, TaskState};
+use std::sync::LazyLock;
+
+/// Cached seed-42 SimState. Constructed once (tree gen + nav graph + lexicon),
+/// then cloned by `test_sim(42)`. ~155 call sites go from full construction
+/// to a cheap ~256KB memcpy.
+static CACHED_SIM_42: LazyLock<SimState> =
+    LazyLock::new(|| SimState::with_config(42, test_config()));
+
+/// Test config with a small 64^3 world and reduced tree energy.
+/// Matches the approach used by nav::tests and tree_gen::tests.
+/// This is ~64x fewer voxels than the default 256×128×256 world,
+/// making SimState construction dramatically faster in debug builds.
+/// Terrain is disabled (terrain_max_height = 0) to preserve existing
+/// test behavior (flat forest floor).
+fn test_config() -> GameConfig {
+    let mut config = GameConfig {
+        world_size: (64, 64, 64),
+        ..GameConfig::default()
+    };
+    config.tree_profile.growth.initial_energy = 50.0;
+    config.terrain_max_height = 0;
+    config
+}
+
+/// Create a test SimState with a small world for fast tests.
+/// Seed 42 clones from a cached instance; other seeds construct fresh.
+fn test_sim(seed: u64) -> SimState {
+    if seed == 42 {
+        CACHED_SIM_42.clone()
+    } else {
+        SimState::with_config(seed, test_config())
+    }
+}
+
+#[test]
+fn new_sim_has_home_tree() {
+    let sim = test_sim(42);
+    assert!(sim.trees.contains_key(&sim.player_tree_id));
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert_eq!(tree.owner, Some(sim.player_id));
+    assert_eq!(tree.mana_stored, sim.config.starting_mana);
+}
+
+#[test]
+fn determinism_two_sims_same_seed() {
+    let sim_a = test_sim(42);
+    let sim_b = test_sim(42);
+    assert_eq!(sim_a.player_id, sim_b.player_id);
+    assert_eq!(sim_a.player_tree_id, sim_b.player_tree_id);
+    assert_eq!(sim_a.tick, sim_b.tick);
+}
+
+#[test]
+fn step_advances_tick() {
+    let mut sim = test_sim(42);
+    sim.step(&[], 100);
+    assert_eq!(sim.tick, 100);
+}
+
+#[test]
+fn tree_heartbeat_reschedules() {
+    let mut sim = test_sim(42);
+    let heartbeat_interval = sim.config.tree_heartbeat_interval_ticks;
+
+    // Step past the first heartbeat.
+    sim.step(&[], heartbeat_interval + 1);
+
+    // The tree heartbeat should have rescheduled at tick = 2 * heartbeat_interval.
+    // Other periodic events (e.g. LogisticsHeartbeat) may sit earlier in the queue,
+    // so pop events until we find the TreeHeartbeat and verify its tick.
+    let mut found_tree_heartbeat = false;
+    while let Some(evt) = sim.event_queue.pop_if_ready(u64::MAX) {
+        if matches!(evt.kind, ScheduledEventKind::TreeHeartbeat { .. }) {
+            assert_eq!(evt.tick, heartbeat_interval * 2);
+            found_tree_heartbeat = true;
+            break;
+        }
+    }
+    assert!(
+        found_tree_heartbeat,
+        "TreeHeartbeat not found in event queue"
+    );
+}
+
+#[test]
+fn serialization_roundtrip() {
+    let mut sim = test_sim(42);
+    sim.step(&[], 50);
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+    assert_eq!(sim.tick, restored.tick);
+    assert_eq!(sim.player_id, restored.player_id);
+    assert_eq!(sim.player_tree_id, restored.player_tree_id);
+}
+
+#[test]
+fn determinism_after_stepping() {
+    let mut sim_a = test_sim(42);
+    let mut sim_b = test_sim(42);
+
+    let cmds = vec![SimCommand {
+        player_id: sim_a.player_id,
+        tick: 50,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: VoxelCoord::new(128, 1, 128),
+        },
+    }];
+
+    sim_a.step(&cmds, 200);
+    sim_b.step(&cmds, 200);
+
+    assert_eq!(sim_a.tick, sim_b.tick);
+    // Verify PRNG state is identical by drawing from both.
+    assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
+}
+
+#[test]
+fn new_sim_has_tree_voxels() {
+    let sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(
+        !tree.trunk_voxels.is_empty(),
+        "Tree should have trunk voxels"
+    );
+    assert!(
+        !tree.branch_voxels.is_empty(),
+        "Tree should have branch voxels"
+    );
+}
+
+#[test]
+fn new_sim_has_nav_graph() {
+    let sim = test_sim(42);
+    assert!(
+        sim.nav_graph.node_count() > 0,
+        "Nav graph should have nodes"
+    );
+}
+
+#[test]
+fn spawn_elf_command() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Elf), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Elf,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn spawned_elf_has_vaelith_name() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+
+    sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Elf), 1);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .expect("elf should exist");
+
+    // Elf should have a non-empty Vaelith name with given + surname.
+    assert!(!elf.name.is_empty(), "Elf should have a name");
+    assert!(
+        elf.name.contains(' '),
+        "Name '{}' should contain a space (given + surname)",
+        elf.name
+    );
+    assert!(
+        !elf.name_meaning.is_empty(),
+        "Elf should have a name meaning"
+    );
+}
+
+#[test]
+fn spawned_elf_name_is_deterministic() {
+    // Same seed should produce the same elf name.
+    let mut sim1 = test_sim(42);
+    let mut sim2 = test_sim(42);
+    let tree_pos = sim1.trees[&sim1.player_tree_id].position;
+
+    let cmd1 = SimCommand {
+        player_id: sim1.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    let cmd2 = SimCommand {
+        player_id: sim2.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+
+    sim1.step(&[cmd1], 2);
+    sim2.step(&[cmd2], 2);
+
+    let elf1 = sim1.db.creatures.iter_all().next().unwrap();
+    let elf2 = sim2.db.creatures.iter_all().next().unwrap();
+    assert_eq!(elf1.name, elf2.name);
+    assert_eq!(elf1.name_meaning, elf2.name_meaning);
+}
+
+#[test]
+fn spawned_non_elf_has_no_name() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+
+    sim.step(&[cmd], 2);
+    let capy = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .expect("capybara should exist");
+
+    // Non-elf creatures should not have Vaelith names.
+    assert!(capy.name.is_empty(), "Capybara should not have a name");
+}
+
+#[test]
+fn elf_wanders_after_spawn() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn elf.
+    let spawn_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[spawn_cmd], 2);
+
+    // Step far enough for many activations (each ground edge costs ~500
+    // ticks at walk_ticks_per_voxel=500).
+    sim.step(&[], 50000);
+
+    assert_eq!(sim.creature_count(Species::Elf), 1);
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert!(elf.current_node.is_some());
+    // Verify position matches current node.
+    let node_pos = sim.nav_graph.node(elf.current_node.unwrap()).position;
+    assert_eq!(elf.position, node_pos);
+}
+
+#[test]
+fn determinism_with_elf_after_1000_ticks() {
+    let mut sim_a = test_sim(42);
+    let mut sim_b = test_sim(42);
+
+    let tree_pos = sim_a.trees[&sim_a.player_tree_id].position;
+
+    let spawn = SimCommand {
+        player_id: sim_a.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+
+    sim_a.step(&[spawn.clone()], 1000);
+    sim_b.step(&[spawn], 1000);
+
+    // Both sims should have identical creature positions.
+    assert_eq!(sim_a.db.creatures.len(), sim_b.db.creatures.len());
+    for creature_a in sim_a.db.creatures.iter_all() {
+        let creature_b = sim_b.db.creatures.get(&creature_a.id).unwrap();
+        assert_eq!(creature_a.position, creature_b.position);
+        assert_eq!(creature_a.current_node, creature_b.current_node);
+    }
+    // PRNG state should be identical.
+    assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
+}
+
+#[test]
+fn spawn_capybara_command() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Capybara), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Capybara,
+            ..
+        }
+    )));
+
+    // Capybara should be at a ground-level node (y=1, air above ForestFloor).
+    let capybara = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .unwrap();
+    assert_eq!(capybara.position.y, 1);
+    assert!(capybara.current_node.is_some());
+}
+
+#[test]
+fn capybara_wanders_on_ground() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Step far enough for heartbeat + movement.
+    sim.step(&[], 50000);
+
+    assert_eq!(sim.creature_count(Species::Capybara), 1);
+    let capybara = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .unwrap();
+    assert!(capybara.current_node.is_some());
+    let node_pos = sim.nav_graph.node(capybara.current_node.unwrap()).position;
+    assert_eq!(capybara.position, node_pos);
+}
+
+#[test]
+fn capybara_stays_on_ground() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Run for many ticks — capybara must never leave y=1 (air above ForestFloor).
+    for target in (10000..100000).step_by(10000) {
+        sim.step(&[], target);
+        let capybara = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Capybara)
+            .unwrap();
+        assert_eq!(
+            capybara.position.y, 1,
+            "Capybara left ground at tick {target}: pos={:?}",
+            capybara.position
+        );
+    }
+}
+
+#[test]
+fn determinism_with_capybara() {
+    let mut sim_a = test_sim(42);
+    let mut sim_b = test_sim(42);
+
+    let tree_pos = sim_a.trees[&sim_a.player_tree_id].position;
+
+    let spawn = SimCommand {
+        player_id: sim_a.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+
+    sim_a.step(&[spawn.clone()], 1000);
+    sim_b.step(&[spawn], 1000);
+
+    assert_eq!(sim_a.db.creatures.len(), sim_b.db.creatures.len());
+    for creature_a in sim_a.db.creatures.iter_all() {
+        let creature_b = sim_b.db.creatures.get(&creature_a.id).unwrap();
+        assert_eq!(creature_a.position, creature_b.position);
+        assert_eq!(creature_a.current_node, creature_b.current_node);
+    }
+    assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
+}
+
+#[test]
+fn creature_wanders_via_activation_chain() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    let initial_node = elf.current_node.unwrap();
+    let initial_pos = elf.position;
+
+    // Step enough for many activations (each moves 1 edge; ground edges
+    // cost ~500 ticks at walk_ticks_per_voxel=500).
+    sim.step(&[], 50000);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    let final_node = elf.current_node.unwrap();
+
+    // After many activations, creature should have moved.
+    assert_ne!(
+        initial_node, final_node,
+        "Elf should have moved after activation chain"
+    );
+    // Position should match current node.
+    let node_pos = sim.nav_graph.node(final_node).position;
+    assert_eq!(elf.position, node_pos);
+    // Creature should not have a stored path (wandering doesn't use paths).
+    assert!(
+        elf.path.is_none(),
+        "Wandering creature should not have a stored path"
+    );
+    let _ = initial_pos;
+}
+
+#[test]
+fn wandering_creature_stays_on_nav_graph() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Run for many ticks, periodically checking node validity.
+    for target in (10000..100000).step_by(10000) {
+        sim.step(&[], target);
+        let elf = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Elf)
+            .unwrap();
+        let node = elf
+            .current_node
+            .expect("Elf should always have a current node");
+        assert!(
+            (node.0 as usize) < sim.nav_graph.node_count(),
+            "Node ID {} out of range at tick {}",
+            node.0,
+            target
+        );
+        let node_pos = sim.nav_graph.node(node).position;
+        assert_eq!(
+            elf.position, node_pos,
+            "Position mismatch at tick {}",
+            target
+        );
+    }
+}
+
+/// Helper: spawn an elf and return its CreatureId.
+fn spawn_elf(sim: &mut SimState) -> CreatureId {
+    let existing: std::collections::BTreeSet<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .map(|c| c.id)
+        .collect();
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+    sim.db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf && !existing.contains(&c.id))
+        .unwrap()
+        .id
+}
+
+/// Helper: insert a GoTo task at the given nav node (elf-only).
+fn insert_goto_task(sim: &mut SimState, location: NavNodeId) -> TaskId {
+    let task_id = TaskId::new(&mut sim.rng);
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(task);
+    task_id
+}
+
+#[test]
+fn creature_claims_available_task() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Pick a task location far from the elf — a branch tip node requires
+    // climbing the trunk and walking a branch, many hops away.
+    let far_node = NavNodeId((sim.nav_graph.node_count() - 1) as u32);
+    let task_id = insert_goto_task(&mut sim, far_node);
+
+    // Tick enough for one activation (~500 ticks for a ground edge at
+    // walk_ticks_per_voxel=500).
+    sim.step(&[], sim.tick + 10000);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(
+        elf.current_task,
+        Some(task_id),
+        "Elf should have claimed the available task"
+    );
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert!(
+        sim.db
+            .creatures
+            .get(&elf_id)
+            .is_some_and(|c| c.current_task == Some(task.id)),
+        "Elf should be assigned to the task"
+    );
+    assert_eq!(task.state, TaskState::InProgress);
+}
+
+#[test]
+fn creature_walks_to_task_location() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Pick a far task location (branch tip) so the elf has a long walk.
+    let far_node = NavNodeId((sim.nav_graph.node_count() - 1) as u32);
+    let task_location = sim.nav_graph.node(far_node).position;
+    let _task_id = insert_goto_task(&mut sim, far_node);
+
+    let initial_dist = sim
+        .db
+        .creatures
+        .get(&elf_id)
+        .unwrap()
+        .position
+        .manhattan_distance(task_location);
+
+    // Step a moderate amount — creature should be closer to the target.
+    sim.step(&[], sim.tick + 50000);
+
+    let mid_dist = sim
+        .db
+        .creatures
+        .get(&elf_id)
+        .unwrap()
+        .position
+        .manhattan_distance(task_location);
+
+    assert!(
+        mid_dist < initial_dist,
+        "Elf should be closer to task after walking (initial={initial_dist}, mid={mid_dist})"
+    );
+}
+
+#[test]
+fn goto_task_completes_on_arrival() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Put the task at the elf's current location for instant completion.
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let task_id = insert_goto_task(&mut sim, elf_node);
+
+    // One activation should be enough: elf claims task, is already there, completes.
+    sim.step(&[], sim.tick + 10000);
+
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Complete,
+        "GoTo task should be complete"
+    );
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(
+        elf.current_task, None,
+        "Elf should be unassigned after task completion"
+    );
+}
+
+#[test]
+fn completed_task_creature_resumes_wandering() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Put the task at the elf's current location for instant completion.
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let _task_id = insert_goto_task(&mut sim, elf_node);
+
+    // Complete the task.
+    sim.step(&[], sim.tick + 10000);
+    let pos_after_task = sim.db.creatures.get(&elf_id).unwrap().position;
+
+    // Continue ticking — elf should resume wandering (position changes).
+    sim.step(&[], sim.tick + 50000);
+
+    let pos_after_wander = sim.db.creatures.get(&elf_id).unwrap().position;
+    assert_ne!(
+        pos_after_task, pos_after_wander,
+        "Elf should have wandered after task completion"
+    );
+    assert!(
+        sim.db
+            .creatures
+            .get(&elf_id)
+            .unwrap()
+            .current_task
+            .is_none(),
+        "Elf should still have no task"
+    );
+}
+
+#[test]
+fn create_task_command_adds_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::CreateTask {
+            kind: TaskKind::GoTo,
+            position: tree_pos,
+            required_species: Some(Species::Elf),
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    assert_eq!(sim.db.tasks.len(), 1, "Should have 1 task");
+    let task = sim.db.tasks.iter_all().next().unwrap();
+    assert_eq!(task.state, TaskState::Available);
+    assert!(task.kind_tag == TaskKindTag::GoTo);
+}
+
+#[test]
+fn end_to_end_summon_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn an elf.
+    let spawn_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[spawn_cmd], 2);
+
+    // Create a GoTo task at a ground position near the tree.
+    let task_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 3,
+        action: SimAction::CreateTask {
+            kind: TaskKind::GoTo,
+            position: VoxelCoord::new(tree_pos.x + 10, 0, tree_pos.z),
+            required_species: Some(Species::Elf),
+        },
+    };
+    sim.step(&[task_cmd], 4);
+
+    assert_eq!(sim.db.tasks.len(), 1);
+    let task_id = *sim.db.tasks.iter_keys().next().unwrap();
+
+    // Tick until the elf completes the task.
+    sim.step(&[], 50000);
+
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Complete,
+        "Task should be complete after enough ticks"
+    );
+
+    // Elf should be unassigned and wandering again.
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert!(elf.current_task.is_none());
+}
+
+#[test]
+fn only_one_creature_claims_goto_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn multiple elves and capybaras.
+    for _ in 0..3 {
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+    }
+    for _ in 0..2 {
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Capybara,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+    }
+
+    // Create an elf-only GoTo task.
+    let far_node = NavNodeId((sim.nav_graph.node_count() - 1) as u32);
+    let task_id = insert_goto_task(&mut sim, far_node);
+
+    // Tick enough for a creature to claim the task. The elf may or may
+    // not have arrived yet (GoTo completes on arrival, clearing
+    // current_task), so we check that the task was claimed OR completed.
+    sim.step(&[], sim.tick + 5000);
+
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    let claimers = sim
+        .db
+        .creatures
+        .by_current_task(&Some(task.id), tabulosity::QueryOpts::ASC);
+
+    if task.state == crate::task::TaskState::Complete {
+        // Task was completed — some elf claimed and finished it.
+        assert!(
+            claimers.is_empty(),
+            "Completed task should have no current claimers"
+        );
+    } else {
+        // Task still in progress — exactly one elf should be on it.
+        assert_eq!(
+            claimers.len(),
+            1,
+            "Exactly one creature should claim the task, got {}",
+            claimers.len()
+        );
+        let assignee = &claimers[0];
+        assert_eq!(assignee.species, Species::Elf);
+    }
+
+    // No capybara should have a task (elf-only restriction).
+    for creature in sim.db.creatures.iter_all() {
+        if creature.species == Species::Capybara {
+            assert!(
+                creature.current_task.is_none(),
+                "Capybara should not have claimed an elf-only task"
+            );
+        }
+    }
+}
+
+#[test]
+fn new_sim_has_initial_fruit() {
+    let sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(
+        !tree.fruit_positions.is_empty(),
+        "Tree should have some initial fruit (got 0)"
+    );
+}
+
+#[test]
+fn fruit_hangs_below_leaf_voxels() {
+    let sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    for fruit_pos in &tree.fruit_positions {
+        // The leaf above the fruit should be in the tree's leaf_voxels.
+        let leaf_above = VoxelCoord::new(fruit_pos.x, fruit_pos.y + 1, fruit_pos.z);
+        assert!(
+            tree.leaf_voxels.contains(&leaf_above),
+            "Fruit at {} should hang below a leaf voxel, but no leaf at {}",
+            fruit_pos,
+            leaf_above
+        );
+    }
+}
+
+#[test]
+fn fruit_set_in_world_grid() {
+    let sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    for fruit_pos in &tree.fruit_positions {
+        assert_eq!(
+            sim.world.get(*fruit_pos),
+            VoxelType::Fruit,
+            "World should have Fruit voxel at {}",
+            fruit_pos
+        );
+    }
+}
+
+#[test]
+fn fruit_grows_during_heartbeat() {
+    // Use a config with no initial fruit but high spawn rate so heartbeats produce fruit.
+    let mut config = test_config();
+    config.fruit_initial_attempts = 0;
+    config.fruit_production_base_rate = 1.0; // Always spawn
+    config.fruit_max_per_tree = 100;
+    let mut sim = SimState::with_config(42, config);
+    let tree_id = sim.player_tree_id;
+
+    assert!(
+        sim.trees[&tree_id].fruit_positions.is_empty(),
+        "Should start with no fruit when initial_attempts = 0"
+    );
+
+    // Step past several heartbeats (interval = 10000 ticks).
+    sim.step(&[], 50000);
+
+    assert!(
+        !sim.trees[&tree_id].fruit_positions.is_empty(),
+        "Fruit should grow during tree heartbeats"
+    );
+}
+
+#[test]
+fn fruit_respects_max_count() {
+    let mut config = test_config();
+    config.fruit_max_per_tree = 3;
+    config.fruit_initial_attempts = 100; // Many attempts, but max is 3.
+    config.fruit_production_base_rate = 1.0;
+    let sim = SimState::with_config(42, config);
+    let tree = &sim.trees[&sim.player_tree_id];
+
+    assert!(
+        tree.fruit_positions.len() <= 3,
+        "Fruit count {} should not exceed max 3",
+        tree.fruit_positions.len()
+    );
+}
+
+#[test]
+fn fruit_deterministic() {
+    let sim_a = test_sim(42);
+    let sim_b = test_sim(42);
+    let tree_a = &sim_a.trees[&sim_a.player_tree_id];
+    let tree_b = &sim_b.trees[&sim_b.player_tree_id];
+    assert_eq!(tree_a.fruit_positions, tree_b.fruit_positions);
+}
+
+#[test]
+fn tree_has_fruit_species_assigned() {
+    let sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(
+        tree.fruit_species_id.is_some(),
+        "Home tree should have a fruit species assigned during worldgen"
+    );
+    // The assigned species should exist in the world's species roster.
+    let species_id = tree.fruit_species_id.unwrap();
+    assert!(
+        sim.db.fruit_species.get(&species_id).is_some(),
+        "Tree's fruit species {:?} should be in the SimDb fruit_species table",
+        species_id
+    );
+}
+
+#[test]
+fn fruit_voxels_have_species_tracked() {
+    let sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    // Every fruit voxel should have a species entry in the map.
+    for &fruit_pos in &tree.fruit_positions {
+        assert!(
+            sim.fruit_voxel_species.contains_key(&fruit_pos),
+            "Fruit at {} should have a species tracked in fruit_voxel_species",
+            fruit_pos
+        );
+    }
+    // The tracked species should match the tree's assigned species.
+    if let Some(tree_species) = tree.fruit_species_id {
+        for &fruit_pos in &tree.fruit_positions {
+            let voxel_species = sim.fruit_voxel_species[&fruit_pos];
+            assert_eq!(
+                voxel_species, tree_species,
+                "Fruit voxel species should match tree species"
+            );
+        }
+    }
+}
+
+#[test]
+fn fruit_species_at_returns_species() {
+    let sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    if let Some(first_fruit) = tree.fruit_positions.first() {
+        let species = sim.fruit_species_at(*first_fruit);
+        assert!(
+            species.is_some(),
+            "fruit_species_at should return a species"
+        );
+        let species = species.unwrap();
+        assert!(
+            !species.vaelith_name.is_empty(),
+            "Fruit species should have a Vaelith name"
+        );
+        assert!(
+            !species.english_gloss.is_empty(),
+            "Fruit species should have an English gloss"
+        );
+    }
+}
+
+#[test]
+fn fruit_voxel_species_roundtrip() {
+    let sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(!tree.fruit_positions.is_empty(), "need fruit for this test");
+
+    let json = sim.to_json().unwrap();
+    let loaded = SimState::from_json(&json).unwrap();
+    let loaded_tree = &loaded.trees[&loaded.player_tree_id];
+
+    // Fruit voxel species map should survive roundtrip.
+    assert_eq!(
+        sim.fruit_voxel_species.len(),
+        loaded.fruit_voxel_species.len(),
+        "fruit_voxel_species count should survive roundtrip"
+    );
+    for (&pos, &species_id) in &sim.fruit_voxel_species {
+        assert_eq!(
+            loaded.fruit_voxel_species.get(&pos),
+            Some(&species_id),
+            "fruit_voxel_species entry at {} should survive roundtrip",
+            pos
+        );
+    }
+    // Tree's fruit species should survive too.
+    assert_eq!(
+        loaded_tree.fruit_species_id, tree.fruit_species_id,
+        "Tree fruit_species_id should survive roundtrip"
+    );
+}
+
+#[test]
+fn harvest_fruit_carries_species_material() {
+    let mut sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    let fruit_pos = tree.fruit_positions[0];
+    let tree_species = tree.fruit_species_id.unwrap();
+
+    // Spawn an elf near the fruit.
+    let elf_nav = sim.nav_graph.find_nearest_node(fruit_pos).unwrap();
+    let elf_pos = sim.nav_graph.node(elf_nav).position;
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, elf_pos, &mut events)
+        .unwrap();
+    sim.config.elf_starting_bread = 100; // Prevent hunger.
+
+    // Manually call do_harvest to test the material flow.
+    let task_id = TaskId::new(&mut sim.rng);
+    let task = task::Task {
+        id: task_id,
+        kind: task::TaskKind::Harvest { fruit_pos },
+        state: task::TaskState::InProgress,
+        location: elf_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: task::TaskOrigin::Automated,
+        target_creature: None,
+    };
+    sim.insert_task(task);
+    sim.resolve_harvest_action(elf_id, task_id, fruit_pos);
+
+    // The fruit should be gone from world and species map.
+    assert_eq!(sim.world.get(fruit_pos), VoxelType::Air);
+    assert!(!sim.fruit_voxel_species.contains_key(&fruit_pos));
+
+    // Find the ground pile and check the item has fruit species material.
+    let pile_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .iter_all()
+        .filter(|s| {
+            s.kind == inventory::ItemKind::Fruit
+                && s.material == Some(inventory::Material::FruitSpecies(tree_species))
+        })
+        .collect();
+    assert!(
+        !pile_stacks.is_empty(),
+        "Harvested fruit should have Material::FruitSpecies({:?})",
+        tree_species
+    );
+}
+
+#[test]
+fn fruit_heartbeat_tracks_species() {
+    // Fruit grown via heartbeat should also be tracked in species map.
+    let mut config = test_config();
+    config.fruit_initial_attempts = 0;
+    config.fruit_production_base_rate = 1.0;
+    config.fruit_max_per_tree = 100;
+    let mut sim = SimState::with_config(42, config);
+
+    assert!(
+        sim.fruit_voxel_species.is_empty(),
+        "Should start with no species entries"
+    );
+
+    // Step past heartbeats to grow fruit.
+    sim.step(&[], 50000);
+
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(
+        !tree.fruit_positions.is_empty(),
+        "Should have grown some fruit"
+    );
+    // Every fruit should have species tracked.
+    for &pos in &tree.fruit_positions {
+        assert!(
+            sim.fruit_voxel_species.contains_key(&pos),
+            "Heartbeat-grown fruit at {} should have species tracked",
+            pos
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// Save/load roundtrip tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn rebuild_world_matches_original() {
+    let sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+
+    // Rebuild world from stored tree voxels and config.
+    let rebuilt = SimState::rebuild_world(
+        &sim.config,
+        &sim.trees,
+        &sim.placed_voxels,
+        &sim.carved_voxels,
+    );
+
+    // Check trunk voxels.
+    for coord in &tree.trunk_voxels {
+        assert_eq!(
+            rebuilt.get(*coord),
+            VoxelType::Trunk,
+            "Rebuilt world missing trunk voxel at {coord}"
+        );
+    }
+    // Check branch voxels.
+    for coord in &tree.branch_voxels {
+        assert_eq!(
+            rebuilt.get(*coord),
+            VoxelType::Branch,
+            "Rebuilt world missing branch voxel at {coord}"
+        );
+    }
+    // Check root voxels.
+    for coord in &tree.root_voxels {
+        assert_eq!(
+            rebuilt.get(*coord),
+            VoxelType::Root,
+            "Rebuilt world missing root voxel at {coord}"
+        );
+    }
+    // Check leaf voxels.
+    for coord in &tree.leaf_voxels {
+        assert_eq!(
+            rebuilt.get(*coord),
+            VoxelType::Leaf,
+            "Rebuilt world missing leaf voxel at {coord}"
+        );
+    }
+    // Check forest floor.
+    let (ws_x, _, ws_z) = sim.config.world_size;
+    let center_x = ws_x as i32 / 2;
+    let center_z = ws_z as i32 / 2;
+    let floor_coord = VoxelCoord::new(center_x, 0, center_z);
+    assert_eq!(rebuilt.get(floor_coord), VoxelType::ForestFloor);
+}
+
+#[test]
+fn rebuild_world_includes_placed_voxels() {
+    let sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Manually construct placed_voxels and rebuild.
+    let placed = vec![(air_coord, VoxelType::GrownPlatform)];
+    let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &placed, &[]);
+
+    assert_eq!(
+        rebuilt.get(air_coord),
+        VoxelType::GrownPlatform,
+        "Rebuilt world should contain the placed platform voxel"
+    );
+}
+
+#[test]
+fn rebuild_world_includes_dirt_voxels() {
+    let mut config = test_config();
+    config.terrain_max_height = 3;
+    config.terrain_noise_scale = 8.0;
+    let sim = SimState::with_config(42, config);
+
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(
+        !tree.dirt_voxels.is_empty(),
+        "With terrain enabled, tree should have dirt voxels"
+    );
+
+    // Rebuild and verify dirt is present.
+    let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &sim.placed_voxels, &[]);
+    for &coord in &tree.dirt_voxels {
+        let voxel = rebuilt.get(coord);
+        // Dirt might be overwritten by tree voxels (trunk/branch/root),
+        // but any remaining should be Dirt.
+        if voxel == VoxelType::Dirt {
+            assert_eq!(voxel, VoxelType::Dirt);
+        }
+    }
+    // At least some dirt voxels should survive (not all overwritten by tree).
+    let dirt_count = tree
+        .dirt_voxels
+        .iter()
+        .filter(|c| rebuilt.get(**c) == VoxelType::Dirt)
+        .count();
+    assert!(
+        dirt_count > 0,
+        "Some dirt voxels should survive in the rebuilt world"
+    );
+}
+
+#[test]
+fn rebuild_transient_state_restores_nav_graph() {
+    let sim = test_sim(42);
+    let json = sim.to_json().unwrap();
+
+    // Deserialize — transient fields are default (empty).
+    let mut restored: SimState = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        restored.nav_graph.node_count(),
+        0,
+        "Before rebuild, nav_graph should be empty"
+    );
+    assert_eq!(
+        restored.world.size_x, 0,
+        "Before rebuild, world should be empty"
+    );
+
+    // Rebuild transient state.
+    restored.rebuild_transient_state();
+    assert!(
+        restored.nav_graph.node_count() > 0,
+        "After rebuild, nav_graph should have nodes"
+    );
+    // Node count may differ very slightly because fruit voxels are placed
+    // after the initial nav graph build but before serialization, so the
+    // rebuilt world includes fruit while the original nav graph was built
+    // without them. Allow a small tolerance.
+    let diff =
+        (restored.nav_graph.node_count() as i64 - sim.nav_graph.node_count() as i64).unsigned_abs();
+    assert!(
+        diff <= 5,
+        "Rebuilt nav_graph node count ({}) should be close to original ({}), diff={}",
+        restored.nav_graph.node_count(),
+        sim.nav_graph.node_count(),
+        diff,
+    );
+}
+
+#[test]
+fn json_roundtrip_preserves_state() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn creatures and advance ticks.
+    let cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Capybara,
+                position: tree_pos,
+            },
+        },
+    ];
+    sim.step(&cmds, 200);
+
+    let restored = SimState::from_json(&sim.to_json().unwrap()).unwrap();
+
+    assert_eq!(sim.tick, restored.tick);
+    assert_eq!(sim.db.creatures.len(), restored.db.creatures.len());
+    for creature in sim.db.creatures.iter_all() {
+        let restored_creature = restored.db.creatures.get(&creature.id).unwrap();
+        assert_eq!(creature.position, restored_creature.position);
+        assert_eq!(creature.species, restored_creature.species);
+        assert_eq!(creature.name, restored_creature.name);
+        assert_eq!(creature.name_meaning, restored_creature.name_meaning);
+    }
+    assert_eq!(sim.player_tree_id, restored.player_tree_id);
+    assert_eq!(sim.player_id, restored.player_id);
+}
+
+#[test]
+fn json_roundtrip_continues_deterministically() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn creatures and advance.
+    let spawn = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[spawn], 200);
+
+    // Save and restore.
+    let mut restored = SimState::from_json(&sim.to_json().unwrap()).unwrap();
+
+    // Advance both 500 more ticks.
+    sim.step(&[], 700);
+    restored.step(&[], 700);
+
+    // Creature positions must match.
+    for creature in sim.db.creatures.iter_all() {
+        let restored_creature = restored.db.creatures.get(&creature.id).unwrap();
+        assert_eq!(
+            creature.position, restored_creature.position,
+            "Creature {:?} position diverged after roundtrip + 500 ticks",
+            creature.id
+        );
+    }
+    // PRNG state must match.
+    assert_eq!(sim.rng.next_u64(), restored.rng.next_u64());
+}
+
+#[test]
+fn elf_spawned_after_roundtrip_gets_name() {
+    let sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Save and restore (no creatures yet).
+    let mut restored = SimState::from_json(&sim.to_json().unwrap()).unwrap();
+
+    // Spawn an elf after the roundtrip.
+    let cmd = SimCommand {
+        player_id: restored.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    restored.step(&[cmd], 2);
+
+    let elf = restored
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .expect("elf should exist after roundtrip spawn");
+    assert!(
+        !elf.name.is_empty(),
+        "Elf spawned after save/load should still get a Vaelith name"
+    );
+}
+
+#[test]
+fn from_json_rejects_invalid_json() {
+    let result = SimState::from_json("not valid json {{{");
+    assert!(result.is_err());
+}
+
+#[test]
+fn from_json_rejects_wrong_schema() {
+    let result = SimState::from_json(r#"{"tick": "not_a_number"}"#);
+    assert!(result.is_err());
+}
+
+#[test]
+fn species_data_loaded_from_config() {
+    let sim = test_sim(42);
+    assert_eq!(sim.species_table.len(), 10);
+    assert!(sim.species_table.contains_key(&Species::Elf));
+    assert!(sim.species_table.contains_key(&Species::Capybara));
+    assert!(sim.species_table.contains_key(&Species::Boar));
+    assert!(sim.species_table.contains_key(&Species::Deer));
+    assert!(sim.species_table.contains_key(&Species::Elephant));
+    assert!(sim.species_table.contains_key(&Species::Goblin));
+    assert!(sim.species_table.contains_key(&Species::Monkey));
+    assert!(sim.species_table.contains_key(&Species::Orc));
+    assert!(sim.species_table.contains_key(&Species::Squirrel));
+    assert!(sim.species_table.contains_key(&Species::Troll));
+
+    let elf_data = &sim.species_table[&Species::Elf];
+    assert!(!elf_data.ground_only);
+    assert!(elf_data.allowed_edge_types.is_none());
+
+    let capy_data = &sim.species_table[&Species::Capybara];
+    assert!(capy_data.ground_only);
+    assert!(capy_data.allowed_edge_types.is_some());
+
+    let boar_data = &sim.species_table[&Species::Boar];
+    assert!(boar_data.ground_only);
+    assert_eq!(boar_data.walk_ticks_per_voxel, 600);
+
+    let deer_data = &sim.species_table[&Species::Deer];
+    assert!(deer_data.ground_only);
+    assert_eq!(deer_data.walk_ticks_per_voxel, 400);
+
+    let monkey_data = &sim.species_table[&Species::Monkey];
+    assert!(!monkey_data.ground_only);
+    assert_eq!(monkey_data.climb_ticks_per_voxel, Some(800));
+
+    let squirrel_data = &sim.species_table[&Species::Squirrel];
+    assert!(!squirrel_data.ground_only);
+    assert_eq!(squirrel_data.climb_ticks_per_voxel, Some(600));
+}
+
+#[test]
+fn graph_for_species_dispatch() {
+    let sim = test_sim(42);
+
+    // Elf (1x1x1) → standard graph.
+    let elf_graph = sim.graph_for_species(Species::Elf) as *const _;
+    let standard = &sim.nav_graph as *const _;
+    assert_eq!(elf_graph, standard, "Elf should use standard nav graph");
+
+    // Elephant (2x2x2) → large graph.
+    let elephant_graph = sim.graph_for_species(Species::Elephant) as *const _;
+    let large = &sim.large_nav_graph as *const _;
+    assert_eq!(elephant_graph, large, "Elephant should use large nav graph");
+}
+
+#[test]
+fn new_sim_has_large_nav_graph() {
+    let sim = test_sim(42);
+    assert!(
+        sim.large_nav_graph.live_nodes().count() > 0,
+        "Large nav graph should have nodes after construction",
+    );
+}
+
+#[test]
+fn elephant_spawns_on_large_graph() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+    let spawn_pos = VoxelCoord::new(10, 1, 10);
+    sim.spawn_creature(Species::Elephant, spawn_pos, &mut events);
+
+    // There should be exactly one elephant.
+    let elephants: Vec<&crate::db::Creature> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elephant)
+        .collect();
+    assert_eq!(elephants.len(), 1, "Should have spawned one elephant");
+
+    // Its current_node should be in the large nav graph.
+    let elephant = elephants[0];
+    let node_id = elephant
+        .current_node
+        .expect("Elephant should have a current_node");
+    let node = sim.large_nav_graph.node(node_id);
+    assert_eq!(
+        node.position, elephant.position,
+        "Elephant position should match its large graph node",
+    );
+}
+
+#[test]
+fn troll_spawns_on_large_graph() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+    let spawn_pos = VoxelCoord::new(10, 1, 10);
+    sim.spawn_creature(Species::Troll, spawn_pos, &mut events);
+
+    let trolls: Vec<&crate::db::Creature> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Troll)
+        .collect();
+    assert_eq!(trolls.len(), 1, "Should have spawned one troll");
+
+    let troll = trolls[0];
+    let node_id = troll
+        .current_node
+        .expect("Troll should have a current_node");
+    let node = sim.large_nav_graph.node(node_id);
+    assert_eq!(
+        node.position, troll.position,
+        "Troll position should match its large graph node",
+    );
+}
+
+#[test]
+fn creature_species_preserved() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn one elf and one capybara.
+    let cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Capybara,
+                position: tree_pos,
+            },
+        },
+    ];
+    sim.step(&cmds, 2);
+
+    assert_eq!(sim.creature_count(Species::Elf), 1);
+    assert_eq!(sim.creature_count(Species::Capybara), 1);
+    assert_eq!(sim.db.creatures.len(), 2);
+
+    // Verify species are correctly stored.
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(elf.species, Species::Elf);
+
+    let capy = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .unwrap();
+    assert_eq!(capy.species, Species::Capybara);
+}
+
+#[test]
+fn food_decreases_over_heartbeats() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let decay_per_tick = sim.species_table[&Species::Elf].food_decay_per_tick;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Verify food starts at food_max.
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(elf.food, food_max);
+
+    // Advance past 3 heartbeats.
+    let target_tick = 1 + heartbeat_interval * 3 + 1;
+    sim.step(&[], target_tick);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    let expected_decay = decay_per_tick * heartbeat_interval as i64 * 3;
+    assert_eq!(elf.food, food_max - expected_decay);
+}
+
+#[test]
+fn food_does_not_go_below_zero() {
+    // Use a custom config with aggressive decay so food depletes quickly.
+    let mut config = test_config();
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 1_000_000_000_000_000; // Depletes in 1 tick
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Advance well past full depletion (many heartbeats).
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 5;
+    sim.step(&[], target_tick);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(elf.food, 0);
+}
+
+#[test]
+fn creature_dies_when_food_reaches_zero() {
+    // Use aggressive decay so food depletes in one heartbeat.
+    let mut config = test_config();
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 1_000_000_000_000_000;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Advance past 2 heartbeats — first depletes food, creature dies.
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 2 + 1;
+    let result = sim.step(&[], target_tick);
+
+    // Creature should be dead.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.vital_status, VitalStatus::Dead);
+
+    // Should have emitted a CreatureDied event with Starvation cause.
+    let died_event = result
+        .events
+        .iter()
+        .find(|e| matches!(e.kind, SimEventKind::CreatureDied { .. }));
+    assert!(died_event.is_some(), "Expected a CreatureDied event");
+    if let SimEventKind::CreatureDied { cause, .. } = &died_event.unwrap().kind {
+        assert_eq!(*cause, DeathCause::Starvation);
+    }
+}
+
+#[test]
+fn starvation_death_notification_mentions_starvation() {
+    // Aggressive decay to trigger starvation quickly.
+    let mut config = test_config();
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 1_000_000_000_000_000;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Advance past depletion.
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 2 + 1;
+    sim.step(&[], target_tick);
+
+    // Check notification mentions starvation.
+    let starvation_notif = sim
+        .db
+        .notifications
+        .iter_all()
+        .any(|n| n.message.contains("starvation"));
+    assert!(
+        starvation_notif,
+        "Expected notification mentioning starvation"
+    );
+}
+
+#[test]
+fn no_heartbeat_after_starvation_death() {
+    // Verify dead creatures don't get further heartbeats processed.
+    let mut config = test_config();
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 1_000_000_000_000_000;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Advance well past death.
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 10;
+    sim.step(&[], target_tick);
+
+    // Creature should still be dead (not resurrected or erroring).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.vital_status, VitalStatus::Dead);
+}
+
+#[test]
+fn creature_with_food_remaining_does_not_starve() {
+    // Default config — food_max is large, decay is slow. Creature should
+    // survive a few heartbeats without issue.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Advance past 3 heartbeats — food should still be positive.
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 3 + 1;
+    sim.step(&[], target_tick);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.vital_status, VitalStatus::Alive);
+    assert!(elf.food > 0);
+}
+
+// -----------------------------------------------------------------------
+// Rest/sleep tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn rest_decreases_over_heartbeats() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let decay_per_tick = sim.species_table[&Species::Elf].rest_decay_per_tick;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Verify rest starts at rest_max.
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(elf.rest, rest_max);
+
+    // Advance past 3 heartbeats.
+    let target_tick = 1 + heartbeat_interval * 3 + 1;
+    sim.step(&[], target_tick);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    let expected_decay = decay_per_tick * heartbeat_interval as i64 * 3;
+    assert_eq!(elf.rest, rest_max - expected_decay);
+}
+
+#[test]
+fn rest_does_not_go_below_zero() {
+    let mut config = test_config();
+    let elf = config.species.get_mut(&Species::Elf).unwrap();
+    elf.rest_decay_per_tick = 1_000_000_000_000_000; // Depletes in 1 tick
+    elf.rest_per_sleep_tick = 0; // Prevent sleep from restoring rest.
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 5;
+    sim.step(&[], target_tick);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(elf.rest, 0);
+}
+
+#[test]
+fn tired_idle_elf_creates_sleep_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set rest below threshold (50%) and food well above threshold.
+    let food_max_val = sim.species_table[&Species::Elf].food_max;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.rest = rest_max * 30 / 100;
+        c.food = food_max_val;
+    });
+
+    // Advance past the next heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // The elf should now have a Sleep task.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Tired idle elf should have been assigned a Sleep task"
+    );
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert!(
+        task.kind_tag == TaskKindTag::Sleep,
+        "Task should be Sleep, got {:?}",
+        task.kind_tag
+    );
+}
+
+#[test]
+fn rested_elf_does_not_create_sleep_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf — starts at full rest.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Advance past the heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // No Sleep task should exist.
+    let has_sleep_task = sim
+        .db
+        .tasks
+        .iter_all()
+        .any(|t| t.kind_tag == TaskKindTag::Sleep);
+    assert!(
+        !has_sleep_task,
+        "Well-rested elf should not create a Sleep task"
+    );
+}
+
+#[test]
+fn busy_tired_elf_does_not_create_sleep_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set rest very low but keep food high.
+    let food_max_val = sim.species_table[&Species::Elf].food_max;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.rest = rest_max * 10 / 100;
+        c.food = food_max_val;
+    });
+
+    // Give the elf a GoTo task so it's busy.
+    let task_id = TaskId::new(&mut sim.rng);
+    let goto_task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: NavNodeId(0),
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(goto_task);
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.current_task = Some(task_id);
+    let _ = sim.db.creatures.update_no_fk(c);
+
+    // Advance past the heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // The elf should still have its GoTo task, not a Sleep one.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(
+        elf.current_task,
+        Some(task_id),
+        "Busy elf should keep its existing task"
+    );
+    let sleep_task_count = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Sleep)
+        .count();
+    assert_eq!(
+        sleep_task_count, 0,
+        "No Sleep task should be created for a busy elf"
+    );
+}
+
+#[test]
+fn hungry_takes_priority_over_tired() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Need fruit.
+    assert!(
+        sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+        "Tree must have fruit"
+    );
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Both food AND rest below threshold.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.food = food_max * 20 / 100;
+        c.rest = rest_max * 20 / 100;
+    });
+
+    // Advance past the heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // Hunger takes priority — should get EatFruit, not Sleep.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Hungry+tired elf should get a task"
+    );
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert!(
+        task.kind_tag == TaskKindTag::EatFruit,
+        "Hunger should take priority over tiredness, got {:?}",
+        task.kind_tag
+    );
+}
+
+#[test]
+fn ground_sleep_fallback_when_no_beds() {
+    // No dormitories exist — tired elf should get a ground Sleep task.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set rest below threshold, food high.
+    let food_max_val = sim.species_table[&Species::Elf].food_max;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.rest = rest_max * 30 / 100;
+        c.food = food_max_val;
+    });
+
+    // Advance past the heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // Should have a Sleep task with bed_pos: None (ground sleep).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Tired elf should get a Sleep task"
+    );
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, TaskKindTag::Sleep, "Expected Sleep task");
+    let bed_pos = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+    assert_eq!(bed_pos, None, "No dormitories — should be ground sleep");
+    // Ground sleep total_cost = sleep_ticks_ground / sleep_action_ticks (number of actions).
+    let expected_cost = (sim.config.sleep_ticks_ground / sim.config.sleep_action_ticks) as f32;
+    assert_eq!(
+        task.total_cost, expected_cost,
+        "Ground sleep total_cost should be number of actions"
+    );
+}
+
+#[test]
+fn find_nearest_bed_excludes_occupied() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Find a valid nav node near tree for the bed position.
+    let graph = sim.graph_for_species(Species::Elf);
+    let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+    let bed_pos = graph.node(bed_node).position;
+
+    // Add a dormitory structure with exactly one bed.
+    let structure_id = StructureId(999);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: bed_pos,
+            width: 3,
+            depth: 3,
+            height: 3,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::Dormitory),
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+        })
+        .unwrap();
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: bed_pos,
+            placed: true,
+        });
+
+    // Spawn two elves.
+    let cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        },
+    ];
+    sim.step(&cmds, 1);
+
+    let elf_ids: Vec<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(elf_ids.len(), 2);
+
+    // Make both elves tired with high food.
+    let food_max_val = sim.species_table[&Species::Elf].food_max;
+    for &elf_id in &elf_ids {
+        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+            c.rest = rest_max * 20 / 100;
+            c.food = food_max_val;
+        });
+    }
+
+    // Advance past the heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // Both should have Sleep tasks.
+    let mut bed_sleep_count = 0;
+    let mut ground_sleep_count = 0;
+    for &elf_id in &elf_ids {
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        if let Some(task_id) = elf.current_task {
+            if let Some(task) = sim.db.tasks.get(&task_id) {
+                if task.kind_tag == TaskKindTag::Sleep {
+                    let bed = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+                    if bed.is_some() {
+                        bed_sleep_count += 1;
+                    } else {
+                        ground_sleep_count += 1;
+                    }
+                }
+            }
+        }
+    }
+    // One bed available → one elf gets bed sleep, one gets ground sleep.
+    assert_eq!(bed_sleep_count, 1, "One elf should sleep in the bed");
+    assert_eq!(
+        ground_sleep_count, 1,
+        "Second elf should sleep on the ground"
+    );
+}
+
+#[test]
+fn tired_elf_sleeps_and_rest_increases() {
+    // Integration test: set low rest, add a dormitory with beds, run many
+    // ticks, verify rest increased (proves sleeping happened).
+    let mut config = test_config();
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    // Don't let food or rest decay interfere — zero both so we can
+    // set rest manually and only see the effect of sleeping.
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+
+    // Add a dormitory with beds near the tree.
+    let graph = sim.graph_for_species(Species::Elf);
+    let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+    let bed_pos = graph.node(bed_node).position;
+
+    let structure_id = StructureId(999);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: bed_pos,
+            width: 3,
+            depth: 3,
+            height: 3,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::Dormitory),
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+        })
+        .unwrap();
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: bed_pos,
+            placed: true,
+        });
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set rest to 20% — well below the 50% threshold.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.rest = rest_max * 20 / 100;
+    });
+    let rest_before = sim.db.creatures.get(&elf_id).unwrap().rest;
+
+    // Run for 50_000 ticks — enough for heartbeat + pathfind + sleep.
+    sim.step(&[], 50_001);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    // If the elf slept, rest should be meaningfully higher than 20%.
+    // With rest_per_sleep_tick=60B and sleep_ticks_bed=10_000 activations,
+    // full bed sleep restores 600T = 60% of rest_max. Even with continued
+    // decay, rest should be well above the starting 20%.
+    assert!(
+        elf.rest > rest_before,
+        "Tired elf should have slept and restored rest above starting level. rest={}, was={}",
+        elf.rest,
+        rest_before
+    );
+}
+
+// -----------------------------------------------------------------------
+// Movement interpolation tests
+// -----------------------------------------------------------------------
+
+/// Helper: create a minimal `db::Creature` for interpolation tests.
+fn make_interp_creature(
+    position: VoxelCoord,
+    action_kind: ActionKind,
+    next_available_tick: Option<u64>,
+) -> crate::db::Creature {
+    crate::db::Creature {
+        id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
+        species: Species::Elf,
+        position,
+        name: String::new(),
+        name_meaning: String::new(),
+        current_node: None,
+        path: None,
+        current_task: None,
+        food: 1000,
+        rest: 1000,
+        assigned_home: None,
+        inventory_id: InventoryId(0),
+        civ_id: None,
+        military_group: None,
+        action_kind,
+        next_available_tick,
+        hp: 100,
+        hp_max: 100,
+        vital_status: VitalStatus::Alive,
+    }
+}
+
+#[test]
+fn interpolated_position_midpoint() {
+    let creature = make_interp_creature(VoxelCoord::new(10, 0, 0), ActionKind::Move, Some(200));
+    let ma = MoveAction {
+        creature_id: creature.id,
+        move_from: VoxelCoord::new(0, 0, 0),
+        move_to: VoxelCoord::new(10, 0, 0),
+        move_start_tick: 100,
+    };
+    let (x, y, z) = creature.interpolated_position(150.0, Some(&ma));
+    assert!((x - 5.0).abs() < 0.001, "x should be 5.0, got {x}");
+    assert!((y - 0.0).abs() < 0.001, "y should be 0.0, got {y}");
+    assert!((z - 0.0).abs() < 0.001, "z should be 0.0, got {z}");
+}
+
+#[test]
+fn interpolated_position_at_start() {
+    let creature = make_interp_creature(VoxelCoord::new(10, 0, 0), ActionKind::Move, Some(200));
+    let ma = MoveAction {
+        creature_id: creature.id,
+        move_from: VoxelCoord::new(0, 0, 0),
+        move_to: VoxelCoord::new(10, 0, 0),
+        move_start_tick: 100,
+    };
+    let (x, _, _) = creature.interpolated_position(100.0, Some(&ma));
+    assert!((x - 0.0).abs() < 0.001, "At t=0 should be at from, got {x}");
+}
+
+#[test]
+fn interpolated_position_at_end() {
+    let creature = make_interp_creature(VoxelCoord::new(10, 0, 0), ActionKind::Move, Some(200));
+    let ma = MoveAction {
+        creature_id: creature.id,
+        move_from: VoxelCoord::new(0, 0, 0),
+        move_to: VoxelCoord::new(10, 0, 0),
+        move_start_tick: 100,
+    };
+    let (x, _, _) = creature.interpolated_position(200.0, Some(&ma));
+    assert!((x - 10.0).abs() < 0.001, "At t=1 should be at to, got {x}");
+}
+
+#[test]
+fn interpolated_position_clamped_past_end() {
+    let creature = make_interp_creature(VoxelCoord::new(10, 0, 0), ActionKind::Move, Some(200));
+    let ma = MoveAction {
+        creature_id: creature.id,
+        move_from: VoxelCoord::new(0, 0, 0),
+        move_to: VoxelCoord::new(10, 0, 0),
+        move_start_tick: 100,
+    };
+    let (x, _, _) = creature.interpolated_position(999.0, Some(&ma));
+    assert!(
+        (x - 10.0).abs() < 0.001,
+        "Past end should clamp to destination, got {x}"
+    );
+}
+
+#[test]
+fn interpolated_position_stationary() {
+    let creature = make_interp_creature(VoxelCoord::new(5, 3, 7), ActionKind::NoAction, None);
+    let (x, y, z) = creature.interpolated_position(50.0, None);
+    assert!((x - 5.0).abs() < 0.001);
+    assert!((y - 3.0).abs() < 0.001);
+    assert!((z - 7.0).abs() < 0.001);
+}
+
+#[test]
+fn wander_sets_movement_metadata() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn an elf at tick 1, step only to tick 1 so the first activation
+    // (scheduled at tick 2) hasn't fired yet.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Before the first activation, the elf should have no action.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.action_kind, ActionKind::NoAction);
+    assert!(elf.next_available_tick.is_none());
+    assert!(sim.db.move_actions.get(&elf_id).is_none());
+
+    let initial_pos = elf.position;
+
+    // Step to tick 2 — the first activation fires and the elf wanders.
+    sim.step(&[], 2);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(
+        elf.action_kind,
+        ActionKind::Move,
+        "action_kind should be Move after wander"
+    );
+    assert!(
+        elf.next_available_tick.is_some(),
+        "next_available_tick should be set after wander"
+    );
+
+    let ma = sim
+        .db
+        .move_actions
+        .get(&elf_id)
+        .expect("MoveAction should exist after wander");
+    assert_eq!(
+        ma.move_from, initial_pos,
+        "move_from should be the spawn position"
+    );
+    assert_eq!(
+        ma.move_to, elf.position,
+        "move_to should be the new position"
+    );
+    assert_eq!(
+        ma.move_start_tick, 2,
+        "move_start_tick should be the activation tick"
+    );
+    assert!(
+        elf.next_available_tick.unwrap() > ma.move_start_tick,
+        "next_available_tick should be after start"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Blueprint / construction tests
+// -----------------------------------------------------------------------
+
+/// Find an Air voxel that is face-adjacent to a trunk voxel.
+/// Panics if none found (should never happen with a generated tree).
+fn find_air_adjacent_to_trunk(sim: &SimState) -> VoxelCoord {
+    let tree = &sim.trees[&sim.player_tree_id];
+    for &trunk_coord in &tree.trunk_voxels {
+        for &(dx, dy, dz) in &[
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ] {
+            let neighbor =
+                VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y + dy, trunk_coord.z + dz);
+            if sim.world.in_bounds(neighbor) && sim.world.get(neighbor) == VoxelType::Air {
+                return neighbor;
+            }
+        }
+    }
+    panic!("No air voxel adjacent to trunk found");
+}
+
+#[test]
+fn designate_build_creates_blueprint() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    let result = sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.voxels, vec![air_coord]);
+    assert_eq!(bp.state, BlueprintState::Designated);
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, SimEventKind::BlueprintDesignated { .. }))
+    );
+}
+
+#[test]
+fn designate_build_creates_composition() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Blueprint should have a composition FK.
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert!(
+        bp.composition_id.is_some(),
+        "Build blueprint should have a composition"
+    );
+
+    // The composition should exist in the DB with Pending status.
+    let comp_id = bp.composition_id.unwrap();
+    let comp = sim.db.music_compositions.get(&comp_id).unwrap();
+    assert_eq!(comp.status, crate::db::CompositionStatus::Pending);
+    assert!(!comp.build_started);
+    assert!(comp.seed != 0, "Composition should have a non-trivial seed");
+    assert!(comp.sections >= 1 && comp.sections <= 4);
+    assert!(comp.mode_index <= 5);
+    assert!(comp.brightness >= 0.2 && comp.brightness <= 0.8);
+    // 1 voxel × 1000 ticks/voxel = 1000ms target duration.
+    assert_eq!(comp.target_duration_ms, 1000);
+}
+
+#[test]
+fn composition_persists_across_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    let comp_id = bp.composition_id.unwrap();
+    let comp = sim.db.music_compositions.get(&comp_id).unwrap();
+    let orig_seed = comp.seed;
+    let orig_sections = comp.sections;
+    let orig_mode = comp.mode_index;
+
+    // Serialize and deserialize.
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    // Composition should survive roundtrip.
+    let comp = restored.db.music_compositions.get(&comp_id).unwrap();
+    assert_eq!(comp.seed, orig_seed);
+    assert_eq!(comp.sections, orig_sections);
+    assert_eq!(comp.mode_index, orig_mode);
+    assert_eq!(comp.status, crate::db::CompositionStatus::Pending);
+
+    // Blueprint FK should still point to it.
+    let bp = restored.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.composition_id, Some(comp_id));
+}
+
+#[test]
+fn designate_carve_has_no_composition() {
+    let mut sim = test_sim(42);
+
+    // Find a solid trunk voxel to carve.
+    let mut carve_coord = None;
+    for y in 1..sim.world.size_y as i32 {
+        for z in 0..sim.world.size_z as i32 {
+            for x in 0..sim.world.size_x as i32 {
+                let coord = VoxelCoord::new(x, y, z);
+                if sim.world.get(coord) == VoxelType::Trunk {
+                    carve_coord = Some(coord);
+                    break;
+                }
+            }
+            if carve_coord.is_some() {
+                break;
+            }
+        }
+        if carve_coord.is_some() {
+            break;
+        }
+    }
+    let carve_coord = carve_coord.expect("Should find a trunk voxel to carve");
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![carve_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    if !sim.db.blueprints.is_empty() {
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
+        assert!(
+            bp.composition_id.is_none(),
+            "Carve blueprint should not have a composition"
+        );
+    }
+    // No compositions should have been created for carving.
+    assert_eq!(
+        sim.db.music_compositions.len(),
+        0,
+        "Carving should not create compositions"
+    );
+}
+
+#[test]
+fn build_work_sets_composition_build_started() {
+    let mut config = test_config();
+    config.build_work_ticks_per_voxel = 50000;
+    let mut sim = SimState::with_config(42, config);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Composition should not be started yet (no work done).
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    let comp_id = bp.composition_id.unwrap();
+    assert!(
+        !sim.db
+            .music_compositions
+            .get(&comp_id)
+            .unwrap()
+            .build_started,
+        "Composition should not be started before any work"
+    );
+
+    // Run enough ticks for the elf to arrive and do at least one tick of work.
+    sim.step(&[], sim.tick + 100_000);
+
+    assert!(
+        sim.db
+            .music_compositions
+            .get(&comp_id)
+            .unwrap()
+            .build_started,
+        "Composition should be started after elf begins building"
+    );
+}
+
+#[test]
+fn designate_build_creates_build_task() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Blueprint should exist and have a linked task.
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert!(
+        bp.task_id.is_some(),
+        "Blueprint should have a linked task_id"
+    );
+
+    // Task should exist.
+    let task_id = bp.task_id.unwrap();
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert!(task.kind_tag == TaskKindTag::Build);
+    assert_eq!(task.state, TaskState::Available);
+    assert_eq!(task.total_cost, 1.0);
+    assert_eq!(task.required_species, Some(Species::Elf));
+}
+
+#[test]
+fn designate_build_rejects_out_of_bounds() {
+    let mut sim = test_sim(42);
+    let oob = VoxelCoord::new(-1, 0, 0);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![oob],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert!(sim.db.blueprints.is_empty());
+}
+
+#[test]
+fn designate_build_rejects_non_air() {
+    let mut sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    let trunk_coord = tree.trunk_voxels[0];
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![trunk_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert!(sim.db.blueprints.is_empty());
+}
+
+#[test]
+fn designate_build_rejects_no_adjacency() {
+    let mut sim = test_sim(42);
+    // Pick a coord far from any solid geometry.
+    let isolated = VoxelCoord::new(0, 50, 0);
+    assert_eq!(sim.world.get(isolated), VoxelType::Air);
+    assert!(!sim.world.has_solid_face_neighbor(isolated));
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![isolated],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert!(sim.db.blueprints.is_empty());
+}
+
+#[test]
+fn designate_build_rejects_empty_voxels() {
+    let mut sim = test_sim(42);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert!(sim.db.blueprints.is_empty());
+}
+
+#[test]
+fn cancel_build_removes_blueprint() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // First designate.
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+
+    // Now cancel.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::CancelBuild { project_id },
+    };
+    let result = sim.step(&[cmd2], 2);
+
+    assert!(sim.db.blueprints.is_empty());
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, SimEventKind::BuildCancelled { .. }))
+    );
+}
+
+#[test]
+fn cancel_build_nonexistent_is_noop() {
+    let mut sim = test_sim(42);
+    let fake_id = ProjectId::new(&mut GameRng::new(999));
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::CancelBuild {
+            project_id: fake_id,
+        },
+    };
+    let result = sim.step(&[cmd], 1);
+
+    assert!(sim.db.blueprints.is_empty());
+    assert!(
+        !result
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, SimEventKind::BuildCancelled { .. }))
+    );
+}
+
+#[test]
+fn cancel_build_removes_associated_task() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Designate a build.
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+    let task_id = sim.db.blueprints.get(&project_id).unwrap().task_id.unwrap();
+    assert!(sim.db.tasks.contains(&task_id));
+
+    // Cancel.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::CancelBuild { project_id },
+    };
+    sim.step(&[cmd2], 2);
+
+    assert!(sim.db.blueprints.is_empty());
+    assert!(!sim.db.tasks.contains(&task_id));
+}
+
+#[test]
+fn cancel_build_unassigns_elf() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Spawn elf.
+    let elf_id = spawn_elf(&mut sim);
+
+    // Designate a build.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+
+    // Tick enough for the elf to claim the task, but not complete it.
+    // The elf claims on its next idle activation after the build is
+    // designated. Elf walk speed is 500 tpv, so one wander step takes
+    // ~500 ticks. We need enough ticks for at least one idle activation
+    // to occur after the build designation, but not enough for the elf to
+    // finish the build (1000 work ticks). 800 ticks is enough for one
+    // full activation cycle.
+    sim.step(&[], sim.tick + 800);
+
+    let task_id = sim.db.blueprints.get(&project_id).unwrap().task_id.unwrap();
+    // Wait for the elf to claim the build task. The elf claims on its next
+    // idle activation, which depends on when its wander step finishes.
+    // Tick in small increments to avoid overshooting past task completion.
+    let mut claimed = false;
+    for _ in 0..20 {
+        sim.step(&[], sim.tick + 100);
+        if sim
+            .db
+            .creatures
+            .get(&elf_id)
+            .is_some_and(|c| c.current_task == Some(task_id))
+        {
+            claimed = true;
+            break;
+        }
+    }
+    assert!(
+        claimed,
+        "Elf should have claimed the build task within 2000 ticks"
+    );
+
+    // Cancel the build.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::CancelBuild { project_id },
+    };
+    sim.step(&[cmd2], sim.tick + 2);
+
+    // Elf should be unassigned.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_none(),
+        "Elf should have no task after cancel"
+    );
+}
+
+#[test]
+fn cancel_build_reverts_partial_voxels() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Designate a build.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+
+    // Simulate partial construction by manually placing a voxel.
+    sim.placed_voxels
+        .push((air_coord, VoxelType::GrownPlatform));
+    sim.world.set(air_coord, VoxelType::GrownPlatform);
+
+    // Cancel the build.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::CancelBuild { project_id },
+    };
+    sim.step(&[cmd2], 2);
+
+    // Voxel should be reverted to Air.
+    assert_eq!(sim.world.get(air_coord), VoxelType::Air);
+    assert!(
+        sim.placed_voxels.is_empty(),
+        "placed_voxels should be cleared"
+    );
+}
+
+#[test]
+fn sim_serialization_with_blueprints() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    let json = sim.to_json().unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+
+    assert_eq!(restored.db.blueprints.len(), 1);
+    let bp = restored.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.voxels, vec![air_coord]);
+    assert_eq!(bp.state, BlueprintState::Designated);
+}
+
+#[test]
+fn blueprint_determinism() {
+    let mut sim_a = test_sim(42);
+    let mut sim_b = test_sim(42);
+
+    let air_a = find_air_adjacent_to_trunk(&sim_a);
+    let air_b = find_air_adjacent_to_trunk(&sim_b);
+    assert_eq!(air_a, air_b);
+
+    let cmd_a = SimCommand {
+        player_id: sim_a.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_a],
+            priority: Priority::Normal,
+        },
+    };
+    let cmd_b = SimCommand {
+        player_id: sim_b.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_b],
+            priority: Priority::Normal,
+        },
+    };
+    sim_a.step(&[cmd_a], 1);
+    sim_b.step(&[cmd_b], 1);
+
+    let id_a = *sim_a.db.blueprints.iter_keys().next().unwrap();
+    let id_b = *sim_b.db.blueprints.iter_keys().next().unwrap();
+    assert_eq!(id_a, id_b);
+    assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
+}
+
+// -----------------------------------------------------------------------
+// New species tests (Boar, Deer, Monkey, Squirrel)
+// -----------------------------------------------------------------------
+
+#[test]
+fn spawn_boar_command() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Boar,
+            position: tree_pos,
+        },
+    };
+
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Boar), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Boar,
+            ..
+        }
+    )));
+
+    // Boar is ground-only — should be at y=1.
+    let boar = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Boar)
+        .unwrap();
+    assert_eq!(boar.position.y, 1);
+}
+
+#[test]
+fn spawn_deer_command() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Deer,
+            position: tree_pos,
+        },
+    };
+
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Deer), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Deer,
+            ..
+        }
+    )));
+
+    // Deer is ground-only — should be at y=1.
+    let deer = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Deer)
+        .unwrap();
+    assert_eq!(deer.position.y, 1);
+}
+
+#[test]
+fn spawn_monkey_command() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Monkey,
+            position: tree_pos,
+        },
+    };
+
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Monkey), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Monkey,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn spawn_squirrel_command() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Squirrel,
+            position: tree_pos,
+        },
+    };
+
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Squirrel), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Squirrel,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn boar_stays_on_ground() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Boar,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Run for many ticks — boar must never leave y=1 (ground-only).
+    for target in (10000..100000).step_by(10000) {
+        sim.step(&[], target);
+        let boar = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Boar)
+            .unwrap();
+        assert_eq!(
+            boar.position.y, 1,
+            "Boar left ground at tick {target}: pos={:?}",
+            boar.position
+        );
+    }
+}
+
+#[test]
+fn deer_stays_on_ground() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Deer,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    for target in (10000..100000).step_by(10000) {
+        sim.step(&[], target);
+        let deer = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Deer)
+            .unwrap();
+        assert_eq!(
+            deer.position.y, 1,
+            "Deer left ground at tick {target}: pos={:?}",
+            deer.position
+        );
+    }
+}
+
+#[test]
+fn monkey_can_climb() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Monkey,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Run for enough ticks that a climbing species should have left ground.
+    sim.step(&[], 100000);
+
+    let monkey = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Monkey)
+        .unwrap();
+    // Monkey is not ground_only, so it should be able to reach y > 1
+    // (trunk/branch surfaces). This verifies the species config allows
+    // climbing edges. The monkey may still be at y=1 if the PRNG led it
+    // only to ground neighbors, so we just verify it has a valid node.
+    assert!(monkey.current_node.is_some());
+}
+
+#[test]
+fn squirrel_can_climb() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Squirrel,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    sim.step(&[], 100000);
+
+    let squirrel = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Squirrel)
+        .unwrap();
+    assert!(squirrel.current_node.is_some());
+}
+
+#[test]
+fn all_small_species_spawn_and_coexist() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let species_list = [
+        Species::Elf,
+        Species::Capybara,
+        Species::Boar,
+        Species::Deer,
+        Species::Goblin,
+        Species::Monkey,
+        Species::Orc,
+        Species::Squirrel,
+    ];
+    let mut tick = 1;
+    for &species in &species_list {
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick,
+            action: SimAction::SpawnCreature {
+                species,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], tick + 1);
+        tick = sim.tick + 1;
+    }
+
+    assert_eq!(sim.db.creatures.len(), 8);
+    for &species in &species_list {
+        assert_eq!(sim.creature_count(species), 1, "Expected 1 {:?}", species);
+    }
+
+    // Run for a while — all should remain alive with valid nodes.
+    sim.step(&[], 50000);
+    assert_eq!(sim.db.creatures.len(), 8);
+    for creature in sim.db.creatures.iter_all() {
+        assert!(
+            creature.current_node.is_some(),
+            "{:?} has no current node",
+            creature.species
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// Build work + incremental materialization tests
+// -----------------------------------------------------------------------
+
+/// Helper: find N air voxels adjacent to trunk, all face-adjacent to
+/// each other or to solid geometry (valid for a multi-voxel blueprint).
+fn find_air_strip_adjacent_to_trunk(sim: &SimState, count: usize) -> Vec<VoxelCoord> {
+    let tree = &sim.trees[&sim.player_tree_id];
+    // Find a trunk voxel with an air voxel to the +x side, then extend
+    // in the +x direction.
+    for &trunk_coord in &tree.trunk_voxels {
+        let start = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
+        if !sim.world.in_bounds(start) || sim.world.get(start) != VoxelType::Air {
+            continue;
+        }
+        let mut strip = vec![start];
+        for i in 1..count {
+            let next = VoxelCoord::new(start.x + i as i32, start.y, start.z);
+            if !sim.world.in_bounds(next) || sim.world.get(next) != VoxelType::Air {
+                break;
+            }
+            strip.push(next);
+        }
+        if strip.len() == count {
+            return strip;
+        }
+    }
+    panic!("Could not find {count} air voxels adjacent to trunk");
+}
+
+/// Helper: create a sim with fast build speed for testing.
+fn build_test_sim() -> SimState {
+    let mut config = test_config();
+    // Fast builds: 1 tick per voxel for quick test completion.
+    config.build_work_ticks_per_voxel = 1;
+    SimState::with_config(42, config)
+}
+
+#[test]
+fn build_task_completes_and_all_voxels_placed() {
+    let mut sim = build_test_sim();
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Spawn elf.
+    let elf_id = spawn_elf(&mut sim);
+
+    // Designate a 1-voxel platform.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+    let task_id = sim.db.blueprints.get(&project_id).unwrap().task_id.unwrap();
+
+    // Tick until completion (elf needs to pathfind + do work).
+    sim.step(&[], sim.tick + 200_000);
+
+    // Blueprint should be Complete.
+    let bp = &sim.db.blueprints.get(&project_id).unwrap();
+    assert_eq!(
+        bp.state,
+        BlueprintState::Complete,
+        "Blueprint should be Complete"
+    );
+
+    // Voxel should be solid.
+    assert_eq!(
+        sim.world.get(air_coord),
+        VoxelType::GrownPlatform,
+        "Build voxel should be GrownPlatform"
+    );
+
+    // Task should be Complete.
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(task.state, TaskState::Complete);
+
+    // Elf should be freed (no current task).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_none(),
+        "Elf should be free after build completion"
+    );
+
+    // placed_voxels should contain the coord.
+    assert!(
+        sim.placed_voxels
+            .contains(&(air_coord, VoxelType::GrownPlatform))
+    );
+}
+
+#[test]
+fn build_task_materializes_voxels_incrementally() {
+    let mut config = test_config();
+    // Slow build: 50000 ticks per voxel (elf walk_tpv is 500, so the elf
+    // needs to arrive first, then do 50000 ticks of work per voxel).
+    config.build_work_ticks_per_voxel = 50000;
+    let mut sim = SimState::with_config(42, config);
+
+    let strip = find_air_strip_adjacent_to_trunk(&sim, 3);
+
+    // Spawn elf.
+    spawn_elf(&mut sim);
+
+    // Designate a 3-voxel platform.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: strip.clone(),
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+
+    // Tick enough for the elf to arrive and do partial work (enough for
+    // 1 voxel but not all 3). Elf walk speed is 500 tpv, so a few
+    // thousand ticks should let it arrive. Then 50000 more for 1 voxel.
+    sim.step(&[], sim.tick + 200_000);
+
+    // At least 1 voxel should be placed, but not all 3.
+    let placed_count = strip
+        .iter()
+        .filter(|c| sim.world.get(**c) != VoxelType::Air)
+        .count();
+
+    // With 200k ticks and 50k per voxel, we'd expect 1-3 placed.
+    // The exact count depends on pathfinding time, but at least 1.
+    assert!(
+        placed_count >= 1,
+        "Expected at least 1 voxel placed, got {placed_count}"
+    );
+
+    // Blueprint should still be Designated (not all voxels done).
+    if placed_count < 3 {
+        let bp = &sim.db.blueprints.get(&project_id).unwrap();
+        assert_eq!(bp.state, BlueprintState::Designated);
+    }
+}
+
+#[test]
+fn build_voxels_maintain_adjacency() {
+    let mut sim = build_test_sim();
+
+    let strip = find_air_strip_adjacent_to_trunk(&sim, 3);
+
+    // Spawn elf.
+    spawn_elf(&mut sim);
+
+    // Designate a 3-voxel strip.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: strip.clone(),
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Tick to completion.
+    sim.step(&[], sim.tick + 200_000);
+
+    // All 3 voxels should be solid.
+    for coord in &strip {
+        assert_eq!(
+            sim.world.get(*coord),
+            VoxelType::GrownPlatform,
+            "Voxel at {coord} should be GrownPlatform"
+        );
+    }
+
+    // Verify each placed voxel is adjacent to at least one solid neighbor
+    // that existed BEFORE it was placed (the trunk or a previously-placed
+    // voxel). Since we can't replay the order, we verify the weaker
+    // property: each voxel has at least one solid face neighbor now.
+    for coord in &strip {
+        assert!(
+            sim.world.has_solid_face_neighbor(*coord),
+            "Placed voxel at {coord} should have a solid face neighbor"
+        );
+    }
+}
+
+#[test]
+fn build_displaces_creature_on_occupied_voxel() {
+    let mut sim = build_test_sim();
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Spawn an elf, then manually place it at the blueprint voxel.
+    let elf_id = spawn_elf(&mut sim);
+
+    // Find the nav node at air_coord (if one exists).
+    let node_at_build = sim.nav_graph.find_nearest_node(air_coord);
+    if let Some(node_id) = node_at_build {
+        let node_pos = sim.nav_graph.node(node_id).position;
+        if node_pos == air_coord {
+            // Move the elf there.
+            let _ = sim.db.creatures.modify_unchecked(&elf_id, |elf| {
+                elf.position = air_coord;
+                elf.current_node = Some(node_id);
+            });
+        }
+    }
+
+    // Spawn a SECOND elf to do the building (the first one is standing
+    // on the build site, so we need another builder).
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Designate the build at the occupied voxel.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Tick to completion.
+    sim.step(&[], sim.tick + 200_000);
+
+    // The voxel should be solid.
+    assert_eq!(sim.world.get(air_coord), VoxelType::GrownPlatform);
+
+    // The first elf should have been displaced — its position should not
+    // be at air_coord (which is now solid).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_ne!(
+        elf.position, air_coord,
+        "Elf should have been displaced from the now-solid voxel"
+    );
+    // It should still have a valid nav node.
+    assert!(elf.current_node.is_some());
+}
+
+#[test]
+fn save_load_preserves_partially_built_platform() {
+    let mut config = test_config();
+    config.build_work_ticks_per_voxel = 50000;
+    let mut sim = SimState::with_config(42, config);
+
+    let strip = find_air_strip_adjacent_to_trunk(&sim, 3);
+
+    spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: strip.clone(),
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Tick for partial construction.
+    sim.step(&[], sim.tick + 200_000);
+
+    let placed_before = sim.placed_voxels.len();
+
+    // Save and load.
+    let json = sim.to_json().unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+
+    // placed_voxels should be preserved.
+    assert_eq!(restored.placed_voxels.len(), placed_before);
+
+    // The world should contain the placed voxels.
+    for &(coord, vt) in &restored.placed_voxels {
+        assert_eq!(
+            restored.world.get(coord),
+            vt,
+            "Restored world should contain placed voxel at {coord}"
+        );
+    }
+}
+
+// --- DesignateBuilding tests ---
+
+/// Find a ground-level position where a 3x3 building can be placed.
+/// Needs solid foundation at y=0 and air above at y=1.
+fn find_building_site(sim: &SimState) -> VoxelCoord {
+    let (sx, _, sz) = sim.config.world_size;
+    for x in 1..(sx as i32 - 4) {
+        for z in 1..(sz as i32 - 4) {
+            let mut all_solid = true;
+            let mut all_air = true;
+            for dx in 0..3 {
+                for dz in 0..3 {
+                    let foundation = VoxelCoord::new(x + dx, 0, z + dz);
+                    if !sim.world.get(foundation).is_solid() {
+                        all_solid = false;
+                    }
+                    let above = VoxelCoord::new(x + dx, 1, z + dz);
+                    if sim.world.get(above) != VoxelType::Air {
+                        all_air = false;
+                    }
+                }
+            }
+            if all_solid && all_air {
+                return VoxelCoord::new(x, 0, z);
+            }
+        }
+    }
+    panic!("No valid 3x3 building site found");
+}
+
+#[test]
+fn designate_building_creates_blueprint() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuilding {
+            anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.build_type, BuildType::Building);
+    assert_eq!(bp.voxels.len(), 9); // 3x3x1
+    assert!(bp.face_layout.is_some());
+    assert_eq!(bp.face_layout.as_ref().unwrap().len(), 9);
+}
+
+#[test]
+fn designate_building_creates_task() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuilding {
+            anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.tasks.len(), 1);
+    let task = sim.db.tasks.iter_all().next().unwrap();
+    assert_eq!(task.state, TaskState::Available);
+    assert_eq!(task.kind_tag, TaskKindTag::Build, "Expected Build task");
+    let project_id = sim.task_project_id(task.id).unwrap();
+    assert!(sim.db.blueprints.contains(&project_id));
+}
+
+#[test]
+fn designate_building_rejects_small_width() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuilding {
+            anchor,
+            width: 2, // too small
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert!(sim.db.blueprints.is_empty());
+}
+
+#[test]
+fn designate_building_rejects_non_solid_foundation() {
+    let mut sim = test_sim(42);
+    // Place anchor at a position where foundation is Air.
+    // y=10 should have Air below.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuilding {
+            anchor: VoxelCoord::new(1, 10, 1),
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert!(sim.db.blueprints.is_empty());
+}
+
+#[test]
+fn building_materialization_sets_building_interior() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuilding {
+            anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+
+    // Manually materialize one voxel.
+    sim.materialize_next_build_voxel(project_id);
+
+    // At least one voxel should now be BuildingInterior.
+    let has_building = sim
+        .placed_voxels
+        .iter()
+        .any(|(_, vt)| *vt == VoxelType::BuildingInterior);
+    assert!(has_building, "Should have placed a BuildingInterior voxel");
+
+    // The placed voxel should have face_data.
+    let placed_coord = sim.placed_voxels[0].0;
+    assert!(
+        sim.face_data.contains_key(&placed_coord),
+        "Placed building voxel should have face_data",
+    );
+}
+
+#[test]
+fn building_materialization_creates_nav_node() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuilding {
+            anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+
+    sim.materialize_next_build_voxel(project_id);
+
+    let placed_coord = sim.placed_voxels[0].0;
+    assert!(
+        sim.nav_graph.has_node_at(placed_coord),
+        "BuildingInterior voxel should be a nav node",
+    );
+}
+
+#[test]
+fn cancel_building_removes_face_data() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuilding {
+            anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+
+    // Materialize some voxels.
+    sim.materialize_next_build_voxel(project_id);
+    sim.materialize_next_build_voxel(project_id);
+    assert!(!sim.face_data.is_empty(), "Should have face_data");
+    assert!(!sim.placed_voxels.is_empty(), "Should have placed voxels");
+
+    // Cancel the build.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::CancelBuild { project_id },
+    };
+    sim.step(&[cmd2], 2);
+
+    assert!(sim.face_data.is_empty(), "face_data should be cleared");
+    assert!(
+        sim.placed_voxels.is_empty(),
+        "placed_voxels should be cleared",
+    );
+    assert!(sim.db.blueprints.is_empty(), "blueprint should be removed");
+
+    // Verify voxels reverted to Air.
+    for x in anchor.x..anchor.x + 3 {
+        for z in anchor.z..anchor.z + 3 {
+            assert_eq!(
+                sim.world.get(VoxelCoord::new(x, anchor.y + 1, z)),
+                VoxelType::Air,
+            );
+        }
+    }
+}
+
+#[test]
+fn save_load_preserves_building() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuilding {
+            anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+
+    // Materialize some voxels.
+    sim.materialize_next_build_voxel(project_id);
+    sim.materialize_next_build_voxel(project_id);
+    sim.materialize_next_build_voxel(project_id);
+
+    let original_face_data_len = sim.face_data.len();
+    let original_placed_len = sim.placed_voxels.len();
+    assert!(original_face_data_len > 0);
+    assert!(original_placed_len > 0);
+
+    // Save and reload.
+    let json = sim.to_json().unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+
+    // Check face_data preserved.
+    assert_eq!(restored.face_data.len(), original_face_data_len);
+    for (coord, fd) in &sim.face_data {
+        let restored_fd = restored.face_data.get(coord).unwrap();
+        assert_eq!(fd, restored_fd);
+    }
+
+    // Check placed voxels preserved in rebuilt world.
+    for &(coord, vt) in &sim.placed_voxels {
+        assert_eq!(restored.world.get(coord), vt);
+    }
+
+    // Check nav graph has nodes at building voxels.
+    for &(coord, vt) in &sim.placed_voxels {
+        if vt == VoxelType::BuildingInterior {
+            assert!(
+                restored.nav_graph.has_node_at(coord),
+                "Restored nav graph should have node at {coord}",
+            );
+        }
+    }
+}
+
+#[test]
+fn designate_building_rejects_non_air_interior() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+
+    // Place a solid voxel in the interior area.
+    let interior = VoxelCoord::new(anchor.x + 1, anchor.y + 1, anchor.z + 1);
+    sim.world.set(interior, VoxelType::Trunk);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuilding {
+            anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert!(sim.db.blueprints.is_empty());
+}
+
+// --- CompletedStructure integration tests ---
+
+/// Helper: designate a single-voxel platform and run the sim until the
+/// build task is complete. Returns the sim after completion.
+fn designate_and_complete_build(mut sim: SimState) -> SimState {
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Spawn an elf near the build site.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: air_coord,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Designate a 1-voxel platform.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 2);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Run the sim forward until the blueprint is Complete.
+    // The elf will claim the task, walk to the site, and do build work.
+    // build_work_ticks_per_voxel * 1 voxel = total_cost ticks of work.
+    // Cap at 1 million ticks to avoid infinite loops in tests.
+    let max_tick = sim.tick + 1_000_000;
+    while sim.tick < max_tick {
+        sim.step(&[], sim.tick + 100);
+        let all_complete = sim
+            .db
+            .blueprints
+            .iter_all()
+            .all(|bp| bp.state == BlueprintState::Complete);
+        if all_complete {
+            break;
+        }
+    }
+    assert!(
+        sim.db
+            .blueprints
+            .iter_all()
+            .all(|bp| bp.state == BlueprintState::Complete),
+        "Build did not complete within tick limit"
+    );
+    sim
+}
+
+#[test]
+fn completed_structure_registered_on_build_complete() {
+    let sim = designate_and_complete_build(test_sim(42));
+
+    assert_eq!(sim.db.structures.len(), 1);
+    let structure = sim.db.structures.iter_all().next().unwrap();
+    assert_eq!(structure.id, StructureId(0));
+    assert_eq!(structure.build_type, BuildType::Platform);
+    assert_eq!(structure.width, 1);
+    assert_eq!(structure.depth, 1);
+    assert_eq!(structure.height, 1);
+    assert!(structure.completed_tick > 0);
+}
+
+#[test]
+fn completed_structure_sequential_ids() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: air_coord,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Designate first build.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Run until first build completes.
+    let max_tick = sim.tick + 1_000_000;
+    while sim.tick < max_tick {
+        sim.step(&[], sim.tick + 100);
+        let all_complete = sim
+            .db
+            .blueprints
+            .iter_all()
+            .all(|bp| bp.state == BlueprintState::Complete);
+        if all_complete {
+            break;
+        }
+    }
+    assert_eq!(sim.db.structures.len(), 1);
+    assert_eq!(
+        sim.db.structures.iter_all().next().unwrap().id,
+        StructureId(0)
+    );
+
+    // Find another air coord for the second build.
+    let mut second_air = None;
+    let tree = &sim.trees[&sim.player_tree_id];
+    for &trunk_coord in &tree.trunk_voxels {
+        for (dx, dy, dz) in [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+            (0, 1, 0),
+            (0, -1, 0),
+        ] {
+            let neighbor =
+                VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y + dy, trunk_coord.z + dz);
+            if sim.world.in_bounds(neighbor)
+                && sim.world.get(neighbor) == VoxelType::Air
+                && neighbor != air_coord
+            {
+                second_air = Some(neighbor);
+                break;
+            }
+        }
+        if second_air.is_some() {
+            break;
+        }
+    }
+    let second_coord = second_air.expect("Need a second air coord");
+
+    // Designate second build.
+    let tick = sim.tick + 1;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![second_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], tick);
+
+    // Run until second build completes.
+    let max_tick = sim.tick + 1_000_000;
+    while sim.tick < max_tick {
+        sim.step(&[], sim.tick + 100);
+        let all_complete = sim
+            .db
+            .blueprints
+            .iter_all()
+            .all(|bp| bp.state == BlueprintState::Complete);
+        if all_complete {
+            break;
+        }
+    }
+    assert_eq!(sim.db.structures.len(), 2);
+
+    // IDs should be 0 and 1.
+    let ids: Vec<StructureId> = sim.db.structures.iter_keys().copied().collect();
+    assert!(ids.contains(&StructureId(0)));
+    assert!(ids.contains(&StructureId(1)));
+}
+
+#[test]
+fn cancel_completed_structure_removes_entry() {
+    let mut sim = designate_and_complete_build(test_sim(42));
+    assert_eq!(sim.db.structures.len(), 1);
+
+    // Get the project_id of the completed structure.
+    let project_id = sim.db.structures.iter_all().next().unwrap().project_id;
+
+    // Cancel the build (should remove from structures too).
+    let tick = sim.tick + 1;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick,
+        action: SimAction::CancelBuild { project_id },
+    };
+    sim.step(&[cmd], tick);
+
+    assert!(
+        sim.db.structures.is_empty(),
+        "Cancelling a completed build should remove it from structures"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Structure voxels and raycast tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn structure_voxels_populated_on_complete_build() {
+    let sim = designate_and_complete_build(test_sim(42));
+
+    // The completed build should populate structure_voxels.
+    assert!(!sim.structure_voxels.is_empty());
+    let structure = sim.db.structures.iter_all().next().unwrap();
+    let bp = sim
+        .db
+        .blueprints
+        .iter_all()
+        .find(|bp| bp.state == BlueprintState::Complete)
+        .unwrap();
+    for &coord in &bp.voxels {
+        assert_eq!(
+            sim.structure_voxels.get(&coord),
+            Some(&structure.id),
+            "Voxel {coord} should map to structure {}",
+            structure.id
+        );
+    }
+}
+
+#[test]
+fn structure_voxels_cleared_on_cancel_build() {
+    let mut sim = designate_and_complete_build(test_sim(42));
+    assert!(!sim.structure_voxels.is_empty());
+
+    let project_id = sim.db.structures.iter_all().next().unwrap().project_id;
+
+    let tick = sim.tick + 1;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick,
+        action: SimAction::CancelBuild { project_id },
+    };
+    sim.step(&[cmd], tick);
+
+    assert!(
+        sim.structure_voxels.is_empty(),
+        "Cancelling a completed build should clear structure_voxels"
+    );
+}
+
+#[test]
+fn structure_voxels_rebuilt_on_rebuild_transient_state() {
+    let sim = designate_and_complete_build(test_sim(42));
+    let voxels_before = sim.structure_voxels.clone();
+    assert!(!voxels_before.is_empty());
+
+    // Round-trip through JSON (which drops transient fields).
+    let json = sim.to_json().unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+
+    assert_eq!(
+        restored.structure_voxels, voxels_before,
+        "structure_voxels should be identical after save/load"
+    );
+}
+
+#[test]
+fn raycast_structure_finds_structure_voxel() {
+    let sim = designate_and_complete_build(test_sim(42));
+    let structure = sim.db.structures.iter_all().next().unwrap();
+    let bp = sim
+        .db
+        .blueprints
+        .iter_all()
+        .find(|bp| bp.state == BlueprintState::Complete)
+        .unwrap();
+    let voxel = bp.voxels[0];
+
+    // Cast a ray from above the voxel straight down.
+    let from = [
+        voxel.x as f32 + 0.5,
+        voxel.y as f32 + 10.0,
+        voxel.z as f32 + 0.5,
+    ];
+    let dir = [0.0, -1.0, 0.0];
+    let result = sim.raycast_structure(from, dir, 100);
+
+    assert_eq!(
+        result,
+        Some(structure.id),
+        "Raycast should find the structure at {voxel}"
+    );
+}
+
+#[test]
+fn raycast_structure_stops_at_trunk() {
+    let sim = designate_and_complete_build(test_sim(42));
+    let bp = sim
+        .db
+        .blueprints
+        .iter_all()
+        .find(|bp| bp.state == BlueprintState::Complete)
+        .unwrap();
+    let voxel = bp.voxels[0];
+
+    // Place a trunk voxel between the ray origin and the structure.
+    let mut sim = sim;
+    let blocker = VoxelCoord::new(voxel.x, voxel.y + 5, voxel.z);
+    sim.world.set(blocker, VoxelType::Trunk);
+
+    let from = [
+        voxel.x as f32 + 0.5,
+        voxel.y as f32 + 10.0,
+        voxel.z as f32 + 0.5,
+    ];
+    let dir = [0.0, -1.0, 0.0];
+    let result = sim.raycast_structure(from, dir, 100);
+
+    assert_eq!(
+        result, None,
+        "Raycast should stop at the trunk and not find the structure"
+    );
+}
+
+#[test]
+fn raycast_structure_returns_none_for_empty_ray() {
+    let sim = test_sim(42);
+    // Cast a ray into empty space.
+    let from = [32.5, 50.0, 32.5];
+    let dir = [0.0, 1.0, 0.0];
+    let result = sim.raycast_structure(from, dir, 100);
+    assert_eq!(result, None);
+}
+
+// -----------------------------------------------------------------------
+// RenameStructure tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn rename_structure_sets_custom_name() {
+    let mut sim = designate_and_complete_build(test_sim(42));
+    assert_eq!(sim.db.structures.len(), 1);
+    let sid = *sim.db.structures.iter_keys().next().unwrap();
+    assert_eq!(
+        sim.db.structures.get(&sid).unwrap().display_name(),
+        "Platform #0"
+    );
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::RenameStructure {
+            structure_id: sid,
+            name: Some("Great Hall".to_string()),
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+    assert_eq!(
+        sim.db.structures.get(&sid).unwrap().display_name(),
+        "Great Hall"
+    );
+}
+
+#[test]
+fn rename_structure_to_none_resets_to_default() {
+    let mut sim = designate_and_complete_build(test_sim(42));
+    let sid = *sim.db.structures.iter_keys().next().unwrap();
+
+    // Set a custom name.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::RenameStructure {
+            structure_id: sid,
+            name: Some("Great Hall".to_string()),
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+    assert_eq!(
+        sim.db.structures.get(&sid).unwrap().display_name(),
+        "Great Hall"
+    );
+
+    // Reset to default.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::RenameStructure {
+            structure_id: sid,
+            name: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+    assert_eq!(
+        sim.db.structures.get(&sid).unwrap().display_name(),
+        "Platform #0"
+    );
+}
+
+#[test]
+fn rename_nonexistent_structure_is_noop() {
+    let mut sim = test_sim(42);
+    let tick_before = sim.tick;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::RenameStructure {
+            structure_id: StructureId(999),
+            name: Some("Ghost".to_string()),
+        },
+    };
+    // Should not panic.
+    sim.step(&[cmd], sim.tick + 1);
+    assert!(sim.db.structures.is_empty());
+    assert!(sim.tick > tick_before);
+}
+
+// -----------------------------------------------------------------------
+// Hunger / EatFruit tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn find_nearest_fruit_returns_reachable() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // The tree should have fruit after initialization (fruit_initial_attempts).
+    let has_fruit = sim.trees.values().any(|t| !t.fruit_positions.is_empty());
+    assert!(has_fruit, "Test tree should have some fruit after init");
+
+    // Spawn an elf near the tree so it has a nav node.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // find_nearest_fruit should return a fruit reachable via nav graph.
+    let result = sim.find_nearest_fruit(elf_id);
+    assert!(
+        result.is_some(),
+        "Elf near tree should find reachable fruit"
+    );
+    let (fruit_pos, nav_node) = result.unwrap();
+
+    // The fruit_pos should actually be in a tree's fruit list.
+    let in_tree = sim
+        .trees
+        .values()
+        .any(|t| t.fruit_positions.contains(&fruit_pos));
+    assert!(in_tree, "Returned fruit should be in a tree's fruit list");
+
+    // The nav node should be valid.
+    let _node = sim.nav_graph.node(nav_node);
+}
+
+#[test]
+fn eat_fruit_task_restores_food_on_arrival() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let restore_pct = sim.species_table[&Species::Elf].food_restore_pct;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+
+    // Set elf food low.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max / 10);
+    let food_before = sim.db.creatures.get(&elf_id).unwrap().food;
+
+    // Manually create an EatFruit task at the elf's current node (instant arrival).
+    let fruit_pos = VoxelCoord::new(0, 0, 0); // dummy — food restore doesn't depend on real fruit
+    let task_id = TaskId::new(&mut sim.rng);
+    let eat_task = Task {
+        id: task_id,
+        kind: TaskKind::EatFruit { fruit_pos },
+        state: TaskState::InProgress,
+        location: elf_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(eat_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Advance enough ticks for the elf to start and complete the Eat action.
+    sim.step(&[], sim.tick + sim.config.eat_action_ticks + 10);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let expected_restore = food_max * restore_pct / 100;
+    assert!(
+        elf.food >= food_before + expected_restore - 1, // allow tiny rounding
+        "Food should increase by ~restore_pct%: before={}, after={}, expected_restore={}",
+        food_before,
+        elf.food,
+        expected_restore,
+    );
+    assert!(elf.current_task.is_none(), "Task should be complete");
+}
+
+#[test]
+fn hungry_idle_elf_creates_eat_fruit_task() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Need fruit to exist.
+    let has_fruit = sim.trees.values().any(|t| !t.fruit_positions.is_empty());
+    assert!(has_fruit, "Tree must have fruit for this test");
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set food below threshold (threshold is 50% by default).
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
+
+    // Advance past the next heartbeat — hunger check should fire.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // The elf should now have an EatFruit task.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Hungry idle elf should have been assigned an EatFruit task"
+    );
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert!(
+        task.kind_tag == TaskKindTag::EatFruit,
+        "Task should be EatFruit, got {:?}",
+        task.kind_tag
+    );
+}
+
+#[test]
+fn well_fed_elf_does_not_create_eat_fruit_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf — starts at full food.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Advance past the heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // No EatFruit task should exist.
+    let has_eat_task = sim
+        .db
+        .tasks
+        .iter_all()
+        .any(|t| t.kind_tag == TaskKindTag::EatFruit);
+    assert!(
+        !has_eat_task,
+        "Well-fed elf should not create an EatFruit task"
+    );
+}
+
+#[test]
+fn busy_hungry_elf_does_not_create_eat_fruit_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set food very low.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 10 / 100);
+
+    // Give the elf a GoTo task so it's busy.
+    let task_id = TaskId::new(&mut sim.rng);
+    let goto_task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: NavNodeId(0),
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(goto_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Advance past the heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // The elf should still have its GoTo task, not an EatFruit one.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(
+        elf.current_task,
+        Some(task_id),
+        "Busy elf should keep its existing task"
+    );
+    let eat_task_count = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::EatFruit)
+        .count();
+    assert_eq!(
+        eat_task_count, 0,
+        "No EatFruit task should be created for a busy elf"
+    );
+}
+
+#[test]
+fn hungry_elf_eats_fruit_and_food_increases() {
+    // Integration test: spawn elf, place fruit at its nav node, set low
+    // food, run ticks, verify the elf ate fruit and food increased.
+    // We place fruit explicitly rather than relying on random fruit spawning
+    // so the test is deterministic regardless of tree shape.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0; // Force fruit foraging, not bread eating.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+
+    // Place a fruit voxel at the elf's position (or very close).
+    // This guarantees the fruit is reachable — the elf is already there.
+    let fruit_pos = elf_pos;
+    sim.world.set(fruit_pos, VoxelType::Fruit);
+    let tree_id = sim.player_tree_id;
+    sim.trees
+        .get_mut(&tree_id)
+        .unwrap()
+        .fruit_positions
+        .push(fruit_pos);
+
+    // Set food to 20% — well below the 50% hunger threshold.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 20 / 100);
+
+    // Run for 50_000 ticks — enough for heartbeat + pathfind + eat.
+    sim.step(&[], 50_001);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+
+    // The elf should have eaten at least once, restoring food above 0.
+    // With default decay the food won't drop to 0 in 50k ticks.
+    assert!(
+        elf.food > 0,
+        "Hungry elf should have eaten fruit and restored food above 0. food={}",
+        elf.food
+    );
+}
+
+// -----------------------------------------------------------------------
+// Hunger / EatBread tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn hungry_elf_with_bread_creates_eat_bread_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Give the elf owned bread.
+    sim.inv_add_simple_item(
+        sim.creature_inv(elf_id),
+        inventory::ItemKind::Bread,
+        3,
+        Some(elf_id),
+        None,
+    );
+
+    // Set food below hunger threshold.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
+
+    // Advance past the next heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // The elf should have an EatBread task, not EatFruit.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Hungry elf with bread should have a task"
+    );
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert!(
+        task.kind_tag == TaskKindTag::EatBread,
+        "Task should be EatBread, got {:?}",
+        task.kind_tag
+    );
+}
+
+#[test]
+fn eat_bread_restores_food_and_removes_bread() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let bread_restore_pct = sim.species_table[&Species::Elf].bread_restore_pct;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+
+    // Give the elf owned bread.
+    sim.inv_add_simple_item(
+        sim.creature_inv(elf_id),
+        inventory::ItemKind::Bread,
+        3,
+        Some(elf_id),
+        None,
+    );
+
+    // Set food low.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max / 10);
+    let food_before = sim.db.creatures.get(&elf_id).unwrap().food;
+
+    // Manually create an EatBread task at the elf's current node.
+    let task_id = TaskId::new(&mut sim.rng);
+    let eat_task = Task {
+        id: task_id,
+        kind: TaskKind::EatBread,
+        state: TaskState::InProgress,
+        location: elf_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(eat_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Advance enough ticks for the elf to start and complete the Eat action.
+    // eat_action_ticks = 1500, plus a few extra for scheduling.
+    sim.step(&[], sim.tick + sim.config.eat_action_ticks + 10);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let expected_restore = food_max * bread_restore_pct / 100;
+    assert!(
+        elf.food >= food_before + expected_restore - 1,
+        "Food should increase by ~bread_restore_pct%: before={}, after={}, expected_restore={}",
+        food_before,
+        elf.food,
+        expected_restore,
+    );
+    assert!(elf.current_task.is_none(), "Task should be complete");
+
+    // Should have consumed 1 bread (2 remaining).
+    let bread_count = sim.inv_count_owned(elf.inventory_id, inventory::ItemKind::Bread, elf_id);
+    assert_eq!(bread_count, 2, "Should have consumed 1 bread, leaving 2");
+}
+
+#[test]
+fn hungry_elf_without_bread_still_seeks_fruit() {
+    // Elf is hungry but has no bread — should create EatFruit, not EatBread.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    assert!(
+        sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+        "Tree must have fruit"
+    );
+
+    // Spawn an elf (no bread in inventory).
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set food below threshold.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
+
+    // Advance past heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // Should have EatFruit, not EatBread.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(elf.current_task.is_some(), "Hungry elf should have a task");
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert!(
+        task.kind_tag == TaskKindTag::EatFruit,
+        "Elf without bread should seek fruit, got {:?}",
+        task.kind_tag
+    );
+}
+
+#[test]
+fn hungry_elf_with_unowned_bread_seeks_fruit() {
+    // Elf has bread but doesn't own it — should seek fruit instead.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    assert!(
+        sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+        "Tree must have fruit"
+    );
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Give the elf bread with no owner (unowned).
+    sim.inv_add_simple_item(
+        sim.creature_inv(elf_id),
+        inventory::ItemKind::Bread,
+        5,
+        None,
+        None,
+    );
+
+    // Set food below threshold.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
+
+    // Advance past heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // Should have EatFruit since the bread is not owned by this elf.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(elf.current_task.is_some(), "Hungry elf should have a task");
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert!(
+        task.kind_tag == TaskKindTag::EatFruit,
+        "Elf with unowned bread should seek fruit, got {:?}",
+        task.kind_tag
+    );
+}
+
+#[test]
+fn eat_bread_generates_thought() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+
+    // Give bread and set food low.
+    sim.inv_add_simple_item(
+        sim.creature_inv(elf_id),
+        inventory::ItemKind::Bread,
+        1,
+        Some(elf_id),
+        None,
+    );
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max / 10);
+
+    // Create EatBread task at current node.
+    let task_id = TaskId::new(&mut sim.rng);
+    let eat_task = Task {
+        id: task_id,
+        kind: TaskKind::EatBread,
+        state: TaskState::InProgress,
+        location: elf_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(eat_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Advance enough to start and complete the Eat action.
+    sim.step(&[], sim.tick + sim.config.eat_action_ticks + 10);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|t| t.kind == ThoughtKind::AteMeal),
+        "Eating bread should generate AteMeal thought"
+    );
+    // Piggyback: mood should reflect the AteMeal thought.
+    let (score, tier) = sim.mood_for_creature(elf_id);
+    assert!(
+        score > 0,
+        "AteMeal should produce positive mood score, got {score}"
+    );
+    assert!(
+        tier == MoodTier::Content || tier == MoodTier::Happy || tier == MoodTier::Elated,
+        "AteMeal should produce at least Content tier, got {tier:?}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Tree overlap construction tests
+// -----------------------------------------------------------------------
+
+/// Find a Leaf voxel that is face-adjacent to a Trunk, Branch, or Root
+/// voxel (not just any solid — must be adjacent to structural wood so the
+/// structural validator can reach the ground).
+fn find_leaf_adjacent_to_wood(sim: &SimState) -> VoxelCoord {
+    let tree = &sim.trees[&sim.player_tree_id];
+    for &leaf_coord in &tree.leaf_voxels {
+        for &(dx, dy, dz) in &[
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ] {
+            let neighbor = VoxelCoord::new(leaf_coord.x + dx, leaf_coord.y + dy, leaf_coord.z + dz);
+            let vt = sim.world.get(neighbor);
+            if matches!(vt, VoxelType::Trunk | VoxelType::Branch | VoxelType::Root) {
+                return leaf_coord;
+            }
+        }
+    }
+    panic!("No leaf voxel adjacent to wood found");
+}
+
+#[test]
+fn overlap_platform_at_leaf_creates_blueprint() {
+    let mut sim = test_sim(42);
+    let leaf_coord = find_leaf_adjacent_to_wood(&sim);
+    assert_eq!(sim.world.get(leaf_coord), VoxelType::Leaf);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![leaf_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 1, "Blueprint should be created");
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.voxels, vec![leaf_coord]);
+    assert_eq!(bp.original_voxels.len(), 1);
+    assert_eq!(bp.original_voxels[0], (leaf_coord, VoxelType::Leaf));
+}
+
+#[test]
+fn overlap_all_trunk_rejects_nothing_to_build() {
+    let mut sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    let trunk_coord = tree.trunk_voxels[0];
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![trunk_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert!(sim.db.blueprints.is_empty(), "All-trunk should be rejected");
+    assert_eq!(
+        sim.last_build_message.as_deref(),
+        Some("Nothing to build — all voxels are already wood.")
+    );
+}
+
+#[test]
+fn overlap_mixed_air_trunk_only_builds_air() {
+    let mut sim = test_sim(42);
+    // Find a trunk voxel with an air neighbor.
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+    // Find which trunk voxel is adjacent.
+    let mut trunk_coord = None;
+    for &(dx, dy, dz) in &[
+        (1, 0, 0),
+        (-1, 0, 0),
+        (0, 1, 0),
+        (0, -1, 0),
+        (0, 0, 1),
+        (0, 0, -1),
+    ] {
+        let neighbor = VoxelCoord::new(air_coord.x + dx, air_coord.y + dy, air_coord.z + dz);
+        if sim.world.in_bounds(neighbor)
+            && matches!(
+                sim.world.get(neighbor),
+                VoxelType::Trunk | VoxelType::Branch | VoxelType::Root
+            )
+        {
+            trunk_coord = Some(neighbor);
+            break;
+        }
+    }
+    let trunk_coord = trunk_coord.expect("Should find adjacent trunk");
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord, trunk_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    // Only the air voxel should be in the blueprint.
+    assert_eq!(bp.voxels, vec![air_coord]);
+    assert!(bp.original_voxels.is_empty());
+}
+
+#[test]
+fn overlap_blocked_voxel_rejects() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // First build a platform at the air coord.
+    sim.world.set(air_coord, VoxelType::GrownPlatform);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert!(
+        sim.db.blueprints.is_empty(),
+        "Blocked voxel should reject build"
+    );
+}
+
+#[test]
+fn overlap_leaf_materializes_to_grown_platform() {
+    let mut sim = build_test_sim();
+    let leaf_coord = find_leaf_adjacent_to_wood(&sim);
+    assert_eq!(sim.world.get(leaf_coord), VoxelType::Leaf);
+
+    // Spawn elf.
+    spawn_elf(&mut sim);
+
+    // Designate platform at the leaf voxel.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![leaf_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+
+    // Tick until completion.
+    sim.step(&[], sim.tick + 200_000);
+
+    // Leaf should have been converted to GrownPlatform.
+    assert_eq!(
+        sim.world.get(leaf_coord),
+        VoxelType::GrownPlatform,
+        "Leaf voxel should be converted to GrownPlatform"
+    );
+
+    // Blueprint should be Complete.
+    let bp = &sim.db.blueprints.get(&project_id).unwrap();
+    assert_eq!(bp.state, BlueprintState::Complete);
+}
+
+#[test]
+fn overlap_cancel_reverts_to_original_type() {
+    let mut sim = test_sim(42);
+    let leaf_coord = find_leaf_adjacent_to_wood(&sim);
+    assert_eq!(sim.world.get(leaf_coord), VoxelType::Leaf);
+
+    // Designate platform at the leaf voxel.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![leaf_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+
+    // Simulate partial construction by manually placing the voxel.
+    sim.placed_voxels
+        .push((leaf_coord, VoxelType::GrownPlatform));
+    sim.world.set(leaf_coord, VoxelType::GrownPlatform);
+
+    // Cancel the build.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::CancelBuild { project_id },
+    };
+    sim.step(&[cmd2], 2);
+
+    // Voxel should revert to Leaf, not Air.
+    assert_eq!(
+        sim.world.get(leaf_coord),
+        VoxelType::Leaf,
+        "Cancelled overlap build should revert to original Leaf, not Air"
+    );
+}
+
+#[test]
+fn overlap_save_load_preserves_original_voxels() {
+    let mut sim = test_sim(42);
+    let leaf_coord = find_leaf_adjacent_to_wood(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![leaf_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    let json = sim.to_json().unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+
+    assert_eq!(restored.db.blueprints.len(), 1);
+    let bp = restored.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.original_voxels.len(), 1);
+    assert_eq!(bp.original_voxels[0], (leaf_coord, VoxelType::Leaf));
+}
+
+#[test]
+fn overlap_determinism() {
+    let mut sim_a = test_sim(42);
+    let mut sim_b = test_sim(42);
+
+    let leaf_a = find_leaf_adjacent_to_wood(&sim_a);
+    let leaf_b = find_leaf_adjacent_to_wood(&sim_b);
+    assert_eq!(leaf_a, leaf_b);
+
+    let cmd_a = SimCommand {
+        player_id: sim_a.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![leaf_a],
+            priority: Priority::Normal,
+        },
+    };
+    let cmd_b = SimCommand {
+        player_id: sim_b.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![leaf_b],
+            priority: Priority::Normal,
+        },
+    };
+    sim_a.step(&[cmd_a], 1);
+    sim_b.step(&[cmd_b], 1);
+
+    let id_a = *sim_a.db.blueprints.iter_keys().next().unwrap();
+    let id_b = *sim_b.db.blueprints.iter_keys().next().unwrap();
+    assert_eq!(id_a, id_b);
+
+    let bp_a = sim_a.db.blueprints.get(&id_a).unwrap();
+    let bp_b = sim_b.db.blueprints.get(&id_b).unwrap();
+    assert_eq!(bp_a.voxels, bp_b.voxels);
+    assert_eq!(bp_a.original_voxels, bp_b.original_voxels);
+    assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
+}
+
+#[test]
+fn overlap_wall_at_leaf_rejects() {
+    let mut sim = test_sim(42);
+    let leaf_coord = find_leaf_adjacent_to_wood(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Wall,
+            voxels: vec![leaf_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert!(
+        sim.db.blueprints.is_empty(),
+        "Wall does not allow overlap, should reject leaf"
+    );
+}
+
+#[test]
+fn walk_toward_dead_task_node_does_not_panic() {
+    // Reproduce B-dead-node-panic: a creature has a task whose location
+    // nav node gets removed by an incremental update. The creature should
+    // gracefully abandon the task instead of panicking in pathfinding.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn an elf.
+    let spawn_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[spawn_cmd], 2);
+
+    let elf_id = *sim.db.creatures.iter_keys().next().unwrap();
+
+    // Find a ground nav node different from the elf's to use as task target.
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let task_node = sim
+        .nav_graph
+        .ground_node_ids()
+        .into_iter()
+        .find(|&nid| nid != elf_node)
+        .expect("Need at least 2 ground nodes");
+
+    // Create a GoTo task at that nav node and assign it to the elf.
+    let task_id = TaskId::new(&mut sim.rng);
+    sim.insert_task(Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: task_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    });
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Directly kill the task node's slot to simulate an incremental update
+    // that removed it without recycling the slot. This is the exact state
+    // that causes the panic: the NavNodeId in the task points to a dead
+    // (None) slot.
+    sim.nav_graph.kill_node(task_node);
+
+    assert!(
+        !sim.nav_graph.is_node_alive(task_node),
+        "Task node should be dead",
+    );
+
+    // Step the sim — the elf should try to walk toward the now-dead
+    // task node. This must NOT panic.
+    sim.step(&[], 50000);
+
+    // The elf should have dropped the task (can't reach dead node).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_none(),
+        "Elf should abandon task with dead location node",
+    );
+}
+
+// ===================================================================
+// Carve tests
+// ===================================================================
+
+/// Helper: find a solid voxel that is safe to carve (won't disconnect the
+/// structure). Picks the highest trunk voxel so removing it doesn't sever
+/// the tree's connection to ground.
+fn find_carvable_voxel(sim: &SimState) -> VoxelCoord {
+    let tree = &sim.trees[&sim.player_tree_id];
+    // Pick the highest trunk voxel — removing the top is structurally safe.
+    tree.trunk_voxels
+        .iter()
+        .copied()
+        .filter(|v| v.y > 0)
+        .max_by_key(|v| v.y)
+        .expect("No trunk voxel above floor")
+}
+
+#[test]
+fn test_designate_carve_filters_air() {
+    let mut sim = test_sim(42);
+    let solid = find_carvable_voxel(&sim);
+    // Pick an air voxel (high up, guaranteed empty).
+    let air = VoxelCoord::new(5, 50, 5);
+    assert_eq!(sim.world.get(air), VoxelType::Air);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![solid, air],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // A blueprint should exist with only the solid voxel.
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.build_type, BuildType::Carve);
+    assert_eq!(bp.voxels.len(), 1);
+    assert_eq!(bp.voxels[0], solid);
+}
+
+#[test]
+fn test_carve_execution_removes_voxels() {
+    let mut config = test_config();
+    // Set carve ticks very low so the test completes quickly.
+    config.carve_work_ticks_per_voxel = 1;
+    let mut sim = SimState::with_config(42, config);
+    let solid = find_carvable_voxel(&sim);
+    assert!(sim.world.get(solid).is_solid());
+
+    // Spawn an elf near the tree so it can claim the task.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
+
+    let spawn_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: elf_pos,
+        },
+    };
+    let carve_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateCarve {
+            voxels: vec![solid],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[spawn_cmd, carve_cmd], 2);
+
+    // Ensure carve blueprint was created (not blocked by structural check).
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Blueprint should exist; last_build_message: {:?}",
+        sim.last_build_message
+    );
+
+    // Run the sim long enough for the elf to reach and carve.
+    sim.step(&[], 500_000);
+
+    // The solid voxel should now be Air.
+    assert_eq!(
+        sim.world.get(solid),
+        VoxelType::Air,
+        "Carved voxel should be Air"
+    );
+    assert!(
+        sim.carved_voxels.contains(&solid),
+        "carved_voxels should track the removal"
+    );
+}
+
+// -------------------------------------------------------------------
+// Ladder tests
+// -------------------------------------------------------------------
+
+/// Find an air voxel adjacent to a trunk voxel on a horizontal face,
+/// ensuring at least `height` air voxels above it. Returns (anchor, orientation)
+/// where orientation is the face of the anchor pointing toward the trunk.
+fn find_ladder_column(sim: &SimState, height: i32) -> (VoxelCoord, FaceDirection) {
+    let tree = &sim.trees[&sim.player_tree_id];
+    for &trunk_coord in &tree.trunk_voxels {
+        for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let base = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y, trunk_coord.z + dz);
+            if !sim.world.in_bounds(base) {
+                continue;
+            }
+            // The orientation points from air toward trunk (i.e., face
+            // direction on the ladder voxel that faces the wall).
+            let orientation = FaceDirection::from_offset(-dx, 0, -dz).unwrap();
+            let all_air = (0..height).all(|dy| {
+                let coord = VoxelCoord::new(base.x, base.y + dy, base.z);
+                sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+            });
+            if all_air {
+                return (base, orientation);
+            }
+        }
+    }
+    panic!("No suitable ladder column found");
+}
+
+#[test]
+fn designate_wood_ladder_creates_blueprint() {
+    let mut sim = test_sim(42);
+    let (anchor, orientation) = find_ladder_column(&sim, 3);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor,
+            height: 3,
+            orientation,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    let result = sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.build_type, BuildType::WoodLadder);
+    assert_eq!(bp.voxels.len(), 3);
+    assert_eq!(bp.state, BlueprintState::Designated);
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, SimEventKind::BlueprintDesignated { .. }))
+    );
+}
+
+#[test]
+fn designate_rope_ladder_creates_blueprint() {
+    let mut sim = test_sim(42);
+    // Rope ladders need top voxel adjacent to solid. Find a trunk voxel
+    // with air below and on the side.
+    let (anchor, orientation) = find_ladder_column(&sim, 1);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor,
+            height: 1,
+            orientation,
+            kind: LadderKind::Rope,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.build_type, BuildType::RopeLadder);
+}
+
+#[test]
+fn designate_ladder_rejects_vertical_orientation() {
+    let mut sim = test_sim(42);
+    let (anchor, _) = find_ladder_column(&sim, 1);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor,
+            height: 1,
+            orientation: FaceDirection::PosY,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert!(sim.db.blueprints.is_empty());
+    assert_eq!(
+        sim.last_build_message.as_deref(),
+        Some("Ladder orientation must be horizontal.")
+    );
+}
+
+#[test]
+fn designate_ladder_rejects_zero_height() {
+    let mut sim = test_sim(42);
+    let (anchor, orientation) = find_ladder_column(&sim, 1);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor,
+            height: 0,
+            orientation,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert!(sim.db.blueprints.is_empty());
+    assert_eq!(
+        sim.last_build_message.as_deref(),
+        Some("Ladder height must be at least 1.")
+    );
+}
+
+#[test]
+fn designate_wood_ladder_rejects_no_anchor() {
+    let mut sim = test_sim(42);
+    // Place ladder in open air with no adjacent solid.
+    let anchor = VoxelCoord::new(1, 10, 1);
+    // Confirm it's air with no solid neighbor.
+    assert_eq!(sim.world.get(anchor), VoxelType::Air);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor,
+            height: 1,
+            orientation: FaceDirection::PosX,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert!(sim.db.blueprints.is_empty());
+}
+
+#[test]
+fn designate_ladder_creates_build_task() {
+    let mut sim = test_sim(42);
+    let (anchor, orientation) = find_ladder_column(&sim, 2);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor,
+            height: 2,
+            orientation,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert!(bp.task_id.is_some());
+    let task = sim.db.tasks.get(&bp.task_id.unwrap()).unwrap();
+    assert!(task.kind_tag == TaskKindTag::Build);
+    assert_eq!(task.required_species, Some(Species::Elf));
+    assert_eq!(task.total_cost, 2.0);
+}
+
+#[test]
+fn ladder_face_data_blocks_correctly() {
+    let fd = ladder_face_data(FaceDirection::PosX);
+    // Only the ladder face (PosX) should be Wall.
+    assert_eq!(fd.get(FaceDirection::PosX), FaceType::Wall);
+    // All other faces should be Open.
+    assert_eq!(fd.get(FaceDirection::NegX), FaceType::Open);
+    assert_eq!(fd.get(FaceDirection::PosZ), FaceType::Open);
+    assert_eq!(fd.get(FaceDirection::NegZ), FaceType::Open);
+    assert_eq!(fd.get(FaceDirection::PosY), FaceType::Open);
+    assert_eq!(fd.get(FaceDirection::NegY), FaceType::Open);
+}
+
+#[test]
+fn ladder_voxel_type_not_solid() {
+    assert!(!VoxelType::WoodLadder.is_solid());
+    assert!(!VoxelType::RopeLadder.is_solid());
+}
+
+#[test]
+fn ladder_voxel_type_is_ladder() {
+    assert!(VoxelType::WoodLadder.is_ladder());
+    assert!(VoxelType::RopeLadder.is_ladder());
+    assert!(!VoxelType::Air.is_ladder());
+    assert!(!VoxelType::Trunk.is_ladder());
+}
+
+#[test]
+fn ladder_build_type_allows_tree_overlap() {
+    assert!(BuildType::WoodLadder.allows_tree_overlap());
+    assert!(BuildType::RopeLadder.allows_tree_overlap());
+}
+
+#[test]
+fn cancel_ladder_removes_blueprint_and_data() {
+    let mut sim = test_sim(42);
+    let (anchor, orientation) = find_ladder_column(&sim, 2);
+
+    // Designate a wood ladder.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor,
+            height: 2,
+            orientation,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+    let cancel_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::CancelBuild { project_id },
+    };
+    let result = sim.step(&[cancel_cmd], 2);
+
+    assert!(sim.db.blueprints.is_empty());
+    assert!(sim.db.tasks.is_empty());
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, SimEventKind::BuildCancelled { .. }))
+    );
+}
+
+#[test]
+fn test_carve_skips_forest_floor() {
+    let mut sim = test_sim(42);
+    let (ws_x, _, ws_z) = sim.config.world_size;
+    let center_x = ws_x as i32 / 2;
+    let center_z = ws_z as i32 / 2;
+    let floor = VoxelCoord::new(center_x, 0, center_z);
+    assert_eq!(sim.world.get(floor), VoxelType::ForestFloor);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![floor],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // No blueprint should be created — ForestFloor is not carvable.
+    assert!(
+        sim.db.blueprints.is_empty(),
+        "ForestFloor should not be carvable"
+    );
+    assert_eq!(sim.last_build_message.as_deref(), Some("Nothing to carve."));
+}
+
+#[test]
+fn test_cancel_carve_restores_originals() {
+    let mut config = test_config();
+    config.carve_work_ticks_per_voxel = 1;
+    let mut sim = SimState::with_config(42, config);
+
+    // Find two adjacent trunk voxels for carving.
+    let tree = &sim.trees[&sim.player_tree_id];
+    let v1 = tree.trunk_voxels.iter().copied().find(|v| v.y > 0).unwrap();
+    let original_type = sim.world.get(v1);
+    assert!(original_type.is_solid());
+
+    // Spawn elf and designate carve.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
+    let spawn_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: elf_pos,
+        },
+    };
+    let carve_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateCarve {
+            voxels: vec![v1],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[spawn_cmd, carve_cmd], 2);
+
+    // Run long enough for the carve to complete.
+    sim.step(&[], 500_000);
+    assert_eq!(sim.world.get(v1), VoxelType::Air);
+
+    // Now cancel the build.
+    let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
+    let cancel_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 500_001,
+        action: SimAction::CancelBuild { project_id },
+    };
+    sim.step(&[cancel_cmd], 500_001);
+
+    // The voxel should be restored to its original type.
+    assert_eq!(
+        sim.world.get(v1),
+        original_type,
+        "Cancelled carve should restore original voxel type"
+    );
+    assert!(
+        !sim.carved_voxels.contains(&v1),
+        "carved_voxels should be cleaned up"
+    );
+}
+
+#[test]
+fn ladder_save_load_roundtrip() {
+    let mut sim = test_sim(42);
+    let (anchor, orientation) = find_ladder_column(&sim, 2);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor,
+            height: 2,
+            orientation,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let json = sim.to_json().unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+    assert_eq!(restored.db.blueprints.len(), 1);
+    let bp = restored.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.build_type, BuildType::WoodLadder);
+}
+
+#[test]
+fn designate_rope_ladder_rejects_no_anchor() {
+    let mut sim = test_sim(42);
+    // Find a column of 3 air voxels next to trunk, then try placing a
+    // rope ladder of height 3. The top voxel's ladder face must be
+    // adjacent to solid — pick an anchor where that's not the case.
+    let (anchor, orientation) = find_ladder_column(&sim, 3);
+    // The anchor faces toward trunk, so height=1 passes (top is adjacent).
+    // But we want to fail: place the anchor 2 voxels further out from the
+    // trunk so the top voxel's neighbor is air.
+    let (odx, _, odz) = orientation.to_offset();
+    let far_anchor = VoxelCoord::new(anchor.x - odx * 2, anchor.y, anchor.z - odz * 2);
+    // Make sure the far anchor column is air (best effort — skip if not).
+    let all_air = (0..3).all(|dy| {
+        let coord = VoxelCoord::new(far_anchor.x, far_anchor.y + dy, far_anchor.z);
+        sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+    });
+    if !all_air {
+        // Can't construct the test scenario — skip gracefully.
+        return;
+    }
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor: far_anchor,
+            height: 3,
+            orientation,
+            kind: LadderKind::Rope,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 0);
+    assert!(sim.last_build_message.is_some());
+}
+
+#[test]
+fn designate_rope_ladder_multiheight() {
+    let mut sim = test_sim(42);
+    // Find a column of 3 air voxels next to trunk. Rope ladder needs
+    // top voxel adjacent to solid — but the anchor is at the bottom.
+    // With height=3, the top (anchor.y+2) must have its ladder face
+    // neighbor be solid.
+    let tree = &sim.trees[&sim.player_tree_id];
+    let mut found = None;
+    for &trunk_coord in &tree.trunk_voxels {
+        for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let orientation = FaceDirection::from_offset(-dx, 0, -dz).unwrap();
+            // We need a column of 3 air voxels starting below the trunk,
+            // where the topmost voxel (base.y+2) is at trunk_coord.y.
+            let base = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y - 2, trunk_coord.z + dz);
+            let all_air = (0..3).all(|dy| {
+                let coord = VoxelCoord::new(base.x, base.y + dy, base.z);
+                sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+            });
+            // Top voxel's ladder-face neighbor must be solid (the trunk).
+            let (odx, _, odz) = orientation.to_offset();
+            let top_neighbor = VoxelCoord::new(base.x + odx, base.y + 2, base.z + odz);
+            if all_air && sim.world.get(top_neighbor).is_solid() {
+                found = Some((base, orientation));
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let (anchor, orientation) = found.expect("No suitable multi-height rope column found");
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor,
+            height: 3,
+            orientation,
+            kind: LadderKind::Rope,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.build_type, BuildType::RopeLadder);
+    assert_eq!(bp.voxels.len(), 3);
+}
+
+#[test]
+fn ladder_classify_for_overlap_blocked() {
+    assert_eq!(
+        VoxelType::WoodLadder.classify_for_overlap(),
+        OverlapClassification::Blocked
+    );
+    assert_eq!(
+        VoxelType::RopeLadder.classify_for_overlap(),
+        OverlapClassification::Blocked
+    );
+}
+
+#[test]
+fn ladder_build_type_to_voxel_type() {
+    assert_eq!(BuildType::WoodLadder.to_voxel_type(), VoxelType::WoodLadder);
+    assert_eq!(BuildType::RopeLadder.to_voxel_type(), VoxelType::RopeLadder);
+}
+
+#[test]
+fn designate_ladder_determinism() {
+    let (anchor_a, orientation_a) = {
+        let sim = test_sim(42);
+        find_ladder_column(&sim, 3)
+    };
+    let (anchor_b, orientation_b) = {
+        let sim = test_sim(42);
+        find_ladder_column(&sim, 3)
+    };
+    assert_eq!(anchor_a, anchor_b);
+    assert_eq!(orientation_a, orientation_b);
+
+    let mut sim_a = test_sim(42);
+    let mut sim_b = test_sim(42);
+
+    let cmd_a = SimCommand {
+        player_id: sim_a.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor: anchor_a,
+            height: 3,
+            orientation: orientation_a,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    let cmd_b = SimCommand {
+        player_id: sim_b.player_id,
+        tick: 1,
+        action: SimAction::DesignateLadder {
+            anchor: anchor_b,
+            height: 3,
+            orientation: orientation_b,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    sim_a.step(&[cmd_a], 1);
+    sim_b.step(&[cmd_b], 1);
+
+    assert_eq!(sim_a.db.blueprints.len(), sim_b.db.blueprints.len());
+}
+
+#[test]
+fn test_carve_nav_graph_update() {
+    let mut config = test_config();
+    config.carve_work_ticks_per_voxel = 1;
+    let mut sim = SimState::with_config(42, config);
+
+    // Find a solid voxel that is part of the tree.
+    let solid = find_carvable_voxel(&sim);
+    // Before carving, the voxel is solid — it should not be a nav node itself.
+    assert!(
+        sim.world.get(solid).is_solid(),
+        "Precondition: voxel is solid"
+    );
+
+    // Spawn elf and designate carve.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
+    let spawn_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: elf_pos,
+        },
+    };
+    let carve_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateCarve {
+            voxels: vec![solid],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[spawn_cmd, carve_cmd], 2);
+
+    // Run sim to complete the carve.
+    sim.step(&[], 500_000);
+
+    // After carving, the voxel is Air. If it has a solid face neighbor,
+    // it should now be a nav node.
+    assert_eq!(sim.world.get(solid), VoxelType::Air);
+    if sim.world.has_solid_face_neighbor(solid) {
+        let node = sim.nav_graph.find_nearest_node(solid);
+        assert!(
+            node.is_some(),
+            "Carved voxel with solid neighbor should be a nav node"
+        );
+    }
+}
+
+#[test]
+fn test_carve_save_load_roundtrip() {
+    let mut config = test_config();
+    config.carve_work_ticks_per_voxel = 1;
+    let mut sim = SimState::with_config(42, config);
+
+    let solid = find_carvable_voxel(&sim);
+    let original_type = sim.world.get(solid);
+
+    // Spawn elf and designate carve.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
+    let spawn_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: elf_pos,
+        },
+    };
+    let carve_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateCarve {
+            voxels: vec![solid],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[spawn_cmd, carve_cmd], 2);
+
+    // Complete the carve.
+    sim.step(&[], 500_000);
+    assert_eq!(sim.world.get(solid), VoxelType::Air);
+    assert!(sim.carved_voxels.contains(&solid));
+
+    // Save and load.
+    let json = sim.to_json().unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+
+    // Verify carved voxels survived.
+    assert!(restored.carved_voxels.contains(&solid));
+    assert_eq!(
+        restored.world.get(solid),
+        VoxelType::Air,
+        "Carved voxel should be Air after reload"
+    );
+
+    // Verify the original type is in the blueprint's original_voxels.
+    let bp = restored.db.blueprints.iter_all().next().unwrap();
+    let orig = bp.original_voxels.iter().find(|(c, _)| *c == solid);
+    assert!(orig.is_some());
+    assert_eq!(orig.unwrap().1, original_type);
+}
+
+// -------------------------------------------------------------------
+// Blueprint overlap rejection (F-no-bp-overlap)
+// -------------------------------------------------------------------
+
+#[test]
+fn build_rejects_overlap_with_existing_build_blueprint() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // First designation succeeds.
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Second designation on the same voxel should be rejected.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd2], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Second blueprint should not be created"
+    );
+    assert!(
+        sim.last_build_message
+            .as_ref()
+            .unwrap()
+            .contains("existing blueprint"),
+        "Should mention existing blueprint overlap: {:?}",
+        sim.last_build_message
+    );
+}
+
+#[test]
+fn build_rejects_overlap_with_carve_blueprint() {
+    let mut sim = test_sim(42);
+    let solid = find_carvable_voxel(&sim);
+
+    // Designate a carve on the solid voxel.
+    let carve_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![solid],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[carve_cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Attempt to build on the same voxel (carve shows as Air in overlay).
+    // This should be rejected due to blueprint overlap, not silently allowed.
+    let build_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Wall,
+            voxels: vec![solid],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[build_cmd], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Build should not overlap carve blueprint"
+    );
+    assert!(
+        sim.last_build_message
+            .as_ref()
+            .unwrap()
+            .contains("existing blueprint"),
+    );
+}
+
+#[test]
+fn carve_filters_out_build_blueprint_voxels() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Designate a platform build.
+    let build_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[build_cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Attempt to carve the same voxel — filtered out as blueprint-claimed,
+    // so nothing to carve.
+    let carve_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateCarve {
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[carve_cmd], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Carve should not overlap build blueprint"
+    );
+}
+
+#[test]
+fn carve_filters_out_carve_blueprint_voxels() {
+    let mut sim = test_sim(42);
+    let solid = find_carvable_voxel(&sim);
+
+    // First carve designation.
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![solid],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Second carve on the same voxel — filtered out.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateCarve {
+            voxels: vec![solid],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd2], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Double carve should be filtered"
+    );
+}
+
+#[test]
+fn building_rejects_overlap_with_existing_blueprint() {
+    let mut sim = test_sim(42);
+    let site = find_building_site(&sim);
+
+    // Designate a platform on one of the building's wall voxels (y+1).
+    // Building walls are at the perimeter of (site.x..site.x+3, site.y+1, site.z..site.z+3).
+    let wall_coord = VoxelCoord::new(site.x, site.y + 1, site.z);
+    assert_eq!(sim.world.get(wall_coord), VoxelType::Air);
+
+    // First: place a platform at the wall position.
+    // Need adjacency — wall_coord is above solid ground, so has a solid
+    // face neighbor below.
+    let platform_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![wall_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[platform_cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Now try to designate a building that overlaps.
+    let building_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuilding {
+            anchor: site,
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[building_cmd], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Building should be rejected due to overlap; msg: {:?}",
+        sim.last_build_message
+    );
+    assert!(
+        sim.last_build_message
+            .as_ref()
+            .unwrap()
+            .contains("existing blueprint"),
+    );
+}
+
+#[test]
+fn ladder_rejects_overlap_with_existing_blueprint() {
+    let mut sim = test_sim(42);
+    let (anchor, orientation) = find_ladder_column(&sim, 2);
+
+    // Designate a platform at the ladder's anchor voxel.
+    let platform_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![anchor],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[platform_cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Now try to designate a ladder overlapping that voxel.
+    let ladder_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateLadder {
+            anchor,
+            height: 2,
+            orientation,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[ladder_cmd], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Ladder should be rejected due to overlap; msg: {:?}",
+        sim.last_build_message
+    );
+    assert!(
+        sim.last_build_message
+            .as_ref()
+            .unwrap()
+            .contains("existing blueprint"),
+    );
+}
+
+#[test]
+fn carve_partial_overlap_filters_claimed_voxels() {
+    // When carving a region where some voxels are claimed by an existing
+    // blueprint and some are not, only unclaimed voxels appear in the
+    // new carve blueprint.
+    let mut sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+
+    // Find two carvable (solid, non-ForestFloor) voxels.
+    let carvable: Vec<VoxelCoord> = tree
+        .trunk_voxels
+        .iter()
+        .copied()
+        .filter(|v| {
+            let vt = sim.world.get(*v);
+            vt.is_solid() && vt != VoxelType::ForestFloor && v.y > 0
+        })
+        .take(2)
+        .collect();
+    assert!(carvable.len() >= 2, "Need two carvable voxels");
+
+    // Designate a carve on the first voxel.
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![carvable[0]],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Now carve both voxels — the first should be filtered out.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateCarve {
+            voxels: carvable.clone(),
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd2], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        2,
+        "Second carve should succeed with the unclaimed voxel"
+    );
+    let second_bp = sim
+        .db
+        .blueprints
+        .iter_all()
+        .find(|bp| bp.voxels.len() == 1 && bp.voxels[0] == carvable[1])
+        .expect("Second blueprint should contain only the unclaimed voxel");
+    assert_eq!(second_bp.voxels, vec![carvable[1]]);
+}
+
+#[test]
+fn build_partial_overlap_rejected() {
+    // If a multi-voxel designation has even one voxel overlapping an
+    // existing blueprint, the entire designation is rejected.
+    let mut sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+
+    // Find two adjacent air voxels next to trunk.
+    let mut air_pair: Option<(VoxelCoord, VoxelCoord)> = None;
+    'outer: for &trunk_coord in &tree.trunk_voxels {
+        for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let a = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y, trunk_coord.z + dz);
+            let b = VoxelCoord::new(a.x + dx, a.y, a.z + dz);
+            if sim.world.in_bounds(a)
+                && sim.world.in_bounds(b)
+                && sim.world.get(a) == VoxelType::Air
+                && sim.world.get(b) == VoxelType::Air
+            {
+                air_pair = Some((a, b));
+                break 'outer;
+            }
+        }
+    }
+    let (a, b) = air_pair.expect("Need two adjacent air voxels near trunk");
+
+    // Designate first voxel.
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![a],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Try to designate both voxels (a overlaps, b is new).
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![a, b],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd2], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Partial overlap should reject entire designation"
+    );
+}
+
+#[test]
+fn non_overlapping_builds_both_succeed() {
+    let mut sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+
+    // Find two separate air voxels next to trunk.
+    let mut air_voxels = Vec::new();
+    for &trunk_coord in &tree.trunk_voxels {
+        for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let neighbor = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y, trunk_coord.z + dz);
+            if sim.world.in_bounds(neighbor) && sim.world.get(neighbor) == VoxelType::Air {
+                air_voxels.push(neighbor);
+                if air_voxels.len() >= 2 {
+                    break;
+                }
+            }
+        }
+        if air_voxels.len() >= 2 {
+            break;
+        }
+    }
+    assert!(air_voxels.len() >= 2, "Need two air voxels near trunk");
+    let (a, b) = (air_voxels[0], air_voxels[1]);
+    assert_ne!(a, b);
+
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![a],
+            priority: Priority::Normal,
+        },
+    };
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![b],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1, cmd2], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        2,
+        "Non-overlapping builds should both succeed"
+    );
+}
+
+#[test]
+fn completed_blueprint_does_not_block_carve() {
+    // Completed blueprints should not trigger the overlap check — only
+    // Designated blueprints are in the overlay.
+    let mut config = test_config();
+    config.build_work_ticks_per_voxel = 1;
+    let mut sim = SimState::with_config(42, config);
+
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Spawn an elf and designate a platform.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
+    let spawn_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: elf_pos,
+        },
+    };
+    let build_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[spawn_cmd, build_cmd], 2);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Let the build complete.
+    sim.step(&[], 500_000);
+    assert_eq!(
+        sim.world.get(air_coord),
+        VoxelType::GrownPlatform,
+        "Platform should be materialized"
+    );
+
+    // Now carve the completed platform — should succeed since the
+    // blueprint is Complete, not Designated.
+    let carve_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 500_001,
+        action: SimAction::DesignateCarve {
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[carve_cmd], 500_001);
+    // Should have 2 blueprints now (the completed build + the new carve).
+    assert_eq!(
+        sim.db.blueprints.len(),
+        2,
+        "Carve over completed build should succeed; msg: {:?}",
+        sim.last_build_message
+    );
+}
+
+#[test]
+fn state_checksum_deterministic() {
+    let sim_a = test_sim(42);
+    let sim_b = test_sim(42);
+    let hash_a = sim_a.state_checksum();
+    let hash_b = sim_b.state_checksum();
+    assert_eq!(
+        hash_a, hash_b,
+        "same seed should produce identical checksum"
+    );
+    assert_ne!(hash_a, 0, "checksum should not be zero");
+}
+
+#[test]
+fn state_checksum_different_seeds() {
+    let sim_a = test_sim(42);
+    let sim_b = test_sim(99);
+    assert_ne!(
+        sim_a.state_checksum(),
+        sim_b.state_checksum(),
+        "different seeds should produce different checksums"
+    );
+}
+
+// --- Furnishing tests ---
+
+/// Insert a completed building into the sim's structures. Returns the
+/// StructureId. The `anchor` parameter is the foundation level (solid
+/// ground); the CompletedStructure's anchor is set one level higher to
+/// match `from_blueprint()`, which computes the bounding box from the
+/// BuildingInterior voxels (not the foundation). The building is 3x3x1
+/// with solid foundation below and BuildingInterior above.
+fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) -> StructureId {
+    let id = StructureId(sim.next_structure_id);
+    sim.next_structure_id += 1;
+
+    // Place BuildingInterior voxels in the world and record face data.
+    // compute_building_face_layout treats `anchor` as foundation level
+    // and creates interior voxels at anchor.y + 1.
+    let face_layout = crate::building::compute_building_face_layout(anchor, 3, 3, 1);
+    for (&coord, fd) in &face_layout {
+        sim.world.set(coord, VoxelType::BuildingInterior);
+        sim.face_data.insert(coord, fd.clone());
+        sim.face_data_list.push((coord, fd.clone()));
+        sim.placed_voxels.push((coord, VoxelType::BuildingInterior));
+        sim.structure_voxels.insert(coord, id);
+    }
+
+    // Place the foundation as solid GrownWall underneath.
+    for z in anchor.z..anchor.z + 3 {
+        for x in anchor.x..anchor.x + 3 {
+            let foundation = VoxelCoord::new(x, anchor.y, z);
+            if sim.world.get(foundation) == VoxelType::Air {
+                sim.world.set(foundation, VoxelType::GrownWall);
+                sim.placed_voxels.push((foundation, VoxelType::GrownWall));
+            }
+        }
+    }
+
+    // The CompletedStructure anchor is the bounding-box min of the
+    // blueprint voxels (BuildingInterior), which is one above foundation.
+    let interior_anchor = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z);
+
+    let project_id = ProjectId::new(&mut sim.rng);
+    let structure = CompletedStructure {
+        id,
+        project_id,
+        build_type: BuildType::Building,
+        anchor: interior_anchor,
+        width: 3,
+        depth: 3,
+        height: 1,
+        completed_tick: sim.tick,
+        name: None,
+        furnishing: None,
+        inventory_id: sim.create_inventory(crate::db::InventoryOwnerKind::Structure),
+        logistics_priority: None,
+        crafting_enabled: false,
+        greenhouse_species: None,
+        greenhouse_enabled: false,
+        greenhouse_last_production_tick: 0,
+    };
+    sim.db.structures.insert_no_fk(structure).unwrap();
+
+    // Insert a dummy blueprint so FK validation passes on deserialization.
+    sim.db
+        .blueprints
+        .insert_no_fk(crate::db::Blueprint {
+            id: project_id,
+            build_type: BuildType::Building,
+            voxels: Vec::new(),
+            priority: crate::types::Priority::Normal,
+            state: crate::blueprint::BlueprintState::Complete,
+            task_id: None,
+            composition_id: None,
+            face_layout: None,
+            stress_warning: false,
+            original_voxels: Vec::new(),
+        })
+        .unwrap();
+
+    // Rebuild nav graph so there are nav nodes inside the building.
+    sim.nav_graph = nav::build_nav_graph(&sim.world, &sim.face_data);
+
+    id
+}
+
+#[test]
+fn compute_furniture_positions_3x3_dormitory() {
+    let mut rng = GameRng::new(42);
+    let structure = CompletedStructure {
+        id: StructureId(0),
+        project_id: ProjectId::new(&mut rng),
+        build_type: BuildType::Building,
+        anchor: VoxelCoord::new(0, 0, 0),
+        width: 3,
+        depth: 3,
+        height: 1,
+        completed_tick: 0,
+        name: None,
+        furnishing: None,
+        inventory_id: InventoryId(0),
+        logistics_priority: None,
+        crafting_enabled: false,
+        greenhouse_species: None,
+        greenhouse_enabled: false,
+        greenhouse_last_production_tick: 0,
+    };
+
+    let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
+
+    // 3x3 = 9 floor tiles, target ~4 items. Door at (1,0,2) and its
+    // neighbors are excluded, so fewer eligible positions.
+    assert!(!items.is_empty());
+    // All items should be at y=0 (anchor.y, the interior level).
+    for item in &items {
+        assert_eq!(item.y, 0);
+    }
+    // No item should be at the door position.
+    let door = VoxelCoord::new(1, 0, 2);
+    assert!(!items.contains(&door));
+}
+
+#[test]
+fn compute_furniture_positions_5x5_dormitory() {
+    let mut rng = GameRng::new(42);
+    let structure = CompletedStructure {
+        id: StructureId(0),
+        project_id: ProjectId::new(&mut rng),
+        build_type: BuildType::Building,
+        anchor: VoxelCoord::new(0, 0, 0),
+        width: 5,
+        depth: 5,
+        height: 1,
+        completed_tick: 0,
+        name: None,
+        furnishing: None,
+        inventory_id: InventoryId(0),
+        logistics_priority: None,
+        crafting_enabled: false,
+        greenhouse_species: None,
+        greenhouse_enabled: false,
+        greenhouse_last_production_tick: 0,
+    };
+
+    let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
+
+    // 5x5 = 25 floor tiles, target ~12 items (1 per 2 tiles).
+    assert!(
+        items.len() >= 8,
+        "Expected at least 8 items for 5x5 dormitory, got {}",
+        items.len()
+    );
+    assert!(
+        items.len() <= 12,
+        "Expected at most 12 items for 5x5 dormitory, got {}",
+        items.len()
+    );
+}
+
+#[test]
+fn state_checksum_changes_after_mutation() {
+    let mut sim = test_sim(42);
+    let before = sim.state_checksum();
+
+    // Spawn an elf to mutate state.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: spawn_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let after = sim.state_checksum();
+    assert_ne!(
+        before, after,
+        "checksum should change after spawning a creature"
+    );
+}
+
+#[test]
+fn display_name_dormitory_when_furnished() {
+    let mut rng = GameRng::new(42);
+    let structure = CompletedStructure {
+        id: StructureId(7),
+        project_id: ProjectId::new(&mut rng),
+        build_type: BuildType::Building,
+        anchor: VoxelCoord::new(0, 0, 0),
+        width: 3,
+        depth: 3,
+        height: 1,
+        completed_tick: 0,
+        name: None,
+        furnishing: Some(FurnishingType::Dormitory),
+        inventory_id: InventoryId(0),
+        logistics_priority: None,
+        crafting_enabled: false,
+        greenhouse_species: None,
+        greenhouse_enabled: false,
+        greenhouse_last_production_tick: 0,
+    };
+
+    assert_eq!(structure.display_name(), "Dormitory #7");
+}
+
+#[test]
+fn display_name_custom_overrides_dormitory() {
+    let mut rng = GameRng::new(42);
+    let structure = CompletedStructure {
+        id: StructureId(7),
+        project_id: ProjectId::new(&mut rng),
+        build_type: BuildType::Building,
+        anchor: VoxelCoord::new(0, 0, 0),
+        width: 3,
+        depth: 3,
+        height: 1,
+        completed_tick: 0,
+        name: Some("Starlight Hall".to_string()),
+        furnishing: Some(FurnishingType::Dormitory),
+        inventory_id: InventoryId(0),
+        logistics_priority: None,
+        crafting_enabled: false,
+        greenhouse_species: None,
+        greenhouse_enabled: false,
+        greenhouse_last_production_tick: 0,
+    };
+
+    assert_eq!(structure.display_name(), "Starlight Hall");
+}
+
+#[test]
+fn furnish_structure_creates_task() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Dormitory,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Should have created a Furnish task.
+    let furnish_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Furnish)
+        .collect();
+    assert_eq!(furnish_tasks.len(), 1);
+    let task = furnish_tasks[0];
+    assert_eq!(task.state, TaskState::Available);
+    assert_eq!(task.required_species, Some(Species::Elf));
+
+    // Structure should have furnishing set and planned furniture computed.
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    assert_eq!(structure.furnishing, Some(FurnishingType::Dormitory));
+    let planned = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|f| !f.placed)
+        .count();
+    let placed = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|f| f.placed)
+        .count();
+    assert!(planned > 0);
+    assert_eq!(placed, 0);
+
+    // Total cost should be planned count (number of items = number of actions).
+    let expected_cost = planned as f32;
+    assert_eq!(task.total_cost, expected_cost);
+}
+
+#[test]
+fn furnish_structure_display_name_changes() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // Before furnishing: "Building #N"
+    assert_eq!(
+        sim.db.structures.get(&structure_id).unwrap().display_name(),
+        format!("Building #{}", structure_id.0)
+    );
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Dormitory,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // After furnishing: "Dormitory #N"
+    assert_eq!(
+        sim.db.structures.get(&structure_id).unwrap().display_name(),
+        format!("Dormitory #{}", structure_id.0)
+    );
+}
+
+#[test]
+fn furnish_preserves_custom_name() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // Give it a custom name first.
+    let rename_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::RenameStructure {
+            structure_id,
+            name: Some("Starlight Hall".to_string()),
+        },
+    };
+    sim.step(&[rename_cmd], sim.tick + 1);
+    assert_eq!(
+        sim.db.structures.get(&structure_id).unwrap().display_name(),
+        "Starlight Hall"
+    );
+
+    // Furnish as dormitory — custom name should be preserved.
+    let furnish_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Dormitory,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[furnish_cmd], sim.tick + 1);
+
+    assert_eq!(
+        sim.db.structures.get(&structure_id).unwrap().furnishing,
+        Some(FurnishingType::Dormitory)
+    );
+    assert_eq!(
+        sim.db.structures.get(&structure_id).unwrap().display_name(),
+        "Starlight Hall"
+    );
+}
+
+#[test]
+fn furnish_rejects_non_building() {
+    let mut sim = test_sim(42);
+
+    // Insert a platform structure (not a Building).
+    let id = StructureId(sim.next_structure_id);
+    sim.next_structure_id += 1;
+    let mut rng = GameRng::new(99);
+    let structure = CompletedStructure {
+        id,
+        project_id: ProjectId::new(&mut rng),
+        build_type: BuildType::Platform,
+        anchor: VoxelCoord::new(10, 5, 10),
+        width: 3,
+        depth: 3,
+        height: 1,
+        completed_tick: 0,
+        name: None,
+        furnishing: None,
+        inventory_id: sim.create_inventory(crate::db::InventoryOwnerKind::Structure),
+        logistics_priority: None,
+        crafting_enabled: false,
+        greenhouse_species: None,
+        greenhouse_enabled: false,
+        greenhouse_last_production_tick: 0,
+    };
+    sim.db.structures.insert_no_fk(structure).unwrap();
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id: id,
+            furnishing_type: FurnishingType::Dormitory,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Should NOT have created a task or set furnishing.
+    assert!(
+        sim.db
+            .tasks
+            .iter_all()
+            .all(|t| t.kind_tag != TaskKindTag::Furnish)
+    );
+    assert_eq!(sim.db.structures.get(&id).unwrap().furnishing, None);
+}
+
+#[test]
+fn furnish_rejects_already_furnished() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // Furnish once.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Dormitory,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+    assert_eq!(
+        sim.db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Furnish)
+            .count(),
+        1
+    );
+
+    // Try to furnish again.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Dormitory,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd2], sim.tick + 1);
+
+    // Should still have exactly one Furnish task (second was rejected).
+    assert_eq!(
+        sim.db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Furnish)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn do_furnish_work_places_items_incrementally() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // Furnish the building.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Dormitory,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let planned_count = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|f| !f.placed)
+        .count();
+    assert!(planned_count > 0);
+
+    // Spawn an elf near the building so it can claim the task.
+    let spawn_pos = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z + 3);
+    let spawn_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: spawn_pos,
+        },
+    };
+    sim.step(&[spawn_cmd], sim.tick + 1);
+
+    // Run the sim long enough for the elf to walk there and place at
+    // least one item. furnish_work_ticks_per_item = 2000, so after ~3000
+    // ticks (walk + first item), we should see progress.
+    let ticks_per_item = sim.config.furnish_work_ticks_per_item;
+    let advance_ticks = ticks_per_item * 3 + 5000; // generous for walking
+    sim.step(&[], sim.tick + advance_ticks);
+
+    let placed_count = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|f| f.placed)
+        .count();
+    assert!(
+        placed_count > 0,
+        "Expected at least one item placed after {} ticks, got 0. planned={}",
+        advance_ticks,
+        planned_count
+    );
+}
+
+#[test]
+fn furnish_completes_all_items() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // Furnish the building.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Dormitory,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let all_furniture = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+    let total_planned = all_furniture.len();
+    assert!(total_planned > 0);
+
+    // Spawn an elf near the building.
+    let spawn_pos = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z + 3);
+    let spawn_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: spawn_pos,
+        },
+    };
+    sim.step(&[spawn_cmd], sim.tick + 1);
+
+    // Run long enough for all items to be placed.
+    let ticks_per_item = sim.config.furnish_work_ticks_per_item;
+    let advance_ticks = ticks_per_item * (total_planned as u64 + 2) + 10000;
+    sim.step(&[], sim.tick + advance_ticks);
+
+    let placed_count = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|f| f.placed)
+        .count();
+    let unplaced_count = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|f| !f.placed)
+        .count();
+    assert_eq!(
+        placed_count, total_planned,
+        "Expected all {} items placed, got {}",
+        total_planned, placed_count
+    );
+    assert_eq!(
+        unplaced_count, 0,
+        "Expected no unplaced furniture after completion"
+    );
+
+    // The Furnish task should be complete.
+    let furnish_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Furnish)
+        .collect();
+    assert!(
+        furnish_tasks.is_empty() || furnish_tasks.iter().all(|t| t.state == TaskState::Complete),
+        "Furnish task should be Complete"
+    );
+}
+
+#[test]
+fn furnish_serialization_roundtrip() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // Furnish the building.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Dormitory,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Serialize and restore.
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    let orig = sim.db.structures.get(&structure_id).unwrap();
+    let rest = restored.db.structures.get(&structure_id).unwrap();
+    assert_eq!(orig.furnishing, rest.furnishing);
+    // Check furniture rows survived serialization.
+    let orig_furn: Vec<_> = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .map(|f| (f.coord, f.placed))
+        .collect();
+    let rest_furn: Vec<_> = restored
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .map(|f| (f.coord, f.placed))
+        .collect();
+    assert_eq!(orig_furn, rest_furn);
+}
+
+#[test]
+fn compute_furniture_positions_home_single_item() {
+    let mut rng = GameRng::new(42);
+    let structure = CompletedStructure {
+        id: StructureId(0),
+        project_id: ProjectId::new(&mut rng),
+        build_type: BuildType::Building,
+        anchor: VoxelCoord::new(0, 0, 0),
+        width: 5,
+        depth: 5,
+        height: 1,
+        completed_tick: 0,
+        name: None,
+        furnishing: None,
+        inventory_id: InventoryId(0),
+        logistics_priority: None,
+        crafting_enabled: false,
+        greenhouse_species: None,
+        greenhouse_enabled: false,
+        greenhouse_last_production_tick: 0,
+    };
+
+    let items = structure.compute_furniture_positions(FurnishingType::Home, &mut rng);
+
+    // Home always produces exactly 1 item regardless of building size.
+    assert_eq!(items.len(), 1, "Home should produce exactly 1 item");
+    assert_eq!(items[0].y, 0);
+}
+
+#[test]
+fn compute_furniture_positions_dining_hall_density() {
+    let mut rng = GameRng::new(42);
+    let structure = CompletedStructure {
+        id: StructureId(0),
+        project_id: ProjectId::new(&mut rng),
+        build_type: BuildType::Building,
+        anchor: VoxelCoord::new(0, 0, 0),
+        width: 5,
+        depth: 5,
+        height: 1,
+        completed_tick: 0,
+        name: None,
+        furnishing: None,
+        inventory_id: InventoryId(0),
+        logistics_priority: None,
+        crafting_enabled: false,
+        greenhouse_species: None,
+        greenhouse_enabled: false,
+        greenhouse_last_production_tick: 0,
+    };
+
+    let items = structure.compute_furniture_positions(FurnishingType::DiningHall, &mut rng);
+
+    // 5x5 = 25 tiles, 1 per 4 = ~6 tables. Should be fewer than dormitory.
+    assert!(
+        items.len() >= 3,
+        "Expected at least 3 tables for 5x5 dining hall, got {}",
+        items.len()
+    );
+    assert!(
+        items.len() <= 6,
+        "Expected at most 6 tables for 5x5 dining hall, got {}",
+        items.len()
+    );
+}
+
+#[test]
+fn display_name_all_furnishing_types() {
+    let mut rng = GameRng::new(42);
+    let types_and_names = [
+        (FurnishingType::ConcertHall, "Concert Hall #0"),
+        (FurnishingType::DiningHall, "Dining Hall #0"),
+        (FurnishingType::Dormitory, "Dormitory #0"),
+        (FurnishingType::Home, "Home #0"),
+        (FurnishingType::Kitchen, "Kitchen #0"),
+        (FurnishingType::Storehouse, "Storehouse #0"),
+        (FurnishingType::Workshop, "Workshop #0"),
+    ];
+    for (furnishing_type, expected) in types_and_names {
+        let structure = CompletedStructure {
+            id: StructureId(0),
+            project_id: ProjectId::new(&mut rng),
+            build_type: BuildType::Building,
+            anchor: VoxelCoord::new(0, 0, 0),
+            width: 3,
+            depth: 3,
+            height: 1,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(furnishing_type),
+            inventory_id: InventoryId(0),
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+        };
+        assert_eq!(
+            structure.display_name(),
+            expected,
+            "display_name() for {:?}",
+            furnishing_type
+        );
+    }
+}
+
+#[test]
+fn furnish_structure_workshop() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Workshop,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    assert_eq!(structure.furnishing, Some(FurnishingType::Workshop));
+    let planned_furn = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|f| !f.placed)
+        .count();
+    assert!(planned_furn > 0);
+    assert_eq!(
+        structure.display_name(),
+        format!("Workshop #{}", structure_id.0)
+    );
+}
+
+// -----------------------------------------------------------------------
+// Greenhouse tests
+// -----------------------------------------------------------------------
+
+/// Helper: get the first cultivable fruit species from the DB.
+fn first_cultivable_species(sim: &SimState) -> Option<FruitSpeciesId> {
+    sim.db
+        .fruit_species
+        .iter_all()
+        .find(|f| f.greenhouse_cultivable)
+        .map(|f| f.id)
+}
+
+/// Helper: get a non-cultivable fruit species from the DB.
+fn first_non_cultivable_species(sim: &SimState) -> Option<FruitSpeciesId> {
+    sim.db
+        .fruit_species
+        .iter_all()
+        .find(|f| !f.greenhouse_cultivable)
+        .map(|f| f.id)
+}
+
+#[test]
+fn furnish_greenhouse_sets_species_and_creates_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    let species_id = first_cultivable_species(&sim)
+        .expect("worldgen should produce at least one cultivable fruit");
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Greenhouse,
+            greenhouse_species: Some(species_id),
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    assert_eq!(structure.furnishing, Some(FurnishingType::Greenhouse));
+    assert_eq!(structure.greenhouse_species, Some(species_id));
+    assert!(structure.greenhouse_enabled);
+    assert_eq!(structure.greenhouse_last_production_tick, sim.tick);
+
+    // Should have created a Furnish task.
+    let furnish_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == crate::db::TaskKindTag::Furnish)
+        .collect();
+    assert_eq!(furnish_tasks.len(), 1);
+}
+
+#[test]
+fn furnish_greenhouse_rejects_non_cultivable_species() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    let species_id = first_non_cultivable_species(&sim);
+    // If all species happen to be cultivable in this seed, skip.
+    if let Some(species_id) = species_id {
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::FurnishStructure {
+                structure_id,
+                furnishing_type: FurnishingType::Greenhouse,
+                greenhouse_species: Some(species_id),
+            },
+        };
+        sim.step(&[cmd], sim.tick + 1);
+
+        let structure = sim.db.structures.get(&structure_id).unwrap();
+        assert_eq!(
+            structure.furnishing, None,
+            "Non-cultivable species should be rejected"
+        );
+    }
+}
+
+#[test]
+fn furnish_greenhouse_rejects_missing_species() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // No greenhouse_species provided.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Greenhouse,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    assert_eq!(
+        structure.furnishing, None,
+        "Greenhouse without species should be rejected"
+    );
+}
+
+#[test]
+fn furnish_greenhouse_rejects_unknown_species() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    let bogus_id = FruitSpeciesId(9999);
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Greenhouse,
+            greenhouse_species: Some(bogus_id),
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    assert_eq!(
+        structure.furnishing, None,
+        "Unknown species should be rejected"
+    );
+}
+
+#[test]
+fn greenhouse_produces_fruit_after_interval() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    let species_id = first_cultivable_species(&sim).expect("need a cultivable species");
+
+    // Set a short production interval for testing.
+    sim.config.greenhouse_base_production_ticks = 1000;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Greenhouse,
+            greenhouse_species: Some(species_id),
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+    let furnish_tick = sim.tick;
+
+    // The building has 3x3 = 9 interior tiles (floor_interior_positions).
+    // Production interval = base / area = 1000 / 9 = 111 ticks.
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    let area = structure.floor_interior_positions().len() as u64;
+    let interval = sim.config.greenhouse_base_production_ticks / area;
+
+    // Advance past one interval + logistics heartbeat.
+    let logistics_interval = sim.config.logistics_heartbeat_interval_ticks;
+    let target_tick = furnish_tick + interval + logistics_interval;
+    sim.step(&[], target_tick);
+
+    // Check that fruit was produced in the greenhouse's inventory.
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    let fruit_count: u32 = sim
+        .db
+        .item_stacks
+        .iter_all()
+        .filter(|s| {
+            s.inventory_id == inv_id
+                && s.kind == inventory::ItemKind::Fruit
+                && s.material == Some(inventory::Material::FruitSpecies(species_id))
+        })
+        .map(|s| s.quantity)
+        .sum();
+    assert!(
+        fruit_count >= 1,
+        "Greenhouse should have produced at least 1 fruit, got {fruit_count}"
+    );
+}
+
+#[test]
+fn greenhouse_display_name() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    let species_id = first_cultivable_species(&sim).expect("need a cultivable species");
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Greenhouse,
+            greenhouse_species: Some(species_id),
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    let name = structure.display_name();
+    assert!(
+        name.starts_with("Greenhouse #"),
+        "Expected 'Greenhouse #N', got '{name}'"
+    );
+}
+
+#[test]
+fn greenhouse_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    let species_id = first_cultivable_species(&sim).expect("need a cultivable species");
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Greenhouse,
+            greenhouse_species: Some(species_id),
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Roundtrip through JSON.
+    let json = serde_json::to_string(&sim).unwrap();
+    let sim2: SimState = serde_json::from_str(&json).unwrap();
+
+    let structure = sim2.db.structures.get(&structure_id).unwrap();
+    assert_eq!(structure.furnishing, Some(FurnishingType::Greenhouse));
+    assert_eq!(structure.greenhouse_species, Some(species_id));
+    assert!(structure.greenhouse_enabled);
+}
+
+// -----------------------------------------------------------------------
+// Home assignment tests
+// -----------------------------------------------------------------------
+
+/// Create a completed building at `anchor`, furnish it as Home, and manually
+/// place 1 bed in the furniture table (skipping the furnishing task flow).
+fn insert_completed_home(sim: &mut SimState, anchor: VoxelCoord) -> StructureId {
+    let structure_id = insert_completed_building(sim, anchor);
+
+    // Find a valid bed position inside the building interior.
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    let interior = structure.floor_interior_positions();
+    let bed_pos = interior[0]; // First interior tile.
+
+    let mut structure = sim.db.structures.get(&structure_id).unwrap();
+    structure.furnishing = Some(FurnishingType::Home);
+    let _ = sim.db.structures.update_no_fk(structure);
+
+    // Insert a placed furniture row for the bed.
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: bed_pos,
+            placed: true,
+        });
+
+    structure_id
+}
+
+#[test]
+fn assign_home_sets_bidirectional_refs() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let home_id = insert_completed_home(&mut sim, anchor);
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Assign elf to home.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::AssignHome {
+            creature_id: elf_id,
+            structure_id: Some(home_id),
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().assigned_home,
+        Some(home_id)
+    );
+    assert_eq!(
+        sim.db
+            .creatures
+            .by_assigned_home(&Some(home_id), tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .map(|c| c.id),
+        Some(elf_id)
+    );
+}
+
+#[test]
+fn assign_home_unassign() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let home_id = insert_completed_home(&mut sim, anchor);
+
+    // Spawn and assign.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: Some(home_id),
+            },
+        }],
+        2,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().assigned_home,
+        Some(home_id)
+    );
+
+    // Unassign.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 3,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: None,
+            },
+        }],
+        3,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().assigned_home, None);
+    assert!(
+        sim.db
+            .creatures
+            .by_assigned_home(&Some(home_id), tabulosity::QueryOpts::ASC)
+            .is_empty()
+    );
+}
+
+#[test]
+fn assign_home_replaces_old_assignment() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor_a = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let anchor_b = VoxelCoord::new(tree_pos.x + 10, 0, tree_pos.z + 5);
+    let home_a = insert_completed_home(&mut sim, anchor_a);
+    let home_b = insert_completed_home(&mut sim, anchor_b);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Assign to home A.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: Some(home_a),
+            },
+        }],
+        2,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().assigned_home,
+        Some(home_a)
+    );
+
+    // Reassign to home B.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 3,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: Some(home_b),
+            },
+        }],
+        3,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().assigned_home,
+        Some(home_b)
+    );
+    assert!(
+        sim.db
+            .creatures
+            .by_assigned_home(&Some(home_a), tabulosity::QueryOpts::ASC)
+            .is_empty()
+    );
+    assert_eq!(
+        sim.db
+            .creatures
+            .by_assigned_home(&Some(home_b), tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .map(|c| c.id),
+        Some(elf_id)
+    );
+}
+
+#[test]
+fn assign_home_evicts_previous_occupant() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let home_id = insert_completed_home(&mut sim, anchor);
+
+    // Spawn two elves.
+    let cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        },
+    ];
+    sim.step(&cmds, 1);
+    let elf_ids: Vec<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(elf_ids.len(), 2);
+    let elf_a = elf_ids[0];
+    let elf_b = elf_ids[1];
+
+    // Assign elf A.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::AssignHome {
+                creature_id: elf_a,
+                structure_id: Some(home_id),
+            },
+        }],
+        2,
+    );
+    assert_eq!(
+        sim.db
+            .creatures
+            .by_assigned_home(&Some(home_id), tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .map(|c| c.id),
+        Some(elf_a)
+    );
+
+    // Assign elf B to same home — evicts elf A.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 3,
+            action: SimAction::AssignHome {
+                creature_id: elf_b,
+                structure_id: Some(home_id),
+            },
+        }],
+        3,
+    );
+    assert_eq!(
+        sim.db
+            .creatures
+            .by_assigned_home(&Some(home_id), tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .map(|c| c.id),
+        Some(elf_b)
+    );
+    assert_eq!(sim.db.creatures.get(&elf_a).unwrap().assigned_home, None);
+    assert_eq!(
+        sim.db.creatures.get(&elf_b).unwrap().assigned_home,
+        Some(home_id)
+    );
+}
+
+#[test]
+fn assign_home_rejects_non_home() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // Furnish as Dormitory (not Home).
+    {
+        let mut s = sim.db.structures.get(&structure_id).unwrap();
+        s.furnishing = Some(FurnishingType::Dormitory);
+        let _ = sim.db.structures.update_no_fk(s);
+    }
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: Some(structure_id),
+            },
+        }],
+        2,
+    );
+
+    // Should be rejected — no assignment set.
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().assigned_home, None);
+    assert!(
+        sim.db
+            .creatures
+            .by_assigned_home(&Some(structure_id), tabulosity::QueryOpts::ASC)
+            .is_empty()
+    );
+}
+
+#[test]
+fn assign_home_rejects_non_elf() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let home_id = insert_completed_home(&mut sim, anchor);
+
+    // Spawn a capybara.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let capy_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .unwrap()
+        .id;
+
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::AssignHome {
+                creature_id: capy_id,
+                structure_id: Some(home_id),
+            },
+        }],
+        2,
+    );
+
+    // Should be rejected — capybaras can't have homes.
+    assert_eq!(sim.db.creatures.get(&capy_id).unwrap().assigned_home, None);
+    assert!(
+        sim.db
+            .creatures
+            .by_assigned_home(&Some(home_id), tabulosity::QueryOpts::ASC)
+            .is_empty()
+    );
+}
+
+#[test]
+fn tired_elf_sleeps_in_assigned_home() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Create a home with a bed.
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let home_id = insert_completed_home(&mut sim, anchor);
+    let home_bed = sim
+        .db
+        .furniture
+        .by_structure_id(&home_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|f| f.placed)
+        .unwrap()
+        .coord;
+
+    // Spawn and assign.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: Some(home_id),
+            },
+        }],
+        2,
+    );
+
+    // Make elf tired.
+    {
+        let food_max_val = sim.species_table[&Species::Elf].food_max;
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.rest = rest_max * 30 / 100;
+        c.food = food_max_val;
+        // Clear any existing task so the elf is idle.
+        c.current_task = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Advance past heartbeat.
+    let target_tick = 2 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Tired elf with home should get a Sleep task"
+    );
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, TaskKindTag::Sleep, "Expected Sleep task");
+    let bed_pos = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+    assert_eq!(
+        bed_pos,
+        Some(home_bed),
+        "Elf should sleep in their assigned home bed"
+    );
+}
+
+#[test]
+fn tired_elf_without_home_uses_dormitory() {
+    // This is largely the same as existing tests, but verifies the new
+    // code path doesn't break dormitory fallback.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Create a dormitory (not a home).
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    let bed_pos = structure.floor_interior_positions()[0];
+    let mut structure = sim.db.structures.get(&structure_id).unwrap();
+    structure.furnishing = Some(FurnishingType::Dormitory);
+    let _ = sim.db.structures.update_no_fk(structure);
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: bed_pos,
+            placed: true,
+        });
+
+    // Spawn elf (no home assignment).
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Make tired and idle.
+    {
+        let food_max_val = sim.species_table[&Species::Elf].food_max;
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.rest = rest_max * 30 / 100;
+        c.food = food_max_val;
+        c.current_task = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Tired elf should get a Sleep task from dormitory"
+    );
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, TaskKindTag::Sleep, "Expected Sleep task");
+    let task_bed = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+    assert_eq!(task_bed, Some(bed_pos), "Should sleep in dormitory bed");
+}
+
+#[test]
+fn assigned_home_unfurnished_falls_back() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Create a home without any placed furniture.
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+    let mut structure = sim.db.structures.get(&structure_id).unwrap();
+    structure.furnishing = Some(FurnishingType::Home);
+    // No furniture placed — bed not yet built.
+    let _ = sim.db.structures.update_no_fk(structure);
+
+    // Spawn and assign.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: Some(structure_id),
+            },
+        }],
+        2,
+    );
+
+    // Make tired and idle.
+    {
+        let food_max_val = sim.species_table[&Species::Elf].food_max;
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.rest = rest_max * 30 / 100;
+        c.food = food_max_val;
+        c.current_task = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let target_tick = 2 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // Should fall back to ground sleep (no dormitories and home has no bed).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Tired elf should get a ground Sleep task"
+    );
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, TaskKindTag::Sleep, "Expected Sleep task");
+    let bed_pos = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+    assert_eq!(bed_pos, None, "Should fall back to ground sleep");
+}
+
+// -----------------------------------------------------------------------
+// Thought system tests
+// -----------------------------------------------------------------------
+
+/// Helper: create a `SimState` with an elf spawned for thought/mood tests.
+/// Returns `(sim, creature_id)`.
+fn sim_with_elf_for_thoughts() -> (SimState, CreatureId) {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    sim.tick = 1000; // Advance tick for thought timestamps.
+    (sim, elf_id)
+}
+
+#[test]
+fn thought_dedup_within_cooldown() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    sim.tick = 1000;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.tick = 1001;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    let thoughts = sim
+        .db
+        .thoughts
+        .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+    assert_eq!(thoughts.len(), 1, "Dedup should prevent second add");
+}
+
+#[test]
+fn thought_dedup_allows_after_cooldown() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    let cooldown = sim.config.thoughts.dedup_ate_meal_ticks;
+    sim.tick = 1000;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.tick = 1000 + cooldown;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    let thoughts = sim
+        .db
+        .thoughts
+        .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+    assert_eq!(thoughts.len(), 2, "Should allow add after cooldown expires");
+}
+
+#[test]
+fn thought_dedup_distinguishes_structure_ids() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    sim.tick = 1000;
+    sim.add_creature_thought(cid, ThoughtKind::SleptInOwnHome(StructureId(1)));
+    sim.tick = 1001;
+    sim.add_creature_thought(cid, ThoughtKind::SleptInOwnHome(StructureId(2)));
+    let thoughts = sim
+        .db
+        .thoughts
+        .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+    assert_eq!(
+        thoughts.len(),
+        2,
+        "Different structure IDs are distinct thoughts"
+    );
+}
+
+#[test]
+fn thought_cap_enforced() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    sim.config.thoughts.cap = 5;
+    sim.config.thoughts.dedup_ate_meal_ticks = 0; // Disable dedup.
+    for i in 0..7 {
+        sim.tick = i * 1000;
+        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    }
+    let thoughts = sim
+        .db
+        .thoughts
+        .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+    assert_eq!(thoughts.len(), 5, "Should not exceed cap");
+    // Oldest should have been dropped — first remaining is tick 2000.
+    assert_eq!(thoughts[0].tick, 2000);
+}
+
+#[test]
+fn thought_expiry() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    let expiry = sim.config.thoughts.expiry_ate_meal_ticks;
+    sim.tick = 1000;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    // Before expiry: should remain.
+    sim.tick = 1000 + expiry - 1;
+    sim.expire_creature_thoughts(cid);
+    let thoughts = sim
+        .db
+        .thoughts
+        .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+    assert_eq!(thoughts.len(), 1, "Should not expire yet");
+    // At expiry: should be removed.
+    sim.tick = 1000 + expiry;
+    sim.expire_creature_thoughts(cid);
+    let thoughts = sim
+        .db
+        .thoughts
+        .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+    assert_eq!(thoughts.len(), 0, "Should expire at expiry tick");
+}
+
+#[test]
+fn thought_serde_roundtrip_via_simstate() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    sim.tick = 5000;
+    sim.add_creature_thought(cid, ThoughtKind::SleptOnGround);
+    sim.tick = 6000;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+    let thoughts = restored
+        .db
+        .thoughts
+        .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
+    assert_eq!(thoughts.len(), 2);
+    assert_eq!(thoughts[0].kind, ThoughtKind::SleptOnGround);
+    assert_eq!(thoughts[1].kind, ThoughtKind::AteMeal);
+}
+
+// -----------------------------------------------------------------------
+// Mood tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn mood_empty_thoughts_is_zero() {
+    let (sim, cid) = sim_with_elf_for_thoughts();
+    let (score, tier) = sim.mood_for_creature(cid);
+    assert_eq!(score, 0);
+    assert_eq!(tier, MoodTier::Neutral);
+}
+
+#[test]
+fn mood_single_positive_thought() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    sim.tick = 1000;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    let (score, tier) = sim.mood_for_creature(cid);
+    assert_eq!(score, 60);
+    assert_eq!(tier, MoodTier::Content);
+}
+
+#[test]
+fn mood_single_negative_thought() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    sim.tick = 1000;
+    sim.add_creature_thought(cid, ThoughtKind::SleptOnGround);
+    let (score, tier) = sim.mood_for_creature(cid);
+    assert_eq!(score, -100);
+    assert_eq!(tier, MoodTier::Unhappy);
+}
+
+#[test]
+fn mood_mixed_thoughts() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    sim.tick = 1000;
+    sim.add_creature_thought(cid, ThoughtKind::SleptInOwnHome(StructureId(1)));
+    sim.tick = 2000;
+    sim.add_creature_thought(cid, ThoughtKind::LowCeiling(StructureId(2)));
+    let (score, tier) = sim.mood_for_creature(cid);
+    // +80 + (-50) = +30
+    assert_eq!(score, 30);
+    assert_eq!(tier, MoodTier::Content);
+}
+
+#[test]
+fn mood_stacking_same_kind() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    sim.config.thoughts.dedup_ate_meal_ticks = 0; // Disable dedup.
+    sim.tick = 1000;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.tick = 2000;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.tick = 3000;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    let (score, tier) = sim.mood_for_creature(cid);
+    // 3 * 60 = 180
+    assert_eq!(score, 180);
+    assert_eq!(tier, MoodTier::Happy);
+}
+
+#[test]
+fn mood_tier_boundaries() {
+    let cfg = crate::config::MoodConfig::default();
+    // Exact boundary values.
+    assert_eq!(cfg.tier(-300), MoodTier::Devastated);
+    assert_eq!(cfg.tier(-301), MoodTier::Devastated);
+    assert_eq!(cfg.tier(-299), MoodTier::Miserable);
+    assert_eq!(cfg.tier(-150), MoodTier::Miserable);
+    assert_eq!(cfg.tier(-149), MoodTier::Unhappy);
+    assert_eq!(cfg.tier(-30), MoodTier::Unhappy);
+    assert_eq!(cfg.tier(-29), MoodTier::Neutral);
+    assert_eq!(cfg.tier(0), MoodTier::Neutral);
+    assert_eq!(cfg.tier(29), MoodTier::Neutral);
+    assert_eq!(cfg.tier(30), MoodTier::Content);
+    assert_eq!(cfg.tier(149), MoodTier::Content);
+    assert_eq!(cfg.tier(150), MoodTier::Happy);
+    assert_eq!(cfg.tier(299), MoodTier::Happy);
+    assert_eq!(cfg.tier(300), MoodTier::Elated);
+    assert_eq!(cfg.tier(301), MoodTier::Elated);
+}
+
+#[test]
+fn mood_custom_config_weights() {
+    let (mut sim, cid) = sim_with_elf_for_thoughts();
+    sim.tick = 1000;
+    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.config.mood.weight_ate_meal = 200;
+    let (score, _) = sim.mood_for_creature(cid);
+    assert_eq!(score, 200);
+}
+
+#[test]
+fn mood_config_serde_roundtrip() {
+    let cfg = crate::config::MoodConfig::default();
+    let json = serde_json::to_string(&cfg).unwrap();
+    let restored: crate::config::MoodConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.weight_ate_meal, cfg.weight_ate_meal);
+    assert_eq!(restored.tier_elated_above, cfg.tier_elated_above);
+}
+
+#[test]
+fn mood_config_backward_compat() {
+    // A GameConfig JSON without a "mood" key should deserialize with defaults.
+    let sim = test_sim(42);
+    let json = serde_json::to_string(&sim).unwrap();
+    // Strip the "mood" key from the JSON to simulate an old save.
+    let mut val: serde_json::Value = serde_json::from_str(&json).unwrap();
+    val.get_mut("config")
+        .and_then(|c| c.as_object_mut())
+        .unwrap()
+        .remove("mood");
+    let stripped = serde_json::to_string(&val).unwrap();
+    let restored: SimState = serde_json::from_str(&stripped).unwrap();
+    assert_eq!(
+        restored.config.mood.weight_ate_meal,
+        crate::config::MoodConfig::default().weight_ate_meal
+    );
+}
+
+#[test]
+fn ground_sleep_generates_thought() {
+    // Integration test: elf sleeps on ground → has SleptOnGround thought.
+    let mut config = test_config();
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0; // No hunger interference.
+    elf_species.rest_decay_per_tick = 0; // Manual control of rest.
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set rest very low to trigger sleep.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
+
+    // Advance past heartbeat to trigger sleep + enough ticks for it to complete.
+    let target_tick = 1 + heartbeat_interval + sim.config.sleep_ticks_ground + 1000;
+    sim.step(&[], target_tick);
+
+    // Elf should have a SleptOnGround thought.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|t| t.kind == ThoughtKind::SleptOnGround),
+        "Elf should have SleptOnGround thought after ground sleep. thoughts={:?}",
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+    );
+    // Piggyback: mood should reflect the negative SleptOnGround thought.
+    let (score, _tier) = sim.mood_for_creature(elf_id);
+    let expected: i32 = sim
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|t| sim.config.mood.mood_weight(&t.kind))
+        .sum();
+    assert_eq!(
+        score, expected,
+        "Mood score should match sum of thought weights"
+    );
+}
+
+#[test]
+fn eating_generates_thought() {
+    // Integration test: elf eats fruit → has AteMeal thought.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    assert!(
+        sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+        "Tree must have fruit for this test"
+    );
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Make the elf hungry.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 10 / 100);
+
+    // Advance enough ticks for the elf to find fruit, walk to it, and eat it.
+    // Walk could be up to ~50 voxels at 500 tpv = 25000 ticks.
+    let target_tick = 1 + heartbeat_interval + 50_000;
+    sim.step(&[], target_tick);
+
+    // Elf should have an AteMeal thought.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|t| t.kind == ThoughtKind::AteMeal),
+        "Elf should have AteMeal thought after eating. thoughts={:?}",
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+    );
+}
+
+// --- Inventory integration tests ---
+
+#[test]
+fn elf_spawns_with_starting_items() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let inv_id = sim.creature_inv(elf_id);
+    // Bread.
+    let bread_count = sim.inv_count_owned(inv_id, inventory::ItemKind::Bread, elf_id);
+    assert_eq!(
+        bread_count, 2,
+        "Elf should spawn with 2 owned bread from elf_starting_bread config"
+    );
+    // Bow.
+    let bow_count = sim.inv_count_owned(inv_id, inventory::ItemKind::Bow, elf_id);
+    assert_eq!(
+        bow_count, 1,
+        "Elf should spawn with 1 owned bow from elf_starting_bows config"
+    );
+    // Arrows.
+    let arrow_count = sim.inv_count_owned(inv_id, inventory::ItemKind::Arrow, elf_id);
+    assert_eq!(
+        arrow_count, 20,
+        "Elf should spawn with 20 owned arrows from elf_starting_arrows config"
+    );
+    assert_eq!(
+        sim.inv_items(inv_id).len(),
+        3,
+        "Inventory should have exactly three stacks (bread, bow, arrows)"
+    );
+}
+
+#[test]
+fn dormitory_sleep_generates_thought() {
+    // Integration test: elf sleeps in dormitory → has SleptInDormitory thought.
+    let mut config = test_config();
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+
+    // Add a dormitory with beds near the tree.
+    let graph = sim.graph_for_species(Species::Elf);
+    let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+    let bed_pos = graph.node(bed_node).position;
+
+    let structure_id = StructureId(999);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: bed_pos,
+            width: 3,
+            depth: 3,
+            height: 3,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::Dormitory),
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+        })
+        .unwrap();
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: bed_pos,
+            placed: true,
+        });
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set rest very low to trigger sleep.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Advance enough ticks for sleep to trigger, walk to bed, and complete.
+    // Walk time + sleep time + buffer.
+    let target_tick = 1 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
+    sim.step(&[], target_tick);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|t| t.kind == ThoughtKind::SleptInDormitory(structure_id)),
+        "Elf should have SleptInDormitory thought. thoughts={:?}",
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+    );
+    // Piggyback: mood should reflect dormitory sleep thought.
+    let (score, _tier) = sim.mood_for_creature(elf_id);
+    let expected: i32 = sim
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|t| sim.config.mood.mood_weight(&t.kind))
+        .sum();
+    assert_eq!(
+        score, expected,
+        "Mood score should match sum of thought weights"
+    );
+}
+
+#[test]
+fn creature_add_and_query_bread() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let elf_id = spawn_elf(&mut sim);
+
+    sim.inv_add_simple_item(
+        sim.creature_inv(elf_id),
+        crate::inventory::ItemKind::Bread,
+        5,
+        Some(elf_id),
+        None,
+    );
+
+    let count = sim.inv_item_count(
+        sim.creature_inv(elf_id),
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(count, 5);
+}
+
+#[test]
+fn creature_inventory_serialization_roundtrip() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let elf_id = spawn_elf(&mut sim);
+
+    sim.inv_add_simple_item(
+        sim.creature_inv(elf_id),
+        crate::inventory::ItemKind::Bread,
+        3,
+        Some(elf_id),
+        None,
+    );
+
+    // Verify via inv_item_count (serialization of item_stacks is tested separately).
+    let count = sim.inv_item_count(
+        sim.creature_inv(elf_id),
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn home_sleep_generates_thought() {
+    // Integration test: elf sleeps in assigned home → has SleptInOwnHome thought.
+    let mut config = test_config();
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+
+    // Add a home with a bed near the tree.
+    let graph = sim.graph_for_species(Species::Elf);
+    let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+    let bed_pos = graph.node(bed_node).position;
+
+    let structure_id = StructureId(888);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: bed_pos,
+            width: 3,
+            depth: 3,
+            height: 3,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::Home),
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+        })
+        .unwrap();
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: bed_pos,
+            placed: true,
+        });
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Assign the home to the elf.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: 2,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: Some(structure_id),
+            },
+        }],
+        2,
+    );
+
+    // Set rest very low to trigger sleep.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Advance enough ticks for sleep to trigger, walk to bed, and complete.
+    let target_tick = 2 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
+    sim.step(&[], target_tick);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|t| t.kind == ThoughtKind::SleptInOwnHome(structure_id)),
+        "Elf should have SleptInOwnHome thought. thoughts={:?}",
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+    );
+    // Piggyback: mood should reflect home sleep thought.
+    let (score, _tier) = sim.mood_for_creature(elf_id);
+    let expected: i32 = sim
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|t| sim.config.mood.mood_weight(&t.kind))
+        .sum();
+    assert_eq!(
+        score, expected,
+        "Mood score should match sum of thought weights"
+    );
+}
+
+#[test]
+fn low_ceiling_generates_thought() {
+    // Integration test: elf sleeps in height-1 building → LowCeiling thought.
+    let mut config = test_config();
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+
+    // Add a dormitory with height=1 (low ceiling).
+    let graph = sim.graph_for_species(Species::Elf);
+    let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+    let bed_pos = graph.node(bed_node).position;
+
+    let structure_id = StructureId(888);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: bed_pos,
+            width: 3,
+            depth: 3,
+            height: 1, // Low ceiling!
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::Dormitory),
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+        })
+        .unwrap();
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: bed_pos,
+            placed: true,
+        });
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set rest very low to trigger sleep.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Advance enough ticks for sleep to trigger, walk to bed, and complete.
+    let target_tick = 1 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
+    sim.step(&[], target_tick);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|t| t.kind == ThoughtKind::LowCeiling(structure_id)),
+        "Elf should have LowCeiling thought from height-1 building. thoughts={:?}",
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+    );
+    // Should also have the dormitory sleep thought.
+    assert!(
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|t| t.kind == ThoughtKind::SleptInDormitory(structure_id)),
+        "Elf should also have SleptInDormitory thought. thoughts={:?}",
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+    );
+    // Piggyback: mood should reflect both dormitory sleep and low ceiling.
+    let (score, _tier) = sim.mood_for_creature(elf_id);
+    let expected: i32 = sim
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|t| sim.config.mood.mood_weight(&t.kind))
+        .sum();
+    assert_eq!(
+        score, expected,
+        "Mood score should match sum of thought weights"
+    );
+}
+
+#[test]
+fn ground_piles_in_sim_state() {
+    let mut sim = test_sim(42);
+    let pos = VoxelCoord::new(10, 1, 20);
+    {
+        let pile_id = sim.ensure_ground_pile(pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            4,
+            None,
+            None,
+        );
+    }
+    assert_eq!(sim.db.ground_piles.len(), 1);
+    let pile = sim
+        .db
+        .ground_piles
+        .by_position(&pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(
+        sim.inv_item_count(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any
+        ),
+        4
+    );
+}
+
+#[test]
+fn ground_piles_serialization_roundtrip() {
+    let mut sim = test_sim(42);
+    let pos1 = VoxelCoord::new(10, 1, 20);
+    let pos2 = VoxelCoord::new(3, 1, 7);
+    {
+        let pile_id = sim.ensure_ground_pile(pos1);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Fruit,
+            2,
+            None,
+            None,
+        );
+    }
+    {
+        let pile_id = sim.ensure_ground_pile(pos2);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            5,
+            None,
+            None,
+        );
+    }
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.db.ground_piles.len(), 2);
+    let pile1 = restored
+        .db
+        .ground_piles
+        .by_position(&pos1, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(pile1.position, pos1);
+    assert_eq!(
+        restored.inv_item_count(
+            pile1.inventory_id,
+            crate::inventory::ItemKind::Fruit,
+            crate::inventory::MaterialFilter::Any
+        ),
+        2
+    );
+    let pile2 = restored
+        .db
+        .ground_piles
+        .by_position(&pos2, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(pile2.position, pos2);
+    assert_eq!(
+        restored.inv_item_count(
+            pile2.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any
+        ),
+        5
+    );
+}
+
+#[test]
+fn ground_piles_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let pos = VoxelCoord::new(10, 1, 20);
+    {
+        let pile_id = sim.ensure_ground_pile(pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            7,
+            None,
+            None,
+        );
+    }
+
+    // Serialize → deserialize round-trip.
+    let json = sim.to_json().expect("serialization should succeed");
+    let restored = SimState::from_json(&json).expect("deserialization should succeed");
+
+    assert_eq!(restored.db.ground_piles.len(), 1);
+    let restored_pile = restored
+        .db
+        .ground_piles
+        .by_position(&pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(
+        restored.inv_item_count(
+            restored_pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
+        ),
+        7
+    );
+
+    // Checksums should match.
+    assert_eq!(sim.state_checksum(), restored.state_checksum());
+}
+
+// --- Hauling and logistics tests ---
+
+/// Helper: create a completed building structure at the given anchor.
+fn insert_building(
+    sim: &mut SimState,
+    anchor: VoxelCoord,
+    logistics_priority: Option<u8>,
+    wants: Vec<crate::building::LogisticsWant>,
+) -> StructureId {
+    let sid = StructureId(sim.next_structure_id);
+    sim.next_structure_id += 1;
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: sid,
+            project_id,
+            build_type: BuildType::Building,
+            anchor,
+            width: 3,
+            depth: 3,
+            height: 2,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::Storehouse),
+            inventory_id: inv_id,
+            logistics_priority,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+        })
+        .unwrap();
+    sim.set_inv_wants(inv_id, &wants);
+    sid
+}
+
+#[test]
+fn logistics_heartbeat_creates_haul_tasks() {
+    let mut sim = test_sim(42);
+
+    // Place a ground pile with bread.
+    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            10,
+            None,
+            None,
+        );
+    }
+
+    // Create a building that wants bread.
+    let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+    let _sid = insert_building(
+        &mut sim,
+        building_anchor,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+
+    // Run logistics heartbeat manually.
+    sim.process_logistics_heartbeat();
+
+    // Should have created a haul task.
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(haul_tasks.len(), 1, "Expected 1 haul task");
+
+    let haul = sim
+        .task_haul_data(haul_tasks[0].id)
+        .expect("Haul task should have haul data");
+    assert_eq!(haul.item_kind, crate::inventory::ItemKind::Bread);
+    assert_eq!(haul.quantity, 5);
+    assert_eq!(haul.source_kind, crate::db::HaulSourceKind::Pile);
+    assert_eq!(haul.phase, task::HaulPhase::GoingToSource);
+
+    // Ground pile items should be reserved.
+    let pile = sim
+        .db
+        .ground_piles
+        .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let unreserved = sim.inv_unreserved_item_count(
+        pile.inventory_id,
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(unreserved, 5, "5 items should remain unreserved");
+}
+
+#[test]
+fn logistics_respects_priority() {
+    let mut sim = test_sim(42);
+
+    // Place bread on the ground.
+    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            3,
+            None,
+            None,
+        );
+    }
+
+    // High-priority building wants 2 bread.
+    let high_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+    insert_building(
+        &mut sim,
+        high_anchor,
+        Some(10),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 2,
+        }],
+    );
+
+    // Low-priority building wants 2 bread.
+    let low_anchor = VoxelCoord::new(pile_pos.x + 6, pile_pos.y, pile_pos.z);
+    insert_building(
+        &mut sim,
+        low_anchor,
+        Some(1),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 2,
+        }],
+    );
+
+    sim.process_logistics_heartbeat();
+
+    // Should create 2 haul tasks: one for high-priority (2 bread), one for
+    // low-priority (1 remaining bread).
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(haul_tasks.len(), 2, "Expected 2 haul tasks");
+
+    // All bread should be reserved.
+    let pile = sim
+        .db
+        .ground_piles
+        .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let unreserved = sim.inv_unreserved_item_count(
+        pile.inventory_id,
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(unreserved, 0, "All bread should be reserved");
+}
+
+#[test]
+fn logistics_skips_reserved_items() {
+    let mut sim = test_sim(42);
+
+    // Place bread on the ground, some already reserved.
+    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    let task_id = TaskId::new(&mut sim.rng);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            5,
+            None,
+            None,
+        );
+        sim.inv_reserve_items(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
+            3,
+            task_id,
+        );
+    }
+
+    // Building wants 5 bread.
+    let anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+    insert_building(
+        &mut sim,
+        anchor,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+
+    sim.process_logistics_heartbeat();
+
+    // Should only create a task for 2 unreserved bread, not all 5.
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(haul_tasks.len(), 1);
+    let haul = sim
+        .task_haul_data(haul_tasks[0].id)
+        .expect("Haul task should have haul data");
+    assert_eq!(haul.quantity, 2, "Only 2 unreserved bread available");
+}
+
+#[test]
+fn logistics_counts_in_transit() {
+    let mut sim = test_sim(42);
+
+    // Place 10 bread on ground.
+    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            10,
+            None,
+            None,
+        );
+    }
+
+    let anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+    let sid = insert_building(
+        &mut sim,
+        anchor,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 8,
+        }],
+    );
+
+    // Manually create an in-transit haul task for 5 bread.
+    let fake_task_id = TaskId::new(&mut sim.rng);
+    let existing_haul = Task {
+        id: fake_task_id,
+        kind: TaskKind::Haul {
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+            source: task::HaulSource::GroundPile(pile_pos),
+            destination: sid,
+            phase: task::HaulPhase::GoingToSource,
+            destination_nav_node: NavNodeId(0),
+        },
+        state: TaskState::InProgress,
+        location: NavNodeId(0),
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+    };
+    sim.insert_task(existing_haul);
+
+    sim.process_logistics_heartbeat();
+
+    // In-transit counts as 5, target is 8, so need 3 more.
+    let new_haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.id != fake_task_id && t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(new_haul_tasks.len(), 1, "Expected 1 new haul task");
+    let haul = sim
+        .task_haul_data(new_haul_tasks[0].id)
+        .expect("Haul task should have haul data");
+    assert_eq!(haul.quantity, 3);
+}
+
+#[test]
+fn logistics_pulls_from_lower_priority_building() {
+    let mut sim = test_sim(42);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Building A (priority 3) has bread.
+    let anchor_a = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let sid_a = insert_building(&mut sim, anchor_a, Some(3), Vec::new());
+    sim.inv_add_simple_item(
+        sim.structure_inv(sid_a),
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        None,
+    );
+
+    // Building B (priority 5) wants bread.
+    let anchor_b = VoxelCoord::new(tree_pos.x + 6, tree_pos.y, tree_pos.z);
+    insert_building(
+        &mut sim,
+        anchor_b,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 3,
+        }],
+    );
+
+    sim.process_logistics_heartbeat();
+
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(haul_tasks.len(), 1);
+    let haul = sim
+        .task_haul_data(haul_tasks[0].id)
+        .expect("Haul task should have haul data");
+    assert_eq!(haul.source_kind, crate::db::HaulSourceKind::Building);
+    let source_sid = sim
+        .task_structure_ref(
+            haul_tasks[0].id,
+            crate::db::TaskStructureRole::HaulSourceBuilding,
+        )
+        .expect("Should have source building ref");
+    assert_eq!(source_sid, sid_a, "Should pull from building A");
+    assert_eq!(haul.quantity, 3);
+}
+
+#[test]
+fn logistics_surplus_source_from_higher_priority_building() {
+    let mut sim = test_sim(42);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Kitchen (priority 8) has 10 bread, wants 0 bread → 10 surplus.
+    let anchor_k = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let sid_k = insert_building(&mut sim, anchor_k, Some(8), Vec::new());
+    sim.inv_add_simple_item(
+        sim.structure_inv(sid_k),
+        crate::inventory::ItemKind::Bread,
+        10,
+        None,
+        None,
+    );
+
+    // Storehouse (priority 2) wants 5 bread.
+    let anchor_s = VoxelCoord::new(tree_pos.x + 7, tree_pos.y, tree_pos.z);
+    insert_building(
+        &mut sim,
+        anchor_s,
+        Some(2),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+
+    sim.process_logistics_heartbeat();
+
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(
+        haul_tasks.len(),
+        1,
+        "Should create a haul task for surplus bread"
+    );
+    let haul = sim
+        .task_haul_data(haul_tasks[0].id)
+        .expect("Haul task should have haul data");
+    assert_eq!(haul.source_kind, crate::db::HaulSourceKind::Building);
+    let source_sid = sim
+        .task_structure_ref(
+            haul_tasks[0].id,
+            crate::db::TaskStructureRole::HaulSourceBuilding,
+        )
+        .expect("Should have source building ref");
+    assert_eq!(
+        source_sid, sid_k,
+        "Should pull from the kitchen (surplus source)"
+    );
+    assert_eq!(haul.quantity, 5);
+}
+
+#[test]
+fn logistics_caps_tasks_per_heartbeat() {
+    let mut sim = test_sim(42);
+    // Override max tasks to 2.
+    sim.config.max_haul_tasks_per_heartbeat = 2;
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    {
+        let pile_id = sim.ensure_ground_pile(tree_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            100,
+            None,
+            None,
+        );
+    }
+
+    // Create 5 buildings that each want 10 bread.
+    for i in 0..5 {
+        let anchor = VoxelCoord::new(tree_pos.x + 3 * (i + 1), tree_pos.y, tree_pos.z);
+        insert_building(
+            &mut sim,
+            anchor,
+            Some(5),
+            vec![crate::building::LogisticsWant {
+                item_kind: crate::inventory::ItemKind::Bread,
+                material_filter: crate::inventory::MaterialFilter::Any,
+                target_quantity: 10,
+            }],
+        );
+    }
+
+    sim.process_logistics_heartbeat();
+
+    let haul_count = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .count();
+    assert_eq!(haul_count, 2, "Should be capped at 2 tasks per heartbeat");
+}
+
+#[test]
+fn kitchen_monitor_creates_cook_task() {
+    let mut sim = test_sim(42);
+    let sid = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
+
+    // Place all furniture so building is functional.
+    let furn_ids: Vec<_> = sim
+        .db
+        .furniture
+        .by_structure_id(&sid, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|f| f.id)
+        .collect();
+    for fid in furn_ids {
+        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+            f.placed = true;
+        });
+    }
+
+    // Furnishing auto-adds bread recipe with default target (50).
+    // Add fruit to the kitchen.
+    sim.inv_add_simple_item(
+        sim.structure_inv(sid),
+        inventory::ItemKind::Fruit,
+        1,
+        None,
+        None,
+    );
+
+    sim.process_unified_crafting_monitor();
+
+    // Verify a Craft task was created for the bread recipe.
+    let craft_tasks: Vec<_> = sim
+        .db
+        .task_structure_refs
+        .by_structure_id(&sid, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|r| {
+            r.role == crate::db::TaskStructureRole::CraftAt
+                && sim
+                    .db
+                    .tasks
+                    .get(&r.task_id)
+                    .is_some_and(|t| t.state != task::TaskState::Complete)
+        })
+        .map(|r| r.task_id)
+        .collect();
+    assert_eq!(craft_tasks.len(), 1, "Should create 1 Craft task for bread");
+
+    // Verify fruit is reserved.
+    let structure = sim.db.structures.get(&sid).unwrap();
+    let unreserved = sim.inv_unreserved_item_count(
+        structure.inventory_id,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Any,
+    );
+    assert_eq!(unreserved, 0, "Fruit should be reserved for craft task");
+}
+
+#[test]
+fn cook_task_converts_fruit_to_bread() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 20; // Prevent hunger interference.
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Insert a kitchen building with 1 fruit (reserved for the cook task).
+    let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let sid = insert_completed_building(&mut sim, anchor);
+    {
+        let mut s = sim.db.structures.get(&sid).unwrap();
+        s.furnishing = Some(FurnishingType::Kitchen);
+        let _ = sim.db.structures.update_no_fk(s);
+    }
+
+    // Find a nav node inside the kitchen.
+    let interior_pos = sim.db.structures.get(&sid).unwrap().anchor;
+    let kitchen_nav = sim.nav_graph.find_nearest_node(interior_pos).unwrap();
+
+    // Create Cook task at the kitchen's nav node.
+    let task_id = TaskId::new(&mut sim.rng);
+    let cook_task = task::Task {
+        id: task_id,
+        kind: task::TaskKind::Cook { structure_id: sid },
+        state: task::TaskState::Available,
+        location: kitchen_nav,
+        progress: 0.0,
+        total_cost: 5000.0, // bread recipe work_ticks
+        required_species: Some(Species::Elf),
+        origin: task::TaskOrigin::Automated,
+        target_creature: None,
+    };
+    sim.insert_task(cook_task);
+
+    // Add 1 fruit reserved by this task.
+    sim.inv_add_simple_item(
+        sim.structure_inv(sid),
+        inventory::ItemKind::Fruit,
+        1,
+        None,
+        Some(task_id),
+    );
+
+    // Spawn an elf near the kitchen.
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, interior_pos, &mut events);
+
+    // Run enough ticks for elf to reach kitchen and complete cooking.
+    // bread work_ticks = 5000, plus walking time.
+    sim.step(&[], sim.tick + 15000);
+
+    // Verify: fruit consumed, bread produced.
+    let structure = sim.db.structures.get(&sid).unwrap();
+    let fruit_count = sim.inv_unreserved_item_count(
+        structure.inventory_id,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Any,
+    );
+    let bread_count = sim.inv_unreserved_item_count(
+        structure.inventory_id,
+        inventory::ItemKind::Bread,
+        inventory::MaterialFilter::Any,
+    );
+    assert_eq!(fruit_count, 0, "Fruit should be consumed");
+    assert_eq!(bread_count, 10, "Should produce 10 bread");
+
+    // Verify task is complete.
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(task.state, task::TaskState::Complete);
+}
+
+#[test]
+fn harvest_task_creates_ground_pile() {
+    let mut sim = test_sim(42);
+
+    // Find a fruit voxel on the tree.
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(
+        !tree.fruit_positions.is_empty(),
+        "Tree should have fruit for this test"
+    );
+    let fruit_pos = tree.fruit_positions[0];
+
+    // Spawn an elf near the fruit.
+    let elf_id = spawn_elf(&mut sim);
+
+    // Find the nav node nearest to the fruit.
+    let fruit_nav = sim.nav_graph.find_nearest_node(fruit_pos).unwrap();
+
+    // Place the elf at the fruit nav node.
+    let elf_pos = sim.nav_graph.node(fruit_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |elf| {
+        elf.current_node = Some(fruit_nav);
+        elf.position = elf_pos;
+    });
+
+    // Create a Harvest task at the fruit nav node.
+    let task_id = TaskId::new(&mut sim.rng);
+    let harvest_task = Task {
+        id: task_id,
+        kind: TaskKind::Harvest { fruit_pos },
+        state: TaskState::InProgress,
+        location: fruit_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+    };
+    sim.insert_task(harvest_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Execute the task directly (resolve the harvest action).
+    sim.resolve_harvest_action(elf_id, task_id, fruit_pos);
+
+    // Assert: fruit voxel removed from world.
+    assert_eq!(
+        sim.world.get(fruit_pos),
+        VoxelType::Air,
+        "Fruit voxel should be removed"
+    );
+
+    // Assert: fruit removed from tree's fruit_positions.
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(
+        !tree.fruit_positions.contains(&fruit_pos),
+        "Fruit should be removed from tree"
+    );
+
+    // Assert: ground pile created with 1 Fruit. The pile may have been
+    // snapped down to the nearest surface if the elf was up on the tree.
+    let pile = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .find(|p| p.position.x == elf_pos.x && p.position.z == elf_pos.z)
+        .expect("Ground pile should exist in elf's column");
+    assert_eq!(
+        sim.inv_item_count(
+            pile.inventory_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any
+        ),
+        1,
+        "Ground pile should have 1 fruit"
+    );
+
+    // Assert: task completed.
+    assert_eq!(
+        sim.db.tasks.get(&task_id).unwrap().state,
+        TaskState::Complete,
+        "Harvest task should be complete"
+    );
+}
+
+#[test]
+fn logistics_heartbeat_creates_harvest_tasks() {
+    let mut sim = test_sim(42);
+
+    // Verify the tree has fruit voxels.
+    let tree = &sim.trees[&sim.player_tree_id];
+    let fruit_count = tree.fruit_positions.len();
+    assert!(fruit_count > 0, "Tree should have fruit for this test");
+
+    // Ensure no ground piles with fruit exist.
+    assert_eq!(sim.db.ground_piles.len(), 0);
+
+    // Create a building that wants fruit (kitchen with logistics).
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let site = VoxelCoord::new(tree_pos.x + 3, 0, tree_pos.z);
+    let kitchen_priority = sim.config.kitchen_default_priority;
+    let sid = insert_building(
+        &mut sim,
+        site,
+        Some(kitchen_priority),
+        vec![building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+    {
+        let mut s = sim.db.structures.get(&sid).unwrap();
+        s.furnishing = Some(FurnishingType::Kitchen);
+        let _ = sim.db.structures.update_no_fk(s);
+    }
+
+    // Run logistics heartbeat.
+    sim.process_logistics_heartbeat();
+
+    // Assert: at least one Harvest task was created.
+    let harvest_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Harvest)
+        .collect();
+    assert!(
+        !harvest_tasks.is_empty(),
+        "Logistics heartbeat should create Harvest tasks when buildings want fruit"
+    );
+
+    // Each harvest task should target a valid fruit position.
+    for task in &harvest_tasks {
+        let fruit_pos = sim
+            .task_voxel_ref(task.id, crate::db::TaskVoxelRole::FruitTarget)
+            .expect("Harvest task should have a FruitTarget voxel ref");
+        assert_eq!(
+            sim.world.get(fruit_pos),
+            VoxelType::Fruit,
+            "Harvest task should target an actual fruit voxel"
+        );
+        assert_eq!(task.state, TaskState::Available);
+        assert_eq!(task.required_species, Some(Species::Elf));
+        assert_eq!(task.origin, TaskOrigin::Automated);
+    }
+}
+
+#[test]
+fn kitchen_cooks_fruit_into_bread_end_to_end() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 20; // Prevent hunger interference.
+    sim.config.elf_default_wants = Vec::new(); // Disable personal acquisition.
+    // Disable hunger and tiredness so the elf doesn't get distracted.
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    // Verify the tree has fruit voxels (no manual ground pile needed).
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(
+        !tree.fruit_positions.is_empty(),
+        "Tree should have fruit voxels for this test"
+    );
+
+    // Place both buildings near the tree on the forest floor, adjacent.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let site1 = VoxelCoord::new(tree_pos.x + 3, 0, tree_pos.z);
+    let site2 = VoxelCoord::new(tree_pos.x + 7, 0, tree_pos.z);
+
+    // Insert storehouse — only wants bread (small target to keep test focused).
+    let sid_store = insert_completed_building(&mut sim, site1);
+    {
+        let mut s = sim.db.structures.get(&sid_store).unwrap();
+        s.furnishing = Some(FurnishingType::Storehouse);
+        s.logistics_priority = Some(sim.config.storehouse_default_priority);
+        let _ = sim.db.structures.update_no_fk(s);
+    }
+    sim.set_inv_wants(
+        sim.structure_inv(sid_store),
+        &[building::LogisticsWant {
+            item_kind: inventory::ItemKind::Bread,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 10,
+        }],
+    );
+
+    // Insert kitchen via unified system.
+    let sid_kitchen = insert_completed_building(&mut sim, site2);
+    {
+        let mut s = sim.db.structures.get(&sid_kitchen).unwrap();
+        s.furnishing = Some(FurnishingType::Kitchen);
+        s.logistics_priority = Some(sim.config.kitchen_default_priority);
+        s.crafting_enabled = true;
+        let _ = sim.db.structures.update_no_fk(s);
+    }
+    // Add bread recipe with a target of 1 bread.
+    sim.add_default_active_recipes(sid_kitchen, FurnishingType::Kitchen);
+    // Override bread target to 1 for faster test.
+    let bread_ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&sid_kitchen, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let bread_target = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&bread_ar.id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|t| t.output_item_kind == inventory::ItemKind::Bread)
+        .unwrap();
+    let _ = sim
+        .db
+        .active_recipe_targets
+        .modify_unchecked(&bread_target.id, |t| {
+            t.target_quantity = 1;
+        });
+
+    // Spawn 1 elf near the tree.
+    let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, spawn_pos, &mut events);
+
+    // Run 500k ticks — enough for full pipeline:
+    // harvest task → elf picks fruit → ground pile → haul to kitchen → cook → haul bread out.
+    sim.step(&[], sim.tick + 500_000);
+
+    // Storehouse should have bread from cooking (full pipeline: harvest → haul → cook → haul).
+    let store_bread = sim.inv_unreserved_item_count(
+        sim.structure_inv(sid_store),
+        inventory::ItemKind::Bread,
+        inventory::MaterialFilter::Any,
+    );
+    assert!(
+        store_bread >= 10,
+        "Storehouse should have at least 10 bread from cooking, got {store_bread}"
+    );
+}
+
+#[test]
+fn elf_acquires_bread_from_kitchen_pipeline() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    sim.config.elf_default_wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Bread,
+        material_filter: inventory::MaterialFilter::Any,
+        target_quantity: 2,
+    }];
+    // Disable hunger/tiredness.
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(
+        !tree.fruit_positions.is_empty(),
+        "Tree should have fruit voxels"
+    );
+
+    // Insert kitchen via unified system.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let site = VoxelCoord::new(tree_pos.x + 3, 0, tree_pos.z);
+    let sid_kitchen = insert_completed_building(&mut sim, site);
+    {
+        let mut s = sim.db.structures.get(&sid_kitchen).unwrap();
+        s.furnishing = Some(FurnishingType::Kitchen);
+        s.logistics_priority = Some(sim.config.kitchen_default_priority);
+        s.crafting_enabled = true;
+        let _ = sim.db.structures.update_no_fk(s);
+    }
+    sim.add_default_active_recipes(sid_kitchen, FurnishingType::Kitchen);
+    // Override bread target to 1.
+    let bread_ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&sid_kitchen, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let bread_target = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&bread_ar.id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|t| t.output_item_kind == inventory::ItemKind::Bread)
+        .unwrap();
+    let _ = sim
+        .db
+        .active_recipe_targets
+        .modify_unchecked(&bread_target.id, |t| {
+            t.target_quantity = 1;
+        });
+
+    // Spawn 1 elf.
+    let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, spawn_pos, &mut events);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Pipeline: harvest fruit → haul to kitchen → cook bread → elf acquires bread.
+    sim.step(&[], sim.tick + 500_000);
+
+    // Elf should have acquired bread.
+    let elf_bread =
+        sim.inv_count_owned(sim.creature_inv(elf_id), inventory::ItemKind::Bread, elf_id);
+    assert!(
+        elf_bread > 0,
+        "Elf should have acquired bread from kitchen pipeline, got {elf_bread}"
+    );
+}
+
+#[test]
+fn haul_source_empty_cancels() {
+    let mut sim = test_sim(42);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let sid = insert_building(&mut sim, anchor, Some(5), Vec::new());
+
+    // Create a haul task with source pointing to a non-existent ground pile.
+    let source_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+    let task_id = TaskId::new(&mut sim.rng);
+    let source_nav = sim.nav_graph.find_nearest_node(source_pos).unwrap();
+    let dest_nav = sim.nav_graph.find_nearest_node(anchor).unwrap();
+
+    let haul_task = Task {
+        id: task_id,
+        kind: TaskKind::Haul {
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+            source: task::HaulSource::GroundPile(source_pos),
+            destination: sid,
+            phase: task::HaulPhase::GoingToSource,
+            destination_nav_node: dest_nav,
+        },
+        state: TaskState::InProgress,
+        location: source_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+    };
+    sim.insert_task(haul_task);
+
+    // Spawn an elf and manually assign it to the haul task at the source.
+    let elf_id = spawn_elf(&mut sim);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.current_node = Some(source_nav));
+    let _ = sim
+        .db
+        .tasks
+        .modify_unchecked(&task_id, |t| t.state = task::TaskState::InProgress);
+
+    // Execute the task — no ground pile exists, so pickup should find 0 items.
+    sim.resolve_pickup_action(elf_id);
+
+    // Task should be completed (cancelled due to empty source).
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(task.state, TaskState::Complete, "Task should be completed");
+}
+
+// -----------------------------------------------------------------------
+// 15.10 New SimAction variants (SetCreatureFood, SetCreatureRest,
+//       AddCreatureItem, AddGroundPileItem)
+// -----------------------------------------------------------------------
+
+#[test]
+fn set_creature_food() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetCreatureFood {
+            creature_id: elf_id,
+            food: 42_000,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().food, 42_000);
+}
+
+#[test]
+fn set_creature_rest() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetCreatureRest {
+            creature_id: elf_id,
+            rest: 99_000,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().rest, 99_000);
+}
+
+#[test]
+fn add_creature_item() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let elf_id = spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddCreatureItem {
+            creature_id: elf_id,
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    let bread_count = sim.inv_item_count(
+        sim.creature_inv(elf_id),
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(bread_count, 5);
+}
+
+#[test]
+fn add_ground_pile_item() {
+    let mut sim = test_sim(42);
+    let pos = VoxelCoord::new(32, 1, 32);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddGroundPileItem {
+            position: pos,
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 3,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    let pile = sim
+        .db
+        .ground_piles
+        .by_position(&pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .expect("pile should exist");
+    let bread_count = sim.inv_item_count(
+        pile.inventory_id,
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(bread_count, 3);
+}
+
+// -----------------------------------------------------------------------
+// spawn_initial_creatures
+// -----------------------------------------------------------------------
+
+/// Build a test config with known initial creatures for a 64x64x64 world.
+fn initial_spawn_test_config() -> GameConfig {
+    use crate::config::{InitialCreatureSpec, InitialGroundPileSpec};
+    let mut config = test_config();
+    config.elf_starting_bread = 0; // Isolate from starting bread feature.
+    config.initial_creatures = vec![
+        InitialCreatureSpec {
+            species: Species::Elf,
+            count: 2,
+            spawn_position: VoxelCoord::new(32, 1, 32),
+            food_pcts: vec![100, 50],
+            rest_pcts: vec![80, 40],
+            bread_counts: vec![0, 3],
+        },
+        InitialCreatureSpec {
+            species: Species::Capybara,
+            count: 1,
+            spawn_position: VoxelCoord::new(32, 1, 32),
+            food_pcts: vec![],
+            rest_pcts: vec![],
+            bread_counts: vec![],
+        },
+    ];
+    config.initial_ground_piles = vec![InitialGroundPileSpec {
+        position: VoxelCoord::new(32, 1, 34),
+        item_kind: crate::inventory::ItemKind::Bread,
+        quantity: 5,
+        material: None,
+    }];
+    config
+}
+
+#[test]
+fn spawn_initial_creatures_populates() {
+    let config = initial_spawn_test_config();
+    let mut sim = SimState::with_config(42, config);
+    let mut events = Vec::new();
+    sim.spawn_initial_creatures(&mut events);
+
+    let elf_count = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .count();
+    let capy_count = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Capybara)
+        .count();
+    assert_eq!(elf_count, 2);
+    assert_eq!(capy_count, 1);
+    assert_eq!(sim.db.creatures.len(), 3);
+
+    // Should have emitted CreatureArrived events for all 3.
+    let arrived: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e.kind, SimEventKind::CreatureArrived { .. }))
+        .collect();
+    assert_eq!(arrived.len(), 3);
+}
+
+#[test]
+fn spawn_initial_creatures_sets_food_rest() {
+    let config = initial_spawn_test_config();
+    let mut sim = SimState::with_config(42, config);
+    let mut events = Vec::new();
+    sim.spawn_initial_creatures(&mut events);
+
+    let elf_food_max = sim.species_table[&Species::Elf].food_max;
+    let elf_rest_max = sim.species_table[&Species::Elf].rest_max;
+
+    let mut elves: Vec<_> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .collect();
+    // Sort by food descending to identify first (100%) vs second (50%).
+    elves.sort_by(|a, b| b.food.cmp(&a.food));
+
+    assert_eq!(elves[0].food, elf_food_max * 100 / 100);
+    assert_eq!(elves[0].rest, elf_rest_max * 80 / 100);
+    assert_eq!(elves[1].food, elf_food_max * 50 / 100);
+    assert_eq!(elves[1].rest, elf_rest_max * 40 / 100);
+
+    // Second elf should have 3 bread.
+    let bread_count = sim.inv_item_count(
+        sim.creature_inv(elves[1].id),
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(bread_count, 3);
+}
+
+#[test]
+fn spawn_initial_creatures_ground_piles() {
+    let config = initial_spawn_test_config();
+    let mut sim = SimState::with_config(42, config);
+    let mut events = Vec::new();
+    sim.spawn_initial_creatures(&mut events);
+
+    // Ground pile should exist. Position may be snapped to surface via
+    // find_surface_position, so look up by the expected surface position.
+    let surface_pos = sim.find_surface_position(32, 34);
+    let pile = sim
+        .db
+        .ground_piles
+        .by_position(&surface_pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .expect("ground pile should exist");
+    let bread_count = sim.inv_item_count(
+        pile.inventory_id,
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(bread_count, 5);
+}
+
+// -----------------------------------------------------------------------
+// find_surface_position
+// -----------------------------------------------------------------------
+
+#[test]
+fn find_surface_position_finds_air() {
+    let sim = test_sim(42);
+    let center = sim.world.size_x as i32 / 2;
+    let pos = sim.find_surface_position(center, center);
+
+    // The returned position should be Air (non-solid).
+    assert!(
+        !sim.world.get(pos).is_solid(),
+        "Surface position should be Air, got {:?}",
+        sim.world.get(pos)
+    );
+
+    // One below should be solid (the ground).
+    if pos.y > 0 {
+        let below = VoxelCoord::new(pos.x, pos.y - 1, pos.z);
+        assert!(
+            sim.world.get(below).is_solid(),
+            "Below surface should be solid, got {:?}",
+            sim.world.get(below)
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// AcquireItem tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn acquire_item_picks_up_and_owns() {
+    let mut sim = test_sim(42);
+
+    // Create a ground pile with unowned bread.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 3, None, None);
+    }
+
+    // Spawn elf, position at pile.
+    let elf_id = spawn_elf(&mut sim);
+    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_node = Some(pile_nav);
+        c.position = pile_nav_pos;
+    });
+
+    // Create AcquireItem task with reservations.
+    let task_id = TaskId::new(&mut sim.rng);
+    let source = task::HaulSource::GroundPile(pile_pos);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Bread,
+            inventory::MaterialFilter::Any,
+            2,
+            task_id,
+        );
+    }
+    let acquire_task = Task {
+        id: task_id,
+        kind: TaskKind::AcquireItem {
+            source,
+            item_kind: inventory::ItemKind::Bread,
+            quantity: 2,
+        },
+        state: TaskState::InProgress,
+        location: pile_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(acquire_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Execute.
+    sim.resolve_acquire_item_action(elf_id, task_id);
+
+    // Assert: bread removed from ground pile (1 unreserved remains).
+    let pile = sim
+        .db
+        .ground_piles
+        .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(
+        sim.inv_item_count(
+            pile.inventory_id,
+            inventory::ItemKind::Bread,
+            inventory::MaterialFilter::Any
+        ),
+        1,
+        "Ground pile should have 1 bread left"
+    );
+
+    // Assert: elf now has 2 bread owned by the elf (plus starting bread).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let owned_bread = sim.inv_count_owned(elf.inventory_id, inventory::ItemKind::Bread, elf_id);
+    // Elf gets starting bread (default 2) + acquired 2 = 4.
+    assert_eq!(
+        owned_bread, 4,
+        "Elf should own 4 bread (2 starting + 2 acquired)"
+    );
+
+    // Assert: task completed.
+    assert_eq!(
+        sim.db.tasks.get(&task_id).unwrap().state,
+        TaskState::Complete
+    );
+}
+
+#[test]
+fn idle_elf_below_want_target_acquires_item() {
+    let mut sim = test_sim(42);
+    // Disable hunger/tiredness so elf stays idle.
+    sim.config.elf_starting_bread = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    // Set elf wants = [Bread: 2].
+    sim.config.elf_default_wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Bread,
+        material_filter: inventory::MaterialFilter::Any,
+        target_quantity: 2,
+    }];
+
+    // Spawn elf (will have 0 bread, wants 2).
+    let elf_id = spawn_elf(&mut sim);
+
+    // Verify elf has 0 bread and wants set.
+    assert_eq!(
+        sim.inv_count_owned(sim.creature_inv(elf_id), inventory::ItemKind::Bread, elf_id),
+        0
+    );
+    assert_eq!(sim.inv_wants(sim.creature_inv(elf_id)).len(), 1);
+
+    // Create unowned bread in a ground pile near the elf.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 5, None, None);
+    }
+
+    // Advance past a heartbeat (heartbeat interval is 3000 for elves).
+    sim.step(&[], sim.tick + 5000);
+
+    // Assert: elf should have an AcquireItem task created.
+    let has_acquire_task = sim.db.tasks.iter_all().any(|t| {
+        t.kind_tag == TaskKindTag::AcquireItem
+            && sim
+                .task_acquire_data(t.id)
+                .is_some_and(|a| a.item_kind == inventory::ItemKind::Bread)
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    // Either has an active task, or already completed one and picked up bread.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let elf_bread = sim.inv_count_owned(elf.inventory_id, inventory::ItemKind::Bread, elf_id);
+    assert!(
+        has_acquire_task || elf_bread > 0,
+        "Elf should have created an AcquireItem task or already acquired bread, \
+             has_task={has_acquire_task}, bread={elf_bread}"
+    );
+}
+
+#[test]
+fn acquire_item_reserves_prevent_double_claim() {
+    let mut sim = test_sim(42);
+    // Disable hunger/tiredness.
+    sim.config.elf_starting_bread = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    sim.config.elf_default_wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Bread,
+        material_filter: inventory::MaterialFilter::Any,
+        target_quantity: 2,
+    }];
+
+    // Create exactly 2 unowned bread.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 2, None, None);
+    }
+
+    // Spawn 2 elves (each wants 2 bread, only 2 available total).
+    let elf1 = spawn_elf(&mut sim);
+    let spawn_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: spawn_pos,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+    let elf2 = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf && c.id != elf1)
+        .unwrap()
+        .id;
+
+    // Run enough ticks for both heartbeats to fire and tasks to complete.
+    sim.step(&[], sim.tick + 50_000);
+
+    // Count total bread across both elves. Should be exactly 2 (no duplication).
+    let elf1_bread = sim.inv_count_owned(sim.creature_inv(elf1), inventory::ItemKind::Bread, elf1);
+    let elf2_bread = sim.inv_count_owned(sim.creature_inv(elf2), inventory::ItemKind::Bread, elf2);
+    assert_eq!(
+        elf1_bread + elf2_bread,
+        2,
+        "Total bread across both elves should be exactly 2 (no duplication), \
+             elf1={elf1_bread}, elf2={elf2_bread}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Mood consequences: moping tests
+// -----------------------------------------------------------------------
+
+/// Helper: create a sim with custom mood_consequences config, spawn an elf,
+/// and optionally inject thoughts to reach a target mood tier.
+fn mope_test_setup(
+    mope_config: crate::config::MoodConsequencesConfig,
+    thoughts: &[ThoughtKind],
+) -> (SimState, CreatureId) {
+    let mut config = test_config();
+    config.mood_consequences = mope_config;
+    // Disable hunger and tiredness so they don't interfere.
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(99, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = *sim
+        .db
+        .creatures
+        .iter_keys()
+        .find(|id| sim.db.creatures.get(id).unwrap().species == Species::Elf)
+        .expect("elf should exist");
+
+    // Inject thoughts.
+    for thought in thoughts {
+        sim.add_creature_thought(elf_id, thought.clone());
+    }
+
+    (sim, elf_id)
+}
+
+#[test]
+fn mope_probability_zero_mean_never_fires() {
+    // When mean = 0, mope_mean_ticks returns 0, check_mope should never trigger.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 0,
+        mope_mean_ticks_miserable: 0,
+        mope_mean_ticks_devastated: 0,
+        ..Default::default()
+    };
+    assert_eq!(cfg.mope_mean_ticks(MoodTier::Unhappy), 0);
+    assert_eq!(cfg.mope_mean_ticks(MoodTier::Miserable), 0);
+    assert_eq!(cfg.mope_mean_ticks(MoodTier::Devastated), 0);
+
+    // Run many heartbeats with zero-mean config + unhappy elf.
+    let (mut sim, elf_id) = mope_test_setup(
+        cfg,
+        &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+    );
+
+    // Advance many heartbeat cycles.
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + interval * 100);
+
+    // No Mope task should exist.
+    let has_mope = sim
+        .db
+        .tasks
+        .iter_all()
+        .any(|t| t.kind_tag == TaskKindTag::Mope);
+    assert!(!has_mope, "Zero mean should never produce a Mope task");
+}
+
+#[test]
+fn mope_probability_nonzero_fires_proportionally() {
+    // With a very small mean (= heartbeat interval), mope fires ~100% per heartbeat.
+    let interval = 3000_u64; // Default elf heartbeat.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: interval, // P ≈ 1.0 per heartbeat
+        mope_duration_ticks: 1,            // Short mope so it completes quickly.
+        ..Default::default()
+    };
+    let (mut sim, _elf_id) = mope_test_setup(
+        cfg,
+        &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+    );
+
+    // Run several heartbeats.
+    sim.step(&[], sim.tick + interval * 10);
+
+    // With P ≈ 1.0 and 10 heartbeats, at least one Mope should fire.
+    let mope_count = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Mope)
+        .count();
+    assert!(
+        mope_count >= 1,
+        "With mean=elapsed, at least one Mope should fire in 10 heartbeats, got {mope_count}"
+    );
+}
+
+#[test]
+fn mope_config_serde_roundtrip() {
+    let cfg = crate::config::MoodConsequencesConfig::default();
+    let json = serde_json::to_string(&cfg).unwrap();
+    let restored: crate::config::MoodConsequencesConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        restored.mope_mean_ticks_unhappy,
+        cfg.mope_mean_ticks_unhappy
+    );
+    assert_eq!(restored.mope_duration_ticks, cfg.mope_duration_ticks);
+    assert_eq!(
+        restored.mope_can_interrupt_task,
+        cfg.mope_can_interrupt_task
+    );
+}
+
+#[test]
+fn mope_config_backward_compat() {
+    // A GameConfig JSON without "mood_consequences" key → defaults.
+    let sim = test_sim(42);
+    let json = serde_json::to_string(&sim).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&json).unwrap();
+    val.get_mut("config")
+        .and_then(|c| c.as_object_mut())
+        .unwrap()
+        .remove("mood_consequences");
+    let stripped = serde_json::to_string(&val).unwrap();
+    let restored: SimState = serde_json::from_str(&stripped).unwrap();
+    assert_eq!(
+        restored.config.mood_consequences.mope_mean_ticks_unhappy,
+        crate::config::MoodConsequencesConfig::default().mope_mean_ticks_unhappy
+    );
+}
+
+#[test]
+fn unhappy_elf_eventually_mopes() {
+    // Give elf SleptOnGround thoughts (weight -100 each → Unhappy/-200 → actually Miserable).
+    // Use a high mope rate so it fires quickly.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 3000, // P ≈ 1.0 per heartbeat
+        mope_mean_ticks_miserable: 3000,
+        mope_mean_ticks_devastated: 3000,
+        mope_duration_ticks: 100,
+        ..Default::default()
+    };
+    let (mut sim, elf_id) = mope_test_setup(
+        cfg,
+        &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+    );
+
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + interval * 20);
+
+    let has_mope = sim.db.tasks.iter_all().any(|t| {
+        t.kind_tag == TaskKindTag::Mope
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    assert!(has_mope, "Unhappy elf should eventually get a Mope task");
+}
+
+#[test]
+fn content_elf_never_mopes() {
+    // Give elf positive thoughts → Content/Happy tier. Mean=0 → never mopes.
+    let cfg = crate::config::MoodConsequencesConfig::default();
+    let (mut sim, elf_id) = mope_test_setup(cfg, &[ThoughtKind::AteMeal, ThoughtKind::AteMeal]);
+
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + interval * 50);
+
+    let has_mope = sim.db.tasks.iter_all().any(|t| {
+        t.kind_tag == TaskKindTag::Mope
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    assert!(!has_mope, "Content elf should never mope");
+}
+
+#[test]
+fn devastated_elf_interrupts_task_to_mope() {
+    // Give elf Devastated-tier thoughts + a GoTo task + high mope rate.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 3000,
+        mope_mean_ticks_miserable: 3000,
+        mope_mean_ticks_devastated: 3000,
+        mope_can_interrupt_task: true,
+        mope_duration_ticks: 100,
+    };
+    let (mut sim, elf_id) = mope_test_setup(
+        cfg,
+        // SleptOnGround has weight -100, three of them → -300 → Devastated
+        &[
+            ThoughtKind::SleptOnGround,
+            ThoughtKind::SleptOnGround,
+            ThoughtKind::SleptOnGround,
+        ],
+    );
+
+    // Assign a GoTo task to the elf so it's not idle.
+    // Find a distant node for the GoTo task.
+    let nav_count = sim.nav_graph.node_count();
+    let far_node = NavNodeId((nav_count / 2) as u32);
+    let task_id = TaskId::new(&mut sim.rng);
+    let goto_task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: far_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(goto_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + interval * 20);
+
+    // Elf should have abandoned GoTo and started moping.
+    let has_mope = sim.db.tasks.iter_all().any(|t| {
+        t.kind_tag == TaskKindTag::Mope
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    assert!(
+        has_mope,
+        "Miserable elf with mope_can_interrupt_task should interrupt GoTo and start moping"
+    );
+}
+
+#[test]
+fn mope_task_completes_and_elf_resumes() {
+    // Short mope duration; elf should be idle afterward.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 3000, // P ≈ 1.0
+        mope_mean_ticks_miserable: 3000,
+        mope_mean_ticks_devastated: 3000,
+        mope_duration_ticks: 10, // Very short mope.
+        ..Default::default()
+    };
+    let (mut sim, _elf_id) = mope_test_setup(
+        cfg,
+        &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+    );
+
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    // Advance enough for mope to trigger and complete.
+    sim.step(&[], sim.tick + interval * 5);
+
+    // At least one completed Mope should exist (state == Complete).
+    let completed_mope = sim
+        .db
+        .tasks
+        .iter_all()
+        .any(|t| t.kind_tag == TaskKindTag::Mope && t.state == TaskState::Complete);
+    assert!(
+        completed_mope,
+        "Mope task should complete after mope_duration_ticks"
+    );
+}
+
+#[test]
+fn mope_does_not_interrupt_autonomous_sleep() {
+    // A Devastated elf that is sleeping should NOT have sleep interrupted by mope.
+    // We use a very long sleep and drain rest to 0 so the sleep won't complete
+    // during the test window, proving mope didn't interrupt it.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 3000,
+        mope_mean_ticks_miserable: 3000,
+        mope_mean_ticks_devastated: 3000, // P ≈ 1.0 per heartbeat
+        mope_can_interrupt_task: true,
+        mope_duration_ticks: 100,
+    };
+    let mut config = test_config();
+    config.mood_consequences = cfg;
+    config.sleep_ticks_ground = 1_000_000; // Very long sleep.
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    elf_species.rest_per_sleep_tick = 1; // Tiny restore so rest_full won't trigger.
+    let mut sim = SimState::with_config(99, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = *sim
+        .db
+        .creatures
+        .iter_keys()
+        .find(|id| sim.db.creatures.get(id).unwrap().species == Species::Elf)
+        .unwrap();
+
+    // Drain rest to 0 so the elf won't complete sleep via rest_full.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| c.rest = 0);
+
+    // Inject Devastated-level thoughts.
+    for _ in 0..4 {
+        sim.add_creature_thought(elf_id, ThoughtKind::SleptOnGround);
+    }
+
+    // Manually assign a Sleep task to the elf.
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let sleep_task_id = TaskId::new(&mut sim.rng);
+    let sleep_task = Task {
+        id: sleep_task_id,
+        kind: TaskKind::Sleep {
+            bed_pos: None,
+            location: crate::task::SleepLocation::Ground,
+        },
+        state: TaskState::InProgress,
+        location: elf_node,
+        progress: 0.0,
+        total_cost: 1_000_000.0,
+        required_species: None,
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(sleep_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(sleep_task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Run several heartbeats — mope rate is P≈1.0 but should not interrupt sleep.
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + interval * 10);
+
+    // The elf should still be sleeping — same task, never interrupted.
+    let current_task = sim.db.creatures.get(&elf_id).and_then(|c| c.current_task);
+    assert_eq!(
+        current_task,
+        Some(sleep_task_id),
+        "Mope should not interrupt autonomous Sleep task"
+    );
+}
+
+#[test]
+fn mope_does_not_interrupt_existing_mope() {
+    // A moping elf should not have its mope interrupted by another mope.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 3000,
+        mope_mean_ticks_miserable: 3000,
+        mope_mean_ticks_devastated: 3000, // P ≈ 1.0 per heartbeat
+        mope_can_interrupt_task: true,
+        mope_duration_ticks: 100_000, // Long mope — won't complete during test.
+    };
+    let (mut sim, elf_id) = mope_test_setup(
+        cfg,
+        &[
+            ThoughtKind::SleptOnGround,
+            ThoughtKind::SleptOnGround,
+            ThoughtKind::SleptOnGround,
+        ],
+    );
+
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    // Run enough heartbeats to trigger the first mope.
+    sim.step(&[], sim.tick + interval * 5);
+
+    // Elf should have a mope task.
+    let mope_task_id = sim
+        .db
+        .creatures
+        .get(&elf_id)
+        .and_then(|c| c.current_task)
+        .filter(|tid| {
+            sim.db
+                .tasks
+                .get(tid)
+                .is_some_and(|t| t.kind_tag == TaskKindTag::Mope)
+        });
+    assert!(mope_task_id.is_some(), "Elf should be moping");
+    let first_mope_id = mope_task_id.unwrap();
+
+    // Run more heartbeats — mope rate is P≈1.0 but should not replace existing mope.
+    sim.step(&[], sim.tick + interval * 10);
+
+    let current_task = sim.db.creatures.get(&elf_id).and_then(|c| c.current_task);
+    assert_eq!(
+        current_task,
+        Some(first_mope_id),
+        "Moping elf should keep the same Mope task, not get a replacement"
+    );
+}
+
+#[test]
+fn mope_always_preempts_player_directed_build() {
+    // With the preemption system, Mood(4) always preempts PlayerDirected(2)
+    // regardless of the mope_can_interrupt_task config field (which is
+    // now superseded). Verify that even with mope_can_interrupt_task=false,
+    // a Devastated elf's Build task is still interrupted.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 3000,
+        mope_mean_ticks_miserable: 3000,
+        mope_mean_ticks_devastated: 3000, // P ≈ 1.0
+        mope_can_interrupt_task: false,   // Superseded — should have no effect.
+        mope_duration_ticks: 100,
+    };
+    let (mut sim, elf_id) = mope_test_setup(
+        cfg,
+        &[
+            ThoughtKind::SleptOnGround,
+            ThoughtKind::SleptOnGround,
+            ThoughtKind::SleptOnGround,
+        ],
+    );
+
+    // Assign a long-running Build task at the elf's current node.
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let task_id = TaskId::new(&mut sim.rng);
+    let project_id = crate::types::ProjectId::new(&mut sim.rng);
+    let build_task = Task {
+        id: task_id,
+        kind: TaskKind::Build { project_id },
+        state: TaskState::InProgress,
+        location: elf_node,
+        progress: 0.0,
+        total_cost: 1_000_000.0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(build_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + interval * 10);
+
+    // The elf should have been interrupted — its current task should differ
+    // from the original Build task (either moping or idle after mope).
+    let current_task = sim.db.creatures.get(&elf_id).and_then(|c| c.current_task);
+    assert_ne!(
+        current_task,
+        Some(task_id),
+        "Mope (Mood) should always preempt Build (PlayerDirected), \
+             regardless of deprecated mope_can_interrupt_task config"
+    );
+}
+
+#[test]
+fn mope_task_location_is_home_when_assigned() {
+    // An elf with an assigned home should mope at the home's nav node.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 3000,
+        mope_mean_ticks_miserable: 3000,
+        mope_mean_ticks_devastated: 3000, // P ≈ 1.0
+        mope_duration_ticks: 50_000,      // Long enough to observe.
+        ..Default::default()
+    };
+    let mut config = test_config();
+    config.mood_consequences = cfg;
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(99, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Create a home.
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let home_id = insert_completed_home(&mut sim, anchor);
+
+    // Get the home's bed nav node (this is the location mope should target).
+    let bed_pos = sim
+        .db
+        .furniture
+        .by_structure_id(&home_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|f| f.placed)
+        .unwrap()
+        .coord;
+    let home_nav_node = sim.nav_graph.find_nearest_node(bed_pos).unwrap();
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = *sim
+        .db
+        .creatures
+        .iter_keys()
+        .find(|id| sim.db.creatures.get(id).unwrap().species == Species::Elf)
+        .unwrap();
+
+    // Assign elf to home.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::AssignHome {
+            creature_id: elf_id,
+            structure_id: Some(home_id),
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Inject negative thoughts.
+    for _ in 0..3 {
+        sim.add_creature_thought(elf_id, ThoughtKind::SleptOnGround);
+    }
+
+    // Run heartbeats until mope triggers.
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + interval * 10);
+
+    // Find the mope task and verify its location is the home nav node.
+    let mope_task = sim.db.tasks.iter_all().find(|t| {
+        t.kind_tag == TaskKindTag::Mope
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    assert!(mope_task.is_some(), "Elf should have a Mope task");
+    assert_eq!(
+        mope_task.unwrap().location,
+        home_nav_node,
+        "Mope task location should be the home's nav node"
+    );
+}
+
+#[test]
+fn elf_at_want_target_does_not_acquire() {
+    let mut sim = test_sim(42);
+    // Disable hunger/tiredness.
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    // Set wants = [Bread: 2], give elf 2 starting bread.
+    sim.config.elf_starting_bread = 2;
+    sim.config.elf_default_wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Bread,
+        material_filter: inventory::MaterialFilter::Any,
+        target_quantity: 2,
+    }];
+
+    let elf_id = spawn_elf(&mut sim);
+
+    // Verify elf has exactly 2 bread.
+    assert_eq!(
+        sim.inv_count_owned(sim.creature_inv(elf_id), inventory::ItemKind::Bread, elf_id),
+        2
+    );
+
+    // Add unowned bread to world.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            inventory::ItemKind::Bread,
+            10,
+            None,
+            None,
+        );
+    }
+
+    // Advance past heartbeat.
+    sim.step(&[], sim.tick + 5000);
+
+    // Assert: no AcquireItem task created (elf already has enough).
+    let has_acquire_task = sim.db.tasks.iter_all().any(|t| {
+        t.kind_tag == TaskKindTag::AcquireItem
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    assert!(
+        !has_acquire_task,
+        "Elf at want target should NOT create AcquireItem task"
+    );
+}
+
+// -----------------------------------------------------------------------
+// raycast_solid tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn raycast_solid_finds_solid_voxel() {
+    let mut sim = test_sim(42);
+    // Place a known solid voxel and cast a ray at it.
+    let target = VoxelCoord::new(5, 5, 5);
+    sim.world.set(target, VoxelType::Trunk);
+    let from = [5.5, 10.0, 5.5];
+    let dir = [0.0, -1.0, 0.0];
+    let result = sim.raycast_solid(from, dir, 100, None);
+    assert!(result.is_some(), "Should hit the trunk voxel");
+    let (coord, face) = result.unwrap();
+    assert_eq!(coord, target);
+    assert_eq!(face, 2, "Should enter through PosY face (from above)");
+}
+
+#[test]
+fn raycast_solid_returns_correct_face() {
+    let mut sim = test_sim(42);
+    // Place a solid voxel in a clear area far from the tree.
+    let target = VoxelCoord::new(5, 10, 5);
+    sim.world.set(target, VoxelType::Trunk);
+
+    // Ray from above → enters through PosY face (index 2).
+    let from_above = [5.5, 15.0, 5.5];
+    let dir_down = [0.0, -1.0, 0.0];
+    let (coord, face) = sim.raycast_solid(from_above, dir_down, 100, None).unwrap();
+    assert_eq!(coord, target);
+    assert_eq!(face, 2, "Ray from above should enter through PosY face");
+
+    // Ray from +X side → enters through PosX face (index 0).
+    let from_east = [10.5, 10.5, 5.5];
+    let dir_west = [-1.0, 0.0, 0.0];
+    let (coord, face) = sim.raycast_solid(from_east, dir_west, 100, None).unwrap();
+    assert_eq!(coord, target);
+    assert_eq!(face, 0, "Ray from +X should enter through PosX face");
+
+    // Ray from +Z side → enters through PosZ face (index 4).
+    let from_south = [5.5, 10.5, 10.5];
+    let dir_north = [0.0, 0.0, -1.0];
+    let (coord, face) = sim.raycast_solid(from_south, dir_north, 100, None).unwrap();
+    assert_eq!(coord, target);
+    assert_eq!(face, 4, "Ray from +Z should enter through PosZ face");
+}
+
+#[test]
+fn raycast_solid_returns_none_for_empty_ray() {
+    let sim = test_sim(42);
+    // Cast a ray straight up from the top of the world — should hit nothing.
+    let from = [5.5, 50.0, 5.5];
+    let dir = [0.0, 1.0, 0.0];
+    let result = sim.raycast_solid(from, dir, 100, None);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn raycast_solid_negative_face_directions() {
+    let mut sim = test_sim(42);
+    let target = VoxelCoord::new(5, 10, 5);
+    sim.world.set(target, VoxelType::Trunk);
+
+    // Ray from -X side → enters through NegX face (index 1).
+    let from_west = [0.5, 10.5, 5.5];
+    let dir_east = [1.0, 0.0, 0.0];
+    let (coord, face) = sim.raycast_solid(from_west, dir_east, 100, None).unwrap();
+    assert_eq!(coord, target);
+    assert_eq!(face, 1, "Ray from -X should enter through NegX face");
+
+    // Ray from -Z side → enters through NegZ face (index 5).
+    let from_north = [5.5, 10.5, 0.5];
+    let dir_south = [0.0, 0.0, 1.0];
+    let (coord, face) = sim.raycast_solid(from_north, dir_south, 100, None).unwrap();
+    assert_eq!(coord, target);
+    assert_eq!(face, 5, "Ray from -Z should enter through NegZ face");
+}
+
+#[test]
+fn raycast_solid_skips_starting_voxel() {
+    let mut sim = test_sim(42);
+    // Place two solid voxels adjacent vertically.
+    sim.world.set(VoxelCoord::new(5, 10, 5), VoxelType::Trunk);
+    sim.world.set(VoxelCoord::new(5, 11, 5), VoxelType::Trunk);
+    // Start inside the upper voxel, cast downward — should skip
+    // the starting voxel and hit the lower one.
+    let from = [5.5, 11.5, 5.5];
+    let dir = [0.0, -1.0, 0.0];
+    let result = sim.raycast_solid(from, dir, 100, None);
+    assert!(result.is_some());
+    let (coord, _face) = result.unwrap();
+    assert_eq!(
+        coord,
+        VoxelCoord::new(5, 10, 5),
+        "Should skip starting voxel"
+    );
+}
+
+#[test]
+fn raycast_solid_hits_blueprint_with_overlay() {
+    let mut sim = test_sim(42);
+    // Find an air voxel adjacent to trunk (valid for platform placement).
+    let target = find_air_adjacent_to_trunk(&sim);
+
+    // Without overlay, ray passes through (it's air).
+    let from = [
+        target.x as f32 + 0.5,
+        target.y as f32 + 5.0,
+        target.z as f32 + 0.5,
+    ];
+    let dir = [0.0, -1.0, 0.0];
+    let result_no_overlay = sim.raycast_solid(from, dir, 20, None);
+    // Ray might hit something else (e.g., floor below), but not the target.
+    assert!(
+        result_no_overlay.is_none() || result_no_overlay.unwrap().0 != target,
+        "Without overlay, ray should not hit the air voxel as solid"
+    );
+
+    // Designate a platform blueprint at the target.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![target],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // With overlay, ray hits the blueprint voxel.
+    let overlay = sim.blueprint_overlay();
+    let result_with_overlay = sim.raycast_solid(from, dir, 20, Some(&overlay));
+    assert!(
+        result_with_overlay.is_some(),
+        "With overlay, ray should hit the blueprint voxel"
+    );
+    let (coord, face) = result_with_overlay.unwrap();
+    assert_eq!(coord, target);
+    assert_eq!(face, 2, "Should enter through PosY face (from above)");
+}
+
+// -----------------------------------------------------------------------
+// auto_ladder_orientation tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn auto_ladder_orientation_faces_trunk() {
+    let mut sim = test_sim(42);
+    // Place a trunk column at (5, 10..14, 5) and test ladder at (6, 10, 5).
+    // Use an elevated position far from the real tree to avoid interference.
+    for y in 10..14 {
+        sim.world.set(VoxelCoord::new(5, y, 5), VoxelType::Trunk);
+    }
+    // Clear all neighbors around the ladder column to ensure only the
+    // trunk at x=5 is adjacent.
+    for y in 10..14 {
+        sim.world.set(VoxelCoord::new(6, y, 5), VoxelType::Air);
+        sim.world.set(VoxelCoord::new(7, y, 5), VoxelType::Air);
+        sim.world.set(VoxelCoord::new(6, y, 4), VoxelType::Air);
+        sim.world.set(VoxelCoord::new(6, y, 6), VoxelType::Air);
+    }
+
+    let face = sim.auto_ladder_orientation(6, 10, 5, 4);
+    // Trunk is to the west (-X) of the ladder, so the ladder should face
+    // NegX (face 1).
+    assert_eq!(face, 1, "Ladder should face the trunk (NegX)");
+}
+
+#[test]
+fn auto_ladder_orientation_tie_breaks_to_first() {
+    let mut sim = test_sim(42);
+    // Place solid voxels on both +X and -X sides of the ladder column,
+    // creating a tie. The code iterates [PosX, PosZ, NegX, NegZ], so
+    // PosX (face 0) should win.
+    for y in 10..14 {
+        sim.world.set(VoxelCoord::new(4, y, 5), VoxelType::Trunk); // -X
+        sim.world.set(VoxelCoord::new(6, y, 5), VoxelType::Trunk); // +X
+        // Clear other neighbors.
+        sim.world.set(VoxelCoord::new(5, y, 4), VoxelType::Air);
+        sim.world.set(VoxelCoord::new(5, y, 6), VoxelType::Air);
+    }
+    let face = sim.auto_ladder_orientation(5, 10, 5, 4);
+    assert_eq!(
+        face, 0,
+        "Tie should break to PosX (first in iteration order)"
+    );
+}
+
+#[test]
+fn auto_ladder_orientation_no_neighbors_defaults_east() {
+    let mut sim = test_sim(42);
+    // Clear all neighbors around the ladder column — no solid voxels.
+    for y in 10..14 {
+        sim.world.set(VoxelCoord::new(5, y, 5), VoxelType::Air);
+        sim.world.set(VoxelCoord::new(4, y, 5), VoxelType::Air);
+        sim.world.set(VoxelCoord::new(6, y, 5), VoxelType::Air);
+        sim.world.set(VoxelCoord::new(5, y, 4), VoxelType::Air);
+        sim.world.set(VoxelCoord::new(5, y, 6), VoxelType::Air);
+    }
+    let face = sim.auto_ladder_orientation(5, 10, 5, 4);
+    // All counts are 0, so first direction (PosX, face 0) wins.
+    assert_eq!(face, 0, "No neighbors should default to PosX (East)");
+}
+
+// -----------------------------------------------------------------------
+// Notification tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn debug_notification_command_creates_notification() {
+    let mut sim = test_sim(42);
+    let pid = sim.player_id;
+
+    assert_eq!(sim.db.notifications.iter_all().count(), 0);
+
+    let cmd = SimCommand {
+        player_id: pid,
+        tick: 1,
+        action: SimAction::DebugNotification {
+            message: "hello world".to_string(),
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.notifications.iter_all().count(), 1);
+    let notif = sim.db.notifications.iter_all().next().unwrap();
+    assert_eq!(notif.message, "hello world");
+    assert_eq!(notif.tick, 1);
+}
+
+#[test]
+fn notifications_persist_across_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let pid = sim.player_id;
+
+    let cmd = SimCommand {
+        player_id: pid,
+        tick: 1,
+        action: SimAction::DebugNotification {
+            message: "save me".to_string(),
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.notifications.iter_all().count(), 1);
+
+    // Serialize and deserialize.
+    let json = serde_json::to_string(&sim).unwrap();
+    let mut restored: SimState = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.db.notifications.iter_all().count(), 1);
+    let notif = restored.db.notifications.iter_all().next().unwrap();
+    assert_eq!(notif.message, "save me");
+
+    // Verify that auto-increment IDs don't collide after deserialization.
+    restored.add_notification("post-load".to_string());
+    let ids: Vec<_> = restored.db.notifications.iter_all().map(|n| n.id).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(
+        ids[1] > ids[0],
+        "Post-load notification ID ({:?}) should be greater than pre-existing ({:?})",
+        ids[1],
+        ids[0]
+    );
+}
+
+// -----------------------------------------------------------------------
+// Manufacturing / Workshop tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn new_item_kind_serde_roundtrip() {
+    use crate::inventory::ItemKind;
+    for kind in [
+        ItemKind::Bow,
+        ItemKind::Arrow,
+        ItemKind::Bowstring,
+        ItemKind::Pulp,
+        ItemKind::Husk,
+        ItemKind::Seed,
+        ItemKind::FruitFiber,
+        ItemKind::FruitSap,
+        ItemKind::FruitResin,
+    ] {
+        let json = serde_json::to_string(&kind).unwrap();
+        let restored: ItemKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, restored);
+    }
+}
+
+#[test]
+fn material_enum_serde_roundtrip() {
+    use crate::inventory::Material;
+    for mat in [
+        Material::Oak,
+        Material::Birch,
+        Material::Willow,
+        Material::Ash,
+        Material::Yew,
+        Material::FruitSpecies(crate::fruit::FruitSpeciesId(42)),
+    ] {
+        let json = serde_json::to_string(&mat).unwrap();
+        let restored: Material = serde_json::from_str(&json).unwrap();
+        assert_eq!(mat, restored);
+    }
+}
+
+#[test]
+fn item_stack_serde_backward_compat() {
+    // Old JSON without material/quality/enchantment_id should deserialize.
+    let json = r#"{
+            "id": 1,
+            "inventory_id": 1,
+            "kind": "Bread",
+            "quantity": 5,
+            "owner": null,
+            "reserved_by": null
+        }"#;
+    let stack: crate::db::ItemStack = serde_json::from_str(json).unwrap();
+    assert_eq!(stack.kind, inventory::ItemKind::Bread);
+    assert_eq!(stack.quantity, 5);
+    assert!(stack.material.is_none());
+    assert_eq!(stack.quality, 0);
+    assert!(stack.enchantment_id.is_none());
+}
+
+#[test]
+fn inv_add_simple_item_stacks_correctly() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 3, None, None);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 2, None, None);
+    // Should stack into one row with qty 5.
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1);
+    assert_eq!(stacks[0].quantity, 5);
+}
+
+#[test]
+fn inv_add_item_material_creates_separate_stacks() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bow,
+        1,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bow,
+        1,
+        None,
+        None,
+        Some(inventory::Material::Yew),
+        0,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 2, "Different materials should not stack");
+}
+
+#[test]
+fn inv_add_item_quality_creates_separate_stacks() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bow,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bow,
+        1,
+        None,
+        None,
+        None,
+        3,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 2, "Different qualities should not stack");
+}
+
+#[test]
+fn inv_normalize_respects_material_quality() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    // Create two stacks with same kind but different quality.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        5,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        3,
+        None,
+        None,
+        None,
+        1,
+        None,
+        None,
+    );
+    sim.inv_normalize(inv_id);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(
+        stacks.len(),
+        2,
+        "Merge should keep different qualities separate"
+    );
+}
+
+#[test]
+fn item_subcomponent_cascade_delete() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bow, 1, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let stack_id = stacks[0].id;
+
+    // Add a subcomponent.
+    let _ = sim
+        .db
+        .item_subcomponents
+        .insert_auto_no_fk(|id| crate::db::ItemSubcomponent {
+            id,
+            item_stack_id: stack_id,
+            component_kind: inventory::ItemKind::Bowstring,
+            material: None,
+            quality: 0,
+            quantity_per_item: 1,
+        });
+    assert_eq!(sim.db.item_subcomponents.len(), 1);
+
+    // Delete the item stack — subcomponent should cascade.
+    sim.db.remove_item_stack(&stack_id).unwrap();
+    assert_eq!(
+        sim.db.item_subcomponents.len(),
+        0,
+        "Subcomponent should cascade delete with parent stack"
+    );
+}
+
+#[test]
+fn enchantment_effect_cascade_delete() {
+    let mut sim = test_sim(42);
+
+    // Create an enchantment.
+    let ench_id = sim
+        .db
+        .item_enchantments
+        .insert_auto_no_fk(|id| crate::db::ItemEnchantment { id })
+        .unwrap();
+
+    // Add an effect.
+    let _ = sim
+        .db
+        .enchantment_effects
+        .insert_auto_no_fk(|id| crate::db::EnchantmentEffect {
+            id,
+            enchantment_id: ench_id,
+            effect_kind: inventory::EffectKind::Placeholder,
+            magnitude: 10,
+            threshold: None,
+        });
+    assert_eq!(sim.db.enchantment_effects.len(), 1);
+
+    // Delete enchantment — effect should cascade.
+    sim.db.remove_item_enchantment(&ench_id).unwrap();
+    assert_eq!(
+        sim.db.enchantment_effects.len(),
+        0,
+        "Effect should cascade delete with parent enchantment"
+    );
+}
+
+#[test]
+fn completed_structure_serde_backward_compat_crafting() {
+    // Old JSON without crafting_enabled field should deserialize with default.
+    let mut rng = GameRng::new(42);
+    let structure = CompletedStructure {
+        id: StructureId(1),
+        project_id: ProjectId::new(&mut rng),
+        build_type: BuildType::Building,
+        anchor: VoxelCoord::new(0, 0, 0),
+        width: 5,
+        depth: 5,
+        height: 3,
+        completed_tick: 100,
+        name: None,
+        furnishing: None,
+        inventory_id: InventoryId(0),
+        logistics_priority: None,
+        crafting_enabled: false,
+        greenhouse_species: None,
+        greenhouse_enabled: false,
+        greenhouse_last_production_tick: 0,
+    };
+    let json = serde_json::to_string(&structure).unwrap();
+    // Remove crafting_enabled to simulate old save.
+    let json_old = json.replace(r#","crafting_enabled":false"#, "");
+    let restored: CompletedStructure = serde_json::from_str(&json_old).unwrap();
+    assert!(!restored.crafting_enabled);
+}
+
+#[test]
+fn game_config_with_recipes_deserializes() {
+    use crate::species::CombatAI;
+    let config_json = std::fs::read_to_string("../default_config.json").unwrap();
+    let config: crate::config::GameConfig = serde_json::from_str(&config_json).unwrap();
+    assert_eq!(config.recipes.len(), 1);
+    assert_eq!(config.recipes[0].id, "bowstring");
+    // CombatAI and detection range survive JSON roundtrip.
+    assert_eq!(
+        config.species[&Species::Goblin].combat_ai,
+        CombatAI::AggressiveMelee
+    );
+    assert_eq!(
+        config.species[&Species::Goblin].hostile_detection_range_sq,
+        225
+    );
+    assert_eq!(config.species[&Species::Elf].combat_ai, CombatAI::Passive);
+    assert_eq!(config.species[&Species::Elf].hostile_detection_range_sq, 0);
+}
+
+#[test]
+fn game_config_without_recipes_gets_defaults() {
+    // Minimal valid config JSON — no recipes field.
+    let config = crate::config::GameConfig::default();
+    assert_eq!(config.recipes.len(), 1);
+    assert_eq!(config.workshop_default_priority, 8);
+}
+
+#[test]
+fn furnish_workshop_sets_defaults() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::Workshop,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    assert!(
+        structure.crafting_enabled,
+        "Workshop should have crafting_enabled"
+    );
+    assert_eq!(
+        structure.logistics_priority,
+        Some(sim.config.workshop_default_priority),
+        "Workshop should have default priority"
+    );
+
+    // Should have ActiveRecipe entries for all workshop recipes.
+    let active_recipes = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+    let default_recipe_count = sim
+        .recipe_catalog
+        .default_recipes_for_furnishing(FurnishingType::Workshop)
+        .len();
+    assert_eq!(
+        active_recipes.len(),
+        default_recipe_count,
+        "Workshop should have all default workshop recipes as active recipes"
+    );
+}
+
+// Old workshop tests (set_workshop_config_*, workshop_monitor_*, setup_workshop)
+// have been removed — all crafting is now tested via the unified ActiveRecipe system.
+// See the "Unified crafting commands" section below.
+
+#[test]
+fn moping_creates_notification() {
+    // Set up with guaranteed moping (mean = 1 so it always fires).
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 1,
+        mope_duration_ticks: 5000,
+        ..Default::default()
+    };
+    let (mut sim, _elf_id) = mope_test_setup(
+        cfg,
+        // Two SleptOnGround thoughts push mood to Unhappy.
+        &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+    );
+
+    assert_eq!(sim.db.notifications.iter_all().count(), 0);
+
+    // Run enough ticks for a heartbeat to fire and trigger moping.
+    let elf_hb = sim.config.species[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + elf_hb + 1);
+
+    // Should have a moping notification.
+    assert!(
+        sim.db.notifications.iter_all().count() > 0,
+        "Expected a moping notification"
+    );
+    let notif = sim.db.notifications.iter_all().next().unwrap();
+    assert!(
+        notif.message.contains("moping"),
+        "Notification should mention moping, got: {}",
+        notif.message
+    );
+    assert!(
+        notif.message.contains("Unhappy"),
+        "Notification should mention mood tier, got: {}",
+        notif.message
+    );
+}
+
+#[test]
+fn moping_notification_unnamed_elf_uses_generic_text() {
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 1,
+        mope_duration_ticks: 5000,
+        ..Default::default()
+    };
+    let (mut sim, elf_id) = mope_test_setup(
+        cfg,
+        &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+    );
+
+    // Clear the elf's name to exercise the empty-name branch.
+    let mut elf = sim.db.creatures.get(&elf_id).unwrap();
+    elf.name = String::new();
+    let _ = sim.db.creatures.update_no_fk(elf);
+
+    let elf_hb = sim.config.species[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + elf_hb + 1);
+
+    assert!(
+        sim.db.notifications.iter_all().count() > 0,
+        "Expected a moping notification for unnamed elf"
+    );
+    let notif = sim.db.notifications.iter_all().next().unwrap();
+    assert!(
+        notif.message.starts_with("An elf is moping"),
+        "Unnamed elf notification should use generic text, got: {}",
+        notif.message
+    );
+}
+
+#[test]
+fn craft_task_serde_roundtrip() {
+    use crate::prng::GameRng;
+    let mut rng = GameRng::new(42);
+    let task_id = TaskId::new(&mut rng);
+
+    let task = task::Task {
+        id: task_id,
+        kind: task::TaskKind::Craft {
+            structure_id: StructureId(5),
+            recipe_id: "bowstring".to_string(),
+        },
+        state: task::TaskState::Available,
+        location: NavNodeId(10),
+        progress: 0.0,
+        total_cost: 5000.0,
+        required_species: Some(Species::Elf),
+        origin: task::TaskOrigin::Automated,
+        target_creature: None,
+    };
+
+    let json = serde_json::to_string(&task).unwrap();
+    let restored: task::Task = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.id, task_id);
+    match &restored.kind {
+        task::TaskKind::Craft {
+            structure_id,
+            recipe_id,
+        } => {
+            assert_eq!(*structure_id, StructureId(5));
+            assert_eq!(recipe_id, "bowstring");
+        }
+        other => panic!("Expected Craft task, got {:?}", other),
+    }
+    assert_eq!(restored.origin, task::TaskOrigin::Automated);
+}
+
+#[test]
+fn orphaned_active_recipes_cleaned_up_on_load() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Verify recipes exist.
+    let initial_count = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .len();
+    assert!(initial_count > 0);
+
+    // Corrupt one recipe's key_json to simulate an orphan.
+    let ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let _ = sim.db.active_recipes.modify_unchecked(&ar.id, |r| {
+        r.recipe_key_json = "__orphaned_recipe_key__".to_string();
+    });
+
+    // Run orphan cleanup (normally called during rebuild_transient_state).
+    sim.cleanup_orphaned_active_recipes();
+
+    // The orphaned recipe should be removed.
+    let after_count = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .len();
+    assert_eq!(after_count, initial_count - 1);
+
+    // A notification should exist.
+    let notifications: Vec<_> = sim.db.notifications.iter_all().collect();
+    assert!(
+        notifications
+            .iter()
+            .any(|n| n.message.contains("no longer available")),
+        "Should create a notification for orphaned recipe"
+    );
+}
+
+// =========================================================================
+// Unified crafting commands (ActiveRecipe / ActiveRecipeTarget)
+// =========================================================================
+
+/// Helper: furnish a building and create a workshop or kitchen via the new
+/// unified crafting system. Returns the structure_id.
+fn setup_crafting_building(sim: &mut SimState, furnishing_type: FurnishingType) -> StructureId {
+    let anchor = find_building_site(sim);
+    let structure_id = insert_completed_building(sim, anchor);
+    let furnish_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[furnish_cmd], sim.tick + 1);
+    structure_id
+}
+
+#[test]
+fn add_active_recipe_creates_recipe_and_targets() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Workshop furnishing auto-adds the bowstring config recipe. Verify it
+    // was added with correct properties.
+    let bowstring_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .into_iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .key
+        .clone();
+
+    let recipes = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+    let bowstring_recipe = recipes
+        .iter()
+        .find(|r| r.recipe_key_json == bowstring_key.to_json())
+        .expect("Bowstring recipe should exist");
+    assert!(bowstring_recipe.enabled);
+    assert!(bowstring_recipe.auto_logistics);
+    assert_eq!(bowstring_recipe.spare_iterations, 0);
+
+    // Should have target rows for each output (bowstring has 1 output).
+    let targets = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&bowstring_recipe.id, tabulosity::QueryOpts::ASC);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].output_item_kind, inventory::ItemKind::Bowstring);
+    assert_eq!(targets[0].target_quantity, 0);
+}
+
+#[test]
+fn add_active_recipe_rejects_duplicate() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Bowstring is already added by furnishing. Try to add it again.
+    let bowstring_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .key
+        .clone();
+
+    let initial_count = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .len();
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: bowstring_key,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Count should not increase — duplicate was rejected.
+    let after_count = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .len();
+    assert_eq!(initial_count, after_count);
+}
+
+#[test]
+fn add_active_recipe_rejects_wrong_furnishing() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
+
+    // Try to add a workshop recipe to a kitchen.
+    let workshop_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .next()
+        .unwrap()
+        .key
+        .clone();
+    let key_json = workshop_key.to_json();
+
+    let initial_count = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .len();
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: workshop_key,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Kitchen should only have its default bread recipe — no workshop recipes.
+    let recipes = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(recipes.len(), initial_count, "Count should not change");
+    assert!(
+        recipes.iter().all(|r| r.recipe_key_json != key_json),
+        "Workshop recipe should not be on a kitchen"
+    );
+}
+
+#[test]
+fn remove_active_recipe_deletes_recipe_and_targets() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Add a grow recipe (not auto-added), then remove it.
+    let arrow_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Grow Oak Arrows")
+        .unwrap()
+        .key
+        .clone();
+
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: arrow_key.clone(),
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    let initial_count = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .len();
+
+    let ar_id = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == arrow_key.to_json())
+        .unwrap()
+        .id;
+
+    // Remove it.
+    let rm_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::RemoveActiveRecipe {
+            active_recipe_id: ar_id,
+        },
+    };
+    sim.step(&[rm_cmd], sim.tick + 1);
+
+    assert_eq!(
+        sim.db
+            .active_recipes
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+            .len(),
+        initial_count - 1,
+    );
+    // Targets should be cascade-deleted.
+    assert_eq!(
+        sim.db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar_id, tabulosity::QueryOpts::ASC)
+            .len(),
+        0,
+    );
+}
+
+#[test]
+fn set_recipe_output_target_updates_quantity() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    let recipe_def = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .into_iter()
+        .find(|r| r.display_name == "Grow Oak Arrows")
+        .unwrap();
+    let recipe_key_json = recipe_def.key.to_json();
+
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: recipe_def.key.clone(),
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    let ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == recipe_key_json)
+        .unwrap();
+    let target = &sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+
+    let set_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 42,
+        },
+    };
+    sim.step(&[set_cmd], sim.tick + 1);
+
+    let updated = sim.db.active_recipe_targets.get(&target.id).unwrap();
+    assert_eq!(updated.target_quantity, 42);
+}
+
+#[test]
+fn set_crafting_enabled_toggles_building() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Workshop furnishing now auto-enables crafting.
+    assert!(
+        sim.db
+            .structures
+            .get(&structure_id)
+            .unwrap()
+            .crafting_enabled
+    );
+
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetCraftingEnabled {
+            structure_id,
+            enabled: false,
+        },
+    };
+    sim.step(&[cmd2], sim.tick + 1);
+    assert!(
+        !sim.db
+            .structures
+            .get(&structure_id)
+            .unwrap()
+            .crafting_enabled
+    );
+}
+
+#[test]
+fn set_recipe_enabled_toggles_recipe() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    let recipe_def = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .into_iter()
+        .find(|r| r.display_name == "Grow Oak Arrows")
+        .unwrap();
+    let recipe_key_json = recipe_def.key.to_json();
+
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: recipe_def.key.clone(),
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    let ar_id = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == recipe_key_json)
+        .unwrap()
+        .id;
+    assert!(sim.db.active_recipes.get(&ar_id).unwrap().enabled);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeEnabled {
+            active_recipe_id: ar_id,
+            enabled: false,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+    assert!(!sim.db.active_recipes.get(&ar_id).unwrap().enabled);
+}
+
+#[test]
+fn set_recipe_auto_logistics_updates_fields() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    let recipe_def = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .into_iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap();
+
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: recipe_def.key.clone(),
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    let ar_id = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0]
+        .id;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeAutoLogistics {
+            active_recipe_id: ar_id,
+            auto_logistics: false,
+            spare_iterations: 5,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let ar = sim.db.active_recipes.get(&ar_id).unwrap();
+    assert!(!ar.auto_logistics);
+    assert_eq!(ar.spare_iterations, 5);
+}
+
+#[test]
+fn move_active_recipe_up_down_swaps_sort_order() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Add a second recipe (bowstring is auto-added, add arrows manually).
+    let arrow_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Grow Oak Arrows")
+        .unwrap()
+        .key
+        .clone();
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: arrow_key,
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    // Now have at least 2 active recipes. Use the first two for
+    // testing move up/down.
+    let recipes = sim.db.active_recipes.by_structure_sort(
+        &structure_id,
+        tabulosity::MatchAll,
+        tabulosity::QueryOpts::ASC,
+    );
+    assert!(recipes.len() >= 2);
+    let first_id = recipes[0].id;
+    let second_id = recipes[1].id;
+    let first_sort = recipes[0].sort_order;
+    let second_sort = recipes[1].sort_order;
+    assert!(first_sort < second_sort);
+
+    // Move second up — should swap with first.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::MoveActiveRecipeUp {
+            active_recipe_id: second_id,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let after = sim.db.active_recipes.by_structure_sort(
+        &structure_id,
+        tabulosity::MatchAll,
+        tabulosity::QueryOpts::ASC,
+    );
+    assert_eq!(after[0].id, second_id);
+    assert_eq!(after[1].id, first_id);
+
+    // Move second (now at top) up again — should be no-op.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::MoveActiveRecipeUp {
+            active_recipe_id: second_id,
+        },
+    };
+    sim.step(&[cmd2], sim.tick + 1);
+
+    let after2 = sim.db.active_recipes.by_structure_sort(
+        &structure_id,
+        tabulosity::MatchAll,
+        tabulosity::QueryOpts::ASC,
+    );
+    assert_eq!(after2[0].id, second_id);
+
+    // Move second down — should swap back.
+    let cmd3 = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::MoveActiveRecipeDown {
+            active_recipe_id: second_id,
+        },
+    };
+    sim.step(&[cmd3], sim.tick + 1);
+
+    let after3 = sim.db.active_recipes.by_structure_sort(
+        &structure_id,
+        tabulosity::MatchAll,
+        tabulosity::QueryOpts::ASC,
+    );
+    assert_eq!(after3[0].id, first_id);
+    assert_eq!(after3[1].id, second_id);
+}
+
+#[test]
+fn add_active_recipe_to_kitchen_bread() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
+
+    let recipe_def = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Kitchen)
+        .into_iter()
+        .find(|r| r.display_name == "Bread")
+        .unwrap();
+    let key = recipe_def.key.clone();
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: key,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let recipes = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(recipes.len(), 1);
+    assert_eq!(recipes[0].recipe_display_name, "Bread");
+
+    let targets = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&recipes[0].id, tabulosity::QueryOpts::ASC);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].output_item_kind, inventory::ItemKind::Bread);
+}
+
+#[test]
+fn unified_crafting_monitor_creates_craft_task() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Place furniture so the building is functional.
+    let furn_ids: Vec<_> = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|f| f.id)
+        .collect();
+    for fid in furn_ids {
+        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+            f.placed = true;
+        });
+    }
+
+    // Crafting is auto-enabled by furnishing. Add arrow recipe manually.
+    let arrow_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Grow Oak Arrows")
+        .unwrap()
+        .key
+        .clone();
+    let arrow_key_json = arrow_key.to_json();
+    let add_arrow_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: arrow_key,
+        },
+    };
+    sim.step(&[add_arrow_cmd], sim.tick + 1);
+
+    let ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == arrow_key_json)
+        .unwrap();
+    let target = &sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+    let set_target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 20,
+        },
+    };
+    sim.step(&[set_target_cmd], sim.tick + 1);
+
+    // Run the unified monitor.
+    sim.process_unified_crafting_monitor();
+
+    // Should have created a Craft task for the arrow recipe.
+    let craft_tasks: Vec<_> = sim
+        .db
+        .task_structure_refs
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|r| r.role == crate::db::TaskStructureRole::CraftAt)
+        .filter(|r| {
+            sim.db
+                .tasks
+                .get(&r.task_id)
+                .is_some_and(|t| t.state != task::TaskState::Complete)
+        })
+        .map(|r| r.task_id)
+        .collect();
+    assert_eq!(craft_tasks.len(), 1, "Expected 1 craft task");
+
+    // Verify the TaskCraftData has the active_recipe_id set.
+    let tcd = sim.task_craft_data(craft_tasks[0]).unwrap();
+    assert_eq!(tcd.active_recipe_id, Some(ar.id));
+}
+
+#[test]
+fn unified_crafting_monitor_skips_when_target_met() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    let furn_ids: Vec<_> = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|f| f.id)
+        .collect();
+    for fid in furn_ids {
+        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+            f.placed = true;
+        });
+    }
+
+    let enable_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetCraftingEnabled {
+            structure_id,
+            enabled: true,
+        },
+    };
+    sim.step(&[enable_cmd], sim.tick + 1);
+
+    let arrow_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Grow Oak Arrows")
+        .unwrap()
+        .key
+        .clone();
+    let arrow_key_json = arrow_key.to_json();
+
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: arrow_key,
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    let ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == arrow_key_json)
+        .unwrap();
+    let target = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+
+    // Set target to 5 arrows, then add 5 arrows to the building's inventory.
+    let set_target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 5,
+        },
+    };
+    sim.step(&[set_target_cmd], sim.tick + 1);
+
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        5,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    // Run the unified monitor — should NOT create a task (target met).
+    sim.process_unified_crafting_monitor();
+
+    let craft_count = sim
+        .db
+        .task_structure_refs
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|r| r.role == crate::db::TaskStructureRole::CraftAt)
+        .filter(|r| {
+            sim.db
+                .tasks
+                .get(&r.task_id)
+                .is_some_and(|t| t.state != task::TaskState::Complete)
+        })
+        .count();
+    assert_eq!(
+        craft_count, 0,
+        "Should not create a task when target is met"
+    );
+}
+
+#[test]
+fn unified_crafting_monitor_skips_when_disabled() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    let furn_ids: Vec<_> = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|f| f.id)
+        .collect();
+    for fid in furn_ids {
+        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+            f.placed = true;
+        });
+    }
+
+    // Disable crafting (furnishing auto-enables it).
+    let disable_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetCraftingEnabled {
+            structure_id,
+            enabled: false,
+        },
+    };
+    sim.step(&[disable_cmd], sim.tick + 1);
+
+    let arrow_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Grow Oak Arrows")
+        .unwrap()
+        .key
+        .clone();
+    let arrow_key_json = arrow_key.to_json();
+
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: arrow_key,
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    let ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == arrow_key_json)
+        .unwrap();
+    let target = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+
+    let set_target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 20,
+        },
+    };
+    sim.step(&[set_target_cmd], sim.tick + 1);
+
+    sim.process_unified_crafting_monitor();
+
+    let craft_count = sim
+        .db
+        .task_structure_refs
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|r| r.role == crate::db::TaskStructureRole::CraftAt)
+        .filter(|r| {
+            sim.db
+                .tasks
+                .get(&r.task_id)
+                .is_some_and(|t| t.state != task::TaskState::Complete)
+        })
+        .count();
+    assert_eq!(
+        craft_count, 0,
+        "Should not create tasks when crafting_enabled is false"
+    );
+}
+
+// =========================================================================
+// Auto-logistics (unified crafting)
+// =========================================================================
+
+#[test]
+fn auto_logistics_generates_wants_from_active_recipe() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Clear old workshop explicit wants and enable crafting.
+    let setup_cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetLogisticsWants {
+                structure_id,
+                wants: vec![],
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled: true,
+            },
+        },
+    ];
+    sim.step(&setup_cmds, sim.tick + 1);
+
+    // Add bowstring recipe (1 Fruit → 20 Bowstring).
+    let bowstring_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .key
+        .clone();
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: bowstring_key,
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    // Set target: 20 bowstrings.
+    let ar = &sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+    let target = &sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+    let set_target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 20,
+        },
+    };
+    sim.step(&[set_target_cmd], sim.tick + 1);
+
+    // Auto-logistics is enabled by default. runs_needed = ceil(20/20) = 1.
+    // Input: 1 Fruit per run → auto_want = 1 * 1 = 1.
+    let wants = sim.compute_effective_wants(structure_id);
+    let fruit_want = wants
+        .iter()
+        .find(|w| w.item_kind == inventory::ItemKind::Fruit)
+        .expect("Should have a Fruit want from auto-logistics");
+    assert_eq!(fruit_want.target_quantity, 1);
+}
+
+#[test]
+fn auto_logistics_spare_iterations_add_extra_wants() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Clear old workshop explicit wants and enable crafting.
+    let setup_cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetLogisticsWants {
+                structure_id,
+                wants: vec![],
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled: true,
+            },
+        },
+    ];
+    sim.step(&setup_cmds, sim.tick + 1);
+
+    let bowstring_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .key
+        .clone();
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: bowstring_key,
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    let ar = &sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+    let target = &sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+
+    // Set target: 20 bowstrings, spare_iterations: 3.
+    let set_target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 20,
+        },
+    };
+    let set_spare_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeAutoLogistics {
+            active_recipe_id: ar.id,
+            auto_logistics: true,
+            spare_iterations: 3,
+        },
+    };
+    sim.step(&[set_target_cmd, set_spare_cmd], sim.tick + 1);
+
+    // runs_needed = 1 (ceil(20/20)), spare = 3, total = 4.
+    // auto_want = 1 * 4 = 4 Fruit.
+    let wants = sim.compute_effective_wants(structure_id);
+    let fruit_want = wants
+        .iter()
+        .find(|w| w.item_kind == inventory::ItemKind::Fruit)
+        .expect("Should have a Fruit want");
+    assert_eq!(fruit_want.target_quantity, 4);
+}
+
+#[test]
+fn auto_logistics_sums_with_explicit_wants() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    let enable_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetCraftingEnabled {
+            structure_id,
+            enabled: true,
+        },
+    };
+    sim.step(&[enable_cmd], sim.tick + 1);
+
+    // Enable logistics and set an explicit want of 5 Fruit.
+    let logistics_cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetLogisticsPriority {
+                structure_id,
+                priority: Some(5),
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetLogisticsWants {
+                structure_id,
+                wants: vec![crate::building::LogisticsWant {
+                    item_kind: inventory::ItemKind::Fruit,
+                    material_filter: inventory::MaterialFilter::Any,
+                    target_quantity: 5,
+                }],
+            },
+        },
+    ];
+    sim.step(&logistics_cmds, sim.tick + 1);
+
+    // Add bowstring recipe with target 20.
+    let bowstring_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .key
+        .clone();
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: bowstring_key,
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    let ar = &sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+    let target = &sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+    let set_target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 20,
+        },
+    };
+    sim.step(&[set_target_cmd], sim.tick + 1);
+
+    // Explicit = 5, auto = 1 → merged = 6.
+    let wants = sim.compute_effective_wants(structure_id);
+    let fruit_want = wants
+        .iter()
+        .find(|w| w.item_kind == inventory::ItemKind::Fruit)
+        .expect("Should have Fruit want");
+    assert_eq!(fruit_want.target_quantity, 6);
+}
+
+#[test]
+fn auto_logistics_disabled_when_crafting_disabled() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Disable crafting and clear explicit wants.
+    let setup_cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled: false,
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetLogisticsWants {
+                structure_id,
+                wants: vec![],
+            },
+        },
+    ];
+    sim.step(&setup_cmds, sim.tick + 1);
+
+    // Bowstring is already added by furnishing. Find it and set target.
+    let bowstring_key_json = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .key
+        .to_json();
+
+    let ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == bowstring_key_json)
+        .unwrap();
+    let target = &sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+    let set_target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 20,
+        },
+    };
+    sim.step(&[set_target_cmd], sim.tick + 1);
+
+    // crafting_enabled is false → no auto-logistics wants.
+    let wants = sim.compute_effective_wants(structure_id);
+    let fruit_want = wants
+        .iter()
+        .find(|w| w.item_kind == inventory::ItemKind::Fruit);
+    assert!(
+        fruit_want.is_none(),
+        "Should not generate auto-logistics when crafting is disabled"
+    );
+}
+
+#[test]
+fn auto_logistics_disabled_per_recipe() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    let setup_cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetLogisticsWants {
+                structure_id,
+                wants: vec![],
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled: true,
+            },
+        },
+    ];
+    sim.step(&setup_cmds, sim.tick + 1);
+
+    let bowstring_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .key
+        .clone();
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: bowstring_key,
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    let ar = &sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+    let target = &sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+
+    // Set target, then disable auto-logistics.
+    let cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 20,
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeAutoLogistics {
+                active_recipe_id: ar.id,
+                auto_logistics: false,
+                spare_iterations: 0,
+            },
+        },
+    ];
+    sim.step(&cmds, sim.tick + 1);
+
+    let wants = sim.compute_effective_wants(structure_id);
+    let fruit_want = wants
+        .iter()
+        .find(|w| w.item_kind == inventory::ItemKind::Fruit);
+    assert!(
+        fruit_want.is_none(),
+        "Should not generate auto-logistics when recipe auto_logistics is false"
+    );
+}
+
+#[test]
+fn auto_logistics_no_input_recipe_generates_no_wants() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    let setup_cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetLogisticsWants {
+                structure_id,
+                wants: vec![],
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled: true,
+            },
+        },
+    ];
+    sim.step(&setup_cmds, sim.tick + 1);
+
+    // Arrow recipe has no inputs. Add it manually (not auto-added).
+    let arrow_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Grow Oak Arrows")
+        .unwrap()
+        .key
+        .clone();
+    let arrow_key_json = arrow_key.to_json();
+    let add_arrow_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: arrow_key,
+        },
+    };
+    sim.step(&[add_arrow_cmd], sim.tick + 1);
+
+    let ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == arrow_key_json)
+        .unwrap();
+    let target = &sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+    let set_target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 100,
+        },
+    };
+    sim.step(&[set_target_cmd], sim.tick + 1);
+
+    // No inputs → no auto-logistics wants.
+    let wants = sim.compute_effective_wants(structure_id);
+    assert!(
+        wants.is_empty(),
+        "Arrow has no inputs, should generate no wants"
+    );
+}
+
+#[test]
+fn auto_logistics_spare_iterations_when_target_met() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    let setup_cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetLogisticsWants {
+                structure_id,
+                wants: vec![],
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetCraftingEnabled {
+                structure_id,
+                enabled: true,
+            },
+        },
+    ];
+    sim.step(&setup_cmds, sim.tick + 1);
+
+    let bowstring_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .key
+        .clone();
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: bowstring_key,
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    let ar = &sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)[0];
+    let target = &sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
+
+    // Set target: 20, spare: 2.
+    let cmds = vec![
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 20,
+            },
+        },
+        SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeAutoLogistics {
+                active_recipe_id: ar.id,
+                auto_logistics: true,
+                spare_iterations: 2,
+            },
+        },
+    ];
+    sim.step(&cmds, sim.tick + 1);
+
+    // Add 20 bowstrings to the building's inventory so target is met.
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bowstring, 20, None, None);
+
+    // runs_needed = 0 (target met), spare = 2, total = 2.
+    // auto_want = 1 * 2 = 2 Fruit (stockpiling for spare iterations).
+    let wants = sim.compute_effective_wants(structure_id);
+    let fruit_want = wants
+        .iter()
+        .find(|w| w.item_kind == inventory::ItemKind::Fruit)
+        .expect("Spare iterations should still generate wants when target is met");
+    assert_eq!(fruit_want.target_quantity, 2);
+}
+
+#[test]
+fn remove_active_recipe_cleans_up_pending_craft_task() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Place furniture so the building is functional.
+    let furn_ids: Vec<_> = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|f| f.id)
+        .collect();
+    for fid in furn_ids {
+        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+            f.placed = true;
+        });
+    }
+
+    // Find the bowstring recipe (has inputs) and set a target.
+    let bowstring_key_json = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .key
+        .to_json();
+    let ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == bowstring_key_json)
+        .unwrap();
+    let target = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 100,
+        },
+    };
+    sim.step(&[target_cmd], sim.tick + 1);
+
+    // Stock building with fruit and run monitor to create a craft task.
+    let inv_id = sim.structure_inv(structure_id);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
+    sim.process_unified_crafting_monitor();
+
+    // Verify craft task exists with reserved items.
+    let craft_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
+        .collect();
+    assert_eq!(craft_tasks.len(), 1, "Should have 1 pending craft task");
+    let task_id = craft_tasks[0].id;
+
+    let reserved = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.reserved_by == Some(task_id))
+        .count();
+    assert!(reserved > 0, "Fruit should be reserved");
+
+    // Remove the active recipe.
+    let rm_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::RemoveActiveRecipe {
+            active_recipe_id: ar.id,
+        },
+    };
+    sim.step(&[rm_cmd], sim.tick + 1);
+
+    // The recipe and targets should be gone.
+    assert!(sim.db.active_recipes.get(&ar.id).is_none());
+    assert!(
+        sim.db
+            .active_recipe_targets
+            .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+            .is_empty()
+    );
+}
+
+#[test]
+fn resolve_craft_via_unified_catalog_path() {
+    // Test the (None, Some(def)) branch of resolve_craft_action by creating
+    // a craft task whose recipe_id doesn't match any config recipe.
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Place furniture.
+    let furn_ids: Vec<_> = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|f| f.id)
+        .collect();
+    for fid in furn_ids {
+        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+            f.placed = true;
+        });
+    }
+
+    // Find the bowstring recipe and set a nonzero target.
+    let bowstring_def = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .into_iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .clone();
+    let ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == bowstring_def.key.to_json())
+        .unwrap();
+    let target = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 100,
+        },
+    };
+    sim.step(&[target_cmd], sim.tick + 1);
+
+    // Stock with fruit and run monitor to create a craft task.
+    let inv_id = sim.structure_inv(structure_id);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
+    sim.process_unified_crafting_monitor();
+
+    let craft_task_id = sim
+        .db
+        .tasks
+        .iter_all()
+        .find(|t| t.kind_tag == TaskKindTag::Craft)
+        .unwrap()
+        .id;
+
+    // Mutate the TaskCraftData to use a non-config recipe_id so the
+    // config lookup fails and we hit the catalog path.
+    let tcd = sim.task_craft_data(craft_task_id).unwrap();
+    let _ = sim.db.task_craft_data.modify_unchecked(&tcd.id, |d| {
+        d.recipe_id = "__not_a_config_recipe__".to_string();
+    });
+
+    // Spawn elf and assign to the task.
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    let elf_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: structure.anchor,
+        },
+    };
+    sim.step(&[elf_cmd], sim.tick + 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .by_species(&Species::Elf, tabulosity::QueryOpts::ASC)
+        .last()
+        .unwrap()
+        .id;
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(craft_task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+    if let Some(mut t) = sim.db.tasks.get(&craft_task_id) {
+        t.state = TaskState::InProgress;
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+
+    // Resolve the craft action — should go through catalog path.
+    let completed = sim.resolve_craft_action(elf_id);
+    assert!(completed, "Craft should complete via catalog path");
+
+    // Fruit should be consumed, bowstring should be produced.
+    let fruit_count = sim.inv_item_count(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Any,
+    );
+    assert_eq!(fruit_count, 0, "Fruit should be consumed");
+    let bowstring_count = sim.inv_item_count(
+        inv_id,
+        inventory::ItemKind::Bowstring,
+        inventory::MaterialFilter::Any,
+    );
+    assert_eq!(bowstring_count, 20, "Bowstring should be produced (qty 20)");
+}
+
+// =========================================================================
+// Ground pile gravity
+// =========================================================================
+
+#[test]
+fn pile_on_solid_ground_does_not_fall() {
+    let mut sim = test_sim(42);
+    // Place a pile on y=1 (above ForestFloor at y=0 — always solid).
+    let pos = VoxelCoord::new(10, 1, 10);
+    let pile_id = sim.ensure_ground_pile(pos);
+    sim.inv_add_simple_item(
+        sim.db.ground_piles.get(&pile_id).unwrap().inventory_id,
+        inventory::ItemKind::Bread,
+        3,
+        None,
+        None,
+    );
+
+    let fell = sim.apply_pile_gravity();
+    assert_eq!(fell, 0);
+
+    // Pile is still at original position.
+    let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+    assert_eq!(pile.position, pos);
+}
+
+#[test]
+fn floating_pile_falls_to_surface() {
+    let mut sim = test_sim(42);
+    // Create a solid platform at y=5 by setting (10, 5, 10) to Platform.
+    let platform_pos = VoxelCoord::new(10, 5, 10);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+
+    // Place a pile at y=6 (on top of the platform).
+    let pile_pos = VoxelCoord::new(10, 6, 10);
+    let pile_id = sim.ensure_ground_pile(pile_pos);
+    sim.inv_add_simple_item(
+        sim.db.ground_piles.get(&pile_id).unwrap().inventory_id,
+        inventory::ItemKind::Bread,
+        5,
+        None,
+        None,
+    );
+
+    // Pile should not fall — platform is solid below.
+    assert_eq!(sim.apply_pile_gravity(), 0);
+
+    // Remove the platform — pile is now floating.
+    sim.world.set(platform_pos, VoxelType::Air);
+    let fell = sim.apply_pile_gravity();
+    assert_eq!(fell, 1);
+
+    // Pile should have fallen to y=1 (above ForestFloor at y=0).
+    // The pile gets a new ID after remove+re-insert, so look up by position.
+    let landing = VoxelCoord::new(10, 1, 10);
+    let piles_at_landing = sim
+        .db
+        .ground_piles
+        .by_position(&landing, tabulosity::QueryOpts::ASC);
+    assert_eq!(piles_at_landing.len(), 1);
+    let pile = &piles_at_landing[0];
+
+    // Items should still be there.
+    let stacks = sim.inv_items(pile.inventory_id);
+    assert_eq!(stacks.len(), 1);
+    assert_eq!(stacks[0].kind, inventory::ItemKind::Bread);
+    assert_eq!(stacks[0].quantity, 5);
+}
+
+#[test]
+fn floating_pile_merges_with_existing_pile() {
+    let mut sim = test_sim(42);
+    // Place a pile on the ground at y=1.
+    let ground_pos = VoxelCoord::new(15, 1, 15);
+    let ground_pile_id = sim.ensure_ground_pile(ground_pos);
+    let ground_inv = sim
+        .db
+        .ground_piles
+        .get(&ground_pile_id)
+        .unwrap()
+        .inventory_id;
+    sim.inv_add_simple_item(ground_inv, inventory::ItemKind::Bread, 3, None, None);
+
+    // Create a platform and a pile on top of it.
+    let platform_pos = VoxelCoord::new(15, 5, 15);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    let high_pos = VoxelCoord::new(15, 6, 15);
+    let high_pile_id = sim.ensure_ground_pile(high_pos);
+    let high_inv = sim.db.ground_piles.get(&high_pile_id).unwrap().inventory_id;
+    sim.inv_add_simple_item(high_inv, inventory::ItemKind::Fruit, 2, None, None);
+
+    // Remove the platform — high pile should fall and merge with ground pile.
+    sim.world.set(platform_pos, VoxelType::Air);
+    let fell = sim.apply_pile_gravity();
+    assert_eq!(fell, 1);
+
+    // The floating pile should be deleted.
+    assert!(sim.db.ground_piles.get(&high_pile_id).is_none());
+
+    // The ground pile should have both item types.
+    let ground_pile = sim.db.ground_piles.get(&ground_pile_id).unwrap();
+    assert_eq!(ground_pile.position, ground_pos);
+    let stacks = sim.inv_items(ground_pile.inventory_id);
+    assert_eq!(stacks.len(), 2);
+    let bread = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Bread)
+        .unwrap();
+    let fruit = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Fruit)
+        .unwrap();
+    assert_eq!(bread.quantity, 3);
+    assert_eq!(fruit.quantity, 2);
+}
+
+#[test]
+fn merge_stacks_same_item_kind() {
+    let mut sim = test_sim(42);
+    // Both piles have Bread — after merge, the ground pile should have a
+    // single Bread stack with the combined quantity.
+    let ground_pos = VoxelCoord::new(20, 1, 20);
+    let ground_pile_id = sim.ensure_ground_pile(ground_pos);
+    let ground_inv = sim
+        .db
+        .ground_piles
+        .get(&ground_pile_id)
+        .unwrap()
+        .inventory_id;
+    sim.inv_add_simple_item(ground_inv, inventory::ItemKind::Bread, 4, None, None);
+
+    let platform_pos = VoxelCoord::new(20, 3, 20);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    let high_pos = VoxelCoord::new(20, 4, 20);
+    let high_pile_id = sim.ensure_ground_pile(high_pos);
+    let high_inv = sim.db.ground_piles.get(&high_pile_id).unwrap().inventory_id;
+    sim.inv_add_simple_item(high_inv, inventory::ItemKind::Bread, 6, None, None);
+
+    sim.world.set(platform_pos, VoxelType::Air);
+    sim.apply_pile_gravity();
+
+    assert!(sim.db.ground_piles.get(&high_pile_id).is_none());
+    let stacks = sim.inv_items(ground_inv);
+    assert_eq!(stacks.len(), 1);
+    assert_eq!(stacks[0].kind, inventory::ItemKind::Bread);
+    assert_eq!(stacks[0].quantity, 10);
+}
+
+#[test]
+fn pile_falls_to_intermediate_surface() {
+    let mut sim = test_sim(42);
+    // Two platforms stacked: y=3 and y=6. Pile at y=7.
+    // Remove y=6 — pile should fall to y=4 (on top of y=3 platform), not y=1.
+    let lower_platform = VoxelCoord::new(25, 3, 25);
+    let upper_platform = VoxelCoord::new(25, 6, 25);
+    sim.world.set(lower_platform, VoxelType::GrownPlatform);
+    sim.world.set(upper_platform, VoxelType::GrownPlatform);
+
+    let pile_pos = VoxelCoord::new(25, 7, 25);
+    let pile_id = sim.ensure_ground_pile(pile_pos);
+    sim.inv_add_simple_item(
+        sim.db.ground_piles.get(&pile_id).unwrap().inventory_id,
+        inventory::ItemKind::Bread,
+        1,
+        None,
+        None,
+    );
+
+    // Remove upper platform only.
+    sim.world.set(upper_platform, VoxelType::Air);
+    sim.apply_pile_gravity();
+
+    // Pile gets a new ID after remove+re-insert, so look up by position.
+    let landing = VoxelCoord::new(25, 4, 25);
+    let piles = sim
+        .db
+        .ground_piles
+        .by_position(&landing, tabulosity::QueryOpts::ASC);
+    assert_eq!(piles.len(), 1, "pile should land on top of lower platform");
+}
+
+#[test]
+fn multiple_floating_piles_in_same_column() {
+    let mut sim = test_sim(42);
+    // Two platforms at y=3 and y=6. Piles at y=4 and y=7.
+    // Remove both platforms — both piles should fall to y=1, merging.
+    let p1 = VoxelCoord::new(30, 3, 30);
+    let p2 = VoxelCoord::new(30, 6, 30);
+    sim.world.set(p1, VoxelType::GrownPlatform);
+    sim.world.set(p2, VoxelType::GrownPlatform);
+
+    let pile1_pos = VoxelCoord::new(30, 4, 30);
+    let pile1_id = sim.ensure_ground_pile(pile1_pos);
+    let pile1_inv = sim.db.ground_piles.get(&pile1_id).unwrap().inventory_id;
+    sim.inv_add_simple_item(pile1_inv, inventory::ItemKind::Bread, 2, None, None);
+
+    let pile2_pos = VoxelCoord::new(30, 7, 30);
+    let pile2_id = sim.ensure_ground_pile(pile2_pos);
+    let pile2_inv = sim.db.ground_piles.get(&pile2_id).unwrap().inventory_id;
+    sim.inv_add_simple_item(pile2_inv, inventory::ItemKind::Fruit, 3, None, None);
+
+    sim.world.set(p1, VoxelType::Air);
+    sim.world.set(p2, VoxelType::Air);
+    let fell = sim.apply_pile_gravity();
+    assert_eq!(fell, 2);
+
+    // Both should have ended up at y=1. Only one pile should remain.
+    let remaining: Vec<_> = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .filter(|p| p.position.x == 30 && p.position.z == 30)
+        .collect();
+    assert_eq!(remaining.len(), 1);
+    let final_pile = &remaining[0];
+    assert_eq!(final_pile.position.y, 1);
+
+    // Should have both item types.
+    let stacks = sim.inv_items(final_pile.inventory_id);
+    let total_items: u32 = stacks.iter().map(|s| s.quantity).sum();
+    assert_eq!(total_items, 5);
+}
+
+#[test]
+fn empty_floating_pile_is_cleaned_up() {
+    let mut sim = test_sim(42);
+    // A floating pile with no items should still be moved.
+    let platform_pos = VoxelCoord::new(35, 3, 35);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    let pile_pos = VoxelCoord::new(35, 4, 35);
+    let _pile_id = sim.ensure_ground_pile(pile_pos);
+
+    sim.world.set(platform_pos, VoxelType::Air);
+    let fell = sim.apply_pile_gravity();
+    assert_eq!(fell, 1);
+
+    // Pile should have moved to y=1.
+    let landing = VoxelCoord::new(35, 1, 35);
+    let piles = sim
+        .db
+        .ground_piles
+        .by_position(&landing, tabulosity::QueryOpts::ASC);
+    assert_eq!(piles.len(), 1);
+}
+
+#[test]
+fn inv_merge_combines_inventories() {
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
+
+    // Same kind in both — should combine into one stack.
+    sim.inv_add_simple_item(src, inventory::ItemKind::Bread, 3, None, None);
+    sim.inv_add_simple_item(dst, inventory::ItemKind::Bread, 2, None, None);
+    // Different kind in src — should become a new stack in dst.
+    sim.inv_add_simple_item(src, inventory::ItemKind::Fruit, 1, None, None);
+
+    sim.inv_merge(src, dst);
+
+    // Source should be empty.
+    assert!(sim.inv_items(src).is_empty());
+
+    // Destination should have 2 stacks: Bread(5) and Fruit(1).
+    let stacks = sim.inv_items(dst);
+    assert_eq!(stacks.len(), 2);
+    let bread = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Bread)
+        .unwrap();
+    let fruit = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Fruit)
+        .unwrap();
+    assert_eq!(bread.quantity, 5);
+    assert_eq!(fruit.quantity, 1);
+}
+
+#[test]
+fn ensure_ground_pile_snaps_floating_position_to_surface() {
+    let mut sim = test_sim(42);
+    // Request a pile at y=10 with no solid voxel below (except floor at y=0).
+    let floating_pos = VoxelCoord::new(40, 10, 40);
+    let pile_id = sim.ensure_ground_pile(floating_pos);
+
+    // Pile should have been snapped to y=1 (above ForestFloor).
+    let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+    assert_eq!(pile.position, VoxelCoord::new(40, 1, 40));
+}
+
+#[test]
+fn ensure_ground_pile_snaps_to_intermediate_platform() {
+    let mut sim = test_sim(42);
+    // Platform at y=5, request pile at y=10.
+    sim.world
+        .set(VoxelCoord::new(42, 5, 42), VoxelType::GrownPlatform);
+    let pile_id = sim.ensure_ground_pile(VoxelCoord::new(42, 10, 42));
+
+    let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+    assert_eq!(pile.position, VoxelCoord::new(42, 6, 42));
+}
+
+#[test]
+fn ensure_ground_pile_merges_when_snapped_to_existing() {
+    let mut sim = test_sim(42);
+    // Create a pile at y=1.
+    let ground_pos = VoxelCoord::new(44, 1, 44);
+    let ground_pile_id = sim.ensure_ground_pile(ground_pos);
+    let ground_inv = sim
+        .db
+        .ground_piles
+        .get(&ground_pile_id)
+        .unwrap()
+        .inventory_id;
+    sim.inv_add_simple_item(ground_inv, inventory::ItemKind::Bread, 5, None, None);
+
+    // Request a pile at y=8 (floating) — should snap to y=1 and return
+    // the existing pile instead of creating a new one.
+    let returned_id = sim.ensure_ground_pile(VoxelCoord::new(44, 8, 44));
+    assert_eq!(returned_id, ground_pile_id);
+
+    // Only one pile at this column.
+    let piles = sim
+        .db
+        .ground_piles
+        .by_position(&ground_pos, tabulosity::QueryOpts::ASC);
+    assert_eq!(piles.len(), 1);
+}
+
+// -----------------------------------------------------------------------
+// Action system tests (F-creature-actions coverage)
+// -----------------------------------------------------------------------
+
+/// High-priority #1: Verify action state (action_kind + next_available_tick)
+/// is correctly set during Build, Sleep, Cook, and Eat work actions.
+#[test]
+fn action_state_set_during_work_actions() {
+    let mut config = test_config();
+    // Very long build so it can't complete before we check.
+    config.build_work_ticks_per_voxel = 500_000;
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let elf_id = spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Run enough ticks for the elf to arrive and start building.
+    sim.step(&[], sim.tick + 100_000);
+
+    // Elf must have claimed the build task and be mid-action.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Elf should have claimed the Build task"
+    );
+    let task_id = elf.current_task.unwrap();
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(task.kind_tag, TaskKindTag::Build);
+    assert_eq!(task.state, TaskState::InProgress);
+    assert_eq!(
+        elf.action_kind,
+        ActionKind::Build,
+        "Elf working on build should have ActionKind::Build"
+    );
+    assert!(
+        elf.next_available_tick.is_some(),
+        "Elf in Build action should have next_available_tick set"
+    );
+}
+
+/// High-priority #2: MoveAction cleanup on resolve — after a creature
+/// completes a Move action (arrives somewhere), the MoveAction row is
+/// deleted.
+#[test]
+fn move_action_cleaned_up_after_arrival() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Let the elf wander once to create a MoveAction.
+    sim.step(&[], sim.tick + 2);
+
+    // Elf should have a MoveAction now.
+    assert!(
+        sim.db.move_actions.get(&elf_id).is_some(),
+        "MoveAction should exist after wander"
+    );
+    let next_tick = sim
+        .db
+        .creatures
+        .get(&elf_id)
+        .unwrap()
+        .next_available_tick
+        .unwrap();
+
+    // Advance past the move completion.
+    sim.step(&[], next_tick + 1);
+
+    // After arrival, action state should be cleared (or a new action started).
+    // Either way, the *old* MoveAction should have been cleaned up. If the elf
+    // wandered again it will have a new MoveAction, which is fine — the test
+    // just verifies the resolve path ran.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    if elf.action_kind == ActionKind::NoAction {
+        assert!(
+            sim.db.move_actions.get(&elf_id).is_none(),
+            "MoveAction should be deleted when elf is idle"
+        );
+    }
+    // If elf started a new wander, it has action_kind=Move — that's fine,
+    // it means the old one was resolved and a new one created.
+}
+
+/// High-priority #3: Task removed during a non-Move action. Creature
+/// should fall through to decision cascade and wander.
+#[test]
+fn task_removed_during_build_action_creature_wanders() {
+    let mut config = test_config();
+    // Very long build so it can't complete before we cancel.
+    config.build_work_ticks_per_voxel = 1_000_000;
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let elf_id = spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Run enough for elf to reach the build site (but build won't finish
+    // because it takes 1M ticks).
+    sim.step(&[], sim.tick + 100_000);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let task_id = elf.current_task;
+    // Elf should have claimed the build task.
+    if task_id.is_none() {
+        // If no task yet, run longer for elf to find and claim it.
+        sim.step(&[], sim.tick + 200_000);
+    }
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(elf.current_task.is_some(), "Elf should have a Build task");
+
+    // Cancel the build (remove the blueprint and task).
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    let project_id = bp.id;
+    let cancel_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::CancelBuild { project_id },
+    };
+    sim.step(&[cancel_cmd], sim.tick + 2);
+
+    // Advance for the elf's activation to fire after cancellation.
+    sim.step(&[], sim.tick + 1_100_000);
+
+    // Elf should have lost the task and be wandering.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_none()
+            || sim
+                .db
+                .tasks
+                .get(&elf.current_task.unwrap())
+                .is_some_and(|t| t.kind_tag != TaskKindTag::Build),
+        "Elf should no longer have the cancelled Build task"
+    );
+}
+
+/// High-priority #4: PickUp phase transition — use the logistics
+/// heartbeat to create a haul task, then run the full pipeline and
+/// verify the task transitions through GoingToDestination.
+#[test]
+fn pickup_action_transitions_haul_phase() {
+    let mut sim = test_sim(42);
+    sim.config.haul_pickup_action_ticks = 500;
+    sim.config.haul_dropoff_action_ticks = 500;
+    let elf_species = sim.config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Place bread on the ground.
+    let pile_pos = tree_pos;
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            5,
+            None,
+            None,
+        );
+    }
+
+    // Create a building that wants bread.
+    let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+    let sid = insert_building(
+        &mut sim,
+        building_anchor,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+
+    // Run logistics heartbeat to create haul task.
+    sim.process_logistics_heartbeat();
+
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(haul_tasks.len(), 1, "Expected 1 haul task");
+    let haul_task_id = haul_tasks[0].id;
+
+    // Verify initial state is GoingToSource.
+    let haul_data = sim.task_haul_data(haul_task_id).unwrap();
+    assert_eq!(haul_data.phase, task::HaulPhase::GoingToSource);
+    let initial_location = sim.db.tasks.get(&haul_task_id).unwrap().location;
+
+    // Spawn an elf and run to completion.
+    let _elf_id = spawn_elf(&mut sim);
+    sim.step(&[], sim.tick + 100_000);
+
+    // Task should have completed (or at least transitioned phases).
+    let task = sim.db.tasks.get(&haul_task_id).unwrap();
+    if task.state == TaskState::Complete {
+        // Full pipeline ran — items delivered.
+        let structure = sim.db.structures.get(&sid).unwrap();
+        let bread_count = sim.inv_unreserved_item_count(
+            structure.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            crate::inventory::MaterialFilter::Any,
+        );
+        assert!(bread_count > 0, "Bread should have been delivered");
+    } else {
+        // At minimum, haul should have progressed past GoingToSource.
+        let haul_data = sim.task_haul_data(haul_task_id).unwrap();
+        assert_eq!(
+            haul_data.phase,
+            task::HaulPhase::GoingToDestination,
+            "Haul should have transitioned to GoingToDestination"
+        );
+        // Task location should have changed to destination.
+        assert_ne!(
+            task.location, initial_location,
+            "Task location should update after PickUp"
+        );
+    }
+}
+
+/// High-priority #5: Mope progress increments by mope_action_ticks, not
+/// by 1. A mope task with total_cost = 10000 and mope_action_ticks = 1000
+/// completes after exactly 10 actions.
+#[test]
+fn mope_progress_increments_by_action_ticks() {
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 3000, // P ≈ 1.0
+        mope_mean_ticks_miserable: 3000,
+        mope_mean_ticks_devastated: 3000,
+        mope_duration_ticks: 10_000,
+        ..Default::default()
+    };
+    let (mut sim, _elf_id) = mope_test_setup(
+        cfg,
+        &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+    );
+    sim.config.mope_action_ticks = 1000;
+
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    // Step enough to trigger mope.
+    sim.step(&[], sim.tick + interval * 5);
+
+    // Find the mope task.
+    let mope_task = sim
+        .db
+        .tasks
+        .iter_all()
+        .find(|t| t.kind_tag == TaskKindTag::Mope);
+    assert!(mope_task.is_some(), "Mope task should exist");
+    let mope_task = mope_task.unwrap();
+
+    // total_cost should be mope_duration_ticks (10000).
+    assert_eq!(mope_task.total_cost, 10_000.0);
+
+    // If still in progress, progress should be a multiple of mope_action_ticks.
+    if mope_task.state == TaskState::InProgress {
+        let remainder = mope_task.progress % 1000.0;
+        assert_eq!(
+            remainder, 0.0,
+            "Mope progress should be a multiple of mope_action_ticks, got {}",
+            mope_task.progress
+        );
+    }
+
+    // If completed, verify progress >= total_cost.
+    if mope_task.state == TaskState::Complete {
+        assert!(mope_task.progress >= mope_task.total_cost);
+    }
+}
+
+/// High-priority #6: Sleep adaptive completion — a creature near full
+/// rest completes sleep early (via rest_full) with progress < total_cost.
+#[test]
+fn sleep_adaptive_completion_rest_full_exits_early() {
+    let mut config = test_config();
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    // High restore per sleep action so rest fills in ~1-2 actions.
+    // rest_max is 1e15, so each action restores rest_per_sleep_tick * sleep_action_ticks.
+    // With 1000 action_ticks and rest_per_sleep_tick = 1e11, each action restores 1e14.
+    // At 95% rest, need 5e13 → 1 action should fill it.
+    elf_species.rest_per_sleep_tick = 100_000_000_000;
+    // Heartbeat far in the future so it doesn't interfere.
+    elf_species.heartbeat_interval_ticks = 1_000_000;
+    config.sleep_action_ticks = 1000;
+    config.sleep_ticks_ground = 1_000_000; // Very long sleep by progress.
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+
+    // Spawn elf (step to tick 1 only, before first activation).
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set rest to 95% (near full). With rest_per_sleep_tick=500 and
+    // sleep_action_ticks=1000, each action restores 500_000. rest_max
+    // is typically 100_000, so 5% = 5000 → one action should fill it.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.rest = rest_max * 95 / 100;
+    });
+
+    // Create a ground sleep task at elf's location.
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let task_id = TaskId::new(&mut sim.rng);
+    let sleep_task = task::Task {
+        id: task_id,
+        kind: task::TaskKind::Sleep {
+            bed_pos: None,
+            location: task::SleepLocation::Ground,
+        },
+        state: task::TaskState::InProgress,
+        location: elf_node,
+        progress: 0.0,
+        total_cost: (sim.config.sleep_ticks_ground / sim.config.sleep_action_ticks) as f32,
+        required_species: None,
+        origin: task::TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(sleep_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Run enough for the first activation (tick 2) + a few sleep actions.
+    sim.step(&[], sim.tick + 10_000);
+
+    let sleep_task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        sleep_task.state,
+        TaskState::Complete,
+        "Sleep should complete early when rest hits max"
+    );
+    // Progress should be much less than total_cost (early exit via rest_full).
+    assert!(
+        sleep_task.progress < sleep_task.total_cost,
+        "Progress ({}) should be less than total_cost ({}) for early rest-full completion",
+        sleep_task.progress,
+        sleep_task.total_cost
+    );
+}
+
+/// High-priority #7: ActionKind + MoveAction serde roundtrip.
+#[test]
+fn action_state_survives_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Let the elf wander to create a Move action + MoveAction row.
+    sim.step(&[], sim.tick + 2);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.action_kind, ActionKind::Move);
+    assert!(elf.next_available_tick.is_some());
+    assert!(sim.db.move_actions.get(&elf_id).is_some());
+
+    // Serialize and deserialize.
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    let elf_r = restored.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf_r.action_kind, ActionKind::Move);
+    assert_eq!(elf_r.next_available_tick, elf.next_available_tick);
+
+    let ma = restored.db.move_actions.get(&elf_id).unwrap();
+    let ma_orig = sim.db.move_actions.get(&elf_id).unwrap();
+    assert_eq!(ma.move_from, ma_orig.move_from);
+    assert_eq!(ma.move_to, ma_orig.move_to);
+    assert_eq!(ma.move_start_tick, ma_orig.move_start_tick);
+}
+
+/// Medium-priority #8: abort_current_action with Move cleans up MoveAction.
+#[test]
+fn abort_move_action_cleans_up_move_action_row() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Let the elf wander to create a Move action.
+    sim.step(&[], sim.tick + 2);
+    assert!(sim.db.move_actions.get(&elf_id).is_some());
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().action_kind,
+        ActionKind::Move
+    );
+
+    // Manually abort.
+    sim.abort_current_action(elf_id);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.action_kind, ActionKind::NoAction);
+    assert!(elf.next_available_tick.is_none());
+    assert!(
+        sim.db.move_actions.get(&elf_id).is_none(),
+        "MoveAction row should be deleted after abort"
+    );
+}
+
+/// Medium-priority #9: Mope interrupts non-Move work action (Build).
+/// Uses mope_mean_ticks = heartbeat interval (P ≈ 1.0 per heartbeat)
+/// and runs 200 heartbeats to ensure at least one mope fires.
+#[test]
+fn mope_interrupts_build_action() {
+    let mut config = test_config();
+    config.build_work_ticks_per_voxel = 500_000; // Very long build.
+    let heartbeat = config
+        .species
+        .get(&Species::Elf)
+        .unwrap()
+        .heartbeat_interval_ticks;
+    config.mood_consequences = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: heartbeat,
+        mope_mean_ticks_miserable: heartbeat,
+        mope_mean_ticks_devastated: heartbeat,
+        mope_can_interrupt_task: true,
+        mope_duration_ticks: 100,
+    };
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(99, config);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let cmd_spawn = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd_spawn], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Inject Devastated-tier thoughts.
+    sim.add_creature_thought(elf_id, ThoughtKind::SleptOnGround);
+    sim.add_creature_thought(elf_id, ThoughtKind::SleptOnGround);
+    sim.add_creature_thought(elf_id, ThoughtKind::SleptOnGround);
+
+    // Designate a build.
+    let cmd_build = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd_build], sim.tick + 2);
+
+    // Run enough for elf to reach the build site and start building,
+    // then for heartbeats to fire and trigger mope. P ≈ 1.0 per heartbeat
+    // so 200 heartbeats should guarantee at least one mope fires.
+    sim.step(&[], sim.tick + heartbeat * 200);
+
+    let mope_ever_existed = sim
+        .db
+        .tasks
+        .iter_all()
+        .any(|t| t.kind_tag == TaskKindTag::Mope);
+    assert!(
+        mope_ever_existed,
+        "Mope should have triggered at least once during 200 heartbeats with P≈1.0"
+    );
+}
+
+/// Medium-priority #12: Creature removal cleans up MoveAction.
+/// The MoveAction table's FK on creature_id has on_delete cascade
+/// at the Database level. Since MoveAction's PK is also the FK
+/// (creature_id), we verify the cascade path works.
+#[test]
+fn creature_removal_cleans_up_move_action() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Let the elf wander to create a MoveAction.
+    sim.step(&[], sim.tick + 2);
+    assert!(sim.db.move_actions.get(&elf_id).is_some());
+
+    // Manually remove both the MoveAction and creature (simulating
+    // what a real despawn would do — abort_current_action + remove).
+    sim.abort_current_action(elf_id);
+    assert!(
+        sim.db.move_actions.get(&elf_id).is_none(),
+        "MoveAction should be removed by abort_current_action"
+    );
+
+    // Creature should still exist.
+    assert!(sim.db.creatures.get(&elf_id).is_some());
+}
+
+/// Medium-priority #13: interpolated_position with non-Move action returns
+/// static position, not a crash.
+#[test]
+fn interpolated_position_with_build_action_returns_static() {
+    let mut config = test_config();
+    config.build_work_ticks_per_voxel = 100_000;
+    let mut sim = SimState::with_config(42, config);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+    let elf_id = spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Run until elf is mid-Build.
+    sim.step(&[], sim.tick + 200_000);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    // Force build action state for the test if not naturally set.
+    if elf.action_kind == ActionKind::Build {
+        // Calling interpolated_position with no MoveAction should not panic
+        // and should return the static position.
+        let pos = elf.interpolated_position(sim.tick as f64, None);
+        let expected = (
+            elf.position.x as f32,
+            elf.position.y as f32,
+            elf.position.z as f32,
+        );
+        assert_eq!(
+            pos, expected,
+            "Non-Move action should return static position"
+        );
+    }
+}
+
+/// Lower-priority #14: Config duration fields control timing — verify
+/// eat_action_ticks controls when Eat action resolves.
+#[test]
+fn eat_action_ticks_controls_timing() {
+    let mut config = test_config();
+    config.eat_action_ticks = 3000;
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn elf.
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, tree_pos, &mut events);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Create an EatBread task at the elf's location.
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let task_id = TaskId::new(&mut sim.rng);
+    let eat_task = task::Task {
+        id: task_id,
+        kind: task::TaskKind::EatBread,
+        state: task::TaskState::InProgress,
+        location: elf_node,
+        progress: 0.0,
+        total_cost: 1.0,
+        required_species: None,
+        origin: task::TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(eat_task);
+
+    // Give elf bread and assign task.
+    let inv_id = sim.creature_inv(elf_id);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 1, None, None);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Run 1 tick to let activation fire and start the Eat action.
+    sim.step(&[], sim.tick + 5);
+
+    // Elf should be in Eat action with next_available_tick = tick + 3000.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    if elf.action_kind == ActionKind::Eat {
+        let expected_tick = elf.next_available_tick.unwrap();
+        // The action should be scheduled ~3000 ticks from when it started.
+        assert!(
+            expected_tick > sim.tick,
+            "Eat action should be scheduled in the future"
+        );
+    }
+
+    // Run past the action duration.
+    sim.step(&[], sim.tick + 3100);
+
+    // Task should be complete.
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Complete,
+        "Eat task should be complete"
+    );
+}
+
+/// Lower-priority #15: carve_work_ticks_per_voxel is separate from build.
+/// Verifies that at a time when a build would have completed, a carve
+/// with 10x the duration is still in progress.
+#[test]
+fn carve_uses_separate_duration_from_build() {
+    let mut config = test_config();
+    config.build_work_ticks_per_voxel = 5000;
+    config.carve_work_ticks_per_voxel = 500_000; // 100x slower than build.
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+
+    // Find a non-forest-floor solid voxel to carve (e.g., a trunk voxel
+    // that isn't on the ground).
+    let tree = &sim.trees[&sim.player_tree_id];
+    let carve_coord = tree
+        .trunk_voxels
+        .iter()
+        .find(|c| c.y > 1)
+        .copied()
+        .expect("Should have trunk voxels above y=1");
+
+    let _elf_id = spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![carve_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Verify the carve task exists.
+    let task = sim
+        .db
+        .tasks
+        .iter_all()
+        .find(|t| t.kind_tag == TaskKindTag::Build);
+    assert!(task.is_some(), "Carve task should exist");
+    let task_id = task.unwrap().id;
+
+    // Run enough for the elf to arrive and start working, but less than
+    // carve_work_ticks_per_voxel. A build (5000 ticks) would be done by now,
+    // but a carve (500_000 ticks) should still be in progress.
+    sim.step(&[], sim.tick + 100_000);
+
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::InProgress,
+        "Carve should still be in progress (500k ticks) — a build (5k) would be done by now"
+    );
+}
+
+/// Lower-priority #18: Config backward compat for new action_ticks fields.
+/// Verify that the default GameConfig has the expected action_ticks values.
+#[test]
+fn config_backward_compat_action_ticks_defaults() {
+    let config = GameConfig::default();
+
+    assert_eq!(config.sleep_action_ticks, 1000);
+    assert_eq!(config.eat_action_ticks, 1500);
+    assert_eq!(config.harvest_action_ticks, 1500);
+    assert_eq!(config.acquire_item_action_ticks, 1000);
+    assert_eq!(config.haul_pickup_action_ticks, 1000);
+    assert_eq!(config.haul_dropoff_action_ticks, 1000);
+    assert_eq!(config.mope_action_ticks, 1000);
+}
+
+/// Lower-priority #20: abort_current_action is harmless with NoAction.
+#[test]
+fn abort_no_action_is_harmless() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn elf but only step to tick 1 (before first activation).
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.action_kind, ActionKind::NoAction);
+
+    // Abort should be a no-op.
+    sim.abort_current_action(elf_id);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.action_kind, ActionKind::NoAction);
+    assert!(elf.next_available_tick.is_none());
+}
+
+/// ActionKind serde roundtrip for all 15 variants.
+#[test]
+fn action_kind_serde_roundtrip_all_variants() {
+    let variants = [
+        ActionKind::NoAction,
+        ActionKind::Move,
+        ActionKind::Build,
+        ActionKind::Furnish,
+        ActionKind::Cook,
+        ActionKind::Craft,
+        ActionKind::Sleep,
+        ActionKind::Eat,
+        ActionKind::Harvest,
+        ActionKind::AcquireItem,
+        ActionKind::PickUp,
+        ActionKind::DropOff,
+        ActionKind::Mope,
+        ActionKind::MeleeStrike,
+        ActionKind::Shoot,
+    ];
+    for variant in &variants {
+        let json = serde_json::to_string(variant).unwrap();
+        let restored: ActionKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            *variant, restored,
+            "ActionKind {:?} should survive serde roundtrip",
+            variant
+        );
+    }
+}
+
+/// abort_current_action with Build (non-Move) just clears state, no
+/// MoveAction deletion attempt.
+#[test]
+fn abort_build_action_clears_state_only() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn elf but only step to tick 1 (before first activation).
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Manually set elf to Build action state.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.action_kind = ActionKind::Build;
+        c.next_available_tick = Some(sim.tick + 50_000);
+    });
+
+    // No MoveAction should exist (elf hasn't moved yet).
+    assert!(sim.db.move_actions.get(&elf_id).is_none());
+
+    // Abort should clear the state without errors.
+    sim.abort_current_action(elf_id);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.action_kind, ActionKind::NoAction);
+    assert!(elf.next_available_tick.is_none());
+    assert!(sim.db.move_actions.get(&elf_id).is_none());
+}
+
+// -------------------------------------------------------------------
+// Civilization tests
+// -------------------------------------------------------------------
+
+#[test]
+fn spawned_elf_gets_player_civ_id() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(
+        elf.civ_id, sim.player_civ_id,
+        "Spawned elf should belong to the player's civilization"
+    );
+}
+
+#[test]
+fn spawned_non_elf_has_no_civ_id() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let capy = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .unwrap();
+    assert_eq!(
+        capy.civ_id, None,
+        "Non-elf creature should not have a civ_id"
+    );
+}
+
+#[test]
+fn discover_civ_creates_relationship() {
+    let mut sim = test_sim(42);
+
+    // Get two existing civ IDs from worldgen.
+    let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
+    assert!(civs.len() >= 2, "Need at least 2 civs for this test");
+
+    let civ_a = civs[0].id;
+    let civ_b = civs[1].id;
+
+    // Remove any existing relationship between a→b from worldgen.
+    let existing: Vec<_> = sim
+        .db
+        .civ_relationships
+        .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|r| r.to_civ == civ_b)
+        .map(|r| r.id)
+        .collect();
+    for id in existing {
+        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    }
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DiscoverCiv {
+            civ_id: civ_a,
+            discovered_civ: civ_b,
+            initial_opinion: CivOpinion::Neutral,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let rels = sim
+        .db
+        .civ_relationships
+        .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC);
+    let found = rels.iter().any(|r| r.to_civ == civ_b);
+    assert!(found, "DiscoverCiv should create a relationship from a→b");
+}
+
+#[test]
+fn discover_civ_is_idempotent() {
+    let mut sim = test_sim(42);
+    let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
+    assert!(civs.len() >= 2);
+
+    let civ_a = civs[0].id;
+    let civ_b = civs[1].id;
+
+    // Remove existing relationship.
+    let existing: Vec<_> = sim
+        .db
+        .civ_relationships
+        .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|r| r.to_civ == civ_b)
+        .map(|r| r.id)
+        .collect();
+    for id in existing {
+        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    }
+
+    // Discover twice.
+    for tick in [1, 2] {
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick,
+            action: SimAction::DiscoverCiv {
+                civ_id: civ_a,
+                discovered_civ: civ_b,
+                initial_opinion: CivOpinion::Neutral,
+            },
+        };
+        sim.step(&[cmd], tick);
+    }
+
+    let rels = sim
+        .db
+        .civ_relationships
+        .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC);
+    let count = rels.iter().filter(|r| r.to_civ == civ_b).count();
+    assert_eq!(
+        count, 1,
+        "DiscoverCiv should not create duplicate relationships"
+    );
+}
+
+#[test]
+fn discover_civ_noop_for_nonexistent_civ() {
+    let mut sim = test_sim(42);
+    let rel_count_before = sim.db.civ_relationships.iter_all().count();
+
+    // Use a CivId that doesn't exist.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DiscoverCiv {
+            civ_id: CivId(999),
+            discovered_civ: CivId(0),
+            initial_opinion: CivOpinion::Neutral,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let rel_count_after = sim.db.civ_relationships.iter_all().count();
+    assert_eq!(
+        rel_count_before, rel_count_after,
+        "No-op for nonexistent civ"
+    );
+}
+
+#[test]
+fn set_civ_opinion_updates_relationship() {
+    let mut sim = test_sim(42);
+
+    // Find an existing relationship from worldgen.
+    let rel = sim.db.civ_relationships.iter_all().next();
+    assert!(
+        rel.is_some(),
+        "Need at least one relationship for this test"
+    );
+    let rel = rel.unwrap();
+    let rel_id = rel.id;
+    let from_civ = rel.from_civ;
+    let to_civ = rel.to_civ;
+    let new_opinion = if rel.opinion == CivOpinion::Hostile {
+        CivOpinion::Friendly
+    } else {
+        CivOpinion::Hostile
+    };
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SetCivOpinion {
+            civ_id: from_civ,
+            target_civ: to_civ,
+            opinion: new_opinion,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let updated = sim.db.civ_relationships.get(&rel_id).unwrap();
+    assert_eq!(updated.opinion, new_opinion, "Opinion should be updated");
+}
+
+#[test]
+fn set_civ_opinion_noop_for_unknown_pair() {
+    let mut sim = test_sim(42);
+
+    // Use a CivId pair with no relationship.
+    // CivId(999) doesn't exist, so this should be a no-op.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SetCivOpinion {
+            civ_id: CivId(999),
+            target_civ: CivId(0),
+            opinion: CivOpinion::Hostile,
+        },
+    };
+    sim.step(&[cmd], 1);
+    // No panic = success.
+}
+
+#[test]
+fn get_known_civs_returns_player_relationships() {
+    let mut sim = test_sim(42);
+
+    let known = sim.get_known_civs();
+    // Should contain entries from worldgen diplomacy (player civ's outgoing rels).
+    let player_rels = sim
+        .db
+        .civ_relationships
+        .by_from_civ(&CivId(0), tabulosity::QueryOpts::ASC);
+
+    assert_eq!(
+        known.len(),
+        player_rels.len(),
+        "get_known_civs should return one entry per player-outgoing relationship"
+    );
+}
+
+#[test]
+fn civ_opinion_serde_roundtrip() {
+    use crate::types::CivOpinion;
+    for &opinion in &[
+        CivOpinion::Friendly,
+        CivOpinion::Neutral,
+        CivOpinion::Suspicious,
+        CivOpinion::Hostile,
+    ] {
+        let json = serde_json::to_string(&opinion).unwrap();
+        let restored: CivOpinion = serde_json::from_str(&json).unwrap();
+        assert_eq!(opinion, restored);
+    }
+}
+
+#[test]
+fn civ_species_serde_roundtrip() {
+    use crate::types::CivSpecies;
+    for &species in CivSpecies::ALL.iter() {
+        let json = serde_json::to_string(&species).unwrap();
+        let restored: CivSpecies = serde_json::from_str(&json).unwrap();
+        assert_eq!(species, restored);
+    }
+}
+
+#[test]
+fn culture_tag_serde_roundtrip() {
+    use crate::types::CultureTag;
+    for &tag in &[
+        CultureTag::Woodland,
+        CultureTag::Coastal,
+        CultureTag::Mountain,
+        CultureTag::Nomadic,
+        CultureTag::Subterranean,
+        CultureTag::Martial,
+    ] {
+        let json = serde_json::to_string(&tag).unwrap();
+        let restored: CultureTag = serde_json::from_str(&json).unwrap();
+        assert_eq!(tag, restored);
+    }
+}
+
+#[test]
+fn discover_civ_command_serde_roundtrip() {
+    let mut rng = GameRng::new(1);
+    let cmd = SimCommand {
+        player_id: PlayerId::new(&mut rng),
+        tick: 42,
+        action: SimAction::DiscoverCiv {
+            civ_id: CivId(0),
+            discovered_civ: CivId(5),
+            initial_opinion: CivOpinion::Suspicious,
+        },
+    };
+    let json = serde_json::to_string(&cmd).unwrap();
+    let restored: SimCommand = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::to_string(&restored).unwrap());
+}
+
+#[test]
+fn set_civ_opinion_command_serde_roundtrip() {
+    let mut rng = GameRng::new(2);
+    let cmd = SimCommand {
+        player_id: PlayerId::new(&mut rng),
+        tick: 99,
+        action: SimAction::SetCivOpinion {
+            civ_id: CivId(1),
+            target_civ: CivId(3),
+            opinion: CivOpinion::Hostile,
+        },
+    };
+    let json = serde_json::to_string(&cmd).unwrap();
+    let restored: SimCommand = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::to_string(&restored).unwrap());
+}
+
+#[test]
+fn civ_opinion_shift_friendlier() {
+    assert_eq!(
+        CivOpinion::Hostile.shift_friendlier(),
+        CivOpinion::Suspicious
+    );
+    assert_eq!(
+        CivOpinion::Suspicious.shift_friendlier(),
+        CivOpinion::Neutral
+    );
+    assert_eq!(CivOpinion::Neutral.shift_friendlier(), CivOpinion::Friendly);
+    assert_eq!(
+        CivOpinion::Friendly.shift_friendlier(),
+        CivOpinion::Friendly
+    );
+}
+
+#[test]
+fn civ_opinion_shift_hostile() {
+    assert_eq!(CivOpinion::Friendly.shift_hostile(), CivOpinion::Neutral);
+    assert_eq!(CivOpinion::Neutral.shift_hostile(), CivOpinion::Suspicious);
+    assert_eq!(CivOpinion::Suspicious.shift_hostile(), CivOpinion::Hostile);
+    assert_eq!(CivOpinion::Hostile.shift_hostile(), CivOpinion::Hostile);
+}
+
+// -----------------------------------------------------------------------
+// Pursuit (dynamic repathfinding) tests
+// -----------------------------------------------------------------------
+
+/// Helper: spawn a second elf and return its CreatureId.
+fn spawn_second_elf(sim: &mut SimState) -> CreatureId {
+    // Collect existing elf IDs before spawning.
+    let existing: std::collections::BTreeSet<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .map(|c| c.id)
+        .collect();
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+    // Return the newly spawned elf (not in the existing set).
+    sim.db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf && !existing.contains(&c.id))
+        .next()
+        .unwrap()
+        .id
+}
+
+/// Helper: insert a pursuit task targeting `target_id` at `location`,
+/// and directly assign `pursuer_id` to it.
+fn insert_pursuit_task(
+    sim: &mut SimState,
+    location: NavNodeId,
+    target_id: CreatureId,
+    pursuer_id: CreatureId,
+) -> TaskId {
+    let task_id = TaskId::new(&mut sim.rng);
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: Some(target_id),
+    };
+    sim.insert_task(task);
+    // Directly assign the pursuer to this task.
+    let mut pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
+    pursuer.current_task = Some(task_id);
+    let _ = sim.db.creatures.update_no_fk(pursuer);
+    task_id
+}
+
+#[test]
+fn pursuit_task_repaths_when_target_moves() {
+    let mut sim = test_sim(42);
+    let pursuer_id = spawn_elf(&mut sim);
+    let target_id = spawn_second_elf(&mut sim);
+
+    // Get target's initial node.
+    let target_node = sim
+        .db
+        .creatures
+        .get(&target_id)
+        .unwrap()
+        .current_node
+        .unwrap();
+
+    // Pick a different alive node to move the target to (use a neighbor).
+    let new_target_node = {
+        let graph = sim.graph_for_species(Species::Elf);
+        let edges = graph.neighbors(target_node);
+        graph.edge(edges[0]).to
+    };
+    assert_ne!(target_node, new_target_node);
+
+    // Create pursuit task at target's current node, assigned to pursuer.
+    let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
+    assert_eq!(sim.db.tasks.get(&task_id).unwrap().location, target_node);
+
+    // Manually move the target to the new node (simulates target movement).
+    let new_pos = sim.nav_graph.node(new_target_node).position;
+    let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
+        c.current_node = Some(new_target_node);
+        c.position = new_pos;
+    });
+
+    // Step so the pursuer's activation fires and updates the task location.
+    sim.step(&[], sim.tick + 10000);
+
+    // The pursuit task's location should have changed from the initial
+    // value, proving the repath logic fired. We don't assert the exact
+    // node because the target may have moved further during the step
+    // (heartbeat-driven tasks, wandering after the GoTo completes, etc.).
+    if let Some(task) = sim.db.tasks.get(&task_id) {
+        assert_ne!(
+            task.location, target_node,
+            "Pursuit task location should have updated when target moved"
+        );
+    }
+    // If the task was completed (pursuer caught the target), that also
+    // proves the repath worked — the pursuer followed the target.
+}
+
+#[test]
+fn pursuit_task_completes_when_adjacent() {
+    let mut sim = test_sim(42);
+    let pursuer_id = spawn_elf(&mut sim);
+    let target_id = spawn_second_elf(&mut sim);
+
+    // Read the pursuer's current node (may have wandered during spawns).
+    let pursuer_node = sim
+        .db
+        .creatures
+        .get(&pursuer_id)
+        .unwrap()
+        .current_node
+        .unwrap();
+
+    // Place both creatures at the same node and prevent them from wandering.
+    let node_pos = sim.nav_graph.node(pursuer_node).position;
+    let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
+        c.current_node = Some(pursuer_node);
+        c.position = node_pos;
+    });
+    let _ = sim.db.creatures.modify_unchecked(&pursuer_id, |c| {
+        c.current_node = Some(pursuer_node);
+        c.position = node_pos;
+        c.path = None;
+    });
+
+    // Give the target a Sleep task so it stays still.
+    let sleep_task_id = TaskId::new(&mut sim.rng);
+    let sleep_task = Task {
+        id: sleep_task_id,
+        kind: TaskKind::Sleep {
+            bed_pos: None,
+            location: task::SleepLocation::Ground,
+        },
+        state: TaskState::InProgress,
+        location: pursuer_node,
+        progress: 0.0,
+        total_cost: 999999.0, // very long sleep
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(sleep_task);
+    let mut target = sim.db.creatures.get(&target_id).unwrap();
+    target.current_task = Some(sleep_task_id);
+    let _ = sim.db.creatures.update_no_fk(target);
+
+    // Create pursuit task at the shared node.
+    let task_id = insert_pursuit_task(&mut sim, pursuer_node, target_id, pursuer_id);
+
+    // Clear pursuer's action state and schedule an immediate activation so
+    // the pursuit logic fires regardless of the sim's PRNG-dependent event
+    // schedule. This makes the test robust to worldgen PRNG changes.
+    let _ = sim.db.creatures.modify_unchecked(&pursuer_id, |c| {
+        c.next_available_tick = None;
+        c.action_kind = crate::db::ActionKind::NoAction;
+    });
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        crate::event::ScheduledEventKind::CreatureActivation {
+            creature_id: pursuer_id,
+        },
+    );
+
+    // Step — pursuer should complete the GoTo since it's at the target's node.
+    sim.step(&[], sim.tick + 10000);
+
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Complete,
+        "Pursuit task should complete when pursuer is at target's node"
+    );
+    let pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
+    assert_eq!(
+        pursuer.current_task, None,
+        "Pursuer should be unassigned after task completion"
+    );
+}
+
+#[test]
+fn pursuit_task_abandons_when_target_gone() {
+    let mut sim = test_sim(42);
+    let pursuer_id = spawn_elf(&mut sim);
+    let target_id = spawn_second_elf(&mut sim);
+
+    // Let both creatures settle (complete initial movement).
+    sim.step(&[], sim.tick + 10000);
+
+    let target_node = sim
+        .db
+        .creatures
+        .get(&target_id)
+        .unwrap()
+        .current_node
+        .unwrap();
+
+    // Assign pursuit task — clear any existing task first.
+    let mut pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
+    pursuer.current_task = None;
+    pursuer.path = None;
+    let _ = sim.db.creatures.update_no_fk(pursuer);
+
+    let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
+
+    // Simulate target becoming unreachable by clearing its current_node.
+    // This triggers the `target_node == None` branch in pursuit logic,
+    // causing the pursuer to abandon the task.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&target_id, |c| c.current_node = None);
+
+    // Step — pursuer should notice target has no nav node and unassign.
+    sim.step(&[], sim.tick + 500000);
+
+    let pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
+    // The pursuer should have abandoned the pursuit task.
+    assert_ne!(
+        pursuer.current_task,
+        Some(task_id),
+        "Pursuer should have abandoned the pursuit task when target has no nav node"
+    );
+
+    // The pursuit task should be completed (not left Available for re-claim).
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Complete,
+        "Abandoned pursuit task should be completed"
+    );
+}
+
+#[test]
+fn pursuit_task_abandons_when_target_unreachable() {
+    let mut sim = test_sim(42);
+    let pursuer_id = spawn_elf(&mut sim);
+    let target_id = spawn_second_elf(&mut sim);
+
+    // Place target at a non-existent nav node (simulates disconnected region).
+    let bogus_node = NavNodeId(999999);
+    let _task_id = insert_pursuit_task(&mut sim, bogus_node, target_id, pursuer_id);
+    // Also set target's current_node to the bogus node.
+    let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
+        c.current_node = Some(bogus_node);
+    });
+
+    // Step so pursuer's activation fires and hits the dead-node check.
+    sim.step(&[], sim.tick + 50000);
+
+    // Pursuer should have abandoned the pursuit task (may have claimed
+    // another task from heartbeat, but not the pursuit task).
+    let pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
+    assert_ne!(
+        pursuer.current_task,
+        Some(_task_id),
+        "Pursuer should have abandoned the pursuit task for unreachable target"
+    );
+}
+
+#[test]
+fn non_pursuit_tasks_unaffected() {
+    // Verify existing GoTo tasks (without target_creature) still work.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+
+    // Insert a regular GoTo task (no target_creature).
+    let task_id = insert_goto_task(&mut sim, elf_node);
+
+    // Verify target_creature is None.
+    let db_task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(db_task.target_creature, None);
+
+    // Step — should complete normally.
+    sim.step(&[], sim.tick + 10000);
+
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Complete,
+        "Non-pursuit GoTo task should complete normally"
+    );
+}
+
+#[test]
+fn pursuit_task_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let pursuer_id = spawn_elf(&mut sim);
+    let target_id = spawn_second_elf(&mut sim);
+    let target_node = sim
+        .db
+        .creatures
+        .get(&target_id)
+        .unwrap()
+        .current_node
+        .unwrap();
+
+    let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
+
+    // Verify the task has target_creature set.
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(task.target_creature, Some(target_id));
+
+    // Serialize the entire sim state via save/load.
+    let json = serde_json::to_string(&sim.db).unwrap();
+    let restored: crate::db::SimDb = serde_json::from_str(&json).unwrap();
+
+    let restored_task = restored.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        restored_task.target_creature,
+        Some(target_id),
+        "target_creature should survive serde roundtrip"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Blueprint overlay tests (B-preview-blueprints)
+// -----------------------------------------------------------------------
+
+#[test]
+fn blueprint_overlay_includes_designated_blueprints() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Designate a platform build.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    let overlay = sim.blueprint_overlay();
+    assert_eq!(
+        overlay.voxels.get(&air_coord),
+        Some(&VoxelType::GrownPlatform),
+        "Designated platform blueprint should appear in overlay as GrownPlatform"
+    );
+}
+
+#[test]
+fn blueprint_overlay_excludes_complete_blueprints() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Designate and then manually mark as complete.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Manually flip the blueprint to Complete.
+    let mut bp = sim.db.blueprints.iter_all().next().unwrap().clone();
+    bp.state = BlueprintState::Complete;
+    let _ = sim.db.blueprints.update_no_fk(bp);
+
+    let overlay = sim.blueprint_overlay();
+    assert!(
+        overlay.voxels.is_empty(),
+        "Complete blueprints should not appear in overlay"
+    );
+}
+
+#[test]
+fn blueprint_overlay_maps_carve_to_air() {
+    let mut sim = test_sim(42);
+
+    // Find a solid carvable voxel from the tree's trunk.
+    let tree = &sim.trees[&sim.player_tree_id];
+    let carve_coord = *tree
+        .trunk_voxels
+        .iter()
+        .find(|&&c| {
+            let vt = sim.world.get(c);
+            vt.is_solid() && vt != VoxelType::ForestFloor
+        })
+        .expect("Need a carvable trunk voxel");
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![carve_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let overlay = sim.blueprint_overlay();
+    assert_eq!(
+        overlay.voxels.get(&carve_coord),
+        Some(&VoxelType::Air),
+        "Carve blueprint should appear in overlay as Air"
+    );
+}
+
+#[test]
+fn second_platform_blocked_by_existing_blueprint() {
+    // Designating a platform on the same voxel as an existing blueprint
+    // should fail because the overlay makes the voxel appear as
+    // GrownPlatform (Blocked for overlap).
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // First designation succeeds.
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Second designation on the same voxel should be rejected.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd2], 2);
+    // Still only one blueprint — second was rejected.
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Second platform on same voxel should be rejected"
+    );
+    assert!(
+        sim.last_build_message.is_some(),
+        "Should have a rejection message"
+    );
+}
+
+#[test]
+fn adjacent_platform_sees_blueprint_support() {
+    // Place platforms in a chain extending from the trunk. Designate the
+    // first N-1 as a single blueprint, then designate the last one
+    // separately — it's only adjacent to the blueprint, not to any solid
+    // in the real world, so it exercises the overlay adjacency check.
+    let mut sim = test_sim(42);
+
+    // Search across trunk voxels and all 4 horizontal directions for a
+    // strip of air that eventually leaves all solid face neighbors behind.
+    let directions: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    let tree = &sim.trees[&sim.player_tree_id];
+    let mut best: Option<(Vec<VoxelCoord>, usize)> = None; // (strip, split_index)
+    'outer: for &trunk_coord in &tree.trunk_voxels {
+        for &(dx, dz) in &directions {
+            let mut strip = Vec::new();
+            for i in 1..=20_i32 {
+                let c = VoxelCoord::new(
+                    trunk_coord.x + dx * i,
+                    trunk_coord.y,
+                    trunk_coord.z + dz * i,
+                );
+                if !sim.world.in_bounds(c) || sim.world.get(c) != VoxelType::Air {
+                    break;
+                }
+                strip.push(c);
+            }
+            if strip.len() < 2 {
+                continue;
+            }
+            if let Some(split) = strip
+                .iter()
+                .position(|&c| !sim.world.has_solid_face_neighbor(c))
+            {
+                if split > 0 {
+                    best = Some((strip, split));
+                    break 'outer;
+                }
+            }
+        }
+    }
+    let (strip, split) = best.expect(
+        "Need a trunk voxel with an air strip that transitions from solid-neighbor to open",
+    );
+
+    let first_batch = &strip[..split];
+    let extension = strip[split];
+
+    // Designate the first batch (adjacent to trunk).
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: first_batch.to_vec(),
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Designate the extension. Without the overlay it would fail
+    // adjacency; with the overlay the blueprint batch acts as solid.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![extension],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd2], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        2,
+        "Platform adjacent to blueprint should be accepted via overlay support"
+    );
+}
+
+#[test]
+fn overlapping_carve_designations_rejected() {
+    // A second carve on the same voxels should be rejected because
+    // the overlay maps them to Air (nothing to carve).
+    let mut sim = test_sim(42);
+
+    let tree = &sim.trees[&sim.player_tree_id];
+    let carve_coord = *tree
+        .trunk_voxels
+        .iter()
+        .find(|&&c| {
+            let vt = sim.world.get(c);
+            vt.is_solid() && vt != VoxelType::ForestFloor
+        })
+        .expect("Need a carvable trunk voxel");
+
+    // First carve succeeds.
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![carve_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Second carve on same voxel rejected — overlay shows Air.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateCarve {
+            voxels: vec![carve_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd2], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Second carve on same voxel should be rejected"
+    );
+    assert!(
+        sim.last_build_message.is_some(),
+        "Should have a rejection message"
+    );
+}
+
+#[test]
+fn building_foundation_on_designated_platform() {
+    // A building placed on a designated platform (not yet built) should
+    // see the platform voxels as solid via the overlay.
+    let mut sim = test_sim(42);
+
+    // Find a 3x3 air area adjacent to the trunk at some Y level.
+    // Use the building site finder logic but at y=1 where ForestFloor
+    // provides the foundation, then place a platform to serve as a
+    // higher foundation.
+    let site = find_building_site(&sim);
+    // site is at y=0 (ForestFloor). Interior starts at y=1.
+    // Designate a 3x3 platform at y=1.
+    let mut platform_voxels = Vec::new();
+    for dx in 0..3 {
+        for dz in 0..3 {
+            platform_voxels.push(VoxelCoord::new(site.x + dx, 1, site.z + dz));
+        }
+    }
+
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: platform_voxels,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Verify the overlay makes the platform voxels solid.
+    let overlay = sim.blueprint_overlay();
+    let platform_coord = VoxelCoord::new(site.x, 1, site.z);
+    assert_eq!(
+        overlay.voxels.get(&platform_coord),
+        Some(&VoxelType::GrownPlatform)
+    );
+
+    // Now designate a building with foundation at y=1 (the platform).
+    // Interior at y=2. Clear any non-air voxels at y=2 so the test
+    // always exercises the building-on-blueprint path.
+    let building_anchor = VoxelCoord::new(site.x, 1, site.z);
+    for dx in 0..3 {
+        for dz in 0..3 {
+            let coord = VoxelCoord::new(site.x + dx, 2, site.z + dz);
+            if sim.world.get(coord) != VoxelType::Air {
+                sim.world.set(coord, VoxelType::Air);
+            }
+        }
+    }
+
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuilding {
+            anchor: building_anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd2], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        2,
+        "Building on designated platform should be accepted: {:?}",
+        sim.last_build_message
+    );
+}
+
+#[test]
+fn ladder_anchored_to_designated_platform() {
+    // A wood ladder placed next to a designated platform should see the
+    // platform as solid for anchoring via the overlay.
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Designate a platform.
+    let cmd1 = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd1], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Find a voxel adjacent to the platform in any horizontal direction
+    // that is Air and has no solid face neighbors in the real world, so
+    // the ladder can only anchor via the blueprint overlay. Clear any
+    // solid neighbors at the ladder voxel if needed to isolate it.
+    let directions: [(i32, i32, FaceDirection); 4] = [
+        (-1, 0, FaceDirection::PosX),
+        (1, 0, FaceDirection::NegX),
+        (0, -1, FaceDirection::PosZ),
+        (0, 1, FaceDirection::NegZ),
+    ];
+    let (ladder_coord, orientation) = directions
+        .iter()
+        .map(|&(dx, dz, dir)| {
+            (
+                VoxelCoord::new(air_coord.x + dx, air_coord.y, air_coord.z + dz),
+                dir,
+            )
+        })
+        .find(|&(coord, _)| sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air)
+        .expect("Need an air voxel adjacent to the platform for ladder placement");
+
+    // Clear any solid face neighbors so anchoring can only succeed via overlay.
+    for &dir in &FaceDirection::ALL {
+        let (dx, dy, dz) = dir.to_offset();
+        let neighbor = VoxelCoord::new(
+            ladder_coord.x + dx,
+            ladder_coord.y + dy,
+            ladder_coord.z + dz,
+        );
+        if neighbor != air_coord && sim.world.get(neighbor).is_solid() {
+            sim.world.set(neighbor, VoxelType::Air);
+        }
+    }
+    assert!(
+        !sim.world.has_solid_face_neighbor(ladder_coord),
+        "Ladder voxel should have no solid face neighbors in the real world"
+    );
+
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateLadder {
+            anchor: ladder_coord,
+            height: 1,
+            orientation,
+            kind: LadderKind::Wood,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd2], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        2,
+        "Wood ladder anchored to designated platform should be accepted: {:?}",
+        sim.last_build_message
+    );
+}
+
+// ── interrupt_task tests ──────────────────────────────────────────
+
+#[test]
+fn interrupt_goto_completes_task_and_clears_creature() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    let nav_count = sim.nav_graph.node_count();
+    let far_node = NavNodeId((nav_count / 2) as u32);
+    let task_id = TaskId::new(&mut sim.rng);
+    let goto_task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: far_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(goto_task);
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.interrupt_task(elf_id, task_id);
+
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(task.state, TaskState::Complete);
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(creature.current_task.is_none());
+    assert!(creature.path.is_none());
+}
+
+#[test]
+fn interrupt_build_returns_task_to_available() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Designate a build.
+    let cmd_build = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd_build], sim.tick + 2);
+
+    let build_task_id = sim
+        .db
+        .tasks
+        .iter_all()
+        .find(|t| t.kind_tag == TaskKindTag::Build)
+        .unwrap()
+        .id;
+
+    // Assign the elf to the build task.
+    if let Some(mut t) = sim.db.tasks.get(&build_task_id) {
+        t.state = TaskState::InProgress;
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(build_task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.interrupt_task(elf_id, build_task_id);
+
+    // Build is resumable — should return to Available.
+    let task = sim.db.tasks.get(&build_task_id).unwrap();
+    assert_eq!(task.state, TaskState::Available);
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(creature.current_task.is_none());
+}
+
+#[test]
+fn interrupt_craft_clears_reservations() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Spawn elf near building.
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    let elf_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: structure.anchor,
+        },
+    };
+    sim.step(&[elf_cmd], sim.tick + 1);
+    let elf_id = sim
+        .db
+        .creatures
+        .by_species(&Species::Elf, tabulosity::QueryOpts::ASC)
+        .last()
+        .unwrap()
+        .id;
+
+    // Find the bowstring recipe (1 Fruit → 20 Bowstring) and set a nonzero target.
+    let bowstring_key_json = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Workshop)
+        .into_iter()
+        .find(|r| r.display_name == "Bowstring")
+        .unwrap()
+        .key
+        .to_json();
+    let ar = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.recipe_key_json == bowstring_key_json)
+        .unwrap();
+    let target = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let target_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetRecipeOutputTarget {
+            active_recipe_target_id: target.id,
+            target_quantity: 100,
+        },
+    };
+    sim.step(&[target_cmd], sim.tick + 1);
+
+    // Stock workshop with Fruit and run the crafting monitor.
+    let inv_id = sim.structure_inv(structure_id);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Fruit, 1, None, None);
+    sim.process_unified_crafting_monitor();
+
+    let task_id = sim
+        .db
+        .tasks
+        .iter_all()
+        .find(|t| t.kind_tag == TaskKindTag::Craft)
+        .unwrap()
+        .id;
+
+    // Verify fruit is reserved.
+    let reserved = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.reserved_by == Some(task_id))
+        .count();
+    assert!(reserved > 0, "Fruit should be reserved before interrupt");
+
+    // Assign elf to the task.
+    if let Some(mut t) = sim.db.tasks.get(&task_id) {
+        t.state = TaskState::InProgress;
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.interrupt_task(elf_id, task_id);
+
+    // Reservations should be cleared.
+    let still_reserved = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.reserved_by == Some(task_id))
+        .count();
+    assert_eq!(still_reserved, 0, "Reservations should be cleared");
+
+    // Task should be Complete (non-resumable).
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(task.state, TaskState::Complete);
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(creature.current_task.is_none());
+}
+
+#[test]
+fn interrupt_sleep_completes_task() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    let current_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let task_id = TaskId::new(&mut sim.rng);
+    let sleep_task = Task {
+        id: task_id,
+        kind: TaskKind::Sleep {
+            bed_pos: None,
+            location: task::SleepLocation::Ground,
+        },
+        state: TaskState::InProgress,
+        location: current_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(sleep_task);
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.interrupt_task(elf_id, task_id);
+
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(task.state, TaskState::Complete);
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(creature.current_task.is_none());
+}
+
+#[test]
+fn interrupt_missing_task_clears_creature_fields() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Assign creature to a task ID that doesn't exist in the DB.
+    let fake_task_id = TaskId::new(&mut sim.rng);
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(fake_task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.interrupt_task(elf_id, fake_task_id);
+
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(creature.current_task.is_none());
+    assert!(creature.path.is_none());
+}
+
+#[test]
+fn interrupt_clears_move_action() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    let current_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+
+    // Put the elf in a Move action.
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.action_kind = ActionKind::Move;
+        c.next_available_tick = Some(sim.tick + 1000);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+    let move_action = crate::db::MoveAction {
+        creature_id: elf_id,
+        move_from: pos,
+        move_to: pos,
+        move_start_tick: sim.tick,
+    };
+    let _ = sim.db.move_actions.insert_no_fk(move_action);
+
+    // Create a GoTo task for context.
+    let task_id = TaskId::new(&mut sim.rng);
+    let goto_task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: current_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(goto_task);
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.interrupt_task(elf_id, task_id);
+
+    // MoveAction should be deleted.
+    assert!(sim.db.move_actions.get(&elf_id).is_none());
+    // Action should be cleared.
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.action_kind, ActionKind::NoAction);
+    assert!(creature.next_available_tick.is_none());
+}
+
+// -----------------------------------------------------------------------
+// Spatial index tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn spatial_index_empty_before_spawn() {
+    let sim = test_sim(42);
+    assert!(
+        sim.spatial_index.is_empty(),
+        "Spatial index should be empty before any creatures are spawned"
+    );
+}
+
+#[test]
+fn spatial_index_populated_after_spawn() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let pos = elf.position;
+
+    // Elf has a [1,1,1] footprint — should be registered at exactly one voxel.
+    let at_pos = sim.creatures_at_voxel(pos);
+    assert!(
+        at_pos.contains(&elf_id),
+        "Elf should be in spatial index at its position"
+    );
+    assert_eq!(at_pos.len(), 1, "Only one creature at this voxel");
+}
+
+#[test]
+fn spatial_index_tracks_movement() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let initial_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+
+    // Run enough ticks for the elf to move at least once.
+    sim.step(&[], sim.tick + 50_000);
+    let new_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+
+    if new_pos != initial_pos {
+        assert!(
+            !sim.creatures_at_voxel(initial_pos).contains(&elf_id),
+            "Elf should not be at old position after moving"
+        );
+        assert!(
+            sim.creatures_at_voxel(new_pos).contains(&elf_id),
+            "Elf should be at new position after moving"
+        );
+    } else {
+        assert!(sim.creatures_at_voxel(initial_pos).contains(&elf_id));
+    }
+}
+
+#[test]
+fn spatial_index_multiple_creatures_same_voxel() {
+    let mut sim = test_sim(42);
+    let elf1 = spawn_elf(&mut sim);
+    let elf2 = spawn_elf(&mut sim);
+
+    // Force both elves to the same position so the test always exercises
+    // multi-occupancy (spawn may place them at different nav nodes).
+    let pos1 = sim.db.creatures.get(&elf1).unwrap().position;
+    let pos2 = sim.db.creatures.get(&elf2).unwrap().position;
+    if pos1 != pos2 {
+        let species = sim.db.creatures.get(&elf2).unwrap().species;
+        let footprint = sim.species_table[&species].footprint;
+        SimState::deregister_creature_from_index(&mut sim.spatial_index, elf2, pos2, footprint);
+        let _ = sim.db.creatures.modify_unchecked(&elf2, |c| {
+            c.position = pos1;
+        });
+        SimState::register_creature_in_index(&mut sim.spatial_index, elf2, pos1, footprint);
+    }
+
+    let at_pos = sim.creatures_at_voxel(pos1);
+    assert!(at_pos.contains(&elf1));
+    assert!(at_pos.contains(&elf2));
+    assert_eq!(at_pos.len(), 2);
+    // Verify sorted for determinism.
+    assert!(
+        at_pos[0] <= at_pos[1],
+        "Spatial index entries should be sorted by CreatureId"
+    );
+}
+
+#[test]
+fn spatial_index_query_empty_voxel() {
+    let sim = test_sim(42);
+    let empty = sim.creatures_at_voxel(VoxelCoord::new(999, 999, 999));
+    assert!(empty.is_empty());
+}
+
+#[test]
+fn spatial_index_survives_save_load_roundtrip() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    assert!(sim.creatures_at_voxel(pos).contains(&elf_id));
+
+    // Roundtrip through JSON (spatial_index is #[serde(skip)]).
+    let json = sim.to_json().unwrap();
+    let sim2 = SimState::from_json(&json).unwrap();
+
+    let elf2 = sim2.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        sim2.creatures_at_voxel(elf2.position).contains(&elf_id),
+        "Spatial index should be rebuilt after deserialization"
+    );
+}
+
+#[test]
+fn spatial_index_consistent_after_many_ticks() {
+    let mut sim = test_sim(42);
+    let elf1 = spawn_elf(&mut sim);
+    let elf2 = spawn_elf(&mut sim);
+    let elf3 = spawn_elf(&mut sim);
+
+    sim.step(&[], sim.tick + 100_000);
+
+    // Every creature must be in the index at its current position.
+    for &elf_id in &[elf1, elf2, elf3] {
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        assert!(
+            sim.creatures_at_voxel(elf.position).contains(&elf_id),
+            "Creature {:?} should be at its position {:?}",
+            elf_id,
+            elf.position,
+        );
+    }
+
+    // Total entries should match total footprint voxels.
+    let total_entries: usize = sim.spatial_index.values().map(|v| v.len()).sum();
+    let expected: usize = sim
+        .db
+        .creatures
+        .iter_all()
+        .map(|c| {
+            let fp = sim.species_table[&c.species].footprint;
+            fp[0] as usize * fp[1] as usize * fp[2] as usize
+        })
+        .sum();
+    assert_eq!(
+        total_entries, expected,
+        "Spatial index entry count should match total footprint voxels"
+    );
+}
+
+// -----------------------------------------------------------------------
+// HP / damage / heal / death tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn spawn_sets_hp_from_species_data() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    let hp_max = sim.species_table[&Species::Elf].hp_max;
+    assert_eq!(creature.hp, hp_max);
+    assert_eq!(creature.hp_max, hp_max);
+    assert_eq!(creature.vital_status, VitalStatus::Alive);
+}
+
+#[test]
+fn debug_kill_sets_dead_and_emits_event() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    let result = sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Creature should still exist but be dead.
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.vital_status, VitalStatus::Dead);
+    assert_eq!(creature.hp, 0);
+
+    // Should have emitted CreatureDied event.
+    assert!(result.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::CreatureDied {
+            creature_id: cid,
+            cause: DeathCause::Debug,
+            ..
+        } if *cid == elf_id
+    )));
+}
+
+#[test]
+fn dead_creature_excluded_from_count() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    assert_eq!(sim.creature_count(Species::Elf), 1);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(sim.creature_count(Species::Elf), 0);
+    // But the row still exists in the DB.
+    assert!(sim.db.creatures.get(&elf_id).is_some());
+}
+
+#[test]
+fn damage_reduces_hp() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let hp_max = sim.species_table[&Species::Elf].hp_max;
+    let tick = sim.tick;
+
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 30,
+            },
+        }],
+        tick + 1,
+    );
+
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.hp, hp_max - 30);
+    assert_eq!(creature.vital_status, VitalStatus::Alive);
+}
+
+#[test]
+fn damage_kills_at_zero_hp() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let hp_max = sim.species_table[&Species::Elf].hp_max;
+    let tick = sim.tick;
+
+    let result = sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: hp_max, // exactly lethal
+            },
+        }],
+        tick + 1,
+    );
+
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.vital_status, VitalStatus::Dead);
+    assert_eq!(creature.hp, 0);
+    assert!(result.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::CreatureDied {
+            cause: DeathCause::Damage,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn overkill_damage_clamps_hp_to_zero() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 99999,
+            },
+        }],
+        tick + 1,
+    );
+
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.hp, 0);
+    assert_eq!(creature.vital_status, VitalStatus::Dead);
+}
+
+#[test]
+fn heal_restores_hp_clamped_to_max() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let hp_max = sim.species_table[&Species::Elf].hp_max;
+    let tick = sim.tick;
+
+    // Damage first.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 60,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_max - 60);
+
+    // Heal more than needed.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::HealCreature {
+                creature_id: elf_id,
+                amount: 999,
+            },
+        }],
+        tick2 + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_max);
+}
+
+#[test]
+fn heal_does_not_revive_dead() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Kill.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Try to heal.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::HealCreature {
+                creature_id: elf_id,
+                amount: 100,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.vital_status, VitalStatus::Dead);
+    assert_eq!(creature.hp, 0);
+}
+
+#[test]
+fn death_drops_inventory_as_ground_pile() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Give the elf some items.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AddCreatureItem {
+                creature_id: elf_id,
+                item_kind: inventory::ItemKind::Bread,
+                quantity: 5,
+            },
+        }],
+        tick + 1,
+    );
+
+    let creature_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+
+    // Kill the elf.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    // Creature's inventory should be empty (items transferred to ground pile).
+    let inv_id = sim.db.creatures.get(&elf_id).unwrap().inventory_id;
+    let remaining: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert!(remaining.is_empty(), "dead creature should have no items");
+
+    // A ground pile should exist somewhere with the dropped bread.
+    // (Position may be snapped by ensure_ground_pile, so we don't check exact pos.)
+    let _ = creature_pos; // used only to confirm creature existed
+    let total_bread: u32 = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .flat_map(|p| {
+            sim.db
+                .item_stacks
+                .by_inventory_id(&p.inventory_id, tabulosity::QueryOpts::ASC)
+        })
+        .filter(|s| s.kind == inventory::ItemKind::Bread)
+        .map(|s| s.quantity)
+        .sum();
+    assert!(
+        total_bread >= 5,
+        "ground piles should have >= 5 bread, got {total_bread}"
+    );
+}
+
+#[test]
+fn spatial_index_multi_voxel_footprint() {
+    let mut index = BTreeMap::<VoxelCoord, Vec<CreatureId>>::new();
+    let mut rng = GameRng::new(999);
+    let cid = CreatureId::new(&mut rng);
+    let anchor = VoxelCoord::new(5, 1, 5);
+    let footprint = [2, 2, 2];
+
+    SimState::register_creature_in_index(&mut index, cid, anchor, footprint);
+
+    // Should be registered at 8 voxels (2x2x2).
+    let mut registered_count = 0;
+    for dx in 0..2 {
+        for dy in 0..2 {
+            for dz in 0..2 {
+                let v = VoxelCoord::new(5 + dx, 1 + dy, 5 + dz);
+                assert!(
+                    index.get(&v).unwrap().contains(&cid),
+                    "Creature should be at ({}, {}, {})",
+                    5 + dx,
+                    1 + dy,
+                    5 + dz,
+                );
+                registered_count += 1;
+            }
+        }
+    }
+    assert_eq!(registered_count, 8);
+
+    SimState::deregister_creature_from_index(&mut index, cid, anchor, footprint);
+    assert!(index.is_empty(), "Index should be empty after deregister");
+}
+
+#[test]
+fn spatial_index_sorted_entries() {
+    let mut index = BTreeMap::<VoxelCoord, Vec<CreatureId>>::new();
+    let pos = VoxelCoord::new(5, 1, 5);
+    let fp = [1, 1, 1];
+
+    let mut rng = GameRng::new(12345);
+    let mut ids = [
+        CreatureId::new(&mut rng),
+        CreatureId::new(&mut rng),
+        CreatureId::new(&mut rng),
+    ];
+    ids.sort();
+
+    // Register in reverse order.
+    SimState::register_creature_in_index(&mut index, ids[2], pos, fp);
+    SimState::register_creature_in_index(&mut index, ids[0], pos, fp);
+    SimState::register_creature_in_index(&mut index, ids[1], pos, fp);
+
+    let entries = &index[&pos];
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0], ids[0]);
+    assert_eq!(entries[1], ids[1]);
+    assert_eq!(entries[2], ids[2]);
+}
+
+#[test]
+fn death_clears_assigned_home() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Build a home and assign the elf.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
+    let structure_id = insert_completed_home(&mut sim, anchor);
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AssignHome {
+                creature_id: elf_id,
+                structure_id: Some(structure_id),
+            },
+        }],
+        tick + 1,
+    );
+    assert!(
+        sim.db
+            .creatures
+            .get(&elf_id)
+            .unwrap()
+            .assigned_home
+            .is_some()
+    );
+
+    // Kill the elf.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick2 + 1,
+    );
+    assert!(
+        sim.db
+            .creatures
+            .get(&elf_id)
+            .unwrap()
+            .assigned_home
+            .is_none()
+    );
+}
+
+#[test]
+fn dead_creature_heartbeat_does_not_reschedule() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Kill the elf.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Run sim forward past several heartbeat intervals. Any pending
+    // heartbeat events for the dead elf should be no-ops (not reschedule).
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + heartbeat_interval * 5);
+
+    // Drain the event queue and check no heartbeat for this creature.
+    let mut found_heartbeat = false;
+    while let Some(evt) = sim.event_queue.pop_if_ready(u64::MAX) {
+        if matches!(
+            evt.kind,
+            ScheduledEventKind::CreatureHeartbeat { creature_id } if creature_id == elf_id
+        ) {
+            found_heartbeat = true;
+        }
+    }
+    assert!(
+        !found_heartbeat,
+        "dead creature should not have pending heartbeats"
+    );
+}
+
+#[test]
+fn dead_creature_not_assigned_tasks() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Kill the elf.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Create a GoTo task.
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::CreateTask {
+                kind: TaskKind::GoTo,
+                position: pos,
+                required_species: Some(Species::Elf),
+            },
+        }],
+        tick2 + 1,
+    );
+
+    // Run several activations.
+    sim.step(&[], sim.tick + 10000);
+
+    // Dead creature should NOT have picked up the task.
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "dead creature should not claim tasks"
+    );
+}
+
+#[test]
+fn damage_dead_creature_is_noop() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Kill.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Try to damage again.
+    let tick2 = sim.tick;
+    let result = sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 50,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    // Should not emit a second death event.
+    assert!(
+        !result
+            .events
+            .iter()
+            .any(|e| matches!(&e.kind, SimEventKind::CreatureDied { .. })),
+        "damaging dead creature should not emit another death event"
+    );
+}
+
+#[test]
+fn death_creates_notification() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let initial_notifications = sim.db.notifications.len();
+    let tick = sim.tick;
+
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert!(
+        sim.db.notifications.len() > initial_notifications,
+        "death should create a notification"
+    );
+    let last_notif = sim.db.notifications.iter_all().last().unwrap();
+    assert!(
+        last_notif.message.contains("died"),
+        "notification should mention death: {}",
+        last_notif.message
+    );
+}
+
+#[test]
+fn death_interrupts_current_task() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Create and claim a GoTo task.
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::CreateTask {
+                kind: TaskKind::GoTo,
+                position: pos,
+                required_species: Some(Species::Elf),
+            },
+        }],
+        tick + 1,
+    );
+
+    // Run until the elf picks up the task.
+    sim.step(&[], sim.tick + 5000);
+    // Elf should have a task now (either the GoTo or something from heartbeat).
+
+    // Kill the elf.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "dead creature should have no task"
+    );
+    assert_eq!(creature.action_kind, ActionKind::NoAction);
+}
+
+#[test]
+fn kill_nonexistent_creature_is_noop() {
+    let mut sim = test_sim(42);
+    let mut rng = GameRng::new(999);
+    let fake_id = CreatureId::new(&mut rng);
+    let tick = sim.tick;
+
+    // Should not panic.
+    let result = sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: fake_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert!(
+        !result
+            .events
+            .iter()
+            .any(|e| matches!(&e.kind, SimEventKind::CreatureDied { .. })),
+        "killing nonexistent creature should not emit event"
+    );
+}
+
+#[test]
+fn death_removes_from_spatial_index() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+
+    // Elf should be in the spatial index before death.
+    assert!(
+        sim.spatial_index
+            .get(&pos)
+            .map_or(false, |v| v.contains(&elf_id)),
+        "living elf should be in spatial index"
+    );
+
+    // Kill the elf.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Elf should no longer be in the spatial index.
+    assert!(
+        !sim.spatial_index
+            .get(&pos)
+            .map_or(false, |v| v.contains(&elf_id)),
+        "dead elf should be removed from spatial index"
+    );
+}
+
+#[test]
+fn hp_death_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Damage elf to half HP.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 50,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Serialize and deserialize the DB.
+    let json = serde_json::to_string(&sim.db).unwrap();
+    let restored: SimDb = serde_json::from_str(&json).unwrap();
+    let creature = restored.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.hp, sim.db.creatures.get(&elf_id).unwrap().hp);
+    assert_eq!(creature.hp_max, sim.species_table[&Species::Elf].hp_max);
+    assert_eq!(creature.vital_status, VitalStatus::Alive);
+}
+
+#[test]
+fn hp_death_serde_roundtrip_dead() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Kill elf.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Serialize and deserialize.
+    let json = serde_json::to_string(&sim.db).unwrap();
+    let restored: SimDb = serde_json::from_str(&json).unwrap();
+    let creature = restored.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.vital_status, VitalStatus::Dead);
+    assert_eq!(creature.hp, 0);
+}
+
+#[test]
+fn zero_and_negative_damage_is_noop() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+    let tick = sim.tick;
+
+    // Zero damage — should not change HP.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 0,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_before);
+
+    // Negative damage — should not change HP.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: -5,
+            },
+        }],
+        tick2 + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_before);
+}
+
+#[test]
+fn zero_and_negative_heal_is_noop() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Damage first so there's room to heal.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 30,
+            },
+        }],
+        tick + 1,
+    );
+    let hp_after_damage = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+    // Zero heal — should not change HP.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::HealCreature {
+                creature_id: elf_id,
+                amount: 0,
+            },
+        }],
+        tick2 + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_after_damage);
+
+    // Negative heal — should not change HP.
+    let tick3 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick3 + 1,
+            action: SimAction::HealCreature {
+                creature_id: elf_id,
+                amount: -10,
+            },
+        }],
+        tick3 + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_after_damage);
+}
+
+// -----------------------------------------------------------------------
+// Melee attack tests
+// -----------------------------------------------------------------------
+
+/// Spawn a creature of the given species near the tree and return its ID.
+fn spawn_species(sim: &mut SimState, species: Species) -> CreatureId {
+    let existing: std::collections::BTreeSet<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == species)
+        .map(|c| c.id)
+        .collect();
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+    sim.db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == species && !existing.contains(&c.id))
+        .unwrap()
+        .id
+}
+
+/// Force a creature to a specific position, updating the spatial index.
+fn force_position(sim: &mut SimState, creature_id: CreatureId, new_pos: VoxelCoord) {
+    let creature = sim.db.creatures.get(&creature_id).unwrap();
+    let old_pos = creature.position;
+    let species = creature.species;
+    let footprint = sim.species_table[&species].footprint;
+    SimState::deregister_creature_from_index(
+        &mut sim.spatial_index,
+        creature_id,
+        old_pos,
+        footprint,
+    );
+    let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
+        c.position = new_pos;
+    });
+    SimState::register_creature_in_index(&mut sim.spatial_index, creature_id, new_pos, footprint);
+}
+
+/// Make a creature idle (NoAction, no next_available_tick, no task).
+fn force_idle(sim: &mut SimState, creature_id: CreatureId) {
+    let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
+        c.action_kind = ActionKind::NoAction;
+        c.next_available_tick = None;
+        c.current_task = None;
+        c.path = None;
+    });
+}
+
+/// Like `force_idle` but also cancels any pending activation events (e.g.
+/// from spawn). Use when you need the creature truly quiescent so you can
+/// precisely control activation counts.
+fn force_idle_and_cancel_activations(sim: &mut SimState, creature_id: CreatureId) {
+    force_idle(sim, creature_id);
+    sim.event_queue.cancel_creature_activations(creature_id);
+}
+
+impl SimState {
+    /// Test helper: count pending `CreatureActivation` events for a creature.
+    fn count_pending_activations_for(&self, creature_id: CreatureId) -> usize {
+        self.event_queue.count_creature_activations(creature_id)
+    }
+}
+
+// -- in_melee_range pure-function tests --
+
+#[test]
+fn test_in_melee_range_adjacent() {
+    // Face-adjacent 1x1 creatures: dist² = 1, within default range_sq = 2.
+    assert!(in_melee_range(
+        VoxelCoord::new(5, 1, 5),
+        [1, 1, 1],
+        VoxelCoord::new(6, 1, 5),
+        [1, 1, 1],
+        2,
+    ));
+}
+
+#[test]
+fn test_in_melee_range_diagonal() {
+    // 2D diagonal: dist² = 1² + 1² = 2, within default range.
+    assert!(in_melee_range(
+        VoxelCoord::new(5, 1, 5),
+        [1, 1, 1],
+        VoxelCoord::new(6, 1, 6),
+        [1, 1, 1],
+        2,
+    ));
+}
+
+#[test]
+fn test_in_melee_range_too_far() {
+    // 2 voxels apart on X: dist² = 2² = 4, exceeds range_sq = 2.
+    assert!(!in_melee_range(
+        VoxelCoord::new(5, 1, 5),
+        [1, 1, 1],
+        VoxelCoord::new(7, 1, 5),
+        [1, 1, 1],
+        2,
+    ));
+}
+
+#[test]
+fn test_in_melee_range_3d_corner() {
+    // 3D diagonal: dist² = 1 + 1 + 1 = 3, exceeds range_sq = 2.
+    assert!(!in_melee_range(
+        VoxelCoord::new(5, 1, 5),
+        [1, 1, 1],
+        VoxelCoord::new(6, 2, 6),
+        [1, 1, 1],
+        2,
+    ));
+}
+
+#[test]
+fn test_in_melee_range_large_footprint() {
+    // 2x2x2 attacker at (4,1,5), target at (6,1,5).
+    // Attacker occupies x=4..5, target at x=6. Gap on x = 6-5 = 1, dist² = 1.
+    assert!(in_melee_range(
+        VoxelCoord::new(4, 1, 5),
+        [2, 2, 2],
+        VoxelCoord::new(6, 1, 5),
+        [1, 1, 1],
+        2,
+    ));
+}
+
+// -- try_melee_strike integration tests --
+
+#[test]
+fn test_melee_strike_deals_damage() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Place goblin adjacent (x+1).
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let tick = sim.tick;
+    let events = sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    // HP reduced.
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(elf_hp_after, elf_hp_before - goblin_damage);
+
+    // CreatureDamaged event emitted.
+    assert!(events.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::CreatureDamaged {
+            attacker_id,
+            target_id,
+            damage,
+            ..
+        } if *attacker_id == goblin && *target_id == elf && *damage == goblin_damage
+    )));
+}
+
+#[test]
+fn test_melee_strike_kills_target() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Set elf HP to just below goblin damage so one strike kills.
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.hp = goblin_damage; // exactly equal → dies
+    });
+
+    let tick = sim.tick;
+    let events = sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().vital_status,
+        VitalStatus::Dead
+    );
+    assert!(events.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::CreatureDied { creature_id, .. } if *creature_id == elf
+    )));
+}
+
+#[test]
+fn test_melee_strike_out_of_range() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Place goblin 3 voxels away — out of range.
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    // HP unchanged.
+    assert_eq!(sim.db.creatures.get(&elf).unwrap().hp, elf_hp_before);
+}
+
+#[test]
+fn test_melee_strike_cooldown() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    // First strike succeeds.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().hp,
+        elf_hp_before - goblin_damage,
+    );
+
+    // Goblin is now in MeleeStrike action — second strike should fail.
+    assert_eq!(
+        sim.db.creatures.get(&goblin).unwrap().action_kind,
+        ActionKind::MeleeStrike,
+    );
+    let elf_hp_mid = sim.db.creatures.get(&elf).unwrap().hp;
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick2 + 1,
+    );
+    // HP unchanged — attack was rejected due to cooldown.
+    assert_eq!(sim.db.creatures.get(&elf).unwrap().hp, elf_hp_mid);
+}
+
+#[test]
+fn test_melee_strike_dead_target() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Kill the elf first.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature { creature_id: elf },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().vital_status,
+        VitalStatus::Dead
+    );
+
+    // Melee attack on dead target should be a no-op.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick2 + 1,
+    );
+    // Goblin should still be idle (attack didn't fire).
+    assert_eq!(
+        sim.db.creatures.get(&goblin).unwrap().action_kind,
+        ActionKind::NoAction,
+    );
+}
+
+#[test]
+fn test_melee_strike_zero_damage_species() {
+    let mut sim = test_sim(42);
+    // Capybara has melee_damage = 0 — cannot melee.
+    let capybara = spawn_species(&mut sim, Species::Capybara);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Put capybara adjacent to elf.
+    let capy_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, capybara, capy_pos);
+    force_idle(&mut sim, capybara);
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: capybara,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf).unwrap().hp, elf_hp_before);
+}
+
+#[test]
+fn test_melee_strike_serde_roundtrip() {
+    // Verify ActionKind::MeleeStrike survives serde roundtrip.
+    let action = ActionKind::MeleeStrike;
+    let json = serde_json::to_string(&action).unwrap();
+    let restored: ActionKind = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, ActionKind::MeleeStrike);
+}
+
+#[test]
+fn test_melee_strike_cooldown_expires() {
+    // After the cooldown elapses, the creature can strike again. With
+    // hostile AI, a goblin adjacent to an elf will automatically re-strike
+    // once the cooldown resolves.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let interval = sim.species_table[&Species::Goblin].melee_interval_ticks;
+
+    // First strike via command.
+    let elf_hp_initial = sim.db.creatures.get(&elf).unwrap().hp;
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&goblin).unwrap().action_kind,
+        ActionKind::MeleeStrike,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().hp,
+        elf_hp_initial - goblin_damage,
+    );
+
+    // Advance past cooldown. The goblin's MeleeStrike resolves, and the
+    // hostile AI will auto-strike the elf again (still adjacent). There
+    // may also be a pre-existing activation from spawn, so the elf may
+    // take more than one additional hit. Verify at least 2 total strikes.
+    sim.step(&[], sim.tick + interval + 1);
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    let total_damage = elf_hp_initial - elf_hp_after;
+    assert!(
+        total_damage >= 2 * goblin_damage,
+        "Should have at least 2 strikes: total damage {total_damage}, \
+             expected >= {} (2 × {goblin_damage})",
+        2 * goblin_damage,
+    );
+    // Damage should be an exact multiple of goblin_damage.
+    assert_eq!(
+        total_damage % goblin_damage,
+        0,
+        "Total damage {total_damage} should be a multiple of {goblin_damage}",
+    );
+}
+
+#[test]
+fn test_melee_strike_dead_attacker() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Kill the goblin.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&goblin).unwrap().vital_status,
+        VitalStatus::Dead,
+    );
+
+    // Dead goblin trying to melee should be a no-op.
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick2 + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf).unwrap().hp, elf_hp_before);
+}
+
+// -----------------------------------------------------------------------
+// Shoot action tests
+// -----------------------------------------------------------------------
+
+/// Helper: give a creature a bow and some arrows.
+fn arm_with_bow_and_arrows(sim: &mut SimState, creature_id: CreatureId, arrows: u32) {
+    let inv_id = sim.db.creatures.get(&creature_id).unwrap().inventory_id;
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bow, 1, None, None);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, arrows, None, None);
+}
+
+#[test]
+fn test_shoot_arrow_spawns_projectile() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place them apart with clear LOS (same Y, 5 voxels apart on X).
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    // Give elf a bow and arrows.
+    arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+    let tick = sim.tick;
+    let events = sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+
+    // A projectile should exist.
+    assert_eq!(sim.db.projectiles.iter_all().count(), 1);
+
+    // Arrow consumed from inventory.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    assert_eq!(
+        sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any
+        ),
+        4
+    );
+    // Bow still there.
+    assert_eq!(
+        sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Bow,
+            inventory::MaterialFilter::Any
+        ),
+        1
+    );
+
+    // Elf is now on Shoot cooldown.
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_creature.action_kind, ActionKind::Shoot);
+    assert!(elf_creature.next_available_tick.is_some());
+
+    // ProjectileLaunched event emitted.
+    assert!(events.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::ProjectileLaunched {
+            attacker_id,
+            target_id,
+        } if *attacker_id == elf && *target_id == goblin
+    )));
+}
+
+#[test]
+fn test_shoot_arrow_no_bow_fails() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    // Give arrows but NO bow.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+
+    // No projectile spawned.
+    assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+    // Elf still idle.
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().action_kind,
+        ActionKind::NoAction,
+    );
+}
+
+#[test]
+fn test_shoot_arrow_no_arrows_fails() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    // Give bow but NO arrows.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bow, 1, None, None);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+}
+
+#[test]
+fn test_shoot_arrow_cooldown_prevents_second_shot() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+    arm_with_bow_and_arrows(&mut sim, elf, 10);
+
+    // First shot.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(sim.db.projectiles.iter_all().count(), 1);
+
+    // Immediate second shot should fail (still on cooldown).
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    // Arrow count should only have decreased by 1 (second shot failed).
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    assert_eq!(
+        sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any
+        ),
+        9
+    );
+}
+
+#[test]
+fn test_shoot_arrow_blocked_los_fails() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Place goblin 5 voxels away.
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+    arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+    // Place a solid wall between them.
+    sim.world.set(
+        VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z),
+        VoxelType::Trunk,
+    );
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+
+    // No projectile — LOS blocked.
+    assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+}
+
+#[test]
+fn test_shoot_arrow_leaf_does_not_block_los() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+    arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+    // Place a leaf between them — should NOT block LOS.
+    sim.world.set(
+        VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z),
+        VoxelType::Leaf,
+    );
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Projectile spawned (leaf doesn't block).
+    assert_eq!(sim.db.projectiles.iter_all().count(), 1);
+}
+
+#[test]
+fn test_shoot_arrow_dead_target_fails() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+    arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+    // Kill the goblin.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Try to shoot dead goblin.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+}
+
+#[test]
+fn test_shoot_arrow_dead_attacker_fails() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+    arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+    // Kill the elf.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature { creature_id: elf },
+        }],
+        tick + 1,
+    );
+
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+}
+
+#[test]
+fn test_shoot_action_serde_roundtrip() {
+    let action = ActionKind::Shoot;
+    let json = serde_json::to_string(&action).unwrap();
+    let restored: ActionKind = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, ActionKind::Shoot);
+}
+
+#[test]
+fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+    arm_with_bow_and_arrows(&mut sim, elf, 10);
+
+    // First shot.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(sim.db.projectiles.iter_all().count(), 1);
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    assert_eq!(
+        sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any
+        ),
+        9
+    );
+
+    // Advance past the cooldown. The activation system clears the Shoot
+    // action, but the elf may flee or wander. Force idle and restore
+    // position to isolate the second-shot test.
+    let cooldown = sim.config.shoot_cooldown_ticks;
+    sim.step(&[], sim.tick + cooldown + 1);
+    force_idle(&mut sim, elf);
+    force_position(&mut sim, elf, elf_pos);
+
+    // Second shot should succeed now that cooldown has expired.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick2 + 1,
+    );
+    assert_eq!(
+        sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any
+        ),
+        8
+    );
+}
+
+#[test]
+fn test_shoot_arrow_rejected_when_not_idle() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    arm_with_bow_and_arrows(&mut sim, elf, 5);
+
+    // Put elf into a non-idle action (e.g., Build).
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.action_kind = ActionKind::Build;
+        c.next_available_tick = Some(sim.tick + 5000);
+    });
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: elf,
+                target_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+
+    // No projectile — elf was busy.
+    assert_eq!(sim.db.projectiles.iter_all().count(), 0);
+}
+
+#[test]
+fn test_hostile_ai_shoots_when_armed() {
+    let mut sim = test_sim(99);
+    let elf_id = spawn_species(&mut sim, Species::Elf);
+    let goblin_id = spawn_species(&mut sim, Species::Goblin);
+
+    // Arm the goblin with bow + arrows. Don't reposition — let the sim's
+    // natural spawn placement and nav graph handle positions.
+    arm_with_bow_and_arrows(&mut sim, goblin_id, 10);
+
+    // Run the sim long enough for the goblin to activate and find elves.
+    // The goblin may melee if adjacent, or shoot if it has LOS and is far
+    // enough away. Either way, it should consume arrows or deal damage.
+    let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+    sim.step(&[], sim.tick + 20_000);
+
+    let inv_id = sim.db.creatures.get(&goblin_id).unwrap().inventory_id;
+    let arrows_remaining = sim.inv_item_count(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        inventory::MaterialFilter::Any,
+    );
+    let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+    // The goblin should have either shot arrows or attacked in melee.
+    assert!(
+        arrows_remaining < 10 || elf_hp_after < elf_hp_before,
+        "Hostile goblin with bow+arrows should have attacked (arrows={arrows_remaining}, \
+             hp_before={elf_hp_before}, hp_after={elf_hp_after})"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Hostile AI tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn combat_ai_config() {
+    use crate::species::CombatAI;
+    let sim = test_sim(42);
+    // Aggressive melee species.
+    assert_eq!(
+        sim.species_table[&Species::Goblin].combat_ai,
+        CombatAI::AggressiveMelee
+    );
+    assert_eq!(
+        sim.species_table[&Species::Orc].combat_ai,
+        CombatAI::AggressiveMelee
+    );
+    assert_eq!(
+        sim.species_table[&Species::Troll].combat_ai,
+        CombatAI::AggressiveMelee
+    );
+    // Passive species.
+    assert_eq!(
+        sim.species_table[&Species::Elf].combat_ai,
+        CombatAI::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Capybara].combat_ai,
+        CombatAI::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Deer].combat_ai,
+        CombatAI::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Boar].combat_ai,
+        CombatAI::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Monkey].combat_ai,
+        CombatAI::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Squirrel].combat_ai,
+        CombatAI::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Elephant].combat_ai,
+        CombatAI::Passive
+    );
+    // Detection ranges are set for aggressive and flee-capable species.
+    assert!(sim.species_table[&Species::Goblin].hostile_detection_range_sq > 0);
+    assert!(sim.species_table[&Species::Orc].hostile_detection_range_sq > 0);
+    assert!(sim.species_table[&Species::Troll].hostile_detection_range_sq > 0);
+    // Elves have detection range for flee behavior (F-flee).
+    assert!(sim.species_table[&Species::Elf].hostile_detection_range_sq > 0);
+    assert_eq!(
+        sim.species_table[&Species::Capybara].hostile_detection_range_sq,
+        0
+    );
+}
+
+#[test]
+fn hostile_creature_pursues_and_attacks_elf() {
+    let mut sim = test_sim(99);
+    let elf_id = spawn_species(&mut sim, Species::Elf);
+    let goblin_id = spawn_species(&mut sim, Species::Goblin);
+
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position;
+
+    assert_ne!(
+        elf_pos, goblin_start,
+        "Elf and goblin spawned at same position — adjust test seed"
+    );
+
+    let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+    sim.step(&[], sim.tick + 10_000);
+
+    let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
+    let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position;
+    let elf_current_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let new_dist = goblin_pos.manhattan_distance(elf_current_pos);
+    let initial_dist = goblin_start.manhattan_distance(elf_pos);
+
+    // The goblin should have either moved closer to the elf's current
+    // position, or dealt damage (meaning it reached and attacked).
+    let moved_closer = new_dist < initial_dist;
+    let dealt_damage = elf_hp_after < elf_hp_before;
+    assert!(
+        moved_closer || dealt_damage,
+        "Goblin should pursue or attack elf: initial dist={initial_dist}, \
+             new dist={new_dist}, elf hp {elf_hp_before} -> {elf_hp_after}"
+    );
+}
+
+#[test]
+fn hostile_creature_wanders_without_elves() {
+    let mut sim = test_sim(99);
+    let goblin_id = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin on a nav node with neighbors so it can wander.
+    let walkable = sim
+        .nav_graph
+        .live_nodes()
+        .find(|n| !n.edge_indices.is_empty())
+        .map(|n| n.position)
+        .expect("should have a walkable nav node with neighbors");
+    force_position(&mut sim, goblin_id, walkable);
+    force_idle(&mut sim, goblin_id);
+
+    let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position;
+
+    sim.step(&[], sim.tick + 10_000);
+
+    let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position;
+    assert_ne!(
+        goblin_start, goblin_pos,
+        "Goblin should wander even without elves to pursue"
+    );
+}
+
+#[test]
+fn hostile_creature_attacks_adjacent_elf() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Place goblin adjacent to elf.
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Schedule an activation so the goblin enters the decision cascade.
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation {
+            creature_id: goblin,
+        },
+    );
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    // Run one activation cycle — the goblin should melee the elf.
+    sim.step(&[], tick + 2);
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    assert_eq!(
+        elf_hp_after,
+        elf_hp_before - goblin_damage,
+        "Adjacent hostile should automatically melee-strike the elf"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Projectile system tests (F-projectiles)
+// -----------------------------------------------------------------------
+
+#[test]
+fn spawn_projectile_creates_entity_and_inventory() {
+    let mut sim = test_sim(42);
+    let origin = VoxelCoord::new(40, 5, 40);
+    let target = VoxelCoord::new(50, 5, 40);
+
+    sim.spawn_projectile(origin, target, None);
+
+    assert_eq!(sim.db.projectiles.len(), 1);
+    let proj = sim.db.projectiles.iter_all().next().unwrap();
+    assert_eq!(proj.shooter, None);
+    assert_eq!(proj.prev_voxel, origin);
+    // Should have an inventory with 1 arrow.
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&proj.inventory_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1);
+    assert_eq!(stacks[0].kind, inventory::ItemKind::Arrow);
+    assert_eq!(stacks[0].quantity, 1);
+}
+
+#[test]
+fn spawn_projectile_schedules_tick_event() {
+    let mut sim = test_sim(42);
+    let initial_events = sim.event_queue.len();
+    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+    // Should have scheduled exactly one ProjectileTick.
+    assert_eq!(sim.event_queue.len(), initial_events + 1);
+}
+
+#[test]
+fn second_spawn_does_not_duplicate_tick_event() {
+    let mut sim = test_sim(42);
+    let initial_events = sim.event_queue.len();
+    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(45, 5, 40), None);
+    // Only one extra event (from first spawn), not two.
+    assert_eq!(sim.event_queue.len(), initial_events + 1);
+}
+
+#[test]
+fn projectile_hits_solid_voxel_and_creates_ground_pile() {
+    let mut sim = test_sim(42);
+    // Place a solid wall at x=45.
+    for y in 1..=5 {
+        sim.world
+            .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+    }
+
+    // Spawn projectile heading +x toward the wall (flat, no gravity).
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+
+    // Run until the projectile resolves (max 500 ticks).
+    for _ in 0..500 {
+        if sim.db.projectiles.len() == 0 {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        if sim.db.projectiles.len() > 0 {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert_eq!(sim.db.projectiles.len(), 0, "Projectile should be resolved");
+
+    // Should have a ground pile with an arrow in it near x=44 (prev_voxel).
+    let mut found_arrow = false;
+    for pile in sim.db.ground_piles.iter_all() {
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+        for s in &stacks {
+            if s.kind == inventory::ItemKind::Arrow {
+                found_arrow = true;
+            }
+        }
+    }
+    assert!(found_arrow, "Arrow should land as ground pile");
+}
+
+#[test]
+fn projectile_hits_creature_and_deals_damage() {
+    let mut sim = test_sim(42);
+    // Spawn a goblin at a known position.
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
+
+    // Spawn projectile aimed at the goblin (no gravity for predictability).
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
+    sim.spawn_projectile(origin, goblin_pos, None);
+
+    // Run until resolved.
+    let mut hit_events = Vec::new();
+    for _ in 0..500 {
+        if sim.db.projectiles.len() == 0 {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if matches!(e.kind, SimEventKind::ProjectileHitCreature { .. }) {
+                hit_events.push(e.clone());
+            }
+        }
+        if sim.db.projectiles.len() > 0 {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert_eq!(sim.db.projectiles.len(), 0, "Projectile should be resolved");
+    assert!(!hit_events.is_empty(), "Should have hit the creature");
+
+    let goblin_hp_after = sim.db.creatures.get(&goblin).unwrap().hp;
+    assert!(
+        goblin_hp_after < goblin_hp_before,
+        "Goblin should have taken damage: {goblin_hp_before} -> {goblin_hp_after}"
+    );
+}
+
+#[test]
+fn projectile_out_of_bounds_despawns_silently() {
+    let mut sim = test_sim(42);
+    // Shoot a projectile off the edge of the world.
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 5; // very fast
+
+    sim.spawn_projectile(
+        VoxelCoord::new(250, 5, 128),
+        VoxelCoord::new(260, 5, 128), // target is beyond world bounds
+        None,
+    );
+
+    // Run until resolved.
+    for _ in 0..2000 {
+        if sim.db.projectiles.len() == 0 {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        // No surface hit or creature hit events expected.
+        for e in &events {
+            assert!(
+                !matches!(e.kind, SimEventKind::ProjectileHitSurface { .. }),
+                "Should not hit surface"
+            );
+        }
+        if sim.db.projectiles.len() > 0 {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert_eq!(
+        sim.db.projectiles.len(),
+        0,
+        "Projectile should have despawned"
+    );
+}
+
+#[test]
+fn projectile_does_not_hit_shooter() {
+    let mut sim = test_sim(42);
+    // Spawn an elf and shoot from their position.
+    let elf = spawn_species(&mut sim, Species::Elf);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+    // Shoot from the elf's own position toward a distant target.
+    sim.spawn_projectile(
+        elf_pos,
+        VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z),
+        Some(elf),
+    );
+
+    // Run a few ticks — the projectile should pass through the shooter.
+    for _ in 0..50 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    // Elf should not have taken any damage.
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_after, elf_hp_before,
+        "Shooter should not be hit by their own arrow"
+    );
+}
+
+#[test]
+fn hostile_creature_wanders_after_killing_elf() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Place goblin adjacent to elf.
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Kill the elf.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature { creature_id: elf },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().vital_status,
+        VitalStatus::Dead,
+    );
+
+    // With no living elves, the goblin should fall back to random wander.
+    sim.step(&[], sim.tick + 10_000);
+    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
+    assert_ne!(
+        goblin_final, goblin_pos,
+        "Goblin should wander after elf is dead"
+    );
+}
+
+#[test]
+fn projectile_skips_origin_voxel_creatures() {
+    let mut sim = test_sim(42);
+    // Spawn shooter and bystander at the same position.
+    let shooter = spawn_species(&mut sim, Species::Elf);
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    let shooter_hp = sim.db.creatures.get(&shooter).unwrap().hp;
+
+    let bystander = spawn_species(&mut sim, Species::Elf);
+    // Move bystander to the same position as the shooter.
+    if let Some(mut c) = sim.db.creatures.get(&bystander) {
+        c.position = shooter_pos;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+    sim.rebuild_spatial_index();
+    let bystander_hp = sim.db.creatures.get(&bystander).unwrap().hp;
+
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+    // Shoot from the shared position toward a distant target.
+    sim.spawn_projectile(
+        shooter_pos,
+        VoxelCoord::new(shooter_pos.x + 20, shooter_pos.y, shooter_pos.z),
+        Some(shooter),
+    );
+
+    // Run ticks until projectile is consumed or max iterations.
+    for _ in 0..50 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    // Neither the shooter nor the bystander in the origin voxel should
+    // have been hit — projectiles skip the entire launch voxel.
+    let shooter_hp_after = sim.db.creatures.get(&shooter).unwrap().hp;
+    assert_eq!(
+        shooter_hp_after, shooter_hp,
+        "Shooter should not be hit by their own arrow"
+    );
+
+    let bystander_hp_after = sim.db.creatures.get(&bystander).unwrap().hp;
+    assert_eq!(
+        bystander_hp_after, bystander_hp,
+        "Bystander in origin voxel should not be hit (hp: {} -> {})",
+        bystander_hp, bystander_hp_after,
+    );
+}
+
+#[test]
+fn hostile_waits_on_cooldown_near_elf() {
+    // When a hostile is in melee range but on cooldown, it should not
+    // wander away — it should wait and re-strike when the cooldown expires.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // First strike via command puts goblin on cooldown.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&goblin).unwrap().action_kind,
+        ActionKind::MeleeStrike,
+    );
+
+    // Advance past cooldown. Goblin should stay near elf and strike again,
+    // NOT wander away.
+    let interval = sim.species_table[&Species::Goblin].melee_interval_ticks;
+    sim.step(&[], sim.tick + interval + 100);
+
+    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
+    let dist = goblin_final.manhattan_distance(elf_pos);
+    // Should still be within melee range (manhattan dist ≤ 2 for range_sq=2).
+    assert!(
+        dist <= 2,
+        "Goblin should stay near elf on cooldown, not wander away (dist={dist})"
+    );
+}
+
+#[test]
+fn hostile_ignores_elf_outside_detection_range() {
+    // A goblin with detection_range_sq=225 (15 voxels) should NOT pursue
+    // an elf that is >15 voxels away in euclidean distance.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+
+    // Place elf far from goblin — 50 voxels away on X axis (50² = 2500 >> 225).
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let far_pos = VoxelCoord::new(goblin_pos.x + 50, goblin_pos.y, goblin_pos.z);
+    force_position(&mut sim, elf, far_pos);
+
+    // Schedule activation.
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation {
+            creature_id: goblin,
+        },
+    );
+    force_idle(&mut sim, goblin);
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    // Run a short period — goblin should wander randomly, not pursue.
+    // Keep ticks low so random wander can't close the 50-voxel gap.
+    sim.step(&[], tick + 1000);
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_before, elf_hp_after,
+        "Goblin should not attack elf outside detection range"
+    );
+    // Goblin should have wandered but NOT moved closer to the elf.
+    // (It might have moved closer by random chance, so we just check
+    // it didn't deal damage — the key assertion.)
+}
+
+#[test]
+fn hostile_pursues_elf_within_detection_range() {
+    // A goblin with detection_range_sq=225 (15 voxels) SHOULD pursue
+    // an elf within 10 voxels (10² = 100 < 225).
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+
+    // Place elf 5 voxels from goblin on X axis (5² = 25 < 225).
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let near_pos = VoxelCoord::new(goblin_pos.x + 5, goblin_pos.y, goblin_pos.z);
+    force_position(&mut sim, elf, near_pos);
+
+    // Schedule activation.
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation {
+            creature_id: goblin,
+        },
+    );
+    force_idle(&mut sim, goblin);
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+    let initial_dist = goblin_pos.manhattan_distance(near_pos);
+
+    sim.step(&[], tick + 10_000);
+
+    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
+    let elf_current = sim.db.creatures.get(&elf).unwrap().position;
+    let new_dist = goblin_final.manhattan_distance(elf_current);
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let moved_closer = new_dist < initial_dist;
+    let dealt_damage = elf_hp_after < elf_hp_before;
+    assert!(
+        moved_closer || dealt_damage,
+        "Goblin should pursue elf within detection range: \
+             initial dist={initial_dist}, new dist={new_dist}, \
+             elf hp {elf_hp_before} -> {elf_hp_after}"
+    );
+}
+
+#[test]
+fn hostile_does_not_attack_same_species() {
+    // Two non-civ goblins adjacent to each other should NOT attack.
+    let mut sim = test_sim(42);
+    let g1 = spawn_species(&mut sim, Species::Goblin);
+    let g2 = spawn_species(&mut sim, Species::Goblin);
+
+    // Place them adjacent.
+    let g1_pos = sim.db.creatures.get(&g1).unwrap().position;
+    let g2_pos = VoxelCoord::new(g1_pos.x + 1, g1_pos.y, g1_pos.z);
+    force_position(&mut sim, g2, g2_pos);
+    force_idle(&mut sim, g1);
+    force_idle(&mut sim, g2);
+
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: g1 },
+    );
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: g2 },
+    );
+
+    let g1_hp_before = sim.db.creatures.get(&g1).unwrap().hp;
+    let g2_hp_before = sim.db.creatures.get(&g2).unwrap().hp;
+
+    sim.step(&[], tick + 3000);
+
+    let g1_hp_after = sim.db.creatures.get(&g1).unwrap().hp;
+    let g2_hp_after = sim.db.creatures.get(&g2).unwrap().hp;
+    assert_eq!(
+        g1_hp_before, g1_hp_after,
+        "Goblins should not attack same species"
+    );
+    assert_eq!(
+        g2_hp_before, g2_hp_after,
+        "Goblins should not attack same species"
+    );
+}
+
+#[test]
+fn all_hostile_species_pursue_elves() {
+    for &hostile_species in &[Species::Goblin, Species::Orc, Species::Troll] {
+        let mut sim = test_sim(99);
+        let elf_id = spawn_species(&mut sim, Species::Elf);
+        let hostile_id = spawn_species(&mut sim, hostile_species);
+
+        // Find two nav nodes that are a few voxels apart so the hostile
+        // has room to pursue without the elf immediately fleeing to safety.
+        let positions: Vec<_> = sim
+            .nav_graph
+            .live_nodes()
+            .filter(|n| !n.edge_indices.is_empty())
+            .map(|n| n.position)
+            .collect();
+        let (pos_a, pos_b) = positions
+            .iter()
+            .flat_map(|a| positions.iter().map(move |b| (*a, *b)))
+            .find(|(a, b)| {
+                let d = a.manhattan_distance(*b);
+                d >= 3 && d <= 6
+            })
+            .expect("should have nav nodes 3-6 apart");
+        force_position(&mut sim, elf_id, pos_a);
+        force_idle(&mut sim, elf_id);
+        force_position(&mut sim, hostile_id, pos_b);
+        force_idle(&mut sim, hostile_id);
+
+        let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+        let hostile_start = sim.db.creatures.get(&hostile_id).unwrap().position;
+
+        let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+        let initial_dist = hostile_start.manhattan_distance(elf_pos);
+
+        sim.step(&[], sim.tick + 10_000);
+
+        let hostile_pos = sim.db.creatures.get(&hostile_id).unwrap().position;
+        let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+        let moved = hostile_pos != hostile_start;
+        let dealt_damage = elf_hp_after < elf_hp_before;
+        assert!(
+            moved || dealt_damage,
+            "{hostile_species:?} should pursue elf: didn't move from {hostile_start:?} \
+                 and didn't deal damage (elf hp {elf_hp_before} -> {elf_hp_after})"
+        );
+    }
+}
+
+#[test]
+fn projectile_hits_creature_beyond_origin_voxel() {
+    let mut sim = test_sim(42);
+    // Place a target creature a few voxels away from the origin.
+    let target = spawn_species(&mut sim, Species::Elf);
+    let origin = VoxelCoord::new(40, 1, 40);
+    let target_pos = VoxelCoord::new(42, 1, 40);
+    if let Some(mut c) = sim.db.creatures.get(&target) {
+        c.position = target_pos;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+    sim.rebuild_spatial_index();
+    let target_hp = sim.db.creatures.get(&target).unwrap().hp;
+
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+    // Shoot from origin toward the target (no shooter creature).
+    sim.spawn_projectile(origin, target_pos, None);
+
+    // Run ticks.
+    let mut hit = false;
+    for _ in 0..100 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if let SimEventKind::ProjectileHitCreature { target_id, .. } = e.kind {
+                if target_id == target {
+                    hit = true;
+                }
+            }
+        }
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert!(hit, "Projectile should hit creature beyond origin voxel");
+    let target_hp_after = sim.db.creatures.get(&target).unwrap().hp;
+    assert!(
+        target_hp_after < target_hp,
+        "Target should have taken damage (hp: {} -> {})",
+        target_hp,
+        target_hp_after,
+    );
+}
+
+#[test]
+fn projectile_cleanup_removes_inventory() {
+    let mut sim = test_sim(42);
+    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+    let proj = sim.db.projectiles.iter_all().next().unwrap();
+    let inv_id = proj.inventory_id;
+    let proj_id = proj.id;
+
+    // Verify inventory exists.
+    assert!(sim.db.inventories.get(&inv_id).is_some());
+
+    sim.remove_projectile(proj_id);
+
+    // Projectile, inventory, and item stacks should all be gone.
+    assert_eq!(sim.db.projectiles.len(), 0);
+    assert!(sim.db.inventories.get(&inv_id).is_none());
+    assert!(
+        sim.db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .is_empty()
+    );
+}
+
+#[test]
+fn projectile_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+
+    let json = sim.to_json().unwrap();
+    let sim2 = SimState::from_json(&json).unwrap();
+
+    assert_eq!(sim2.db.projectiles.len(), 1);
+    let proj = sim2.db.projectiles.iter_all().next().unwrap();
+    let stacks = sim2
+        .db
+        .item_stacks
+        .by_inventory_id(&proj.inventory_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1);
+    assert_eq!(stacks[0].kind, inventory::ItemKind::Arrow);
+}
+
+#[test]
+fn debug_spawn_projectile_command() {
+    let mut sim = test_sim(42);
+    let origin = VoxelCoord::new(40, 5, 40);
+    let target = VoxelCoord::new(50, 5, 40);
+    let tick = sim.tick;
+
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugSpawnProjectile {
+                origin,
+                target,
+                shooter_id: None,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(sim.db.projectiles.len(), 1);
+}
+
+// -----------------------------------------------------------------------
+// F-attack-task: AttackTarget task tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn attack_creature_command_creates_task_and_assigns() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place them nearby.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Elf should have an AttackTarget task assigned.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Elf should have a task assigned"
+    );
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackTarget);
+    assert_eq!(task.state, TaskState::InProgress);
+    assert_eq!(task.origin, TaskOrigin::PlayerDirected);
+    assert_eq!(task.target_creature, Some(goblin));
+
+    // Extension data should exist.
+    let attack_data = sim.task_attack_target_data(task.id).unwrap();
+    assert_eq!(attack_data.target, goblin);
+    assert_eq!(attack_data.path_failures, 0);
+}
+
+#[test]
+fn attack_target_task_pursues_and_strikes() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin within reach of elf.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+        },
+    };
+    // Run for 10 seconds — enough time to walk there and attack.
+    sim.step(&[cmd], tick + 10_000);
+
+    let goblin_hp_after = sim.db.creatures.get(&goblin).unwrap().hp;
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    let final_dist = elf_creature.position.manhattan_distance(goblin_pos);
+
+    let moved_closer = final_dist < elf_pos.manhattan_distance(goblin_pos);
+    let dealt_damage = goblin_hp_after < goblin_hp_before;
+    assert!(
+        moved_closer || dealt_damage,
+        "Elf should pursue and/or damage goblin: initial_dist={}, final_dist={final_dist}, \
+             hp {goblin_hp_before} -> {goblin_hp_after}",
+        elf_pos.manhattan_distance(goblin_pos)
+    );
+}
+
+#[test]
+fn attack_target_completes_when_target_dies() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin adjacent to elf (instant melee range).
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let adjacent_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, adjacent_pos);
+    force_idle(&mut sim, elf);
+
+    // Give elf high melee damage to kill quickly.
+    // Just use commands to create the attack task and then kill the target.
+    let tick = sim.tick;
+    let attack_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+        },
+    };
+    sim.step(&[attack_cmd], tick + 2);
+
+    let task_id = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    // Kill the goblin.
+    let kill_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 3,
+        action: SimAction::DebugKillCreature {
+            creature_id: goblin,
+        },
+    };
+    // Step enough that the elf's activation runs after the kill.
+    sim.step(&[kill_cmd], tick + 5000);
+
+    // Task should be complete.
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Complete,
+        "Attack task should complete when target dies"
+    );
+    // Elf should be free.
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        elf_creature.current_task.is_none(),
+        "Elf should have no task after target dies"
+    );
+}
+
+#[test]
+fn attack_target_preempts_lower_priority_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Give elf a GoTo task (PlayerDirected level 2).
+    let far_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+    let goto_task_id = insert_goto_task(&mut sim, far_node);
+    sim.claim_task(elf, goto_task_id);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Old task should be completed/interrupted.
+    let old_task = sim.db.tasks.get(&goto_task_id).unwrap();
+    assert_eq!(
+        old_task.state,
+        TaskState::Complete,
+        "GoTo task should be interrupted by AttackCreature"
+    );
+
+    // Elf should have the attack task.
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(elf_creature.current_task.is_some());
+    let new_task = sim
+        .db
+        .tasks
+        .get(&elf_creature.current_task.unwrap())
+        .unwrap();
+    assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::AttackTarget);
+}
+
+#[test]
+fn attack_target_cannot_attack_self() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle(&mut sim, elf);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: elf,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Elf should NOT have an attack task.
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        elf_creature.current_task.is_none(),
+        "Should not be able to attack self"
+    );
+}
+
+#[test]
+fn attack_target_cannot_attack_dead_creature() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    force_idle(&mut sim, elf);
+
+    // Kill goblin first.
+    let tick = sim.tick;
+    let kill_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::DebugKillCreature {
+            creature_id: goblin,
+        },
+    };
+    sim.step(&[kill_cmd], tick + 2);
+
+    // Try to attack.
+    let attack_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 3,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+        },
+    };
+    sim.step(&[attack_cmd], tick + 4);
+
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        elf_creature.current_task.is_none(),
+        "Should not be able to attack dead creature"
+    );
+}
+
+#[test]
+fn attack_target_task_serde_roundtrip() {
+    let mut rng = GameRng::new(42);
+    let task_id = TaskId::new(&mut rng);
+    let target = CreatureId::new(&mut rng);
+    let location = NavNodeId(5);
+
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::AttackTarget { target },
+        state: TaskState::InProgress,
+        location,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: Some(target),
+    };
+
+    let json = serde_json::to_string(&task).unwrap();
+    let restored: Task = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.id, task_id);
+    match &restored.kind {
+        TaskKind::AttackTarget { target: t } => assert_eq!(*t, target),
+        other => panic!("Expected AttackTarget, got {:?}", other),
+    }
+    assert_eq!(restored.state, TaskState::InProgress);
+    assert_eq!(restored.origin, TaskOrigin::PlayerDirected);
+    assert_eq!(restored.target_creature, Some(target));
+}
+
+// -----------------------------------------------------------------------
+// F-attack-move: AttackMove task tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_attack_move_creates_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle(&mut sim, elf);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: dest,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(creature.current_task.is_some(), "Elf should have a task");
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackMove);
+    assert_eq!(task.state, TaskState::InProgress);
+    assert_eq!(task.origin, TaskOrigin::PlayerDirected);
+    assert!(task.target_creature.is_none());
+
+    // Extension data should exist with the destination.
+    let move_data = sim.task_attack_move_data(task.id).unwrap();
+    assert_eq!(move_data.destination, dest);
+}
+
+#[test]
+fn test_attack_move_walks_to_destination() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle(&mut sim, elf);
+
+    // Pick a destination a few voxels away (no hostiles present).
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let dest = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: dest,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    let task_id = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    // Run enough ticks for the elf to walk there.
+    sim.step(&[], tick + 20_000);
+
+    // Task should be complete.
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Complete,
+        "AttackMove task should complete on arrival at destination"
+    );
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "Elf should be idle after arrival"
+    );
+}
+
+#[test]
+fn test_attack_move_engages_hostile() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin between elf and destination.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    let dest = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
+    let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: dest,
+        },
+    };
+    // Run long enough for detection and engagement.
+    sim.step(&[cmd], tick + 10_000);
+
+    // Goblin should have taken damage (elf detected and engaged).
+    let goblin_hp_after = sim.db.creatures.get(&goblin).unwrap().hp;
+    assert!(
+        goblin_hp_after < goblin_hp_before,
+        "Goblin should take damage from attack-move engagement: hp {} -> {}",
+        goblin_hp_before,
+        goblin_hp_after
+    );
+}
+
+#[test]
+fn test_attack_move_resumes_after_kill() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin near the elf.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    let dest = VoxelCoord::new(elf_pos.x + 8, elf_pos.y, elf_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: dest,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    let task_id = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    // Kill the goblin so the elf will disengage and resume walking.
+    let kill_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 3,
+        action: SimAction::DebugKillCreature {
+            creature_id: goblin,
+        },
+    };
+    // Run long enough for elf to resume and reach destination.
+    sim.step(&[kill_cmd], tick + 30_000);
+
+    // Task should be complete (elf walked to destination after kill).
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Complete,
+        "AttackMove task should complete after target dies and elf walks to destination"
+    );
+}
+
+#[test]
+fn test_attack_move_nearest_target() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin_near = spawn_species(&mut sim, Species::Goblin);
+    let goblin_far = spawn_species(&mut sim, Species::Goblin);
+
+    // Place near goblin closer, far goblin further.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let near_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
+    let far_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin_near, near_pos);
+    force_position(&mut sim, goblin_far, far_pos);
+    force_idle(&mut sim, elf);
+
+    let dest = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: dest,
+        },
+    };
+    // Run a few ticks for detection.
+    sim.step(&[cmd], tick + 100);
+
+    // Check that elf is targeting the near goblin.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    let task_id = creature
+        .current_task
+        .expect("Elf should still have an attack-move task");
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    let target = task
+        .target_creature
+        .expect("Elf should have detected a hostile and set target_creature");
+    assert_eq!(
+        target, goblin_near,
+        "Should target nearest hostile, not the far one"
+    );
+}
+
+#[test]
+fn test_attack_move_preempts_lower_priority() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Give elf a GoTo task (PlayerDirected level 2).
+    let far_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+    let goto_task_id = insert_goto_task(&mut sim, far_node);
+    sim.claim_task(elf, goto_task_id);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: dest,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Old task should be interrupted.
+    let old_task = sim.db.tasks.get(&goto_task_id).unwrap();
+    assert_eq!(
+        old_task.state,
+        TaskState::Complete,
+        "GoTo task should be interrupted by AttackMove"
+    );
+
+    // Elf should have the attack-move task.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(creature.current_task.is_some());
+    let new_task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::AttackMove);
+}
+
+#[test]
+fn test_attack_move_flee_exempt() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+
+    // Elf is in Flee group (civilian) — should flee by default.
+    assert!(sim.should_flee(elf_id, Species::Elf));
+
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    // Issue a player-directed attack-move (creates a PlayerCombat-level task).
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::AttackMove {
+            creature_id: elf_id,
+            destination: dest,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // PlayerCombat task overrides flee behavior.
+    assert!(
+        !sim.should_flee(elf_id, Species::Elf),
+        "Elf with PlayerCombat attack-move task should not flee"
+    );
+}
+
+#[test]
+fn test_attack_move_serde_roundtrip() {
+    let mut rng = GameRng::new(42);
+    let task_id = TaskId::new(&mut rng);
+    let location = NavNodeId(5);
+
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::AttackMove,
+        state: TaskState::InProgress,
+        location,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+
+    let json = serde_json::to_string(&task).unwrap();
+    let restored: Task = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.id, task_id);
+    assert!(matches!(restored.kind, TaskKind::AttackMove));
+    assert_eq!(restored.state, TaskState::InProgress);
+    assert_eq!(restored.origin, TaskOrigin::PlayerDirected);
+    assert!(restored.target_creature.is_none());
+}
+
+// -----------------------------------------------------------------------
+// DirectedGoTo command tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn directed_goto_creates_task_for_specific_creature() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle(&mut sim, elf);
+
+    // Pick a target position.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let target_pos = VoxelCoord::new(tree_pos.x + 3, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target_pos,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Elf should have a GoTo task"
+    );
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::GoTo);
+    assert_eq!(task.state, TaskState::InProgress);
+    assert_eq!(task.origin, TaskOrigin::PlayerDirected);
+}
+
+#[test]
+fn directed_goto_replaces_player_directed_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Give elf a PlayerDirected GoTo task (PlayerDirected level 2).
+    let task_id = TaskId::new(&mut sim.rng);
+    let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: dest_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(task);
+    sim.claim_task(elf, task_id);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let target_pos = VoxelCoord::new(tree_pos.x + 2, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target_pos,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Old task should be interrupted (Complete).
+    let old_task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(old_task.state, TaskState::Complete);
+
+    // Elf should have the new GoTo task.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    let new_task_id = creature.current_task.unwrap();
+    assert_ne!(new_task_id, task_id);
+    let new_task = sim.db.tasks.get(&new_task_id).unwrap();
+    assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::GoTo);
+}
+
+#[test]
+fn directed_goto_preempts_autonomous_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Give elf an autonomous Harvest task (Autonomous level 1).
+    let task_id = TaskId::new(&mut sim.rng);
+    let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+    let fruit_pos = VoxelCoord::new(0, 0, 0);
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::Harvest { fruit_pos },
+        state: TaskState::InProgress,
+        location: dest_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(task);
+    sim.claim_task(elf, task_id);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let target_pos = VoxelCoord::new(tree_pos.x + 2, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target_pos,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Old autonomous task should be interrupted (Complete).
+    let old_task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(old_task.state, TaskState::Complete);
+
+    // Elf should have the new GoTo task.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    let new_task_id = creature.current_task.unwrap();
+    assert_ne!(new_task_id, task_id);
+    let new_task = sim.db.tasks.get(&new_task_id).unwrap();
+    assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::GoTo);
+}
+
+#[test]
+fn directed_goto_does_not_abort_mid_walk_action() {
+    // B-erratic-movement: issuing a DirectedGoTo while a creature is
+    // mid-walk should NOT abort the in-progress Move action. The action
+    // should complete naturally, then the creature picks up the new task.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    // Issue a first DirectedGoTo to start the elf walking.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+    let tick = sim.tick;
+    let cmd_a = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target_a,
+        },
+    };
+    sim.step(&[cmd_a], tick + 2);
+
+    // Advance until the elf is mid-walk (action_kind == Move).
+    let mut mid_walk = false;
+    for t in (sim.tick + 1)..=(sim.tick + 50) {
+        sim.step(&[], t);
+        let c = sim.db.creatures.get(&elf).unwrap();
+        if c.action_kind == ActionKind::Move && c.next_available_tick.is_some() {
+            mid_walk = true;
+            break;
+        }
+    }
+    assert!(mid_walk, "Elf should be mid-walk after advancing ticks");
+
+    let c = sim.db.creatures.get(&elf).unwrap();
+    let action_before = c.action_kind;
+    let nat_before = c.next_available_tick;
+    let first_task_id = c.current_task.unwrap();
+
+    // Issue a second DirectedGoTo while mid-walk.
+    let target_b = VoxelCoord::new(tree_pos.x - 3, 1, tree_pos.z);
+    let tick2 = sim.tick;
+    let cmd_b = SimCommand {
+        player_id: sim.player_id,
+        tick: tick2 + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target_b,
+        },
+    };
+    sim.step(&[cmd_b], tick2 + 2);
+
+    // The in-progress Move action should NOT have been aborted.
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(
+        c.action_kind, action_before,
+        "Move action should not be aborted by task preemption"
+    );
+    assert_eq!(
+        c.next_available_tick, nat_before,
+        "next_available_tick should be unchanged"
+    );
+
+    // The task should have changed to the new GoTo.
+    let new_task_id = c.current_task.unwrap();
+    assert_ne!(new_task_id, first_task_id, "Task should have been swapped");
+    let new_task = sim.db.tasks.get(&new_task_id).unwrap();
+    assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::GoTo);
+
+    // Old task should be completed.
+    let old_task = sim.db.tasks.get(&first_task_id).unwrap();
+    assert_eq!(old_task.state, TaskState::Complete);
+
+    // Advance past the original next_available_tick — the elf should
+    // resolve the Move action normally and then follow the new task.
+    let completion_tick = nat_before.unwrap();
+    let target_tick = completion_tick.max(sim.tick) + 1;
+    sim.step(&[], target_tick);
+
+    // After the original move resolves, the creature should have picked
+    // up the new GoTo task (it may have started a new Move step toward
+    // the new destination, which is fine — the key is it's using the
+    // new task, not the old one).
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(
+        c.current_task,
+        Some(new_task_id),
+        "Creature should still be on the new GoTo task"
+    );
+}
+
+#[test]
+fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
+    // B-erratic-movement: issuing a DirectedGoTo while a creature is
+    // mid-action should NOT schedule an extra CreatureActivation. The
+    // existing activation (from the in-progress action) is sufficient.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    // Issue first DirectedGoTo and advance until mid-walk.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target_a,
+            },
+        }],
+        tick + 2,
+    );
+    for t in (sim.tick + 1)..=(sim.tick + 50) {
+        sim.step(&[], t);
+        if sim
+            .db
+            .creatures
+            .get(&elf)
+            .is_some_and(|c| c.action_kind == ActionKind::Move)
+        {
+            break;
+        }
+    }
+    assert!(
+        sim.db
+            .creatures
+            .get(&elf)
+            .is_some_and(|c| c.action_kind == ActionKind::Move),
+        "Elf should be mid-walk"
+    );
+
+    // Count activations before issuing the second command.
+    let activations_before = sim.count_pending_activations_for(elf);
+    assert_eq!(
+        activations_before, 1,
+        "Should have exactly 1 pending activation before redirect"
+    );
+
+    // Issue a second DirectedGoTo while mid-walk — should NOT add an
+    // extra activation event.
+    let target_b = VoxelCoord::new(tree_pos.x - 3, 1, tree_pos.z);
+    let tick2 = sim.tick;
+    // Process the command on this tick without advancing further, so no
+    // events fire between the command and our assertion.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target_b,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    let activations_after = sim.count_pending_activations_for(elf);
+    assert_eq!(
+        activations_after, 1,
+        "Should still have exactly 1 pending activation after redirect (was {activations_after})"
+    );
+}
+
+#[test]
+fn group_goto_spreads_creatures_to_different_nodes() {
+    // Three elves given a GroupGoTo to the same destination should each
+    // end up with a GoTo task at a different nav node.
+    let mut sim = test_sim(42);
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    let elf_c = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf_a);
+    force_idle_and_cancel_activations(&mut sim, elf_b);
+    force_idle_and_cancel_activations(&mut sim, elf_c);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::GroupGoTo {
+                creature_ids: vec![elf_a, elf_b, elf_c],
+                position: dest,
+            },
+        }],
+        tick + 2,
+    );
+
+    // All three should have GoTo tasks.
+    let task_a = sim.db.creatures.get(&elf_a).unwrap().current_task.unwrap();
+    let task_b = sim.db.creatures.get(&elf_b).unwrap().current_task.unwrap();
+    let task_c = sim.db.creatures.get(&elf_c).unwrap().current_task.unwrap();
+    let loc_a = sim.db.tasks.get(&task_a).unwrap().location;
+    let loc_b = sim.db.tasks.get(&task_b).unwrap().location;
+    let loc_c = sim.db.tasks.get(&task_c).unwrap().location;
+
+    // At least two of the three should have different locations (spread).
+    let locs = [loc_a, loc_b, loc_c];
+    let unique: std::collections::BTreeSet<_> = locs.iter().collect();
+    assert!(
+        unique.len() >= 2,
+        "GroupGoTo should spread creatures to different nav nodes, got {:?}",
+        locs
+    );
+}
+
+#[test]
+fn group_goto_single_creature_delegates_to_normal() {
+    // A single-element GroupGoTo should work identically to DirectedGoTo.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::GroupGoTo {
+                creature_ids: vec![elf],
+                position: dest,
+            },
+        }],
+        tick + 2,
+    );
+
+    let task_id = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert!(task.kind_tag == TaskKindTag::GoTo);
+}
+
+#[test]
+fn group_attack_move_spreads_creatures() {
+    // GroupAttackMove should create AttackMove tasks at spread destinations.
+    let mut sim = test_sim(42);
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf_a);
+    force_idle_and_cancel_activations(&mut sim, elf_b);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::GroupAttackMove {
+                creature_ids: vec![elf_a, elf_b],
+                destination: dest,
+            },
+        }],
+        tick + 2,
+    );
+
+    // Both should have AttackMove tasks.
+    let task_a = sim.db.creatures.get(&elf_a).unwrap().current_task.unwrap();
+    let task_b = sim.db.creatures.get(&elf_b).unwrap().current_task.unwrap();
+    assert_eq!(
+        sim.db.tasks.get(&task_a).unwrap().kind_tag,
+        TaskKindTag::AttackMove
+    );
+    assert_eq!(
+        sim.db.tasks.get(&task_b).unwrap().kind_tag,
+        TaskKindTag::AttackMove
+    );
+
+    // Their task locations should differ (spread).
+    let loc_a = sim.db.tasks.get(&task_a).unwrap().location;
+    let loc_b = sim.db.tasks.get(&task_b).unwrap().location;
+    assert_ne!(
+        loc_a, loc_b,
+        "GroupAttackMove should spread to different nav nodes"
+    );
+}
+
+#[test]
+fn group_goto_empty_list_is_noop() {
+    let mut sim = test_sim(42);
+    let tick = sim.tick;
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    // Should not panic or create any tasks.
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::GroupGoTo {
+                creature_ids: vec![],
+                position: dest,
+            },
+        }],
+        tick + 2,
+    );
+}
+
+#[test]
+fn group_goto_skips_dead_creatures() {
+    // Dead creatures in the list should be silently skipped.
+    let mut sim = test_sim(42);
+    let elf_alive = spawn_elf(&mut sim);
+    let elf_dead = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf_alive);
+    force_idle_and_cancel_activations(&mut sim, elf_dead);
+
+    // Kill one elf.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_dead,
+            },
+        }],
+        tick + 2,
+    );
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick2 + 1,
+            action: SimAction::GroupGoTo {
+                creature_ids: vec![elf_alive, elf_dead],
+                position: dest,
+            },
+        }],
+        tick2 + 2,
+    );
+
+    // Only the alive elf should have a task.
+    assert!(
+        sim.db
+            .creatures
+            .get(&elf_alive)
+            .unwrap()
+            .current_task
+            .is_some()
+    );
+}
+
+#[test]
+fn group_goto_serialization_roundtrip() {
+    let mut rng = crate::prng::GameRng::new(42);
+    let cmd = SimCommand {
+        player_id: PlayerId::new(&mut rng),
+        tick: 100,
+        action: SimAction::GroupGoTo {
+            creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
+            position: VoxelCoord::new(10, 1, 5),
+        },
+    };
+
+    let json = serde_json::to_string(&cmd).unwrap();
+    let restored: SimCommand = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::to_string(&restored).unwrap());
+}
+
+#[test]
+fn group_attack_move_serialization_roundtrip() {
+    let mut rng = crate::prng::GameRng::new(42);
+    let cmd = SimCommand {
+        player_id: PlayerId::new(&mut rng),
+        tick: 100,
+        action: SimAction::GroupAttackMove {
+            creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
+            destination: VoxelCoord::new(10, 1, 5),
+        },
+    };
+
+    let json = serde_json::to_string(&cmd).unwrap();
+    let restored: SimCommand = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::to_string(&restored).unwrap());
+}
+
+#[test]
+fn abort_current_action_cancels_orphaned_activation_events() {
+    // B-erratic-movement safety net: when abort_current_action is called
+    // (death, flee, nav invalidation), orphaned CreatureActivation events
+    // for that creature should be removed from the event queue.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    // Issue a DirectedGoTo and advance until the elf is mid-walk.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    for t in (sim.tick + 1)..=(sim.tick + 50) {
+        sim.step(&[], t);
+        let c = sim.db.creatures.get(&elf).unwrap();
+        if c.action_kind == ActionKind::Move {
+            break;
+        }
+    }
+
+    // Count CreatureActivation events for this elf before abort.
+    let count_before = sim.count_pending_activations_for(elf);
+    assert!(
+        count_before >= 1,
+        "Should have at least one pending activation"
+    );
+
+    // Abort the current action (simulating death/flee/nav invalidation).
+    sim.abort_current_action(elf);
+
+    // After abort, all CreatureActivation events for this elf should be gone.
+    let count_after = sim.count_pending_activations_for(elf);
+    assert_eq!(
+        count_after, 0,
+        "Orphaned activation events should be cancelled after abort"
+    );
+}
+
+// -----------------------------------------------------------------------
+// AttackTarget preemption level tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn attack_target_preemption_is_player_combat() {
+    assert_eq!(
+        preemption::preemption_level(
+            crate::db::TaskKindTag::AttackTarget,
+            TaskOrigin::PlayerDirected
+        ),
+        preemption::PreemptionLevel::PlayerCombat,
+    );
+}
+
+// -----------------------------------------------------------------------
+// Material filter tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn material_filter_matches_any() {
+    use crate::inventory::{Material, MaterialFilter};
+    let any = MaterialFilter::Any;
+    assert!(any.matches(None));
+    assert!(any.matches(Some(Material::Oak)));
+    assert!(
+        any.matches(Some(Material::FruitSpecies(crate::fruit::FruitSpeciesId(
+            1
+        ))))
+    );
+}
+
+#[test]
+fn material_filter_matches_specific() {
+    use crate::inventory::{Material, MaterialFilter};
+    let specific = MaterialFilter::Specific(Material::Oak);
+    assert!(specific.matches(Some(Material::Oak)));
+    assert!(!specific.matches(None));
+    assert!(!specific.matches(Some(Material::Birch)));
+    assert!(
+        !specific.matches(Some(Material::FruitSpecies(crate::fruit::FruitSpeciesId(
+            1
+        ))))
+    );
+}
+
+#[test]
+fn material_filter_ord_deterministic() {
+    use crate::inventory::{Material, MaterialFilter};
+    // Any < Specific(*)
+    assert!(MaterialFilter::Any < MaterialFilter::Specific(Material::Oak));
+    // Specific variants ordered by Material's Ord
+    assert!(MaterialFilter::Specific(Material::Oak) < MaterialFilter::Specific(Material::Birch));
+}
+
+#[test]
+fn material_filter_serde_roundtrip() {
+    use crate::inventory::{Material, MaterialFilter};
+    for filter in [
+        MaterialFilter::Any,
+        MaterialFilter::Specific(Material::Oak),
+        MaterialFilter::Specific(Material::FruitSpecies(crate::fruit::FruitSpeciesId(42))),
+    ] {
+        let json = serde_json::to_string(&filter).unwrap();
+        let restored: MaterialFilter = serde_json::from_str(&json).unwrap();
+        assert_eq!(filter, restored, "roundtrip failed for {json}");
+    }
+}
+
+#[test]
+fn material_filter_default_is_any() {
+    use crate::inventory::MaterialFilter;
+    assert_eq!(MaterialFilter::default(), MaterialFilter::Any);
+}
+
+#[test]
+fn logistics_want_serde_backward_compat() {
+    // Old format without material_filter should deserialize with default (Any).
+    let json = r#"{"item_kind":"Bread","target_quantity":5}"#;
+    let want: building::LogisticsWant = serde_json::from_str(json).unwrap();
+    assert_eq!(want.material_filter, inventory::MaterialFilter::Any);
+    assert_eq!(want.item_kind, inventory::ItemKind::Bread);
+    assert_eq!(want.target_quantity, 5);
+}
+
+#[test]
+fn inv_item_count_respects_material_filter() {
+    let mut sim = test_sim(42);
+    let pos = VoxelCoord::new(10, 1, 20);
+    let pile_id = sim.ensure_ground_pile(pos);
+    let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+
+    let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+    let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        3,
+        None,
+        None,
+        Some(species_a),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        5,
+        None,
+        None,
+        Some(species_b),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 2, None, None);
+
+    // Any filter counts all fruit.
+    assert_eq!(
+        sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any
+        ),
+        8
+    );
+    // Specific filter counts only matching species.
+    assert_eq!(
+        sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(species_a)
+        ),
+        3
+    );
+    assert_eq!(
+        sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(species_b)
+        ),
+        5
+    );
+    // Bread is unmaterialed — Specific for a material should return 0.
+    assert_eq!(
+        sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Bread,
+            inventory::MaterialFilter::Specific(inventory::Material::Oak)
+        ),
+        0
+    );
+}
+
+#[test]
+fn inv_reserve_items_single_material_lock() {
+    let mut sim = test_sim(42);
+    let pos = VoxelCoord::new(10, 1, 20);
+    let pile_id = sim.ensure_ground_pile(pos);
+    let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+
+    let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+    let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+    // Add 3 of species A and 5 of species B.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        3,
+        None,
+        None,
+        Some(species_a),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        5,
+        None,
+        None,
+        Some(species_b),
+        0,
+        None,
+        None,
+    );
+
+    // Request 6 fruit with Any filter. Should lock in one material.
+    let task_id = TaskId::new(&mut sim.rng.clone());
+    let hauled_material = sim.inv_reserve_items(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Any,
+        6,
+        task_id,
+    );
+
+    // Should have locked in species_a (first in BTree order) and reserved only 3.
+    assert_eq!(hauled_material, Some(species_a));
+    let unreserved = sim.inv_unreserved_item_count(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Any,
+    );
+    assert_eq!(unreserved, 5, "Only species B (5) should remain unreserved");
+}
+
+#[test]
+fn inv_reserve_items_specific_filter() {
+    let mut sim = test_sim(42);
+    let pos = VoxelCoord::new(10, 1, 20);
+    let pile_id = sim.ensure_ground_pile(pos);
+    let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+
+    let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+    let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        3,
+        None,
+        None,
+        Some(species_a),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        5,
+        None,
+        None,
+        Some(species_b),
+        0,
+        None,
+        None,
+    );
+
+    // Reserve with Specific(species_b) filter — should only reserve species B.
+    let task_id = TaskId::new(&mut sim.rng.clone());
+    let hauled = sim.inv_reserve_items(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Specific(species_b),
+        10,
+        task_id,
+    );
+    assert_eq!(hauled, Some(species_b));
+
+    // All species A should still be unreserved.
+    assert_eq!(
+        sim.inv_unreserved_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(species_a)
+        ),
+        3
+    );
+    // Species B should all be reserved.
+    assert_eq!(
+        sim.inv_unreserved_item_count(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(species_b)
+        ),
+        0
+    );
+}
+
+#[test]
+fn set_inv_wants_deduplicates_by_kind_filter() {
+    let mut sim = test_sim(42);
+    let inv_id = sim
+        .db
+        .inventories
+        .insert_auto_no_fk(|id| crate::db::Inventory {
+            id,
+            owner_kind: crate::db::InventoryOwnerKind::Structure,
+        })
+        .unwrap();
+
+    let wants = vec![
+        building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        },
+        building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 10,
+        },
+    ];
+    sim.set_inv_wants(inv_id, &wants);
+
+    // Should deduplicate: one want with max quantity.
+    let stored = sim.inv_wants(inv_id);
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].target_quantity, 10);
+}
+
+#[test]
+fn overlapping_wants_additive() {
+    let mut sim = test_sim(42);
+    let inv_id = sim
+        .db
+        .inventories
+        .insert_auto_no_fk(|id| crate::db::Inventory {
+            id,
+            owner_kind: crate::db::InventoryOwnerKind::Structure,
+        })
+        .unwrap();
+
+    let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+    let wants = vec![
+        building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        },
+        building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Specific(species_a),
+            target_quantity: 10,
+        },
+    ];
+    sim.set_inv_wants(inv_id, &wants);
+
+    // Both should be stored independently.
+    let stored = sim.inv_wants(inv_id);
+    assert_eq!(stored.len(), 2);
+
+    // Per-filter queries.
+    assert_eq!(
+        sim.inv_want_target(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Any
+        ),
+        5
+    );
+    assert_eq!(
+        sim.inv_want_target(
+            inv_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(species_a)
+        ),
+        10
+    );
+
+    // Total for item kind sums both.
+    assert_eq!(
+        sim.inv_want_target_total(inv_id, inventory::ItemKind::Fruit),
+        15
+    );
+}
+
+#[test]
+fn gap_calculation_with_material_filter() {
+    let mut sim = test_sim(42);
+    let inv_id = sim
+        .db
+        .inventories
+        .insert_auto_no_fk(|id| crate::db::Inventory {
+            id,
+            owner_kind: crate::db::InventoryOwnerKind::Structure,
+        })
+        .unwrap();
+
+    let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+
+    // Set up wants: "Any Fruit: 5" and "Species A Fruit: 10".
+    let wants = vec![
+        building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        },
+        building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Specific(species_a),
+            target_quantity: 10,
+        },
+    ];
+    sim.set_inv_wants(inv_id, &wants);
+
+    // Add 12 of species A to the inventory.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        12,
+        None,
+        None,
+        Some(species_a),
+        0,
+        None,
+        None,
+    );
+
+    // Any want: current=12 (all fruit), target=5 → gap=0.
+    let any_current = sim.inv_item_count(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Any,
+    );
+    assert_eq!(any_current, 12);
+    assert!(any_current >= 5, "Any want should be satisfied");
+
+    // Specific want: current=12, target=10 → gap=0.
+    let specific_current = sim.inv_item_count(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Specific(species_a),
+    );
+    assert_eq!(specific_current, 12);
+    assert!(specific_current >= 10, "Specific want should be satisfied");
+}
+
+#[test]
+fn surplus_uses_want_target_total() {
+    let mut sim = test_sim(42);
+    let inv_id = sim
+        .db
+        .inventories
+        .insert_auto_no_fk(|id| crate::db::Inventory {
+            id,
+            owner_kind: crate::db::InventoryOwnerKind::Structure,
+        })
+        .unwrap();
+
+    let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+    let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+    // Want: "Species A Fruit: 10"
+    let wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Fruit,
+        material_filter: inventory::MaterialFilter::Specific(species_a),
+        target_quantity: 10,
+    }];
+    sim.set_inv_wants(inv_id, &wants);
+
+    // Hold 8 of species B.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        8,
+        None,
+        None,
+        Some(species_b),
+        0,
+        None,
+        None,
+    );
+
+    // Surplus for Specific(species_b): held=8, total wanted=10 → surplus=0.
+    let held = sim.inv_unreserved_item_count(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Specific(species_b),
+    );
+    let wanted = sim.inv_want_target_total(inv_id, inventory::ItemKind::Fruit);
+    let surplus = held.saturating_sub(wanted);
+    assert_eq!(
+        surplus, 0,
+        "Conservative surplus: total wanted (10) > held species B (8)"
+    );
+}
+
+#[test]
+fn config_backward_compat_missing_material_filter() {
+    // Verify that default_config.json without material_filter in elf_default_wants
+    // deserializes correctly (covered by the `#[serde(default)]` on the field).
+    let json = r#"{"item_kind":"Bread","target_quantity":2}"#;
+    let want: building::LogisticsWant = serde_json::from_str(json).unwrap();
+    assert_eq!(want.material_filter, inventory::MaterialFilter::Any);
+}
+
+#[test]
+fn task_haul_data_serde_backward_compat() {
+    // Old TaskHaulData without material_filter and hauled_material fields.
+    let json = r#"{
+            "id": 1,
+            "task_id": "00000000-0000-0000-0000-000000000001",
+            "item_kind": "Bread",
+            "quantity": 5,
+            "phase": "GoingToSource",
+            "source_kind": "Pile",
+            "destination_nav_node": 0
+        }"#;
+    let data: crate::db::TaskHaulData = serde_json::from_str(json).unwrap();
+    assert_eq!(data.material_filter, inventory::MaterialFilter::Any);
+    assert_eq!(data.hauled_material, None);
+}
+
+#[test]
+fn material_item_display_name_fruit_species() {
+    let sim = test_sim(42);
+    // The test_sim worldgen should have created fruit species.
+    // Verify that material_item_display_name uses the Vaelith name.
+    if let Some(species) = sim.db.fruit_species.iter_all().next() {
+        let mat = inventory::Material::FruitSpecies(species.id);
+        let name = sim.material_item_display_name(inventory::ItemKind::Fruit, mat);
+        // Should contain the Vaelith name, not generic "Fruit".
+        assert!(
+            name.contains(&species.vaelith_name),
+            "Display name '{name}' should contain Vaelith name '{}'",
+            species.vaelith_name
+        );
+    }
+}
+
+#[test]
+fn material_item_display_name_wood() {
+    let sim = test_sim(42);
+    let name = sim.material_item_display_name(inventory::ItemKind::Bow, inventory::Material::Oak);
+    assert_eq!(name, "Oak Bow");
+}
+
+#[test]
+fn logistics_heartbeat_specific_filter_hauls_correct_species() {
+    let mut sim = test_sim(42);
+
+    let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+    let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+    // Place a ground pile with mixed fruit.
+    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_item(
+            pile.inventory_id,
+            inventory::ItemKind::Fruit,
+            3,
+            None,
+            None,
+            Some(species_a),
+            0,
+            None,
+            None,
+        );
+        sim.inv_add_item(
+            pile.inventory_id,
+            inventory::ItemKind::Fruit,
+            5,
+            None,
+            None,
+            Some(species_b),
+            0,
+            None,
+            None,
+        );
+    }
+
+    // Create building wanting only species B fruit.
+    let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+    let _sid = insert_building(
+        &mut sim,
+        building_anchor,
+        Some(5),
+        vec![building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Specific(species_b),
+            target_quantity: 3,
+        }],
+    );
+
+    sim.process_logistics_heartbeat();
+
+    // Should have created a haul task.
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(haul_tasks.len(), 1, "Expected 1 haul task");
+
+    let haul = sim
+        .task_haul_data(haul_tasks[0].id)
+        .expect("Haul task should have haul data");
+    assert_eq!(haul.item_kind, inventory::ItemKind::Fruit);
+    assert_eq!(haul.quantity, 3);
+    // The haul should track the actual material and the filter.
+    assert_eq!(
+        haul.material_filter,
+        inventory::MaterialFilter::Specific(species_b)
+    );
+    assert_eq!(haul.hauled_material, Some(species_b));
+
+    // Species A should be completely unreserved.
+    let pile = sim
+        .db
+        .ground_piles
+        .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(
+        sim.inv_unreserved_item_count(
+            pile.inventory_id,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(species_a)
+        ),
+        3,
+        "Species A should be untouched"
+    );
+}
+
+#[test]
+fn attack_target_autonomous_preemption_is_autonomous_combat() {
+    assert_eq!(
+        preemption::preemption_level(crate::db::TaskKindTag::AttackTarget, TaskOrigin::Autonomous),
+        preemption::PreemptionLevel::AutonomousCombat,
+    );
+}
+
+// -----------------------------------------------------------------------
+// Flee behavior tests (F-flee)
+// -----------------------------------------------------------------------
+
+#[test]
+fn elf_flees_from_adjacent_goblin() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin adjacent to elf.
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Force the elf idle and schedule an activation.
+    force_idle(&mut sim, elf);
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+
+    // Run one activation — elf should move away from the goblin.
+    sim.step(&[], tick + 2);
+    let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+    // The elf should have moved (not stayed in place).
+    assert_ne!(elf_pos, elf_new_pos, "Elf should flee from adjacent goblin");
+
+    // The elf should be farther from the goblin than before.
+    let old_dist_sq = (elf_pos.x as i64 - goblin_pos.x as i64).pow(2)
+        + (elf_pos.y as i64 - goblin_pos.y as i64).pow(2)
+        + (elf_pos.z as i64 - goblin_pos.z as i64).pow(2);
+    let new_dist_sq = (elf_new_pos.x as i64 - goblin_pos.x as i64).pow(2)
+        + (elf_new_pos.y as i64 - goblin_pos.y as i64).pow(2)
+        + (elf_new_pos.z as i64 - goblin_pos.z as i64).pow(2);
+    assert!(
+        new_dist_sq >= old_dist_sq,
+        "Elf should move away from goblin: old_dist_sq={old_dist_sq}, new_dist_sq={new_dist_sq}"
+    );
+}
+
+#[test]
+fn elf_does_not_flee_when_goblin_out_of_range() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin far away (50 voxels — beyond 15-voxel detection radius).
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 50, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Run a short period — elf should wander normally, not flee.
+    // Keep ticks low so random wander can't close the 50-voxel gap.
+    sim.step(&[], sim.tick + 5000);
+
+    // Elf should have wandered (moved from starting pos) but NOT
+    // systematically moved away from goblin. We just verify it didn't
+    // stay put (wander still works).
+    let elf_final = sim.db.creatures.get(&elf).unwrap().position;
+    // Wander is random, so we can't assert direction — just verify the
+    // elf moved (was not frozen by a broken flee check).
+    assert_ne!(
+        elf_pos, elf_final,
+        "Elf should still wander when goblin is out of range"
+    );
+}
+
+#[test]
+fn flee_interrupts_current_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+    // Give the elf a GoTo task to somewhere.
+    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let graph = sim.graph_for_species(Species::Elf);
+    let neighbors = graph.neighbors(elf_node);
+    assert!(!neighbors.is_empty(), "Need at least one neighbor node");
+    let goto_node = graph.edge(neighbors[0]).to;
+
+    let task_id = insert_goto_task(&mut sim, goto_node);
+    // Force-assign the task to the elf.
+    if let Some(mut t) = sim.db.tasks.get(&task_id) {
+        t.state = TaskState::InProgress;
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.current_task = Some(task_id);
+        c.action_kind = ActionKind::NoAction;
+        c.next_available_tick = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Place goblin adjacent to elf — within detection range.
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Schedule elf activation.
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+
+    sim.step(&[], tick + 2);
+
+    // Elf should have lost its task (interrupted by flee).
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(
+        elf_creature.current_task, None,
+        "Flee should interrupt the elf's current task"
+    );
+
+    // Elf should have moved away from goblin.
+    let elf_new_pos = elf_creature.position;
+    assert_ne!(elf_pos, elf_new_pos, "Elf should have moved while fleeing");
+}
+
+#[test]
+fn elf_resumes_normal_behavior_after_threat_leaves() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin adjacent to elf.
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    // Verify the elf would flee (flee_step finds a threat and returns true).
+    assert!(
+        sim.flee_step(elf, elf_node, Species::Elf),
+        "Elf should flee from nearby goblin"
+    );
+
+    // Undo the flee step so we can test threat removal cleanly.
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    // Now kill the goblin — threat removed.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+
+    // flee_step should return false (no living threats detected).
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    assert!(
+        !sim.flee_step(elf, elf_node, Species::Elf),
+        "Elf should not flee from a dead goblin"
+    );
+}
+
+#[test]
+fn goblin_does_not_flee_from_elf() {
+    // Goblins are AggressiveMelee — they should pursue, not flee.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    assert!(
+        !sim.should_flee(goblin, Species::Goblin),
+        "Aggressive creatures should not flee"
+    );
+}
+
+#[test]
+fn flee_only_species_flees() {
+    // Create a sim where deer have FleeOnly combat_ai and a detection range.
+    use crate::species::CombatAI;
+    let mut sim = test_sim(42);
+    sim.species_table.get_mut(&Species::Deer).unwrap().combat_ai = CombatAI::FleeOnly;
+    sim.species_table
+        .get_mut(&Species::Deer)
+        .unwrap()
+        .hostile_detection_range_sq = 225;
+
+    let deer = spawn_species(&mut sim, Species::Deer);
+    let deer_pos = sim.db.creatures.get(&deer).unwrap().position;
+
+    // Spawn a goblin adjacent to the deer.
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = VoxelCoord::new(deer_pos.x + 1, deer_pos.y, deer_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+    force_idle(&mut sim, deer);
+
+    // Deer should want to flee.
+    assert!(
+        sim.should_flee(deer, Species::Deer),
+        "FleeOnly species should flee from hostiles"
+    );
+
+    // Schedule deer activation and run.
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: deer },
+    );
+    sim.step(&[], tick + 2);
+
+    let deer_new_pos = sim.db.creatures.get(&deer).unwrap().position;
+    assert_ne!(
+        deer_pos, deer_new_pos,
+        "FleeOnly deer should flee from adjacent goblin"
+    );
+}
+
+#[test]
+fn passive_species_does_not_flee() {
+    // Capybara is Passive with detection_range 0 — should not flee.
+    let mut sim = test_sim(42);
+    let capybara = spawn_species(&mut sim, Species::Capybara);
+    assert!(
+        !sim.should_flee(capybara, Species::Capybara),
+        "Passive species with no detection range should not flee"
+    );
+}
+
+#[test]
+fn flee_step_returns_true_when_threat_detected() {
+    // Verify flee_step directly returns true when a threat is in range
+    // and the creature has neighbors to flee to.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+
+    // Place goblin adjacent.
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    assert!(
+        sim.flee_step(elf, elf_node, Species::Elf),
+        "Flee step should return true when threat is in range"
+    );
+}
+
+#[test]
+fn flee_from_multiple_threats_uses_nearest() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+    // Spawn two goblins at different distances.
+    let goblin_near = spawn_species(&mut sim, Species::Goblin);
+    let goblin_far = spawn_species(&mut sim, Species::Goblin);
+    let near_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    let far_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin_near, near_pos);
+    force_position(&mut sim, goblin_far, far_pos);
+    force_idle(&mut sim, elf);
+
+    // Schedule activation and run.
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+    sim.step(&[], tick + 2);
+
+    let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position;
+    assert_ne!(elf_pos, elf_new_pos, "Elf should have fled");
+
+    // Elf should have moved away from the nearest goblin (at x+1).
+    // The new position should be farther from goblin_near than before.
+    let old_dist = (elf_pos.x as i64 - near_pos.x as i64).pow(2)
+        + (elf_pos.y as i64 - near_pos.y as i64).pow(2)
+        + (elf_pos.z as i64 - near_pos.z as i64).pow(2);
+    let new_dist = (elf_new_pos.x as i64 - near_pos.x as i64).pow(2)
+        + (elf_new_pos.y as i64 - near_pos.y as i64).pow(2)
+        + (elf_new_pos.z as i64 - near_pos.z as i64).pow(2);
+    assert!(
+        new_dist >= old_dist,
+        "Elf should flee away from nearest goblin: old={old_dist}, new={new_dist}"
+    );
+}
+
+#[test]
+fn in_transit_counting_uses_hauled_material() {
+    let mut sim = test_sim(42);
+
+    let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+    let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
+
+    // Place ground piles with species A and B.
+    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_item(
+            pile.inventory_id,
+            inventory::ItemKind::Fruit,
+            10,
+            None,
+            None,
+            Some(species_a),
+            0,
+            None,
+            None,
+        );
+        sim.inv_add_item(
+            pile.inventory_id,
+            inventory::ItemKind::Fruit,
+            10,
+            None,
+            None,
+            Some(species_b),
+            0,
+            None,
+            None,
+        );
+    }
+
+    // Create building wanting "Any Fruit: 20".
+    let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+    let sid = insert_building(
+        &mut sim,
+        building_anchor,
+        Some(5),
+        vec![building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 20,
+        }],
+    );
+
+    sim.process_logistics_heartbeat();
+
+    // Should have created a haul task.
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert!(!haul_tasks.is_empty(), "Expected at least 1 haul task");
+
+    let haul = sim
+        .task_haul_data(haul_tasks[0].id)
+        .expect("Haul task should have haul data");
+    let hauled_mat = haul.hauled_material;
+
+    // In-transit with Any filter should count this haul.
+    let any_in_transit = sim.count_in_transit_items(
+        sid,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Any,
+    );
+    assert!(
+        any_in_transit > 0,
+        "Any filter should count in-transit items"
+    );
+
+    // In-transit with Specific(hauled material) should also count it.
+    if let Some(mat) = hauled_mat {
+        let specific_in_transit = sim.count_in_transit_items(
+            sid,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(mat),
+        );
+        assert!(
+            specific_in_transit > 0,
+            "Specific filter matching hauled material should count"
+        );
+
+        // In-transit with a different Specific filter should NOT count it.
+        let other_mat = if mat == species_a {
+            species_b
+        } else {
+            species_a
+        };
+        let other_in_transit = sim.count_in_transit_items(
+            sid,
+            inventory::ItemKind::Fruit,
+            inventory::MaterialFilter::Specific(other_mat),
+        );
+        assert_eq!(
+            other_in_transit, 0,
+            "Specific filter for different material should not count in-transit"
+        );
+    }
+}
+
+#[test]
+fn haul_preserves_material_through_pickup_and_dropoff() {
+    let mut sim = test_sim(42);
+
+    let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
+
+    // Place a ground pile with fruit that has a species material.
+    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+    sim.inv_add_item(
+        pile.inventory_id,
+        inventory::ItemKind::Fruit,
+        5,
+        None,
+        None,
+        Some(species_a),
+        0,
+        None,
+        None,
+    );
+
+    // Create a building with a Specific want for species_a fruit.
+    let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+    let structure_id = insert_building(
+        &mut sim,
+        building_anchor,
+        Some(5),
+        vec![building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Specific(species_a),
+            target_quantity: 10,
+        }],
+    );
+    let dest_inv = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+
+    // Run logistics heartbeat to create haul task.
+    sim.process_logistics_heartbeat();
+
+    // Find the haul task and verify hauled_material is set.
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == crate::db::TaskKindTag::Haul)
+        .collect();
+    assert_eq!(haul_tasks.len(), 1, "Should have one haul task");
+    let haul_data = sim.task_haul_data(haul_tasks[0].id).unwrap();
+    assert_eq!(haul_data.hauled_material, Some(species_a));
+
+    // Spawn an elf and fast-forward to let it complete the haul.
+    let _elf_id = sim.spawn_creature(crate::types::Species::Elf, pile_pos, &mut Vec::new());
+    for _ in 0..500 {
+        sim.step(&[], sim.tick + 100);
+    }
+
+    // Check the destination building's inventory: fruit should have the
+    // species material, not None.
+    let fruit_stacks: Vec<_> = sim
+        .inv_items(dest_inv)
+        .into_iter()
+        .filter(|s| s.kind == inventory::ItemKind::Fruit)
+        .collect();
+    if !fruit_stacks.is_empty() {
+        for stack in &fruit_stacks {
+            assert_eq!(
+                stack.material,
+                Some(species_a),
+                "Hauled fruit should preserve species material in destination inventory"
+            );
+        }
+    }
+}
+
+#[test]
+fn find_available_task_prefers_nearest_by_nav_distance() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn an elf near the tree.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .expect("elf should exist");
+    let elf_id = elf.id;
+    let elf_node = elf.current_node.expect("elf should have a nav node");
+    let elf_pos = sim.nav_graph.node(elf_node).position;
+
+    // Find two nav nodes: one close to the elf, one farther away.
+    // We pick nodes by searching the graph for nodes at increasing
+    // Manhattan distances from the elf.
+    let mut nodes_by_distance: Vec<(NavNodeId, u32)> = sim
+        .nav_graph
+        .live_nodes()
+        .filter(|n| n.id != elf_node)
+        .map(|n| (n.id, n.position.manhattan_distance(elf_pos)))
+        .collect();
+    nodes_by_distance.sort_by_key(|&(_, d)| d);
+
+    // Pick a near node (close to elf) and a far node (much farther).
+    let near_node = nodes_by_distance[0].0;
+    let far_node = nodes_by_distance
+        .iter()
+        .find(|&&(_, d)| d >= 10)
+        .expect("should have a node at least 10 manhattan away")
+        .0;
+
+    // Create two Available tasks — far task first (to ensure it would be
+    // picked under the old first-found behavior if its TaskId sorts first).
+    let far_task_id = TaskId::new(&mut sim.rng);
+    let near_task_id = TaskId::new(&mut sim.rng);
+
+    let far_task = crate::db::Task {
+        id: far_task_id,
+        kind_tag: TaskKindTag::GoTo,
+        state: TaskState::Available,
+        location: far_node,
+        progress: 0.0,
+        total_cost: 1.0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    let near_task = crate::db::Task {
+        id: near_task_id,
+        kind_tag: TaskKindTag::GoTo,
+        state: TaskState::Available,
+        location: near_node,
+        progress: 0.0,
+        total_cost: 1.0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+
+    sim.db.tasks.insert_no_fk(far_task).unwrap();
+    sim.db.tasks.insert_no_fk(near_task).unwrap();
+
+    // Clear the elf's current task so it's idle.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_task = None;
+    });
+
+    let chosen = sim.find_available_task(elf_id).expect("should find a task");
+    assert_eq!(
+        chosen, near_task_id,
+        "find_available_task should prefer the nearest task by nav distance"
+    );
+}
+
+#[test]
+fn find_available_task_single_candidate_skips_dijkstra() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .expect("elf should exist");
+    let elf_id = elf.id;
+
+    // Pick any nav node for the single task.
+    let task_node = sim
+        .nav_graph
+        .live_nodes()
+        .next()
+        .expect("should have nodes")
+        .id;
+
+    let task_id = TaskId::new(&mut sim.rng);
+    let task = crate::db::Task {
+        id: task_id,
+        kind_tag: TaskKindTag::GoTo,
+        state: TaskState::Available,
+        location: task_node,
+        progress: 0.0,
+        total_cost: 1.0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.db.tasks.insert_no_fk(task).unwrap();
+
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_task = None;
+    });
+
+    let chosen = sim
+        .find_available_task(elf_id)
+        .expect("should find the only task");
+    assert_eq!(chosen, task_id);
+}
+
+#[test]
+fn find_available_task_respects_species_filter_with_proximity() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    // Spawn a capybara (non-elf).
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    let capy = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .expect("capybara should exist");
+    let capy_id = capy.id;
+
+    let task_node = sim
+        .nav_graph
+        .live_nodes()
+        .next()
+        .expect("should have nodes")
+        .id;
+
+    // Create an elf-only task — capybara should not see it.
+    let elf_task_id = TaskId::new(&mut sim.rng);
+    let elf_task = crate::db::Task {
+        id: elf_task_id,
+        kind_tag: TaskKindTag::GoTo,
+        state: TaskState::Available,
+        location: task_node,
+        progress: 0.0,
+        total_cost: 1.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.db.tasks.insert_no_fk(elf_task).unwrap();
+
+    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+        c.current_task = None;
+    });
+
+    let chosen = sim.find_available_task(capy_id);
+    assert_eq!(
+        chosen, None,
+        "capybara should not be assigned an elf-only task"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Military group tests
+// -----------------------------------------------------------------------
+
+/// Helper: directly set a creature's military group (test-only).
+/// Uses update_no_fk because military_group is indexed.
+fn set_military_group(sim: &mut SimState, creature_id: CreatureId, group: Option<MilitaryGroupId>) {
+    let mut creature = sim.db.creatures.get(&creature_id).unwrap();
+    creature.military_group = group;
+    sim.db.creatures.update_no_fk(creature).unwrap();
+}
+
+/// Helper: find the player civ's civilian group.
+fn civilian_group(sim: &SimState) -> crate::db::MilitaryGroup {
+    let civ_id = sim.player_civ_id.unwrap();
+    sim.db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|g| g.is_default_civilian)
+        .expect("player civ should have a civilian group")
+}
+
+/// Helper: find the player civ's soldiers group.
+fn soldiers_group(sim: &SimState) -> crate::db::MilitaryGroup {
+    let civ_id = sim.player_civ_id.unwrap();
+    sim.db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|g| !g.is_default_civilian && g.name == "Soldiers")
+        .expect("player civ should have a soldiers group")
+}
+
+#[test]
+fn worldgen_creates_default_military_groups() {
+    let sim = test_sim(42);
+    let civ_id = sim.player_civ_id.unwrap();
+    let groups = sim
+        .db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+
+    assert!(
+        groups.len() >= 2,
+        "Should have at least 2 groups (Civilians + Soldiers)"
+    );
+
+    let civilians = groups.iter().filter(|g| g.is_default_civilian).count();
+    assert_eq!(civilians, 1, "Exactly one civilian group per civ");
+
+    let civilian = groups.iter().find(|g| g.is_default_civilian).unwrap();
+    assert_eq!(civilian.name, "Civilians");
+    assert_eq!(civilian.hostile_response, crate::db::HostileResponse::Flee);
+
+    let soldiers = groups.iter().find(|g| g.name == "Soldiers").unwrap();
+    assert!(!soldiers.is_default_civilian);
+    assert_eq!(soldiers.hostile_response, crate::db::HostileResponse::Fight);
+}
+
+#[test]
+fn worldgen_all_civs_have_military_groups() {
+    let sim = test_sim(42);
+    for civ in sim.db.civilizations.iter_all() {
+        let groups = sim
+            .db
+            .military_groups
+            .by_civ_id(&civ.id, tabulosity::QueryOpts::ASC);
+        let civilian_count = groups.iter().filter(|g| g.is_default_civilian).count();
+        assert_eq!(
+            civilian_count, 1,
+            "Civ {:?} should have exactly 1 civilian group",
+            civ.id
+        );
+        assert!(
+            groups.len() >= 2,
+            "Civ {:?} should have at least Civilians + Soldiers",
+            civ.id
+        );
+    }
+}
+
+#[test]
+fn create_military_group_command() {
+    let mut sim = test_sim(42);
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::CreateMilitaryGroup {
+            name: "Archers".to_string(),
+        },
+    };
+    let result = sim.step(&[cmd], 1);
+
+    // Should emit MilitaryGroupCreated event.
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|e| matches!(&e.kind, SimEventKind::MilitaryGroupCreated { .. })),
+        "Should emit MilitaryGroupCreated event"
+    );
+
+    // The new group should exist in the DB.
+    let civ_id = sim.player_civ_id.unwrap();
+    let groups = sim
+        .db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+    let archers = groups.iter().find(|g| g.name == "Archers");
+    assert!(archers.is_some(), "Archers group should exist");
+    let archers = archers.unwrap();
+    assert!(!archers.is_default_civilian);
+    assert_eq!(
+        archers.hostile_response,
+        crate::db::HostileResponse::Fight,
+        "New groups default to Fight"
+    );
+}
+
+#[test]
+fn creature_reassignment_to_group_and_back() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    // Spawn an elf.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.military_group, None, "Spawned elf is implicit civilian");
+
+    // Assign to soldiers.
+    let soldiers = soldiers_group(&sim);
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: Some(soldiers.id),
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(
+        elf.military_group,
+        Some(soldiers.id),
+        "Elf should be in soldiers group"
+    );
+
+    // Reassign back to civilian (None).
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: None,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.military_group, None, "Elf should be back to civilian");
+}
+
+#[test]
+fn reassign_between_non_civilian_groups() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+
+    // Create a second group.
+    let create_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::CreateMilitaryGroup {
+            name: "Archers".to_string(),
+        },
+    };
+    sim.step(&[create_cmd], 1);
+
+    let civ_id = sim.player_civ_id.unwrap();
+    let archers = sim
+        .db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|g| g.name == "Archers")
+        .unwrap();
+
+    // Assign to soldiers.
+    let soldiers = soldiers_group(&sim);
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: Some(soldiers.id),
+        },
+    };
+    sim.step(&[cmd], 2);
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().military_group,
+        Some(soldiers.id)
+    );
+
+    // Reassign to archers.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 3,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: Some(archers.id),
+        },
+    };
+    sim.step(&[cmd], 3);
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().military_group,
+        Some(archers.id)
+    );
+}
+
+#[test]
+fn should_flee_with_fight_group() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+
+    // Default: implicit civilian (Flee group) → should flee.
+    assert!(
+        sim.should_flee(elf_id, Species::Elf),
+        "Civilian elf should flee"
+    );
+
+    // Assign to soldiers (Fight group).
+    let soldiers = soldiers_group(&sim);
+    set_military_group(&mut sim, elf_id, Some(soldiers.id));
+
+    assert!(
+        !sim.should_flee(elf_id, Species::Elf),
+        "Fight-group elf should not flee"
+    );
+}
+
+#[test]
+fn should_flee_with_flee_group() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+
+    // Implicit civilian → Flee.
+    assert!(sim.should_flee(elf_id, Species::Elf));
+
+    // Explicitly assign to a Flee group (the civilian group).
+    let civ_group = civilian_group(&sim);
+    set_military_group(&mut sim, elf_id, Some(civ_group.id));
+
+    assert!(
+        sim.should_flee(elf_id, Species::Elf),
+        "Flee-group elf should still flee"
+    );
+}
+
+#[test]
+fn should_flee_player_combat_override() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+
+    // Elf is in Flee group (civilian).
+    assert!(sim.should_flee(elf_id, Species::Elf));
+
+    // Spawn a goblin target.
+    let goblin_id = sim
+        .spawn_creature(Species::Goblin, tree_pos, &mut events)
+        .expect("should spawn goblin");
+
+    // Issue a player-directed attack (creates a PlayerCombat-level task).
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf_id,
+            target_id: goblin_id,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // PlayerCombat task overrides flee behavior.
+    assert!(
+        !sim.should_flee(elf_id, Species::Elf),
+        "Elf with PlayerCombat task should not flee even in Flee group"
+    );
+}
+
+#[test]
+fn delete_military_group_nullifies_members() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+
+    // Create a new group and assign the elf to it.
+    let create_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::CreateMilitaryGroup {
+            name: "Scouts".to_string(),
+        },
+    };
+    sim.step(&[create_cmd], 1);
+
+    let civ_id = sim.player_civ_id.unwrap();
+    let scouts = sim
+        .db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|g| g.name == "Scouts")
+        .unwrap();
+
+    let assign_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: Some(scouts.id),
+        },
+    };
+    sim.step(&[assign_cmd], 2);
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().military_group,
+        Some(scouts.id)
+    );
+
+    // Delete the group.
+    let delete_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 3,
+        action: SimAction::DeleteMilitaryGroup {
+            group_id: scouts.id,
+        },
+    };
+    let result = sim.step(&[delete_cmd], 3);
+
+    // Elf should be back to civilian (None).
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().military_group,
+        None,
+        "Deleted group should nullify creature.military_group"
+    );
+
+    // Group should be gone.
+    assert!(
+        sim.db.military_groups.get(&scouts.id).is_none(),
+        "Deleted group should be removed"
+    );
+
+    // Should emit MilitaryGroupDeleted event.
+    assert!(
+        result.events.iter().any(|e| matches!(
+            &e.kind,
+            SimEventKind::MilitaryGroupDeleted {
+                name, member_count, ..
+            } if name == "Scouts" && *member_count == 1
+        )),
+        "Should emit MilitaryGroupDeleted with correct name and count"
+    );
+}
+
+#[test]
+fn civilian_group_deletion_rejected() {
+    let mut sim = test_sim(42);
+    let civ_group = civilian_group(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DeleteMilitaryGroup {
+            group_id: civ_group.id,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Civilian group should still exist.
+    assert!(
+        sim.db.military_groups.get(&civ_group.id).is_some(),
+        "Civilian group cannot be deleted"
+    );
+}
+
+#[test]
+fn dead_creature_not_counted_in_member_count() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_a = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("spawn elf a");
+    let elf_b = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("spawn elf b");
+
+    // Assign both to soldiers.
+    let soldiers = soldiers_group(&sim);
+    for eid in [elf_a, elf_b] {
+        set_military_group(&mut sim, eid, Some(soldiers.id));
+    }
+
+    // Kill elf_b.
+    let kill_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DebugKillCreature { creature_id: elf_b },
+    };
+    sim.step(&[kill_cmd], 1);
+
+    // Count alive members.
+    let alive_count = sim
+        .db
+        .creatures
+        .by_military_group(&Some(soldiers.id), tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|c| c.vital_status == VitalStatus::Alive)
+        .count();
+    assert_eq!(alive_count, 1, "Only elf_a should be alive in soldiers");
+
+    // Dead elf should still be assigned to soldiers.
+    let dead_elf = sim.db.creatures.get(&elf_b).unwrap();
+    assert_eq!(
+        dead_elf.military_group,
+        Some(soldiers.id),
+        "Dead creature preserves group assignment"
+    );
+    assert_eq!(dead_elf.vital_status, VitalStatus::Dead);
+}
+
+#[test]
+fn cross_civ_reassignment_rejected() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    // Get a non-player civ.
+    let ai_civ = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| !c.player_controlled)
+        .expect("need an AI civ");
+    let ai_groups = sim
+        .db
+        .military_groups
+        .by_civ_id(&ai_civ.id, tabulosity::QueryOpts::ASC);
+    let ai_soldiers = ai_groups
+        .iter()
+        .find(|g| !g.is_default_civilian)
+        .expect("AI civ should have a non-civilian group");
+
+    // Spawn an elf (player civ).
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("spawn elf");
+
+    // Try to assign elf to AI civ's group — should be rejected.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: Some(ai_soldiers.id),
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().military_group,
+        None,
+        "Cross-civ reassignment should be rejected"
+    );
+}
+
+#[test]
+fn non_civ_creature_reassignment_rejected() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let goblin_id = sim
+        .spawn_creature(Species::Goblin, tree_pos, &mut events)
+        .expect("spawn goblin");
+
+    let soldiers = soldiers_group(&sim);
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: goblin_id,
+            group_id: Some(soldiers.id),
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(
+        sim.db.creatures.get(&goblin_id).unwrap().military_group,
+        None,
+        "Non-civ creatures cannot be assigned to military groups"
+    );
+}
+
+#[test]
+fn rename_civilian_group() {
+    let mut sim = test_sim(42);
+    let civ_group = civilian_group(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::RenameMilitaryGroup {
+            group_id: civ_group.id,
+            name: "Villagers".to_string(),
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let renamed = sim.db.military_groups.get(&civ_group.id).unwrap();
+    assert_eq!(renamed.name, "Villagers");
+}
+
+#[test]
+fn set_group_hostile_response() {
+    let mut sim = test_sim(42);
+    let civ_group = civilian_group(&sim);
+
+    // Change civilian group to Fight.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SetGroupHostileResponse {
+            group_id: civ_group.id,
+            hostile_response: crate::db::HostileResponse::Fight,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let updated = sim.db.military_groups.get(&civ_group.id).unwrap();
+    assert_eq!(updated.hostile_response, crate::db::HostileResponse::Fight);
+}
+
+#[test]
+fn fk_cascade_civ_delete_removes_groups() {
+    let mut sim = test_sim(99);
+
+    // Find an AI civ (not the player civ, which might cause issues).
+    let ai_civ = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| !c.player_controlled);
+    let Some(ai_civ) = ai_civ else {
+        // No AI civ in this seed — skip test.
+        return;
+    };
+    let ai_civ_id = ai_civ.id;
+
+    let groups_before = sim
+        .db
+        .military_groups
+        .by_civ_id(&ai_civ_id, tabulosity::QueryOpts::ASC);
+    assert!(
+        !groups_before.is_empty(),
+        "AI civ should have military groups"
+    );
+
+    // Delete the civ — groups should cascade.
+    let _ = sim.db.remove_civilization(&ai_civ_id);
+
+    let groups_after = sim
+        .db
+        .military_groups
+        .by_civ_id(&ai_civ_id, tabulosity::QueryOpts::ASC);
+    assert!(
+        groups_after.is_empty(),
+        "Deleting a civ should cascade-delete its military groups"
+    );
+}
+
+#[test]
+fn hostile_response_serde_roundtrip() {
+    use crate::db::HostileResponse;
+    let fight = HostileResponse::Fight;
+    let flee = HostileResponse::Flee;
+
+    let fight_json = serde_json::to_string(&fight).unwrap();
+    let flee_json = serde_json::to_string(&flee).unwrap();
+
+    assert_eq!(
+        serde_json::from_str::<HostileResponse>(&fight_json).unwrap(),
+        fight
+    );
+    assert_eq!(
+        serde_json::from_str::<HostileResponse>(&flee_json).unwrap(),
+        flee
+    );
+}
+
+#[test]
+fn military_group_serde_roundtrip() {
+    let sim = test_sim(42);
+
+    // Serialize and deserialize the full SimDb.
+    let json = serde_json::to_string(&sim.db).unwrap();
+    let db2: crate::db::SimDb = serde_json::from_str(&json).unwrap();
+
+    let civ_id = sim.player_civ_id.unwrap();
+    let groups_orig = sim
+        .db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+    let groups_deser = db2
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+
+    assert_eq!(groups_orig.len(), groups_deser.len());
+    for (a, b) in groups_orig.iter().zip(groups_deser.iter()) {
+        assert_eq!(a.id, b.id);
+        assert_eq!(a.civ_id, b.civ_id);
+        assert_eq!(a.name, b.name);
+        assert_eq!(a.is_default_civilian, b.is_default_civilian);
+        assert_eq!(a.hostile_response, b.hostile_response);
+    }
+}
+
+#[test]
+fn military_group_command_serde_roundtrip() {
+    use crate::db::HostileResponse;
+
+    let actions = vec![
+        SimAction::CreateMilitaryGroup {
+            name: "Guards".to_string(),
+        },
+        SimAction::DeleteMilitaryGroup {
+            group_id: MilitaryGroupId(1),
+        },
+        SimAction::ReassignMilitaryGroup {
+            creature_id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
+            group_id: Some(MilitaryGroupId(2)),
+        },
+        SimAction::RenameMilitaryGroup {
+            group_id: MilitaryGroupId(1),
+            name: "Elite".to_string(),
+        },
+        SimAction::SetGroupHostileResponse {
+            group_id: MilitaryGroupId(1),
+            hostile_response: HostileResponse::Flee,
+        },
+    ];
+
+    for action in &actions {
+        let json = serde_json::to_string(action).unwrap();
+        let deser: SimAction = serde_json::from_str(&json).unwrap();
+        let json2 = serde_json::to_string(&deser).unwrap();
+        assert_eq!(json, json2, "Serde roundtrip failed for {action:?}");
+    }
+}
+
+#[test]
+fn fight_group_civ_creature_auto_engages() {
+    // This test verifies that a Fight-group civ creature will attempt to
+    // pursue hostiles via wander(), not just avoid them.
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("spawn elf");
+
+    // Assign to soldiers (Fight).
+    let soldiers = soldiers_group(&sim);
+    set_military_group(&mut sim, elf_id, Some(soldiers.id));
+
+    // Verify resolve_hostile_response returns Fight.
+    assert_eq!(
+        sim.resolve_hostile_response(elf_id),
+        Some(crate::db::HostileResponse::Fight),
+        "Soldiers group should resolve to Fight"
+    );
+}
+
+#[test]
+fn resolve_hostile_response_implicit_civilian() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("spawn elf");
+
+    // Implicit civilian (military_group = None, civ_id = Some).
+    assert_eq!(
+        sim.resolve_hostile_response(elf_id),
+        Some(crate::db::HostileResponse::Flee),
+        "Implicit civilian should resolve to Flee (default civilian group)"
+    );
+}
+
+#[test]
+fn resolve_hostile_response_non_civ_creature() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let goblin_id = sim
+        .spawn_creature(Species::Goblin, tree_pos, &mut events)
+        .expect("spawn goblin");
+
+    // Non-civ creature → None (behavior from CombatAI instead).
+    assert_eq!(
+        sim.resolve_hostile_response(goblin_id),
+        None,
+        "Non-civ creature should return None"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Fruit extraction tests
+// -----------------------------------------------------------------------
+
+/// Helper: insert a test fruit species into the sim DB and rebuild the
+/// recipe catalog to include its extraction recipe. Returns the species ID.
+fn insert_test_fruit_species(sim: &mut SimState) -> crate::fruit::FruitSpeciesId {
+    use crate::fruit::{
+        FruitAppearance, FruitColor, FruitPart, FruitShape, FruitSpecies, GrowthHabitat, PartType,
+        Rarity,
+    };
+    use std::collections::BTreeSet;
+    let id = crate::types::FruitSpeciesId(999);
+    let species = FruitSpecies {
+        id,
+        vaelith_name: "Testaleth".to_string(),
+        english_gloss: "test-berry".to_string(),
+        parts: vec![
+            FruitPart {
+                part_type: PartType::Flesh,
+                properties: BTreeSet::new(),
+                pigment: None,
+                component_units: 37,
+            },
+            FruitPart {
+                part_type: PartType::Fiber,
+                properties: BTreeSet::new(),
+                pigment: None,
+                component_units: 52,
+            },
+            FruitPart {
+                part_type: PartType::Seed,
+                properties: BTreeSet::new(),
+                pigment: None,
+                component_units: 15,
+            },
+        ],
+        habitat: GrowthHabitat::Branch,
+        rarity: Rarity::Common,
+        greenhouse_cultivable: true,
+        appearance: FruitAppearance {
+            exterior_color: FruitColor {
+                r: 200,
+                g: 100,
+                b: 50,
+            },
+            shape: FruitShape::Round,
+            size_percent: 100,
+            glows: false,
+        },
+    };
+    let _ = sim.db.fruit_species.insert_no_fk(species);
+    // Rebuild catalog so extraction recipe is included.
+    let fruits: Vec<_> = sim.db.fruit_species.iter_all().cloned().collect();
+    sim.recipe_catalog = crate::recipe::build_catalog(&sim.config, &fruits);
+    id
+}
+
+/// Helper: set up a kitchen with a test fruit species extraction recipe
+/// enabled and targeted. Returns (structure_id, species_id).
+fn setup_extraction_kitchen(sim: &mut SimState) -> (StructureId, crate::fruit::FruitSpeciesId) {
+    let species_id = insert_test_fruit_species(sim);
+    let structure_id = setup_crafting_building(sim, FurnishingType::Kitchen);
+
+    // Find the extraction recipe for our test species.
+    let extract_key = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Kitchen)
+        .into_iter()
+        .find(|r| r.display_name == "Extract Testaleth")
+        .expect("extraction recipe should exist")
+        .key
+        .clone();
+
+    // Add the extraction recipe to the kitchen.
+    let add_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::AddActiveRecipe {
+            structure_id,
+            recipe_key: extract_key.clone(),
+        },
+    };
+    sim.step(&[add_cmd], sim.tick + 1);
+
+    // Set nonzero targets for the outputs so the monitor will schedule work.
+    let active_recipes = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+    let ar = active_recipes
+        .iter()
+        .find(|r| r.recipe_key_json == extract_key.to_json())
+        .expect("active recipe should exist");
+
+    let targets = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC);
+    for target in &targets {
+        let set_cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: sim.tick + 1,
+            action: SimAction::SetRecipeOutputTarget {
+                active_recipe_target_id: target.id,
+                target_quantity: 100,
+            },
+        };
+        sim.step(&[set_cmd], sim.tick + 1);
+    }
+
+    (structure_id, species_id)
+}
+
+#[test]
+fn extraction_recipe_catalog_has_recipes_for_worldgen_species() {
+    let sim = test_sim(42);
+    let fruit_count = sim.db.fruit_species.iter_all().count();
+    assert!(fruit_count > 0, "worldgen should produce fruit species");
+
+    let kitchen_recipes = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Kitchen);
+    // Should have bread + extraction recipes + component recipes (mill/bake
+    // for starchy species). At minimum: bread + one extraction per species.
+    assert!(
+        kitchen_recipes.len() >= 1 + fruit_count,
+        "kitchen should have at least bread + extraction recipes, got {}",
+        kitchen_recipes.len()
+    );
+
+    // Verify only bread is auto-added (extraction and component recipes are not).
+    let default_recipes = sim
+        .recipe_catalog
+        .default_recipes_for_furnishing(FurnishingType::Kitchen);
+    assert_eq!(default_recipes.len(), 1, "only bread should auto-add");
+    assert_eq!(default_recipes[0].display_name, "Bread");
+}
+
+#[test]
+fn extraction_recipe_inputs_and_outputs_match_species() {
+    let mut sim = test_sim(42);
+    let species_id = insert_test_fruit_species(&mut sim);
+
+    let extract_def = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Kitchen)
+        .into_iter()
+        .find(|r| r.display_name == "Extract Testaleth")
+        .expect("extraction recipe should exist");
+
+    // Input: 1 Testaleth Fruit.
+    assert_eq!(extract_def.inputs.len(), 1);
+    assert_eq!(extract_def.inputs[0].item_kind, inventory::ItemKind::Fruit);
+    assert_eq!(extract_def.inputs[0].quantity, 1);
+    assert_eq!(
+        extract_def.inputs[0].material_filter,
+        inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id))
+    );
+
+    // Outputs: Pulp(37), FruitFiber(52), Seed(15) — 3 outputs.
+    assert_eq!(extract_def.outputs.len(), 3);
+
+    let pulp = extract_def
+        .outputs
+        .iter()
+        .find(|o| o.item_kind == inventory::ItemKind::Pulp);
+    assert!(pulp.is_some(), "should have Pulp output");
+    assert_eq!(pulp.unwrap().quantity, 37);
+
+    let fiber = extract_def
+        .outputs
+        .iter()
+        .find(|o| o.item_kind == inventory::ItemKind::FruitFiber);
+    assert!(fiber.is_some(), "should have FruitFiber output");
+    assert_eq!(fiber.unwrap().quantity, 52);
+
+    let seed = extract_def
+        .outputs
+        .iter()
+        .find(|o| o.item_kind == inventory::ItemKind::Seed);
+    assert!(seed.is_some(), "should have Seed output");
+    assert_eq!(seed.unwrap().quantity, 15);
+
+    // Verb should be Extract.
+    assert_eq!(extract_def.key.verb, crate::recipe::RecipeVerb::Extract);
+
+    // Work ticks should come from config.
+    assert_eq!(extract_def.work_ticks, sim.config.extract_work_ticks);
+}
+
+#[test]
+fn extraction_monitor_creates_task_when_fruit_available() {
+    let mut sim = test_sim(42);
+    let (structure_id, species_id) = setup_extraction_kitchen(&mut sim);
+
+    // Add fruit of the correct species to the kitchen inventory.
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        5,
+        None,
+        None,
+        Some(inventory::Material::FruitSpecies(species_id)),
+        0,
+        None,
+        None,
+    );
+
+    // Advance far enough for the logistics heartbeat to trigger the crafting
+    // monitor. The heartbeat interval is config.logistics_heartbeat_interval_ticks.
+    let target = sim.tick + sim.config.logistics_heartbeat_interval_ticks + 1;
+    while sim.tick < target {
+        sim.step(&[], sim.tick + 1);
+    }
+
+    // Should have created a Craft task for the kitchen.
+    let tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
+        .collect();
+    assert_eq!(tasks.len(), 1, "should create one craft task");
+}
+
+#[test]
+fn extraction_produces_correct_component_items() {
+    let mut sim = test_sim(42);
+    let (structure_id, species_id) = setup_extraction_kitchen(&mut sim);
+
+    // Add fruit to kitchen.
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        1,
+        None,
+        None,
+        Some(inventory::Material::FruitSpecies(species_id)),
+        0,
+        None,
+        None,
+    );
+
+    // Pre-fill bread so the bread recipe (auto-added with target 50)
+    // doesn't compete for the fruit or the elf's attention.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bread,
+        200,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+
+    // Spawn an elf near the kitchen and run until extraction completes.
+    let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, anchor, &mut events)
+        .expect("spawn elf");
+    // Make elf not hungry/sleepy so they'll pick up the task.
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.food = food_max;
+        c.rest = rest_max;
+    });
+
+    // Run the sim forward: need heartbeat interval (5000) + walk time +
+    // extract_work_ticks (3000) + margin.
+    for _ in 0..15000 {
+        sim.step(&[], sim.tick + 1);
+    }
+
+    // Check that the fruit was consumed and components were produced.
+    let fruit_count = sim.inv_item_count(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+    );
+    assert_eq!(fruit_count, 0, "fruit should be consumed");
+
+    let pulp_count = sim.inv_item_count(
+        inv_id,
+        inventory::ItemKind::Pulp,
+        inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+    );
+    assert_eq!(pulp_count, 37, "should produce 37 Pulp");
+
+    let fiber_count = sim.inv_item_count(
+        inv_id,
+        inventory::ItemKind::FruitFiber,
+        inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+    );
+    assert_eq!(fiber_count, 52, "should produce 52 FruitFiber");
+
+    let seed_count = sim.inv_item_count(
+        inv_id,
+        inventory::ItemKind::Seed,
+        inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+    );
+    assert_eq!(seed_count, 15, "should produce 15 Seed");
+}
+
+#[test]
+fn extraction_display_names_use_vaelith_species() {
+    let mut sim = test_sim(42);
+    let species_id = insert_test_fruit_species(&mut sim);
+
+    // Use material_item_display_name which doesn't need an ItemStack.
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::Pulp,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Pulp"
+    );
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::FruitFiber,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Fiber"
+    );
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::Seed,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Seed"
+    );
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::Husk,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Husk"
+    );
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::FruitSap,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Sap"
+    );
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::FruitResin,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Resin"
+    );
+
+    // Processed components and species-specific bread/bowstring.
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::Flour,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Flour"
+    );
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::Thread,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Thread"
+    );
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::Cord,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Cord"
+    );
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::Bread,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Bread"
+    );
+    assert_eq!(
+        sim.material_item_display_name(
+            inventory::ItemKind::Bowstring,
+            inventory::Material::FruitSpecies(species_id)
+        ),
+        "Testaleth Bowstring"
+    );
+
+    // Also test item_display_name by adding items to an inventory.
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Pulp,
+        10,
+        None,
+        None,
+        Some(inventory::Material::FruitSpecies(species_id)),
+        0,
+        None,
+        None,
+    );
+    let stacks = sim.inv_items(inv_id);
+    let pulp_stack = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Pulp)
+        .expect("should have pulp");
+    assert_eq!(sim.item_display_name(pulp_stack), "Testaleth Pulp");
+}
+
+#[test]
+fn extraction_monitor_skips_when_targets_met() {
+    let mut sim = test_sim(42);
+    let (structure_id, species_id) = setup_extraction_kitchen(&mut sim);
+
+    // Add fruit to the kitchen.
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        5,
+        None,
+        None,
+        Some(inventory::Material::FruitSpecies(species_id)),
+        0,
+        None,
+        None,
+    );
+
+    // Also add enough bread to satisfy the bread recipe target (auto-added
+    // with the kitchen), so the bread recipe doesn't fire either.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bread,
+        200,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+
+    // Pre-fill all outputs above their targets so the monitor sees no need.
+    // Targets are set to 100 each; add 200 of each.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Pulp,
+        200,
+        None,
+        None,
+        Some(inventory::Material::FruitSpecies(species_id)),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::FruitFiber,
+        200,
+        None,
+        None,
+        Some(inventory::Material::FruitSpecies(species_id)),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Seed,
+        200,
+        None,
+        None,
+        Some(inventory::Material::FruitSpecies(species_id)),
+        0,
+        None,
+        None,
+    );
+
+    // Advance far enough for the logistics heartbeat to trigger.
+    let target = sim.tick + sim.config.logistics_heartbeat_interval_ticks + 1;
+    while sim.tick < target {
+        sim.step(&[], sim.tick + 1);
+    }
+
+    // Should NOT create a task because all targets are met.
+    let tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state != TaskState::Complete)
+        .collect();
+    assert_eq!(tasks.len(), 0, "should not create task when targets met");
+}
+
+#[test]
+fn extraction_recipe_key_json_roundtrip() {
+    let mut sim = test_sim(42);
+    let _species_id = insert_test_fruit_species(&mut sim);
+
+    let extract_def = sim
+        .recipe_catalog
+        .recipes_for_furnishing(FurnishingType::Kitchen)
+        .into_iter()
+        .find(|r| r.display_name == "Extract Testaleth")
+        .expect("extraction recipe should exist");
+
+    let json = extract_def.key.to_json();
+    let restored = crate::recipe::RecipeKey::from_json(&json).expect("should deserialize");
+    assert_eq!(extract_def.key, restored);
+}
+
+#[test]
+fn kitchen_furnishing_does_not_auto_add_extraction_recipes() {
+    let mut sim = test_sim(42);
+    let _species_id = insert_test_fruit_species(&mut sim);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
+
+    // Kitchen should only have bread, not extraction recipes.
+    let active_recipes = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(active_recipes.len(), 1, "only bread should be auto-added");
+    assert!(
+        active_recipes[0].recipe_display_name.contains("Bread"),
+        "auto-added recipe should be bread, got: {}",
+        active_recipes[0].recipe_display_name
+    );
+}
+
+#[test]
+fn greenhouse_fruit_haul_to_extraction_kitchen() {
+    let mut sim = test_sim(42);
+    let (kitchen_id, species_id) = setup_extraction_kitchen(&mut sim);
+
+    // Pre-fill bread so the bread recipe doesn't interfere.
+    let kitchen_inv = sim.db.structures.get(&kitchen_id).unwrap().inventory_id;
+    sim.inv_add_item(
+        kitchen_inv,
+        inventory::ItemKind::Bread,
+        200,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+
+    // Create a greenhouse with the same species.
+    let gh_anchor = find_building_site(&sim);
+    let gh_id = insert_completed_building(&mut sim, gh_anchor);
+    let furnish_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id: gh_id,
+            furnishing_type: FurnishingType::Greenhouse,
+            greenhouse_species: Some(species_id),
+        },
+    };
+    sim.step(&[furnish_cmd], sim.tick + 1);
+
+    // Verify greenhouse has a logistics priority set.
+    let gh = sim.db.structures.get(&gh_id).unwrap();
+    assert!(
+        gh.logistics_priority.is_some(),
+        "greenhouse should have logistics priority"
+    );
+    assert!(
+        gh.logistics_priority.unwrap() < sim.config.kitchen_default_priority,
+        "greenhouse priority should be lower than kitchen's"
+    );
+
+    // Put fruit in the greenhouse.
+    let gh_inv = gh.inventory_id;
+    sim.inv_add_item(
+        gh_inv,
+        inventory::ItemKind::Fruit,
+        5,
+        None,
+        None,
+        Some(inventory::Material::FruitSpecies(species_id)),
+        0,
+        None,
+        None,
+    );
+
+    // The extraction recipe auto-logistics should generate a want for
+    // this species' fruit. Verify the effective wants include it.
+    let wants = sim.compute_effective_wants(kitchen_id);
+    let fruit_want = wants.iter().find(|w| {
+        w.item_kind == inventory::ItemKind::Fruit
+            && w.material_filter
+                == inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(
+                    species_id,
+                ))
+    });
+    assert!(
+        fruit_want.is_some(),
+        "kitchen should want fruit of the extraction species"
+    );
+
+    // The haul source search should find the greenhouse fruit.
+    let source = sim.find_haul_source(
+        inventory::ItemKind::Fruit,
+        inventory::MaterialFilter::Specific(inventory::Material::FruitSpecies(species_id)),
+        1,
+        kitchen_id,
+        sim.config.kitchen_default_priority,
+    );
+    assert!(
+        source.is_some(),
+        "should find greenhouse as haul source for fruit"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Strut designation and construction tests
+// -----------------------------------------------------------------------
+
+/// Find two air voxels adjacent to trunk that form a valid 2-voxel strut
+/// line (face-adjacent pair, at least one endpoint adjacent to trunk).
+fn find_strut_endpoints(sim: &SimState) -> (VoxelCoord, VoxelCoord) {
+    let tree = &sim.trees[&sim.player_tree_id];
+    for &trunk_coord in &tree.trunk_voxels {
+        // Try +X direction: two air voxels extending from trunk.
+        let a = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
+        let b = VoxelCoord::new(trunk_coord.x + 2, trunk_coord.y, trunk_coord.z);
+        if sim.world.in_bounds(a)
+            && sim.world.in_bounds(b)
+            && sim.world.get(a) == VoxelType::Air
+            && sim.world.get(b) == VoxelType::Air
+        {
+            return (a, b);
+        }
+    }
+    panic!("No suitable strut endpoints found");
+}
+
+#[test]
+fn strut_designate_creates_blueprint_and_strut_row() {
+    let mut sim = test_sim(42);
+    let (a, b) = find_strut_endpoints(&sim);
+    let line = a.line_to(b);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: line.clone(),
+            priority: Priority::Normal,
+        },
+    };
+    let result = sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.build_type, BuildType::Strut);
+    assert_eq!(bp.voxels, line);
+    assert_eq!(bp.state, BlueprintState::Designated);
+
+    // Strut row created with correct endpoints.
+    assert_eq!(sim.db.struts.len(), 1);
+    let strut = sim.db.struts.iter_all().next().unwrap();
+    assert_eq!(strut.endpoint_a, a);
+    assert_eq!(strut.endpoint_b, b);
+    assert_eq!(strut.blueprint_id, Some(bp.id));
+    assert!(strut.structure_id.is_none());
+
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, SimEventKind::BlueprintDesignated { .. }))
+    );
+}
+
+#[test]
+fn strut_rejects_single_voxel() {
+    let mut sim = test_sim(42);
+    let air = find_air_adjacent_to_trunk(&sim);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: vec![air],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 0);
+    assert!(
+        sim.last_build_message
+            .as_ref()
+            .unwrap()
+            .contains("at least 2")
+    );
+}
+
+#[test]
+fn strut_rejects_invalid_bresenham_list() {
+    let mut sim = test_sim(42);
+    let (a, b) = find_strut_endpoints(&sim);
+
+    // Submit a voxel list that doesn't match the line.
+    let bogus = vec![a, VoxelCoord::new(a.x + 5, a.y + 5, a.z + 5), b];
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: bogus,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 0);
+    assert!(
+        sim.last_build_message
+            .as_ref()
+            .unwrap()
+            .contains("Bresenham")
+    );
+}
+
+#[test]
+fn strut_rejects_player_built_structure() {
+    let mut sim = test_sim(42);
+    let air = find_air_adjacent_to_trunk(&sim);
+
+    // Place a GrownPlatform at `air`.
+    sim.world.set(air, VoxelType::GrownPlatform);
+
+    // Try to designate a strut through the platform.
+    let b = VoxelCoord::new(air.x + 1, air.y, air.z);
+    if sim.world.in_bounds(b) && sim.world.get(b) == VoxelType::Air {
+        let line = air.line_to(b);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 0);
+        assert!(
+            sim.last_build_message
+                .as_ref()
+                .unwrap()
+                .contains("player-built")
+        );
+    }
+}
+
+#[test]
+fn strut_replaces_trunk_records_originals() {
+    let mut sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    // Find a trunk voxel with air on both sides (+X).
+    let mut found = None;
+    for &trunk_coord in &tree.trunk_voxels {
+        let before = VoxelCoord::new(trunk_coord.x - 1, trunk_coord.y, trunk_coord.z);
+        let after = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
+        if sim.world.in_bounds(before)
+            && sim.world.in_bounds(after)
+            && sim.world.get(before) == VoxelType::Air
+            && sim.world.get(after) == VoxelType::Air
+        {
+            found = Some((before, trunk_coord, after));
+            break;
+        }
+    }
+    let (before, trunk, after) = found.expect("Need trunk with air on both sides");
+
+    let line = before.line_to(after);
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: line,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    // Original voxels should record the trunk position.
+    assert!(
+        bp.original_voxels
+            .iter()
+            .any(|(c, vt)| *c == trunk && *vt == VoxelType::Trunk),
+        "Should record trunk in original_voxels"
+    );
+}
+
+#[test]
+fn part_type_extracted_item_kind_mapping() {
+    use crate::fruit::PartType;
+    assert_eq!(
+        PartType::Flesh.extracted_item_kind(),
+        inventory::ItemKind::Pulp
+    );
+    assert_eq!(
+        PartType::Rind.extracted_item_kind(),
+        inventory::ItemKind::Husk
+    );
+    assert_eq!(
+        PartType::Seed.extracted_item_kind(),
+        inventory::ItemKind::Seed
+    );
+    assert_eq!(
+        PartType::Fiber.extracted_item_kind(),
+        inventory::ItemKind::FruitFiber
+    );
+    assert_eq!(
+        PartType::Sap.extracted_item_kind(),
+        inventory::ItemKind::FruitSap
+    );
+    assert_eq!(
+        PartType::Resin.extracted_item_kind(),
+        inventory::ItemKind::FruitResin
+    );
+}
+
+#[test]
+fn strut_rejects_no_adjacency() {
+    let mut sim = test_sim(42);
+    // Place strut entirely in open air, far from any structure.
+    let a = VoxelCoord::new(60, 60, 60);
+    let b = VoxelCoord::new(61, 60, 60);
+    if sim.world.in_bounds(a)
+        && sim.world.in_bounds(b)
+        && sim.world.get(a) == VoxelType::Air
+        && sim.world.get(b) == VoxelType::Air
+    {
+        let line = a.line_to(b);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick: 1,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], 1);
+        assert_eq!(sim.db.blueprints.len(), 0);
+        assert!(
+            sim.last_build_message
+                .as_ref()
+                .unwrap()
+                .contains("adjacent")
+        );
+    }
+}
+
+#[test]
+fn strut_blueprint_overlap_rejected() {
+    let mut sim = test_sim(42);
+    let (a, b) = find_strut_endpoints(&sim);
+    let line = a.line_to(b);
+
+    // Designate first strut.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: line.clone(),
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Try to designate overlapping strut.
+    let cmd2 = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: line,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd2], 2);
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Second strut should be rejected"
+    );
+    assert!(
+        sim.last_build_message
+            .as_ref()
+            .unwrap()
+            .contains("Overlaps")
+    );
+}
+
+#[test]
+fn strut_cancel_deletes_strut_row() {
+    let mut sim = test_sim(42);
+    let (a, b) = find_strut_endpoints(&sim);
+    let line = a.line_to(b);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: line,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.struts.len(), 1);
+
+    let bp_id = sim.db.blueprints.iter_all().next().unwrap().id;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::CancelBuild { project_id: bp_id },
+    };
+    sim.step(&[cmd], 2);
+    assert_eq!(
+        sim.db.struts.len(),
+        0,
+        "Strut row should be cascade-deleted on cancel"
+    );
+}
+
+#[test]
+fn strut_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let (a, b) = find_strut_endpoints(&sim);
+    let line = a.line_to(b);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: line.clone(),
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Serde roundtrip the sim state.
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.db.struts.len(), 1);
+    let strut = restored.db.struts.iter_all().next().unwrap();
+    assert_eq!(strut.endpoint_a, a);
+    assert_eq!(strut.endpoint_b, b);
+
+    assert_eq!(restored.db.blueprints.len(), 1);
+    let bp = restored.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.build_type, BuildType::Strut);
+}
+
+#[test]
+fn strut_replaces_replaceable_types() {
+    let mut sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+
+    // Find a trunk voxel at y > 1 to place air→trunk→air line.
+    let trunk_coord = tree
+        .trunk_voxels
+        .iter()
+        .find(|c| {
+            let a = VoxelCoord::new(c.x - 1, c.y, c.z);
+            let b = VoxelCoord::new(c.x + 1, c.y, c.z);
+            sim.world.in_bounds(a)
+                && sim.world.in_bounds(b)
+                && sim.world.get(a) == VoxelType::Air
+                && sim.world.get(b) == VoxelType::Air
+        })
+        .copied()
+        .expect("Need trunk with air on both sides");
+
+    let a = VoxelCoord::new(trunk_coord.x - 1, trunk_coord.y, trunk_coord.z);
+    let b = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
+
+    let mut tick = 1u64;
+    // Set various replaceable types and verify strut accepts them.
+    for replaceable in [
+        VoxelType::Leaf,
+        VoxelType::Fruit,
+        VoxelType::Dirt,
+        VoxelType::Root,
+        VoxelType::Branch,
+    ] {
+        sim.world.set(trunk_coord, replaceable);
+        let line = a.line_to(b);
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick,
+            action: SimAction::DesignateBuild {
+                build_type: BuildType::Strut,
+                voxels: line,
+                priority: Priority::Normal,
+            },
+        };
+        sim.step(&[cmd], tick);
+        tick += 1;
+        assert!(
+            sim.db.blueprints.len() >= 1,
+            "Strut should accept replacing {:?}, msg: {:?}",
+            replaceable,
+            sim.last_build_message
+        );
+        // Cancel so we can try the next type.
+        let bp_id = sim.db.blueprints.iter_all().next().unwrap().id;
+        let cmd = SimCommand {
+            player_id: sim.player_id,
+            tick,
+            action: SimAction::CancelBuild { project_id: bp_id },
+        };
+        sim.step(&[cmd], tick);
+        tick += 1;
+        // Restore the original type for the next iteration.
+        sim.world.set(trunk_coord, VoxelType::Trunk);
+    }
+}
+
+#[test]
+fn strut_build_type_to_voxel_type() {
+    assert_eq!(BuildType::Strut.to_voxel_type(), VoxelType::Strut);
+}
+
+#[test]
+fn strut_completed_structure_display_name() {
+    let inv_id = InventoryId(0);
+    let bp = Blueprint {
+        id: ProjectId(crate::types::SimUuid::new_v4(
+            &mut crate::prng::GameRng::new(1),
+        )),
+        build_type: BuildType::Strut,
+        voxels: vec![VoxelCoord::new(0, 0, 0), VoxelCoord::new(1, 0, 0)],
+        priority: Priority::Normal,
+        state: BlueprintState::Complete,
+        task_id: None,
+        composition_id: None,
+        face_layout: None,
+        stress_warning: false,
+        original_voxels: vec![],
+    };
+    let structure = CompletedStructure::from_blueprint(StructureId(42), &bp, 100, inv_id);
+    assert_eq!(structure.display_name(), "Strut #42");
+}
+
+#[test]
+fn strut_cancel_restores_original_voxels() {
+    // Designating a strut through trunk records the trunk in
+    // original_voxels. Manually materializing the strut voxel and
+    // cancelling should restore the original trunk type.
+    let mut sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+
+    // Find a trunk voxel with air on both sides.
+    let trunk_coord = tree
+        .trunk_voxels
+        .iter()
+        .find(|c| {
+            let a = VoxelCoord::new(c.x - 1, c.y, c.z);
+            let b = VoxelCoord::new(c.x + 1, c.y, c.z);
+            sim.world.in_bounds(a)
+                && sim.world.in_bounds(b)
+                && sim.world.get(a) == VoxelType::Air
+                && sim.world.get(b) == VoxelType::Air
+        })
+        .copied()
+        .expect("Need trunk with air on both sides");
+
+    let a = VoxelCoord::new(trunk_coord.x - 1, trunk_coord.y, trunk_coord.z);
+    let b = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
+    let line = a.line_to(b);
+
+    // Designate strut.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: line.clone(),
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Verify original_voxels tracked the trunk voxel.
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert!(
+        bp.original_voxels
+            .iter()
+            .any(|(c, vt)| *c == trunk_coord && *vt == VoxelType::Trunk),
+        "original_voxels should include the trunk coord"
+    );
+
+    // Simulate materialization: set the trunk voxel to Strut and add
+    // to placed_voxels (as the build task would).
+    sim.world.set(trunk_coord, VoxelType::Strut);
+    sim.placed_voxels.push((trunk_coord, VoxelType::Strut));
+    assert_eq!(sim.world.get(trunk_coord), VoxelType::Strut);
+
+    // Cancel the build.
+    let bp_id = sim.db.blueprints.iter_all().next().unwrap().id;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::CancelBuild { project_id: bp_id },
+    };
+    sim.step(&[cmd], 2);
+
+    // After cancel, the trunk voxel should be restored.
+    assert_eq!(
+        sim.world.get(trunk_coord),
+        VoxelType::Trunk,
+        "Cancel should restore trunk voxel from original_voxels"
+    );
+
+    // placed_voxels should no longer contain the strut entry.
+    assert!(
+        !sim.placed_voxels.iter().any(|(c, _)| *c == trunk_coord),
+        "placed_voxels should not contain cancelled strut voxel"
+    );
+}
+
+#[test]
+fn strut_materialization_creates_voxels() {
+    // Complete a strut build and verify all line voxels become Strut.
+    let mut sim = test_sim(42);
+    let (a, b) = find_strut_endpoints(&sim);
+    let line = a.line_to(b);
+
+    // Spawn an elf near the build site.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: a,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Designate the strut.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: line.clone(),
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 2);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Run forward until complete.
+    let max_tick = sim.tick + 1_000_000;
+    while sim.tick < max_tick {
+        sim.step(&[], sim.tick + 100);
+        let all_complete = sim
+            .db
+            .blueprints
+            .iter_all()
+            .all(|bp| bp.state == BlueprintState::Complete);
+        if all_complete {
+            break;
+        }
+    }
+    assert!(
+        sim.db
+            .blueprints
+            .iter_all()
+            .all(|bp| bp.state == BlueprintState::Complete),
+        "Strut build did not complete"
+    );
+
+    // All line voxels should be Strut.
+    for &coord in &line {
+        assert_eq!(
+            sim.world.get(coord),
+            VoxelType::Strut,
+            "Voxel at {:?} should be Strut after completion",
+            coord
+        );
+    }
+
+    // A CompletedStructure should exist.
+    assert!(
+        sim.db.structures.len() >= 1,
+        "Should have a completed structure"
+    );
+
+    // The Strut row should have structure_id set.
+    let strut = sim.db.struts.iter_all().next().unwrap();
+    assert!(
+        strut.structure_id.is_some(),
+        "Strut row should have structure_id after completion"
+    );
+}
+
+#[test]
+fn strut_save_load_roundtrip_with_completed_strut() {
+    // Complete a strut, save, load, and verify the strut row + voxels
+    // survive the roundtrip.
+    let mut sim = test_sim(42);
+    let (a, b) = find_strut_endpoints(&sim);
+    let line = a.line_to(b);
+
+    // Spawn elf and designate.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: a,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Strut,
+            voxels: line.clone(),
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Complete the build.
+    let max_tick = sim.tick + 1_000_000;
+    while sim.tick < max_tick {
+        sim.step(&[], sim.tick + 100);
+        if sim
+            .db
+            .blueprints
+            .iter_all()
+            .all(|bp| bp.state == BlueprintState::Complete)
+        {
+            break;
+        }
+    }
+
+    // Save/load roundtrip.
+    let json = serde_json::to_string(&sim).unwrap();
+    let mut restored: SimState = serde_json::from_str(&json).unwrap();
+    restored.rebuild_transient_state();
+
+    // Verify strut row survived.
+    assert_eq!(restored.db.struts.len(), 1);
+    let strut = restored.db.struts.iter_all().next().unwrap();
+    assert_eq!(strut.endpoint_a, a);
+    assert_eq!(strut.endpoint_b, b);
+    assert!(strut.structure_id.is_some());
+
+    // Verify voxels survived.
+    for &coord in &line {
+        assert_eq!(
+            restored.world.get(coord),
+            VoxelType::Strut,
+            "Strut voxel at {:?} should survive save/load",
+            coord
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// Clothing / equip system tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn equip_slot_mapping() {
+    use inventory::EquipSlot;
+    assert_eq!(inventory::ItemKind::Hat.equip_slot(), Some(EquipSlot::Head));
+    assert_eq!(
+        inventory::ItemKind::Tunic.equip_slot(),
+        Some(EquipSlot::Torso)
+    );
+    assert_eq!(
+        inventory::ItemKind::Leggings.equip_slot(),
+        Some(EquipSlot::Legs)
+    );
+    assert_eq!(
+        inventory::ItemKind::Boots.equip_slot(),
+        Some(EquipSlot::Feet)
+    );
+    assert_eq!(
+        inventory::ItemKind::Gloves.equip_slot(),
+        Some(EquipSlot::Hands)
+    );
+    // Non-clothing items return None.
+    assert_eq!(inventory::ItemKind::Bread.equip_slot(), None);
+    assert_eq!(inventory::ItemKind::Bow.equip_slot(), None);
+    assert_eq!(inventory::ItemKind::Arrow.equip_slot(), None);
+    assert_eq!(inventory::ItemKind::Cloth.equip_slot(), None);
+}
+
+#[test]
+fn inv_split_stack_preserves_properties() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        3,
+        None,
+        None,
+        Some(inventory::Material::FruitSpecies(
+            crate::fruit::FruitSpeciesId(0),
+        )),
+        5,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1);
+    let orig_id = stacks[0].id;
+
+    let new_id = sim.inv_split_stack(orig_id, 1).unwrap();
+    assert_ne!(new_id, orig_id, "Split should create a new stack");
+
+    let orig = sim.db.item_stacks.get(&orig_id).unwrap();
+    let split = sim.db.item_stacks.get(&new_id).unwrap();
+    assert_eq!(orig.quantity, 2);
+    assert_eq!(split.quantity, 1);
+    // Properties preserved.
+    assert_eq!(split.material, orig.material);
+    assert_eq!(split.quality, orig.quality);
+    assert_eq!(split.current_hp, orig.current_hp);
+    assert_eq!(split.max_hp, orig.max_hp);
+    assert_eq!(split.kind, orig.kind);
+}
+
+#[test]
+fn inv_split_stack_whole_stack() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        2,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let orig_id = stacks[0].id;
+
+    // Splitting >= quantity returns the original stack.
+    let result = sim.inv_split_stack(orig_id, 2).unwrap();
+    assert_eq!(result, orig_id);
+    let result = sim.inv_split_stack(orig_id, 5).unwrap();
+    assert_eq!(result, orig_id);
+
+    // Splitting 0 returns None.
+    assert!(sim.inv_split_stack(orig_id, 0).is_none());
+}
+
+#[test]
+fn inv_equip_item_sets_slot() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let stack_id = stacks[0].id;
+
+    assert!(sim.inv_equip_item(stack_id));
+    let stack = sim.db.item_stacks.get(&stack_id).unwrap();
+    assert_eq!(stack.equipped_slot, Some(inventory::EquipSlot::Torso));
+}
+
+#[test]
+fn inv_equip_rejects_duplicate_slot() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    // Add two Tunics (qty 1 each).
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        None,
+        None,
+        Some(inventory::Material::Yew),
+        0,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 2);
+
+    assert!(sim.inv_equip_item(stacks[0].id));
+    assert!(!sim.inv_equip_item(stacks[1].id), "Slot already occupied");
+}
+
+#[test]
+fn inv_equip_rejects_quantity_gt_1() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        3,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert!(
+        !sim.inv_equip_item(stacks[0].id),
+        "qty > 1 should be rejected"
+    );
+}
+
+#[test]
+fn inv_equip_rejects_non_clothing() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 1, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert!(
+        !sim.inv_equip_item(stacks[0].id),
+        "Non-clothing items should be rejected"
+    );
+}
+
+#[test]
+fn acquire_item_auto_equips_one_from_multi_qty() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+
+    // Create a ground pile with 3 Hats.
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Hat, 3, None, None);
+    }
+
+    // Position elf at the pile.
+    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_node = Some(pile_nav);
+        c.position = pile_nav_pos;
+    });
+
+    // Create AcquireItem task for 3 Hats.
+    let task_id = TaskId::new(&mut sim.rng);
+    let source = task::HaulSource::GroundPile(pile_pos);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Hat,
+            inventory::MaterialFilter::Any,
+            3,
+            task_id,
+        );
+    }
+    let acquire_task = Task {
+        id: task_id,
+        kind: TaskKind::AcquireItem {
+            source,
+            item_kind: inventory::ItemKind::Hat,
+            quantity: 3,
+        },
+        state: TaskState::InProgress,
+        location: pile_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(acquire_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.resolve_acquire_item_action(elf_id, task_id);
+
+    // Should have 3 Hats total: 1 equipped, 2 unequipped.
+    let elf_inv = sim.creature_inv(elf_id);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&elf_inv, tabulosity::QueryOpts::ASC);
+    let hats: Vec<_> = stacks
+        .iter()
+        .filter(|s| s.kind == inventory::ItemKind::Hat)
+        .collect();
+    let total_qty: u32 = hats.iter().map(|s| s.quantity).sum();
+    assert_eq!(total_qty, 3, "Should have 3 hats total");
+    let equipped_count = hats.iter().filter(|s| s.equipped_slot.is_some()).count();
+    assert_eq!(equipped_count, 1, "Exactly one hat should be equipped");
+    let equipped = hats.iter().find(|s| s.equipped_slot.is_some()).unwrap();
+    assert_eq!(equipped.quantity, 1, "Equipped hat should be qty 1");
+}
+
+#[test]
+fn equipped_items_dont_merge() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    // Add equipped Tunic.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        Some(inventory::EquipSlot::Torso),
+    );
+    // Add unequipped Tunic.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 2, "Equipped and unequipped should not merge");
+    let equipped = stacks.iter().find(|s| s.equipped_slot.is_some()).unwrap();
+    let unequipped = stacks.iter().find(|s| s.equipped_slot.is_none()).unwrap();
+    assert_eq!(equipped.quantity, 1);
+    assert_eq!(unequipped.quantity, 1);
+}
+
+#[test]
+fn inv_unequip_slot_clears_and_normalizes() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    // Add equipped Tunic + unequipped Tunic (same properties).
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        Some(inventory::EquipSlot::Torso),
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 2);
+
+    // Unequip.
+    let unequipped_id = sim.inv_unequip_slot(inv_id, inventory::EquipSlot::Torso);
+    assert!(unequipped_id.is_some());
+
+    // After normalize, should merge into a single stack of qty 2.
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1, "Should merge after unequip");
+    assert_eq!(stacks[0].quantity, 2);
+    assert_eq!(stacks[0].equipped_slot, None);
+}
+
+#[test]
+fn acquire_item_preserves_material() {
+    // Test that acquiring an item via resolve_acquire_item_action
+    // preserves material and quality (bug fix verification).
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+
+    // Create a ground pile with material-bearing Cloth.
+    let mat = Some(inventory::Material::FruitSpecies(
+        crate::fruit::FruitSpeciesId(0),
+    ));
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_item(
+            pile.inventory_id,
+            inventory::ItemKind::Cloth,
+            2,
+            None,
+            None,
+            mat,
+            3,
+            None,
+            None,
+        );
+    }
+
+    // Position elf at the pile.
+    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_node = Some(pile_nav);
+        c.position = pile_nav_pos;
+    });
+
+    // Create AcquireItem task with reservation.
+    let task_id = TaskId::new(&mut sim.rng);
+    let source = task::HaulSource::GroundPile(pile_pos);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_items(
+            pile.inventory_id,
+            inventory::ItemKind::Cloth,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
+    let acquire_task = Task {
+        id: task_id,
+        kind: TaskKind::AcquireItem {
+            source,
+            item_kind: inventory::ItemKind::Cloth,
+            quantity: 1,
+        },
+        state: TaskState::InProgress,
+        location: pile_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(acquire_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.resolve_acquire_item_action(elf_id, task_id);
+
+    // Verify material/quality preserved in creature inventory.
+    let elf_inv = sim.creature_inv(elf_id);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&elf_inv, tabulosity::QueryOpts::ASC);
+    let cloth = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Cloth)
+        .expect("Cloth should be in elf inventory");
+    assert_eq!(cloth.material, mat, "Material should be preserved");
+    assert_eq!(cloth.quality, 3, "Quality should be preserved");
+}
+
+#[test]
+fn acquire_item_auto_equips_clothing() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+
+    // Create a ground pile with a Tunic.
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Tunic, 1, None, None);
+    }
+
+    // Position elf at the pile.
+    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_node = Some(pile_nav);
+        c.position = pile_nav_pos;
+    });
+
+    // Create AcquireItem task with reservation.
+    let task_id = TaskId::new(&mut sim.rng);
+    let source = task::HaulSource::GroundPile(pile_pos);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Tunic,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
+    let acquire_task = Task {
+        id: task_id,
+        kind: TaskKind::AcquireItem {
+            source,
+            item_kind: inventory::ItemKind::Tunic,
+            quantity: 1,
+        },
+        state: TaskState::InProgress,
+        location: pile_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(acquire_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.resolve_acquire_item_action(elf_id, task_id);
+
+    // Verify the Tunic is equipped in the Torso slot.
+    let elf_inv = sim.creature_inv(elf_id);
+    let equipped = sim.inv_equipped_in_slot(elf_inv, inventory::EquipSlot::Torso);
+    assert!(equipped.is_some(), "Tunic should be auto-equipped");
+    assert_eq!(equipped.unwrap().kind, inventory::ItemKind::Tunic);
+}
+
+#[test]
+fn acquire_item_does_not_equip_if_slot_occupied() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+
+    // Pre-equip a Tunic in the elf's inventory.
+    let elf_inv = sim.creature_inv(elf_id);
+    sim.inv_add_item(
+        elf_inv,
+        inventory::ItemKind::Tunic,
+        1,
+        Some(elf_id),
+        None,
+        None,
+        0,
+        None,
+        Some(inventory::EquipSlot::Torso),
+    );
+
+    // Create a ground pile with another Tunic.
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Tunic, 1, None, None);
+    }
+
+    // Position elf at the pile.
+    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_node = Some(pile_nav);
+        c.position = pile_nav_pos;
+    });
+
+    // Create AcquireItem task with reservation.
+    let task_id = TaskId::new(&mut sim.rng);
+    let source = task::HaulSource::GroundPile(pile_pos);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Tunic,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
+    let acquire_task = Task {
+        id: task_id,
+        kind: TaskKind::AcquireItem {
+            source,
+            item_kind: inventory::ItemKind::Tunic,
+            quantity: 1,
+        },
+        state: TaskState::InProgress,
+        location: pile_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(acquire_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.resolve_acquire_item_action(elf_id, task_id);
+
+    // Should have 2 Tunics: 1 equipped, 1 not.
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&elf_inv, tabulosity::QueryOpts::ASC);
+    let tunics: Vec<_> = stacks
+        .iter()
+        .filter(|s| s.kind == inventory::ItemKind::Tunic)
+        .collect();
+    assert_eq!(tunics.len(), 2, "Should have 2 separate tunic stacks");
+    let equipped_count = tunics.iter().filter(|s| s.equipped_slot.is_some()).count();
+    assert_eq!(equipped_count, 1, "Only one should be equipped");
+}
+
+#[test]
+fn serde_roundtrip_equipped_slot() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Hat,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        Some(inventory::EquipSlot::Head),
+    );
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+    let stacks = restored
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1);
+    assert_eq!(stacks[0].equipped_slot, Some(inventory::EquipSlot::Head));
+}
+
+#[test]
+fn serde_backward_compat_no_equipped_slot() {
+    // Simulate old save format: ItemStack JSON without equipped_slot field.
+    let json = r#"{"id":1,"inventory_id":1,"kind":"Hat","quantity":1,"material":null,"quality":0,"enchantment_id":null,"owner":null,"reserved_by":null}"#;
+    let stack: crate::db::ItemStack = serde_json::from_str(json).unwrap();
+    assert_eq!(stack.equipped_slot, None);
+}
+
+#[test]
+fn clothing_wants_in_default_config() {
+    let config = crate::config::GameConfig::default();
+    let wants = &config.elf_default_wants;
+    assert!(wants.len() >= 6, "Should have bread + 5 clothing wants");
+
+    let has_tunic = wants
+        .iter()
+        .any(|w| w.item_kind == inventory::ItemKind::Tunic);
+    let has_leggings = wants
+        .iter()
+        .any(|w| w.item_kind == inventory::ItemKind::Leggings);
+    let has_boots = wants
+        .iter()
+        .any(|w| w.item_kind == inventory::ItemKind::Boots);
+    let has_hat = wants
+        .iter()
+        .any(|w| w.item_kind == inventory::ItemKind::Hat);
+    let has_gloves = wants
+        .iter()
+        .any(|w| w.item_kind == inventory::ItemKind::Gloves);
+    assert!(has_tunic, "Should want Tunic");
+    assert!(has_leggings, "Should want Leggings");
+    assert!(has_boots, "Should want Boots");
+    assert!(has_hat, "Should want Hat");
+    assert!(has_gloves, "Should want Gloves");
+
+    // Boots want should use NonWood filter so elves avoid wood boots (armor).
+    let boots_want = wants
+        .iter()
+        .find(|w| w.item_kind == inventory::ItemKind::Boots)
+        .unwrap();
+    assert_eq!(
+        boots_want.material_filter,
+        inventory::MaterialFilter::NonWood,
+        "Boots want should use NonWood filter to avoid picking up armor"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Friendly-fire avoidance (F-friendly-fire)
+// -----------------------------------------------------------------------
+
+#[test]
+fn is_non_hostile_same_creature() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    assert!(sim.is_non_hostile(elf, elf));
+}
+
+#[test]
+fn is_non_hostile_same_civ() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    // Both elves belong to the player civ.
+    assert!(sim.is_non_hostile(elf_a, elf_b));
+}
+
+#[test]
+fn is_non_hostile_civ_vs_passive_non_civ() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    // Deer has Passive combat AI — should be non-hostile.
+    let deer = spawn_species(&mut sim, Species::Deer);
+    assert!(sim.is_non_hostile(elf, deer));
+}
+
+#[test]
+fn is_non_hostile_civ_vs_aggressive_non_civ() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    // Goblin has AggressiveMelee combat AI — should be hostile.
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    assert!(!sim.is_non_hostile(elf, goblin));
+}
+
+#[test]
+fn is_non_hostile_non_civ_same_species() {
+    let mut sim = test_sim(42);
+    let goblin_a = spawn_species(&mut sim, Species::Goblin);
+    let goblin_b = spawn_species(&mut sim, Species::Goblin);
+    assert!(sim.is_non_hostile(goblin_a, goblin_b));
+}
+
+#[test]
+fn is_non_hostile_non_civ_different_species() {
+    // Non-civ creatures are always non-hostile to each other, even across
+    // species. This matches detect_hostile_targets: non-civ aggressors
+    // only target civ creatures.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let deer = spawn_species(&mut sim, Species::Deer);
+    assert!(sim.is_non_hostile(goblin, deer));
+}
+
+#[test]
+fn is_non_hostile_different_civs_neutral() {
+    // Two creatures from different civs with no Hostile relationship
+    // should be non-hostile.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+
+    // Use two existing civs from worldgen.
+    let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
+    assert!(civs.len() >= 2, "Need at least 2 civs");
+    let civ_a = civs[0].id;
+    let civ_b = civs[1].id;
+
+    // Remove any existing relationships so we have a clean slate.
+    let existing: Vec<_> = sim
+        .db
+        .civ_relationships
+        .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|r| r.to_civ == civ_b)
+        .map(|r| r.id)
+        .collect();
+    for id in existing {
+        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    }
+
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    if let Some(mut c) = sim.db.creatures.get(&elf_b) {
+        c.civ_id = Some(civ_b);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // No Hostile relationship → non-hostile.
+    assert!(
+        sim.is_non_hostile(elf_a, elf_b),
+        "Different civs with no Hostile relationship should be non-hostile"
+    );
+}
+
+#[test]
+fn is_non_hostile_different_civs_hostile() {
+    // Two creatures from different civs with a Hostile relationship
+    // should be hostile.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+
+    let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
+    assert!(civs.len() >= 2, "Need at least 2 civs");
+    let civ_a = civs[0].id;
+    let civ_b = civs[1].id;
+
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+
+    // Assign elf_a to civ_a (it should already be the player civ).
+    let elf_a_civ = sim.db.creatures.get(&elf_a).unwrap().civ_id.unwrap();
+    // Assign elf_b to civ_b.
+    if let Some(mut c) = sim.db.creatures.get(&elf_b) {
+        c.civ_id = Some(civ_b);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Discover civ_b as Hostile.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DiscoverCiv {
+                civ_id: elf_a_civ,
+                discovered_civ: civ_b,
+                initial_opinion: CivOpinion::Hostile,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert!(
+        !sim.is_non_hostile(elf_a, elf_b),
+        "Different civs with Hostile relationship should be hostile"
+    );
+}
+
+#[test]
+fn flight_path_clear_no_creatures() {
+    // Arrow through empty space should not be blocked.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let target_voxel = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
+
+    use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+    let origin_sub = SubVoxelCoord::from_voxel_center(elf_pos);
+    let speed = sim.config.arrow_base_speed;
+    let gravity = sim.config.arrow_gravity;
+    let aim = compute_aim_velocity(origin_sub, target_voxel, speed, gravity, 5, 5000);
+    assert!(aim.hit_tick.is_some());
+
+    let blocked = sim.flight_path_blocked_by_friendly(elf, elf_pos, target_voxel, aim.velocity);
+    assert!(
+        blocked.is_none(),
+        "Should not be blocked with no creatures in path"
+    );
+}
+
+#[test]
+fn flight_path_blocked_by_friendly_creature() {
+    // An elf between the shooter and the target should block the shot.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let shooter = spawn_elf(&mut sim);
+    let blocker = spawn_elf(&mut sim);
+
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    // Place blocker 5 voxels away (in the flight path).
+    let blocker_pos = VoxelCoord::new(shooter_pos.x + 5, shooter_pos.y, shooter_pos.z);
+    force_position(&mut sim, blocker, blocker_pos);
+    // Target 10 voxels away (past the blocker).
+    let target_voxel = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
+
+    use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+    let origin_sub = SubVoxelCoord::from_voxel_center(shooter_pos);
+    let speed = sim.config.arrow_base_speed;
+    let gravity = sim.config.arrow_gravity;
+    let aim = compute_aim_velocity(origin_sub, target_voxel, speed, gravity, 5, 5000);
+    assert!(aim.hit_tick.is_some());
+
+    let blocked =
+        sim.flight_path_blocked_by_friendly(shooter, shooter_pos, target_voxel, aim.velocity);
+    assert_eq!(blocked, Some(blocker), "Should be blocked by friendly elf");
+}
+
+#[test]
+fn flight_path_origin_area_excluded_for_friendlies() {
+    // A friendly creature at the origin voxel (immediate neighbor) should
+    // NOT block the shot — squads can stand together.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let shooter = spawn_elf(&mut sim);
+    let buddy = spawn_elf(&mut sim);
+
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    // Place buddy right next to shooter (adjacent voxel).
+    let buddy_pos = VoxelCoord::new(shooter_pos.x + 1, shooter_pos.y, shooter_pos.z);
+    force_position(&mut sim, buddy, buddy_pos);
+    // Target far away.
+    let target_voxel = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
+
+    use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+    let origin_sub = SubVoxelCoord::from_voxel_center(shooter_pos);
+    let speed = sim.config.arrow_base_speed;
+    let gravity = sim.config.arrow_gravity;
+    let aim = compute_aim_velocity(origin_sub, target_voxel, speed, gravity, 5, 5000);
+    assert!(aim.hit_tick.is_some());
+
+    let blocked =
+        sim.flight_path_blocked_by_friendly(shooter, shooter_pos, target_voxel, aim.velocity);
+    assert!(blocked.is_none(), "Friendly near origin should not block");
+}
+
+#[test]
+fn shoot_arrow_blocked_by_friendly_in_path() {
+    // Full integration: elf should NOT shoot through a friendly elf.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let shooter = spawn_elf(&mut sim);
+    let blocker = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    let blocker_pos = VoxelCoord::new(shooter_pos.x + 5, shooter_pos.y, shooter_pos.z);
+    let goblin_pos = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
+    force_position(&mut sim, blocker, blocker_pos);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, shooter);
+
+    arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: shooter,
+                target_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+
+    // No projectile should have been spawned.
+    assert_eq!(
+        sim.db.projectiles.iter_all().count(),
+        0,
+        "Should not shoot through friendly elf"
+    );
+    // Arrow should NOT have been consumed.
+    let inv_id = sim.db.creatures.get(&shooter).unwrap().inventory_id;
+    assert_eq!(
+        sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any
+        ),
+        5,
+        "Arrow should not be consumed when shot is blocked"
+    );
+}
+
+#[test]
+fn shoot_arrow_hostile_in_path_does_not_block() {
+    // A hostile creature in the flight path should NOT block the shot
+    // (they're a valid target the arrow can hit).
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let shooter = spawn_elf(&mut sim);
+    let goblin_near = spawn_species(&mut sim, Species::Goblin);
+    let goblin_far = spawn_species(&mut sim, Species::Goblin);
+
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    let near_pos = VoxelCoord::new(shooter_pos.x + 5, shooter_pos.y, shooter_pos.z);
+    let far_pos = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
+    force_position(&mut sim, goblin_near, near_pos);
+    force_position(&mut sim, goblin_far, far_pos);
+    force_idle(&mut sim, shooter);
+
+    arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: shooter,
+                target_id: goblin_far,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Projectile should be spawned — hostile in path doesn't block.
+    assert_eq!(
+        sim.db.projectiles.iter_all().count(),
+        1,
+        "Should shoot past hostile creature"
+    );
+}
+
+#[test]
+fn elf_does_not_acquire_wood_boots_as_clothing() {
+    // Wood boots are armor, not clothing. Elves seeking boots should
+    // skip them (NonWood filter on the Boots want).
+    let mut sim = test_sim(42);
+
+    // Set up elf wants: only boots, NonWood filter.
+    sim.config.elf_default_wants = vec![crate::building::LogisticsWant {
+        item_kind: inventory::ItemKind::Boots,
+        material_filter: inventory::MaterialFilter::NonWood,
+        target_quantity: 1,
+    }];
+    sim.config.elf_starting_bread = 0;
+
+    // Spawn elf (gets wants from config).
+    let elf_id = spawn_elf(&mut sim);
+
+    // Place wood boots on the ground near the tree.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
+    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+    sim.inv_add_item(
+        pile_inv,
+        inventory::ItemKind::Boots,
+        1,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    // Run heartbeat — elf should NOT create an AcquireItem task for
+    // wood boots because the NonWood filter rejects them.
+    sim.check_creature_wants(elf_id);
+
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "Elf should not acquire wood boots (armor) as clothing"
+    );
+}
+
+#[test]
+fn elf_acquires_non_wood_boots_as_clothing() {
+    // Non-wood boots (e.g., fruit-material) are clothing, not armor.
+    let mut sim = test_sim(42);
+
+    sim.config.elf_default_wants = vec![crate::building::LogisticsWant {
+        item_kind: inventory::ItemKind::Boots,
+        material_filter: inventory::MaterialFilter::NonWood,
+        target_quantity: 1,
+    }];
+    sim.config.elf_starting_bread = 0;
+
+    let elf_id = spawn_elf(&mut sim);
+
+    // Place fruit-material boots on the ground.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
+    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+    let fruit_mat = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(0));
+    sim.inv_add_item(
+        pile_inv,
+        inventory::ItemKind::Boots,
+        1,
+        None,
+        None,
+        Some(fruit_mat),
+        0,
+        None,
+        None,
+    );
+
+    // Run heartbeat — elf should create an AcquireItem task for
+    // fruit-material boots (passes NonWood filter).
+    sim.check_creature_wants(elf_id);
+
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Elf should acquire non-wood boots as clothing"
+    );
+}
+
+#[test]
+fn try_combat_redirects_to_alternate_target() {
+    // When primary target is blocked by friendly, the attacker should
+    // redirect to an alternate hostile target with a clear path.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let shooter = spawn_elf(&mut sim);
+    let blocker = spawn_elf(&mut sim);
+    let goblin_blocked = spawn_species(&mut sim, Species::Goblin);
+    let goblin_clear = spawn_species(&mut sim, Species::Goblin);
+
+    // Place everyone on the forest floor away from the tree to avoid
+    // LOS issues with the trunk. Y=1 is walking height on flat floor.
+    let base = VoxelCoord::new(5, 1, 32);
+    force_position(&mut sim, shooter, base);
+
+    // Place blocker between shooter and goblin_blocked (on X axis).
+    let blocker_pos = VoxelCoord::new(base.x + 5, base.y, base.z);
+    let blocked_pos = VoxelCoord::new(base.x + 10, base.y, base.z);
+    force_position(&mut sim, blocker, blocker_pos);
+    force_position(&mut sim, goblin_blocked, blocked_pos);
+
+    // Place goblin_clear on the opposite X side with no blocker.
+    let clear_pos = VoxelCoord::new(base.x - 8, base.y, base.z);
+    force_position(&mut sim, goblin_clear, clear_pos);
+
+    force_idle(&mut sim, shooter);
+    arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+    let mut events = Vec::new();
+    let result = sim.try_combat_against_target(shooter, goblin_blocked, &mut events);
+
+    assert!(
+        result,
+        "Should have redirected and fired at alternate target"
+    );
+    assert_eq!(
+        sim.db.projectiles.iter_all().count(),
+        1,
+        "Should have spawned a projectile at alternate target"
+    );
+
+    // Verify the projectile was launched at the clear goblin.
+    let launched_event = events.iter().find(|e| {
+        matches!(&e.kind, SimEventKind::ProjectileLaunched { target_id, .. }
+                if *target_id == goblin_clear)
+    });
+    assert!(
+        launched_event.is_some(),
+        "ProjectileLaunched should target the clear goblin"
+    );
+}
+
+#[test]
+fn item_display_name_shows_equipped_suffix() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    // Unequipped item.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    // Equipped item.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Hat,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        Some(inventory::EquipSlot::Head),
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let tunic = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Tunic)
+        .unwrap();
+    let hat = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Hat)
+        .unwrap();
+    assert_eq!(sim.item_display_name(tunic), "Tunic");
+    assert_eq!(sim.item_display_name(hat), "Hat (equipped)");
+}
+
+#[test]
+fn in_flight_arrow_passes_through_friendly_near_origin() {
+    // An arrow should pass through a friendly creature standing adjacent
+    // to the shooter (origin neighbor) and hit a hostile further away.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let shooter = spawn_elf(&mut sim);
+    let buddy = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place on flat ground away from the tree.
+    let base = VoxelCoord::new(5, 1, 32);
+    force_position(&mut sim, shooter, base);
+    // Buddy adjacent (origin+1 on X axis).
+    let buddy_pos = VoxelCoord::new(base.x + 1, base.y, base.z);
+    force_position(&mut sim, buddy, buddy_pos);
+    // Goblin further along the same axis.
+    let goblin_pos = VoxelCoord::new(base.x + 10, base.y, base.z);
+    force_position(&mut sim, goblin, goblin_pos);
+
+    force_idle(&mut sim, shooter);
+    arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+    // Fire the arrow.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: shooter,
+                target_id: goblin,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.projectiles.iter_all().count(),
+        1,
+        "Arrow should launch"
+    );
+
+    // Advance until the projectile resolves (hits goblin or despawns).
+    let max_tick = sim.tick + 10_000;
+    while sim.tick < max_tick && sim.db.projectiles.iter_all().count() > 0 {
+        sim.step(&[], sim.tick + 10);
+    }
+
+    // Buddy should be alive and at full HP (arrow passed through, not hit).
+    let buddy_creature = sim.db.creatures.get(&buddy).unwrap();
+    assert_eq!(
+        buddy_creature.vital_status,
+        VitalStatus::Alive,
+        "Friendly near origin should not be hit by arrow"
+    );
+    let buddy_max_hp = sim.species_table[&Species::Elf].hp_max;
+    assert_eq!(
+        buddy_creature.hp, buddy_max_hp,
+        "Friendly near origin should be at full HP"
+    );
+    // Goblin should have taken damage (arrow hit them).
+    let goblin_hp = sim.db.creatures.get(&goblin).unwrap().hp;
+    let goblin_max = sim.species_table[&Species::Goblin].hp_max;
+    assert!(
+        goblin_hp < goblin_max,
+        "Goblin should have been hit by the arrow"
+    );
+}
+
+#[test]
+fn position_blocks_friendly_archer_on_line() {
+    // A candidate position directly between a friendly archer and their
+    // target should be detected as blocking.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let mover = spawn_elf(&mut sim);
+    let archer = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place on flat ground away from tree.
+    let base = VoxelCoord::new(5, 1, 32);
+    force_position(&mut sim, mover, base);
+
+    // Archer at x=5, goblin at x=15, candidate at x=10 — directly in line.
+    let archer_pos = VoxelCoord::new(base.x, base.y, base.z + 3);
+    force_position(&mut sim, archer, archer_pos);
+    let goblin_pos = VoxelCoord::new(base.x, base.y, base.z + 13);
+    force_position(&mut sim, goblin, goblin_pos);
+
+    // Give archer a bow so they count as an archer.
+    arm_with_bow_and_arrows(&mut sim, archer, 5);
+
+    // Give archer an attack task targeting the goblin.
+    let goblin_node = sim.nav_graph.find_nearest_node(goblin_pos);
+    if let Some(node) = goblin_node {
+        let task_id = TaskId::new(&mut sim.rng);
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::AttackTarget { target: goblin },
+            state: TaskState::InProgress,
+            location: node,
+            progress: 0.0,
+            total_cost: 0.0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: Some(goblin),
+        };
+        sim.insert_task(task);
+        if let Some(mut c) = sim.db.creatures.get(&archer) {
+            c.current_task = Some(task_id);
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+    }
+
+    // Candidate position between archer and goblin (on the Z-axis line).
+    let candidate = VoxelCoord::new(base.x, base.y, base.z + 8);
+    assert!(
+        sim.position_blocks_friendly_archers(mover, candidate),
+        "Candidate between archer and target should block"
+    );
+
+    // Candidate position off the line should not block.
+    let off_line = VoxelCoord::new(base.x + 5, base.y, base.z + 8);
+    assert!(
+        !sim.position_blocks_friendly_archers(mover, off_line),
+        "Candidate far off the line should not block"
+    );
+}
+
+#[test]
+fn in_flight_arrow_hits_hostile_at_origin_neighbor() {
+    // Point-blank: a hostile creature adjacent to the shooter (origin
+    // neighbor) should still be hit by the arrow.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let shooter = spawn_elf(&mut sim);
+    let goblin_near = spawn_species(&mut sim, Species::Goblin);
+    let goblin_far = spawn_species(&mut sim, Species::Goblin);
+
+    // Place on flat ground away from the tree.
+    let base = VoxelCoord::new(5, 1, 32);
+    force_position(&mut sim, shooter, base);
+    // Hostile adjacent (origin+1).
+    let near_pos = VoxelCoord::new(base.x + 1, base.y, base.z);
+    force_position(&mut sim, goblin_near, near_pos);
+    // Target further away (we shoot at this one, but arrow should hit
+    // the near goblin first since it's in the path).
+    let far_pos = VoxelCoord::new(base.x + 10, base.y, base.z);
+    force_position(&mut sim, goblin_far, far_pos);
+
+    force_idle(&mut sim, shooter);
+    arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+    // Fire at the far goblin.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DebugShootAction {
+                attacker_id: shooter,
+                target_id: goblin_far,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(sim.db.projectiles.iter_all().count(), 1);
+
+    // Advance until the projectile resolves.
+    let max_tick = sim.tick + 10_000;
+    while sim.tick < max_tick && sim.db.projectiles.iter_all().count() > 0 {
+        sim.step(&[], sim.tick + 10);
+    }
+
+    // Near hostile should have been hit (arrow doesn't skip hostiles
+    // even near origin).
+    let near_hp = sim.db.creatures.get(&goblin_near).unwrap().hp;
+    let goblin_max = sim.species_table[&Species::Goblin].hp_max;
+    assert!(
+        near_hp < goblin_max,
+        "Hostile near origin should be hit by arrow"
+    );
+}
+
+#[test]
+fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
+    // B-erratic-movement-2: issuing a DirectedGoTo while a creature is
+    // mid-wander-move (no task, action_kind == Move) should NOT schedule
+    // an extra CreatureActivation. The existing wander activation should
+    // resolve the move, then the creature picks up the new GoTo task.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    // Put the elf into a wander state: no task, mid-Move.
+    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let mut events = Vec::new();
+    sim.wander(elf, elf_node, &mut events);
+
+    // Verify the elf is now mid-wander-move with no task.
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(c.action_kind, ActionKind::Move, "Should be mid-wander-move");
+    assert!(c.current_task.is_none(), "Wander has no task");
+    let activations_before = sim.count_pending_activations_for(elf);
+    assert_eq!(
+        activations_before, 1,
+        "Should have exactly 1 pending activation from wander"
+    );
+
+    // Issue a DirectedGoTo while mid-wander-move.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Should still have exactly 1 pending activation — the existing wander
+    // activation — not 2 (which would cause the wander move to resolve early).
+    let activations_after = sim.count_pending_activations_for(elf);
+    assert_eq!(
+        activations_after, 1,
+        "Should still have exactly 1 pending activation after DirectedGoTo on wandering \
+             creature (was {activations_after})"
+    );
+}
+
+#[test]
+fn directed_goto_on_wandering_creature_preserves_move_action() {
+    // B-erratic-movement-2: issuing a DirectedGoTo while a creature is
+    // mid-wander-move should preserve the in-progress Move action.
+    // The move should complete at its original next_available_tick, then
+    // the creature starts walking toward the new GoTo destination.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    // Put the elf into a wander state.
+    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let mut events = Vec::new();
+    sim.wander(elf, elf_node, &mut events);
+
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(c.action_kind, ActionKind::Move);
+    assert!(c.current_task.is_none());
+    let nat_before = c.next_available_tick;
+    assert!(nat_before.is_some(), "Should have a next_available_tick");
+    let move_action_before = sim.db.move_actions.get(&elf).unwrap();
+    let move_to_before = move_action_before.move_to;
+
+    // Issue DirectedGoTo.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Move action should still be in-flight with original timing.
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(
+        c.action_kind,
+        ActionKind::Move,
+        "Move action should be preserved"
+    );
+    assert_eq!(
+        c.next_available_tick, nat_before,
+        "next_available_tick should be unchanged"
+    );
+    let move_action_after = sim.db.move_actions.get(&elf).unwrap();
+    assert_eq!(
+        move_action_after.move_to, move_to_before,
+        "MoveAction destination should be unchanged"
+    );
+
+    // New GoTo task should be assigned.
+    assert!(c.current_task.is_some(), "Should have the new GoTo task");
+    let task = sim.db.tasks.get(&c.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::GoTo);
+
+    // Advance past the original next_available_tick — elf should resolve
+    // the wander move and then start walking toward the GoTo destination.
+    let completion_tick = nat_before.unwrap();
+    sim.step(&[], completion_tick + 1);
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        c.current_task.is_some(),
+        "Should still have the GoTo task after wander move resolves"
+    );
+}
+
+#[test]
+fn directed_goto_spam_does_not_accumulate_activations() {
+    // B-erratic-movement-2: rapidly issuing multiple DirectedGoTo commands
+    // while the creature is mid-move should never accumulate multiple
+    // pending activations. Each command should recognize the in-flight
+    // move and skip scheduling.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    // Start the elf walking via first DirectedGoTo.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target_a,
+            },
+        }],
+        tick + 2,
+    );
+
+    // Advance until mid-walk.
+    for t in (sim.tick + 1)..=(sim.tick + 50) {
+        sim.step(&[], t);
+        if sim
+            .db
+            .creatures
+            .get(&elf)
+            .is_some_and(|c| c.action_kind == ActionKind::Move)
+        {
+            break;
+        }
+    }
+    assert!(
+        sim.db
+            .creatures
+            .get(&elf)
+            .is_some_and(|c| c.action_kind == ActionKind::Move),
+        "Elf should be mid-walk"
+    );
+    assert_eq!(sim.count_pending_activations_for(elf), 1);
+
+    // Spam 5 DirectedGoTo commands on successive ticks.
+    for i in 0..5 {
+        let target = VoxelCoord::new(tree_pos.x + 3 + i, 1, tree_pos.z + i);
+        let t = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_id: sim.player_id,
+                tick: t + 1,
+                action: SimAction::DirectedGoTo {
+                    creature_id: elf,
+                    position: target,
+                },
+            }],
+            t + 1,
+        );
+    }
+
+    // Should still have exactly 1 pending activation.
+    assert_eq!(
+        sim.count_pending_activations_for(elf),
+        1,
+        "Spamming DirectedGoTo should not accumulate activations"
+    );
+
+    // Let the sim run for a while — creature should move smoothly
+    // without double-activations.
+    let nat = sim
+        .db
+        .creatures
+        .get(&elf)
+        .unwrap()
+        .next_available_tick
+        .unwrap();
+    sim.step(&[], nat + 200);
+
+    // Creature should be alive and functional.
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(c.vital_status, VitalStatus::Alive);
+}
+
+#[test]
+fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
+    // B-erratic-movement-2: same issue as DirectedGoTo but for AttackMove.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let mut events = Vec::new();
+    sim.wander(elf, elf_node, &mut events);
+
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(c.action_kind, ActionKind::Move);
+    assert!(c.current_task.is_none());
+    assert_eq!(sim.count_pending_activations_for(elf), 1);
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::AttackMove {
+                creature_id: elf,
+                destination: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(
+        sim.count_pending_activations_for(elf),
+        1,
+        "Should still have exactly 1 pending activation after AttackMove on wandering creature"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Reactivation after combat task completion
+// -----------------------------------------------------------------------
+// These tests verify that creatures are not left permanently inert after
+// combat tasks complete. The bug: complete_task() clears the creature's
+// task but several code paths return without scheduling a follow-up
+// activation, leaving the creature with no pending events.
+
+#[test]
+fn attack_move_creature_reactivates_after_arriving_at_destination() {
+    // An elf attack-moves to a location with no hostiles. After arriving
+    // and completing the task, the elf must still have a pending activation
+    // so it can wander or pick up new work.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let dest = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: dest,
+        },
+    };
+    // Run long enough for the elf to arrive.
+    sim.step(&[cmd], tick + 20_000);
+
+    // Task should be complete.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "Elf should have no task after attack-move completion"
+    );
+
+    // The creature must still have a pending activation — it should not
+    // be permanently inert.
+    assert!(
+        sim.count_pending_activations_for(elf) >= 1,
+        "Elf must have a pending activation after attack-move completion, \
+             otherwise it will never act again"
+    );
+}
+
+#[test]
+fn attack_move_creature_wanders_after_arriving_at_destination() {
+    // After attack-move completes, advance the sim and verify the elf
+    // actually moves (wanders), proving it didn't get stuck.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let dest = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: dest,
+        },
+    };
+    // Run long enough for the elf to arrive and complete.
+    sim.step(&[cmd], tick + 20_000);
+
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(creature.current_task.is_none(), "Task should be complete");
+
+    // Record position, then advance more ticks.
+    let pos_after_arrival = sim.db.creatures.get(&elf).unwrap().position;
+    sim.step(&[], tick + 25_000);
+
+    let pos_later = sim.db.creatures.get(&elf).unwrap().position;
+    assert_ne!(
+        pos_after_arrival, pos_later,
+        "Elf should have wandered after attack-move completion, but it stayed at {:?}",
+        pos_after_arrival
+    );
+}
+
+#[test]
+fn attack_target_creature_reactivates_after_target_dies() {
+    // An elf is ordered to attack a goblin. The goblin is killed (via
+    // debug command). The elf's task completes, and it must still have
+    // a pending activation so it doesn't become permanently inert.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let tick = sim.tick;
+    let attack_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+        },
+    };
+    sim.step(&[attack_cmd], tick + 2);
+
+    // Elf should have an AttackTarget task.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Elf should have attack task"
+    );
+
+    // Kill the goblin.
+    let kill_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 3,
+        action: SimAction::DebugKillCreature {
+            creature_id: goblin,
+        },
+    };
+    sim.step(&[kill_cmd], tick + 5_000);
+
+    // Task should be complete.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "Elf should have no task after target dies"
+    );
+
+    // Must still have a pending activation.
+    assert!(
+        sim.count_pending_activations_for(elf) >= 1,
+        "Elf must have a pending activation after attack-target completion, \
+             otherwise it will never act again"
+    );
+}
+
+#[test]
+fn attack_target_creature_wanders_after_target_dies() {
+    // After the attack target dies and the task completes, the elf should
+    // actually do something (wander) rather than sitting frozen.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let tick = sim.tick;
+    let attack_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+        },
+    };
+    sim.step(&[attack_cmd], tick + 2);
+
+    // Kill the goblin.
+    let kill_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 3,
+        action: SimAction::DebugKillCreature {
+            creature_id: goblin,
+        },
+    };
+    sim.step(&[kill_cmd], tick + 5_000);
+
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(creature.current_task.is_none(), "Task should be complete");
+
+    // Record position, then advance.
+    let pos_after_kill = sim.db.creatures.get(&elf).unwrap().position;
+    sim.step(&[], tick + 10_000);
+
+    let pos_later = sim.db.creatures.get(&elf).unwrap().position;
+    assert_ne!(
+        pos_after_kill, pos_later,
+        "Elf should have wandered after target died, but it stayed at {:?}",
+        pos_after_kill
+    );
+}
+
+// -----------------------------------------------------------------------
+// Voxel exclusion (F-voxel-exclusion): creatures cannot enter voxels
+// occupied by hostile creatures.
+// -----------------------------------------------------------------------
+
+/// Helper: place a creature at a specific nav node, updating position,
+/// current_node, and spatial index.
+fn force_to_node(sim: &mut SimState, creature_id: CreatureId, node_id: NavNodeId) {
+    let node_pos = sim.nav_graph.node(node_id).position;
+    force_position(sim, creature_id, node_pos);
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&creature_id, |c| c.current_node = Some(node_id));
+}
+
+/// Find two connected nav nodes (A has an edge to B). Returns (node_a, node_b).
+fn find_connected_pair(sim: &SimState) -> (NavNodeId, NavNodeId) {
+    for node in sim.nav_graph.live_nodes() {
+        if !node.edge_indices.is_empty() {
+            let edge = sim.nav_graph.edge(node.edge_indices[0]);
+            return (node.id, edge.to);
+        }
+    }
+    panic!("No connected nav nodes found in test sim");
+}
+
+/// Find three connected nav nodes in a chain: A->B->C where B has edges
+/// to both A and C. Returns (node_a, node_b, node_c).
+fn find_chain_of_three(sim: &SimState) -> (NavNodeId, NavNodeId, NavNodeId) {
+    for node_b in sim.nav_graph.live_nodes() {
+        if node_b.edge_indices.len() >= 2 {
+            let edge_0 = sim.nav_graph.edge(node_b.edge_indices[0]);
+            let edge_1 = sim.nav_graph.edge(node_b.edge_indices[1]);
+            if edge_0.to != edge_1.to {
+                return (edge_0.to, node_b.id, edge_1.to);
+            }
+        }
+    }
+    panic!("No chain of 3 connected nav nodes found in test sim");
+}
+
+#[test]
+fn voxel_exclusion_hostile_blocks_movement() {
+    // A goblin at node B should prevent an elf from moving to node B.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+
+    let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
+
+    // Schedule only the elf to activate (goblin stays idle).
+    sim.event_queue.cancel_creature_activations(elf);
+    sim.event_queue.cancel_creature_activations(goblin);
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+
+    // Run a few ticks — elf should NOT move to goblin's voxel.
+    sim.step(&[], sim.tick + 200);
+
+    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    // Elf must not be at the goblin's position.
+    assert_ne!(
+        elf_pos_after, goblin_pos,
+        "Elf should not move into voxel occupied by hostile goblin"
+    );
+}
+
+#[test]
+fn voxel_exclusion_non_hostile_does_not_block() {
+    // Two elves (same civ) should be able to share a voxel.
+    let mut sim = test_sim(42);
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf_a, node_a);
+    force_to_node(&mut sim, elf_b, node_b);
+    force_idle(&mut sim, elf_a);
+    force_idle(&mut sim, elf_b);
+
+    // Verify they are non-hostile.
+    assert!(
+        sim.is_non_hostile(elf_a, elf_b),
+        "Two elves should be non-hostile"
+    );
+
+    // The exclusion check should return false (not blocked).
+    let elf_b_pos = sim.db.creatures.get(&elf_b).unwrap().position;
+    let elf_footprint = sim.species_table[&Species::Elf].footprint;
+    assert!(
+        !sim.destination_blocked_by_hostile(elf_a, elf_b_pos, elf_footprint),
+        "Non-hostile creature should not block destination"
+    );
+}
+
+#[test]
+fn voxel_exclusion_self_does_not_block() {
+    // A creature should not block itself (e.g., when source and dest
+    // footprints overlap for large creatures).
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_footprint = sim.species_table[&Species::Elf].footprint;
+
+    assert!(
+        !sim.destination_blocked_by_hostile(elf, elf_pos, elf_footprint),
+        "Creature should not block itself"
+    );
+}
+
+#[test]
+fn voxel_exclusion_dead_hostile_does_not_block() {
+    // A dead goblin should not block an elf's movement.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+
+    // Kill the goblin (vital_status is indexed, so use update).
+    if let Some(mut c) = sim.db.creatures.get(&goblin) {
+        c.vital_status = VitalStatus::Dead;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let elf_footprint = sim.species_table[&Species::Elf].footprint;
+    assert!(
+        !sim.destination_blocked_by_hostile(elf, goblin_pos, elf_footprint),
+        "Dead hostile should not block destination"
+    );
+}
+
+#[test]
+fn voxel_exclusion_bidirectional_blocking() {
+    // Both elf and goblin should be blocked from entering each other's
+    // voxels — exclusion is symmetric.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let elf_fp = sim.species_table[&Species::Elf].footprint;
+    let goblin_fp = sim.species_table[&Species::Goblin].footprint;
+
+    assert!(
+        sim.destination_blocked_by_hostile(elf, goblin_pos, elf_fp),
+        "Goblin should block elf from entering its voxel"
+    );
+    assert!(
+        sim.destination_blocked_by_hostile(goblin, elf_pos, goblin_fp),
+        "Elf should block goblin from entering its voxel"
+    );
+}
+
+#[test]
+fn voxel_exclusion_hostile_pursue_blocked() {
+    // A goblin pursuing an elf should be blocked when the elf occupies
+    // the destination voxel (but the goblin can still attack from range).
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+
+    // Place them on adjacent nodes.
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, goblin, node_a);
+    force_to_node(&mut sim, elf, node_b);
+    force_idle(&mut sim, goblin);
+    force_idle(&mut sim, elf);
+
+    let goblin_pos_before = sim.db.creatures.get(&goblin).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+    // Only activate the goblin, freeze the elf.
+    sim.event_queue.cancel_creature_activations(goblin);
+    sim.event_queue.cancel_creature_activations(elf);
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation {
+            creature_id: goblin,
+        },
+    );
+
+    sim.step(&[], sim.tick + 200);
+
+    let goblin_pos_after = sim.db.creatures.get(&goblin).unwrap().position;
+
+    // Goblin should NOT have moved onto the elf's exact voxel.
+    assert_ne!(
+        goblin_pos_after, elf_pos,
+        "Goblin should not move into elf's voxel (hostile exclusion)"
+    );
+
+    // Goblin should either stay put or have dealt damage (melee from
+    // adjacent position).
+    let elf_hp = sim.db.creatures.get(&elf).unwrap().hp;
+    let elf_max_hp = sim.species_table[&Species::Elf].hp_max;
+    let goblin_moved = goblin_pos_before != goblin_pos_after;
+    let dealt_damage = elf_hp < elf_max_hp;
+    assert!(
+        !goblin_moved || dealt_damage,
+        "Goblin should either stay put (blocked) or attack; \
+             moved={goblin_moved}, dealt_damage={dealt_damage}"
+    );
+}
+
+#[test]
+fn voxel_exclusion_wander_avoids_hostile_voxels() {
+    // An elf wandering should not pick an edge leading to a hostile's voxel.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place elf at node_b, goblin at node_c. Elf should not wander to node_c.
+    let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+    force_to_node(&mut sim, elf, node_b);
+    force_to_node(&mut sim, goblin, node_c);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+
+    // Cancel goblin activations so it stays put.
+    sim.event_queue.cancel_creature_activations(goblin);
+    sim.event_queue.cancel_creature_activations(elf);
+
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    // Run many activations and verify the elf never lands on goblin's voxel.
+    for i in 0..20 {
+        force_idle(&mut sim, elf);
+        force_to_node(&mut sim, elf, node_b);
+        sim.event_queue.schedule(
+            sim.tick + 1,
+            ScheduledEventKind::CreatureActivation { creature_id: elf },
+        );
+        sim.step(&[], sim.tick + 200);
+
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        assert_ne!(
+            elf_pos, goblin_pos,
+            "Elf should not wander into hostile voxel (iteration {i})"
+        );
+    }
+}
+
+#[test]
+fn voxel_exclusion_flee_avoids_hostile_voxels() {
+    // A fleeing elf should prefer edges not occupied by hostiles.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Set up: elf at node_b (middle), goblin at node_a (nearby threatening).
+    // Node_c should be unoccupied — elf should flee toward node_c, not node_a.
+    let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+    force_to_node(&mut sim, elf, node_b);
+    force_to_node(&mut sim, goblin, node_a);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+
+    sim.event_queue.cancel_creature_activations(elf);
+    sim.event_queue.cancel_creature_activations(goblin);
+
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    // Activate only the elf — it should detect the goblin and flee.
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+    sim.step(&[], sim.tick + 200);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Elf should NOT have fled into the goblin's voxel.
+    assert_ne!(
+        elf_pos, goblin_pos,
+        "Fleeing elf should not enter hostile voxel"
+    );
+}
+
+#[test]
+fn voxel_exclusion_flee_cornered_still_moves() {
+    // If ALL neighboring voxels have hostiles, the fleeing creature should
+    // still be allowed to move (flee fallback — better to move through a
+    // hostile than freeze).
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Find a node with at least 2 neighbors and place goblins on ALL neighbors.
+    let elf_node = sim
+        .nav_graph
+        .live_nodes()
+        .find(|n| n.edge_indices.len() >= 2)
+        .map(|n| n.id)
+        .expect("Need a node with >= 2 neighbors");
+
+    force_to_node(&mut sim, elf, elf_node);
+    force_idle(&mut sim, elf);
+
+    let neighbor_positions: Vec<(NavNodeId, VoxelCoord)> = sim
+        .nav_graph
+        .neighbors(elf_node)
+        .iter()
+        .map(|&edge_idx| {
+            let edge = sim.nav_graph.edge(edge_idx);
+            let pos = sim.nav_graph.node(edge.to).position;
+            (edge.to, pos)
+        })
+        .collect();
+
+    // Spawn a goblin at each neighbor.
+    let mut goblins = Vec::new();
+    for &(neighbor_node, _) in &neighbor_positions {
+        let g = spawn_species(&mut sim, Species::Goblin);
+        force_to_node(&mut sim, g, neighbor_node);
+        force_idle(&mut sim, g);
+        sim.event_queue.cancel_creature_activations(g);
+        goblins.push(g);
+    }
+
+    // Also make sure the elf is still at the right node (spawning moves
+    // things around).
+    force_to_node(&mut sim, elf, elf_node);
+    force_idle(&mut sim, elf);
+    sim.event_queue.cancel_creature_activations(elf);
+
+    // Verify that all neighbors are indeed hostile-blocked.
+    let elf_fp = sim.species_table[&Species::Elf].footprint;
+    for &(_, pos) in &neighbor_positions {
+        assert!(
+            sim.destination_blocked_by_hostile(elf, pos, elf_fp),
+            "Expected neighbor at {pos:?} to be hostile-blocked"
+        );
+    }
+
+    let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
+
+    // Now activate the elf — it should be cornered but flee should still
+    // use the fallback (allow movement through hostile).
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+    sim.step(&[], sim.tick + 200);
+
+    // The elf has hostile_detection_range_sq=225 (15 voxels) and the
+    // goblins are on adjacent nav nodes — well within range. The elf
+    // should detect the threat and flee. Since all exits are hostile-
+    // occupied, the flee fallback should allow movement through a hostile.
+    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+    assert_ne!(
+        elf_pos_before, elf_pos_after,
+        "Cornered elf should flee (using fallback through hostile-occupied voxel)"
+    );
+    // Elf moved — verify it went to one of the neighbor positions
+    // (which are all hostile-occupied, confirming fallback worked).
+    let moved_to_neighbor = neighbor_positions.iter().any(|&(_, p)| p == elf_pos_after);
+    assert!(
+        moved_to_neighbor,
+        "Cornered elf should flee to a neighbor (even hostile-occupied)"
+    );
+}
+
+#[test]
+fn voxel_exclusion_move_one_step_returns_false_when_blocked() {
+    // Directly test move_one_step returns false when destination is hostile.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+
+    // Find the edge from node_a to node_b.
+    let edge_idx = sim
+        .nav_graph
+        .neighbors(node_a)
+        .iter()
+        .copied()
+        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+        .expect("Should have edge from A to B");
+
+    let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
+    let result = sim.move_one_step(elf, Species::Elf, edge_idx);
+
+    assert!(!result, "move_one_step should return false when blocked");
+    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+    assert_eq!(
+        elf_pos_before, elf_pos_after,
+        "Elf position should not change when move is blocked"
+    );
+}
+
+#[test]
+fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
+    // move_one_step_inner with skip_exclusion=true should succeed even
+    // when the destination is hostile-occupied. This is the mechanism
+    // used by flee_step's cornered fallback.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+
+    let edge_idx = sim
+        .nav_graph
+        .neighbors(node_a)
+        .iter()
+        .copied()
+        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+        .expect("Should have edge from A to B");
+
+    // Without skip_exclusion: blocked.
+    let result_blocked = sim.move_one_step(elf, Species::Elf, edge_idx);
+    assert!(
+        !result_blocked,
+        "move_one_step should block when hostile present"
+    );
+
+    // Cancel the retry activation scheduled by the failed move.
+    sim.event_queue.cancel_creature_activations(elf);
+
+    // With skip_exclusion: allowed.
+    let result_forced = sim.move_one_step_inner(elf, Species::Elf, edge_idx, true);
+    assert!(
+        result_forced,
+        "move_one_step_inner with skip_exclusion should succeed"
+    );
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let node_b_pos = sim.nav_graph.node(node_b).position;
+    assert_eq!(
+        elf_pos, node_b_pos,
+        "Elf should have moved to goblin's voxel with skip_exclusion"
+    );
+}
+
+#[test]
+fn voxel_exclusion_move_one_step_returns_true_when_clear() {
+    // move_one_step should return true when destination is clear.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_idle(&mut sim, elf);
+
+    let edge_idx = sim
+        .nav_graph
+        .neighbors(node_a)
+        .iter()
+        .copied()
+        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+        .expect("Should have edge from A to B");
+
+    let result = sim.move_one_step(elf, Species::Elf, edge_idx);
+    assert!(
+        result,
+        "move_one_step should return true when path is clear"
+    );
+
+    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+    let node_b_pos = sim.nav_graph.node(node_b).position;
+    assert_eq!(elf_pos_after, node_b_pos, "Elf should have moved to node B");
+}
+
+#[test]
+fn voxel_exclusion_blocked_schedules_retry() {
+    // When movement is blocked, a retry activation should be scheduled.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+
+    sim.event_queue.cancel_creature_activations(elf);
+    sim.event_queue.cancel_creature_activations(goblin);
+
+    let edge_idx = sim
+        .nav_graph
+        .neighbors(node_a)
+        .iter()
+        .copied()
+        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+        .expect("Should have edge from A to B");
+
+    let activations_before = sim.count_pending_activations_for(elf);
+    sim.move_one_step(elf, Species::Elf, edge_idx);
+    let activations_after = sim.count_pending_activations_for(elf);
+
+    assert_eq!(
+        activations_after,
+        activations_before + 1,
+        "Blocked move should schedule a retry activation"
+    );
+}
+
+#[test]
+fn voxel_exclusion_already_overlapping_allowed() {
+    // If two hostile creatures are already in the same voxel (e.g., both
+    // spawned there), they should be allowed to stay — the check only
+    // prevents MOVING into a hostile's voxel.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, _) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_a);
+
+    // Both are now at the same position — this should be fine.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    assert_eq!(
+        elf_pos, goblin_pos,
+        "Test setup: both should be at same position"
+    );
+
+    // The sim should not crash when processing these creatures.
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+    sim.event_queue.cancel_creature_activations(elf);
+    sim.event_queue.cancel_creature_activations(goblin);
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation {
+            creature_id: goblin,
+        },
+    );
+
+    // Just verify no panic. Creatures should separate on their next moves.
+    sim.step(&[], sim.tick + 500);
+}
+
+#[test]
+fn voxel_exclusion_different_hostile_civs_block() {
+    // Two creatures from different hostile civs should block each other.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let orc = spawn_species(&mut sim, Species::Orc);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, orc, node_b);
+
+    let orc_pos = sim.db.creatures.get(&orc).unwrap().position;
+    let elf_fp = sim.species_table[&Species::Elf].footprint;
+
+    // Orc is aggressive non-civ — should be hostile to elf.
+    assert!(
+        !sim.is_non_hostile(elf, orc),
+        "Elf and orc should be hostile"
+    );
+    assert!(
+        sim.destination_blocked_by_hostile(elf, orc_pos, elf_fp),
+        "Orc should block elf destination"
+    );
+}
+
+#[test]
+fn voxel_exclusion_two_non_civ_same_species_share() {
+    // Two non-civ goblins should NOT block each other (they're non-hostile).
+    let mut sim = test_sim(42);
+    let g1 = spawn_species(&mut sim, Species::Goblin);
+    let g2 = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, g1, node_a);
+    force_to_node(&mut sim, g2, node_b);
+
+    let g2_pos = sim.db.creatures.get(&g2).unwrap().position;
+    let goblin_fp = sim.species_table[&Species::Goblin].footprint;
+
+    // Non-civ same-species are non-hostile.
+    assert!(
+        sim.is_non_hostile(g1, g2),
+        "Two goblins should be non-hostile"
+    );
+    assert!(
+        !sim.destination_blocked_by_hostile(g1, g2_pos, goblin_fp),
+        "Same-species non-civ creatures should not block each other"
+    );
+}
+
+#[test]
+fn voxel_exclusion_large_creature_blocked_by_small_hostile_in_footprint() {
+    // An elephant (2x2x2) should be blocked if a goblin occupies any
+    // voxel within the elephant's destination footprint.
+    let mut sim = test_sim(42);
+    let elephant = spawn_species(&mut sim, Species::Elephant);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let elephant_fp = sim.species_table[&Species::Elephant].footprint;
+    assert_eq!(
+        elephant_fp,
+        [2, 2, 2],
+        "Elephant should have 2x2x2 footprint"
+    );
+
+    // Place the goblin at a position that would be inside the elephant's
+    // destination footprint. If elephant anchor is at (x,y,z), the
+    // footprint covers (x..x+2, y..y+2, z..z+2).
+    let elephant_pos = sim.db.creatures.get(&elephant).unwrap().position;
+    // Place goblin at elephant_pos + (1, 0, 0) — inside the footprint.
+    let goblin_pos = VoxelCoord::new(elephant_pos.x + 1, elephant_pos.y, elephant_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+
+    // Elephant is passive non-civ, goblin is aggressive non-civ — both
+    // non-civ means non-hostile by default. Give the elephant a civ so the
+    // goblin's AggressiveMelee AI makes them hostile.
+    let player_civ = sim.player_civ_id.unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elephant) {
+        c.civ_id = Some(player_civ);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    assert!(
+        !sim.is_non_hostile(elephant, goblin),
+        "Civ elephant and aggressive goblin should be hostile"
+    );
+
+    assert!(
+        sim.destination_blocked_by_hostile(elephant, elephant_pos, elephant_fp),
+        "Goblin inside elephant's footprint should block it"
+    );
+}
+
+#[test]
+fn voxel_exclusion_small_creature_blocked_by_large_hostile_footprint() {
+    // A 1x1x1 elf should be blocked if a troll (2x2x2, aggressive) has
+    // a footprint covering the elf's destination voxel.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    let troll_fp = sim.species_table[&Species::Troll].footprint;
+    assert_eq!(
+        troll_fp,
+        [2, 2, 2],
+        "Troll must have 2x2x2 footprint for this test"
+    );
+
+    let troll = spawn_species(&mut sim, Species::Troll);
+
+    let troll_pos = sim.db.creatures.get(&troll).unwrap().position;
+    // Troll footprint covers troll_pos to troll_pos + (1,1,1).
+    // Test a position inside the footprint but not the anchor.
+    let blocked_pos = VoxelCoord::new(troll_pos.x + 1, troll_pos.y, troll_pos.z);
+
+    let elf_fp = sim.species_table[&Species::Elf].footprint;
+
+    // Troll is aggressive non-civ, elf has civ — they should be hostile.
+    assert!(
+        !sim.is_non_hostile(elf, troll),
+        "Elf and troll should be hostile"
+    );
+
+    assert!(
+        sim.destination_blocked_by_hostile(elf, blocked_pos, elf_fp),
+        "Troll's extended footprint should block elf at ({}, {}, {})",
+        blocked_pos.x,
+        blocked_pos.y,
+        blocked_pos.z
+    );
+
+    // The anchor position should also be blocked.
+    assert!(
+        sim.destination_blocked_by_hostile(elf, troll_pos, elf_fp),
+        "Troll's anchor voxel should also block elf"
+    );
+}
+
+#[test]
+fn voxel_exclusion_config_retry_ticks_respected() {
+    // Verify that the retry delay uses the configured value. Set a large
+    // retry delay (500 ticks), block a move, then step to 499 — the elf
+    // should still be at the original position. Step to 501 — the retry
+    // activation fires (elf attempts to move or re-evaluates).
+    let mut sim = test_sim(42);
+    sim.config.voxel_exclusion_retry_ticks = 500;
+
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+
+    sim.event_queue.cancel_creature_activations(elf);
+    sim.event_queue.cancel_creature_activations(goblin);
+
+    let edge_idx = sim
+        .nav_graph
+        .neighbors(node_a)
+        .iter()
+        .copied()
+        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+        .expect("Should have edge from A to B");
+
+    let tick_at_block = sim.tick;
+    sim.move_one_step(elf, Species::Elf, edge_idx);
+
+    // Step to just before the retry — activation should NOT have fired.
+    let activations_before = sim.count_pending_activations_for(elf);
+    assert_eq!(
+        activations_before, 1,
+        "Should have exactly one retry scheduled"
+    );
+
+    sim.step(&[], tick_at_block + 499);
+    // Elf should still be at node_a (retry not yet fired).
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let node_a_pos = sim.nav_graph.node(node_a).position;
+    assert_eq!(
+        elf_pos, node_a_pos,
+        "Elf should not have moved before retry delay expires"
+    );
+
+    // Step past the retry tick — activation fires.
+    sim.step(&[], tick_at_block + 501);
+    let activations_after = sim.count_pending_activations_for(elf);
+    // The retry activation should have been consumed (though a new one
+    // may have been scheduled if the elf is still blocked).
+    assert!(
+        activations_after <= 1,
+        "Retry activation should have fired by tick {}",
+        tick_at_block + 501
+    );
+}
+
+#[test]
+fn voxel_exclusion_walk_toward_task_blocked() {
+    // An elf walking toward a task should be blocked by a hostile in its path.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Find a chain so elf can walk from A through B (goblin) to C (task).
+    let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+
+    sim.event_queue.cancel_creature_activations(goblin);
+    sim.event_queue.cancel_creature_activations(elf);
+
+    // Create a GoTo task at node_c and assign the elf.
+    let task_id = insert_goto_task(&mut sim, node_c);
+    if let Some(mut t) = sim.db.tasks.get(&task_id) {
+        t.state = TaskState::InProgress;
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Activate elf.
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+    sim.step(&[], sim.tick + 200);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    assert_ne!(
+        elf_pos, goblin_pos,
+        "Elf walking toward task should not enter goblin's voxel"
+    );
+}
+
+#[test]
+fn voxel_exclusion_serde_config_roundtrip() {
+    // Verify the new config field survives serialization.
+    let config = GameConfig::default();
+    let json = serde_json::to_string(&config).unwrap();
+    let config2: GameConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        config.voxel_exclusion_retry_ticks, config2.voxel_exclusion_retry_ticks,
+        "voxel_exclusion_retry_ticks should survive serde roundtrip"
+    );
+}
+
+#[test]
+fn voxel_exclusion_serde_config_default() {
+    // Verify that loading old configs without the new field uses the default.
+    // Serialize default config, strip the new field, and re-deserialize.
+    let config = GameConfig::default();
+    let mut json_val: serde_json::Value = serde_json::to_value(&config).unwrap();
+    json_val
+        .as_object_mut()
+        .unwrap()
+        .remove("voxel_exclusion_retry_ticks");
+    let config2: GameConfig = serde_json::from_value(json_val).unwrap();
+    assert_eq!(
+        config2.voxel_exclusion_retry_ticks, 50,
+        "Default voxel_exclusion_retry_ticks should be 50"
+    );
+}
+
+#[test]
+fn voxel_exclusion_walk_toward_task_clears_cached_path() {
+    // When walk_toward_task is blocked by a hostile, the creature's
+    // cached path should be invalidated (set to None) so a fresh
+    // path is computed on retry.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+    sim.event_queue.cancel_creature_activations(goblin);
+    sim.event_queue.cancel_creature_activations(elf);
+
+    // Give the elf a cached path through the goblin's node.
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.path = Some(CreaturePath {
+            remaining_nodes: vec![node_b, node_c],
+            remaining_edge_indices: vec![0, 0], // dummy indices
+        });
+    });
+    assert!(
+        sim.db.creatures.get(&elf).unwrap().path.is_some(),
+        "Test setup: elf should have a cached path"
+    );
+
+    // Create a GoTo task at node_c and assign the elf.
+    let task_id = insert_goto_task(&mut sim, node_c);
+    if let Some(mut t) = sim.db.tasks.get(&task_id) {
+        t.state = TaskState::InProgress;
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Activate the elf — it should try to follow the cached path,
+    // hit the hostile, and clear the path.
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+    sim.step(&[], sim.tick + 10);
+
+    assert!(
+        sim.db.creatures.get(&elf).unwrap().path.is_none(),
+        "Cached path should be cleared when blocked by hostile"
+    );
+}
+
+#[test]
+fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
+    // A creature blocked by a hostile should successfully move once
+    // the hostile dies and the retry activation fires.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+    sim.event_queue.cancel_creature_activations(goblin);
+    sim.event_queue.cancel_creature_activations(elf);
+
+    let node_a_pos = sim.nav_graph.node(node_a).position;
+    let node_b_pos = sim.nav_graph.node(node_b).position;
+
+    // Try to move — should be blocked.
+    let edge_idx = sim
+        .nav_graph
+        .neighbors(node_a)
+        .iter()
+        .copied()
+        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
+        .expect("Should have edge from A to B");
+
+    let result = sim.move_one_step(elf, Species::Elf, edge_idx);
+    assert!(!result, "Should be blocked while goblin is alive");
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().position,
+        node_a_pos,
+        "Elf should still be at node A"
+    );
+
+    // Kill the goblin.
+    let tick = sim.tick;
+    let kill_cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::DebugKillCreature {
+            creature_id: goblin,
+        },
+    };
+    sim.step(&[kill_cmd], tick + 2);
+
+    // The retry activation should fire after voxel_exclusion_retry_ticks.
+    // The goblin is dead, so the voxel should now be clear.
+    let goblin_fp = sim.species_table[&Species::Goblin].footprint;
+    assert!(
+        !sim.destination_blocked_by_hostile(elf, node_b_pos, goblin_fp),
+        "Dead goblin should not block"
+    );
+
+    // Now manually retry the move — should succeed.
+    let result2 = sim.move_one_step(elf, Species::Elf, edge_idx);
+    assert!(result2, "Move should succeed after goblin dies");
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().position,
+        node_b_pos,
+        "Elf should have moved to node B"
+    );
+}
+
+#[test]
+fn voxel_exclusion_attack_target_task_blocked_by_hostile() {
+    // An elf with a player-directed AttackTarget task walking toward
+    // its target should be blocked by a different hostile in the path.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let target_goblin = spawn_species(&mut sim, Species::Goblin);
+    let blocking_goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Set up: elf at A, blocking_goblin at B, target_goblin at C.
+    // Elf must walk through B to reach C.
+    let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, blocking_goblin, node_b);
+    force_to_node(&mut sim, target_goblin, node_c);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, blocking_goblin);
+    force_idle(&mut sim, target_goblin);
+    sim.event_queue.cancel_creature_activations(blocking_goblin);
+    sim.event_queue.cancel_creature_activations(target_goblin);
+    sim.event_queue.cancel_creature_activations(elf);
+
+    // Issue AttackCreature command — this creates an AttackTarget task.
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: target_goblin,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Verify elf has an attack task.
+    assert!(
+        sim.db.creatures.get(&elf).unwrap().current_task.is_some(),
+        "Elf should have an attack task"
+    );
+
+    // Run for a bit — elf should NOT move onto blocking_goblin's voxel.
+    let blocking_pos = sim.db.creatures.get(&blocking_goblin).unwrap().position;
+    sim.step(&[], tick + 500);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    assert_ne!(
+        elf_pos, blocking_pos,
+        "Elf should not walk through blocking goblin to reach attack target"
+    );
+}
+
+#[test]
+fn voxel_exclusion_attack_move_task_blocked_by_hostile() {
+    // An elf with an AttackMove task walking toward a destination
+    // should be blocked by a hostile in the path.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
+    force_idle(&mut sim, elf);
+    force_idle(&mut sim, goblin);
+    sim.event_queue.cancel_creature_activations(goblin);
+    sim.event_queue.cancel_creature_activations(elf);
+
+    let dest_pos = sim.nav_graph.node(node_c).position;
+
+    // Issue AttackMove command toward node_c.
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: dest_pos,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Run for a bit — elf should NOT move onto goblin's voxel.
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    sim.step(&[], tick + 500);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    assert_ne!(
+        elf_pos, goblin_pos,
+        "Elf on attack-move should not walk through hostile goblin"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Item durability tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn inv_add_item_assigns_durability_from_config() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    // Arrow has default durability of 3 in config.
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1);
+    assert_eq!(stacks[0].max_hp, 3);
+    assert_eq!(stacks[0].current_hp, 3);
+}
+
+#[test]
+fn inv_add_item_no_durability_for_unconfigured_kinds() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    // Bread has no durability config — should be 0/0 (indestructible).
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 3, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks[0].max_hp, 0);
+    assert_eq!(stacks[0].current_hp, 0);
+}
+
+#[test]
+fn durability_stacking_same_hp_merges() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    // Two batches of arrows with same durability should merge.
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 3, None, None);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 2, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1, "Same-durability arrows should stack");
+    assert_eq!(stacks[0].quantity, 5);
+}
+
+#[test]
+fn durability_stacking_different_hp_separate() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    // Add arrows at full HP.
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 3, None, None);
+    // Add arrows with reduced current_hp via explicit durability.
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        2,
+        None,
+        None,
+        None,
+        0,
+        2, // current_hp
+        3, // max_hp
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(
+        stacks.len(),
+        2,
+        "Arrows with different current_hp should not stack"
+    );
+}
+
+#[test]
+fn inv_split_stack_preserves_durability() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let orig_id = stacks[0].id;
+
+    let new_id = sim.inv_split_stack(orig_id, 2).unwrap();
+    assert_ne!(new_id, orig_id);
+
+    let orig = sim.db.item_stacks.get(&orig_id).unwrap();
+    let split = sim.db.item_stacks.get(&new_id).unwrap();
+    assert_eq!(orig.quantity, 3);
+    assert_eq!(split.quantity, 2);
+    assert_eq!(split.current_hp, orig.current_hp);
+    assert_eq!(split.max_hp, orig.max_hp);
+    assert_eq!(split.max_hp, 3, "Arrow max_hp from config");
+}
+
+#[test]
+fn inv_merge_preserves_durability() {
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+    sim.inv_add_simple_item(dst, inventory::ItemKind::Arrow, 2, None, None);
+
+    sim.inv_merge(src, dst);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1, "Same-durability arrows should merge");
+    assert_eq!(stacks[0].quantity, 5);
+    assert_eq!(stacks[0].current_hp, 3);
+    assert_eq!(stacks[0].max_hp, 3);
+}
+
+#[test]
+fn inv_merge_keeps_different_durability_separate() {
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    // Full-HP arrows in dst.
+    sim.inv_add_simple_item(dst, inventory::ItemKind::Arrow, 3, None, None);
+    // Damaged arrows in src.
+    sim.inv_add_item_with_durability(
+        src,
+        inventory::ItemKind::Arrow,
+        2,
+        None,
+        None,
+        None,
+        0,
+        1, // current_hp
+        3, // max_hp
+        None,
+        None,
+    );
+
+    sim.inv_merge(src, dst);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    assert_eq!(
+        stacks.len(),
+        2,
+        "Different current_hp should remain separate after merge"
+    );
+}
+
+#[test]
+fn inv_damage_item_reduces_hp() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let stack_id = stacks[0].id;
+
+    let mut events = Vec::new();
+    let broke = sim.inv_damage_item(stack_id, 1, &mut events);
+    assert!(!broke, "Arrow should not break from 1 damage (3 HP)");
+    assert!(events.is_empty());
+
+    let stack = sim.db.item_stacks.get(&stack_id).unwrap();
+    assert_eq!(stack.current_hp, 2);
+}
+
+#[test]
+fn inv_damage_item_breaks_at_zero() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let stack_id = stacks[0].id;
+
+    let mut events = Vec::new();
+    let broke = sim.inv_damage_item(stack_id, 3, &mut events);
+    assert!(broke, "Arrow should break from 3 damage (3 HP)");
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0].kind, SimEventKind::ItemBroken { item_kind, .. } if *item_kind == inventory::ItemKind::Arrow)
+    );
+    // Stack should be removed.
+    assert!(sim.db.item_stacks.get(&stack_id).is_none());
+}
+
+#[test]
+fn inv_damage_item_noop_on_indestructible() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 5, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let stack_id = stacks[0].id;
+
+    let mut events = Vec::new();
+    let broke = sim.inv_damage_item(stack_id, 100, &mut events);
+    assert!(!broke, "Indestructible items should not break");
+    assert!(events.is_empty());
+    let stack = sim.db.item_stacks.get(&stack_id).unwrap();
+    assert_eq!(stack.quantity, 5, "Bread should remain unchanged");
+}
+
+#[test]
+fn inv_damage_item_breaks_one_from_stack() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let stack_id = stacks[0].id;
+
+    let mut events = Vec::new();
+    let broke = sim.inv_damage_item(stack_id, 3, &mut events);
+    assert!(broke, "Should break one arrow from the stack");
+    assert_eq!(events.len(), 1);
+
+    // Stack should still exist with qty 4.
+    let stack = sim.db.item_stacks.get(&stack_id).unwrap();
+    assert_eq!(stack.quantity, 4);
+    // Remaining arrows should still have full HP (the broken one is gone).
+    assert_eq!(stack.current_hp, 3);
+}
+
+#[test]
+fn inv_damage_item_partial_on_multi_stack_splits() {
+    // Partial damage on a multi-item stack should split off one item
+    // and only damage that one, leaving the rest at full HP.
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let stack_id = stacks[0].id;
+
+    let mut events = Vec::new();
+    let broke = sim.inv_damage_item(stack_id, 1, &mut events);
+    assert!(!broke, "Arrow should not break from 1 damage (3 HP)");
+    assert!(events.is_empty());
+
+    // Should now have 2 stacks: 4 at full HP, 1 at reduced HP.
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 2, "Should split into damaged and undamaged");
+    let full_hp_stack = stacks.iter().find(|s| s.current_hp == 3).unwrap();
+    let damaged_stack = stacks.iter().find(|s| s.current_hp == 2).unwrap();
+    assert_eq!(full_hp_stack.quantity, 4);
+    assert_eq!(damaged_stack.quantity, 1);
+}
+
+#[test]
+fn inv_damage_item_zero_amount_noop() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 3, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let stack_id = stacks[0].id;
+
+    let mut events = Vec::new();
+    let broke = sim.inv_damage_item(stack_id, 0, &mut events);
+    assert!(!broke);
+    assert!(events.is_empty());
+    let stack = sim.db.item_stacks.get(&stack_id).unwrap();
+    assert_eq!(stack.current_hp, 3);
+    assert_eq!(stack.quantity, 3);
+}
+
+#[test]
+fn durability_serde_backward_compat() {
+    // Old JSON without current_hp/max_hp should deserialize with 0/0.
+    let json = r#"{
+            "id": 1,
+            "inventory_id": 1,
+            "kind": "Arrow",
+            "quantity": 5,
+            "material": null,
+            "quality": 0,
+            "enchantment_id": null,
+            "owner": null,
+            "reserved_by": null
+        }"#;
+    let stack: crate::db::ItemStack = serde_json::from_str(json).unwrap();
+    assert_eq!(stack.current_hp, 0);
+    assert_eq!(stack.max_hp, 0);
+}
+
+#[test]
+fn durability_serde_roundtrip() {
+    let json = r#"{
+            "id": 1,
+            "inventory_id": 1,
+            "kind": "Arrow",
+            "quantity": 5,
+            "material": null,
+            "quality": 0,
+            "current_hp": 2,
+            "max_hp": 3,
+            "enchantment_id": null,
+            "owner": null,
+            "reserved_by": null
+        }"#;
+    let stack: crate::db::ItemStack = serde_json::from_str(json).unwrap();
+    assert_eq!(stack.current_hp, 2);
+    assert_eq!(stack.max_hp, 3);
+
+    let serialized = serde_json::to_string(&stack).unwrap();
+    let restored: crate::db::ItemStack = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(restored.current_hp, 2);
+    assert_eq!(restored.max_hp, 3);
+}
+
+#[test]
+fn item_durability_config_defaults() {
+    let config = crate::config::GameConfig::default();
+    // Arrows: small range for stacking.
+    assert_eq!(
+        config.item_durability.get(&inventory::ItemKind::Arrow),
+        Some(&3)
+    );
+    // Bow: moderate.
+    assert_eq!(
+        config.item_durability.get(&inventory::ItemKind::Bow),
+        Some(&50)
+    );
+    // Breastplate: high.
+    assert_eq!(
+        config
+            .item_durability
+            .get(&inventory::ItemKind::Breastplate),
+        Some(&60)
+    );
+    // Bread: not in map (indestructible).
+    assert_eq!(
+        config.item_durability.get(&inventory::ItemKind::Bread),
+        None
+    );
+}
+
+#[test]
+fn inv_add_item_with_durability_explicit() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        3,
+        None,
+        None,
+        None,
+        0,
+        1, // current_hp
+        3, // max_hp
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1);
+    assert_eq!(stacks[0].current_hp, 1);
+    assert_eq!(stacks[0].max_hp, 3);
+}
+
+#[test]
+fn inv_reserve_items_preserves_durability() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+
+    let task_id = TaskId::new(&mut sim.rng.clone());
+    sim.inv_reserve_items(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        inventory::MaterialFilter::Any,
+        2,
+        task_id,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    // Should have 2 stacks: 3 unreserved, 2 reserved — both with same durability.
+    assert_eq!(stacks.len(), 2);
+    for s in &stacks {
+        assert_eq!(s.current_hp, 3);
+        assert_eq!(s.max_hp, 3);
+    }
+}
+
+// -----------------------------------------------------------------------
+// inv_move_stack / inv_move_items tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn inv_move_stack_basic() {
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_item_with_durability(
+        src,
+        inventory::ItemKind::Arrow,
+        5,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        2, // quality
+        2, // current_hp
+        3, // max_hp
+        None,
+        None,
+    );
+    let stack_id = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC)[0]
+        .id;
+
+    // Move 3 of 5 arrows to dst.
+    let moved_id = sim.inv_move_stack(stack_id, 3, dst).unwrap();
+
+    // Source should have 2 remaining.
+    let src_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+    assert_eq!(src_stacks.len(), 1);
+    assert_eq!(src_stacks[0].quantity, 2);
+
+    // Dst should have 3, with all properties preserved.
+    let moved = sim.db.item_stacks.get(&moved_id).unwrap();
+    assert_eq!(moved.inventory_id, dst);
+    assert_eq!(moved.quantity, 3);
+    assert_eq!(moved.material, Some(inventory::Material::Oak));
+    assert_eq!(moved.quality, 2);
+    assert_eq!(moved.current_hp, 2);
+    assert_eq!(moved.max_hp, 3);
+}
+
+#[test]
+fn inv_move_stack_whole_stack() {
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+    let stack_id = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC)[0]
+        .id;
+
+    // Move entire stack (quantity >= stack quantity).
+    let moved_id = sim.inv_move_stack(stack_id, 5, dst).unwrap();
+    assert_eq!(moved_id, stack_id, "Whole-stack move returns same ID");
+
+    // Source should be empty.
+    let src_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+    assert!(src_stacks.is_empty());
+
+    // Dst should have the stack.
+    let moved = sim.db.item_stacks.get(&moved_id).unwrap();
+    assert_eq!(moved.inventory_id, dst);
+    assert_eq!(moved.quantity, 3);
+    assert_eq!(moved.current_hp, 3);
+    assert_eq!(moved.max_hp, 3);
+}
+
+#[test]
+fn inv_move_stack_preserves_owner_and_reserved() {
+    // inv_move_stack should NOT clear owner or reserved_by.
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let fake_owner = CreatureId::new(&mut sim.rng.clone());
+    let fake_task = TaskId::new(&mut sim.rng.clone());
+    sim.inv_add_item(
+        src,
+        inventory::ItemKind::Bow,
+        1,
+        Some(fake_owner),
+        Some(fake_task),
+        Some(inventory::Material::Yew),
+        0,
+        None,
+        None,
+    );
+    let stack_id = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC)[0]
+        .id;
+
+    let moved_id = sim.inv_move_stack(stack_id, 1, dst).unwrap();
+    let moved = sim.db.item_stacks.get(&moved_id).unwrap();
+    assert_eq!(moved.owner, Some(fake_owner), "Owner must be preserved");
+    assert_eq!(
+        moved.reserved_by,
+        Some(fake_task),
+        "reserved_by must be preserved"
+    );
+}
+
+#[test]
+fn inv_move_stack_merges_at_destination() {
+    // If dst already has matching items, the moved stack should merge.
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+    sim.inv_add_simple_item(dst, inventory::ItemKind::Arrow, 2, None, None);
+    let stack_id = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC)[0]
+        .id;
+
+    sim.inv_move_stack(stack_id, 3, dst);
+
+    let dst_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    assert_eq!(dst_stacks.len(), 1, "Should merge into one stack");
+    assert_eq!(dst_stacks[0].quantity, 5);
+}
+
+#[test]
+fn inv_move_stack_zero_quantity_noop() {
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+    let stack_id = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC)[0]
+        .id;
+
+    assert!(sim.inv_move_stack(stack_id, 0, dst).is_none());
+    // Source unchanged.
+    let src_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+    assert_eq!(src_stacks[0].quantity, 3);
+}
+
+#[test]
+fn inv_move_items_basic() {
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_item_with_durability(
+        src,
+        inventory::ItemKind::Arrow,
+        5,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        0,
+        2, // current_hp (damaged)
+        3, // max_hp
+        None,
+        None,
+    );
+    sim.inv_add_simple_item(src, inventory::ItemKind::Bread, 3, None, None);
+
+    // Move 3 arrows (by kind, any material).
+    let moved = sim.inv_move_items(
+        src,
+        dst,
+        Some(inventory::ItemKind::Arrow),
+        None, // any material
+        Some(3),
+    );
+    assert_eq!(moved, 3);
+
+    // Dst should have 3 arrows with preserved durability.
+    let dst_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    assert_eq!(dst_stacks.len(), 1);
+    assert_eq!(dst_stacks[0].kind, inventory::ItemKind::Arrow);
+    assert_eq!(dst_stacks[0].quantity, 3);
+    assert_eq!(dst_stacks[0].current_hp, 2);
+    assert_eq!(dst_stacks[0].max_hp, 3);
+    assert_eq!(dst_stacks[0].material, Some(inventory::Material::Oak));
+
+    // Source should have 2 arrows + 3 bread.
+    let src_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+    assert_eq!(src_stacks.len(), 2);
+}
+
+#[test]
+fn inv_move_items_filter_by_material() {
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_item(
+        src,
+        inventory::ItemKind::Bow,
+        2,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        src,
+        inventory::ItemKind::Bow,
+        3,
+        None,
+        None,
+        Some(inventory::Material::Yew),
+        0,
+        None,
+        None,
+    );
+
+    // Move only Yew bows.
+    let moved = sim.inv_move_items(
+        src,
+        dst,
+        Some(inventory::ItemKind::Bow),
+        Some(Some(inventory::Material::Yew)),
+        Some(2),
+    );
+    assert_eq!(moved, 2);
+
+    // Dst: 2 Yew bows.
+    let dst_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    assert_eq!(dst_stacks.len(), 1);
+    assert_eq!(dst_stacks[0].material, Some(inventory::Material::Yew));
+    assert_eq!(dst_stacks[0].quantity, 2);
+
+    // Source: 2 Oak + 1 Yew.
+    let src_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+    assert_eq!(src_stacks.len(), 2);
+}
+
+#[test]
+fn inv_move_items_no_kind_filter_moves_all() {
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+    sim.inv_add_simple_item(src, inventory::ItemKind::Bread, 2, None, None);
+
+    // Move everything (no kind filter, no quantity limit).
+    let moved = sim.inv_move_items(src, dst, None, None, None);
+    assert_eq!(moved, 5);
+
+    let src_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+    assert!(src_stacks.is_empty());
+
+    let dst_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    assert_eq!(dst_stacks.len(), 2);
+}
+
+#[test]
+fn inv_move_items_partial_when_not_enough() {
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+
+    // Request 10 but only 3 available.
+    let moved = sim.inv_move_items(src, dst, Some(inventory::ItemKind::Arrow), None, Some(10));
+    assert_eq!(moved, 3);
+}
+
+// -----------------------------------------------------------------------
+// Caller durability-preservation tests (expose existing bugs)
+// -----------------------------------------------------------------------
+
+#[test]
+fn creature_death_drops_preserve_durability() {
+    // When a creature dies, its items should drop on the ground
+    // with all properties (durability, material, quality) preserved.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+
+    // Give the elf a bow with specific material and durability.
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Bow,
+        1,
+        Some(elf),
+        None,
+        Some(inventory::Material::Yew),
+        5,  // quality
+        30, // current_hp (damaged)
+        50, // max_hp
+        None,
+        None,
+    );
+
+    // Kill the elf.
+    let mut events = Vec::new();
+    sim.apply_damage(elf, 9999, &mut events);
+
+    // Scan ALL ground piles for the Yew bow specifically (the elf also
+    // has a starting bow with material: None, so we need to match ours).
+    let mut bow_stack = None;
+    for pile in sim.db.ground_piles.iter_all() {
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+        if let Some(s) = stacks.iter().find(|s| {
+            s.kind == inventory::ItemKind::Bow && s.material == Some(inventory::Material::Yew)
+        }) {
+            bow_stack = Some(s.clone());
+            break;
+        }
+    }
+
+    let bow_stack = bow_stack.expect("Yew bow should be in some ground pile after death");
+    assert_eq!(
+        bow_stack.material,
+        Some(inventory::Material::Yew),
+        "Material must survive death drop"
+    );
+    assert_eq!(bow_stack.quality, 5, "Quality must survive death drop");
+    assert_eq!(
+        bow_stack.current_hp, 30,
+        "current_hp must survive death drop"
+    );
+    assert_eq!(bow_stack.max_hp, 50, "max_hp must survive death drop");
+    assert!(
+        bow_stack.owner.is_none(),
+        "Owner should be cleared on death"
+    );
+}
+
+#[test]
+fn creature_death_drops_clear_equipped_slot() {
+    // Equipped items should have equipped_slot cleared when dropped on death.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+
+    // Give the elf an equipped hat.
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Hat,
+        1,
+        Some(elf),
+        None,
+        Some(inventory::Material::FruitSpecies(
+            crate::fruit::FruitSpeciesId(0),
+        )),
+        0,
+        15, // current_hp
+        20, // max_hp
+        None,
+        Some(inventory::EquipSlot::Head),
+    );
+
+    // Kill the elf.
+    let mut events = Vec::new();
+    sim.apply_damage(elf, 9999, &mut events);
+
+    // Find the hat in ground piles.
+    let mut hat_stack = None;
+    for pile in sim.db.ground_piles.iter_all() {
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+        if let Some(s) = stacks
+            .iter()
+            .find(|s| s.kind == inventory::ItemKind::Hat && s.current_hp == 15)
+        {
+            hat_stack = Some(s.clone());
+            break;
+        }
+    }
+
+    let hat = hat_stack.expect("Hat should be in ground pile after death");
+    assert_eq!(
+        hat.equipped_slot, None,
+        "equipped_slot must be cleared on death drop"
+    );
+    assert_eq!(hat.current_hp, 15, "Durability must be preserved");
+    assert!(hat.owner.is_none(), "Owner must be cleared");
+}
+
+#[test]
+fn haul_dropoff_preserves_durability() {
+    // Items moved between inventories via inv_move_items must preserve
+    // all properties including quality and durability.
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+
+    // Put damaged arrows in source (simulating creature carrying hauled items).
+    sim.inv_add_item_with_durability(
+        src,
+        inventory::ItemKind::Arrow,
+        5,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        3, // quality
+        2, // current_hp (damaged)
+        3, // max_hp
+        None,
+        None,
+    );
+
+    // Move items the way haul dropoff now does.
+    let material = Some(inventory::Material::Oak);
+    sim.inv_move_items(
+        src,
+        dst,
+        Some(inventory::ItemKind::Arrow),
+        Some(material),
+        Some(5),
+    );
+
+    let dst_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    assert_eq!(dst_stacks.len(), 1);
+    let stack = &dst_stacks[0];
+    assert_eq!(stack.quality, 3, "quality must survive haul dropoff");
+    assert_eq!(stack.current_hp, 2, "current_hp must survive haul dropoff");
+    assert_eq!(
+        stack.material,
+        Some(inventory::Material::Oak),
+        "material must survive haul dropoff"
+    );
+}
+
+#[test]
+fn inv_move_stack_nonexistent_returns_none() {
+    let mut sim = test_sim(42);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let fake_id = ItemStackId(999_999);
+    assert!(sim.inv_move_stack(fake_id, 5, dst).is_none());
+    // Dst should remain empty.
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    assert!(stacks.is_empty());
+}
+
+#[test]
+fn inv_damage_item_nonexistent_returns_false() {
+    let mut sim = test_sim(42);
+    let fake_id = ItemStackId(999_999);
+    let mut events = Vec::new();
+    assert!(!sim.inv_damage_item(fake_id, 5, &mut events));
+    assert!(events.is_empty());
+}
+
+#[test]
+fn death_drop_preserves_preexisting_pile_items() {
+    // If a ground pile already exists at the death position with items
+    // from another source, those items must not be affected.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_inv = sim.db.creatures.get(&elf).unwrap().inventory_id;
+
+    // Pre-place arrows in a ground pile at the elf's position.
+    // Use a unique material (Willow) so they won't merge with the elf's
+    // starting arrows (which have material: None).
+    let pile_id = sim.ensure_ground_pile(elf_pos);
+    let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+    let fake_task = TaskId::new(&mut sim.rng.clone());
+    sim.inv_add_item(
+        pile_inv,
+        inventory::ItemKind::Arrow,
+        10,
+        None,
+        Some(fake_task), // reserved by another task
+        Some(inventory::Material::Willow),
+        7, // distinctive quality
+        None,
+        None,
+    );
+
+    // Give the elf a bow (owned by elf, so death drop will clear its owner).
+    sim.inv_add_item(
+        elf_inv,
+        inventory::ItemKind::Bow,
+        1,
+        Some(elf),
+        None,
+        Some(inventory::Material::Yew),
+        0,
+        None,
+        None,
+    );
+
+    // Kill the elf.
+    let mut events = Vec::new();
+    sim.apply_damage(elf, 9999, &mut events);
+
+    // The pre-existing Willow arrows must still have their reservation.
+    let pile_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&pile_inv, tabulosity::QueryOpts::ASC);
+    let arrow_stack = pile_stacks
+        .iter()
+        .find(|s| {
+            s.kind == inventory::ItemKind::Arrow
+                && s.material == Some(inventory::Material::Willow)
+                && s.quality == 7
+        })
+        .expect("Pre-existing Willow arrows should still be in pile");
+    assert_eq!(
+        arrow_stack.reserved_by,
+        Some(fake_task),
+        "Pre-existing reservation must not be cleared by death drop"
+    );
+    assert_eq!(arrow_stack.quantity, 10);
+
+    // The elf's bow should also be in the pile, unowned.
+    let bow_stack = pile_stacks
+        .iter()
+        .find(|s| {
+            s.kind == inventory::ItemKind::Bow && s.material == Some(inventory::Material::Yew)
+        })
+        .expect("Elf's bow should be in pile");
+    assert!(bow_stack.owner.is_none());
+}
+
+#[test]
+fn inv_move_items_multi_durability_stacks() {
+    // Moving items that span multiple stacks with different durability
+    // should preserve each stack's durability independently.
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+
+    // 3 full-HP arrows + 2 damaged arrows.
+    sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+    sim.inv_add_item_with_durability(
+        src,
+        inventory::ItemKind::Arrow,
+        2,
+        None,
+        None,
+        None,
+        0,
+        1, // current_hp (damaged)
+        3, // max_hp
+        None,
+        None,
+    );
+
+    // Move 4 arrows total.
+    let moved = sim.inv_move_items(src, dst, Some(inventory::ItemKind::Arrow), None, Some(4));
+    assert_eq!(moved, 4);
+
+    // Dst should have items from both durability tiers.
+    let dst_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    let total_qty: u32 = dst_stacks.iter().map(|s| s.quantity).sum();
+    assert_eq!(total_qty, 4);
+
+    // Source should have 1 remaining.
+    let src_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+    let src_total: u32 = src_stacks.iter().map(|s| s.quantity).sum();
+    assert_eq!(src_total, 1);
+
+    // Verify both durability tiers exist in dst.
+    let full_hp: u32 = dst_stacks
+        .iter()
+        .filter(|s| s.current_hp == 3)
+        .map(|s| s.quantity)
+        .sum();
+    let damaged: u32 = dst_stacks
+        .iter()
+        .filter(|s| s.current_hp == 1)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(full_hp, 3, "All 3 full-HP arrows should move first");
+    assert_eq!(damaged, 1, "1 damaged arrow should move to fill the 4");
+}

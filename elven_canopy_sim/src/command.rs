@@ -6,7 +6,7 @@
 //
 // The full flow for a player action:
 //   GDScript UI → `sim_bridge.rs` (gdext) → constructs a `SimCommand` →
-//   `SimState::step()` in `sim.rs` processes it.
+//   `SimState::step()` in `sim/mod.rs` processes it.
 //
 // In multiplayer (future), commands are broadcast to all peers, canonically
 // ordered by tick, then applied — guaranteeing identical state.
@@ -22,7 +22,7 @@
 // - `SetTaskPriority` — build system (placeholder, not yet wired).
 // - `SpawnCreature` — place a creature of any species at a voxel position.
 // - `CreateTask` — create a task at a voxel position (see `task.rs` for
-//   `TaskKind`). The handler in `sim.rs` snaps the position to the nearest
+//   `TaskKind`). The handler in `sim/construction.rs` snaps the position to the nearest
 //   nav node.
 // - `RenameStructure` — set or clear a completed structure's user-editable name.
 // - `DesignateLadder` — place a wood or rope ladder at an anchor position.
@@ -56,7 +56,7 @@
 // - `GroupAttackMove` — like `AttackMove` but for multiple creatures with
 //   spread destinations.
 //
-// See also: `sim.rs` for `process_command()` which dispatches these,
+// See also: `sim/mod.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
 // `sim_bridge.rs` (in the gdext crate) for the GDScript-facing wrappers.
 //

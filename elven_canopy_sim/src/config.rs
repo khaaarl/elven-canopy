@@ -21,7 +21,7 @@
 // heartbeat interval, edge restrictions) lives in `SpeciesData` entries
 // keyed by `Species` in the `species` map — see `species.rs`.
 //
-// See also: `sim.rs` which owns the `GameConfig` as part of `SimState`,
+// See also: `sim/mod.rs` which owns the `GameConfig` as part of `SimState`,
 // `species.rs` for the `SpeciesData` struct, `tree_gen.rs` for the
 // energy-based recursive segment growth algorithm that reads `TreeProfile`.
 //
@@ -373,7 +373,7 @@ impl Default for ThoughtConfig {
 
 /// Configuration for deriving a mood score from a creature's active thoughts.
 /// The score is the sum of per-ThoughtKind weights. Tier thresholds map the
-/// numeric score to a `MoodTier` label. See `Creature::mood()` in `sim.rs`.
+/// numeric score to a `MoodTier` label. See `Creature::mood()` in `sim/needs.rs`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MoodConfig {
     /// Weight for SleptInOwnHome thoughts.

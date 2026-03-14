@@ -44,7 +44,7 @@
 // All tabulosity collections use `BTreeMap`/`BTreeSet` internally, matching
 // the determinism requirement. No `HashMap` usage.
 //
-// See also: `sim.rs` for `SimState` which owns the `SimDb` instance,
+// See also: `sim/mod.rs` for `SimState` which owns the `SimDb` instance,
 // `types.rs` for all ID types, `docs/drafts/sim_db_schema_v4.md` for the
 // full schema design.
 //
@@ -772,7 +772,7 @@ fn is_equipped(stack: &ItemStack) -> bool {
 /// A stack of items within an inventory. Items in a stack share identical
 /// properties (kind, material, quality, current_hp, max_hp, enchantment).
 /// The `current_hp`/`max_hp` pair tracks item durability — 0/0 means
-/// indestructible (no durability tracking). See `sim.rs` `inv_normalize`
+/// indestructible (no durability tracking). See `sim/inventory_mgmt.rs` `inv_normalize`
 /// for the full stacking criteria.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 #[index(

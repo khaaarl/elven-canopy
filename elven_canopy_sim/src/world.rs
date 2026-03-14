@@ -19,7 +19,7 @@
 //
 // See also: `tree_gen.rs` for populating the world with tree geometry,
 // `nav.rs` for the navigation graph built on top of the voxel data,
-// `sim.rs` which owns the `VoxelWorld` as part of `SimState`.
+// `sim/mod.rs` which owns the `VoxelWorld` as part of `SimState`.
 //
 // **Critical constraint: determinism.** All world modifications must go
 // through deterministic sim logic. No concurrent mutation, no random

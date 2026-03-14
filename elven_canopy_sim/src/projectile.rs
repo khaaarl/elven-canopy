@@ -37,7 +37,7 @@
 //
 // The `Projectile` entity table lives in `db.rs`. Collision detection (solid
 // voxels, creature hits via spatial index), the `ProjectileTick` batched
-// event, and projectile spawn/despawn/impact logic live in `sim.rs`
+// event, and projectile spawn/despawn/impact logic live in `sim/combat.rs`
 // (`spawn_projectile`, `process_projectile_tick`, `resolve_projectile_*`).
 // This module provides the pure math: trajectory stepping and aim solving.
 //

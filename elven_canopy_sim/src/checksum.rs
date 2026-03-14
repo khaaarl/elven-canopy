@@ -2,7 +2,7 @@
 //
 // Provides FNV-1a hashing and the checksum interval constant used by the
 // multiplayer pipeline. Clients periodically hash their `SimState` (via
-// `SimState::state_checksum()` in `sim.rs`) and send the hash to the relay.
+// `SimState::state_checksum()` in `sim/mod.rs`) and send the hash to the relay.
 // The relay compares hashes from all players at the same tick and broadcasts
 // `DesyncDetected` on mismatch (see `elven_canopy_relay::session`).
 //

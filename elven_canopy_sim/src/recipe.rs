@@ -23,7 +23,7 @@
 //
 // See also: `config.rs` for `RecipeInput`/`RecipeOutput` structs,
 // `db.rs` for `ActiveRecipe`/`ActiveRecipeTarget` tables,
-// `command.rs` for crafting commands, `sim.rs` for the crafting monitor.
+// `command.rs` for crafting commands, `sim/crafting.rs` for the crafting monitor.
 
 use crate::config::{RecipeInput, RecipeOutput, RecipeSubcomponentRecord};
 use crate::inventory::{ItemKind, Material, MaterialFilter};

@@ -1,0 +1,130 @@
+// Greenhouse system — fruit spawning and harvest monitoring.
+//
+// Manages the periodic `GreenhouseMonitor` event that creates harvest tasks
+// for ripe fruit, and the `attempt_fruit_spawn` logic that grows new fruit
+// on eligible tree positions during tree heartbeats.
+//
+// See also: `fruit.rs` (fruit species data), `logistics.rs` (harvest task
+// cleanup), `needs.rs` (eating fruit).
+use super::*;
+use crate::inventory;
+
+impl SimState {
+    /// Scan greenhouses and produce fruit when production interval has elapsed.
+    /// Called at the end of each logistics heartbeat.
+    pub(crate) fn process_greenhouse_monitor(&mut self) {
+        let base_ticks = self.config.greenhouse_base_production_ticks;
+        if base_ticks == 0 {
+            return;
+        }
+
+        // Collect (id, species, production_interval, last_tick) to avoid borrow.
+        let greenhouses: Vec<(StructureId, FruitSpeciesId, u64, u64)> = self
+            .db
+            .structures
+            .iter_all()
+            .filter_map(|s| {
+                if s.furnishing == Some(FurnishingType::Greenhouse) && s.greenhouse_enabled {
+                    let species_id = s.greenhouse_species?;
+                    let area = s.floor_interior_positions().len().max(1) as u64;
+                    let interval = base_ticks / area;
+                    Some((
+                        s.id,
+                        species_id,
+                        interval,
+                        s.greenhouse_last_production_tick,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let tick = self.tick;
+        for (sid, species_id, interval, last_tick) in greenhouses {
+            if interval == 0 || tick < last_tick + interval {
+                continue;
+            }
+
+            // Produce fruit into the structure's inventory.
+            let inv_id = match self.db.structures.get(&sid) {
+                Some(s) => s.inventory_id,
+                None => continue,
+            };
+            self.inv_add_item(
+                inv_id,
+                inventory::ItemKind::Fruit,
+                1,
+                None,
+                None,
+                Some(inventory::Material::FruitSpecies(species_id)),
+                0,
+                None,
+                None,
+            );
+
+            // Update last production tick.
+            let _ = self.db.structures.modify_unchecked(&sid, |s| {
+                s.greenhouse_last_production_tick = tick;
+            });
+        }
+    }
+
+    /// Attempt to spawn one fruit on the given tree. Rolls the RNG for spawn
+    /// chance and picks a random leaf voxel to hang fruit below. Returns `true`
+    /// if a fruit was actually placed.
+    ///
+    /// This is the single code path for all fruit spawning — both the initial
+    /// fast-forward during `with_config()` and the periodic `TreeHeartbeat`.
+    pub(crate) fn attempt_fruit_spawn(&mut self, tree_id: TreeId) -> bool {
+        let tree = match self.trees.get(&tree_id) {
+            Some(t) => t,
+            None => return false,
+        };
+
+        if tree.fruit_positions.len() >= self.config.fruit_max_per_tree as usize {
+            return false;
+        }
+
+        // Roll spawn chance.
+        let roll = self.rng.next_f32();
+        if roll >= self.config.fruit_production_base_rate {
+            return false;
+        }
+
+        if tree.leaf_voxels.is_empty() {
+            return false;
+        }
+
+        // Pick a random leaf voxel; fruit hangs one voxel below it.
+        // Skip leaves that have been carved away.
+        let leaf_count = tree.leaf_voxels.len();
+        let leaf_idx = self.rng.range_u64(0, leaf_count as u64) as usize;
+        let leaf_pos = tree.leaf_voxels[leaf_idx];
+        if self.world.get(leaf_pos) == VoxelType::Air {
+            return false;
+        }
+        let fruit_pos = VoxelCoord::new(leaf_pos.x, leaf_pos.y - 1, leaf_pos.z);
+
+        // Position must be in-bounds, currently air, and not already fruited.
+        if !self.world.in_bounds(fruit_pos) {
+            return false;
+        }
+        if self.world.get(fruit_pos) != VoxelType::Air {
+            return false;
+        }
+        if tree.fruit_positions.contains(&fruit_pos) {
+            return false;
+        }
+
+        // Place the fruit and record its species.
+        self.world.set(fruit_pos, VoxelType::Fruit);
+        let tree = self.trees.get_mut(&tree_id).unwrap();
+        tree.fruit_positions.push(fruit_pos);
+        if let Some(species_id) = tree.fruit_species_id {
+            self.fruit_voxel_species.insert(fruit_pos, species_id);
+            self.fruit_voxel_species_list.push((fruit_pos, species_id));
+        }
+        true
+    }
+}

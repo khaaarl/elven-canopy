@@ -3,7 +3,7 @@
 //
 // The sim uses a discrete event simulation model. Entities schedule future
 // events into a priority queue ordered by `(tick, sequence)`. The tick loop
-// in `sim.rs` pops events up to the current tick and dispatches them.
+// in `sim/mod.rs` pops events up to the current tick and dispatches them.
 // Empty ticks are free (the queue skips forward).
 //
 // This file defines two related but distinct concepts:
@@ -14,7 +14,7 @@
 // - `CreatureActivation` — the core creature behavior loop. Each activation,
 //   the creature does one action (check for a task, walk 1 nav edge, or do
 //   1 unit of work) and schedules its next activation based on how long the
-//   action took. See `sim.rs` `process_creature_activation()`.
+//   action took. See `sim/activation.rs` `process_creature_activation()`.
 // - `CreatureHeartbeat` — periodic non-movement checks (mood, mana, needs).
 //   Does NOT drive movement — that's entirely the activation chain.
 // - `TreeHeartbeat` — periodic tree updates (fruit, mana capacity).
@@ -22,7 +22,7 @@
 //   creates `Haul` tasks to fill unmet item wants.
 // - `ProjectileTick` — batched per-tick update of all in-flight projectiles.
 //   Scheduled when the first projectile spawns (table 0→1), self-reschedules
-//   for tick+1 while projectiles remain. See `sim.rs` `process_projectile_tick()`.
+//   for tick+1 while projectiles remain. See `sim/combat.rs` `process_projectile_tick()`.
 //
 // The `EventQueue` wraps a `BinaryHeap` with reversed `Ord` to get min-heap
 // behavior (earliest tick pops first). A monotonic `next_sequence` counter
@@ -46,7 +46,7 @@
 // `CreatureDamaged` (melee strike hit), `ProjectileHitCreature`,
 // `ProjectileHitSurface`, and `ItemBroken` (durability reached zero).
 //
-// See also: `sim.rs` for the tick loop that processes scheduled events,
+// See also: `sim/mod.rs` for the tick loop that processes scheduled events,
 // `types.rs` for entity IDs and the `Species` enum, `task.rs` for the task
 // system that `CreatureActivation` interacts with.
 //

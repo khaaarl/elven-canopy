@@ -23,7 +23,7 @@
 // - **Deterministic.** Two sessions processing identical message streams from
 //   the same initial state produce identical results.
 //
-// See also: `sim.rs` for the simulation state machine, `command.rs` for
+// See also: `sim/mod.rs` for the simulation state machine, `command.rs` for
 // `SimAction`/`SimCommand` types, `event.rs` for `SimEvent`.
 //
 // The design follows `docs/drafts/session_state_machine_v4.md`.
@@ -417,7 +417,7 @@ mod tests {
     use crate::types::{Species, VoxelCoord};
     use std::sync::LazyLock;
 
-    /// Small test config matching sim.rs test_config() — 64x64x64 world,
+    /// Small test config matching sim/mod.rs test_config() — 64x64x64 world,
     /// low-energy tree, flat terrain.
     fn session_test_config() -> GameConfig {
         let mut config = GameConfig {

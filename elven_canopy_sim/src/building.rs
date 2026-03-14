@@ -24,7 +24,7 @@
 //
 // `LogisticsWant` is a DTO pairing an `ItemKind` and `MaterialFilter` with a
 // target quantity. Used by building logistics (automated hauling) and creature
-// personal item acquisition (`Creature.wants` in `sim.rs`). The
+// personal item acquisition (`Creature.wants` in `sim/needs.rs`). The
 // `material_filter` field (default `Any`) constrains which materials satisfy
 // the want — `Any` accepts all, `Specific(m)` requires an exact match.
 //
@@ -34,7 +34,7 @@
 // `db.rs` as a tabulosity table.
 //
 // See also: `types.rs` for `FaceDirection`, `FaceType`, `FaceData`,
-// `VoxelCoord`. `sim.rs` for the `DesignateBuilding` command that calls face
+// `VoxelCoord`. `sim/construction.rs` for the `DesignateBuilding` command that calls face
 // layout. `nav.rs` for how face data affects pathfinding. `db.rs` for the
 // `CompletedStructure` tabulosity table.
 //
@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 
 /// A desired item kind, material filter, and target quantity. Used by building
 /// logistics (automated hauling) and creature personal acquisition
-/// (`Creature.wants` in `sim.rs`).
+/// (`Creature.wants` in `sim/needs.rs`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogisticsWant {
     pub item_kind: ItemKind,

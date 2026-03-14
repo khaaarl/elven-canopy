@@ -11,7 +11,7 @@
 // `species.rs`). The heuristic uses `manhattan_distance * walk_ticks_per_voxel`
 // — the fastest speed — to remain admissible.
 //
-// See also: `nav.rs` for the `NavGraph` being searched, `sim.rs` which
+// See also: `nav.rs` for the `NavGraph` being searched, `sim/activation.rs` which
 // calls pathfinding during creature AI decisions.
 //
 // **Critical constraint: determinism.** A* is a pure function of graph

@@ -15,7 +15,7 @@
 //   ticks/sec, a value of 1250 means 0.8 voxels per second climbing.
 // - `heartbeat_interval_ticks` — interval for `CreatureHeartbeat` events.
 //   Note: heartbeats do NOT drive movement (that's the activation chain in
-//   `sim.rs`); they handle periodic non-movement checks like mood and mana.
+//   `sim/activation.rs`); they handle periodic non-movement checks like mood and mana.
 // - `allowed_edge_types` — restricts which nav graph edges the species can
 //   traverse. `None` = all edges (elves can climb trunks and walk branches).
 //   `Some(vec)` = only listed types (capybaras are ground-only).
@@ -54,11 +54,12 @@
 //   E.g. 225 = 15-voxel radius, 400 = 20-voxel radius. Height is included,
 //   so ground-level goblins cannot detect canopy elves directly. Elves have
 //   a detection range (225) for flee behavior — they detect approaching
-//   hostiles and run away. See `sim.rs` `should_flee()` / `flee_step()`.
+//   hostiles and run away. See `sim/combat.rs` `should_flee()` / `flee_step()`.
 //
 // See also: `config.rs` where the species table lives as part of `GameConfig`,
-// `sim.rs` for the unified `Creature` type and activation chain that consumes
-// this data, `types.rs` for the `Species` enum, `nav.rs` for `EdgeType`.
+// `sim/mod.rs` for the unified `Creature` type and `sim/activation.rs` for the
+// activation chain that consumes this data, `types.rs` for the `Species` enum,
+// `nav.rs` for `EdgeType`.
 //
 // **Critical constraint: determinism.** Species data is part of the game
 // config and must be identical across all clients.
