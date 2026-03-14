@@ -126,6 +126,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-item-durability      Item durability system (current/max HP on items)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
+[ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
@@ -2085,6 +2086,8 @@ Activation-driven hostile scanning. On each creature activation, scan for hostil
 
 **Draft:** docs/drafts/combat_military.md (§6, §7)
 
+**Related:** F-los-tuning
+
 #### F-hp-ui — HP bars in creature UI
 **Status:** Done
 
@@ -2120,6 +2123,27 @@ A per-species `FleeInstinct` struct on `SpeciesData` that defines involuntary pa
 **Distinct from EngagementStyle's disengage threshold:** The disengage threshold in EngagementStyle is a tactical, voluntary "I should retreat." FleeInstinct is involuntary panic — different movement behavior (possibly ignoring pathing efficiency, running in a random direction away from threat), different visual feedback (panic animation/particles), and cannot be overridden by orders.
 
 **Blocked by:** F-engagement-style
+
+#### F-los-tuning — Line-of-sight tuning (terrain tolerance, tall creature bonus)
+**Status:** Todo
+
+Line of sight feels too constrained — elves lose sight of targets that go
+over small terrain bumps. Two improvements:
+
+1. **Terrain tolerance:** LOS checks should be more forgiving for minor
+   elevation changes (e.g., a one-voxel hill shouldn't fully block sight).
+   Consider allowing LOS rays to pass through partial obstructions or adding
+   a tolerance margin for small obstacles.
+
+2. **Tall creature bonus:** Large creatures like trolls should be easier to
+   spot. Species height/size should factor into detection and LOS — a troll
+   standing behind a small hill is still visible because it towers above it.
+
+Related: F-hostile-detection already notes that height makes detection range
+ineffective across tree levels. This item addresses the horizontal/terrain
+case specifically.
+
+**Related:** F-hostile-detection
 
 #### F-military-armor — Military group armor policy
 **Status:** Todo
