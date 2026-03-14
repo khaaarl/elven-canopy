@@ -16,7 +16,19 @@ elven-canopy/
 │       ├── fruit.rs            # Procedural fruit species: types, generation, coverage, Vaelith naming
 │       ├── session.rs          # GameSession — message-driven session management
 │       ├── local_relay.rs      # LocalRelay — accumulator-based tick pacer (SP)
-│       ├── sim.rs              # SimState, tick loop, command processing
+│       ├── sim/                # SimState and all simulation logic (directory module)
+│       │   ├── mod.rs          #   Struct definition, constructors, tick loop, event dispatch, serialization
+│       │   ├── activation.rs   #   Creature activation chain, task selection, claiming
+│       │   ├── combat.rs       #   Melee, ranged, projectiles, flee, hostile AI, diplomacy
+│       │   ├── construction.rs #   Build/carve designation, materialization, furnishing, raycast
+│       │   ├── crafting.rs     #   Recipe execution, active recipe management, cooking
+│       │   ├── creature.rs     #   Spawning, surface placement, pile gravity, task cleanup
+│       │   ├── greenhouse.rs   #   Fruit spawning, harvest monitoring
+│       │   ├── inventory_mgmt.rs #  Item stack ops, reservations, equipment, durability
+│       │   ├── logistics.rs    #   Hauling, harvesting, pickup/dropoff, logistics heartbeat
+│       │   ├── movement.rs     #   GoTo commands, unit spreading, step execution, wandering
+│       │   ├── needs.rs        #   Eating, sleeping, moping, personal item acquisition
+│       │   └── task_helpers.rs #   Task extension table accessors, insert_task
 │       ├── db.rs               # SimDb — tabulosity relational store (30 tables, all entities)
 │       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with face culling
 │       ├── texture_gen.rs      # Procedural face textures (3D Perlin noise atlases)
