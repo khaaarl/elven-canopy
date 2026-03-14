@@ -3239,7 +3239,7 @@ mod tests {
         // A designated (not yet built) strut should contribute rod springs
         // when its voxels appear in the overlay/visited set as Strut.
         let config = GameConfig::default();
-        let mut world = make_column_world(24, 0..16, 5, 5, 10);
+        let world = make_column_world(24, 0..16, 5, 5, 10);
 
         // Strut endpoints.
         let strut_a = VoxelCoord::new(6, 1, 5);

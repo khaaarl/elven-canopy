@@ -629,7 +629,6 @@ fn debug_catches_unique_indexed_field_change() {
 // --- Filtered index table ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(dead_code)]
 enum TaskStatus {
     Pending,
     InProgress,

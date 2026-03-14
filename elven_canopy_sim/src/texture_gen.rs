@@ -378,7 +378,7 @@ mod tests {
             let z = i as f64 * 0.23;
             let val = perlin_3d(x, y, z);
             assert!(
-                val >= -1.5 && val <= 1.5,
+                (-1.5..=1.5).contains(&val),
                 "Perlin noise out of expected range: {val} at ({x},{y},{z})"
             );
         }
@@ -475,8 +475,8 @@ mod tests {
         // Right edge of face 0: tx=15, ty=0..15.
         // Left edge of face 1: tx=0, ty=0..15.
         for ty in 0..FACE_TEX_SIZE {
-            let px0 = 0 * FACE_TEX_SIZE + (FACE_TEX_SIZE - 1); // face 0 right edge
-            let px1 = 1 * FACE_TEX_SIZE; // face 1 left edge
+            let px0 = FACE_TEX_SIZE - 1; // face 0 right edge
+            let px1 = FACE_TEX_SIZE; // face 1 left edge
             let idx0 = ((ty * atlas.width + px0) * 4) as usize;
             let idx1 = ((ty * atlas.width + px1) * 4) as usize;
             assert_eq!(

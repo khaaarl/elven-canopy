@@ -221,7 +221,7 @@ mod tests {
         let mut rng = GameRng::new(777);
         for _ in 0..10_000 {
             let v = rng.range_f32(1.5, 3.5);
-            assert!(v >= 1.5 && v < 3.5, "range_f32 out of range: {v}");
+            assert!((1.5..3.5).contains(&v), "range_f32 out of range: {v}");
         }
     }
 

@@ -949,8 +949,6 @@ mod tests {
         PartProperty, PartType, Rarity,
     };
     use crate::types::FruitSpeciesId;
-    use std::collections::BTreeSet;
-
     fn test_species(id: u16, name: &str, parts: Vec<FruitPart>) -> FruitSpecies {
         FruitSpecies {
             id: FruitSpeciesId(id),

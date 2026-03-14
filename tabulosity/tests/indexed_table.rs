@@ -1004,6 +1004,7 @@ struct FiltTaskId(u32);
     fields("assignee"),
     filter = "FiltTask::is_active"
 )]
+#[allow(clippy::duplicated_attributes)]
 #[index(
     name = "active_priority",
     fields("assignee", "priority"),
@@ -3164,6 +3165,7 @@ mod gap_coverage {
     // --- Inverted range returns empty ---
 
     #[test]
+    #[allow(clippy::reversed_empty_ranges)]
     fn inverted_range_returns_empty() {
         let mut table = CreatureTable::new();
         for i in 0..5 {

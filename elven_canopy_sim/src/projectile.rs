@@ -559,8 +559,8 @@ mod tests {
         let speed = SUB_VOXEL_ONE / 20;
         let v = SubVoxelVec::new(speed, speed, speed);
         let sq = v.magnitude_sq_i64();
+        // If the multiplication overflowed, sq would wrap negative.
         assert!(sq > 0);
-        assert!(sq <= i64::MAX);
     }
 
     #[test]
@@ -654,7 +654,10 @@ mod tests {
         assert!(result.is_some(), "Should hit a target 5 voxels away");
         // At 0.05 voxels/tick, 5 voxels takes ~100 ticks
         let tick = result.unwrap();
-        assert!(tick >= 90 && tick <= 110, "Expected ~100 ticks, got {tick}");
+        assert!(
+            (90..=110).contains(&tick),
+            "Expected ~100 ticks, got {tick}"
+        );
     }
 
     #[test]

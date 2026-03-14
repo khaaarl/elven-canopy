@@ -129,7 +129,7 @@ impl SimState {
     /// Add an item with explicit durability values (current_hp / max_hp).
     /// Used in tests to create items with specific durability state.
     /// For transfers between inventories, prefer `inv_move_stack`.
-    #[allow(clippy::too_many_arguments, dead_code)]
+    #[allow(clippy::too_many_arguments, dead_code)] // Used by tests; future production use for loot drops and crafted items with durability
     pub(crate) fn inv_add_item_with_durability(
         &mut self,
         inv_id: InventoryId,
@@ -756,7 +756,7 @@ impl SimState {
     ///
     /// For stacks with quantity > 1, one item is split off before applying
     /// damage so that the rest of the stack retains its original HP.
-    #[allow(dead_code)] // Will be called by combat/wear degradation hooks.
+    #[allow(dead_code)] // Used by tests; future production use by combat/wear degradation hooks
     pub(crate) fn inv_damage_item(
         &mut self,
         stack_id: ItemStackId,

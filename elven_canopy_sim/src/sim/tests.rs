@@ -315,8 +315,8 @@ fn determinism_with_elf_after_1000_ticks() {
         },
     };
 
-    sim_a.step(&[spawn.clone()], 1000);
-    sim_b.step(&[spawn], 1000);
+    sim_a.step(std::slice::from_ref(&spawn), 1000);
+    sim_b.step(std::slice::from_ref(&spawn), 1000);
 
     // Both sims should have identical creature positions.
     assert_eq!(sim_a.db.creatures.len(), sim_b.db.creatures.len());
@@ -442,8 +442,8 @@ fn determinism_with_capybara() {
         },
     };
 
-    sim_a.step(&[spawn.clone()], 1000);
-    sim_b.step(&[spawn], 1000);
+    sim_a.step(std::slice::from_ref(&spawn), 1000);
+    sim_b.step(std::slice::from_ref(&spawn), 1000);
 
     assert_eq!(sim_a.db.creatures.len(), sim_b.db.creatures.len());
     for creature_a in sim_a.db.creatures.iter_all() {
@@ -2253,16 +2253,15 @@ fn find_nearest_bed_excludes_occupied() {
     let mut ground_sleep_count = 0;
     for &elf_id in &elf_ids {
         let elf = sim.db.creatures.get(&elf_id).unwrap();
-        if let Some(task_id) = elf.current_task {
-            if let Some(task) = sim.db.tasks.get(&task_id) {
-                if task.kind_tag == TaskKindTag::Sleep {
-                    let bed = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
-                    if bed.is_some() {
-                        bed_sleep_count += 1;
-                    } else {
-                        ground_sleep_count += 1;
-                    }
-                }
+        if let Some(task_id) = elf.current_task
+            && let Some(task) = sim.db.tasks.get(&task_id)
+            && task.kind_tag == TaskKindTag::Sleep
+        {
+            let bed = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
+            if bed.is_some() {
+                bed_sleep_count += 1;
+            } else {
+                ground_sleep_count += 1;
             }
         }
     }
@@ -5133,7 +5132,7 @@ fn eat_bread_generates_thought() {
     // Advance enough to start and complete the Eat action.
     sim.step(&[], sim.tick + sim.config.eat_action_ticks + 10);
 
-    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let _elf = sim.db.creatures.get(&elf_id).unwrap();
     assert!(
         sim.db
             .thoughts
@@ -8709,7 +8708,7 @@ fn ground_sleep_generates_thought() {
     sim.step(&[], target_tick);
 
     // Elf should have a SleptOnGround thought.
-    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let _elf = sim.db.creatures.get(&elf_id).unwrap();
     assert!(
         sim.db
             .thoughts
@@ -8780,7 +8779,7 @@ fn eating_generates_thought() {
     sim.step(&[], target_tick);
 
     // Elf should have an AteMeal thought.
-    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let _elf = sim.db.creatures.get(&elf_id).unwrap();
     assert!(
         sim.db
             .thoughts
@@ -8907,7 +8906,7 @@ fn dormitory_sleep_generates_thought() {
     let target_tick = 1 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
     sim.step(&[], target_tick);
 
-    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let _elf = sim.db.creatures.get(&elf_id).unwrap();
     assert!(
         sim.db
             .thoughts
@@ -9072,7 +9071,7 @@ fn home_sleep_generates_thought() {
     let target_tick = 2 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
     sim.step(&[], target_tick);
 
-    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let _elf = sim.db.creatures.get(&elf_id).unwrap();
     assert!(
         sim.db
             .thoughts
@@ -9179,7 +9178,7 @@ fn low_ceiling_generates_thought() {
     let target_tick = 1 + heartbeat_interval + 50_000 + sim.config.sleep_ticks_bed;
     sim.step(&[], target_tick);
 
-    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let _elf = sim.db.creatures.get(&elf_id).unwrap();
     assert!(
         sim.db
             .thoughts
@@ -10885,7 +10884,7 @@ fn mope_probability_zero_mean_never_fires() {
     assert_eq!(cfg.mope_mean_ticks(MoodTier::Devastated), 0);
 
     // Run many heartbeats with zero-mean config + unhappy elf.
-    let (mut sim, elf_id) = mope_test_setup(
+    let (mut sim, _elf_id) = mope_test_setup(
         cfg,
         &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
     );
@@ -12335,8 +12334,7 @@ fn add_active_recipe_rejects_wrong_furnishing() {
     let workshop_key = sim
         .recipe_catalog
         .recipes_for_furnishing(FurnishingType::Workshop)
-        .iter()
-        .next()
+        .first()
         .unwrap()
         .key
         .clone();
@@ -15200,7 +15198,7 @@ fn set_civ_opinion_noop_for_unknown_pair() {
 
 #[test]
 fn get_known_civs_returns_player_relationships() {
-    let mut sim = test_sim(42);
+    let sim = test_sim(42);
 
     let known = sim.get_known_civs();
     // Should contain entries from worldgen diplomacy (player civ's outgoing rels).
@@ -15345,8 +15343,7 @@ fn spawn_second_elf(sim: &mut SimState) -> CreatureId {
     sim.db
         .creatures
         .iter_all()
-        .filter(|c| c.species == Species::Elf && !existing.contains(&c.id))
-        .next()
+        .find(|c| c.species == Species::Elf && !existing.contains(&c.id))
         .unwrap()
         .id
 }
@@ -15816,11 +15813,10 @@ fn adjacent_platform_sees_blueprint_support() {
             if let Some(split) = strip
                 .iter()
                 .position(|&c| !sim.world.has_solid_face_neighbor(c))
+                && split > 0
             {
-                if split > 0 {
-                    best = Some((strip, split));
-                    break 'outer;
-                }
+                best = Some((strip, split));
+                break 'outer;
             }
         }
     }
@@ -17142,7 +17138,7 @@ fn death_removes_from_spatial_index() {
     assert!(
         sim.spatial_index
             .get(&pos)
-            .map_or(false, |v| v.contains(&elf_id)),
+            .is_some_and(|v| v.contains(&elf_id)),
         "living elf should be in spatial index"
     );
 
@@ -17163,7 +17159,7 @@ fn death_removes_from_spatial_index() {
     assert!(
         !sim.spatial_index
             .get(&pos)
-            .map_or(false, |v| v.contains(&elf_id)),
+            .is_some_and(|v| v.contains(&elf_id)),
         "dead elf should be removed from spatial index"
     );
 }
@@ -18518,13 +18514,13 @@ fn projectile_hits_solid_voxel_and_creates_ground_pile() {
 
     // Run until the projectile resolves (max 500 ticks).
     for _ in 0..500 {
-        if sim.db.projectiles.len() == 0 {
+        if sim.db.projectiles.is_empty() {
             break;
         }
         sim.tick += 1;
         let mut events = Vec::new();
         sim.process_projectile_tick(&mut events);
-        if sim.db.projectiles.len() > 0 {
+        if !sim.db.projectiles.is_empty() {
             sim.event_queue
                 .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
         }
@@ -18565,7 +18561,7 @@ fn projectile_hits_creature_and_deals_damage() {
     // Run until resolved.
     let mut hit_events = Vec::new();
     for _ in 0..500 {
-        if sim.db.projectiles.len() == 0 {
+        if sim.db.projectiles.is_empty() {
             break;
         }
         sim.tick += 1;
@@ -18576,7 +18572,7 @@ fn projectile_hits_creature_and_deals_damage() {
                 hit_events.push(e.clone());
             }
         }
-        if sim.db.projectiles.len() > 0 {
+        if !sim.db.projectiles.is_empty() {
             sim.event_queue
                 .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
         }
@@ -18607,7 +18603,7 @@ fn projectile_out_of_bounds_despawns_silently() {
 
     // Run until resolved.
     for _ in 0..2000 {
-        if sim.db.projectiles.len() == 0 {
+        if sim.db.projectiles.is_empty() {
             break;
         }
         sim.tick += 1;
@@ -18620,7 +18616,7 @@ fn projectile_out_of_bounds_despawns_silently() {
                 "Should not hit surface"
             );
         }
-        if sim.db.projectiles.len() > 0 {
+        if !sim.db.projectiles.is_empty() {
             sim.event_queue
                 .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
         }
@@ -18952,7 +18948,7 @@ fn all_hostile_species_pursue_elves() {
             .flat_map(|a| positions.iter().map(move |b| (*a, *b)))
             .find(|(a, b)| {
                 let d = a.manhattan_distance(*b);
-                d >= 3 && d <= 6
+                (3..=6).contains(&d)
             })
             .expect("should have nav nodes 3-6 apart");
         force_position(&mut sim, elf_id, pos_a);
@@ -18960,11 +18956,8 @@ fn all_hostile_species_pursue_elves() {
         force_position(&mut sim, hostile_id, pos_b);
         force_idle(&mut sim, hostile_id);
 
-        let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
         let hostile_start = sim.db.creatures.get(&hostile_id).unwrap().position;
-
         let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
-        let initial_dist = hostile_start.manhattan_distance(elf_pos);
 
         sim.step(&[], sim.tick + 10_000);
 
@@ -19011,10 +19004,10 @@ fn projectile_hits_creature_beyond_origin_voxel() {
         let mut events = Vec::new();
         sim.process_projectile_tick(&mut events);
         for e in &events {
-            if let SimEventKind::ProjectileHitCreature { target_id, .. } = e.kind {
-                if target_id == target {
-                    hit = true;
-                }
+            if let SimEventKind::ProjectileHitCreature { target_id, .. } = e.kind
+                && target_id == target
+            {
+                hit = true;
             }
         }
         if !sim.db.projectiles.is_empty() {
@@ -22422,7 +22415,7 @@ fn extraction_recipe_catalog_has_recipes_for_worldgen_species() {
     // Should have bread + extraction recipes + component recipes (mill/bake
     // for starchy species). At minimum: bread + one extraction per species.
     assert!(
-        kitchen_recipes.len() >= 1 + fruit_count,
+        kitchen_recipes.len() > fruit_count,
         "kitchen should have at least bread + extraction recipes, got {}",
         kitchen_recipes.len()
     );
@@ -23323,7 +23316,7 @@ fn strut_replaces_replaceable_types() {
         sim.step(&[cmd], tick);
         tick += 1;
         assert!(
-            sim.db.blueprints.len() >= 1,
+            !sim.db.blueprints.is_empty(),
             "Strut should accept replacing {:?}, msg: {:?}",
             replaceable,
             sim.last_build_message
@@ -23510,7 +23503,7 @@ fn strut_materialization_creates_voxels() {
 
     // A CompletedStructure should exist.
     assert!(
-        sim.db.structures.len() >= 1,
+        !sim.db.structures.is_empty(),
         "Should have a completed structure"
     );
 
@@ -24410,7 +24403,6 @@ fn is_non_hostile_different_civs_hostile() {
 
     let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
     assert!(civs.len() >= 2, "Need at least 2 civs");
-    let civ_a = civs[0].id;
     let civ_b = civs[1].id;
 
     let elf_a = spawn_elf(&mut sim);
@@ -25478,8 +25470,6 @@ fn voxel_exclusion_hostile_blocks_movement() {
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
-    let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
-
     // Schedule only the elf to activate (goblin stays idle).
     sim.event_queue.cancel_creature_activations(elf);
     sim.event_queue.cancel_creature_activations(goblin);
@@ -25656,7 +25646,7 @@ fn voxel_exclusion_wander_avoids_hostile_voxels() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place elf at node_b, goblin at node_c. Elf should not wander to node_c.
-    let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+    let (_node_a, node_b, node_c) = find_chain_of_three(&sim);
     force_to_node(&mut sim, elf, node_b);
     force_to_node(&mut sim, goblin, node_c);
     force_idle(&mut sim, elf);
@@ -25695,7 +25685,7 @@ fn voxel_exclusion_flee_avoids_hostile_voxels() {
 
     // Set up: elf at node_b (middle), goblin at node_a (nearby threatening).
     // Node_c should be unoccupied — elf should flee toward node_c, not node_a.
-    let (node_a, node_b, node_c) = find_chain_of_three(&sim);
+    let (node_a, node_b, _node_c) = find_chain_of_three(&sim);
     force_to_node(&mut sim, elf, node_b);
     force_to_node(&mut sim, goblin, node_a);
     force_idle(&mut sim, elf);

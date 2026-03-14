@@ -790,6 +790,7 @@ struct CreatureLog {
 /// Parent (creature) has:
 /// - pk FK child (CreatureStats) with cascade
 /// - regular FK child (CreatureLog) with cascade
+///
 /// If parent is deleted, both should cascade.
 #[derive(Database)]
 struct MixedCascadeDb {

@@ -942,14 +942,10 @@ fn dye_to_rgb(color: DyeColor) -> FruitColor {
 // ---------------------------------------------------------------------------
 
 /// Habitat/character affinities for roots like "deep," "wild," "ancient."
-/// Some variants are reserved for future habitat-to-naming mappings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 enum HabitatTrait {
-    HighCanopy,
     LowTrunk,
     Wild,
-    Ancient,
 }
 
 /// Trait dimensions for root-fruit affinity scoring.
@@ -2229,7 +2225,7 @@ mod tests {
         let shape_nouns: Vec<&str> = fruits
             .iter()
             .filter(|f| !f.english_gloss.starts_with("world-"))
-            .filter_map(|f| f.vaelith_name.split(' ').last())
+            .filter_map(|f| f.vaelith_name.split(' ').next_back())
             .collect();
 
         if shape_nouns.len() > 5 {

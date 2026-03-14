@@ -313,9 +313,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn bounded_bool() {
-        assert_eq!(<bool as Bounded>::MIN, false);
-        assert_eq!(<bool as Bounded>::MAX, true);
+        assert!(!<bool as Bounded>::MIN);
+        assert!(<bool as Bounded>::MAX);
     }
 
     #[test]

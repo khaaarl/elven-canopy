@@ -45,7 +45,7 @@ pub enum BlueprintState {
 mod tests {
     use super::*;
     use crate::prng::GameRng;
-    use crate::types::{BuildType, FaceData, Priority, ProjectId, VoxelCoord, VoxelType};
+    use crate::types::{BuildType, Priority, ProjectId, VoxelCoord, VoxelType};
     use std::collections::BTreeMap;
 
     #[test]

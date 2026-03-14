@@ -151,10 +151,9 @@ fn wait_for_turn_with_commands(
             sim_tick_target,
             commands,
         } = msg
+            && !commands.is_empty()
         {
-            if !commands.is_empty() {
-                return (turn_number, sim_tick_target, commands);
-            }
+            return (turn_number, sim_tick_target, commands);
         }
     }
     panic!("did not receive Turn with commands within 50 reads");
@@ -1897,12 +1896,7 @@ fn dedicated_non_host_set_speed_ignored() {
     r1.get_ref()
         .set_read_timeout(Some(Duration::from_millis(200)))
         .ok();
-    loop {
-        match read_message(&mut r1) {
-            Ok(_) => continue,
-            Err(_) => break,
-        }
-    }
+    while read_message(&mut r1).is_ok() {}
 
     // Guest sends SetSpeed — should be ignored.
     send(
@@ -1918,15 +1912,10 @@ fn dedicated_non_host_set_speed_ignored() {
         .set_read_timeout(Some(Duration::from_millis(200)))
         .ok();
     let mut found_speed_changed = false;
-    loop {
-        match read_message(&mut r1) {
-            Ok(bytes) => {
-                let msg: ServerMessage = serde_json::from_slice(&bytes).unwrap();
-                if matches!(msg, ServerMessage::SpeedChanged { .. }) {
-                    found_speed_changed = true;
-                }
-            }
-            Err(_) => break,
+    while let Ok(bytes) = read_message(&mut r1) {
+        let msg: ServerMessage = serde_json::from_slice(&bytes).unwrap();
+        if matches!(msg, ServerMessage::SpeedChanged { .. }) {
+            found_speed_changed = true;
         }
     }
     assert!(
@@ -2022,12 +2011,7 @@ fn dedicated_host_leaves_guest_cannot_set_speed() {
     r2.get_ref()
         .set_read_timeout(Some(Duration::from_millis(200)))
         .ok();
-    loop {
-        match read_message(&mut r2) {
-            Ok(_) => continue,
-            Err(_) => break,
-        }
-    }
+    while read_message(&mut r2).is_ok() {}
 
     // Host disconnects.
     send(&mut w1, &ClientMessage::Goodbye);
@@ -2037,12 +2021,7 @@ fn dedicated_host_leaves_guest_cannot_set_speed() {
     r2.get_ref()
         .set_read_timeout(Some(Duration::from_millis(300)))
         .ok();
-    loop {
-        match read_message(&mut r2) {
-            Ok(_) => continue,
-            Err(_) => break,
-        }
-    }
+    while read_message(&mut r2).is_ok() {}
 
     // Guest tries SetSpeed — should be silently ignored (no SpeedChanged).
     send(
@@ -2057,15 +2036,10 @@ fn dedicated_host_leaves_guest_cannot_set_speed() {
         .set_read_timeout(Some(Duration::from_millis(300)))
         .ok();
     let mut found_speed_changed = false;
-    loop {
-        match read_message(&mut r2) {
-            Ok(bytes) => {
-                let msg: ServerMessage = serde_json::from_slice(&bytes).unwrap();
-                if matches!(msg, ServerMessage::SpeedChanged { .. }) {
-                    found_speed_changed = true;
-                }
-            }
-            Err(_) => break,
+    while let Ok(bytes) = read_message(&mut r2) {
+        let msg: ServerMessage = serde_json::from_slice(&bytes).unwrap();
+        if matches!(msg, ServerMessage::SpeedChanged { .. }) {
+            found_speed_changed = true;
         }
     }
     assert!(
