@@ -2050,6 +2050,14 @@ Creatures with Flee response (civilian military group default, or FleeOnly comba
 
 **Draft:** docs/drafts/combat_military.md (§7)
 
+#### F-fog-of-war — Visibility via tree and root network
+**Status:** Todo · **Phase:** 8+ · **Refs:** §17
+
+World hidden except where observed by elves or sensed through tree/root
+network. Strongest near trunk, weaker at root edges, absent beyond.
+
+**Related:** F-combat, F-root-network
+
 #### F-friendly-fire — Friendly-fire avoidance for ranged attacks
 **Status:** Done
 
@@ -2268,6 +2276,12 @@ social norms over time.
 
 **Blocked by:** F-multi-tree, F-personality
 
+#### F-day-night — Day/night cycle and pacing
+**Status:** Todo · **Refs:** §27
+
+Length of in-game day. Affects pacing, fruit production, sleep schedules.
+Open design question (§27).
+
 #### F-fruit-naming — Fruit naming overhaul
 **Status:** Done · **Phase:** 7
 
@@ -2346,6 +2360,14 @@ scope, gameplay implications, and interaction with existing tree generation
 are not yet specified.
 
 **Related:** F-branch-growth, F-multi-tree
+
+#### F-weather — Weather within seasons
+**Status:** Todo · **Refs:** §27
+
+Rain, wind, storms within seasons. Could affect mood, fire spread, and
+construction difficulty. Open design question (§27).
+
+**Related:** F-fire-ecology, F-seasons
 
 #### F-worldgen-framework — Worldgen generator framework
 **Status:** Done
@@ -3020,10 +3042,7 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 
 **Related:** F-bldg-transparency, F-ghost-above, F-minimap
 
-### Infrastructure & Multiplayer
-
-#### B-tab-serde-tests — Fix tabulosity test compilation under feature unification
-**Status:** Done
+### Sim Engine
 
 #### F-activation-revamp — Replace manual event scheduling with automatic reactivation
 **Status:** Todo · **Phase:** 5
@@ -3038,43 +3057,6 @@ Revamp the creature activation/event system so that creatures do not need to man
 Control a single elf in first/third-person perspective within the
 same simulation. RPG-like exploration mode.
 
-#### F-ai-test-harness — Headless test harness for AI-driven manual testing
-**Status:** Todo
-
-Build a headless "screen reader" harness that lets Claude (or automated
-scripts) play the game without eyes. Three components:
-
-1. **State observation layer** — dump visible UI state as text/JSON: open
-   panels, label text, button states, inventory contents, creature lists.
-   Activated via command-line flag or autoload.
-
-2. **Command interface** — high-level actions ("select workshop at 5,3,1",
-   "activate Wooden Bowl recipe", "wait 100 ticks") translated into real
-   UI interactions (input events or direct bridge calls).
-
-3. **Assertion helpers** — check observable state against expectations
-   ("workshop inventory contains 1 Wooden Bowl with material Oak").
-
-Catches full-vertical-slice bugs (Rust sim → bridge serialization →
-GDScript display) that unit tests miss, like inventories showing items
-without material info. Same infrastructure supports both AI-driven
-exploratory testing and deterministic regression scripts.
-
-**Related:** F-bridge-integ-tests, F-gdscript-tests
-
-#### F-bridge-integ-tests — Integration tests for gdext bridge functions
-**Status:** Todo
-
-Integration tests that exercise gdext bridge functions from GDScript in a
-running Godot instance. These catch type mismatches at the FFI boundary
-(e.g. Array<GString> vs VarArray), argument passing bugs, and
-GDScript-to-Rust round-trip issues that pure Rust tests can't detect.
-Heavier than unit tests — requires launching Godot headless. Add a CI
-job and a `scripts/build.sh integtest` target. Motivated by the
-F-move-spread segfault where an Array type mismatch crashed at runtime.
-
-**Related:** F-ai-test-harness, F-gdscript-tests
-
 #### F-core-types — VoxelCoord, IDs, SimCommand, GameConfig
 **Status:** Done · **Phase:** 0 · **Refs:** §5, §7
 
@@ -3086,12 +3068,6 @@ Core data types with deterministic UUID generation from PRNG.
 Sim crate has zero Godot dependencies. Compiler-enforced separation
 enables headless testing, fast-forward, and replay verification.
 
-#### F-day-night — Day/night cycle and pacing
-**Status:** Todo · **Refs:** §27
-
-Length of in-game day. Affects pacing, fruit production, sleep schedules.
-Open design question (§27).
-
 #### F-event-loop — Event-driven tick loop (priority queue)
 **Status:** Done · **Phase:** 1 · **Refs:** §6
 
@@ -3099,14 +3075,6 @@ Discrete event simulation with priority queue. Empty ticks are free.
 1000 ticks per simulated second.
 
 **Related:** F-activation-revamp, F-sim-speed
-
-#### F-fog-of-war — Visibility via tree and root network
-**Status:** Todo · **Phase:** 8+ · **Refs:** §17
-
-World hidden except where observed by elves or sensed through tree/root
-network. Strongest near trunk, weaker at root edges, absent beyond.
-
-**Related:** F-combat, F-root-network
 
 #### F-game-session — Game session autoload singleton
 **Status:** Done · **Refs:** §26
@@ -3118,17 +3086,6 @@ Godot autoload persisting seed and tree config across scene transitions.
 
 GDExtension bridge crate exposing sim to Godot. SimBridge node with
 methods for commands, queries, and rendering data.
-
-#### F-gdscript-tests — GDScript unit tests (GUT or built-in)
-**Status:** Done
-
-Set up a lightweight GDScript unit testing framework (GUT or Godot 4.6's
-built-in test runner). Cover pure GDScript logic: UI state machines,
-coordinate math, selection helpers, input mode transitions. Add a
-`scripts/build.sh gdtest` target and a CI job. These tests don't need
-the sim or bridge — just GDScript in isolation.
-
-**Related:** F-ai-test-harness, F-bridge-integ-tests
 
 #### F-immediate-commands — Immediate command application (zero-tick updates)
 **Status:** Done · **Phase:** 2
@@ -3177,109 +3134,6 @@ state. The sim crate itself should need no changes.
 
 Plugin/scripting system for custom structures, elf behaviors, invader
 types. Open design question (§27).
-
-#### F-mp-chat — Multiplayer in-game chat
-**Status:** Todo · **Phase:** 8+ · **Refs:** §4
-
-Text chat between players in multiplayer sessions. Protocol support exists
-(`Chat`/`ChatBroadcast` messages) but the GDScript UI for displaying and
-sending chat messages is not yet implemented.
-
-**Related:** F-multiplayer
-
-#### F-mp-checksums — Multiplayer state checksums for desync detection
-**Status:** Done · **Phase:** 8+ · **Refs:** §4
-
-Periodic sim-state checksums sent via the relay to detect desync between
-clients. `SimState::state_checksum()` serializes state to JSON and hashes with
-FNV-1a 64-bit (`checksum.rs`). `NetClient::send_checksum()` sends the hash to
-the relay, which compares per-player hashes and broadcasts `DesyncDetected` on
-mismatch. The GDExtension bridge (`sim_bridge.rs`) sends checksums
-automatically every `CHECKSUM_INTERVAL_TICKS` (1000 ticks = 1 sim-second)
-after applying turns.
-
-**Related:** F-multiplayer
-
-#### F-mp-integ-test — Multiplayer integration test harness
-**Status:** Done · **Phase:** 8+ · **Refs:** §4
-
-End-to-end integration tests for multiplayer workflows: hosting a game,
-joining, issuing commands, verifying both sides see the same state. Should
-run entirely in Rust (no Godot dependency) by exercising the relay, net
-client, and sim directly. Consider moving UI-adjacent logic (button press
-→ command dispatch) into testable Rust functions to maximize coverage
-without requiring Godot automation. Goal: catch regressions in the full
-host→relay→join→command→turn→apply pipeline.
-
-**Related:** F-multiplayer
-
-#### F-mp-mid-join — Mid-game join with state snapshot
-**Status:** Done · **Phase:** 8+ · **Refs:** §4
-
-Allow players to join a multiplayer session that has already started.
-The relay requests a full sim state snapshot from the host, pauses turn
-flushing during the transfer, and forwards it to the joining player.
-Pending joiner is excluded from checksum comparisons. Only one mid-game
-join can be in flight at a time.
-
-**Related:** F-mp-reconnect, F-multiplayer, F-save-load
-
-#### F-mp-reconnect — Multiplayer reconnection after disconnect
-**Status:** Todo · **Phase:** 8+ · **Refs:** §4
-
-Graceful handling of temporary disconnections in multiplayer. When a client
-disconnects, preserve their player slot for a timeout period and allow
-reconnection with state catchup (replaying missed turns or requesting a
-snapshot). Not yet designed in detail.
-
-**Related:** F-mp-mid-join, F-multiplayer
-
-#### F-multiplayer — Relay-coordinator multiplayer networking
-**Status:** In Progress · **Phase:** 8+ · **Refs:** §4
-**Draft:** `docs/drafts/multiplayer_relay.md`
-
-Multiplayer via a lightweight relay coordinator that determines canonical
-command ordering and broadcasts turns to all clients. The relay can run as
-a standalone headless binary (`elven_canopy_relay` crate) or embedded in a
-player's game process. Clients connect outbound to the relay, avoiding NAT
-traversal issues. Supersedes the Paxos-like model originally described in
-§4 — simpler, same guarantees for 2–4 player scale. Steam integration
-possible as a discovery mechanism (lobby browser, friend invites) without
-replacing the relay architecture. Periodic state checksums detect desync.
-Architecture foundations are ready (deterministic sim, command interface).
-Initial multiplayer mode is shared-tree co-op (all players control one
-tree). Separate-tree multiplayer (cooperative or competitive with per-player
-trees) deferred to F-multi-tree. Draft doc covers relay architecture,
-session management, and UI design (main menu flow, lobby, in-game controls,
-ESC menu behavior, save/load semantics, sim speed policy).
-
-**Related:** F-immediate-commands, F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
-
-#### F-relay-multi-game — Relay server supports multiple simultaneous games
-**Status:** Todo · **Phase:** 8
-
-Extend the relay server to host multiple simultaneous game sessions.
-Each session has its own independent lobby, command queue, turn counter,
-and connected-client list. Clients specify which session to join (or
-create) during the handshake. The relay multiplexes all sessions on a
-single listening port. Requires per-session isolation so that a crash
-or desync in one game cannot affect others. Depends on F-relay-release
-(standalone relay must exist first) and F-multiplayer (core relay
-protocol).
-
-**Related:** F-multiplayer, F-relay-release
-
-#### F-relay-release — Standalone relay server release build
-**Status:** Todo · **Phase:** 8
-
-Build the `elven_canopy_relay` crate as a standalone headless binary
-with a release profile. Add a `scripts/build.sh relay` (or similar)
-target that produces an optimized, stripped binary suitable for
-deployment on a dedicated server. Include any necessary Cargo profile
-tuning (LTO, codegen-units=1, strip=true) for minimal binary size and
-maximum performance.
-
-**Related:** F-multiplayer, F-relay-multi-game
 
 #### F-save-load — Save/load to JSON with versioning
 **Status:** Done · **Phase:** 2 · **Refs:** §4, §5
@@ -3345,6 +3199,18 @@ as `SimDb` (16 tables) — see F-sim-tab-migrate.
 **Status:** Done
 
 #### F-split-sim — Split monolithic sim.rs into domain sub-modules
+**Status:** Done
+
+#### F-tree-gen — Procedural tree generation (trunk+branches)
+**Status:** Done · **Phase:** 1 · **Refs:** §8
+
+Trunk is first branch — all segments use same growth algorithm with
+different params. Cross-section bridging ensures 6-connectivity. Voxel
+type priority prevents overwrites.
+
+### Tabulosity
+
+#### B-tab-serde-tests — Fix tabulosity test compilation under feature unification
 **Status:** Done
 
 #### F-tab-auto-pk — Auto-generated primary keys
@@ -3472,18 +3338,158 @@ infrastructure.
 
 **Related:** F-sim-db-impl
 
-#### F-tree-gen — Procedural tree generation (trunk+branches)
-**Status:** Done · **Phase:** 1 · **Refs:** §8
+### Multiplayer
 
-Trunk is first branch — all segments use same growth algorithm with
-different params. Cross-section bridging ensures 6-connectivity. Voxel
-type priority prevents overwrites.
+#### F-mp-chat — Multiplayer in-game chat
+**Status:** Todo · **Phase:** 8+ · **Refs:** §4
 
-#### F-weather — Weather within seasons
-**Status:** Todo · **Refs:** §27
+Text chat between players in multiplayer sessions. Protocol support exists
+(`Chat`/`ChatBroadcast` messages) but the GDScript UI for displaying and
+sending chat messages is not yet implemented.
 
-Rain, wind, storms within seasons. Could affect mood, fire spread, and
-construction difficulty. Open design question (§27).
+**Related:** F-multiplayer
 
-**Related:** F-fire-ecology, F-seasons
+#### F-mp-checksums — Multiplayer state checksums for desync detection
+**Status:** Done · **Phase:** 8+ · **Refs:** §4
+
+Periodic sim-state checksums sent via the relay to detect desync between
+clients. `SimState::state_checksum()` serializes state to JSON and hashes with
+FNV-1a 64-bit (`checksum.rs`). `NetClient::send_checksum()` sends the hash to
+the relay, which compares per-player hashes and broadcasts `DesyncDetected` on
+mismatch. The GDExtension bridge (`sim_bridge.rs`) sends checksums
+automatically every `CHECKSUM_INTERVAL_TICKS` (1000 ticks = 1 sim-second)
+after applying turns.
+
+**Related:** F-multiplayer
+
+#### F-mp-integ-test — Multiplayer integration test harness
+**Status:** Done · **Phase:** 8+ · **Refs:** §4
+
+End-to-end integration tests for multiplayer workflows: hosting a game,
+joining, issuing commands, verifying both sides see the same state. Should
+run entirely in Rust (no Godot dependency) by exercising the relay, net
+client, and sim directly. Consider moving UI-adjacent logic (button press
+→ command dispatch) into testable Rust functions to maximize coverage
+without requiring Godot automation. Goal: catch regressions in the full
+host→relay→join→command→turn→apply pipeline.
+
+**Related:** F-multiplayer
+
+#### F-mp-mid-join — Mid-game join with state snapshot
+**Status:** Done · **Phase:** 8+ · **Refs:** §4
+
+Allow players to join a multiplayer session that has already started.
+The relay requests a full sim state snapshot from the host, pauses turn
+flushing during the transfer, and forwards it to the joining player.
+Pending joiner is excluded from checksum comparisons. Only one mid-game
+join can be in flight at a time.
+
+**Related:** F-mp-reconnect, F-multiplayer, F-save-load
+
+#### F-mp-reconnect — Multiplayer reconnection after disconnect
+**Status:** Todo · **Phase:** 8+ · **Refs:** §4
+
+Graceful handling of temporary disconnections in multiplayer. When a client
+disconnects, preserve their player slot for a timeout period and allow
+reconnection with state catchup (replaying missed turns or requesting a
+snapshot). Not yet designed in detail.
+
+**Related:** F-mp-mid-join, F-multiplayer
+
+#### F-multiplayer — Relay-coordinator multiplayer networking
+**Status:** In Progress · **Phase:** 8+ · **Refs:** §4
+**Draft:** `docs/drafts/multiplayer_relay.md`
+
+Multiplayer via a lightweight relay coordinator that determines canonical
+command ordering and broadcasts turns to all clients. The relay can run as
+a standalone headless binary (`elven_canopy_relay` crate) or embedded in a
+player's game process. Clients connect outbound to the relay, avoiding NAT
+traversal issues. Supersedes the Paxos-like model originally described in
+§4 — simpler, same guarantees for 2–4 player scale. Steam integration
+possible as a discovery mechanism (lobby browser, friend invites) without
+replacing the relay architecture. Periodic state checksums detect desync.
+Architecture foundations are ready (deterministic sim, command interface).
+Initial multiplayer mode is shared-tree co-op (all players control one
+tree). Separate-tree multiplayer (cooperative or competitive with per-player
+trees) deferred to F-multi-tree. Draft doc covers relay architecture,
+session management, and UI design (main menu flow, lobby, in-game controls,
+ESC menu behavior, save/load semantics, sim speed policy).
+
+**Related:** F-immediate-commands, F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
+
+#### F-relay-multi-game — Relay server supports multiple simultaneous games
+**Status:** Todo · **Phase:** 8
+
+Extend the relay server to host multiple simultaneous game sessions.
+Each session has its own independent lobby, command queue, turn counter,
+and connected-client list. Clients specify which session to join (or
+create) during the handshake. The relay multiplexes all sessions on a
+single listening port. Requires per-session isolation so that a crash
+or desync in one game cannot affect others. Depends on F-relay-release
+(standalone relay must exist first) and F-multiplayer (core relay
+protocol).
+
+**Related:** F-multiplayer, F-relay-release
+
+#### F-relay-release — Standalone relay server release build
+**Status:** Todo · **Phase:** 8
+
+Build the `elven_canopy_relay` crate as a standalone headless binary
+with a release profile. Add a `scripts/build.sh relay` (or similar)
+target that produces an optimized, stripped binary suitable for
+deployment on a dedicated server. Include any necessary Cargo profile
+tuning (LTO, codegen-units=1, strip=true) for minimal binary size and
+maximum performance.
+
+**Related:** F-multiplayer, F-relay-multi-game
+
+### Testing Infrastructure
+
+#### F-ai-test-harness — Headless test harness for AI-driven manual testing
+**Status:** Todo
+
+Build a headless "screen reader" harness that lets Claude (or automated
+scripts) play the game without eyes. Three components:
+
+1. **State observation layer** — dump visible UI state as text/JSON: open
+   panels, label text, button states, inventory contents, creature lists.
+   Activated via command-line flag or autoload.
+
+2. **Command interface** — high-level actions ("select workshop at 5,3,1",
+   "activate Wooden Bowl recipe", "wait 100 ticks") translated into real
+   UI interactions (input events or direct bridge calls).
+
+3. **Assertion helpers** — check observable state against expectations
+   ("workshop inventory contains 1 Wooden Bowl with material Oak").
+
+Catches full-vertical-slice bugs (Rust sim → bridge serialization →
+GDScript display) that unit tests miss, like inventories showing items
+without material info. Same infrastructure supports both AI-driven
+exploratory testing and deterministic regression scripts.
+
+**Related:** F-bridge-integ-tests, F-gdscript-tests
+
+#### F-bridge-integ-tests — Integration tests for gdext bridge functions
+**Status:** Todo
+
+Integration tests that exercise gdext bridge functions from GDScript in a
+running Godot instance. These catch type mismatches at the FFI boundary
+(e.g. Array<GString> vs VarArray), argument passing bugs, and
+GDScript-to-Rust round-trip issues that pure Rust tests can't detect.
+Heavier than unit tests — requires launching Godot headless. Add a CI
+job and a `scripts/build.sh integtest` target. Motivated by the
+F-move-spread segfault where an Array type mismatch crashed at runtime.
+
+**Related:** F-ai-test-harness, F-gdscript-tests
+
+#### F-gdscript-tests — GDScript unit tests (GUT or built-in)
+**Status:** Done
+
+Set up a lightweight GDScript unit testing framework (GUT or Godot 4.6's
+built-in test runner). Cover pure GDScript logic: UI state machines,
+coordinate math, selection helpers, input mode transitions. Add a
+`scripts/build.sh gdtest` target and a CI job. These tests don't need
+the sim or bridge — just GDScript in isolation.
+
+**Related:** F-ai-test-harness, F-bridge-integ-tests
 
