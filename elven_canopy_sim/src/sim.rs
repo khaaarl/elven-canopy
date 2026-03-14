@@ -3599,33 +3599,41 @@ impl SimState {
         let quantity = haul.quantity;
         let destination_nav_node = haul.destination_nav_node;
 
-        // Pick up items from source.
-        let picked_up = match &source {
-            task::HaulSource::GroundPile(pos) => {
-                if let Some(pile) = self
-                    .db
-                    .ground_piles
-                    .by_position(pos, tabulosity::QueryOpts::ASC)
-                    .into_iter()
-                    .next()
-                {
-                    self.inv_remove_reserved_items(pile.inventory_id, item_kind, quantity, task_id)
-                } else {
-                    0
+        // Pick up reserved items from source by moving them to creature
+        // inventory. This preserves all item properties (durability, etc.).
+        let source_inv = match &source {
+            task::HaulSource::GroundPile(pos) => self
+                .db
+                .ground_piles
+                .by_position(pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .map(|p| p.inventory_id),
+            task::HaulSource::Building(sid) => self.db.structures.get(sid).map(|s| s.inventory_id),
+        };
+        let creature_inv = self.creature_inv(creature_id);
+        let picked_up = if let Some(src_inv) = source_inv {
+            // Find stacks reserved by this task and move them.
+            let stacks: Vec<_> = self
+                .db
+                .item_stacks
+                .by_inventory_id(&src_inv, tabulosity::QueryOpts::ASC);
+            let mut remaining = quantity;
+            let mut moved = 0u32;
+            for stack in &stacks {
+                if stack.kind == item_kind && stack.reserved_by == Some(task_id) && remaining > 0 {
+                    let take = remaining.min(stack.quantity);
+                    self.inv_move_stack(stack.id, take, creature_inv);
+                    remaining -= take;
+                    moved += take;
                 }
             }
-            task::HaulSource::Building(sid) => {
-                if let Some(structure) = self.db.structures.get(sid) {
-                    self.inv_remove_reserved_items(
-                        structure.inventory_id,
-                        item_kind,
-                        quantity,
-                        task_id,
-                    )
-                } else {
-                    0
-                }
-            }
+            // Clear reservation on picked-up items (reservation was for the
+            // source inventory; items are now carried by the creature).
+            self.inv_clear_reservations(creature_inv, task_id);
+            moved
+        } else {
+            0
         };
 
         // Clean up empty ground piles.
@@ -3646,20 +3654,6 @@ impl SimState {
             self.complete_task(task_id);
             return true;
         }
-
-        // Add items to creature inventory, preserving the hauled material.
-        let inv_id = self.creature_inv(creature_id);
-        self.inv_add_item(
-            inv_id,
-            item_kind,
-            picked_up,
-            None,
-            None,
-            haul.hauled_material,
-            0,
-            None,
-            None,
-        );
 
         // Switch to GoingToDestination phase.
         let mut updated_haul = haul.clone();
@@ -3719,24 +3713,16 @@ impl SimState {
         let item_kind = haul.item_kind;
         let quantity = haul.quantity;
 
-        // Deposit items into destination building, preserving material.
+        // Deposit items into destination building, preserving all properties.
         let material = haul.hauled_material;
-        self.inv_remove_item_with_material(
-            self.creature_inv(creature_id),
-            item_kind,
-            material,
-            quantity,
-        );
-        self.inv_add_item(
-            self.structure_inv(destination),
-            item_kind,
-            quantity,
-            None,
-            None,
-            material,
-            0,
-            None,
-            None,
+        let creature_inv = self.creature_inv(creature_id);
+        let dst_inv = self.structure_inv(destination);
+        self.inv_move_items(
+            creature_inv,
+            dst_inv,
+            Some(item_kind),
+            Some(material),
+            Some(quantity),
         );
         self.complete_task(task_id);
         true
@@ -3786,27 +3772,16 @@ impl SimState {
                 let material = haul.hauled_material;
                 if let Some(creature) = self.db.creatures.get(&creature_id) {
                     let pos = creature.position;
-                    let removed = self.inv_remove_item_with_material(
-                        creature.inventory_id,
-                        item_kind,
-                        material,
-                        quantity,
+                    let creature_inv = creature.inventory_id;
+                    let pile_id = self.ensure_ground_pile(pos);
+                    let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+                    self.inv_move_items(
+                        creature_inv,
+                        pile_inv,
+                        Some(item_kind),
+                        Some(material),
+                        Some(quantity),
                     );
-                    if removed > 0 {
-                        let pile_id = self.ensure_ground_pile(pos);
-                        let pile = self.db.ground_piles.get(&pile_id).unwrap();
-                        self.inv_add_item(
-                            pile.inventory_id,
-                            item_kind,
-                            removed,
-                            None,
-                            None,
-                            material,
-                            0,
-                            None,
-                            None,
-                        );
-                    }
                 }
             }
         }
@@ -6819,29 +6794,38 @@ impl SimState {
             self.abort_current_action(creature_id);
         }
 
-        // 2. Drop all owned inventory items as a ground pile at death position.
+        // 2. Drop all inventory items as a ground pile at death position.
+        // Use inv_move_items to preserve all item properties (material,
+        // quality, durability, enchantment). Then clear owner/reserved_by
+        // on the moved stacks.
         let inv_id = self.db.creatures.get(&creature_id).map(|c| c.inventory_id);
         if let Some(inv_id) = inv_id {
-            let owned_stacks: Vec<_> = self
+            let has_items = !self
                 .db
                 .item_stacks
                 .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
-                .into_iter()
-                .filter(|s| s.quantity > 0)
-                .collect();
-            if !owned_stacks.is_empty() {
+                .is_empty();
+            if has_items {
                 let pile_id = self.ensure_ground_pile(position);
                 let pile_inv_id = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
-                for stack in owned_stacks {
-                    self.inv_add_simple_item(
-                        pile_inv_id,
-                        stack.kind,
-                        stack.quantity,
-                        None, // no owner
-                        None, // no reservation
-                    );
-                    let _ = self.db.item_stacks.remove_no_fk(&stack.id);
+                self.inv_move_items(inv_id, pile_inv_id, None, None, None);
+                // Clear owner, reserved_by, and equipped_slot on the dead
+                // creature's stacks only (filter by owner to avoid clobbering
+                // pre-existing items in the same ground pile).
+                // Uses update_no_fk because owner and equipped_slot are indexed.
+                let pile_stacks: Vec<_> = self
+                    .db
+                    .item_stacks
+                    .by_inventory_id(&pile_inv_id, tabulosity::QueryOpts::ASC);
+                for mut stack in pile_stacks {
+                    if stack.owner == Some(creature_id) {
+                        stack.owner = None;
+                        stack.reserved_by = None;
+                        stack.equipped_slot = None;
+                        let _ = self.db.item_stacks.update_no_fk(stack);
+                    }
                 }
+                self.inv_normalize(pile_inv_id);
             }
         }
 
@@ -7119,11 +7103,18 @@ impl SimState {
         }
 
         // 6. All checks passed — consume arrow and fire.
-        self.inv_remove_item_with_material(inv_id, ItemKind::Arrow, None, 1);
-
-        // Create projectile inventory with one arrow (projectile carries its payload).
+        // Move one arrow from attacker inventory to a new projectile inventory,
+        // preserving all properties (durability, material, quality, enchantment).
+        let arrow_stack_id = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|s| s.kind == ItemKind::Arrow)
+            .unwrap()
+            .id;
         let proj_inv_id = self.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
-        self.inv_add_simple_item(proj_inv_id, ItemKind::Arrow, 1, None, None);
+        self.inv_move_stack(arrow_stack_id, 1, proj_inv_id);
 
         let was_empty = self.db.projectiles.is_empty();
 
@@ -7882,6 +7873,9 @@ impl SimState {
         enchantment_id: Option<crate::types::EnchantmentId>,
         equipped_slot: Option<inventory::EquipSlot>,
     ) {
+        // Look up default durability from config when creating fresh items.
+        let max_hp = self.config.item_durability.get(&kind).copied().unwrap_or(0);
+        let current_hp = max_hp;
         let _ = self
             .db
             .item_stacks
@@ -7892,6 +7886,46 @@ impl SimState {
                 quantity,
                 material,
                 quality,
+                current_hp,
+                max_hp,
+                enchantment_id,
+                owner,
+                reserved_by,
+                equipped_slot,
+            });
+        self.inv_normalize(inv_id);
+    }
+
+    /// Add an item with explicit durability values (current_hp / max_hp).
+    /// Used in tests to create items with specific durability state.
+    /// For transfers between inventories, prefer `inv_move_stack`.
+    #[allow(clippy::too_many_arguments, dead_code)]
+    fn inv_add_item_with_durability(
+        &mut self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        quantity: u32,
+        owner: Option<CreatureId>,
+        reserved_by: Option<TaskId>,
+        material: Option<inventory::Material>,
+        quality: i32,
+        current_hp: i32,
+        max_hp: i32,
+        enchantment_id: Option<crate::types::EnchantmentId>,
+        equipped_slot: Option<inventory::EquipSlot>,
+    ) {
+        let _ = self
+            .db
+            .item_stacks
+            .insert_auto_no_fk(|id| crate::db::ItemStack {
+                id,
+                inventory_id: inv_id,
+                kind,
+                quantity,
+                material,
+                quality,
+                current_hp,
+                max_hp,
                 enchantment_id,
                 owner,
                 reserved_by,
@@ -7937,40 +7971,6 @@ impl SimState {
             let _ = self.db.item_stacks.update_no_fk(moved);
         }
         self.inv_normalize(dst);
-    }
-
-    /// Remove up to `quantity` items of the given kind and material from an
-    /// inventory. Returns the amount actually removed. Drops stacks that reach
-    /// zero.
-    fn inv_remove_item_with_material(
-        &mut self,
-        inv_id: InventoryId,
-        kind: inventory::ItemKind,
-        material: Option<inventory::Material>,
-        quantity: u32,
-    ) -> u32 {
-        let stacks = self
-            .db
-            .item_stacks
-            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
-        let mut remaining = quantity;
-        let mut removed = 0u32;
-        for stack in &stacks {
-            if stack.kind == kind && stack.material == material && remaining > 0 {
-                let take = remaining.min(stack.quantity);
-                let new_qty = stack.quantity - take;
-                if new_qty == 0 {
-                    let _ = self.db.item_stacks.remove_no_fk(&stack.id);
-                } else {
-                    let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
-                        s.quantity = new_qty;
-                    });
-                }
-                remaining -= take;
-                removed += take;
-            }
-        }
-        removed
     }
 
     /// Count the total quantity of a given item kind in an inventory,
@@ -8100,6 +8100,8 @@ impl SimState {
                 });
                 let mat = stack.material;
                 let qual = stack.quality;
+                let chp = stack.current_hp;
+                let mhp = stack.max_hp;
                 let ench = stack.enchantment_id;
                 let own = stack.owner;
                 let _ = self
@@ -8112,6 +8114,8 @@ impl SimState {
                         quantity: take,
                         material: mat,
                         quality: qual,
+                        current_hp: chp,
+                        max_hp: mhp,
                         enchantment_id: ench,
                         owner: own,
                         reserved_by: Some(task_id),
@@ -8237,6 +8241,8 @@ impl SimState {
                 });
                 let mat = stack.material;
                 let qual = stack.quality;
+                let chp = stack.current_hp;
+                let mhp = stack.max_hp;
                 let ench = stack.enchantment_id;
                 let _ = self
                     .db
@@ -8248,6 +8254,8 @@ impl SimState {
                         quantity: take,
                         material: mat,
                         quality: qual,
+                        current_hp: chp,
+                        max_hp: mhp,
                         enchantment_id: ench,
                         owner: None,
                         reserved_by: Some(task_id),
@@ -8262,9 +8270,10 @@ impl SimState {
 
     /// Consolidate matching stacks within an inventory. Two stacks are
     /// mergeable when they agree on all properties: kind, material, quality,
-    /// enchantment_id, owner, and reserved_by. This is the single source of
-    /// truth for stack-merging criteria — called by `inv_add_item` and
-    /// `inv_merge`. Equipped items never merge with unequipped items.
+    /// current_hp, max_hp, enchantment_id, owner, reserved_by, and
+    /// equipped_slot. This is the single source of truth for stack-merging
+    /// criteria — called after any operation that may create mergeable stacks
+    /// (add, move, split, reservation changes, etc.).
     fn inv_normalize(&mut self, inv_id: InventoryId) {
         let stacks = self
             .db
@@ -8274,6 +8283,8 @@ impl SimState {
         type MergeKey = (
             inventory::ItemKind,
             Option<inventory::Material>,
+            i32,
+            i32,
             i32,
             Option<crate::types::EnchantmentId>,
             Option<CreatureId>,
@@ -8287,6 +8298,8 @@ impl SimState {
                 stack.kind,
                 stack.material,
                 stack.quality,
+                stack.current_hp,
+                stack.max_hp,
                 stack.enchantment_id,
                 stack.owner,
                 stack.reserved_by,
@@ -8312,8 +8325,8 @@ impl SimState {
     }
 
     /// Split `quantity` items off an existing stack, preserving all properties
-    /// (material, quality, enchantment, owner, reserved_by) except
-    /// `equipped_slot` which is always `None` on the new stack.
+    /// (material, quality, current_hp, max_hp, enchantment, owner, reserved_by)
+    /// except `equipped_slot` which is always `None` on the new stack.
     ///
     /// - If `quantity == 0`: returns `None`.
     /// - If `quantity >= stack.quantity`: returns `Some(stack_id)` (whole stack,
@@ -8335,6 +8348,8 @@ impl SimState {
         let kind = stack.kind;
         let material = stack.material;
         let quality = stack.quality;
+        let current_hp = stack.current_hp;
+        let max_hp = stack.max_hp;
         let enchantment_id = stack.enchantment_id;
         let owner = stack.owner;
         let reserved_by = stack.reserved_by;
@@ -8354,6 +8369,8 @@ impl SimState {
                 quantity,
                 material,
                 quality,
+                current_hp,
+                max_hp,
                 enchantment_id,
                 owner,
                 reserved_by,
@@ -8361,6 +8378,79 @@ impl SimState {
             })
             .unwrap();
         Some(new_id)
+    }
+
+    /// Move `quantity` items from `stack_id` to `dst` inventory, preserving
+    /// all properties (material, quality, durability, enchantment, owner,
+    /// reserved_by). Uses `inv_split_stack` when moving a partial stack.
+    ///
+    /// - If `quantity == 0`: returns `None`.
+    /// - If `quantity >= stack.quantity`: moves the entire stack.
+    /// - Otherwise: splits off `quantity` items and moves the new stack.
+    ///
+    /// The moved stack is normalized into `dst` (may merge with existing
+    /// matching stacks). Returns the ID of the moved stack (post-normalize
+    /// it may have been merged away, so the ID may no longer exist).
+    fn inv_move_stack(
+        &mut self,
+        stack_id: ItemStackId,
+        quantity: u32,
+        dst: InventoryId,
+    ) -> Option<ItemStackId> {
+        let split_id = self.inv_split_stack(stack_id, quantity)?;
+        if let Some(mut stack) = self.db.item_stacks.get(&split_id) {
+            stack.inventory_id = dst;
+            let _ = self.db.item_stacks.update_no_fk(stack);
+        }
+        self.inv_normalize(dst);
+        Some(split_id)
+    }
+
+    /// Move up to `quantity` items from `src` to `dst`, filtered by kind and
+    /// material. Preserves all properties (quality, durability, enchantment,
+    /// owner, reserved_by).
+    ///
+    /// - `kind`: if `Some`, only move items of this kind. If `None`, any kind.
+    /// - `material`: if `Some(m)`, only move items with that exact material
+    ///   (use `Some(None)` for unmaterialed items). If `None`, any material.
+    /// - `quantity`: if `Some(n)`, move at most `n` items. If `None`, move all
+    ///   matching items.
+    ///
+    /// Returns the total number of items moved.
+    fn inv_move_items(
+        &mut self,
+        src: InventoryId,
+        dst: InventoryId,
+        kind: Option<inventory::ItemKind>,
+        material: Option<Option<inventory::Material>>,
+        quantity: Option<u32>,
+    ) -> u32 {
+        let stacks: Vec<crate::db::ItemStack> = self
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+        let mut remaining = quantity.unwrap_or(u32::MAX);
+        let mut moved = 0u32;
+        for stack in &stacks {
+            if remaining == 0 {
+                break;
+            }
+            if let Some(k) = kind
+                && stack.kind != k
+            {
+                continue;
+            }
+            if let Some(m) = material
+                && stack.material != m
+            {
+                continue;
+            }
+            let take = remaining.min(stack.quantity);
+            self.inv_move_stack(stack.id, take, dst);
+            remaining -= take;
+            moved += take;
+        }
+        moved
     }
 
     /// Query the item equipped in a specific slot of an inventory.
@@ -8422,6 +8512,75 @@ impl SimState {
         let _ = self.db.item_stacks.update_no_fk(updated);
         self.inv_normalize(inv_id);
         Some(stack_id)
+    }
+
+    /// Reduce one item's `current_hp` by `amount`. If the item has no
+    /// durability tracking (`max_hp == 0`) or `amount <= 0`, this is a no-op
+    /// and returns `false`. If `current_hp` reaches 0, the item breaks: it is
+    /// removed from the inventory and an `ItemBroken` event is emitted.
+    /// Returns `true` if the item broke.
+    ///
+    /// For stacks with quantity > 1, one item is split off before applying
+    /// damage so that the rest of the stack retains its original HP.
+    #[allow(dead_code)] // Will be called by combat/wear degradation hooks.
+    fn inv_damage_item(
+        &mut self,
+        stack_id: ItemStackId,
+        amount: i32,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        if amount <= 0 {
+            return false;
+        }
+        let stack = match self.db.item_stacks.get(&stack_id) {
+            Some(s) => s,
+            None => return false,
+        };
+        // No durability tracking — indestructible.
+        if stack.max_hp == 0 {
+            return false;
+        }
+        // For multi-item stacks, split off one item so the rest keep full HP.
+        let target_id = if stack.quantity > 1 {
+            // split_stack(1) returns a new stack with qty=1.
+            match self.inv_split_stack(stack_id, 1) {
+                Some(id) => id,
+                None => return false,
+            }
+        } else {
+            stack_id
+        };
+        // Re-fetch the (possibly split) stack.
+        let target = match self.db.item_stacks.get(&target_id) {
+            Some(s) => s,
+            None => return false,
+        };
+        let new_hp = (target.current_hp - amount).max(0);
+        if new_hp > 0 {
+            // Item damaged but not broken.
+            let _ = self
+                .db
+                .item_stacks
+                .modify_unchecked(&target_id, |s| s.current_hp = new_hp);
+            return false;
+        }
+        // Item broke — capture fields before removing.
+        let item_kind = target.kind;
+        let material = target.material;
+        let owner = target.owner;
+        let inv_id = target.inventory_id;
+        let _ = self.db.item_stacks.remove_no_fk(&target_id);
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::ItemBroken {
+                item_kind,
+                material,
+                owner,
+            },
+        });
+        // Normalize in case the split created a mergeable state.
+        self.inv_normalize(inv_id);
+        true
     }
 
     /// Get the inventory_id for a creature, or return a sentinel. Panics in debug
@@ -34979,6 +35138,8 @@ mod tests {
         // Properties preserved.
         assert_eq!(split.material, orig.material);
         assert_eq!(split.quality, orig.quality);
+        assert_eq!(split.current_hp, orig.current_hp);
+        assert_eq!(split.max_hp, orig.max_hp);
         assert_eq!(split.kind, orig.kind);
     }
 
@@ -37792,5 +37953,1041 @@ mod tests {
             elf_pos, goblin_pos,
             "Elf on attack-move should not walk through hostile goblin"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Item durability tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inv_add_item_assigns_durability_from_config() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        // Arrow has default durability of 3 in config.
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 1);
+        assert_eq!(stacks[0].max_hp, 3);
+        assert_eq!(stacks[0].current_hp, 3);
+    }
+
+    #[test]
+    fn inv_add_item_no_durability_for_unconfigured_kinds() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        // Bread has no durability config — should be 0/0 (indestructible).
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 3, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks[0].max_hp, 0);
+        assert_eq!(stacks[0].current_hp, 0);
+    }
+
+    #[test]
+    fn durability_stacking_same_hp_merges() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        // Two batches of arrows with same durability should merge.
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 3, None, None);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 2, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 1, "Same-durability arrows should stack");
+        assert_eq!(stacks[0].quantity, 5);
+    }
+
+    #[test]
+    fn durability_stacking_different_hp_separate() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        // Add arrows at full HP.
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 3, None, None);
+        // Add arrows with reduced current_hp via explicit durability.
+        sim.inv_add_item_with_durability(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            2,
+            None,
+            None,
+            None,
+            0,
+            2, // current_hp
+            3, // max_hp
+            None,
+            None,
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(
+            stacks.len(),
+            2,
+            "Arrows with different current_hp should not stack"
+        );
+    }
+
+    #[test]
+    fn inv_split_stack_preserves_durability() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let orig_id = stacks[0].id;
+
+        let new_id = sim.inv_split_stack(orig_id, 2).unwrap();
+        assert_ne!(new_id, orig_id);
+
+        let orig = sim.db.item_stacks.get(&orig_id).unwrap();
+        let split = sim.db.item_stacks.get(&new_id).unwrap();
+        assert_eq!(orig.quantity, 3);
+        assert_eq!(split.quantity, 2);
+        assert_eq!(split.current_hp, orig.current_hp);
+        assert_eq!(split.max_hp, orig.max_hp);
+        assert_eq!(split.max_hp, 3, "Arrow max_hp from config");
+    }
+
+    #[test]
+    fn inv_merge_preserves_durability() {
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+        sim.inv_add_simple_item(dst, inventory::ItemKind::Arrow, 2, None, None);
+
+        sim.inv_merge(src, dst);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 1, "Same-durability arrows should merge");
+        assert_eq!(stacks[0].quantity, 5);
+        assert_eq!(stacks[0].current_hp, 3);
+        assert_eq!(stacks[0].max_hp, 3);
+    }
+
+    #[test]
+    fn inv_merge_keeps_different_durability_separate() {
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        // Full-HP arrows in dst.
+        sim.inv_add_simple_item(dst, inventory::ItemKind::Arrow, 3, None, None);
+        // Damaged arrows in src.
+        sim.inv_add_item_with_durability(
+            src,
+            inventory::ItemKind::Arrow,
+            2,
+            None,
+            None,
+            None,
+            0,
+            1, // current_hp
+            3, // max_hp
+            None,
+            None,
+        );
+
+        sim.inv_merge(src, dst);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+        assert_eq!(
+            stacks.len(),
+            2,
+            "Different current_hp should remain separate after merge"
+        );
+    }
+
+    #[test]
+    fn inv_damage_item_reduces_hp() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let stack_id = stacks[0].id;
+
+        let mut events = Vec::new();
+        let broke = sim.inv_damage_item(stack_id, 1, &mut events);
+        assert!(!broke, "Arrow should not break from 1 damage (3 HP)");
+        assert!(events.is_empty());
+
+        let stack = sim.db.item_stacks.get(&stack_id).unwrap();
+        assert_eq!(stack.current_hp, 2);
+    }
+
+    #[test]
+    fn inv_damage_item_breaks_at_zero() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let stack_id = stacks[0].id;
+
+        let mut events = Vec::new();
+        let broke = sim.inv_damage_item(stack_id, 3, &mut events);
+        assert!(broke, "Arrow should break from 3 damage (3 HP)");
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0].kind, SimEventKind::ItemBroken { item_kind, .. } if *item_kind == inventory::ItemKind::Arrow)
+        );
+        // Stack should be removed.
+        assert!(sim.db.item_stacks.get(&stack_id).is_none());
+    }
+
+    #[test]
+    fn inv_damage_item_noop_on_indestructible() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 5, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let stack_id = stacks[0].id;
+
+        let mut events = Vec::new();
+        let broke = sim.inv_damage_item(stack_id, 100, &mut events);
+        assert!(!broke, "Indestructible items should not break");
+        assert!(events.is_empty());
+        let stack = sim.db.item_stacks.get(&stack_id).unwrap();
+        assert_eq!(stack.quantity, 5, "Bread should remain unchanged");
+    }
+
+    #[test]
+    fn inv_damage_item_breaks_one_from_stack() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let stack_id = stacks[0].id;
+
+        let mut events = Vec::new();
+        let broke = sim.inv_damage_item(stack_id, 3, &mut events);
+        assert!(broke, "Should break one arrow from the stack");
+        assert_eq!(events.len(), 1);
+
+        // Stack should still exist with qty 4.
+        let stack = sim.db.item_stacks.get(&stack_id).unwrap();
+        assert_eq!(stack.quantity, 4);
+        // Remaining arrows should still have full HP (the broken one is gone).
+        assert_eq!(stack.current_hp, 3);
+    }
+
+    #[test]
+    fn inv_damage_item_partial_on_multi_stack_splits() {
+        // Partial damage on a multi-item stack should split off one item
+        // and only damage that one, leaving the rest at full HP.
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let stack_id = stacks[0].id;
+
+        let mut events = Vec::new();
+        let broke = sim.inv_damage_item(stack_id, 1, &mut events);
+        assert!(!broke, "Arrow should not break from 1 damage (3 HP)");
+        assert!(events.is_empty());
+
+        // Should now have 2 stacks: 4 at full HP, 1 at reduced HP.
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 2, "Should split into damaged and undamaged");
+        let full_hp_stack = stacks.iter().find(|s| s.current_hp == 3).unwrap();
+        let damaged_stack = stacks.iter().find(|s| s.current_hp == 2).unwrap();
+        assert_eq!(full_hp_stack.quantity, 4);
+        assert_eq!(damaged_stack.quantity, 1);
+    }
+
+    #[test]
+    fn inv_damage_item_zero_amount_noop() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 3, None, None);
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        let stack_id = stacks[0].id;
+
+        let mut events = Vec::new();
+        let broke = sim.inv_damage_item(stack_id, 0, &mut events);
+        assert!(!broke);
+        assert!(events.is_empty());
+        let stack = sim.db.item_stacks.get(&stack_id).unwrap();
+        assert_eq!(stack.current_hp, 3);
+        assert_eq!(stack.quantity, 3);
+    }
+
+    #[test]
+    fn durability_serde_backward_compat() {
+        // Old JSON without current_hp/max_hp should deserialize with 0/0.
+        let json = r#"{
+            "id": 1,
+            "inventory_id": 1,
+            "kind": "Arrow",
+            "quantity": 5,
+            "material": null,
+            "quality": 0,
+            "enchantment_id": null,
+            "owner": null,
+            "reserved_by": null
+        }"#;
+        let stack: crate::db::ItemStack = serde_json::from_str(json).unwrap();
+        assert_eq!(stack.current_hp, 0);
+        assert_eq!(stack.max_hp, 0);
+    }
+
+    #[test]
+    fn durability_serde_roundtrip() {
+        let json = r#"{
+            "id": 1,
+            "inventory_id": 1,
+            "kind": "Arrow",
+            "quantity": 5,
+            "material": null,
+            "quality": 0,
+            "current_hp": 2,
+            "max_hp": 3,
+            "enchantment_id": null,
+            "owner": null,
+            "reserved_by": null
+        }"#;
+        let stack: crate::db::ItemStack = serde_json::from_str(json).unwrap();
+        assert_eq!(stack.current_hp, 2);
+        assert_eq!(stack.max_hp, 3);
+
+        let serialized = serde_json::to_string(&stack).unwrap();
+        let restored: crate::db::ItemStack = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.current_hp, 2);
+        assert_eq!(restored.max_hp, 3);
+    }
+
+    #[test]
+    fn item_durability_config_defaults() {
+        let config = crate::config::GameConfig::default();
+        // Arrows: small range for stacking.
+        assert_eq!(
+            config.item_durability.get(&inventory::ItemKind::Arrow),
+            Some(&3)
+        );
+        // Bow: moderate.
+        assert_eq!(
+            config.item_durability.get(&inventory::ItemKind::Bow),
+            Some(&50)
+        );
+        // Breastplate: high.
+        assert_eq!(
+            config
+                .item_durability
+                .get(&inventory::ItemKind::Breastplate),
+            Some(&60)
+        );
+        // Bread: not in map (indestructible).
+        assert_eq!(
+            config.item_durability.get(&inventory::ItemKind::Bread),
+            None
+        );
+    }
+
+    #[test]
+    fn inv_add_item_with_durability_explicit() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_item_with_durability(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            3,
+            None,
+            None,
+            None,
+            0,
+            1, // current_hp
+            3, // max_hp
+            None,
+            None,
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        assert_eq!(stacks.len(), 1);
+        assert_eq!(stacks[0].current_hp, 1);
+        assert_eq!(stacks[0].max_hp, 3);
+    }
+
+    #[test]
+    fn inv_reserve_items_preserves_durability() {
+        let mut sim = test_sim(42);
+        let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+
+        let task_id = TaskId::new(&mut sim.rng.clone());
+        sim.inv_reserve_items(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any,
+            2,
+            task_id,
+        );
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        // Should have 2 stacks: 3 unreserved, 2 reserved — both with same durability.
+        assert_eq!(stacks.len(), 2);
+        for s in &stacks {
+            assert_eq!(s.current_hp, 3);
+            assert_eq!(s.max_hp, 3);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // inv_move_stack / inv_move_items tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inv_move_stack_basic() {
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_item_with_durability(
+            src,
+            inventory::ItemKind::Arrow,
+            5,
+            None,
+            None,
+            Some(inventory::Material::Oak),
+            2, // quality
+            2, // current_hp
+            3, // max_hp
+            None,
+            None,
+        );
+        let stack_id = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC)[0]
+            .id;
+
+        // Move 3 of 5 arrows to dst.
+        let moved_id = sim.inv_move_stack(stack_id, 3, dst).unwrap();
+
+        // Source should have 2 remaining.
+        let src_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+        assert_eq!(src_stacks.len(), 1);
+        assert_eq!(src_stacks[0].quantity, 2);
+
+        // Dst should have 3, with all properties preserved.
+        let moved = sim.db.item_stacks.get(&moved_id).unwrap();
+        assert_eq!(moved.inventory_id, dst);
+        assert_eq!(moved.quantity, 3);
+        assert_eq!(moved.material, Some(inventory::Material::Oak));
+        assert_eq!(moved.quality, 2);
+        assert_eq!(moved.current_hp, 2);
+        assert_eq!(moved.max_hp, 3);
+    }
+
+    #[test]
+    fn inv_move_stack_whole_stack() {
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+        let stack_id = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC)[0]
+            .id;
+
+        // Move entire stack (quantity >= stack quantity).
+        let moved_id = sim.inv_move_stack(stack_id, 5, dst).unwrap();
+        assert_eq!(moved_id, stack_id, "Whole-stack move returns same ID");
+
+        // Source should be empty.
+        let src_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+        assert!(src_stacks.is_empty());
+
+        // Dst should have the stack.
+        let moved = sim.db.item_stacks.get(&moved_id).unwrap();
+        assert_eq!(moved.inventory_id, dst);
+        assert_eq!(moved.quantity, 3);
+        assert_eq!(moved.current_hp, 3);
+        assert_eq!(moved.max_hp, 3);
+    }
+
+    #[test]
+    fn inv_move_stack_preserves_owner_and_reserved() {
+        // inv_move_stack should NOT clear owner or reserved_by.
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let fake_owner = CreatureId::new(&mut sim.rng.clone());
+        let fake_task = TaskId::new(&mut sim.rng.clone());
+        sim.inv_add_item(
+            src,
+            inventory::ItemKind::Bow,
+            1,
+            Some(fake_owner),
+            Some(fake_task),
+            Some(inventory::Material::Yew),
+            0,
+            None,
+            None,
+        );
+        let stack_id = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC)[0]
+            .id;
+
+        let moved_id = sim.inv_move_stack(stack_id, 1, dst).unwrap();
+        let moved = sim.db.item_stacks.get(&moved_id).unwrap();
+        assert_eq!(moved.owner, Some(fake_owner), "Owner must be preserved");
+        assert_eq!(
+            moved.reserved_by,
+            Some(fake_task),
+            "reserved_by must be preserved"
+        );
+    }
+
+    #[test]
+    fn inv_move_stack_merges_at_destination() {
+        // If dst already has matching items, the moved stack should merge.
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+        sim.inv_add_simple_item(dst, inventory::ItemKind::Arrow, 2, None, None);
+        let stack_id = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC)[0]
+            .id;
+
+        sim.inv_move_stack(stack_id, 3, dst);
+
+        let dst_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+        assert_eq!(dst_stacks.len(), 1, "Should merge into one stack");
+        assert_eq!(dst_stacks[0].quantity, 5);
+    }
+
+    #[test]
+    fn inv_move_stack_zero_quantity_noop() {
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+        let stack_id = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC)[0]
+            .id;
+
+        assert!(sim.inv_move_stack(stack_id, 0, dst).is_none());
+        // Source unchanged.
+        let src_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+        assert_eq!(src_stacks[0].quantity, 3);
+    }
+
+    #[test]
+    fn inv_move_items_basic() {
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_item_with_durability(
+            src,
+            inventory::ItemKind::Arrow,
+            5,
+            None,
+            None,
+            Some(inventory::Material::Oak),
+            0,
+            2, // current_hp (damaged)
+            3, // max_hp
+            None,
+            None,
+        );
+        sim.inv_add_simple_item(src, inventory::ItemKind::Bread, 3, None, None);
+
+        // Move 3 arrows (by kind, any material).
+        let moved = sim.inv_move_items(
+            src,
+            dst,
+            Some(inventory::ItemKind::Arrow),
+            None, // any material
+            Some(3),
+        );
+        assert_eq!(moved, 3);
+
+        // Dst should have 3 arrows with preserved durability.
+        let dst_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+        assert_eq!(dst_stacks.len(), 1);
+        assert_eq!(dst_stacks[0].kind, inventory::ItemKind::Arrow);
+        assert_eq!(dst_stacks[0].quantity, 3);
+        assert_eq!(dst_stacks[0].current_hp, 2);
+        assert_eq!(dst_stacks[0].max_hp, 3);
+        assert_eq!(dst_stacks[0].material, Some(inventory::Material::Oak));
+
+        // Source should have 2 arrows + 3 bread.
+        let src_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+        assert_eq!(src_stacks.len(), 2);
+    }
+
+    #[test]
+    fn inv_move_items_filter_by_material() {
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_item(
+            src,
+            inventory::ItemKind::Bow,
+            2,
+            None,
+            None,
+            Some(inventory::Material::Oak),
+            0,
+            None,
+            None,
+        );
+        sim.inv_add_item(
+            src,
+            inventory::ItemKind::Bow,
+            3,
+            None,
+            None,
+            Some(inventory::Material::Yew),
+            0,
+            None,
+            None,
+        );
+
+        // Move only Yew bows.
+        let moved = sim.inv_move_items(
+            src,
+            dst,
+            Some(inventory::ItemKind::Bow),
+            Some(Some(inventory::Material::Yew)),
+            Some(2),
+        );
+        assert_eq!(moved, 2);
+
+        // Dst: 2 Yew bows.
+        let dst_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+        assert_eq!(dst_stacks.len(), 1);
+        assert_eq!(dst_stacks[0].material, Some(inventory::Material::Yew));
+        assert_eq!(dst_stacks[0].quantity, 2);
+
+        // Source: 2 Oak + 1 Yew.
+        let src_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+        assert_eq!(src_stacks.len(), 2);
+    }
+
+    #[test]
+    fn inv_move_items_no_kind_filter_moves_all() {
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+        sim.inv_add_simple_item(src, inventory::ItemKind::Bread, 2, None, None);
+
+        // Move everything (no kind filter, no quantity limit).
+        let moved = sim.inv_move_items(src, dst, None, None, None);
+        assert_eq!(moved, 5);
+
+        let src_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+        assert!(src_stacks.is_empty());
+
+        let dst_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+        assert_eq!(dst_stacks.len(), 2);
+    }
+
+    #[test]
+    fn inv_move_items_partial_when_not_enough() {
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+
+        // Request 10 but only 3 available.
+        let moved = sim.inv_move_items(src, dst, Some(inventory::ItemKind::Arrow), None, Some(10));
+        assert_eq!(moved, 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Caller durability-preservation tests (expose existing bugs)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn creature_death_drops_preserve_durability() {
+        // When a creature dies, its items should drop on the ground
+        // with all properties (durability, material, quality) preserved.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+
+        // Give the elf a bow with specific material and durability.
+        sim.inv_add_item_with_durability(
+            inv_id,
+            inventory::ItemKind::Bow,
+            1,
+            Some(elf),
+            None,
+            Some(inventory::Material::Yew),
+            5,  // quality
+            30, // current_hp (damaged)
+            50, // max_hp
+            None,
+            None,
+        );
+
+        // Kill the elf.
+        let mut events = Vec::new();
+        sim.apply_damage(elf, 9999, &mut events);
+
+        // Scan ALL ground piles for the Yew bow specifically (the elf also
+        // has a starting bow with material: None, so we need to match ours).
+        let mut bow_stack = None;
+        for pile in sim.db.ground_piles.iter_all() {
+            let stacks = sim
+                .db
+                .item_stacks
+                .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+            if let Some(s) = stacks.iter().find(|s| {
+                s.kind == inventory::ItemKind::Bow && s.material == Some(inventory::Material::Yew)
+            }) {
+                bow_stack = Some(s.clone());
+                break;
+            }
+        }
+
+        let bow_stack = bow_stack.expect("Yew bow should be in some ground pile after death");
+        assert_eq!(
+            bow_stack.material,
+            Some(inventory::Material::Yew),
+            "Material must survive death drop"
+        );
+        assert_eq!(bow_stack.quality, 5, "Quality must survive death drop");
+        assert_eq!(
+            bow_stack.current_hp, 30,
+            "current_hp must survive death drop"
+        );
+        assert_eq!(bow_stack.max_hp, 50, "max_hp must survive death drop");
+        assert!(
+            bow_stack.owner.is_none(),
+            "Owner should be cleared on death"
+        );
+    }
+
+    #[test]
+    fn creature_death_drops_clear_equipped_slot() {
+        // Equipped items should have equipped_slot cleared when dropped on death.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+
+        // Give the elf an equipped hat.
+        sim.inv_add_item_with_durability(
+            inv_id,
+            inventory::ItemKind::Hat,
+            1,
+            Some(elf),
+            None,
+            Some(inventory::Material::FruitSpecies(
+                crate::fruit::FruitSpeciesId(0),
+            )),
+            0,
+            15, // current_hp
+            20, // max_hp
+            None,
+            Some(inventory::EquipSlot::Head),
+        );
+
+        // Kill the elf.
+        let mut events = Vec::new();
+        sim.apply_damage(elf, 9999, &mut events);
+
+        // Find the hat in ground piles.
+        let mut hat_stack = None;
+        for pile in sim.db.ground_piles.iter_all() {
+            let stacks = sim
+                .db
+                .item_stacks
+                .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+            if let Some(s) = stacks
+                .iter()
+                .find(|s| s.kind == inventory::ItemKind::Hat && s.current_hp == 15)
+            {
+                hat_stack = Some(s.clone());
+                break;
+            }
+        }
+
+        let hat = hat_stack.expect("Hat should be in ground pile after death");
+        assert_eq!(
+            hat.equipped_slot, None,
+            "equipped_slot must be cleared on death drop"
+        );
+        assert_eq!(hat.current_hp, 15, "Durability must be preserved");
+        assert!(hat.owner.is_none(), "Owner must be cleared");
+    }
+
+    #[test]
+    fn haul_dropoff_preserves_durability() {
+        // Items moved between inventories via inv_move_items must preserve
+        // all properties including quality and durability.
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+
+        // Put damaged arrows in source (simulating creature carrying hauled items).
+        sim.inv_add_item_with_durability(
+            src,
+            inventory::ItemKind::Arrow,
+            5,
+            None,
+            None,
+            Some(inventory::Material::Oak),
+            3, // quality
+            2, // current_hp (damaged)
+            3, // max_hp
+            None,
+            None,
+        );
+
+        // Move items the way haul dropoff now does.
+        let material = Some(inventory::Material::Oak);
+        sim.inv_move_items(
+            src,
+            dst,
+            Some(inventory::ItemKind::Arrow),
+            Some(material),
+            Some(5),
+        );
+
+        let dst_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+        assert_eq!(dst_stacks.len(), 1);
+        let stack = &dst_stacks[0];
+        assert_eq!(stack.quality, 3, "quality must survive haul dropoff");
+        assert_eq!(stack.current_hp, 2, "current_hp must survive haul dropoff");
+        assert_eq!(
+            stack.material,
+            Some(inventory::Material::Oak),
+            "material must survive haul dropoff"
+        );
+    }
+
+    #[test]
+    fn inv_move_stack_nonexistent_returns_none() {
+        let mut sim = test_sim(42);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let fake_id = ItemStackId(999_999);
+        assert!(sim.inv_move_stack(fake_id, 5, dst).is_none());
+        // Dst should remain empty.
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+        assert!(stacks.is_empty());
+    }
+
+    #[test]
+    fn inv_damage_item_nonexistent_returns_false() {
+        let mut sim = test_sim(42);
+        let fake_id = ItemStackId(999_999);
+        let mut events = Vec::new();
+        assert!(!sim.inv_damage_item(fake_id, 5, &mut events));
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn death_drop_preserves_preexisting_pile_items() {
+        // If a ground pile already exists at the death position with items
+        // from another source, those items must not be affected.
+        let mut sim = test_sim(42);
+        let elf = spawn_elf(&mut sim);
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let elf_inv = sim.db.creatures.get(&elf).unwrap().inventory_id;
+
+        // Pre-place arrows in a ground pile at the elf's position.
+        // Use a unique material (Willow) so they won't merge with the elf's
+        // starting arrows (which have material: None).
+        let pile_id = sim.ensure_ground_pile(elf_pos);
+        let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+        let fake_task = TaskId::new(&mut sim.rng.clone());
+        sim.inv_add_item(
+            pile_inv,
+            inventory::ItemKind::Arrow,
+            10,
+            None,
+            Some(fake_task), // reserved by another task
+            Some(inventory::Material::Willow),
+            7, // distinctive quality
+            None,
+            None,
+        );
+
+        // Give the elf a bow (owned by elf, so death drop will clear its owner).
+        sim.inv_add_item(
+            elf_inv,
+            inventory::ItemKind::Bow,
+            1,
+            Some(elf),
+            None,
+            Some(inventory::Material::Yew),
+            0,
+            None,
+            None,
+        );
+
+        // Kill the elf.
+        let mut events = Vec::new();
+        sim.apply_damage(elf, 9999, &mut events);
+
+        // The pre-existing Willow arrows must still have their reservation.
+        let pile_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&pile_inv, tabulosity::QueryOpts::ASC);
+        let arrow_stack = pile_stacks
+            .iter()
+            .find(|s| {
+                s.kind == inventory::ItemKind::Arrow
+                    && s.material == Some(inventory::Material::Willow)
+                    && s.quality == 7
+            })
+            .expect("Pre-existing Willow arrows should still be in pile");
+        assert_eq!(
+            arrow_stack.reserved_by,
+            Some(fake_task),
+            "Pre-existing reservation must not be cleared by death drop"
+        );
+        assert_eq!(arrow_stack.quantity, 10);
+
+        // The elf's bow should also be in the pile, unowned.
+        let bow_stack = pile_stacks
+            .iter()
+            .find(|s| {
+                s.kind == inventory::ItemKind::Bow && s.material == Some(inventory::Material::Yew)
+            })
+            .expect("Elf's bow should be in pile");
+        assert!(bow_stack.owner.is_none());
+    }
+
+    #[test]
+    fn inv_move_items_multi_durability_stacks() {
+        // Moving items that span multiple stacks with different durability
+        // should preserve each stack's durability independently.
+        let mut sim = test_sim(42);
+        let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+        let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+
+        // 3 full-HP arrows + 2 damaged arrows.
+        sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
+        sim.inv_add_item_with_durability(
+            src,
+            inventory::ItemKind::Arrow,
+            2,
+            None,
+            None,
+            None,
+            0,
+            1, // current_hp (damaged)
+            3, // max_hp
+            None,
+            None,
+        );
+
+        // Move 4 arrows total.
+        let moved = sim.inv_move_items(src, dst, Some(inventory::ItemKind::Arrow), None, Some(4));
+        assert_eq!(moved, 4);
+
+        // Dst should have items from both durability tiers.
+        let dst_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+        let total_qty: u32 = dst_stacks.iter().map(|s| s.quantity).sum();
+        assert_eq!(total_qty, 4);
+
+        // Source should have 1 remaining.
+        let src_stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+        let src_total: u32 = src_stacks.iter().map(|s| s.quantity).sum();
+        assert_eq!(src_total, 1);
+
+        // Verify both durability tiers exist in dst.
+        let full_hp: u32 = dst_stacks
+            .iter()
+            .filter(|s| s.current_hp == 3)
+            .map(|s| s.quantity)
+            .sum();
+        let damaged: u32 = dst_stacks
+            .iter()
+            .filter(|s| s.current_hp == 1)
+            .map(|s| s.quantity)
+            .sum();
+        assert_eq!(full_hp, 3, "All 3 full-HP arrows should move first");
+        assert_eq!(damaged, 1, "1 damaged arrow should move to fill the 4");
     }
 }

@@ -43,8 +43,8 @@
 // Emitted by the sim as output for the UI event log. Not queued — produced
 // synchronously during event processing and collected by the caller.
 // Includes `CreatureDied` (with cause: Debug or Damage),
-// `CreatureDamaged` (melee strike hit), `ProjectileHitCreature`, and
-// `ProjectileHitSurface`.
+// `CreatureDamaged` (melee strike hit), `ProjectileHitCreature`,
+// `ProjectileHitSurface`, and `ItemBroken` (durability reached zero).
 //
 // See also: `sim.rs` for the tick loop that processes scheduled events,
 // `types.rs` for entity IDs and the `Species` enum, `task.rs` for the task
@@ -265,6 +265,12 @@ pub enum SimEventKind {
         group_id: MilitaryGroupId,
         name: String,
         member_count: usize,
+    },
+    /// An item broke (current_hp reached 0) and was removed.
+    ItemBroken {
+        item_kind: crate::inventory::ItemKind,
+        material: Option<crate::inventory::Material>,
+        owner: Option<CreatureId>,
     },
 }
 

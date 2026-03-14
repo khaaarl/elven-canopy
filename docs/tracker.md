@@ -63,6 +63,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-alt-deselect         Alt+click to remove from selection
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-armor                Wearable armor system
+[ ] F-armor-combat-wear    Armor and clothing combat damage degradation
 [ ] F-arrow-durability     Arrow durability and recovery
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
@@ -85,6 +86,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
+[ ] F-clothing-wear        Clothing wear-over-time degradation
 [ ] F-combat               Combat and invader threat system
 [ ] F-command-queue        Shift+right-click to queue commands
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
@@ -125,13 +127,15 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
-[ ] F-item-durability      Item durability system (current/max HP on items)
+[ ] F-item-hp-ui           Item durability display in UI
+[ ] F-item-repair          Item repair and mending
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
 [ ] F-mass-conserve        Wood mass tracking and conservation
+[ ] F-mat-durability       Material-dependent item durability
 [ ] F-military-armor       Military group armor policy
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-equip       Military group equipment acquisition
@@ -246,6 +250,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-hp-death             HP, VitalStatus, and creature death handling
 [x] F-hp-ui                HP bars in creature UI
 [x] F-immediate-commands   Immediate command application (zero-tick updates)
+[x] F-item-durability      Item durability system (current/max HP on items)
 [x] F-items                Items and inventory system
 [x] F-keybind-help         Keyboard shortcuts help overlay
 [x] F-ladders              Rope/wood ladders as cheap connectors
@@ -1271,7 +1276,20 @@ bakery.
 Creatures can wear clothing items in defined body slots (e.g., head, torso, legs, feet). Clothing is crafted at workshops, stored in inventories, and equipped by creatures. Many details TBD: slot system design (fixed slots vs. layering), how clothing affects mood/comfort/thoughts, crafting recipes and material requirements, visual representation (sprite overlays? color tinting?), clothing durability and wear, species-specific clothing (elf vs. other species body plans), and whether clothing provides any mechanical benefits beyond mood. This is the base wearable-item infrastructure that armor builds on.
 
 **Unblocked:** F-armor, F-equipment-sprites
-**Related:** F-item-durability
+**Related:** F-clothing-wear, F-item-durability
+
+#### F-clothing-wear — Clothing wear-over-time degradation
+**Status:** Todo
+
+Clothing items degrade over time from normal wear. A periodic heartbeat
+(e.g., creature heartbeat or dedicated wear tick) decrements current_hp
+on equipped clothing. When clothing breaks, the creature loses its mood
+bonus and needs a replacement. Wear rate could vary by activity (walking
+wears boots faster, manual labor wears gloves faster) but a flat rate
+per heartbeat is fine for v1.
+
+**Unblocked by:** F-item-durability
+**Related:** F-clothing, F-item-repair
 
 #### F-component-recipes — Component-based crafting recipes (bread, thread, bowstring)
 **Status:** Done · **Phase:** 7
@@ -1459,30 +1477,41 @@ task abandonment (clear reservations or drop carried items as ground pile).
 **Related:** F-elf-acquire, F-food-chain, F-logistics
 
 #### F-item-durability — Item durability system (current/max HP on items)
+**Status:** Done
+
+General item durability system: items have a current_hp and max_hp
+pair on ItemStack. Max HP is set at creation time from the
+item_durability config map. Items not in the map are indestructible
+(0/0). At current_hp 0 the item breaks and is removed (ItemBroken
+event). Stackable items like arrows use small durability values (3)
+to keep stacking viable; equipment uses larger values.
+
+All inventory operations (stacking, splitting, merging, reservation)
+preserve durability fields. Items with different current_hp or max_hp
+do not stack together. inv_damage_item() splits one item off a
+multi-item stack before applying damage so the rest retain full HP.
+
+Remaining work for downstream features: degradation hooks at each
+use site (combat impact, tool use, wear-over-time heartbeat) and
+display of item condition in UI.
+
+**Branch:** `feature/F-item-durability`
+
+**Unblocked:** F-armor, F-armor-combat-wear, F-arrow-durability, F-clothing-wear, F-item-hp-ui, F-item-repair, F-mat-durability
+**Related:** F-clothing
+
+#### F-item-repair — Item repair and mending
 **Status:** Todo
 
-General item durability system: items have a current HP and max HP pair
-(not just a single counter). When something damages an item (arrow
-impact, armor absorbing a hit, tool use, clothing wear over time), its
-current HP decreases. At 0 the item breaks and is removed. Max HP is
-set at creation time based on config/recipe and represents the item's
-baseline sturdiness. Current HP can potentially be restored via repair.
+Allow creatures to repair damaged items, restoring current_hp toward
+max_hp. Likely a workshop task consuming some material input (e.g.,
+thread to mend clothing, wood to patch armor). Could also be a
+dedicated "mending" task type. Questions: can items be repaired to
+full max_hp or only partially? Does repair require the same material
+as the original item? Is there a skill/speed component?
 
-Needs: new fields on ItemStack (or a companion table) for current_hp
-and max_hp, config for per-ItemKind base max HP, degradation hooks at
-each use site (combat impact, tool use, wear-over-time heartbeat),
-item breakage removal + event, and display of item condition in UI.
-
-This is the foundational system that arrow durability, armor wear,
-clothing wear, and weapon degradation all build on.
-
-**Branch:** `feature/F-arrow-durability` has a partial implementation
-using the `quality` field as a single durability counter. The test
-scenarios cover the right impact paths but will need updating to check
-current_hp/max_hp fields instead.
-
-**Blocks:** F-armor, F-arrow-durability
-**Related:** F-clothing
+**Unblocked by:** F-item-durability
+**Related:** F-armor-combat-wear, F-clothing-wear
 
 #### F-items — Items and inventory system
 **Status:** Done · **Phase:** 3
@@ -1562,6 +1591,18 @@ workshop_enabled, recipe list, craft_status — mirrors kitchen cooking
 section).
 
 **Related:** F-batch-craft, F-bldg-kitchen, F-bread, F-items
+
+#### F-mat-durability — Material-dependent item durability
+**Status:** Todo
+
+Item max_hp varies by material. Currently all items of a given ItemKind
+get the same max_hp from config regardless of material. This feature
+adds material-based multipliers or overrides so that e.g. Yew bows
+last longer than Willow bows, wood boots (armor) are sturdier than
+cloth boots (clothing), and different fruit-species fibers produce
+clothing of varying durability.
+
+**Unblocked by:** F-item-durability
 
 #### F-pile-gravity — Ground pile gravity and merging
 **Status:** Done · **Phase:** 4
@@ -1924,9 +1965,24 @@ infrastructure.
 
 Armor items that can be worn in clothing slots, providing damage reduction in combat. Builds on the clothing/wearable system (F-clothing) for slot mechanics and equip/unequip flow. Many details TBD: armor types and their stats (leather, chain, plate?), how damage reduction is calculated (flat reduction? percentage? per-damage-type?), armor durability and repair, crafting recipes and material requirements, how armor interacts with movement speed or other stats, visual representation, whether armor and clothing can be worn simultaneously (layering), and species-specific armor availability.
 
-**Blocked by:** F-item-durability
-**Blocks:** F-military-armor
-**Unblocked by:** F-clothing
+**Blocks:** F-armor-combat-wear, F-military-armor
+**Unblocked by:** F-clothing, F-item-durability
+**Related:** F-armor-combat-wear
+
+#### F-armor-combat-wear — Armor and clothing combat damage degradation
+**Status:** Todo
+
+Equipped armor and clothing take durability damage when the wearer is
+struck in combat (melee or projectile hit). The degradation hook fires
+inside the damage-application path: after computing damage reduction
+from armor, the armor piece that absorbed the hit loses HP. Clothing
+worn under armor (if layering is supported) might also take reduced
+damage. When an armor piece breaks mid-combat, the creature loses its
+protection for that slot.
+
+**Blocked by:** F-armor
+**Unblocked by:** F-item-durability
+**Related:** F-armor, F-item-repair
 
 #### F-arrow-durability — Arrow durability and recovery
 **Status:** Todo · **Phase:** 3
@@ -1945,7 +2001,7 @@ test scenarios (surface hit, creature hit, breakage, serde roundtrip,
 durability carry-through on shoot) can be reused but will need updating
 to check the general item HP fields instead.
 
-**Blocked by:** F-item-durability
+**Unblocked by:** F-item-durability
 
 #### F-attack-move — Attack-move task (walk + fight en route)
 **Status:** Done
@@ -2723,6 +2779,17 @@ player's tree. Keeps current zoom and pitch — only repositions the
 focal point.
 
 **Related:** F-controls-config
+
+#### F-item-hp-ui — Item durability display in UI
+**Status:** Todo
+
+Show item durability (current_hp / max_hp) in the game UI. This
+includes inventory tooltips, item lists, and possibly a durability
+bar overlay on item icons. Items at full HP can omit the display;
+low-HP items should be visually distinct (color change, warning icon).
+Indestructible items (0/0) show no durability indicator.
+
+**Unblocked by:** F-item-durability
 
 #### F-keybind-help — Keyboard shortcuts help overlay
 **Status:** Done · **Phase:** 2

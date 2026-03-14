@@ -769,7 +769,11 @@ fn is_equipped(stack: &ItemStack) -> bool {
     stack.equipped_slot.is_some()
 }
 
-/// A stack of items within an inventory.
+/// A stack of items within an inventory. Items in a stack share identical
+/// properties (kind, material, quality, current_hp, max_hp, enchantment).
+/// The `current_hp`/`max_hp` pair tracks item durability — 0/0 means
+/// indestructible (no durability tracking). See `sim.rs` `inv_normalize`
+/// for the full stacking criteria.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 #[index(
     name = "equipped_inv_slot",
@@ -789,6 +793,16 @@ pub struct ItemStack {
     pub material: Option<Material>,
     #[serde(default)]
     pub quality: i32,
+    /// Current hit points. Decremented by damage hooks (combat, wear, etc.).
+    /// When both `current_hp` and `max_hp` are 0, the item has no durability
+    /// tracking (indestructible). When `max_hp > 0` and `current_hp` reaches
+    /// 0, the item breaks and is removed.
+    #[serde(default)]
+    pub current_hp: i32,
+    /// Maximum hit points set at creation time from config. 0 means no
+    /// durability tracking (legacy / indestructible items).
+    #[serde(default)]
+    pub max_hp: i32,
     #[serde(default)]
     #[indexed]
     pub enchantment_id: Option<EnchantmentId>,

@@ -1294,6 +1294,26 @@ fn default_voxel_exclusion_retry_ticks() -> u64 {
     50
 }
 
+fn default_item_durability() -> BTreeMap<ItemKind, i32> {
+    BTreeMap::from([
+        // Stackable projectiles — small range to keep stacking viable.
+        (ItemKind::Arrow, 3),
+        // Weapons — moderate durability.
+        (ItemKind::Bow, 50),
+        // Armor — high durability.
+        (ItemKind::Helmet, 40),
+        (ItemKind::Breastplate, 60),
+        (ItemKind::Greaves, 40),
+        (ItemKind::Gauntlets, 30),
+        // Clothing — moderate durability.
+        (ItemKind::Tunic, 30),
+        (ItemKind::Leggings, 25),
+        (ItemKind::Boots, 20),
+        (ItemKind::Hat, 20),
+        (ItemKind::Gloves, 15),
+    ])
+}
+
 // ---------------------------------------------------------------------------
 // Civilization config
 // ---------------------------------------------------------------------------
@@ -1721,6 +1741,13 @@ pub struct GameConfig {
     /// voxel is occupied by a hostile creature (voxel exclusion).
     #[serde(default = "default_voxel_exclusion_retry_ticks")]
     pub voxel_exclusion_retry_ticks: u64,
+
+    /// Per-item-kind max hit points for the durability system. Items not in
+    /// this map have no durability tracking (indestructible). Stackable items
+    /// like arrows should use small values (e.g., 3) to keep stacking viable;
+    /// equipment like armor and weapons can use larger values.
+    #[serde(default = "default_item_durability")]
+    pub item_durability: BTreeMap<ItemKind, i32>,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -2295,6 +2322,7 @@ impl Default for GameConfig {
             shoot_cooldown_ticks: default_shoot_cooldown_ticks(),
             attack_path_retry_limit: default_attack_path_retry_limit(),
             voxel_exclusion_retry_ticks: default_voxel_exclusion_retry_ticks(),
+            item_durability: default_item_durability(),
         }
     }
 }
