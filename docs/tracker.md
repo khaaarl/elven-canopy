@@ -63,7 +63,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-alt-deselect         Alt+click to remove from selection
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-armor                Wearable armor system
-[ ] F-armor-combat-wear    Armor and clothing combat damage degradation
 [ ] F-arrow-durability     Arrow durability and recovery
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
@@ -86,7 +85,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
-[ ] F-clothing-wear        Clothing wear-over-time degradation
 [ ] F-combat               Combat and invader threat system
 [ ] F-command-queue        Shift+right-click to queue commands
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
@@ -94,6 +92,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
 [ ] F-crafting             Non-construction jobs and crafting
+[ ] F-creature-death       Basic creature death (starvation)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-dblclick-select      Double-click to select all of same military group
@@ -127,15 +126,13 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
-[ ] F-item-hp-ui           Item durability display in UI
-[ ] F-item-repair          Item repair and mending
+[ ] F-item-durability      Item durability system (current/max HP on items)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
 [ ] F-mass-conserve        Wood mass tracking and conservation
-[ ] F-mat-durability       Material-dependent item durability
 [ ] F-military-armor       Military group armor policy
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-equip       Military group equipment acquisition
@@ -155,7 +152,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
-[ ] F-recipe-search        Recipe catalog search/filter
+[ ] F-relay-multi-game     Relay server supports multiple simultaneous games
+[ ] F-relay-release        Standalone relay server release build
 [ ] F-roof-click-select    Roof click selects building, not elf underneath
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
@@ -168,7 +166,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
-[ ] F-split-sim            Break up sim.rs into focused modules
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
@@ -186,6 +183,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-unfurnish            Unfurnish/refurnish a building
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-visual-smooth        Smooth voxel surface rendering
+[ ] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
@@ -220,7 +218,6 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crate-structure      Two-crate sim/gdext structure
 [x] F-creature-actions     Creature action system: typed duration-bearing actions
-[x] F-creature-death       Basic creature death (starvation)
 [x] F-creature-info        Creature info panel with follow button
 [x] F-creature-tooltip     Hover tooltips for world objects
 [x] F-debug-menu           Move spawn/summon into debug menu
@@ -250,7 +247,6 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-hp-death             HP, VitalStatus, and creature death handling
 [x] F-hp-ui                HP bars in creature UI
 [x] F-immediate-commands   Immediate command application (zero-tick updates)
-[x] F-item-durability      Item durability system (current/max HP on items)
 [x] F-items                Items and inventory system
 [x] F-keybind-help         Keyboard shortcuts help overlay
 [x] F-ladders              Rope/wood ladders as cheap connectors
@@ -284,9 +280,8 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-preemption           Task priority and preemption system
 [x] F-projectiles          Projectile physics system (arrows)
 [x] F-recipe-hierarchy     Recipe catalog UI hierarchy and organization
+[x] F-recipe-search        Recipe catalog search/filter
 [x] F-recipes              Recipe system for crafting/cooking
-[x] F-relay-multi-game     Relay server supports multiple simultaneous games
-[x] F-relay-release        Standalone relay server release build
 [x] F-rts-selection        RTS box selection and multi-creature commands
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
 [x] F-save-load            Save/load to JSON with versioning
@@ -324,7 +319,6 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tree-info            Tree stats/info panel
 [x] F-tree-overlap         Construction overlap with tree geometry
 [x] F-unified-craft-ui     Unified data-driven building crafting UI
-[x] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [x] F-voxel-fem            Voxel FEM structural analysis
 [x] F-voxel-textures       Per-face Perlin noise voxel textures
 [x] F-worldgen-framework   Worldgen generator framework
@@ -1030,7 +1024,7 @@ Remaining: additional test coverage audit per design doc.
 **Related:** F-dynamic-pursuit, F-preemption, F-task-interruption
 
 #### F-creature-death — Basic creature death (starvation)
-**Status:** Done · **Phase:** 3 · **Refs:** §13, §15
+**Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
 
 When a creature's food gauge reaches zero, it dies (vital_status → Dead,
 creature row kept in DB). Basic death mechanic without the spiritual
@@ -1276,20 +1270,7 @@ bakery.
 Creatures can wear clothing items in defined body slots (e.g., head, torso, legs, feet). Clothing is crafted at workshops, stored in inventories, and equipped by creatures. Many details TBD: slot system design (fixed slots vs. layering), how clothing affects mood/comfort/thoughts, crafting recipes and material requirements, visual representation (sprite overlays? color tinting?), clothing durability and wear, species-specific clothing (elf vs. other species body plans), and whether clothing provides any mechanical benefits beyond mood. This is the base wearable-item infrastructure that armor builds on.
 
 **Unblocked:** F-armor, F-equipment-sprites
-**Related:** F-clothing-wear, F-item-durability
-
-#### F-clothing-wear — Clothing wear-over-time degradation
-**Status:** Todo
-
-Clothing items degrade over time from normal wear. A periodic heartbeat
-(e.g., creature heartbeat or dedicated wear tick) decrements current_hp
-on equipped clothing. When clothing breaks, the creature loses its mood
-bonus and needs a replacement. Wear rate could vary by activity (walking
-wears boots faster, manual labor wears gloves faster) but a flat rate
-per heartbeat is fine for v1.
-
-**Unblocked by:** F-item-durability
-**Related:** F-clothing, F-item-repair
+**Related:** F-item-durability
 
 #### F-component-recipes — Component-based crafting recipes (bread, thread, bowstring)
 **Status:** Done · **Phase:** 7
@@ -1477,41 +1458,30 @@ task abandonment (clear reservations or drop carried items as ground pile).
 **Related:** F-elf-acquire, F-food-chain, F-logistics
 
 #### F-item-durability — Item durability system (current/max HP on items)
-**Status:** Done
-
-General item durability system: items have a current_hp and max_hp
-pair on ItemStack. Max HP is set at creation time from the
-item_durability config map. Items not in the map are indestructible
-(0/0). At current_hp 0 the item breaks and is removed (ItemBroken
-event). Stackable items like arrows use small durability values (3)
-to keep stacking viable; equipment uses larger values.
-
-All inventory operations (stacking, splitting, merging, reservation)
-preserve durability fields. Items with different current_hp or max_hp
-do not stack together. inv_damage_item() splits one item off a
-multi-item stack before applying damage so the rest retain full HP.
-
-Remaining work for downstream features: degradation hooks at each
-use site (combat impact, tool use, wear-over-time heartbeat) and
-display of item condition in UI.
-
-**Branch:** `feature/F-item-durability`
-
-**Unblocked:** F-armor, F-armor-combat-wear, F-arrow-durability, F-clothing-wear, F-item-hp-ui, F-item-repair, F-mat-durability
-**Related:** F-clothing
-
-#### F-item-repair — Item repair and mending
 **Status:** Todo
 
-Allow creatures to repair damaged items, restoring current_hp toward
-max_hp. Likely a workshop task consuming some material input (e.g.,
-thread to mend clothing, wood to patch armor). Could also be a
-dedicated "mending" task type. Questions: can items be repaired to
-full max_hp or only partially? Does repair require the same material
-as the original item? Is there a skill/speed component?
+General item durability system: items have a current HP and max HP pair
+(not just a single counter). When something damages an item (arrow
+impact, armor absorbing a hit, tool use, clothing wear over time), its
+current HP decreases. At 0 the item breaks and is removed. Max HP is
+set at creation time based on config/recipe and represents the item's
+baseline sturdiness. Current HP can potentially be restored via repair.
 
-**Unblocked by:** F-item-durability
-**Related:** F-armor-combat-wear, F-clothing-wear
+Needs: new fields on ItemStack (or a companion table) for current_hp
+and max_hp, config for per-ItemKind base max HP, degradation hooks at
+each use site (combat impact, tool use, wear-over-time heartbeat),
+item breakage removal + event, and display of item condition in UI.
+
+This is the foundational system that arrow durability, armor wear,
+clothing wear, and weapon degradation all build on.
+
+**Branch:** `feature/F-arrow-durability` has a partial implementation
+using the `quality` field as a single durability counter. The test
+scenarios cover the right impact paths but will need updating to check
+current_hp/max_hp fields instead.
+
+**Blocks:** F-armor, F-arrow-durability
+**Related:** F-clothing
 
 #### F-items — Items and inventory system
 **Status:** Done · **Phase:** 3
@@ -1591,18 +1561,6 @@ workshop_enabled, recipe list, craft_status — mirrors kitchen cooking
 section).
 
 **Related:** F-batch-craft, F-bldg-kitchen, F-bread, F-items
-
-#### F-mat-durability — Material-dependent item durability
-**Status:** Todo
-
-Item max_hp varies by material. Currently all items of a given ItemKind
-get the same max_hp from config regardless of material. This feature
-adds material-based multipliers or overrides so that e.g. Yew bows
-last longer than Willow bows, wood boots (armor) are sturdier than
-cloth boots (clothing), and different fruit-species fibers produce
-clothing of varying durability.
-
-**Unblocked by:** F-item-durability
 
 #### F-pile-gravity — Ground pile gravity and merging
 **Status:** Done · **Phase:** 4
@@ -1965,24 +1923,9 @@ infrastructure.
 
 Armor items that can be worn in clothing slots, providing damage reduction in combat. Builds on the clothing/wearable system (F-clothing) for slot mechanics and equip/unequip flow. Many details TBD: armor types and their stats (leather, chain, plate?), how damage reduction is calculated (flat reduction? percentage? per-damage-type?), armor durability and repair, crafting recipes and material requirements, how armor interacts with movement speed or other stats, visual representation, whether armor and clothing can be worn simultaneously (layering), and species-specific armor availability.
 
-**Blocks:** F-armor-combat-wear, F-military-armor
-**Unblocked by:** F-clothing, F-item-durability
-**Related:** F-armor-combat-wear
-
-#### F-armor-combat-wear — Armor and clothing combat damage degradation
-**Status:** Todo
-
-Equipped armor and clothing take durability damage when the wearer is
-struck in combat (melee or projectile hit). The degradation hook fires
-inside the damage-application path: after computing damage reduction
-from armor, the armor piece that absorbed the hit loses HP. Clothing
-worn under armor (if layering is supported) might also take reduced
-damage. When an armor piece breaks mid-combat, the creature loses its
-protection for that slot.
-
-**Blocked by:** F-armor
-**Unblocked by:** F-item-durability
-**Related:** F-armor, F-item-repair
+**Blocked by:** F-item-durability
+**Blocks:** F-military-armor
+**Unblocked by:** F-clothing
 
 #### F-arrow-durability — Arrow durability and recovery
 **Status:** Todo · **Phase:** 3
@@ -2001,7 +1944,7 @@ test scenarios (surface hit, creature hit, breakage, serde roundtrip,
 durability carry-through on shoot) can be reused but will need updating
 to check the general item HP fields instead.
 
-**Unblocked by:** F-item-durability
+**Blocked by:** F-item-durability
 
 #### F-attack-move — Attack-move task (walk + fight en route)
 **Status:** Done
@@ -2278,7 +2221,7 @@ BTreeMap<VoxelCoord, Vec<CreatureId>> on SimState, #[serde(skip)], rebuilt on lo
 **Related:** F-projectiles
 
 #### F-voxel-exclusion — Creatures cannot enter voxels occupied by hostile creatures
-**Status:** Done · **Phase:** 3
+**Status:** Todo · **Phase:** 3
 
 Creatures should not be able to enter a voxel already occupied by a hostile creature (and vice versa). Currently multiple creatures freely share voxels regardless of faction. Needs pathfinding and/or movement-step checks to enforce. Edge case: if creatures are already sharing a voxel when hostility begins, behavior is TBD (push apart, allow temporary overlap, etc.).
 
@@ -2780,17 +2723,6 @@ focal point.
 
 **Related:** F-controls-config
 
-#### F-item-hp-ui — Item durability display in UI
-**Status:** Todo
-
-Show item durability (current_hp / max_hp) in the game UI. This
-includes inventory tooltips, item lists, and possibly a durability
-bar overlay on item icons. Items at full HP can omit the display;
-low-HP items should be visually distinct (color change, warning icon).
-Indestructible items (0/0) show no durability indicator.
-
-**Unblocked by:** F-item-durability
-
 #### F-keybind-help — Keyboard shortcuts help overlay
 **Status:** Done · **Phase:** 2
 
@@ -2866,7 +2798,7 @@ Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 ESC-triggered pause menu with Resume, Save, Load, and Quit options.
 
 #### F-recipe-search — Recipe catalog search/filter
-**Status:** Todo · **Phase:** 4
+**Status:** Done · **Phase:** 4
 
 Add a search/filter text box to the recipe catalog picker so players
 can quickly find recipes by name without browsing the category tree.
@@ -3298,7 +3230,7 @@ ESC menu behavior, save/load semantics, sim speed policy).
 **Related:** F-immediate-commands, F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
 
 #### F-relay-multi-game — Relay server supports multiple simultaneous games
-**Status:** Done · **Phase:** 8
+**Status:** Todo · **Phase:** 8
 
 Extend the relay server to host multiple simultaneous game sessions.
 Each session has its own independent lobby, command queue, turn counter,
@@ -3312,7 +3244,7 @@ protocol).
 **Related:** F-multiplayer, F-relay-release
 
 #### F-relay-release — Standalone relay server release build
-**Status:** Done · **Phase:** 8
+**Status:** Todo · **Phase:** 8
 
 Build the `elven_canopy_relay` crate as a standalone headless binary
 with a release profile. Add a `scripts/build.sh relay` (or similar)
@@ -3385,23 +3317,6 @@ as `SimDb` (16 tables) — see F-sim-tab-migrate.
 
 #### F-sim-tab-migrate — Migrate sim entity storage to tabulosity SimDb
 **Status:** Done
-
-#### F-split-sim — Break up sim.rs into focused modules
-**Status:** Todo
-
-sim.rs is 36,560 lines (~11,100 sim code + ~25,400 tests). Split into focused `impl SimState` blocks in separate modules. Proposed modules:
-
-- **sim.rs** (~1,500 lines): struct definition, `new`/`with_config`, `step`/`process_event`, serialization, core helpers (`find_surface_position`, `abort_current_action`, `schedule_reactivation`)
-- **activation.rs** (~800): `process_creature_activation`, `find_available_task`, `claim_task`, `execute_task_behavior`, `execute_task_at_location`, `check_creature_wants`, `check_mope`
-- **construction.rs** (~1,200): `designate_build`, `designate_building`, `designate_ladder`, `designate_carve`, `cancel_build`, `create_task`
-- **combat.rs** (~1,500): `command_attack_creature`, `command_attack_move`, `command_group_attack_move`, `execute_attack_move`, `execute_combat_at_location`, `try_combat_against_target`, `walk_toward_attack_target`, `in_melee_range`, friendly-fire
-- **movement.rs** (~500): `command_directed_goto`, `command_group_goto`, `compute_spread_assignments`, `walk_toward_task`
-- **crafting.rs** (~1,200): all `*_craft_*`/`*_cook_*`, `process_unified_crafting_monitor`, `compute_runs_needed`, `compute_effective_wants`, active recipe management
-- **logistics.rs** (~800): `process_logistics_heartbeat`, `process_harvest_tasks`, `find_haul_source`, `reserve_haul_items`, `find_item_source`, `count_in_transit_items`, pickup/dropoff/haul
-- **needs.rs** (~600): sleep, eating, moping, `resolve_acquire_item_action`
-- **greenhouse.rs** (~200): `process_greenhouse_monitor`, fruit helpers
-
-Tests follow their corresponding module. Schedule when no other sim branches are in flight.
 
 #### F-tab-auto-pk — Auto-generated primary keys
 **Status:** Done

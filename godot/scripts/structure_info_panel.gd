@@ -38,7 +38,9 @@
 ## The detail panel (sibling PanelContainer) contains:
 ## - A "Crafting Enabled" toggle
 ## - An "Add Recipe..." button that expands a hierarchical recipe picker
-##   organized as a collapsible tree by category (e.g. Processing > Milling)
+##   organized as a collapsible tree by category (e.g. Processing > Milling),
+##   with a search/filter field for case-insensitive substring matching against
+##   recipe names and input/output item kinds
 ## - Active recipe list with per-output target controls, auto-logistics toggle,
 ##   reorder/remove buttons, and per-recipe enable toggles
 ## Emits crafting_enabled_changed, add_recipe_requested, remove_recipe_requested,
@@ -121,6 +123,7 @@ var _crafting_active_recipes_vbox: VBoxContainer
 var _crafting_details_status_label: Label
 ## Whether the recipe picker is currently expanded.
 var _recipe_picker_visible: bool = false
+var _recipe_search_edit: LineEdit
 ## Cached recipe catalog for the current building (from bridge).
 var _cached_building_recipes: Array = []
 ## Collapsed state per top-level category in the recipe picker tree.
@@ -453,7 +456,13 @@ func _ready() -> void:
 
 	var details_close := Button.new()
 	details_close.text = "X"
-	details_close.pressed.connect(func(): _crafting_details_panel.visible = false)
+	details_close.pressed.connect(
+		func():
+			_crafting_details_panel.visible = false
+			_recipe_picker_visible = false
+			_recipe_search_edit.visible = false
+			_recipe_search_edit.text = ""
+	)
 	details_header.add_child(details_close)
 
 	_crafting_details_vbox.add_child(HSeparator.new())
@@ -470,6 +479,13 @@ func _ready() -> void:
 	_crafting_add_recipe_button.text = "Add Recipe..."
 	_crafting_add_recipe_button.pressed.connect(_on_add_recipe_pressed)
 	_crafting_details_vbox.add_child(_crafting_add_recipe_button)
+
+	_recipe_search_edit = LineEdit.new()
+	_recipe_search_edit.placeholder_text = "Filter recipes..."
+	_recipe_search_edit.clear_button_enabled = true
+	_recipe_search_edit.visible = false
+	_recipe_search_edit.text_changed.connect(_on_recipe_search_changed)
+	_crafting_details_vbox.add_child(_recipe_search_edit)
 
 	_crafting_recipe_picker = VBoxContainer.new()
 	_crafting_recipe_picker.visible = false
@@ -569,6 +585,9 @@ func hide_panel() -> void:
 		_name_edit.release_focus()
 	_logistics_details_panel.visible = false
 	_crafting_details_panel.visible = false
+	_recipe_picker_visible = false
+	_recipe_search_edit.visible = false
+	_recipe_search_edit.text = ""
 	visible = false
 
 
@@ -1023,6 +1042,8 @@ func _on_crafting_details_pressed() -> void:
 		_recipe_rows_built = false
 		_active_recipe_widgets.clear()
 		_recipe_picker_visible = false
+		_recipe_search_edit.visible = false
+		_recipe_search_edit.text = ""
 
 
 func _on_crafting_enabled_toggled(pressed: bool) -> void:
@@ -1034,18 +1055,50 @@ func _on_crafting_enabled_toggled(pressed: bool) -> void:
 func _on_add_recipe_pressed() -> void:
 	_recipe_picker_visible = not _recipe_picker_visible
 	_crafting_recipe_picker.visible = _recipe_picker_visible
+	_recipe_search_edit.visible = _recipe_picker_visible
 	if _recipe_picker_visible:
+		_recipe_search_edit.text = ""
 		_populate_recipe_picker()
+		_recipe_search_edit.grab_focus()
+	else:
+		_recipe_search_edit.text = ""
+
+
+func _on_recipe_search_changed(_new_text: String) -> void:
+	_populate_recipe_picker()
+	if _crafting_recipe_picker.visible:
+		_refresh_recipe_picker_availability()
+
+
+## Return true if `recipe` matches the current search filter (case-insensitive
+## substring match against display name, input item kinds, and output item kinds).
+func _recipe_matches_filter(recipe: Dictionary, filter_lower: String) -> bool:
+	if filter_lower.is_empty():
+		return true
+	var display_name: String = recipe.get("display_name", "")
+	if display_name.to_lower().contains(filter_lower):
+		return true
+	for inp in recipe.get("inputs", []):
+		if inp.get("item_kind", "").to_lower().contains(filter_lower):
+			return true
+	for out in recipe.get("outputs", []):
+		if out.get("item_kind", "").to_lower().contains(filter_lower):
+			return true
+	return false
 
 
 func _populate_recipe_picker() -> void:
 	for child in _crafting_recipe_picker.get_children():
 		child.queue_free()
 
+	var filter_lower: String = _recipe_search_edit.text.strip_edges().to_lower()
+
 	# Group recipes by top-level category.
 	var categorized: Dictionary = {}  # category_name -> Array of recipes
 	var root_recipes: Array = []  # recipes with empty category
 	for recipe in _cached_building_recipes:
+		if not _recipe_matches_filter(recipe, filter_lower):
+			continue
 		var category: Array = recipe.get("category", [])
 		if category.size() == 0:
 			root_recipes.append(recipe)
@@ -1055,8 +1108,10 @@ func _populate_recipe_picker() -> void:
 				categorized[top_cat] = []
 			categorized[top_cat].append(recipe)
 
-	# Auto-expand if all recipes share a single top-level category.
+	# Auto-expand if all recipes share a single top-level category,
+	# or if a search filter is active (so matches aren't hidden).
 	var auto_expand := root_recipes.size() == 0 and categorized.size() == 1
+	var filter_active := not filter_lower.is_empty()
 
 	# Initialize collapsed state for any new categories (default collapsed).
 	for cat_name: String in categorized:
@@ -1072,7 +1127,9 @@ func _populate_recipe_picker() -> void:
 	sorted_cats.sort()
 	for cat_name: String in sorted_cats:
 		var recipes: Array = categorized[cat_name]
-		var is_collapsed: bool = _recipe_category_collapsed.get(cat_name, true)
+		var is_collapsed: bool = (
+			false if filter_active else _recipe_category_collapsed.get(cat_name, true)
+		)
 
 		# Subcategorize within this top-level category.
 		var subcategorized: Dictionary = {}  # subcat_name -> Array of recipes
@@ -1196,6 +1253,8 @@ func _on_recipe_picker_selected(key_json: String) -> void:
 	add_recipe_requested.emit(_current_structure_id, key_json)
 	_recipe_picker_visible = false
 	_crafting_recipe_picker.visible = false
+	_recipe_search_edit.visible = false
+	_recipe_search_edit.text = ""
 
 
 func _on_recipe_remove(active_recipe_id: int) -> void:
