@@ -5,6 +5,11 @@
 ## Camera3D, etc.). Both controllers now delegate to these functions.
 ## placement_controller.gd uses the same math but inlines it in a hot loop.
 ##
+## Also provides the `is_shielded_by_roof()` predicate used by both
+## selection_controller.gd and tooltip_controller.gd for roof-click-select:
+## when the ray hits a building roof, creatures inside (below roof Y) are
+## shielded from selection.
+##
 ## See also: selection_controller.gd (click-to-select, box-select),
 ## tooltip_controller.gd (hover detection), placement_controller.gd
 ## (click-to-place snap — inlines the same ray-distance math for performance).
@@ -28,3 +33,11 @@ static func make_screen_rect(a: Vector2, b: Vector2) -> Rect2:
 	var top_left := Vector2(minf(a.x, b.x), minf(a.y, b.y))
 	var bottom_right := Vector2(maxf(a.x, b.x), maxf(a.y, b.y))
 	return Rect2(top_left, bottom_right - top_left)
+
+
+## Return true if a creature at `creature_y` (integer voxel Y) should be
+## hidden from selection because a building roof shields it. A roof shields
+## creatures whose Y position is strictly below `roof_y`. When `is_roof` is
+## false (no roof was hit), no creature is ever shielded.
+static func is_shielded_by_roof(creature_y: int, is_roof: bool, roof_y: int) -> bool:
+	return is_roof and creature_y < roof_y

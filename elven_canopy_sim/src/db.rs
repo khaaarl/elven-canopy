@@ -708,6 +708,27 @@ impl CompletedStructure {
         shuffled
     }
 
+    /// Return true if `coord` is a roof voxel of this structure.
+    ///
+    /// A roof voxel is defined as the topmost Y layer of the bounding box for
+    /// Building and Enclosure types. Other structure types (Platform, Bridge,
+    /// Stairs, etc.) have no concept of a roof.
+    ///
+    /// Used by `selection_controller.gd` to decide whether a click on a
+    /// structure voxel should shield creatures inside from selection.
+    pub fn is_roof_voxel(&self, coord: VoxelCoord) -> bool {
+        match self.build_type {
+            BuildType::Building | BuildType::Enclosure => {}
+            _ => return false,
+        }
+        let roof_y = self.anchor.y + self.height - 1;
+        coord.y == roof_y
+            && coord.x >= self.anchor.x
+            && coord.x < self.anchor.x + self.width
+            && coord.z >= self.anchor.z
+            && coord.z < self.anchor.z + self.depth
+    }
+
     /// Compute the axis-aligned bounding box of a set of voxel coordinates.
     fn compute_bounding_box(voxels: &[VoxelCoord]) -> (VoxelCoord, i32, i32, i32) {
         if voxels.is_empty() {

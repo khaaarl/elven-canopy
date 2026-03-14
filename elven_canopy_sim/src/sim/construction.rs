@@ -1551,6 +1551,65 @@ impl SimState {
         }
     }
 
+    /// DDA voxel raycast returning `(StructureId, VoxelCoord)` of the first
+    /// structure voxel hit. Like `raycast_structure()` but also returns the
+    /// hit coordinate, needed by the roof-click-select feature to decide
+    /// whether the hit voxel is a building roof.
+    pub fn raycast_structure_with_hit(
+        &self,
+        from: [f32; 3],
+        dir: [f32; 3],
+        max_steps: u32,
+    ) -> Option<(StructureId, VoxelCoord)> {
+        let mut voxel = [
+            from[0].floor() as i32,
+            from[1].floor() as i32,
+            from[2].floor() as i32,
+        ];
+
+        let mut step = [0i32; 3];
+        let mut t_max = [f32::INFINITY; 3];
+        let mut t_delta = [f32::INFINITY; 3];
+
+        for axis in 0..3 {
+            if dir[axis] > 0.0 {
+                step[axis] = 1;
+                t_delta[axis] = 1.0 / dir[axis];
+                t_max[axis] = ((voxel[axis] as f32 + 1.0) - from[axis]) / dir[axis];
+            } else if dir[axis] < 0.0 {
+                step[axis] = -1;
+                t_delta[axis] = 1.0 / (-dir[axis]);
+                t_max[axis] = (from[axis] - voxel[axis] as f32) / (-dir[axis]);
+            }
+        }
+
+        for _ in 0..max_steps {
+            let coord = VoxelCoord::new(voxel[0], voxel[1], voxel[2]);
+
+            if let Some(&sid) = self.structure_voxels.get(&coord) {
+                return Some((sid, coord));
+            }
+
+            let vt = self.world.get(coord);
+            if vt.is_solid() {
+                return None;
+            }
+
+            let min_axis = if t_max[0] <= t_max[1] && t_max[0] <= t_max[2] {
+                0
+            } else if t_max[1] <= t_max[2] {
+                1
+            } else {
+                2
+            };
+
+            voxel[min_axis] += step[min_axis];
+            t_max[min_axis] += t_delta[min_axis];
+        }
+
+        None
+    }
+
     /// DDA voxel raycast that returns the `StructureId` of the first structure
     /// voxel hit along the ray. Uses the same Amanatides & Woo algorithm as
     /// `VoxelWorld::raycast_hits_solid`, but checks `structure_voxels` at each

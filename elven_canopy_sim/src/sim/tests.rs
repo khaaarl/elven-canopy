@@ -4377,6 +4377,165 @@ fn raycast_structure_returns_none_for_empty_ray() {
 }
 
 // -----------------------------------------------------------------------
+// Roof-click-select: is_roof_voxel + raycast_structure_with_hit
+// -----------------------------------------------------------------------
+
+/// Helper: designate and complete a 3x3x1 building, returning the sim with
+/// a completed building structure whose interior voxels are registered in
+/// `structure_voxels`.
+fn designate_and_complete_building(mut sim: SimState) -> SimState {
+    let anchor = find_building_site(&sim);
+
+    // Spawn an elf near the build site.
+    let air_above = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z);
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: air_above,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Designate a 3x3x1 building.
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: 2,
+        action: SimAction::DesignateBuilding {
+            anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 2);
+    assert_eq!(sim.db.blueprints.len(), 1);
+
+    // Run until complete.
+    let max_tick = sim.tick + 1_000_000;
+    while sim.tick < max_tick {
+        sim.step(&[], sim.tick + 100);
+        if sim
+            .db
+            .blueprints
+            .iter_all()
+            .all(|bp| bp.state == BlueprintState::Complete)
+        {
+            break;
+        }
+    }
+    assert!(
+        sim.db
+            .blueprints
+            .iter_all()
+            .all(|bp| bp.state == BlueprintState::Complete),
+        "Building did not complete within tick limit"
+    );
+    sim
+}
+
+#[test]
+fn is_roof_voxel_true_for_top_layer() {
+    let sim = designate_and_complete_building(test_sim(42));
+    let structure = sim.db.structures.iter_all().next().unwrap();
+
+    // For a 3x3x1 building, all interior voxels are at the same Y level,
+    // which is also the roof (top layer = only layer).
+    let roof_y = structure.anchor.y + structure.height - 1;
+    let coord = VoxelCoord::new(structure.anchor.x, roof_y, structure.anchor.z);
+    assert!(
+        structure.is_roof_voxel(coord),
+        "Top-layer voxel should be a roof voxel"
+    );
+}
+
+#[test]
+fn is_roof_voxel_false_for_non_building() {
+    let sim = designate_and_complete_build(test_sim(42));
+    let structure = sim.db.structures.iter_all().next().unwrap();
+    assert_eq!(structure.build_type, BuildType::Platform);
+
+    // Platforms have no roof concept.
+    let coord = VoxelCoord::new(structure.anchor.x, structure.anchor.y, structure.anchor.z);
+    assert!(
+        !structure.is_roof_voxel(coord),
+        "Platform voxels should never be roof voxels"
+    );
+}
+
+#[test]
+fn is_roof_voxel_false_outside_bounds() {
+    let sim = designate_and_complete_building(test_sim(42));
+    let structure = sim.db.structures.iter_all().next().unwrap();
+
+    let roof_y = structure.anchor.y + structure.height - 1;
+    // One step outside in X.
+    let outside = VoxelCoord::new(
+        structure.anchor.x + structure.width,
+        roof_y,
+        structure.anchor.z,
+    );
+    assert!(
+        !structure.is_roof_voxel(outside),
+        "Voxel outside building bounds should not be a roof voxel"
+    );
+}
+
+#[test]
+fn raycast_structure_with_hit_returns_coord() {
+    let sim = designate_and_complete_building(test_sim(42));
+    let structure = sim.db.structures.iter_all().next().unwrap();
+    let bp = sim
+        .db
+        .blueprints
+        .iter_all()
+        .find(|bp| bp.state == BlueprintState::Complete)
+        .unwrap();
+    let voxel = bp.voxels[0];
+
+    // Cast a ray from above straight down.
+    let from = [
+        voxel.x as f32 + 0.5,
+        voxel.y as f32 + 10.0,
+        voxel.z as f32 + 0.5,
+    ];
+    let dir = [0.0, -1.0, 0.0];
+    let result = sim.raycast_structure_with_hit(from, dir, 100);
+
+    assert!(result.is_some(), "Should hit the building");
+    let (sid, hit_coord) = result.unwrap();
+    assert_eq!(sid, structure.id);
+    assert_eq!(hit_coord, voxel);
+}
+
+#[test]
+fn raycast_roof_voxel_is_identified_as_roof() {
+    let sim = designate_and_complete_building(test_sim(42));
+    let structure = sim.db.structures.iter_all().next().unwrap();
+
+    // For a 3x3x1 building, every interior voxel is the top layer (roof).
+    // Cast a ray from above into the center of the building.
+    let center_x = structure.anchor.x as f32 + structure.width as f32 / 2.0;
+    let roof_y = structure.anchor.y + structure.height - 1;
+    let center_z = structure.anchor.z as f32 + structure.depth as f32 / 2.0;
+
+    let from = [center_x, roof_y as f32 + 10.0, center_z];
+    let dir = [0.0, -1.0, 0.0];
+    let result = sim.raycast_structure_with_hit(from, dir, 100);
+
+    assert!(result.is_some());
+    let (sid, hit_coord) = result.unwrap();
+    assert_eq!(sid, structure.id);
+    assert!(
+        structure.is_roof_voxel(hit_coord),
+        "Hit voxel at {:?} should be a roof voxel (roof_y={roof_y})",
+        hit_coord
+    );
+}
+
+// -----------------------------------------------------------------------
 // RenameStructure tests
 // -----------------------------------------------------------------------
 

@@ -152,7 +152,14 @@ func _find_hover_target() -> Dictionary:
 	var ray_origin := _camera.project_ray_origin(_mouse_pos)
 	var ray_dir := _camera.project_ray_normal(_mouse_pos)
 
+	# Check structure raycast first to detect roof hits (roof-click-select).
+	var struct_hit := _bridge.raycast_structure_detailed(ray_origin, ray_dir)
+	var hit_sid: int = struct_hit.get("sid", -1)
+	var hit_is_roof: bool = struct_hit.get("is_roof", false)
+	var roof_y: int = struct_hit.get("roof_y", -1)
+
 	# 1. Creatures (closest sprite within snap threshold).
+	# When a roof is hit, skip creatures below the roof (inside the building).
 	var best_dist_sq := SNAP_THRESHOLD_SQ
 	var best_creature_id := ""
 
@@ -163,6 +170,8 @@ func _find_hover_target() -> Dictionary:
 		var y_off: float = SPECIES_Y_OFFSETS[species_name]
 		for i in positions.size():
 			var pos := positions[i]
+			if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
+				continue
 			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
 			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
 			if dist_sq < best_dist_sq:
@@ -172,10 +181,9 @@ func _find_hover_target() -> Dictionary:
 	if best_creature_id != "":
 		return {"type": "creature", "creature_id": best_creature_id}
 
-	# 2. Structures (voxel raycast via bridge).
-	var sid := _bridge.raycast_structure(ray_origin, ray_dir)
-	if sid >= 0:
-		return {"type": "structure", "id": sid}
+	# 2. Structures — use the result from the detailed raycast above.
+	if hit_sid >= 0:
+		return {"type": "structure", "id": hit_sid}
 
 	# 3. Ground piles (point-to-ray distance check).
 	var piles := _bridge.get_ground_piles()

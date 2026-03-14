@@ -1429,6 +1429,43 @@ impl SimBridge {
         }
     }
 
+    /// Cast a ray and return detailed structure hit info for roof-click-select.
+    ///
+    /// Returns `{sid: int, is_roof: bool, roof_y: int}` if a structure voxel
+    /// was hit, or `{sid: -1}` if nothing was hit. `is_roof` is true when the
+    /// hit voxel is on the topmost Y layer of a Building or Enclosure.
+    /// `roof_y` is the Y coordinate of that layer (only meaningful when
+    /// `is_roof` is true).
+    ///
+    /// Used by `selection_controller.gd` to decide whether a click on a
+    /// building roof should shield creatures inside from selection.
+    #[func]
+    fn raycast_structure_detailed(&self, origin: Vector3, dir: Vector3) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let Some(sim) = &self.session.sim else {
+            dict.set("sid", -1_i64);
+            return dict;
+        };
+        let from = [origin.x, origin.y, origin.z];
+        let d = [dir.x, dir.y, dir.z];
+        match sim.raycast_structure_with_hit(from, d, 500) {
+            Some((sid, coord)) => {
+                dict.set("sid", sid.0 as i64);
+                let structure = sim.db.structures.get(&sid);
+                let is_roof = structure.is_some_and(|s| s.is_roof_voxel(coord));
+                dict.set("is_roof", is_roof);
+                if is_roof {
+                    dict.set("roof_y", coord.y as i64);
+                }
+                dict
+            }
+            None => {
+                dict.set("sid", -1_i64);
+                dict
+            }
+        }
+    }
+
     /// Cast a ray and return the first solid voxel hit and entry face.
     /// Returns `{hit: true, voxel: Vector3i, face: int}` or `{hit: false}`.
     /// Raycasts against the **actual world only** — designated blueprints are

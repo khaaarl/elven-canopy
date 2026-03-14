@@ -206,6 +206,7 @@ case "$MODE" in
         echo "Building elven_canopy_gdext (debug)..."
         cargo build -p elven_canopy_gdext
         ensure_godot_imported
+        rm -f "$REPO_ROOT/godot/.godot/global_script_class_cache.cfg"
         echo "Launching Elven Canopy..."
         RUST_BACKTRACE=1 "$GODOT" --path "$REPO_ROOT/godot"
         ;;
@@ -274,6 +275,7 @@ case "$MODE" in
         echo "Building elven_canopy_gdext (debug)..."
         cargo build -p elven_canopy_gdext
         ensure_godot_imported
+        rm -f "$REPO_ROOT/godot/.godot/global_script_class_cache.cfg"
         echo "Launching Elven Canopy..."
         RUST_BACKTRACE=1 "$GODOT" --path "$REPO_ROOT/godot"
         ;;

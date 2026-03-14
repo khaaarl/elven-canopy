@@ -7,6 +7,13 @@
 ## selection. Creatures are identified by stable CreatureId strings (UUID),
 ## not ephemeral per-species indices.
 ##
+## Roof click-shield: when the ray hits a building/enclosure roof voxel,
+## creatures inside the building (below the roof Y level) are excluded from
+## selection. Creatures standing on top of the roof remain selectable. If no
+## creature above the roof is near the click, the building itself is selected.
+## Pairs with F-bldg-transparency which lets the player hide roofs to reach
+## the creatures inside.
+##
 ## On right-click (when a creature is selected), issues context-sensitive
 ## commands: attack if the target is hostile, move-to if it's a friendly
 ## creature or ground location. Uses bridge.is_hostile_by_id(),
@@ -262,7 +269,17 @@ func _try_select(mouse_pos: Vector2, shift: bool) -> void:
 	var ray_origin := _camera.project_ray_origin(mouse_pos)
 	var ray_dir := _camera.project_ray_normal(mouse_pos)
 
-	# First, try to select a creature (closest sprite within snap threshold).
+	# Check structure raycast first to detect roof hits. A building roof
+	# acts as a click shield: creatures inside the building (below the roof)
+	# are not selectable, but creatures on top of the roof still are.
+	var struct_hit := _bridge.raycast_structure_detailed(ray_origin, ray_dir)
+	var hit_sid: int = struct_hit.get("sid", -1)
+	var hit_is_roof: bool = struct_hit.get("is_roof", false)
+	var roof_y: int = struct_hit.get("roof_y", -1)
+
+	# Try to select a creature. When a roof was hit, only consider creatures
+	# whose voxel Y position is at or above the roof — they're standing on
+	# top of the building, not inside it.
 	var best_dist_sq := SNAP_THRESHOLD * SNAP_THRESHOLD
 	var best_id := ""
 
@@ -273,6 +290,9 @@ func _try_select(mouse_pos: Vector2, shift: bool) -> void:
 		var y_off: float = SPECIES_Y_OFFSETS[species_name]
 		for i in positions.size():
 			var pos := positions[i]
+			# Roof shield: skip creatures inside the building (below roof).
+			if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
+				continue
 			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
 			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
 			if dist_sq < best_dist_sq:
@@ -300,13 +320,13 @@ func _try_select(mouse_pos: Vector2, shift: bool) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
-	# No creature hit — try structure raycast.
-	var sid := _bridge.raycast_structure(ray_origin, ray_dir)
-	if sid >= 0:
+	# No creature hit — select the structure if the raycast found one
+	# (whether it was a roof hit or any other structure voxel).
+	if hit_sid >= 0:
 		_deselect_creature_only()
 		_deselect_pile_only()
-		_selected_structure_id = sid
-		structure_selected.emit(sid)
+		_selected_structure_id = hit_sid
+		structure_selected.emit(hit_sid)
 		get_viewport().set_input_as_handled()
 		return
 

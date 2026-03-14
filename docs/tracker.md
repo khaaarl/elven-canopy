@@ -152,7 +152,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-relay-multi-game     Relay server supports multiple simultaneous games
 [ ] F-relay-release        Standalone relay server release build
-[ ] F-roof-click-select    Roof click selects building, not elf underneath
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
@@ -280,6 +279,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-recipe-hierarchy     Recipe catalog UI hierarchy and organization
 [x] F-recipe-search        Recipe catalog search/filter
 [x] F-recipes              Recipe system for crafting/cooking
+[x] F-roof-click-select    Roof click selects building, not elf underneath
 [x] F-rts-selection        RTS box selection and multi-creature commands
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
 [x] F-save-load            Save/load to JSON with versioning
@@ -2857,7 +2857,7 @@ Split out from F-recipe-hierarchy which handles the tree/hierarchy UI.
 **Related:** F-recipe-hierarchy
 
 #### F-roof-click-select — Roof click selects building, not elf underneath
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 When the player clicks on a roof voxel of a building, select the building
 (opening the structure panel) rather than selecting an elf who is inside
