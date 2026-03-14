@@ -109,6 +109,7 @@ name = "elven_canopy_relay"
 version = "0.1.0"
 dependencies = [
  "elven_canopy_protocol",
+ "libc",
  "serde",
  "serde_json",
 ]
