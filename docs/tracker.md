@@ -51,7 +51,6 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
-[~] F-projectiles          Projectile physics system (arrows)
 ```
 
 ### Todo
@@ -75,7 +74,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-dining          Dining hall
 [ ] F-bldg-storehouse      Storehouse (item storage)
 [ ] F-bldg-transparency    Toggle building roof/wall transparency to see inside
-[ ] F-bldg-workshop        Craftself's workshop
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridge-integ-tests   Integration tests for gdext bridge functions
@@ -105,7 +103,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
-[ ] F-elfcyclopedia-srv    Embedded localhost HTTP elfcyclopedia server
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-engagement-style     Unified engagement style (species + military group combat tactics)
 [ ] F-equipment-sprites    Dynamic sprite customization for equipment
@@ -187,7 +184,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
-[ ] F-worldgen-framework   Worldgen generator framework
 [ ] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 ```
 
