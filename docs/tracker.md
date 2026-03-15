@@ -63,7 +63,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-alt-deselect         Alt+click to remove from selection
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-armor                Wearable armor system
-[ ] F-arrow-durability     Arrow durability and recovery
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
@@ -122,7 +121,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
-[ ] F-item-durability      Item durability system (current/max HP on items)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
@@ -193,6 +191,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
+[x] F-arrow-durability     Arrow durability and recovery
 [x] F-attack-move          Attack-move task (walk + fight en route)
 [x] F-attack-task          AttackCreature task (player-directed target pursuit)
 [x] F-audio-synth          Waveform synthesis for audio rendering
@@ -243,6 +242,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-hp-death             HP, VitalStatus, and creature death handling
 [x] F-hp-ui                HP bars in creature UI
 [x] F-immediate-commands   Immediate command application (zero-tick updates)
+[x] F-item-durability      Item durability system (current/max HP on items)
 [x] F-items                Items and inventory system
 [x] F-keybind-help         Keyboard shortcuts help overlay
 [x] F-ladders              Rope/wood ladders as cheap connectors
@@ -1457,29 +1457,23 @@ task abandonment (clear reservations or drop carried items as ground pile).
 **Related:** F-elf-acquire, F-food-chain, F-logistics
 
 #### F-item-durability — Item durability system (current/max HP on items)
-**Status:** Todo
+**Status:** Done
 
-General item durability system: items have a current HP and max HP pair
-(not just a single counter). When something damages an item (arrow
-impact, armor absorbing a hit, tool use, clothing wear over time), its
-current HP decreases. At 0 the item breaks and is removed. Max HP is
-set at creation time based on config/recipe and represents the item's
-baseline sturdiness. Current HP can potentially be restored via repair.
+General item durability system: items have current_hp and max_hp fields
+on ItemStack. Max HP is set from config at creation time; items not in
+the durability config map are indestructible (0/0). When damaged via
+inv_damage_item(), current_hp decreases; at 0 the item breaks (removed
+from inventory, ItemBroken event emitted). For multi-item stacks, one
+item is split off before damage so the rest keep full HP.
 
-Needs: new fields on ItemStack (or a companion table) for current_hp
-and max_hp, config for per-ItemKind base max HP, degradation hooks at
-each use site (combat impact, tool use, wear-over-time heartbeat),
-item breakage removal + event, and display of item condition in UI.
+Display names show condition labels: "(worn)" when HP% <= worn threshold
+(default 70%), "(damaged)" when HP% <= damaged threshold (default 40%).
+Both thresholds are configurable in GameConfig. A GDScript mirror
+(ItemUtils.condition_label) is available for UI-side use.
 
-This is the foundational system that arrow durability, armor wear,
-clothing wear, and weapon degradation all build on.
+**Branch:** `feature/F-item-durability-display`
 
-**Branch:** `feature/F-arrow-durability` has a partial implementation
-using the `quality` field as a single durability counter. The test
-scenarios cover the right impact paths but will need updating to check
-current_hp/max_hp fields instead.
-
-**Blocks:** F-armor, F-arrow-durability
+**Unblocked:** F-armor, F-arrow-durability
 **Related:** F-clothing
 
 #### F-items — Items and inventory system
@@ -1922,28 +1916,23 @@ infrastructure.
 
 Armor items that can be worn in clothing slots, providing damage reduction in combat. Builds on the clothing/wearable system (F-clothing) for slot mechanics and equip/unequip flow. Many details TBD: armor types and their stats (leather, chain, plate?), how damage reduction is calculated (flat reduction? percentage? per-damage-type?), armor durability and repair, crafting recipes and material requirements, how armor interacts with movement speed or other stats, visual representation, whether armor and clothing can be worn simultaneously (layering), and species-specific armor availability.
 
-**Blocked by:** F-item-durability
 **Blocks:** F-military-armor
-**Unblocked by:** F-clothing
+**Unblocked by:** F-clothing, F-item-durability
 
 #### F-arrow-durability — Arrow durability and recovery
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
-Arrow durability system: arrows lose durability on impact and may break.
-Recoverable arrows that survive impact are placed on the ground for
-pickup. Extracted from F-projectiles as a separate concern — not needed
-for the first pass at combat.
+Arrows take random durability damage on impact (creature or surface).
+Damage is uniform random in [arrow_impact_damage_min, arrow_impact_damage_max]
+(defaults 0–3). With 3 max HP, this gives roughly equal chances of:
+undamaged, worn (2/3 HP), damaged (1/3 HP), or destroyed. Destroyed
+arrows emit ItemBroken and are not placed in ground piles. Surviving
+arrows land in ground piles with their reduced HP preserved, and arrows
+at different HP levels remain as separate stacks.
 
-Depends on F-item-durability for the general current/max HP item health
-system. Arrow impacts are one of the degradation hooks.
+**Branch:** `feature/F-item-durability-display`
 
-**Branch:** `feature/F-arrow-durability` has a partial implementation
-using the `quality` field as a single durability counter. Many of its
-test scenarios (surface hit, creature hit, breakage, serde roundtrip,
-durability carry-through on shoot) can be reused but will need updating
-to check the general item HP fields instead.
-
-**Blocked by:** F-item-durability
+**Unblocked by:** F-item-durability
 
 #### F-attack-move — Attack-move task (walk + fight en route)
 **Status:** Done

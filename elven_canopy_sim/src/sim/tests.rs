@@ -30427,3 +30427,646 @@ fn military_group_equipment_wants_serde_backward_compat() {
         "Missing equipment_wants field should default to empty vec"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Condition label / display name with durability
+// ---------------------------------------------------------------------------
+
+#[test]
+fn condition_label_full_hp_returns_none() {
+    assert!(SimState::condition_label(3, 3, 70, 40).is_none());
+}
+
+#[test]
+fn condition_label_indestructible_returns_none() {
+    assert!(SimState::condition_label(0, 0, 70, 40).is_none());
+}
+
+#[test]
+fn condition_label_worn_threshold() {
+    // 70% exactly → worn
+    assert_eq!(SimState::condition_label(70, 100, 70, 40), Some("(worn)"));
+    // 71% → no label
+    assert!(SimState::condition_label(71, 100, 70, 40).is_none());
+}
+
+#[test]
+fn condition_label_damaged_threshold() {
+    // 40% exactly → damaged
+    assert_eq!(
+        SimState::condition_label(40, 100, 70, 40),
+        Some("(damaged)")
+    );
+    // 41% → worn (not damaged)
+    assert_eq!(SimState::condition_label(41, 100, 70, 40), Some("(worn)"));
+}
+
+#[test]
+fn condition_label_arrow_hp_values() {
+    // Arrow: 3/3 → no label
+    assert!(SimState::condition_label(3, 3, 70, 40).is_none());
+    // Arrow: 2/3 = 66% → worn (66 <= 70)
+    assert_eq!(SimState::condition_label(2, 3, 70, 40), Some("(worn)"));
+    // Arrow: 1/3 = 33% → damaged (33 <= 40)
+    assert_eq!(SimState::condition_label(1, 3, 70, 40), Some("(damaged)"));
+}
+
+#[test]
+fn condition_label_custom_thresholds() {
+    // With worn=50, damaged=20: 60% is fine, 50% is worn, 20% is damaged
+    assert!(SimState::condition_label(60, 100, 50, 20).is_none());
+    assert_eq!(SimState::condition_label(50, 100, 50, 20), Some("(worn)"));
+    assert_eq!(
+        SimState::condition_label(20, 100, 50, 20),
+        Some("(damaged)")
+    );
+}
+
+#[test]
+fn item_display_name_shows_condition_worn() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        1,
+        None,
+        None,
+        None,
+        0,
+        2, // current_hp
+        3, // max_hp — 66% → worn
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(sim.item_display_name(&stacks[0]), "Arrow (worn)");
+}
+
+#[test]
+fn item_display_name_shows_condition_damaged() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        1,
+        None,
+        None,
+        None,
+        0,
+        1, // current_hp
+        3, // max_hp — 33% → damaged
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(sim.item_display_name(&stacks[0]), "Arrow (damaged)");
+}
+
+#[test]
+fn item_display_name_no_condition_at_full_hp() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(sim.item_display_name(&stacks[0]), "Arrow");
+}
+
+#[test]
+fn item_display_name_equipped_and_damaged() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Hat,
+        1,
+        None,
+        None,
+        None,
+        0,
+        5,  // current_hp
+        20, // max_hp — 25% → damaged
+        None,
+        Some(inventory::EquipSlot::Head),
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(
+        sim.item_display_name(&stacks[0]),
+        "Hat (equipped) (damaged)"
+    );
+}
+
+#[test]
+fn item_display_name_indestructible_no_condition() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    // Bread has no durability (max_hp=0).
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 1, None, None);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(sim.item_display_name(&stacks[0]), "Bread");
+}
+
+// ---------------------------------------------------------------------------
+// Arrow durability on impact
+// ---------------------------------------------------------------------------
+
+#[test]
+fn arrow_surface_hit_always_destroyed_when_min_equals_max_hp() {
+    let mut sim = test_sim(42);
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.config.arrow_impact_damage_min = 3;
+    sim.config.arrow_impact_damage_max = 3;
+
+    // Place a solid wall.
+    for y in 1..=5 {
+        sim.world
+            .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+    }
+
+    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+
+    let mut all_events = Vec::new();
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        all_events.extend(events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert!(sim.db.projectiles.is_empty(), "Projectile should resolve");
+    // Arrow should have been destroyed — no arrows in any ground pile.
+    let arrow_count: u32 = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .flat_map(|p| {
+            sim.db
+                .item_stacks
+                .by_inventory_id(&p.inventory_id, tabulosity::QueryOpts::ASC)
+        })
+        .filter(|s| s.kind == inventory::ItemKind::Arrow)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(arrow_count, 0, "Arrow should be destroyed on impact");
+
+    // Should have an ItemBroken event.
+    assert!(
+        all_events.iter().any(
+            |e| matches!(&e.kind, SimEventKind::ItemBroken { item_kind, .. }
+                if *item_kind == inventory::ItemKind::Arrow)
+        ),
+        "Should emit ItemBroken event"
+    );
+}
+
+#[test]
+fn arrow_surface_hit_survives_when_no_damage() {
+    let mut sim = test_sim(42);
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.config.arrow_impact_damage_min = 0;
+    sim.config.arrow_impact_damage_max = 0;
+
+    for y in 1..=5 {
+        sim.world
+            .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+    }
+
+    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    // Arrow should survive at full HP in a ground pile.
+    let arrows: Vec<_> = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .flat_map(|p| {
+            sim.db
+                .item_stacks
+                .by_inventory_id(&p.inventory_id, tabulosity::QueryOpts::ASC)
+        })
+        .filter(|s| s.kind == inventory::ItemKind::Arrow)
+        .collect();
+    assert_eq!(arrows.len(), 1, "Arrow should be in a ground pile");
+    assert_eq!(arrows[0].current_hp, 3, "Arrow should be at full HP");
+}
+
+#[test]
+fn arrow_creature_hit_always_destroyed_when_min_equals_max_hp() {
+    let mut sim = test_sim(42);
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.config.arrow_impact_damage_min = 3;
+    sim.config.arrow_impact_damage_max = 3;
+
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
+    sim.spawn_projectile(origin, goblin_pos, None);
+
+    let mut all_events = Vec::new();
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        all_events.extend(events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert!(sim.db.projectiles.is_empty());
+
+    // Arrow should be destroyed.
+    let arrow_count: u32 = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .flat_map(|p| {
+            sim.db
+                .item_stacks
+                .by_inventory_id(&p.inventory_id, tabulosity::QueryOpts::ASC)
+        })
+        .filter(|s| s.kind == inventory::ItemKind::Arrow)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(arrow_count, 0, "Arrow should be destroyed");
+
+    // Should have ItemBroken event.
+    assert!(all_events.iter().any(
+        |e| matches!(&e.kind, SimEventKind::ItemBroken { item_kind, .. }
+            if *item_kind == inventory::ItemKind::Arrow)
+    ));
+}
+
+#[test]
+fn arrow_creature_hit_survives_when_no_damage() {
+    let mut sim = test_sim(42);
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.config.arrow_impact_damage_min = 0;
+    sim.config.arrow_impact_damage_max = 0;
+
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
+    sim.spawn_projectile(origin, goblin_pos, None);
+
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    // Arrow should survive at full HP.
+    let arrows: Vec<_> = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .flat_map(|p| {
+            sim.db
+                .item_stacks
+                .by_inventory_id(&p.inventory_id, tabulosity::QueryOpts::ASC)
+        })
+        .filter(|s| s.kind == inventory::ItemKind::Arrow)
+        .collect();
+    assert_eq!(arrows.len(), 1, "Arrow should be in a ground pile");
+    assert_eq!(arrows[0].current_hp, 3);
+}
+
+#[test]
+fn arrow_impact_damage_is_deterministic() {
+    // Same seed should produce identical results.
+    let run = |seed: u64| -> (u32, i32) {
+        let mut sim = test_sim(seed);
+        sim.config.arrow_gravity = 0;
+        sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+        sim.config.arrow_impact_damage_min = 0;
+        sim.config.arrow_impact_damage_max = 3;
+
+        for y in 1..=5 {
+            sim.world
+                .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+        }
+
+        sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+
+        for _ in 0..500 {
+            if sim.db.projectiles.is_empty() {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+            if !sim.db.projectiles.is_empty() {
+                sim.event_queue
+                    .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+            }
+        }
+
+        let arrows: Vec<_> = sim
+            .db
+            .ground_piles
+            .iter_all()
+            .flat_map(|p| {
+                sim.db
+                    .item_stacks
+                    .by_inventory_id(&p.inventory_id, tabulosity::QueryOpts::ASC)
+            })
+            .filter(|s| s.kind == inventory::ItemKind::Arrow)
+            .collect();
+        if arrows.is_empty() {
+            (0, 0) // arrow destroyed
+        } else {
+            (arrows[0].quantity, arrows[0].current_hp)
+        }
+    };
+
+    let r1 = run(99);
+    let r2 = run(99);
+    assert_eq!(r1, r2, "Same seed must produce identical results");
+}
+
+#[test]
+fn arrow_impact_partial_damage_reduces_hp() {
+    let mut sim = test_sim(42);
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    // Force exactly 1 damage.
+    sim.config.arrow_impact_damage_min = 1;
+    sim.config.arrow_impact_damage_max = 1;
+
+    for y in 1..=5 {
+        sim.world
+            .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+    }
+
+    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    let arrows: Vec<_> = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .flat_map(|p| {
+            sim.db
+                .item_stacks
+                .by_inventory_id(&p.inventory_id, tabulosity::QueryOpts::ASC)
+        })
+        .filter(|s| s.kind == inventory::ItemKind::Arrow)
+        .collect();
+    assert_eq!(arrows.len(), 1, "Arrow should survive with 1 damage");
+    assert_eq!(arrows[0].current_hp, 2, "Arrow should have 2/3 HP");
+}
+
+#[test]
+fn arrow_impact_config_defaults_serde_roundtrip() {
+    let config = GameConfig::default();
+    let json = serde_json::to_string(&config).unwrap();
+    let restored: GameConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.arrow_impact_damage_min, 0);
+    assert_eq!(restored.arrow_impact_damage_max, 3);
+    assert_eq!(restored.durability_worn_pct, 70);
+    assert_eq!(restored.durability_damaged_pct, 40);
+}
+
+#[test]
+fn arrow_impact_config_missing_fields_use_defaults() {
+    // Simulate loading a save from before these config fields existed:
+    // serialize defaults, strip the new fields, and re-deserialize.
+    let config = GameConfig::default();
+    let mut val: serde_json::Value = serde_json::to_value(&config).unwrap();
+    let obj = val.as_object_mut().unwrap();
+    obj.remove("arrow_impact_damage_min");
+    obj.remove("arrow_impact_damage_max");
+    obj.remove("durability_worn_pct");
+    obj.remove("durability_damaged_pct");
+    let config: GameConfig = serde_json::from_value(val).unwrap();
+    assert_eq!(config.arrow_impact_damage_min, 0);
+    assert_eq!(config.arrow_impact_damage_max, 3);
+    assert_eq!(config.durability_worn_pct, 70);
+    assert_eq!(config.durability_damaged_pct, 40);
+}
+
+#[test]
+fn arrow_cumulative_damage_across_impacts() {
+    // An arrow that took 1 damage (2/3 HP) should break when it takes 2 more.
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        1,
+        None,
+        None,
+        None,
+        0,
+        2, // current_hp (already damaged once)
+        3, // max_hp
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let stack_id = stacks[0].id;
+
+    let mut events = Vec::new();
+    // Apply 2 more damage — should break.
+    let broke = sim.inv_damage_item(stack_id, 2, &mut events);
+    assert!(broke, "Arrow at 2/3 HP should break from 2 damage");
+    assert!(sim.db.item_stacks.get(&stack_id).is_none());
+    assert!(events.iter().any(
+        |e| matches!(&e.kind, SimEventKind::ItemBroken { item_kind, .. }
+            if *item_kind == inventory::ItemKind::Arrow)
+    ));
+}
+
+#[test]
+fn damaged_and_full_hp_arrows_stay_separate_in_ground_pile() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
+    // Add full-HP arrows.
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
+    // Add damaged arrows (2/3 HP).
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        3,
+        None,
+        None,
+        None,
+        0,
+        2, // current_hp
+        3, // max_hp
+        None,
+        None,
+    );
+    sim.inv_normalize(inv_id);
+
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    // Should be 2 separate stacks: one at 3/3 HP, one at 2/3 HP.
+    assert_eq!(stacks.len(), 2, "Different HP levels must stay separate");
+    let full_hp: u32 = stacks
+        .iter()
+        .filter(|s| s.current_hp == 3)
+        .map(|s| s.quantity)
+        .sum();
+    let damaged: u32 = stacks
+        .iter()
+        .filter(|s| s.current_hp == 2)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(full_hp, 5);
+    assert_eq!(damaged, 3);
+}
+
+#[test]
+fn damaged_arrow_survives_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    // Place a damaged arrow in a ground pile.
+    let pos = VoxelCoord::new(128, 1, 128);
+    let pile_id = sim.ensure_ground_pile(pos);
+    let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+    sim.inv_add_item_with_durability(
+        pile_inv,
+        inventory::ItemKind::Arrow,
+        1,
+        None,
+        None,
+        None,
+        0,
+        1, // current_hp — damaged
+        3, // max_hp
+        None,
+        None,
+    );
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    let restored_pile = restored.db.ground_piles.get(&pile_id).unwrap();
+    let stacks = restored
+        .db
+        .item_stacks
+        .by_inventory_id(&restored_pile.inventory_id, tabulosity::QueryOpts::ASC);
+    let arrow = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Arrow)
+        .expect("Arrow should survive roundtrip");
+    assert_eq!(arrow.current_hp, 1, "current_hp should be preserved");
+    assert_eq!(arrow.max_hp, 3, "max_hp should be preserved");
+}
+
+#[test]
+fn condition_label_current_hp_exceeds_max_hp() {
+    // Shouldn't happen, but verify it reports as full health.
+    assert!(SimState::condition_label(5, 3, 70, 40).is_none());
+}
+
+#[test]
+fn arrow_impact_no_damage_when_min_exceeds_max() {
+    let mut sim = test_sim(42);
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.config.arrow_impact_damage_min = 5;
+    sim.config.arrow_impact_damage_max = 2; // min > max → no damage
+
+    for y in 1..=5 {
+        sim.world
+            .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+    }
+
+    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    // Arrow should survive at full HP.
+    let arrows: Vec<_> = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .flat_map(|p| {
+            sim.db
+                .item_stacks
+                .by_inventory_id(&p.inventory_id, tabulosity::QueryOpts::ASC)
+        })
+        .filter(|s| s.kind == inventory::ItemKind::Arrow)
+        .collect();
+    assert_eq!(arrows.len(), 1, "Arrow should survive");
+    assert_eq!(arrows[0].current_hp, 3, "Arrow should be at full HP");
+}

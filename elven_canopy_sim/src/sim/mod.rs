@@ -1328,9 +1328,11 @@ impl SimState {
     /// For any other item with a fruit species material (extracted components,
     /// processed components, species-specific bread/bowstrings), returns
     /// "SpeciesName ItemType". For all other items, returns the basic
-    /// `ItemKind::display_name()`.
+    /// `ItemKind::display_name()`. Appends "(equipped)" if the item is in an
+    /// equip slot, and a condition label ("(worn)" or "(damaged)") if the
+    /// item's HP is below the configured thresholds.
     pub fn item_display_name(&self, stack: &crate::db::ItemStack) -> String {
-        let base = if let Some(inventory::Material::FruitSpecies(id)) = stack.material
+        let mut name = if let Some(inventory::Material::FruitSpecies(id)) = stack.material
             && let Some(species) = self.db.fruit_species.get(&id)
         {
             if stack.kind == inventory::ItemKind::Fruit {
@@ -1344,9 +1346,38 @@ impl SimState {
             stack.kind.display_name().to_owned()
         };
         if stack.equipped_slot.is_some() {
-            format!("{base} (equipped)")
+            name.push_str(" (equipped)");
+        }
+        if let Some(label) = Self::condition_label(
+            stack.current_hp,
+            stack.max_hp,
+            self.config.durability_worn_pct,
+            self.config.durability_damaged_pct,
+        ) {
+            name.push(' ');
+            name.push_str(label);
+        }
+        name
+    }
+
+    /// Return the condition label for an item based on its HP ratio, or `None`
+    /// if the item is at full health or indestructible.
+    pub fn condition_label(
+        current_hp: i32,
+        max_hp: i32,
+        worn_pct: i32,
+        damaged_pct: i32,
+    ) -> Option<&'static str> {
+        if max_hp <= 0 || current_hp >= max_hp {
+            return None;
+        }
+        let ratio = current_hp * 100 / max_hp;
+        if ratio <= damaged_pct {
+            Some("(damaged)")
+        } else if ratio <= worn_pct {
+            Some("(worn)")
         } else {
-            base
+            None
         }
     }
 

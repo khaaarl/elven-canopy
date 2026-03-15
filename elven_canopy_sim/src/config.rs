@@ -1300,6 +1300,22 @@ fn default_voxel_exclusion_retry_ticks() -> u64 {
     50
 }
 
+fn default_durability_worn_pct() -> i32 {
+    70
+}
+
+fn default_durability_damaged_pct() -> i32 {
+    40
+}
+
+fn default_arrow_impact_damage_min() -> i32 {
+    0
+}
+
+fn default_arrow_impact_damage_max() -> i32 {
+    3
+}
+
 fn default_item_durability() -> BTreeMap<ItemKind, i32> {
     BTreeMap::from([
         // Stackable projectiles — small range to keep stacking viable.
@@ -1760,6 +1776,28 @@ pub struct GameConfig {
     /// equipment like armor and weapons can use larger values.
     #[serde(default = "default_item_durability")]
     pub item_durability: BTreeMap<ItemKind, i32>,
+
+    /// HP percentage at or below which an item is labelled "(worn)" in its
+    /// display name. Should be > `durability_damaged_pct`; if not, the worn
+    /// range becomes empty and items jump straight from healthy to damaged.
+    /// Default 70.
+    #[serde(default = "default_durability_worn_pct")]
+    pub durability_worn_pct: i32,
+
+    /// HP percentage at or below which an item is labelled "(damaged)" instead
+    /// of "(worn)". Default 40.
+    #[serde(default = "default_durability_damaged_pct")]
+    pub durability_damaged_pct: i32,
+
+    /// Minimum durability damage an arrow takes on impact (creature or
+    /// surface). Actual damage is uniform random in
+    /// `[arrow_impact_damage_min, arrow_impact_damage_max]`. Default 0.
+    #[serde(default = "default_arrow_impact_damage_min")]
+    pub arrow_impact_damage_min: i32,
+
+    /// Maximum durability damage an arrow takes on impact. Default 3.
+    #[serde(default = "default_arrow_impact_damage_max")]
+    pub arrow_impact_damage_max: i32,
 }
 
 fn default_carve_ticks() -> u64 {
@@ -2398,6 +2436,10 @@ impl Default for GameConfig {
             defensive_pursuit_range_sq: default_defensive_pursuit_range_sq(),
             voxel_exclusion_retry_ticks: default_voxel_exclusion_retry_ticks(),
             item_durability: default_item_durability(),
+            durability_worn_pct: default_durability_worn_pct(),
+            durability_damaged_pct: default_durability_damaged_pct(),
+            arrow_impact_damage_min: default_arrow_impact_damage_min(),
+            arrow_impact_damage_max: default_arrow_impact_damage_max(),
         }
     }
 }

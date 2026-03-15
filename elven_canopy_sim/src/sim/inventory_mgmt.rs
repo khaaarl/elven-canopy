@@ -779,7 +779,6 @@ impl SimState {
     ///
     /// For stacks with quantity > 1, one item is split off before applying
     /// damage so that the rest of the stack retains its original HP.
-    #[allow(dead_code)] // Used by tests; future production use by combat/wear degradation hooks
     pub(crate) fn inv_damage_item(
         &mut self,
         stack_id: ItemStackId,

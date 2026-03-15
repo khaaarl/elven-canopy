@@ -4,7 +4,8 @@
 // melee strikes, ranged shooting (bow + arrow with ballistic trajectories),
 // projectile simulation, damage application, creature death, flee behavior,
 // hostile pursuit, friendly-fire avoidance, and voxel exclusion enforcement.
-// Also includes civilization diplomacy and military group management.
+// Also includes civilization diplomacy, military group management, and arrow
+// durability degradation on impact (apply_arrow_impact_damage).
 //
 // See also: `projectile.rs` (sub-voxel trajectory math), `preemption.rs`
 // (task priority for combat interruption), `movement.rs` (tactical repositioning).
@@ -1501,8 +1502,9 @@ impl SimState {
         }
     }
 
-    /// Resolve a projectile hitting a solid surface. Transfers the arrow from
-    /// the projectile inventory to a ground pile at `prev_voxel`.
+    /// Resolve a projectile hitting a solid surface. Applies random durability
+    /// damage to the arrow; if it survives, transfers it to a ground pile at
+    /// `prev_voxel`.
     pub(crate) fn resolve_projectile_surface_hit(
         &mut self,
         proj_id: ProjectileId,
@@ -1515,10 +1517,15 @@ impl SimState {
         };
         let proj_inv = proj.inventory_id;
 
-        // Create/join ground pile at prev_voxel and merge items.
-        let pile_id = self.ensure_ground_pile(prev_voxel);
-        let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
-        self.inv_merge(proj_inv, pile_inv);
+        // Apply random durability damage to the arrow.
+        let arrow_broke = self.apply_arrow_impact_damage(proj_inv, events);
+
+        if !arrow_broke {
+            // Arrow survived — transfer to ground pile.
+            let pile_id = self.ensure_ground_pile(prev_voxel);
+            let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+            self.inv_merge(proj_inv, pile_inv);
+        }
 
         events.push(SimEvent {
             tick: self.tick,
@@ -1531,7 +1538,8 @@ impl SimState {
     }
 
     /// Resolve a projectile hitting a creature. Computes damage from impact
-    /// velocity, applies it, and transfers the arrow to a ground pile.
+    /// velocity, applies it, then rolls random durability damage on the arrow.
+    /// If the arrow survives, transfers it to a ground pile.
     pub(crate) fn resolve_projectile_creature_hit(
         &mut self,
         proj_id: ProjectileId,
@@ -1574,10 +1582,15 @@ impl SimState {
             },
         });
 
-        // Transfer arrow to ground pile at the creature's position.
-        let pile_id = self.ensure_ground_pile(hit_voxel);
-        let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
-        self.inv_merge(proj_inv, pile_inv);
+        // Apply random durability damage to the arrow.
+        let arrow_broke = self.apply_arrow_impact_damage(proj_inv, events);
+
+        if !arrow_broke {
+            // Arrow survived — transfer to ground pile.
+            let pile_id = self.ensure_ground_pile(hit_voxel);
+            let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+            self.inv_merge(proj_inv, pile_inv);
+        }
 
         self.remove_projectile(proj_id);
     }
@@ -1605,6 +1618,39 @@ impl SimState {
             // Remove the inventory row itself.
             let _ = self.db.inventories.remove_no_fk(&inv_id);
         }
+    }
+
+    /// Roll random durability damage for an arrow on impact and apply it.
+    /// Returns `true` if the arrow broke, `false` if it survived (or there
+    /// was no arrow in the inventory).
+    fn apply_arrow_impact_damage(
+        &mut self,
+        proj_inv: InventoryId,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        let min = self.config.arrow_impact_damage_min.max(0);
+        let max = self.config.arrow_impact_damage_max;
+        if min > max || max <= 0 {
+            return false;
+        }
+        let range = (max - min + 1) as u64;
+        // Always consume the PRNG even when the rolled damage is 0 — this
+        // keeps the PRNG sequence stable regardless of config, which is
+        // important for deterministic replay.
+        let damage = min + (self.rng.next_u64() % range) as i32;
+        if damage <= 0 {
+            return false;
+        }
+        // Find the arrow stack in the projectile inventory.
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&proj_inv, tabulosity::QueryOpts::ASC);
+        let arrow_stack_id = match stacks.iter().find(|s| s.kind == inventory::ItemKind::Arrow) {
+            Some(s) => s.id,
+            None => return false,
+        };
+        self.inv_damage_item(arrow_stack_id, damage, events)
     }
 
     /// A civ becomes aware of another civ. Creates a CivRelationship row.
