@@ -6,6 +6,12 @@
 // activation. `process_creature_activation` is the main entry point,
 // implementing the flee → task → wander decision cascade.
 //
+// Also contains heartbeat-driven military equipment logic:
+// - `military_equipment_drop`: drops unowned items that don't satisfy the
+//   creature's military group equipment wants (Phase 2b¾a).
+// - `check_military_equipment_wants`: creates `AcquireMilitaryEquipment`
+//   tasks for unsatisfied group equipment wants (Phase 2b¾b).
+//
 // See also: `movement.rs` (walking helpers), `needs.rs` (want-driven tasks),
 // `combat.rs` (flee behavior).
 use super::*;
@@ -222,6 +228,7 @@ impl SimState {
                 | ActionKind::Eat
                 | ActionKind::Harvest
                 | ActionKind::AcquireItem
+                | ActionKind::AcquireMilitaryEquipment
                 | ActionKind::PickUp
                 | ActionKind::DropOff
                 | ActionKind::Mope
@@ -641,6 +648,14 @@ impl SimState {
                 );
                 return;
             }
+            crate::db::TaskKindTag::AcquireMilitaryEquipment => {
+                self.start_simple_action(
+                    creature_id,
+                    ActionKind::AcquireMilitaryEquipment,
+                    self.config.acquire_item_action_ticks,
+                );
+                return;
+            }
             crate::db::TaskKindTag::Mope => {
                 self.start_mope_action(creature_id);
                 return;
@@ -854,6 +869,235 @@ impl SimState {
                 kind: task::TaskKind::AcquireItem {
                     source,
                     item_kind: *item_kind,
+                    quantity,
+                },
+                state: task::TaskState::InProgress,
+                location: nav_node,
+                progress: 0.0,
+                total_cost: 0.0,
+                required_species: None,
+                origin: task::TaskOrigin::Autonomous,
+                target_creature: None,
+            };
+            self.insert_task(new_task);
+            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                creature.current_task = Some(task_id);
+                let _ = self.db.creatures.update_no_fk(creature);
+            }
+            return; // One task per heartbeat.
+        }
+    }
+
+    /// Drop items the creature shouldn't be carrying. An item is dropped if:
+    /// - It's owned by another creature (always drop), OR
+    /// - It's unowned AND doesn't satisfy any of the creature's military
+    ///   equipment wants AND isn't reserved by the creature's current task.
+    ///
+    /// Items owned by the creature itself are never dropped. Dropped items go
+    /// to a ground pile at the creature's current position.
+    pub(crate) fn military_equipment_drop(&mut self, creature_id: CreatureId) {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return,
+        };
+        // Only elves have military groups and equipment management.
+        if creature.species != Species::Elf {
+            return;
+        }
+        let inv_id = creature.inventory_id;
+        let current_task = creature.current_task;
+        let current_node = creature.current_node;
+
+        // Get equipment wants from the creature's military group.
+        let equipment_wants = creature
+            .military_group
+            .and_then(|gid| self.db.military_groups.get(&gid))
+            .map(|g| g.equipment_wants.clone())
+            .unwrap_or_default();
+
+        // Scan inventory for items to drop.
+        let stacks: Vec<crate::db::ItemStack> = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+
+        // Build a map of how many items of each (kind, filter) are wanted vs
+        // held, so we can determine which unowned items exceed the want.
+        // Track remaining want capacity per want entry.
+        let mut want_remaining: Vec<(inventory::ItemKind, inventory::MaterialFilter, u32)> =
+            equipment_wants
+                .iter()
+                .map(|w| (w.item_kind, w.material_filter, w.target_quantity))
+                .collect();
+
+        // First pass: subtract owned-by-self items from want capacity (they
+        // always satisfy wants and are never dropped).
+        for stack in &stacks {
+            if stack.owner != Some(creature_id) {
+                continue;
+            }
+            for (kind, filter, remaining) in &mut want_remaining {
+                if stack.kind == *kind && filter.matches(stack.material) && *remaining > 0 {
+                    let satisfy = stack.quantity.min(*remaining);
+                    *remaining -= satisfy;
+                    break;
+                }
+            }
+        }
+
+        // Second pass: identify unowned items to keep (satisfying remaining wants)
+        // and items to drop.
+        let mut stacks_to_drop: Vec<(ItemStackId, u32)> = Vec::new();
+        for stack in &stacks {
+            // Never drop items owned by self.
+            if stack.owner == Some(creature_id) {
+                continue;
+            }
+            // Always drop items owned by someone else (even if equipped).
+            if stack.owner.is_some() {
+                stacks_to_drop.push((stack.id, stack.quantity));
+                continue;
+            }
+            // Never drop equipped unowned items (e.g. clothing auto-equipped
+            // via personal AcquireItem).
+            if stack.equipped_slot.is_some() {
+                continue;
+            }
+            // Unowned items: check if reserved by current task.
+            if let Some(task_id) = current_task
+                && stack.reserved_by == Some(task_id)
+            {
+                continue;
+            }
+            // Unowned items: check if they satisfy a military want.
+            let mut qty_to_keep = 0u32;
+            for (kind, filter, remaining) in &mut want_remaining {
+                if stack.kind == *kind && filter.matches(stack.material) && *remaining > 0 {
+                    let satisfy = stack.quantity.min(*remaining);
+                    *remaining -= satisfy;
+                    qty_to_keep += satisfy;
+                    break;
+                }
+            }
+            let qty_to_drop = stack.quantity.saturating_sub(qty_to_keep);
+            if qty_to_drop > 0 {
+                stacks_to_drop.push((stack.id, qty_to_drop));
+            }
+        }
+
+        if stacks_to_drop.is_empty() {
+            return;
+        }
+
+        // Find or create a ground pile at the creature's position.
+        let creature_pos = match current_node {
+            Some(node) if self.nav_graph.is_node_alive(node) => self.nav_graph.node(node).position,
+            _ => return,
+        };
+        let pile_id = self.ensure_ground_pile(creature_pos);
+        let pile_inv = match self.db.ground_piles.get(&pile_id) {
+            Some(p) => p.inventory_id,
+            None => return,
+        };
+
+        // Move items to the ground pile.
+        for (stack_id, qty) in stacks_to_drop {
+            if let Some(split_id) = self.inv_split_stack(stack_id, qty)
+                && let Some(mut moved) = self.db.item_stacks.get(&split_id)
+            {
+                moved.inventory_id = pile_inv;
+                moved.owner = None;
+                moved.reserved_by = None;
+                let _ = self.db.item_stacks.update_no_fk(moved);
+            }
+        }
+
+        // Normalize both inventories.
+        self.inv_normalize(inv_id);
+        self.inv_normalize(pile_inv);
+    }
+
+    /// Check a creature's military group equipment wants and create an
+    /// `AcquireMilitaryEquipment` task for the first unsatisfied want.
+    /// Called during heartbeat Phase 2b¾ when the creature is idle.
+    pub(crate) fn check_military_equipment_wants(&mut self, creature_id: CreatureId) {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return,
+        };
+        let group_id = match creature.military_group {
+            Some(gid) => gid,
+            None => return,
+        };
+        let group = match self.db.military_groups.get(&group_id) {
+            Some(g) => g,
+            None => return,
+        };
+        if group.equipment_wants.is_empty() {
+            return;
+        }
+        let inv_id = creature.inventory_id;
+        let wants = group.equipment_wants.clone();
+
+        // Check each want against current inventory.
+        for want in &wants {
+            let have = self.inv_count_owned_or_unowned(
+                inv_id,
+                want.item_kind,
+                want.material_filter,
+                creature_id,
+            );
+            if have >= want.target_quantity {
+                continue;
+            }
+            let needed = want.target_quantity - have;
+
+            // Find a source.
+            let (source, quantity, nav_node) =
+                match self.find_item_source(want.item_kind, want.material_filter, needed) {
+                    Some(s) => s,
+                    None => continue,
+                };
+
+            // Reserve items at source.
+            let task_id = TaskId::new(&mut self.rng);
+            match &source {
+                task::HaulSource::GroundPile(pos) => {
+                    if let Some(pile) = self
+                        .db
+                        .ground_piles
+                        .by_position(pos, tabulosity::QueryOpts::ASC)
+                        .into_iter()
+                        .next()
+                    {
+                        self.inv_reserve_unowned_items(
+                            pile.inventory_id,
+                            want.item_kind,
+                            want.material_filter,
+                            quantity,
+                            task_id,
+                        );
+                    }
+                }
+                task::HaulSource::Building(sid) => {
+                    if let Some(structure) = self.db.structures.get(sid) {
+                        self.inv_reserve_unowned_items(
+                            structure.inventory_id,
+                            want.item_kind,
+                            want.material_filter,
+                            quantity,
+                            task_id,
+                        );
+                    }
+                }
+            }
+
+            // Create AcquireMilitaryEquipment task, directly assigned.
+            let new_task = task::Task {
+                id: task_id,
+                kind: task::TaskKind::AcquireMilitaryEquipment {
+                    source,
+                    item_kind: want.item_kind,
                     quantity,
                 },
                 state: task::TaskState::InProgress,

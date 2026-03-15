@@ -236,6 +236,29 @@ impl SimState {
             .sum()
     }
 
+    /// Count items of a given kind that are owned by the creature or unowned,
+    /// filtered by material. Used for military equipment satisfaction checks
+    /// where both personal and unowned items count.
+    pub(crate) fn inv_count_owned_or_unowned(
+        &self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
+        creature_id: CreatureId,
+    ) -> u32 {
+        self.db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|s| {
+                s.kind == kind
+                    && (s.owner == Some(creature_id) || s.owner.is_none())
+                    && filter.matches(s.material)
+            })
+            .map(|s| s.quantity)
+            .sum()
+    }
+
     /// Count unreserved items of the given kind, filtered by material.
     pub(crate) fn inv_unreserved_item_count(
         &self,

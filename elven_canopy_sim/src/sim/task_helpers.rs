@@ -395,6 +395,46 @@ impl SimState {
                     }
                 });
             }
+            task::TaskKind::AcquireMilitaryEquipment {
+                source,
+                item_kind,
+                quantity,
+            } => {
+                let source_kind = match source {
+                    task::HaulSource::GroundPile(pos) => {
+                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|id| {
+                            crate::db::TaskVoxelRef {
+                                id,
+                                task_id,
+                                coord: *pos,
+                                role: crate::db::TaskVoxelRole::AcquireSourcePile,
+                            }
+                        });
+                        crate::db::HaulSourceKind::Pile
+                    }
+                    task::HaulSource::Building(sid) => {
+                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                            crate::db::TaskStructureRef {
+                                id,
+                                task_id,
+                                structure_id: *sid,
+                                role: crate::db::TaskStructureRole::AcquireSourceBuilding,
+                            }
+                        });
+                        crate::db::HaulSourceKind::Building
+                    }
+                };
+                let _ =
+                    self.db
+                        .task_acquire_data
+                        .insert_auto_no_fk(|id| crate::db::TaskAcquireData {
+                            id,
+                            task_id,
+                            item_kind: *item_kind,
+                            quantity: *quantity,
+                            source_kind,
+                        });
+            }
             // AttackMove — extension data inserted by the command handler
             // (command_attack_move) since the destination VoxelCoord is not
             // carried in the TaskKind variant.

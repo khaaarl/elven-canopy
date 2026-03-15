@@ -320,6 +320,8 @@ fn generate_civilizations(
 /// - "Civilians" (default, passive with 100% disengage = always flee)
 /// - "Soldiers" (non-default, aggressive with prefer ranged)
 fn create_default_military_groups(db: &mut SimDb, civ_id: CivId) {
+    use crate::building::LogisticsWant;
+    use crate::inventory::{ItemKind, MaterialFilter};
     use crate::species::{
         AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
     };
@@ -336,6 +338,7 @@ fn create_default_military_groups(db: &mut SimDb, civ_id: CivId) {
                 initiative: EngagementInitiative::Defensive,
                 disengage_threshold_pct: 100,
             },
+            equipment_wants: Vec::new(),
         });
     let _ = db
         .military_groups
@@ -350,6 +353,18 @@ fn create_default_military_groups(db: &mut SimDb, civ_id: CivId) {
                 initiative: EngagementInitiative::Aggressive,
                 disengage_threshold_pct: 0,
             },
+            equipment_wants: vec![
+                LogisticsWant {
+                    item_kind: ItemKind::Bow,
+                    material_filter: MaterialFilter::Any,
+                    target_quantity: 1,
+                },
+                LogisticsWant {
+                    item_kind: ItemKind::Arrow,
+                    material_filter: MaterialFilter::Any,
+                    target_quantity: 20,
+                },
+            ],
         });
 }
 

@@ -4,8 +4,9 @@
 ## - **Summary page:** Lists all military groups with member counts. Click a row
 ##   to navigate to the group detail page. "New Group" button at the bottom.
 ## - **Detail page:** Shows group members, engagement style controls (weapon
-##   preference, ammo exhaustion, initiative, disengage threshold), rename
-##   button, delete button (non-civilian only), and per-member reassign.
+##   preference, ammo exhaustion, initiative, disengage threshold), equipment
+##   wants editor, rename button, delete button (non-civilian only), and
+##   per-member reassign.
 ##
 ## Toggle behavior: [M] opens/closes the panel. ESC from detail navigates back
 ## to summary; ESC from summary closes. Opening this panel closes the creature
@@ -15,7 +16,8 @@
 ## Detail calls bridge.get_military_group_members(group_id) with the same cadence.
 ##
 ## See also: creature_info_panel.gd (shares screen space), main.gd (wiring),
-## action_toolbar.gd (Military button), sim_bridge.rs (Rust API).
+## action_toolbar.gd (Military button), sim_bridge.rs (Rust API),
+## wants_editor.gd (reusable wants list widget).
 
 extends PanelContainer
 
@@ -51,6 +53,7 @@ var _ammo_btn: Button
 var _disengage_label: Label
 var _disengage_slider: HSlider
 var _delete_btn: Button
+var _equipment_editor: Control  # WantsEditor instance
 
 
 func _ready() -> void:
@@ -212,6 +215,24 @@ func _ready() -> void:
 	_disengage_slider.value_changed.connect(_on_disengage_changed)
 	disengage_row.add_child(_disengage_slider)
 
+	_detail_vbox.add_child(HSeparator.new())
+
+	# Equipment wants editor.
+	var equip_label := Label.new()
+	equip_label.text = "Equipment"
+	equip_label.add_theme_font_size_override("font_size", 16)
+	_detail_vbox.add_child(equip_label)
+
+	var editor_script = load("res://scripts/wants_editor.gd")
+	_equipment_editor = VBoxContainer.new()
+	_equipment_editor.set_script(editor_script)
+	_equipment_editor.default_add_quantity = 1
+	_equipment_editor.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_equipment_editor.wants_changed.connect(_on_equipment_wants_changed)
+	_detail_vbox.add_child(_equipment_editor)
+
+	_detail_vbox.add_child(HSeparator.new())
+
 	# Delete button.
 	_delete_btn = Button.new()
 	_delete_btn.text = "Delete Group"
@@ -241,6 +262,14 @@ func _ready() -> void:
 
 func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
+	# Cache item kinds and material options for the equipment wants editor.
+	if _bridge and _equipment_editor:
+		var item_kinds: Array = _bridge.get_logistics_item_kinds()
+		var mat_options: Dictionary = {}
+		for entry in item_kinds:
+			var kind: String = entry.get("kind", "")
+			mat_options[kind] = _bridge.get_logistics_material_options(kind)
+		_equipment_editor.set_picker_data(item_kinds, mat_options)
 
 
 func toggle() -> void:
@@ -439,6 +468,10 @@ func _refresh_detail() -> void:
 
 	# Hide delete for civilian group.
 	_delete_btn.visible = not group_data.get("is_civilian", false)
+
+	# Update equipment wants editor.
+	var equipment_wants: Array = group_data.get("equipment_wants", [])
+	_equipment_editor.update_wants(equipment_wants)
 
 	# Refresh member list.
 	var members: Array = _bridge.get_military_group_members(_detail_group_id)
@@ -642,6 +675,16 @@ func _on_delete_group() -> void:
 		return
 	_bridge.delete_military_group(_detail_group_id)
 	_show_summary()
+
+
+# --- Equipment wants ---
+
+
+func _on_equipment_wants_changed(wants_json: String) -> void:
+	if not _bridge or _detail_group_id < 0:
+		return
+	_bridge.set_group_equipment_wants(_detail_group_id, wants_json)
+	_refresh_timer = 0.4
 
 
 # --- Reassignment overlay ---

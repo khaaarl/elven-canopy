@@ -132,7 +132,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-military-armor       Military group armor policy
 [ ] F-military-campaign    Send elves on world expeditions
-[ ] F-military-equip       Military group equipment acquisition
 [ ] F-military-org         Squad management and organization
 [ ] F-minimap              Minimap with tree silhouette and creature positions
 [ ] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
@@ -255,6 +254,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-main-menu            Main menu UI
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-melee-action         Melee attack action
+[x] F-military-equip       Military group equipment acquisition
 [x] F-military-groups      Military group data model and configuration
 [x] F-mood-system          Mood with escalating consequences
 [x] F-move-interp          Smooth creature movement interpolation
@@ -2151,7 +2151,8 @@ case specifically.
 
 Military groups can specify an armor policy — what armor, if any, members should wear. Extends the military group equipment system (F-military-equip) to handle armor specifically, using the wearable armor system (F-armor) for the actual equip mechanics. Many details TBD: how armor policy is specified (any available armor? specific armor type? minimum protection level?), how the policy interacts with armor availability (wait for crafting? use whatever's available?), priority of armor acquisition vs. weapon acquisition, UI for armor policy configuration within the military group detail panel, and how armor status is displayed per creature and per group.
 
-**Blocked by:** F-armor, F-military-equip
+**Blocked by:** F-armor
+**Unblocked by:** F-military-equip
 **Related:** F-military-groups
 
 #### F-military-campaign — Send elves on world expeditions
@@ -2163,11 +2164,17 @@ control (unlike Dwarf Fortress's hands-off approach).
 **Blocked by:** F-combat, F-military-org
 
 #### F-military-equip — Military group equipment acquisition
-**Status:** Todo
+**Status:** Done
 
-The player configures equipment policies on military groups (e.g., "members should carry a bow and 10 arrows"). The system automatically generates logistics-style wants for group members, causing them to seek out and acquire the specified items — similar to personal item acquisition but driven by group policy rather than individual creature wants. Unlike personal wants, group equipment wants do NOT confer ownership — items are held for the group's purpose, not the creature's personal use. Many details TBD: how equipment policies are specified (item kind + quantity pairs? equipment slots?), how wants interact with existing personal wants (priority? separate queue?), what happens when equipment is unavailable (partial fulfillment? queuing?), how re-equipment works after item loss (death drops, combat breakage), whether equipment policies generate tasks immediately or on a heartbeat cycle, and how the UI surfaces equipment status per creature and per group. Depends on F-military-groups for the group data model and UI.
+Military groups have an `equipment_wants` field — a list of (item kind, material filter, quantity) entries configurable via the military panel UI. The default "Soldiers" group starts with 1 bow + 20 arrows; new groups start empty.
 
-**Blocks:** F-military-armor
+Heartbeat Phase 2b¾ runs after moping but before personal wants: (a) drops unowned items that don't satisfy any military want or are owned by another creature, (b) creates `AcquireMilitaryEquipment` tasks for unsatisfied wants. This task works like `AcquireItem` but does not change item ownership on pickup.
+
+The reusable `WantsEditor` widget (wants_editor.gd) provides the two-step item kind → material filter picker UI, shared by both building logistics and military equipment panels.
+
+Spawn changes: elves start with 0 bows/arrows; ground pile includes bows, arrows, and armor.
+
+**Unblocked:** F-military-armor
 **Related:** F-military-groups
 
 #### F-military-groups — Military group data model and configuration

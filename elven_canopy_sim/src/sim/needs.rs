@@ -1,11 +1,14 @@
-// Creature needs — eating, sleeping, moping, and personal item acquisition.
+// Creature needs — eating, sleeping, moping, item acquisition, and military equipment.
 //
 // Handles the creature want system: hunger (eat fruit or bread), tiredness
-// (find bed and sleep), mood consequences (moping when unhappy), and
-// personal item acquisition (fetching items to satisfy inventory wants).
-// These are triggered by the creature heartbeat in `process_event`.
+// (find bed and sleep), mood consequences (moping when unhappy), personal
+// item acquisition (fetching items to satisfy inventory wants), and military
+// equipment acquisition (fetching items for group equipment wants without
+// changing ownership). These are triggered by the creature heartbeat in
+// `process_event`.
 //
-// See also: `activation.rs` (`check_creature_wants`, `check_mope`),
+// See also: `activation.rs` (`check_creature_wants`, `check_mope`,
+// `military_equipment_drop`, `check_military_equipment_wants`),
 // `inventory_mgmt.rs` (item operations), `greenhouse.rs` (fruit sources).
 use super::*;
 use crate::db::ActionKind;
@@ -296,6 +299,95 @@ impl SimState {
             t.state = task::TaskState::Complete;
             let _ = self.db.tasks.update_no_fk(t);
         }
+    }
+
+    /// Resolve a completed AcquireMilitaryEquipment action: same as
+    /// `resolve_acquire_item_action` but does NOT change ownership and does
+    /// NOT auto-equip clothing.
+    pub(crate) fn resolve_acquire_military_equipment_action(
+        &mut self,
+        creature_id: CreatureId,
+        task_id: TaskId,
+    ) -> bool {
+        let acquire = match self.task_acquire_data(task_id) {
+            Some(a) => a,
+            None => return false,
+        };
+        let source = match self.task_acquire_source(task_id, acquire.source_kind) {
+            Some(s) => s,
+            None => return false,
+        };
+        let item_kind = acquire.item_kind;
+        let quantity = acquire.quantity;
+
+        // Find the source inventory.
+        let source_inv = match &source {
+            task::HaulSource::GroundPile(pos) => self
+                .db
+                .ground_piles
+                .by_position(pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .map(|pile| pile.inventory_id),
+            task::HaulSource::Building(sid) => self.db.structures.get(sid).map(|s| s.inventory_id),
+        };
+        let source_inv = match source_inv {
+            Some(inv) => inv,
+            None => {
+                self.complete_task(task_id);
+                return true;
+            }
+        };
+
+        // Find reserved stacks and split+move them to creature inventory.
+        // Unlike AcquireItem, ownership is NOT changed.
+        let creature_inv = self.creature_inv(creature_id);
+        let stacks: Vec<crate::db::ItemStack> = self
+            .db
+            .item_stacks
+            .by_inventory_id(&source_inv, tabulosity::QueryOpts::ASC);
+        let mut remaining = quantity;
+        for stack in &stacks {
+            if stack.kind != item_kind || stack.reserved_by != Some(task_id) || remaining == 0 {
+                continue;
+            }
+            let take = remaining.min(stack.quantity);
+            if let Some(split_id) = self.inv_split_stack(stack.id, take) {
+                if let Some(mut moved) = self.db.item_stacks.get(&split_id) {
+                    moved.inventory_id = creature_inv;
+                    moved.reserved_by = None;
+                    // ownership unchanged — stays None or whatever it was
+                    let _ = self.db.item_stacks.update_no_fk(moved);
+                }
+                remaining -= take;
+            }
+        }
+
+        // Normalize both inventories.
+        self.inv_normalize(source_inv);
+        self.inv_normalize(creature_inv);
+
+        // Clean up empty ground piles.
+        if let task::HaulSource::GroundPile(pos) = &source
+            && let Some(pile) = self
+                .db
+                .ground_piles
+                .by_position(pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+            && self.inv_items(pile.inventory_id).is_empty()
+        {
+            let _ = self.db.ground_piles.remove_no_fk(&pile.id);
+        }
+
+        self.complete_task(task_id);
+        true
+    }
+
+    /// Clean up an AcquireMilitaryEquipment task on abandonment: clear
+    /// reservations at the source (same logic as `cleanup_acquire_item_task`).
+    pub(crate) fn cleanup_acquire_military_equipment_task(&mut self, task_id: TaskId) {
+        self.cleanup_acquire_item_task(task_id);
     }
 
     /// Resolve a completed EatBread action: remove 1 owned bread, restore food,

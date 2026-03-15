@@ -81,7 +81,8 @@ pub fn preemption_level(kind: TaskKindTag, origin: TaskOrigin) -> PreemptionLeve
         | TaskKindTag::Cook
         | TaskKindTag::Craft
         | TaskKindTag::Harvest
-        | TaskKindTag::AcquireItem => match origin {
+        | TaskKindTag::AcquireItem
+        | TaskKindTag::AcquireMilitaryEquipment => match origin {
             TaskOrigin::PlayerDirected | TaskOrigin::Autonomous | TaskOrigin::Automated => {
                 PreemptionLevel::Autonomous
             }

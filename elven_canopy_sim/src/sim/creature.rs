@@ -392,6 +392,9 @@ impl SimState {
             crate::db::TaskKindTag::AcquireItem => {
                 self.cleanup_acquire_item_task(task_id);
             }
+            crate::db::TaskKindTag::AcquireMilitaryEquipment => {
+                self.cleanup_acquire_military_equipment_task(task_id);
+            }
             // Resumable tasks: return to Available for another creature.
             // unassign_creature_from_task handles reverting InProgress → Available.
             crate::db::TaskKindTag::Build | crate::db::TaskKindTag::Furnish => {}

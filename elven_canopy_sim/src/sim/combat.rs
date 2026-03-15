@@ -1762,6 +1762,7 @@ impl SimState {
                     initiative: crate::species::EngagementInitiative::Aggressive,
                     disengage_threshold_pct: 0,
                 },
+                equipment_wants: Vec::new(),
             });
         if let Ok(group_id) = result {
             self.add_notification(format!("Military group '{group_name}' created."));
@@ -1893,6 +1894,27 @@ impl SimState {
             .db
             .military_groups
             .modify_unchecked(&group_id, |g| g.engagement_style = engagement_style);
+    }
+
+    /// Set a military group's equipment wants.
+    pub(crate) fn set_group_equipment_wants(
+        &mut self,
+        group_id: MilitaryGroupId,
+        wants: Vec<crate::building::LogisticsWant>,
+    ) {
+        let Some(group) = self.db.military_groups.get(&group_id) else {
+            return;
+        };
+        let Some(player_civ) = self.player_civ() else {
+            return;
+        };
+        if group.civ_id != player_civ {
+            return;
+        }
+        let _ = self
+            .db
+            .military_groups
+            .modify_unchecked(&group_id, |g| g.equipment_wants = wants);
     }
 
     /// Determine whether a creature should flee from nearby hostiles.

@@ -115,6 +115,8 @@ pub enum ActionKind {
     MeleeStrike = 13,
     /// Shooting a ranged projectile at a target creature.
     Shoot = 14,
+    /// Picking up items for military group equipment (no ownership transfer).
+    AcquireMilitaryEquipment = 15,
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +129,7 @@ pub enum ActionKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TaskKindTag {
     AcquireItem,
+    AcquireMilitaryEquipment,
     AttackMove,
     AttackTarget,
     Build,
@@ -147,6 +150,7 @@ impl TaskKindTag {
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::AcquireItem => "AcquireItem",
+            Self::AcquireMilitaryEquipment => "Equip",
             Self::AttackMove => "AttackMove",
             Self::AttackTarget => "Attack",
             Self::Build => "Build",
@@ -168,6 +172,7 @@ impl TaskKindTag {
         use crate::task::TaskKind;
         match kind {
             TaskKind::AcquireItem { .. } => Self::AcquireItem,
+            TaskKind::AcquireMilitaryEquipment { .. } => Self::AcquireMilitaryEquipment,
             TaskKind::AttackMove => Self::AttackMove,
             TaskKind::AttackTarget { .. } => Self::AttackTarget,
             TaskKind::Build { .. } => Self::Build,
@@ -1055,6 +1060,12 @@ pub struct MilitaryGroup {
     /// species-level `engagement_style` for civ creatures in this group.
     #[serde(default)]
     pub engagement_style: crate::species::EngagementStyle,
+    /// Equipment that group members should autonomously acquire. Items
+    /// acquired for military purposes do not confer ownership — they stay
+    /// unowned (or keep their existing owner) in the creature's inventory.
+    /// The player can edit these via the military panel UI.
+    #[serde(default)]
+    pub equipment_wants: Vec<crate::building::LogisticsWant>,
 }
 
 /// Directed relationship: `from_civ`'s opinion of `to_civ`.

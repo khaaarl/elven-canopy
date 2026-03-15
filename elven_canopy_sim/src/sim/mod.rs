@@ -918,6 +918,9 @@ impl SimState {
             } => {
                 self.set_group_engagement_style(*group_id, *engagement_style);
             }
+            SimAction::SetGroupEquipmentWants { group_id, wants } => {
+                self.set_group_equipment_wants(*group_id, wants.clone());
+            }
             SimAction::DebugSpawnProjectile {
                 origin,
                 target,
@@ -1146,6 +1149,18 @@ impl SimState {
                 // (only species with meaningful thoughts currently).
                 self.check_mope(creature_id);
 
+                // Phase 2b¾: military equipment — drop unwanted items, then
+                // acquire missing equipment if idle.
+                self.military_equipment_drop(creature_id);
+                let still_idle_for_equip = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .is_some_and(|c| c.current_task.is_none());
+                if still_idle_for_equip {
+                    self.check_military_equipment_wants(creature_id);
+                }
+
                 // Phase 2c: if idle (no task from hunger or sleep), check
                 // personal wants and acquire items from unowned sources.
                 let still_idle = self
@@ -1259,6 +1274,13 @@ impl SimState {
                     None => return false,
                 };
                 self.resolve_acquire_item_action(creature_id, tid)
+            }
+            ActionKind::AcquireMilitaryEquipment => {
+                let tid = match task_id {
+                    Some(t) => t,
+                    None => return false,
+                };
+                self.resolve_acquire_military_equipment_action(creature_id, tid)
             }
             ActionKind::MeleeStrike | ActionKind::Shoot => {
                 // MeleeStrike/Shoot are not task-driven; creature becomes idle.

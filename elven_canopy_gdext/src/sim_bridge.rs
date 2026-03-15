@@ -1945,6 +1945,38 @@ impl SimBridge {
         });
     }
 
+    /// Parse an `ItemKind` from its display name. Returns `None` if unknown.
+    fn parse_item_kind(name: &str) -> Option<elven_canopy_sim::inventory::ItemKind> {
+        use elven_canopy_sim::inventory::ItemKind;
+        match name {
+            "Bread" => Some(ItemKind::Bread),
+            "Fruit" => Some(ItemKind::Fruit),
+            "Bow" => Some(ItemKind::Bow),
+            "Arrow" => Some(ItemKind::Arrow),
+            "Bowstring" => Some(ItemKind::Bowstring),
+            "Pulp" => Some(ItemKind::Pulp),
+            "Husk" => Some(ItemKind::Husk),
+            "Seed" => Some(ItemKind::Seed),
+            "Fiber" => Some(ItemKind::FruitFiber),
+            "Sap" => Some(ItemKind::FruitSap),
+            "Resin" => Some(ItemKind::FruitResin),
+            "Flour" => Some(ItemKind::Flour),
+            "Thread" => Some(ItemKind::Thread),
+            "Cord" => Some(ItemKind::Cord),
+            "Cloth" => Some(ItemKind::Cloth),
+            "Tunic" => Some(ItemKind::Tunic),
+            "Leggings" => Some(ItemKind::Leggings),
+            "Boots" => Some(ItemKind::Boots),
+            "Hat" => Some(ItemKind::Hat),
+            "Helmet" => Some(ItemKind::Helmet),
+            "Breastplate" => Some(ItemKind::Breastplate),
+            "Greaves" => Some(ItemKind::Greaves),
+            "Gauntlets" => Some(ItemKind::Gauntlets),
+            "Gloves" => Some(ItemKind::Gloves),
+            _ => None,
+        }
+    }
+
     /// Parse a `MaterialFilter` from a JSON value (matching serde externally-tagged
     /// enum format). Returns `Any` if missing or malformed.
     fn parse_material_filter(
@@ -2046,32 +2078,10 @@ impl SimBridge {
         let mut wants = Vec::new();
         for entry in &parsed {
             let kind_str = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let kind = match kind_str {
-                "Bread" => elven_canopy_sim::inventory::ItemKind::Bread,
-                "Fruit" => elven_canopy_sim::inventory::ItemKind::Fruit,
-                "Bow" => elven_canopy_sim::inventory::ItemKind::Bow,
-                "Arrow" => elven_canopy_sim::inventory::ItemKind::Arrow,
-                "Bowstring" => elven_canopy_sim::inventory::ItemKind::Bowstring,
-                "Pulp" => elven_canopy_sim::inventory::ItemKind::Pulp,
-                "Husk" => elven_canopy_sim::inventory::ItemKind::Husk,
-                "Seed" => elven_canopy_sim::inventory::ItemKind::Seed,
-                "Fiber" => elven_canopy_sim::inventory::ItemKind::FruitFiber,
-                "Sap" => elven_canopy_sim::inventory::ItemKind::FruitSap,
-                "Resin" => elven_canopy_sim::inventory::ItemKind::FruitResin,
-                "Flour" => elven_canopy_sim::inventory::ItemKind::Flour,
-                "Thread" => elven_canopy_sim::inventory::ItemKind::Thread,
-                "Cord" => elven_canopy_sim::inventory::ItemKind::Cord,
-                "Cloth" => elven_canopy_sim::inventory::ItemKind::Cloth,
-                "Tunic" => elven_canopy_sim::inventory::ItemKind::Tunic,
-                "Leggings" => elven_canopy_sim::inventory::ItemKind::Leggings,
-                "Boots" => elven_canopy_sim::inventory::ItemKind::Boots,
-                "Hat" => elven_canopy_sim::inventory::ItemKind::Hat,
-                "Helmet" => elven_canopy_sim::inventory::ItemKind::Helmet,
-                "Breastplate" => elven_canopy_sim::inventory::ItemKind::Breastplate,
-                "Greaves" => elven_canopy_sim::inventory::ItemKind::Greaves,
-                "Gauntlets" => elven_canopy_sim::inventory::ItemKind::Gauntlets,
-                other => {
-                    godot_error!("SimBridge: unknown item kind in logistics wants: '{other}'");
+            let kind = match Self::parse_item_kind(kind_str) {
+                Some(k) => k,
+                None => {
+                    godot_error!("SimBridge: unknown item kind in logistics wants: '{kind_str}'");
                     continue;
                 }
             };
@@ -2973,6 +2983,32 @@ impl SimBridge {
                     .count()
             };
             dict.set("member_count", member_count as i64);
+
+            // Equipment wants.
+            let mut wants_arr = VarArray::new();
+            for want in &g.equipment_wants {
+                let mut want_dict = VarDictionary::new();
+                want_dict.set("kind", GString::from(want.item_kind.display_name()));
+                let filter_json = Self::serialize_material_filter(want.material_filter);
+                let filter_str = filter_json.to_string();
+                want_dict.set("material_filter", GString::from(&filter_str));
+                let label = match want.material_filter {
+                    elven_canopy_sim::inventory::MaterialFilter::Any => {
+                        format!("Any {}", want.item_kind.display_name())
+                    }
+                    elven_canopy_sim::inventory::MaterialFilter::Specific(mat) => {
+                        sim.material_item_display_name(want.item_kind, mat)
+                    }
+                    elven_canopy_sim::inventory::MaterialFilter::NonWood => {
+                        format!("Non-wood {}", want.item_kind.display_name())
+                    }
+                };
+                want_dict.set("label", GString::from(label.as_str()));
+                want_dict.set("target_quantity", want.target_quantity as i64);
+                wants_arr.push(&want_dict.to_variant());
+            }
+            dict.set("equipment_wants", wants_arr);
+
             arr.push(&dict.to_variant());
         }
         arr
@@ -3122,6 +3158,46 @@ impl SimBridge {
                 initiative: init,
                 disengage_threshold_pct: pct,
             },
+        });
+    }
+
+    /// Set a military group's equipment wants. Expects a JSON string like:
+    /// `[{"kind": "Bow", "material_filter": "Any", "quantity": 1}]`
+    ///
+    /// Uses the same material filter encoding as `set_logistics_wants`.
+    #[func]
+    fn set_group_equipment_wants(&mut self, group_id: i64, wants_json: GString) {
+        let json_str = wants_json.to_string();
+        let parsed: Vec<serde_json::Value> = match serde_json::from_str(&json_str) {
+            Ok(v) => v,
+            Err(e) => {
+                godot_error!("SimBridge: failed to parse equipment wants JSON: {e}");
+                return;
+            }
+        };
+        let mut wants = Vec::new();
+        for entry in &parsed {
+            let kind_str = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let kind = match Self::parse_item_kind(kind_str) {
+                Some(k) => k,
+                None => {
+                    godot_error!("SimBridge: unknown item kind in equipment wants: '{kind_str}'");
+                    continue;
+                }
+            };
+            let material_filter = Self::parse_material_filter(entry.get("material_filter"));
+            let quantity = entry.get("quantity").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            if quantity > 0 {
+                wants.push(elven_canopy_sim::building::LogisticsWant {
+                    item_kind: kind,
+                    material_filter,
+                    target_quantity: quantity,
+                });
+            }
+        }
+        self.apply_or_send(SimAction::SetGroupEquipmentWants {
+            group_id: elven_canopy_sim::types::MilitaryGroupId(group_id as u64),
+            wants,
         });
     }
 

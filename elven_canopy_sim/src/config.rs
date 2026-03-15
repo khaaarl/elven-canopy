@@ -1795,11 +1795,11 @@ fn default_elf_starting_bread() -> u32 {
 }
 
 fn default_elf_starting_bows() -> u32 {
-    1
+    0
 }
 
 fn default_elf_starting_arrows() -> u32 {
-    20
+    0
 }
 
 fn default_elf_default_wants() -> Vec<crate::building::LogisticsWant> {
@@ -2248,8 +2248,8 @@ impl Default for GameConfig {
             logistics_heartbeat_interval_ticks: 5000,
             max_haul_tasks_per_heartbeat: 5,
             elf_starting_bread: 2,
-            elf_starting_bows: 1,
-            elf_starting_arrows: 20,
+            elf_starting_bows: 0,
+            elf_starting_arrows: 0,
             elf_default_wants: default_elf_default_wants(),
             storehouse_default_priority: 2,
             storehouse_default_fruit_want: 10,
@@ -2341,6 +2341,48 @@ impl Default for GameConfig {
                     item_kind: ItemKind::Gloves,
                     quantity: 2,
                     material: None,
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Bow,
+                    quantity: 2,
+                    material: None,
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Arrow,
+                    quantity: 30,
+                    material: None,
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Helmet,
+                    quantity: 1,
+                    material: Some(Material::Oak),
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Breastplate,
+                    quantity: 1,
+                    material: Some(Material::Oak),
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Greaves,
+                    quantity: 1,
+                    material: Some(Material::Oak),
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Gauntlets,
+                    quantity: 1,
+                    material: Some(Material::Oak),
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Boots,
+                    quantity: 1,
+                    material: Some(Material::Oak),
                 },
             ],
             recipes: default_recipes(),

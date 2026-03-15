@@ -399,8 +399,8 @@
   "logistics_heartbeat_interval_ticks": 5000,
   "max_haul_tasks_per_heartbeat": 5,
   "elf_starting_bread": 2,
-  "elf_starting_bows": 1,
-  "elf_starting_arrows": 20,
+  "elf_starting_bows": 0,
+  "elf_starting_arrows": 0,
   "elf_default_wants": [
     { "item_kind": "Bread", "target_quantity": 2 }
   ],
@@ -551,31 +551,41 @@
       "quantity": 5
     },
     {
-      "position": { "x": 130, "y": 1, "z": 138 },
+      "position": { "x": 128, "y": 1, "z": 138 },
+      "item_kind": "Bow",
+      "quantity": 2
+    },
+    {
+      "position": { "x": 128, "y": 1, "z": 138 },
+      "item_kind": "Arrow",
+      "quantity": 30
+    },
+    {
+      "position": { "x": 128, "y": 1, "z": 138 },
       "item_kind": "Helmet",
       "quantity": 1,
       "material": "Oak"
     },
     {
-      "position": { "x": 130, "y": 1, "z": 138 },
+      "position": { "x": 128, "y": 1, "z": 138 },
       "item_kind": "Breastplate",
       "quantity": 1,
       "material": "Oak"
     },
     {
-      "position": { "x": 130, "y": 1, "z": 138 },
+      "position": { "x": 128, "y": 1, "z": 138 },
       "item_kind": "Greaves",
       "quantity": 1,
       "material": "Oak"
     },
     {
-      "position": { "x": 130, "y": 1, "z": 138 },
+      "position": { "x": 128, "y": 1, "z": 138 },
       "item_kind": "Gauntlets",
       "quantity": 1,
       "material": "Oak"
     },
     {
-      "position": { "x": 130, "y": 1, "z": 138 },
+      "position": { "x": 128, "y": 1, "z": 138 },
       "item_kind": "Boots",
       "quantity": 1,
       "material": "Oak"

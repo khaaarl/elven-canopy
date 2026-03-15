@@ -318,6 +318,11 @@ pub enum SimAction {
         group_id: MilitaryGroupId,
         engagement_style: EngagementStyle,
     },
+    /// Set a military group's equipment wants (items members should acquire).
+    SetGroupEquipmentWants {
+        group_id: MilitaryGroupId,
+        wants: Vec<crate::building::LogisticsWant>,
+    },
     /// Spawn a projectile at a position with a given velocity (debug/testing).
     /// Creates a projectile with an arrow item in its inventory.
     DebugSpawnProjectile {

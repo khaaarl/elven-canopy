@@ -99,17 +99,9 @@ var _logistics_details_panel: PanelContainer
 var _logistics_priority_hbox: HBoxContainer
 var _logistics_priority_edit: LineEdit
 var _logistics_enabled_check: CheckButton
-var _logistics_wants_vbox: VBoxContainer
-var _logistics_add_button: Button
-var _logistics_item_picker: VBoxContainer
-var _logistics_material_picker: VBoxContainer
-## Cached item kinds from the bridge (static, set once by main.gd).
-var _cached_item_kinds: Array = []
-## Cached material options per item kind from the bridge.
-## Dictionary mapping kind string -> Array of {filter, label} dicts.
-var _cached_material_options: Dictionary = {}
-## The item kind selected in step 1 of the two-step picker.
-var _pending_item_kind: String = ""
+var _logistics_wants_editor: Control  # WantsEditor instance
+var _cached_logistics_item_kinds: Array = []
+var _cached_logistics_material_options: Dictionary = {}
 var _crafting_wrapper: VBoxContainer
 var _crafting_summary_label: Label
 var _crafting_details_button: Button
@@ -376,29 +368,14 @@ func _ready() -> void:
 
 	logistics_vbox.add_child(HSeparator.new())
 
-	# Wants list inside a scroll container.
-	var wants_scroll := ScrollContainer.new()
-	wants_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	logistics_vbox.add_child(wants_scroll)
-
-	_logistics_wants_vbox = VBoxContainer.new()
-	_logistics_wants_vbox.add_theme_constant_override("separation", 2)
-	_logistics_wants_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	wants_scroll.add_child(_logistics_wants_vbox)
-
-	# Add item button + pickers at the bottom of the details panel.
-	_logistics_add_button = Button.new()
-	_logistics_add_button.text = "Add Item..."
-	_logistics_add_button.pressed.connect(_on_logistics_add_pressed)
-	logistics_vbox.add_child(_logistics_add_button)
-
-	_logistics_item_picker = VBoxContainer.new()
-	_logistics_item_picker.visible = false
-	logistics_vbox.add_child(_logistics_item_picker)
-
-	_logistics_material_picker = VBoxContainer.new()
-	_logistics_material_picker.visible = false
-	logistics_vbox.add_child(_logistics_material_picker)
+	# Wants list editor (reusable widget).
+	var editor_script = load("res://scripts/wants_editor.gd")
+	_logistics_wants_editor = VBoxContainer.new()
+	_logistics_wants_editor.set_script(editor_script)
+	_logistics_wants_editor.default_add_quantity = 10
+	_logistics_wants_editor.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_logistics_wants_editor.wants_changed.connect(_on_logistics_wants_editor_changed)
+	logistics_vbox.add_child(_logistics_wants_editor)
 
 	# Crafting section — summary + details button (visible for crafting buildings).
 	_crafting_wrapper = VBoxContainer.new()
@@ -550,12 +527,18 @@ func set_cultivable_fruits(fruits: Array) -> void:
 
 ## Cache logistics item kinds from the bridge. Called by main.gd.
 func set_logistics_item_kinds(kinds: Array) -> void:
-	_cached_item_kinds = kinds
+	_cached_logistics_item_kinds = kinds
+	_logistics_wants_editor.set_picker_data(
+		_cached_logistics_item_kinds, _cached_logistics_material_options
+	)
 
 
 ## Cache logistics material options from the bridge. Called by main.gd.
 func set_logistics_material_options(options: Dictionary) -> void:
-	_cached_material_options = options
+	_cached_logistics_material_options = options
+	_logistics_wants_editor.set_picker_data(
+		_cached_logistics_item_kinds, _cached_logistics_material_options
+	)
 
 
 func show_structure(info: Dictionary) -> void:
@@ -563,8 +546,6 @@ func show_structure(info: Dictionary) -> void:
 	_furnish_picker.visible = false
 	_greenhouse_picker_scroll.visible = false
 	_elf_picker_scroll.visible = false
-	_logistics_item_picker.visible = false
-	_logistics_material_picker.visible = false
 	_logistics_details_panel.visible = false
 	_crafting_details_panel.visible = false
 	_recipe_rows_built = false
@@ -749,28 +730,8 @@ func _update_logistics(info: Dictionary, furnishing: String) -> void:
 	if is_enabled and not _logistics_priority_edit.has_focus():
 		_logistics_priority_edit.text = str(priority)
 
-	# Rebuild wants list.
-	for child in _logistics_wants_vbox.get_children():
-		child.queue_free()
-	for want in wants:
-		var display_label: String = want.get("label", want.get("kind", "?"))
-		var qty: int = want.get("target_quantity", 0)
-		var kind: String = want.get("kind", "?")
-		var mat_filter: String = want.get("material_filter", '"Any"')
-		var row := HBoxContainer.new()
-		var label := Label.new()
-		label.text = "%s: %d" % [display_label, qty]
-		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		# Store kind and filter as metadata for roundtripping in emit functions.
-		row.set_meta("kind", kind)
-		row.set_meta("material_filter", mat_filter)
-		row.set_meta("quantity", qty)
-		row.add_child(label)
-		var remove_btn := Button.new()
-		remove_btn.text = "X"
-		remove_btn.pressed.connect(_on_logistics_want_removed.bind(kind, mat_filter))
-		row.add_child(remove_btn)
-		_logistics_wants_vbox.add_child(row)
+	# Update wants list via the reusable editor widget.
+	_logistics_wants_editor.update_wants(wants)
 
 
 func _update_crafting(info: Dictionary, furnishing: String) -> void:
@@ -1379,109 +1340,10 @@ func _on_logistics_priority_focus_exited() -> void:
 		logistics_priority_changed.emit(_current_structure_id, val)
 
 
-func _on_logistics_add_pressed() -> void:
-	_logistics_material_picker.visible = false
-	var was_visible := _logistics_item_picker.visible
-	_logistics_item_picker.visible = not was_visible
-	if not was_visible:
-		_populate_item_kind_picker()
-
-
-func _populate_item_kind_picker() -> void:
-	for child in _logistics_item_picker.get_children():
-		child.queue_free()
-	for entry in _cached_item_kinds:
-		var kind: String = entry.get("kind", "")
-		var label: String = entry.get("label", kind)
-		var btn := Button.new()
-		btn.text = label
-		btn.pressed.connect(_on_logistics_item_kind_picked.bind(kind))
-		_logistics_item_picker.add_child(btn)
-
-
-func _on_logistics_item_kind_picked(kind: String) -> void:
-	_logistics_item_picker.visible = false
-	_pending_item_kind = kind
-
-	# Check if this kind has material options beyond just "Any".
-	var options: Array = _cached_material_options.get(kind, [])
-	if options.size() <= 1:
-		# Only "Any" or no options — skip step 2, auto-select Any.
-		_on_logistics_material_picked('"Any"')
-		return
-
-	# Show step 2: material filter picker.
-	_populate_material_picker(options)
-	_logistics_material_picker.visible = true
-
-
-func _populate_material_picker(options: Array) -> void:
-	for child in _logistics_material_picker.get_children():
-		child.queue_free()
-	for entry in options:
-		var filter_str: String = entry.get("filter", '"Any"')
-		var label: String = entry.get("label", "?")
-		var btn := Button.new()
-		btn.text = label
-		btn.pressed.connect(_on_logistics_material_picked.bind(filter_str))
-		_logistics_material_picker.add_child(btn)
-
-
-func _on_logistics_material_picked(filter_str: String) -> void:
-	_logistics_material_picker.visible = false
+func _on_logistics_wants_editor_changed(wants_json: String) -> void:
 	if _current_structure_id < 0:
 		return
-	# Add a want with default quantity 10, or increment existing.
-	_emit_wants_with_added(_pending_item_kind, filter_str, 10)
-
-
-func _on_logistics_want_removed(kind: String, filter_str: String) -> void:
-	if _current_structure_id < 0:
-		return
-	_emit_wants_without(kind, filter_str)
-
-
-func _emit_wants_with_added(kind: String, filter_str: String, default_qty: int) -> void:
-	# Build JSON from current wants, adding or updating the specified (kind, filter).
-	var wants: Array = []
-	var found := false
-	var filter_val: Variant = JSON.parse_string(filter_str)
-	for child in _logistics_wants_vbox.get_children():
-		if child is HBoxContainer and child.has_meta("kind"):
-			var k: String = child.get_meta("kind")
-			var mf: String = child.get_meta("material_filter")
-			var q: int = child.get_meta("quantity")
-			var mf_val: Variant = JSON.parse_string(mf)
-			if k == kind and _variant_eq(mf_val, filter_val):
-				q += default_qty
-				found = true
-			wants.append(_make_want_entry(k, mf_val, q))
-	if not found:
-		wants.append(_make_want_entry(kind, filter_val, default_qty))
-	logistics_wants_changed.emit(_current_structure_id, JSON.stringify(wants))
-
-
-func _emit_wants_without(kind: String, filter_str: String) -> void:
-	var wants: Array = []
-	var filter_val: Variant = JSON.parse_string(filter_str)
-	for child in _logistics_wants_vbox.get_children():
-		if child is HBoxContainer and child.has_meta("kind"):
-			var k: String = child.get_meta("kind")
-			var mf: String = child.get_meta("material_filter")
-			var q: int = child.get_meta("quantity")
-			var mf_val: Variant = JSON.parse_string(mf)
-			if k != kind or not _variant_eq(mf_val, filter_val):
-				wants.append(_make_want_entry(k, mf_val, q))
-	logistics_wants_changed.emit(_current_structure_id, JSON.stringify(wants))
-
-
-static func _make_want_entry(k: String, mf: Variant, q: int) -> Dictionary:
-	return {"kind": k, "material_filter": mf, "quantity": q}
-
-
-## Deep-compare two Variants (for comparing parsed JSON material filter values).
-static func _variant_eq(a: Variant, b: Variant) -> bool:
-	return JSON.stringify(a) == JSON.stringify(b)
+	logistics_wants_changed.emit(_current_structure_id, wants_json)
 
 
 func _on_name_submitted(new_text: String) -> void:

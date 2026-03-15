@@ -236,6 +236,16 @@ pub enum TaskKind {
     /// dies or is lost, the creature resumes walking to the destination. The task
     /// completes when the creature reaches the destination with no target engaged.
     AttackMove,
+    /// Pick up items for military group equipment. Same flow as `AcquireItem`
+    /// (walk to source, pick up reserved items on arrival) but does NOT change
+    /// item ownership — items stay unowned or keep their existing owner. Created
+    /// by the heartbeat military equipment check when a group member's inventory
+    /// is below the group's `equipment_wants` target.
+    AcquireMilitaryEquipment {
+        source: HaulSource,
+        item_kind: ItemKind,
+        quantity: u32,
+    },
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.
