@@ -177,12 +177,22 @@ jobs:
             echo "GDScript parse check failed!" >&2
             exit 1
           fi
+          if ! printf '%s' "$OUTPUT" | grep -q "GDScript preload complete"; then
+            echo "$OUTPUT" >&2
+            echo "GDScript parse check failed: preload confirmation missing!" >&2
+            exit 1
+          fi
           echo "GDScript parse check passed."
 
   gdscript-unit-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build gdext
+        run: cargo build -p elven_canopy_gdext
 
       - name: Install Godot
         run: |

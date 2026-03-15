@@ -80,13 +80,27 @@ godot_script_check() {
     fi
     echo "Building elven_canopy_gdext for GDScript check..."
     cargo build -p elven_canopy_gdext
-    ensure_godot_imported
+    # Rebuild global class cache so class_name globals are available at parse time.
+    CLASS_CACHE="$REPO_ROOT/godot/.godot/global_script_class_cache.cfg"
+    rm -f "$CLASS_CACHE"
+    echo "Importing Godot project..."
+    "$GODOT" --path "$REPO_ROOT/godot" --headless --import --quit &>/dev/null || true
+    if [ ! -f "$CLASS_CACHE" ]; then
+        echo "Error: Godot import failed to create global_script_class_cache.cfg" >&2
+        exit 1
+    fi
     echo "Checking GDScript parse validity..."
     OUTPUT="$(xvfb-run -a "$GODOT" --path "$REPO_ROOT/godot" --quit 2>&1)" || true
     if printf '%s' "$OUTPUT" | grep -q "SCRIPT ERROR"; then
         echo "$OUTPUT" >&2
         echo "" >&2
         echo "GDScript parse check failed!" >&2
+        exit 1
+    fi
+    if ! printf '%s' "$OUTPUT" | grep -q "GDScript preload complete"; then
+        echo "$OUTPUT" >&2
+        echo "" >&2
+        echo "GDScript parse check failed: preload confirmation missing!" >&2
         exit 1
     fi
     echo "GDScript parse check passed."
@@ -196,6 +210,8 @@ case "$MODE" in
         if printf '%s' "$CHANGED_FILES" | grep -q '\.gd$'; then
             godot_script_check
             echo ""
+            gdscript_unit_tests
+            echo ""
         fi
         echo "All tests passed."
         ;;
@@ -205,8 +221,17 @@ case "$MODE" in
     run)
         echo "Building elven_canopy_gdext (debug)..."
         cargo build -p elven_canopy_gdext
-        ensure_godot_imported
-        rm -f "$REPO_ROOT/godot/.godot/global_script_class_cache.cfg"
+        # Delete and rebuild the global class cache. Without a fresh cache,
+        # class_name globals (SpriteFactory, GeometryUtils) are unknown at
+        # parse time and scripts fail to load.
+        CLASS_CACHE="$REPO_ROOT/godot/.godot/global_script_class_cache.cfg"
+        rm -f "$CLASS_CACHE"
+        echo "Importing Godot project..."
+        "$GODOT" --path "$REPO_ROOT/godot" --headless --import --quit &>/dev/null || true
+        if [ ! -f "$CLASS_CACHE" ]; then
+            echo "Error: Godot import failed to create global_script_class_cache.cfg" >&2
+            exit 1
+        fi
         echo "Launching Elven Canopy..."
         RUST_BACKTRACE=1 "$GODOT" --path "$REPO_ROOT/godot"
         ;;
@@ -274,8 +299,15 @@ case "$MODE" in
         echo ""
         echo "Building elven_canopy_gdext (debug)..."
         cargo build -p elven_canopy_gdext
-        ensure_godot_imported
-        rm -f "$REPO_ROOT/godot/.godot/global_script_class_cache.cfg"
+        # Delete and rebuild the global class cache (see 'run' target comment).
+        CLASS_CACHE="$REPO_ROOT/godot/.godot/global_script_class_cache.cfg"
+        rm -f "$CLASS_CACHE"
+        echo "Importing Godot project..."
+        "$GODOT" --path "$REPO_ROOT/godot" --headless --import --quit &>/dev/null || true
+        if [ ! -f "$CLASS_CACHE" ]; then
+            echo "Error: Godot import failed to create global_script_class_cache.cfg" >&2
+            exit 1
+        fi
         echo "Launching Elven Canopy..."
         RUST_BACKTRACE=1 "$GODOT" --path "$REPO_ROOT/godot"
         ;;

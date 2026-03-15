@@ -86,6 +86,9 @@
       "Bash(wc:*)",
       "Bash(which:*)",
       "Bash(xargs dirname:*)",
+      "Bash(xvfb-run -a godot:*)",
+      "Bash(xvfb-run -a godot4:*)",
+      "Bash(xvfb-run -a godot-4:*)",
       "Bash(xxd:*)",
       "WebFetch",
       "WebSearch"

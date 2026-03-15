@@ -98,6 +98,7 @@ func _preload_all_scripts() -> void:
 				push_error("Failed to load script: " + path)
 		file_name = dir.get_next()
 	dir.list_dir_end()
+	print("GDScript preload complete — all scripts loaded.")
 
 
 func _has_save_files() -> bool:
