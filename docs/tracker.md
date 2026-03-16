@@ -56,6 +56,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
+[ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
@@ -147,7 +148,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-selection-bar        Bottom-of-screen selection bar (SC2-style)
-[ ] F-selection-groups     Ctrl+number selection groups with double-tap camera center
 [ ] F-skirmish             Ranged skirmish/kite behavior (shoot-retreat loop)
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
@@ -291,6 +291,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-save-load            Save/load to JSON with versioning
 [x] F-select-struct        Selectable structures with interaction UI
 [x] F-selection            Click-to-select creatures
+[x] F-selection-groups     Ctrl+number selection groups with double-tap camera center
 [x] F-serde                Serialization for all sim types
 [x] F-session-sm           Formal session & sim state machines
 [x] F-shared-prng          Shared PRNG crate across all Rust crates
@@ -2481,6 +2482,26 @@ soul-powered constructs (golems, animated defenses).
 
 ### UI & Presentation
 
+#### B-doubletap-groups — Double-tap selection group recall inconsistently triggers camera center
+**Status:** Todo
+
+Double-tapping a number key (1–9) to recall a selection group and center
+the camera works inconsistently — sometimes the camera centers, sometimes
+it doesn't. The input system is event-driven (no lost events), so the
+likely cause is UI focus stealing: the first tap recalls the group and
+shows a panel (creature info or group panel), and a focused control in
+that panel may consume the second keypress via _gui_input before it
+reaches _unhandled_input in selection_controller.gd.
+
+Moving number key handling to _input() (which fires before GUI focus)
+fixes the double-tap but breaks the crafting UI which needs number key
+input in text fields. The fix needs to be smarter — e.g., check whether
+a text-entry control has focus before intercepting number keys, or use
+_shortcut_input with an InputMap action that panels can selectively
+block.
+
+**Related:** F-selection-groups
+
 #### F-ai-sprites — AI-generated sprite art pipeline
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
 
@@ -3119,7 +3140,7 @@ structure_info_panel.gd, selection_controller.gd, and overall layout.
 **Related:** F-rts-selection
 
 #### F-selection-groups — Ctrl+number selection groups with double-tap camera center
-**Status:** Todo · **Phase:** 5
+**Status:** Done · **Phase:** 5
 
 SC2-style selection groups using number keys 1-9:
 - Ctrl+number: save current selection as group N
@@ -3138,7 +3159,7 @@ Requires F-game-speed-fkeys (done) to free the number keys.
 Requires F-player-identity for per-player persistent storage.
 
 **Unblocked by:** F-game-speed-fkeys, F-player-identity
-**Related:** F-controls-config, F-dblclick-select, F-follow-multi, F-player-identity
+**Related:** B-doubletap-groups, F-controls-config, F-dblclick-select, F-follow-multi, F-player-identity
 
 #### F-sim-speed — Simulation speed controls UI
 **Status:** Done · **Phase:** 4

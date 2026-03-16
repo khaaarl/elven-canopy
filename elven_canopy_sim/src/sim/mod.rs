@@ -647,6 +647,123 @@ impl SimState {
         }
     }
 
+    /// Set (overwrite) a numbered selection group for a player. If a group
+    /// with this number already exists, its contents are replaced; otherwise
+    /// a new row is inserted.
+    fn set_selection_group(
+        &mut self,
+        player_name: &str,
+        group_number: u8,
+        creature_ids: Vec<CreatureId>,
+        structure_ids: Vec<StructureId>,
+    ) {
+        if !(1..=9).contains(&group_number) {
+            return;
+        }
+        // Find existing row for this player + group_number.
+        let existing_id = self.find_selection_group_id(player_name, group_number);
+        if let Some(id) = existing_id {
+            let c = creature_ids;
+            let s = structure_ids;
+            let _ = self.db.selection_groups.modify_unchecked(&id, |g| {
+                g.creature_ids = c;
+                g.structure_ids = s;
+            });
+        } else {
+            let pn = player_name.to_string();
+            let _ = self
+                .db
+                .selection_groups
+                .insert_auto_no_fk(|id| crate::db::SelectionGroup {
+                    id,
+                    player_name: pn,
+                    group_number,
+                    creature_ids,
+                    structure_ids,
+                });
+        }
+    }
+
+    /// Add creatures and structures to a numbered selection group for a player.
+    /// If the group doesn't exist, it is created. Duplicates are ignored.
+    fn add_to_selection_group(
+        &mut self,
+        player_name: &str,
+        group_number: u8,
+        creature_ids: Vec<CreatureId>,
+        structure_ids: Vec<StructureId>,
+    ) {
+        if !(1..=9).contains(&group_number) {
+            return;
+        }
+        let existing_id = self.find_selection_group_id(player_name, group_number);
+        if let Some(id) = existing_id {
+            let c = creature_ids;
+            let s = structure_ids;
+            let _ = self.db.selection_groups.modify_unchecked(&id, |g| {
+                for cid in &c {
+                    if !g.creature_ids.contains(cid) {
+                        g.creature_ids.push(*cid);
+                    }
+                }
+                for sid in &s {
+                    if !g.structure_ids.contains(sid) {
+                        g.structure_ids.push(*sid);
+                    }
+                }
+            });
+        } else {
+            let pn = player_name.to_string();
+            let _ = self
+                .db
+                .selection_groups
+                .insert_auto_no_fk(|id| crate::db::SelectionGroup {
+                    id,
+                    player_name: pn,
+                    group_number,
+                    creature_ids,
+                    structure_ids,
+                });
+        }
+    }
+
+    /// Find the `SelectionGroupId` for a player + group_number, if it exists.
+    fn find_selection_group_id(
+        &self,
+        player_name: &str,
+        group_number: u8,
+    ) -> Option<SelectionGroupId> {
+        for group in self
+            .db
+            .selection_groups
+            .by_player_name(&player_name.to_string(), tabulosity::QueryOpts::ASC)
+        {
+            if group.group_number == group_number {
+                return Some(group.id);
+            }
+        }
+        None
+    }
+
+    /// Return all selection groups for a given player name.
+    pub fn get_selection_groups(
+        &self,
+        player_name: &str,
+    ) -> Vec<(u8, Vec<CreatureId>, Vec<StructureId>)> {
+        self.db
+            .selection_groups
+            .by_player_name(&player_name.to_string(), tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .map(|g| {
+                (
+                    g.group_number,
+                    g.creature_ids.clone(),
+                    g.structure_ids.clone(),
+                )
+            })
+            .collect()
+    }
+
     /// Apply a batch of commands and advance the sim to the target tick,
     /// processing all scheduled events up to that point.
     ///
@@ -954,6 +1071,30 @@ impl SimState {
                 destination,
             } => {
                 self.command_group_attack_move(creature_ids, *destination, events);
+            }
+            SimAction::SetSelectionGroup {
+                group_number,
+                creature_ids,
+                structure_ids,
+            } => {
+                self.set_selection_group(
+                    &cmd.player_name,
+                    *group_number,
+                    creature_ids.clone(),
+                    structure_ids.clone(),
+                );
+            }
+            SimAction::AddToSelectionGroup {
+                group_number,
+                creature_ids,
+                structure_ids,
+            } => {
+                self.add_to_selection_group(
+                    &cmd.player_name,
+                    *group_number,
+                    creature_ids.clone(),
+                    structure_ids.clone(),
+                );
             }
         }
     }

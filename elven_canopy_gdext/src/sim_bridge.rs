@@ -77,6 +77,10 @@
 //   `furnish_structure(structure_id, furnishing_type)` begins furnishing a
 //   completed building. `get_furniture_positions()` returns flat (x,y,z,kind)
 //   quads of placed furniture for rendering.
+// - **Selection groups:** `set_selection_group(n, creature_uuids, structure_ids)`
+//   and `add_to_selection_group(n, ...)` send commands to persist groups in the
+//   sim. `get_all_selection_groups()` returns all groups for the local player
+//   (used to hydrate GDScript's local cache after load).
 // - **Construction:** `validate_build_position(x,y,z)` checks whether a
 //   voxel is valid for building (Air + adjacent to solid) — used for
 //   single-voxel preview. `validate_build_air(x,y,z)` checks only
@@ -5390,6 +5394,92 @@ impl SimBridge {
             greenhouse_cultivable: f.greenhouse_cultivable,
             parts,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Selection groups (F-selection-groups)
+    // -----------------------------------------------------------------------
+
+    /// Set (overwrite) a numbered selection group. `creature_uuids` is an
+    /// untyped GDScript Array of UUID strings, `structure_ids` is an Array
+    /// of ints. Sends a `SetSelectionGroup` command to the sim for persistence.
+    #[func]
+    fn set_selection_group(
+        &mut self,
+        group_number: i32,
+        creature_uuids: VarArray,
+        structure_ids: VarArray,
+    ) {
+        let creature_ids: Vec<elven_canopy_sim::types::CreatureId> = creature_uuids
+            .iter_shared()
+            .filter_map(|v| parse_creature_id(&v.to_string()))
+            .collect();
+        let structure_ids: Vec<elven_canopy_sim::types::StructureId> = structure_ids
+            .iter_shared()
+            .map(|v| elven_canopy_sim::types::StructureId(v.to::<i64>() as u64))
+            .collect();
+        self.apply_or_send(SimAction::SetSelectionGroup {
+            group_number: group_number as u8,
+            creature_ids,
+            structure_ids,
+        });
+    }
+
+    /// Add creatures and structures to an existing selection group (or create
+    /// it if it doesn't exist). Sends an `AddToSelectionGroup` command.
+    #[func]
+    fn add_to_selection_group(
+        &mut self,
+        group_number: i32,
+        creature_uuids: VarArray,
+        structure_ids: VarArray,
+    ) {
+        let creature_ids: Vec<elven_canopy_sim::types::CreatureId> = creature_uuids
+            .iter_shared()
+            .filter_map(|v| parse_creature_id(&v.to_string()))
+            .collect();
+        let structure_ids: Vec<elven_canopy_sim::types::StructureId> = structure_ids
+            .iter_shared()
+            .map(|v| elven_canopy_sim::types::StructureId(v.to::<i64>() as u64))
+            .collect();
+        self.apply_or_send(SimAction::AddToSelectionGroup {
+            group_number: group_number as u8,
+            creature_ids,
+            structure_ids,
+        });
+    }
+
+    /// Retrieve all selection groups for the local player. Returns an Array
+    /// of Dictionaries, each with keys: `group_number` (int), `creature_ids`
+    /// (Array of UUID strings), `structure_ids` (Array of ints).
+    #[func]
+    fn get_all_selection_groups(&self) -> VarArray {
+        let mut arr = VarArray::new();
+        let Some(sim) = &self.session.sim else {
+            return arr;
+        };
+        let player_name = self
+            .session
+            .players
+            .get(&self.local_player_id)
+            .map(|p| p.name.as_str())
+            .unwrap_or("");
+        for (group_number, creature_ids, structure_ids) in sim.get_selection_groups(player_name) {
+            let mut dict = VarDictionary::new();
+            dict.set("group_number", group_number as i32);
+            let mut cids = VarArray::new();
+            for cid in &creature_ids {
+                cids.push(&GString::from(&cid.to_string()).to_variant());
+            }
+            dict.set("creature_ids", cids);
+            let mut sids = VarArray::new();
+            for sid in &structure_ids {
+                sids.push(&(sid.0 as i64).to_variant());
+            }
+            dict.set("structure_ids", sids);
+            arr.push(&dict.to_variant());
+        }
+        arr
     }
 }
 

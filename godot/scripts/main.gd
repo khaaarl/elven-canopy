@@ -475,6 +475,9 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Home key: center camera on the home tree.
 	_camera_pivot.home_requested.connect(_center_on_home_tree)
 
+	# Selection group double-tap: center camera on group centroid.
+	_selector.group_center_requested.connect(func(pos: Vector3): _look_at_position(pos))
+
 	_selector.creatures_selected.connect(
 		func(ids: Array):
 			# Mutual exclusion: hide tree info, structure info, pile, and military panels.
@@ -851,6 +854,9 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Initialize notification cursor to the highest existing ID so that
 	# historical notifications (from a loaded save) aren't replayed as toasts.
 	_last_notification_id = bridge.get_max_notification_id()
+
+	# Hydrate selection groups from sim (restores groups after loading a save).
+	_selector.hydrate_selection_groups()
 
 
 ## Try to load a save file. Returns true on success.

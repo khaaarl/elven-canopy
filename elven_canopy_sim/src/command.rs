@@ -55,6 +55,8 @@
 //   destinations across nearby nav nodes via BFS so creatures don't stack.
 // - `GroupAttackMove` — like `AttackMove` but for multiple creatures with
 //   spread destinations.
+// - `SetSelectionGroup` — overwrite a numbered selection group (Ctrl+N).
+// - `AddToSelectionGroup` — merge into a numbered selection group (Shift+N).
 //
 // See also: `sim/mod.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -327,6 +329,22 @@ pub enum SimAction {
     SetGroupEquipmentWants {
         group_id: MilitaryGroupId,
         wants: Vec<crate::building::LogisticsWant>,
+    },
+    /// Set (overwrite) a selection group for the issuing player. `group_number`
+    /// is 1–9. If a group with this number already exists for the player, its
+    /// contents are replaced. Otherwise a new row is inserted.
+    SetSelectionGroup {
+        group_number: u8,
+        creature_ids: Vec<CreatureId>,
+        structure_ids: Vec<StructureId>,
+    },
+    /// Add the given creatures and structures to an existing selection group
+    /// (Shift+number). If the group doesn't exist yet, it is created with the
+    /// provided contents. Duplicates are silently ignored.
+    AddToSelectionGroup {
+        group_number: u8,
+        creature_ids: Vec<CreatureId>,
+        structure_ids: Vec<StructureId>,
     },
     /// Spawn a projectile at a position with a given velocity (debug/testing).
     /// Creates a projectile with an arrow item in its inventory.

@@ -5,12 +5,12 @@
 ## A "Debug" toggle button (or F12) reveals a second row with dev/test tools:
 ## creature spawn buttons, Summon Elf, and Test Notif (sends a debug
 ## notification through the full sim command pipeline via SimBridge).
-## When the debug row is hidden, its keyboard shortcuts
-## (1–7) are inactive.
+## Debug spawn buttons are click-only (no keyboard shortcuts).
 ##
 ## Keyboard shortcuts:
-## [Space] Toggle pause/resume, [1] Normal, [2] Fast, [3] Very Fast
+## [Space] Toggle pause/resume, [F1] Normal, [F2] Fast, [F3] Very Fast
 ## [B] Build, [T] Tasks, [U] Units, [M] Military, [I] Tree Info, [?] Help, [F12] Toggle debug panel
+## [1-9] Selection groups (see selection_controller.gd)
 ##
 ## Emits three signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up

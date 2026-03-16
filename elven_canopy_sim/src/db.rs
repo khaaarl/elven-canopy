@@ -6,10 +6,12 @@
 //
 // ## Table layout
 //
-// The database has 34 tables organized in four tiers:
+// The database has 35 tables organized in four tiers:
 //
-// **Player table:** `players` — human operators identified by username string.
+// **Player tables:** `players` — human operators identified by username string.
 // One entry per connected human player; persisted in save files.
+// `selection_groups` — SC2-style numbered selection groups (Ctrl+1–9) per
+// player, storing creature and structure IDs for instant recall.
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures`,
 // `projectiles` — the primary simulation entities, keyed by UUID-based or
@@ -62,10 +64,11 @@ use crate::types::{
     ActiveRecipeId, ActiveRecipeTargetId, BuildType, CivId, CivOpinion, CivRelationshipId,
     CivSpecies, CompositionId, CreatureId, CultureTag, EnchantmentEffectId, EnchantmentId,
     FurnishingType, FurnitureId, GroundPileId, InventoryId, ItemStackId, ItemSubcomponentId,
-    LogisticsWantId, MilitaryGroupId, NavNodeId, NotificationId, ProjectId, ProjectileId, Species,
-    StructureId, StrutId, TaskAcquireDataId, TaskAttackMoveDataId, TaskAttackTargetDataId,
-    TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId, TaskSleepDataId,
-    TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VitalStatus, VoxelCoord,
+    LogisticsWantId, MilitaryGroupId, NavNodeId, NotificationId, ProjectId, ProjectileId,
+    SelectionGroupId, Species, StructureId, StrutId, TaskAcquireDataId, TaskAttackMoveDataId,
+    TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId,
+    TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VitalStatus,
+    VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -1038,6 +1041,27 @@ pub struct Player {
     pub civ_id: Option<CivId>,
 }
 
+/// A player's selection group (SC2-style Ctrl+1–9). Each row represents one
+/// numbered group for one player, containing the creature and structure IDs
+/// that were in the selection when the group was saved.
+///
+/// `player_name` + `group_number` form a logical composite key (enforced by
+/// the sim command handler, which upserts by looking up existing rows).
+/// `group_number` is 1–9 (the keyboard key the player pressed).
+///
+/// Groups persist across save/load via serde. GDScript keeps a parallel
+/// local copy for instant recall; the sim copy is the persistence layer.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct SelectionGroup {
+    #[primary_key(auto_increment)]
+    pub id: SelectionGroupId,
+    #[indexed]
+    pub player_name: String,
+    pub group_number: u8,
+    pub creature_ids: Vec<CreatureId>,
+    pub structure_ids: Vec<StructureId>,
+}
+
 // ---------------------------------------------------------------------------
 // Civilization tables
 // ---------------------------------------------------------------------------
@@ -1170,6 +1194,7 @@ impl std::fmt::Debug for SimDb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SimDb")
             .field("civilizations", &self.civilizations.len())
+            .field("selection_groups", &self.selection_groups.len())
             .field("fruit_species", &self.fruit_species.len())
             .field("military_groups", &self.military_groups.len())
             .field("civ_relationships", &self.civ_relationships.len())
@@ -1194,6 +1219,9 @@ impl std::fmt::Debug for SimDb {
 pub struct SimDb {
     #[table(singular = "player")]
     pub players: PlayerTable,
+
+    #[table(singular = "selection_group", auto)]
+    pub selection_groups: SelectionGroupTable,
 
     #[table(singular = "civilization")]
     pub civilizations: CivilizationTable,

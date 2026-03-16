@@ -397,6 +397,8 @@ auto_pk_id!(/// Auto-increment ID for support struts.
 StrutId);
 auto_pk_id!(/// Auto-increment ID for military groups within a civilization.
 MilitaryGroupId);
+auto_pk_id!(/// Auto-increment ID for player selection groups (Ctrl+1–9).
+SelectionGroupId);
 
 // ---------------------------------------------------------------------------
 // Civilization IDs — sequential u16, assigned by worldgen in batch.

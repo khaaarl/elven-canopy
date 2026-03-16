@@ -1,5 +1,6 @@
-## Handles click-to-select, box-select, double-click-select, and right-click
-## commands for creatures, structures, and ground piles.
+## Handles click-to-select, box-select, double-click-select, right-click
+## commands, and SC2-style selection groups (Ctrl+1–9) for creatures,
+## structures, and ground piles.
 ##
 ## Supports single-click selection (ray-cast to closest creature sprite),
 ## click-and-drag box selection (2D rectangle selecting all creatures whose
@@ -11,6 +12,14 @@
 ## programmatic select_creature_by_id() checks Alt state and removes instead of
 ## solo-selecting. Creatures are identified by stable CreatureId strings
 ## (UUID), not ephemeral per-species indices.
+##
+## Selection groups (F-selection-groups): Ctrl+1–9 saves the current selection
+## as a numbered group. Shift+1–9 adds the current selection to the group.
+## Pressing 1–9 (plain) recalls the group. Double-tapping 1–9 recalls the
+## group and centers the camera on the group centroid. Groups can contain both
+## creatures and structures. GDScript keeps an authoritative local copy for
+## instant recall; mutations are also sent to the sim for persistence across
+## save/load. On load, hydrate_selection_groups() fetches from the sim.
 ##
 ## Double-click group select (F-dblclick-select): double-clicking a player-civ
 ## creature selects all visible (on-screen, not behind camera) player-civ
@@ -69,6 +78,9 @@ signal structure_selected(structure_id: int)
 signal structure_deselected
 signal pile_selected(x: int, y: int, z: int)
 signal pile_deselected
+## Emitted when a selection group is double-tap recalled, requesting the camera
+## center on the given world position (centroid of group members).
+signal group_center_requested(position: Vector3)
 
 ## Maximum perpendicular distance (world units) from the mouse ray to a
 ## creature sprite center for it to count as a click hit. Tighter than
@@ -77,6 +89,10 @@ const SNAP_THRESHOLD := 1.5
 
 ## Minimum drag distance (pixels) before a click becomes a box-select drag.
 const DRAG_THRESHOLD := 5.0
+
+## Maximum time (seconds) between two presses of the same number key to count
+## as a double-tap (recall + center camera).
+const DOUBLE_TAP_THRESHOLD := 0.4
 
 ## Y offsets per species — must match the renderers.
 const SPECIES_Y_OFFSETS = {
@@ -121,6 +137,16 @@ var _attack_move_mode: bool = false
 ## When true, building roof voxels are skipped during raycasts so clicks pass
 ## through to creatures inside. Set by main.gd when the roof-hide toggle is active.
 var _roofs_hidden: bool = false
+
+## SC2-style selection groups (1–9). Keys are group numbers (int),
+## values are Dictionaries with "creature_ids" (Array) and "structure_ids" (Array).
+## This is the authoritative runtime copy — mutations also write to sim for persistence.
+var _selection_groups: Dictionary = {}
+
+## Double-tap detection for selection group recall. Tracks the last number key
+## pressed and when, so a second press within the threshold centers the camera.
+var _last_group_key: int = -1
+var _last_group_key_time: float = 0.0
 
 
 func set_roofs_hidden(hidden: bool) -> void:
@@ -277,6 +303,17 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event is InputEventKey:
 		var key := event as InputEventKey
+		if key.pressed and not key.echo:
+			var group_num := _keycode_to_group_number(key.keycode)
+			if group_num > 0:
+				if key.ctrl_pressed:
+					_save_selection_group(group_num)
+				elif key.shift_pressed:
+					_add_to_selection_group(group_num)
+				else:
+					_recall_selection_group(group_num)
+				get_viewport().set_input_as_handled()
+				return
 		if key.pressed and key.keycode == KEY_F and has_creature_selection():
 			_attack_move_mode = not _attack_move_mode
 			get_viewport().set_input_as_handled()
@@ -725,3 +762,128 @@ func _update_box_rect(current_pos: Vector2) -> void:
 ## Delegates to GeometryUtils (geometry_utils.gd) — the single source of truth.
 func _make_screen_rect(a: Vector2, b: Vector2) -> Rect2:
 	return GeometryUtils.make_screen_rect(a, b)
+
+
+# ---------------------------------------------------------------------------
+# Selection groups (F-selection-groups)
+# ---------------------------------------------------------------------------
+
+
+## Map a keycode to group number 1–9, or 0 if not a number key.
+func _keycode_to_group_number(keycode: int) -> int:
+	if keycode >= KEY_1 and keycode <= KEY_9:
+		return keycode - KEY_0
+	return 0
+
+
+## Save the current selection as group N (Ctrl+N).
+func _save_selection_group(group_num: int) -> void:
+	var group := {
+		"creature_ids": _selected_creature_ids.duplicate(),
+		"structure_ids": [] as Array,
+	}
+	if _selected_structure_id >= 0:
+		group["structure_ids"] = [_selected_structure_id]
+	_selection_groups[group_num] = group
+	# Persist to sim for save/load.
+	if _bridge:
+		_bridge.set_selection_group(group_num, group["creature_ids"], group["structure_ids"])
+
+
+## Add the current selection to group N (Shift+N).
+func _add_to_selection_group(group_num: int) -> void:
+	if not _selection_groups.has(group_num):
+		_save_selection_group(group_num)
+		return
+	var group: Dictionary = _selection_groups[group_num]
+	var cids: Array = group["creature_ids"]
+	for cid in _selected_creature_ids:
+		if cids.find(cid) < 0:
+			cids.append(cid)
+	var sids: Array = group["structure_ids"]
+	if _selected_structure_id >= 0 and sids.find(_selected_structure_id) < 0:
+		sids.append(_selected_structure_id)
+	# Persist to sim.
+	if _bridge:
+		_bridge.set_selection_group(group_num, cids, sids)
+
+
+## Recall group N (plain number key). Double-tap centers camera.
+func _recall_selection_group(group_num: int) -> void:
+	var now := Time.get_ticks_msec() / 1000.0
+	var is_double_tap := (
+		_last_group_key == group_num and (now - _last_group_key_time) < DOUBLE_TAP_THRESHOLD
+	)
+	_last_group_key = group_num
+	_last_group_key_time = now
+
+	if not _selection_groups.has(group_num):
+		return
+	var group: Dictionary = _selection_groups[group_num]
+	var cids: Array = group["creature_ids"]
+	var sids: Array = group["structure_ids"]
+
+	# Apply the selection.
+	_deselect_creature_only()
+	_deselect_structure_only()
+	_deselect_pile_only()
+	_attack_move_mode = false
+
+	if not cids.is_empty():
+		_selected_creature_ids = cids.duplicate()
+		creatures_selected.emit(_selected_creature_ids)
+	elif not sids.is_empty():
+		_selected_structure_id = sids[0]
+		structure_selected.emit(_selected_structure_id)
+
+	# Double-tap: center camera on group centroid.
+	if is_double_tap:
+		var centroid := _compute_group_centroid(cids, sids)
+		if centroid != Vector3.ZERO:
+			group_center_requested.emit(centroid)
+
+
+## Compute the centroid of a selection group's members for camera centering.
+func _compute_group_centroid(creature_ids: Array, structure_ids: Array) -> Vector3:
+	var sum := Vector3.ZERO
+	var count := 0
+
+	for cid in creature_ids:
+		var info := _bridge.get_creature_info_by_id(cid, _render_tick)
+		if info.is_empty():
+			continue
+		sum += Vector3(info.get("x", 0.0), info.get("y", 0.0), info.get("z", 0.0))
+		count += 1
+
+	for sid in structure_ids:
+		var sinfo := _bridge.get_structure_info(sid)
+		if sinfo.is_empty():
+			continue
+		# Compute center from anchor + dimensions.
+		var ax: float = sinfo.get("anchor_x", 0)
+		var ay: float = sinfo.get("anchor_y", 0)
+		var az: float = sinfo.get("anchor_z", 0)
+		var w: float = sinfo.get("width", 1)
+		var d: float = sinfo.get("depth", 1)
+		var h: float = sinfo.get("height", 1)
+		sum += Vector3(ax + w / 2.0, ay + h / 2.0, az + d / 2.0)
+		count += 1
+
+	if count == 0:
+		return Vector3.ZERO
+	return sum / count
+
+
+## Hydrate local selection groups from the sim after loading a save.
+## Called by main.gd after a successful load_game_json().
+func hydrate_selection_groups() -> void:
+	_selection_groups.clear()
+	if not _bridge:
+		return
+	var groups := _bridge.get_all_selection_groups()
+	for entry in groups:
+		var num: int = entry.get("group_number", 0)
+		_selection_groups[num] = {
+			"creature_ids": entry.get("creature_ids", []),
+			"structure_ids": entry.get("structure_ids", []),
+		}
