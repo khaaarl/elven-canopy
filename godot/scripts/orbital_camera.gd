@@ -9,6 +9,7 @@
 ## - Up/Down arrows or middle-mouse drag: tilt the camera up/down.
 ## - Scroll wheel or +/= and - keys: zoom (distance from focal point to camera).
 ## - Page Up/Down: move the focal point vertically (clamped to world bounds).
+## - Home: center focal point on the home tree (emits home_requested signal).
 ## - R/F formerly duplicated Page Up/Down; removed to free F for attack-move.
 ##
 ## Follow mode: main.gd calls start_follow() / update_follow_target() to lock
@@ -28,6 +29,9 @@
 ## follow UI, construction_controller.gd for vertical snap toggling.
 
 extends Node3D
+
+## Emitted when the user presses the Home key to center on the home tree.
+signal home_requested
 
 ## Lerp speed for vertical snap (units per second, exponential decay).
 const SNAP_LERP_SPEED: float = 8.0
@@ -136,6 +140,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			_update_camera_transform()
 		elif mb.button_index == MOUSE_BUTTON_MIDDLE:
 			_rotating = mb.pressed
+
+	# Home key: center camera on the home tree.
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_HOME:
+			home_requested.emit()
+			get_viewport().set_input_as_handled()
 
 	# Middle-mouse drag rotation and tilt.
 	if event is InputEventMouseMotion and _rotating:

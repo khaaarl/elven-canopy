@@ -467,6 +467,9 @@ func _setup_common(bridge: SimBridge) -> void:
 			func(world_pos: Vector3): _look_at_position(world_pos)
 		)
 
+	# Home key: center camera on the home tree.
+	_camera_pivot.home_requested.connect(_center_on_home_tree)
+
 	_selector.creatures_selected.connect(
 		func(ids: Array):
 			# Mutual exclusion: hide tree info, structure info, pile, and military panels.
@@ -1067,6 +1070,17 @@ func _look_at_position(pos: Vector3) -> void:
 	if _panel and _panel.visible:
 		_panel.set_follow_state(false)
 	_camera_pivot.position = pos
+
+
+## Center the camera on the home tree's position. Called when the user presses
+## the Home key. Keeps current zoom and pitch — only repositions the focal point.
+func _center_on_home_tree() -> void:
+	var bridge: SimBridge = $SimBridge
+	var tree_data := bridge.get_home_tree_info()
+	var x: float = tree_data.get("position_x", 0.0)
+	var y: float = tree_data.get("position_y", 0.0)
+	var z: float = tree_data.get("position_z", 0.0)
+	_look_at_position(Vector3(x + 0.5, y, z + 0.5))
 
 
 ## Get the world-space position of a creature sprite by its stable ID.

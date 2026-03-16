@@ -118,6 +118,7 @@ func _build_sections(parent: VBoxContainer) -> void:
 			["Middle Mouse Drag", "Orbit camera"],
 			["Page Up", "Move view up"],
 			["Page Down", "Move view down"],
+			["Home", "Center on home tree"],
 		]
 	)
 

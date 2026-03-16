@@ -119,7 +119,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
-[ ] F-home-camera          Home key to center camera on tree
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-item-color           Item color system (material-derived and dye override)
 [ ] F-jobs                 Elf job/role specialization
@@ -242,6 +241,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
+[x] F-home-camera          Home key to center camera on tree
 [x] F-hostile-detection    Hostile detection and faction logic
 [x] F-hostile-species      Goblin, Orc, and Troll species
 [x] F-hp-death             HP, VitalStatus, and creature death handling
@@ -2881,7 +2881,7 @@ handle the rest.
 Godot 4 project with GDExtension configuration.
 
 #### F-home-camera — Home key to center camera on tree
-**Status:** Todo · **Phase:** 5
+**Status:** Done · **Phase:** 5
 
 Press Home to snap the camera focal point to the center of the
 player's tree. Keeps current zoom and pitch — only repositions the
