@@ -224,13 +224,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		if key.keycode == KEY_SPACE:
 			_toggle_pause()
 			get_viewport().set_input_as_handled()
-		elif key.keycode == KEY_1:
+		elif key.keycode == KEY_F1:
 			_set_speed("Normal")
 			get_viewport().set_input_as_handled()
-		elif key.keycode == KEY_2:
+		elif key.keycode == KEY_F2:
 			_set_speed("Fast")
 			get_viewport().set_input_as_handled()
-		elif key.keycode == KEY_3:
+		elif key.keycode == KEY_F3:
 			_set_speed("VeryFast")
 			get_viewport().set_input_as_handled()
 		# Gameplay shortcuts (always active).

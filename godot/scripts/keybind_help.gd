@@ -126,9 +126,9 @@ func _build_sections(parent: VBoxContainer) -> void:
 		"Speed",
 		[
 			["Space", "Pause / resume"],
-			["1", "Normal speed (1x)"],
-			["2", "Fast speed (2x)"],
-			["3", "Very fast speed (5x)"],
+			["F1", "Normal speed (1x)"],
+			["F2", "Fast speed (2x)"],
+			["F3", "Very fast speed (5x)"],
 		]
 	)
 

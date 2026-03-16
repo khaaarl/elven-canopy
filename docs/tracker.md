@@ -114,7 +114,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
-[ ] F-game-speed-fkeys     Move game speed controls to F1/F2/F3
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
@@ -232,6 +231,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-fruit-yields         Fruit yield model overhaul
 [x] F-furnish              Building furnishing framework (dormitories)
 [x] F-game-session         Game session autoload singleton
+[x] F-game-speed-fkeys     Move game speed controls to F1/F2/F3
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-gdscript-tests       GDScript unit tests (GUT or built-in)
 [x] F-ghost-above          Hide voxels above camera focus height
@@ -2749,13 +2749,13 @@ Follows the existing sprite_factory.gd pattern used for creature sprites.
 **Related:** F-fruit-sprite-ui, F-fruit-variety, F-rust-sprites
 
 #### F-game-speed-fkeys — Move game speed controls to F1/F2/F3
-**Status:** Todo · **Phase:** 5
+**Status:** Done · **Phase:** 5
 
 Move game speed controls from 1/2/3 to F1/F2/F3, freeing the number
 keys for selection groups (F-selection-groups). Space remains
 pause/resume.
 
-**Blocks:** F-selection-groups
+**Unblocked:** F-selection-groups
 **Related:** F-controls-config
 
 #### F-ghost-above — Hide voxels above camera focus height
@@ -3053,7 +3053,7 @@ parallel binding set.
 
 Requires F-game-speed-fkeys to free the number keys.
 
-**Blocked by:** F-game-speed-fkeys
+**Unblocked by:** F-game-speed-fkeys
 **Related:** F-controls-config, F-dblclick-select, F-follow-multi
 
 #### F-sim-speed — Simulation speed controls UI
