@@ -6,7 +6,10 @@
 //
 // ## Table layout
 //
-// The database has 30 tables organized in three tiers:
+// The database has 34 tables organized in four tiers:
+//
+// **Player table:** `players` — human operators identified by username string.
+// One entry per connected human player; persisted in save files.
 //
 // **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures`,
 // `projectiles` — the primary simulation entities, keyed by UUID-based or
@@ -1012,6 +1015,25 @@ pub struct Furniture {
 }
 
 // ---------------------------------------------------------------------------
+// Player tables
+// ---------------------------------------------------------------------------
+
+/// A human player (operator). In single-player there is exactly one; in
+/// multiplayer there is one per connected human. The username string is the
+/// primary key — unique within a game, chosen by the player on first launch,
+/// and persisted client-side in `user://player.cfg`.
+///
+/// `civ_id` records which civilization this player controls. Currently all
+/// players share the same civ, but the schema supports per-player civs for
+/// future multi-civ games.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct Player {
+    #[primary_key]
+    pub name: String,
+    pub civ_id: Option<CivId>,
+}
+
+// ---------------------------------------------------------------------------
 // Civilization tables
 // ---------------------------------------------------------------------------
 
@@ -1165,6 +1187,9 @@ impl std::fmt::Debug for SimDb {
 
 #[derive(Database)]
 pub struct SimDb {
+    #[table(singular = "player")]
+    pub players: PlayerTable,
+
     #[table(singular = "civilization")]
     pub civilizations: CivilizationTable,
 

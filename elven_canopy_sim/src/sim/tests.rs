@@ -44,7 +44,7 @@ fn new_sim_has_home_tree() {
     let sim = test_sim(42);
     assert!(sim.trees.contains_key(&sim.player_tree_id));
     let tree = &sim.trees[&sim.player_tree_id];
-    assert_eq!(tree.owner, Some(sim.player_id));
+    assert_eq!(tree.owner, sim.player_civ_id);
     assert_eq!(tree.mana_stored, sim.config.starting_mana);
 }
 
@@ -52,7 +52,7 @@ fn new_sim_has_home_tree() {
 fn determinism_two_sims_same_seed() {
     let sim_a = test_sim(42);
     let sim_b = test_sim(42);
-    assert_eq!(sim_a.player_id, sim_b.player_id);
+    assert_eq!(sim_a.player_civ_id, sim_b.player_civ_id);
     assert_eq!(sim_a.player_tree_id, sim_b.player_tree_id);
     assert_eq!(sim_a.tick, sim_b.tick);
 }
@@ -96,7 +96,7 @@ fn serialization_roundtrip() {
     let json = serde_json::to_string(&sim).unwrap();
     let restored: SimState = serde_json::from_str(&json).unwrap();
     assert_eq!(sim.tick, restored.tick);
-    assert_eq!(sim.player_id, restored.player_id);
+    assert_eq!(sim.player_civ_id, restored.player_civ_id);
     assert_eq!(sim.player_tree_id, restored.player_tree_id);
 }
 
@@ -106,7 +106,7 @@ fn determinism_after_stepping() {
     let mut sim_b = test_sim(42);
 
     let cmds = vec![SimCommand {
-        player_id: sim_a.player_id,
+        player_name: String::new(),
         tick: 50,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -151,7 +151,7 @@ fn spawn_elf_command() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -176,7 +176,7 @@ fn spawned_elf_has_vaelith_name() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -215,7 +215,7 @@ fn spawned_elf_name_is_deterministic() {
     let tree_pos = sim1.trees[&sim1.player_tree_id].position;
 
     let cmd1 = SimCommand {
-        player_id: sim1.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -223,7 +223,7 @@ fn spawned_elf_name_is_deterministic() {
         },
     };
     let cmd2 = SimCommand {
-        player_id: sim2.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -246,7 +246,7 @@ fn spawned_non_elf_has_no_name() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Capybara,
@@ -273,7 +273,7 @@ fn elf_wanders_after_spawn() {
 
     // Spawn elf.
     let spawn_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -307,7 +307,7 @@ fn determinism_with_elf_after_1000_ticks() {
     let tree_pos = sim_a.trees[&sim_a.player_tree_id].position;
 
     let spawn = SimCommand {
-        player_id: sim_a.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -335,7 +335,7 @@ fn spawn_capybara_command() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Capybara,
@@ -370,7 +370,7 @@ fn capybara_wanders_on_ground() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Capybara,
@@ -400,7 +400,7 @@ fn capybara_stays_on_ground() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Capybara,
@@ -434,7 +434,7 @@ fn determinism_with_capybara() {
     let tree_pos = sim_a.trees[&sim_a.player_tree_id].position;
 
     let spawn = SimCommand {
-        player_id: sim_a.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Capybara,
@@ -460,7 +460,7 @@ fn creature_wanders_via_activation_chain() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -512,7 +512,7 @@ fn wandering_creature_stays_on_nav_graph() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -559,7 +559,7 @@ fn spawn_elf(sim: &mut SimState) -> CreatureId {
         .collect();
     let tree_pos = sim.trees[&sim.player_tree_id].position;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -722,7 +722,7 @@ fn create_task_command_adds_task() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::CreateTask {
             kind: TaskKind::GoTo,
@@ -745,7 +745,7 @@ fn end_to_end_summon_task() {
 
     // Spawn an elf.
     let spawn_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -756,7 +756,7 @@ fn end_to_end_summon_task() {
 
     // Create a GoTo task at a ground position near the tree.
     let task_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 3,
         action: SimAction::CreateTask {
             kind: TaskKind::GoTo,
@@ -797,7 +797,7 @@ fn only_one_creature_claims_goto_task() {
     // Spawn multiple elves and capybaras.
     for _ in 0..3 {
         let cmd = SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SpawnCreature {
                 species: Species::Elf,
@@ -808,7 +808,7 @@ fn only_one_creature_claims_goto_task() {
     }
     for _ in 0..2 {
         let cmd = SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SpawnCreature {
                 species: Species::Capybara,
@@ -1284,7 +1284,7 @@ fn json_roundtrip_preserves_state() {
     // Spawn creatures and advance ticks.
     let cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
                 species: Species::Elf,
@@ -1292,7 +1292,7 @@ fn json_roundtrip_preserves_state() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
                 species: Species::Capybara,
@@ -1314,7 +1314,7 @@ fn json_roundtrip_preserves_state() {
         assert_eq!(creature.name_meaning, restored_creature.name_meaning);
     }
     assert_eq!(sim.player_tree_id, restored.player_tree_id);
-    assert_eq!(sim.player_id, restored.player_id);
+    assert_eq!(sim.player_civ_id, restored.player_civ_id);
 }
 
 #[test]
@@ -1324,7 +1324,7 @@ fn json_roundtrip_continues_deterministically() {
 
     // Spawn creatures and advance.
     let spawn = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1363,7 +1363,7 @@ fn elf_spawned_after_roundtrip_gets_name() {
 
     // Spawn an elf after the roundtrip.
     let cmd = SimCommand {
-        player_id: restored.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1522,7 +1522,7 @@ fn creature_species_preserved() {
     // Spawn one elf and one capybara.
     let cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
                 species: Species::Elf,
@@ -1530,7 +1530,7 @@ fn creature_species_preserved() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
                 species: Species::Capybara,
@@ -1573,7 +1573,7 @@ fn food_decreases_over_heartbeats() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1619,7 +1619,7 @@ fn food_does_not_go_below_zero() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1656,7 +1656,7 @@ fn creature_dies_when_food_reaches_zero() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1706,7 +1706,7 @@ fn starvation_death_notification_mentions_starvation() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1745,7 +1745,7 @@ fn no_heartbeat_after_starvation_death() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1780,7 +1780,7 @@ fn creature_with_food_remaining_does_not_starve() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1822,7 +1822,7 @@ fn rest_decreases_over_heartbeats() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1864,7 +1864,7 @@ fn rest_does_not_go_below_zero() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1895,7 +1895,7 @@ fn tired_idle_elf_creates_sleep_task() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1945,7 +1945,7 @@ fn rested_elf_does_not_create_sleep_task() {
 
     // Spawn an elf — starts at full rest.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -1979,7 +1979,7 @@ fn busy_tired_elf_does_not_create_sleep_task() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -2061,7 +2061,7 @@ fn hungry_takes_priority_over_tired() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -2112,7 +2112,7 @@ fn ground_sleep_fallback_when_no_beds() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -2208,7 +2208,7 @@ fn find_nearest_bed_excludes_occupied() {
     // Spawn two elves.
     let cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
                 species: Species::Elf,
@@ -2216,7 +2216,7 @@ fn find_nearest_bed_excludes_occupied() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
                 species: Species::Elf,
@@ -2328,7 +2328,7 @@ fn tired_elf_sleeps_and_rest_increases() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -2474,7 +2474,7 @@ fn wander_sets_movement_metadata() {
     // Spawn an elf at tick 1, step only to tick 1 so the first activation
     // (scheduled at tick 2) hasn't fired yet.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -2569,7 +2569,7 @@ fn designate_build_creates_blueprint() {
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2597,7 +2597,7 @@ fn designate_build_creates_composition() {
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2633,7 +2633,7 @@ fn composition_persists_across_serde_roundtrip() {
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2692,7 +2692,7 @@ fn designate_carve_has_no_composition() {
     let carve_coord = carve_coord.expect("Should find a trunk voxel to carve");
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
             voxels: vec![carve_coord],
@@ -2726,7 +2726,7 @@ fn build_work_sets_composition_build_started() {
     spawn_elf(&mut sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2767,7 +2767,7 @@ fn designate_build_creates_build_task() {
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2800,7 +2800,7 @@ fn designate_build_rejects_out_of_bounds() {
     let oob = VoxelCoord::new(-1, 0, 0);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2820,7 +2820,7 @@ fn designate_build_rejects_non_air() {
     let trunk_coord = tree.trunk_voxels[0];
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2842,7 +2842,7 @@ fn designate_build_rejects_no_adjacency() {
     assert!(!sim.world.has_solid_face_neighbor(isolated));
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2860,7 +2860,7 @@ fn designate_build_rejects_empty_voxels() {
     let mut sim = test_sim(42);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2880,7 +2880,7 @@ fn cancel_build_removes_blueprint() {
 
     // First designate.
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2894,7 +2894,7 @@ fn cancel_build_removes_blueprint() {
 
     // Now cancel.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::CancelBuild { project_id },
     };
@@ -2915,7 +2915,7 @@ fn cancel_build_nonexistent_is_noop() {
     let fake_id = ProjectId::new(&mut GameRng::new(999));
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::CancelBuild {
             project_id: fake_id,
@@ -2939,7 +2939,7 @@ fn cancel_build_removes_associated_task() {
 
     // Designate a build.
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -2955,7 +2955,7 @@ fn cancel_build_removes_associated_task() {
 
     // Cancel.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::CancelBuild { project_id },
     };
@@ -2975,7 +2975,7 @@ fn cancel_build_unassigns_elf() {
 
     // Designate a build.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -3020,7 +3020,7 @@ fn cancel_build_unassigns_elf() {
 
     // Cancel the build.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::CancelBuild { project_id },
     };
@@ -3041,7 +3041,7 @@ fn cancel_build_reverts_partial_voxels() {
 
     // Designate a build.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -3059,7 +3059,7 @@ fn cancel_build_reverts_partial_voxels() {
 
     // Cancel the build.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::CancelBuild { project_id },
     };
@@ -3079,7 +3079,7 @@ fn sim_serialization_with_blueprints() {
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -3109,7 +3109,7 @@ fn blueprint_determinism() {
     assert_eq!(air_a, air_b);
 
     let cmd_a = SimCommand {
-        player_id: sim_a.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -3118,7 +3118,7 @@ fn blueprint_determinism() {
         },
     };
     let cmd_b = SimCommand {
-        player_id: sim_b.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -3145,7 +3145,7 @@ fn spawn_boar_command() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Boar,
@@ -3179,7 +3179,7 @@ fn spawn_deer_command() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Deer,
@@ -3213,7 +3213,7 @@ fn spawn_monkey_command() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Monkey,
@@ -3238,7 +3238,7 @@ fn spawn_squirrel_command() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Squirrel,
@@ -3263,7 +3263,7 @@ fn boar_stays_on_ground() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Boar,
@@ -3295,7 +3295,7 @@ fn deer_stays_on_ground() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Deer,
@@ -3326,7 +3326,7 @@ fn monkey_can_climb() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Monkey,
@@ -3357,7 +3357,7 @@ fn squirrel_can_climb() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Squirrel,
@@ -3395,7 +3395,7 @@ fn all_small_species_spawn_and_coexist() {
     let mut tick = 1;
     for &species in &species_list {
         let cmd = SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick,
             action: SimAction::SpawnCreature {
                 species,
@@ -3471,7 +3471,7 @@ fn build_task_completes_and_all_voxels_placed() {
 
     // Designate a 1-voxel platform.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -3535,7 +3535,7 @@ fn build_task_materializes_voxels_incrementally() {
 
     // Designate a 3-voxel platform.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -3583,7 +3583,7 @@ fn build_voxels_maintain_adjacency() {
 
     // Designate a 3-voxel strip.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -3642,7 +3642,7 @@ fn build_displaces_creature_on_occupied_voxel() {
     // on the build site, so we need another builder).
     let tree_pos = sim.trees[&sim.player_tree_id].position;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -3653,7 +3653,7 @@ fn build_displaces_creature_on_occupied_voxel() {
 
     // Designate the build at the occupied voxel.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -3691,7 +3691,7 @@ fn save_load_preserves_partially_built_platform() {
     spawn_elf(&mut sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -3759,7 +3759,7 @@ fn designate_building_creates_blueprint() {
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
             anchor,
@@ -3785,7 +3785,7 @@ fn designate_building_creates_task() {
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
             anchor,
@@ -3811,7 +3811,7 @@ fn designate_building_rejects_small_width() {
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
             anchor,
@@ -3831,7 +3831,7 @@ fn designate_building_rejects_non_solid_foundation() {
     // Place anchor at a position where foundation is Air.
     // y=10 should have Air below.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
             anchor: VoxelCoord::new(1, 10, 1),
@@ -3851,7 +3851,7 @@ fn building_materialization_sets_building_interior() {
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
             anchor,
@@ -3888,7 +3888,7 @@ fn building_materialization_creates_nav_node() {
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
             anchor,
@@ -3916,7 +3916,7 @@ fn cancel_building_removes_face_data() {
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
             anchor,
@@ -3937,7 +3937,7 @@ fn cancel_building_removes_face_data() {
 
     // Cancel the build.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::CancelBuild { project_id },
     };
@@ -3967,7 +3967,7 @@ fn save_load_preserves_building() {
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
             anchor,
@@ -4027,7 +4027,7 @@ fn designate_building_rejects_non_air_interior() {
     sim.world.set(interior, VoxelType::Trunk);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
             anchor,
@@ -4050,7 +4050,7 @@ fn designate_and_complete_build(mut sim: SimState) -> SimState {
 
     // Spawn an elf near the build site.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -4061,7 +4061,7 @@ fn designate_and_complete_build(mut sim: SimState) -> SimState {
 
     // Designate a 1-voxel platform.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -4119,7 +4119,7 @@ fn completed_structure_sequential_ids() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -4130,7 +4130,7 @@ fn completed_structure_sequential_ids() {
 
     // Designate first build.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -4190,7 +4190,7 @@ fn completed_structure_sequential_ids() {
     // Designate second build.
     let tick = sim.tick + 1;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -4232,7 +4232,7 @@ fn cancel_completed_structure_removes_entry() {
     // Cancel the build (should remove from structures too).
     let tick = sim.tick + 1;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick,
         action: SimAction::CancelBuild { project_id },
     };
@@ -4280,7 +4280,7 @@ fn structure_voxels_cleared_on_cancel_build() {
 
     let tick = sim.tick + 1;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick,
         action: SimAction::CancelBuild { project_id },
     };
@@ -4389,7 +4389,7 @@ fn designate_and_complete_building(mut sim: SimState) -> SimState {
     // Spawn an elf near the build site.
     let air_above = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -4400,7 +4400,7 @@ fn designate_and_complete_building(mut sim: SimState) -> SimState {
 
     // Designate a 3x3x1 building.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuilding {
             anchor,
@@ -4613,7 +4613,7 @@ fn rename_structure_sets_custom_name() {
     );
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::RenameStructure {
             structure_id: sid,
@@ -4634,7 +4634,7 @@ fn rename_structure_to_none_resets_to_default() {
 
     // Set a custom name.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::RenameStructure {
             structure_id: sid,
@@ -4649,7 +4649,7 @@ fn rename_structure_to_none_resets_to_default() {
 
     // Reset to default.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::RenameStructure {
             structure_id: sid,
@@ -4669,7 +4669,7 @@ fn rename_nonexistent_structure_is_noop() {
     let tick_before = sim.tick;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::RenameStructure {
             structure_id: StructureId(999),
@@ -4697,7 +4697,7 @@ fn find_nearest_fruit_returns_reachable() {
 
     // Spawn an elf near the tree so it has a nav node.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -4742,7 +4742,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -4817,7 +4817,7 @@ fn hungry_idle_elf_creates_eat_fruit_task() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -4866,7 +4866,7 @@ fn well_fed_elf_does_not_create_eat_fruit_task() {
 
     // Spawn an elf — starts at full food.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -4900,7 +4900,7 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -4979,7 +4979,7 @@ fn hungry_elf_eats_fruit_and_food_increases() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -5041,7 +5041,7 @@ fn hungry_elf_with_bread_creates_eat_bread_task() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -5101,7 +5101,7 @@ fn eat_bread_restores_food_and_removes_bread() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -5191,7 +5191,7 @@ fn hungry_elf_without_bread_still_seeks_fruit() {
 
     // Spawn an elf (no bread in inventory).
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -5245,7 +5245,7 @@ fn hungry_elf_with_unowned_bread_seeks_fruit() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -5300,7 +5300,7 @@ fn eat_bread_generates_thought() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -5410,7 +5410,7 @@ fn overlap_platform_at_leaf_creates_blueprint() {
     assert_eq!(sim.world.get(leaf_coord), VoxelType::Leaf);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -5434,7 +5434,7 @@ fn overlap_all_trunk_rejects_nothing_to_build() {
     let trunk_coord = tree.trunk_voxels[0];
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -5480,7 +5480,7 @@ fn overlap_mixed_air_trunk_only_builds_air() {
     let trunk_coord = trunk_coord.expect("Should find adjacent trunk");
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -5506,7 +5506,7 @@ fn overlap_blocked_voxel_rejects() {
     sim.world.set(air_coord, VoxelType::GrownPlatform);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -5533,7 +5533,7 @@ fn overlap_leaf_materializes_to_grown_platform() {
 
     // Designate platform at the leaf voxel.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -5568,7 +5568,7 @@ fn overlap_cancel_reverts_to_original_type() {
 
     // Designate platform at the leaf voxel.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -5587,7 +5587,7 @@ fn overlap_cancel_reverts_to_original_type() {
 
     // Cancel the build.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::CancelBuild { project_id },
     };
@@ -5607,7 +5607,7 @@ fn overlap_save_load_preserves_original_voxels() {
     let leaf_coord = find_leaf_adjacent_to_wood(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -5637,7 +5637,7 @@ fn overlap_determinism() {
     assert_eq!(leaf_a, leaf_b);
 
     let cmd_a = SimCommand {
-        player_id: sim_a.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -5646,7 +5646,7 @@ fn overlap_determinism() {
         },
     };
     let cmd_b = SimCommand {
-        player_id: sim_b.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -5674,7 +5674,7 @@ fn overlap_wall_at_leaf_rejects() {
     let leaf_coord = find_leaf_adjacent_to_wood(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Wall,
@@ -5700,7 +5700,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
 
     // Spawn an elf.
     let spawn_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -5789,7 +5789,7 @@ fn test_designate_carve_filters_air() {
     assert_eq!(sim.world.get(air), VoxelType::Air);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
             voxels: vec![solid, air],
@@ -5820,7 +5820,7 @@ fn test_carve_execution_removes_voxels() {
     let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
 
     let spawn_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -5828,7 +5828,7 @@ fn test_carve_execution_removes_voxels() {
         },
     };
     let carve_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
             voxels: vec![solid],
@@ -5896,7 +5896,7 @@ fn designate_wood_ladder_creates_blueprint() {
     let (anchor, orientation) = find_ladder_column(&sim, 3);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor,
@@ -5929,7 +5929,7 @@ fn designate_rope_ladder_creates_blueprint() {
     let (anchor, orientation) = find_ladder_column(&sim, 1);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor,
@@ -5952,7 +5952,7 @@ fn designate_ladder_rejects_vertical_orientation() {
     let (anchor, _) = find_ladder_column(&sim, 1);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor,
@@ -5977,7 +5977,7 @@ fn designate_ladder_rejects_zero_height() {
     let (anchor, orientation) = find_ladder_column(&sim, 1);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor,
@@ -6005,7 +6005,7 @@ fn designate_wood_ladder_rejects_no_anchor() {
     assert_eq!(sim.world.get(anchor), VoxelType::Air);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor,
@@ -6026,7 +6026,7 @@ fn designate_ladder_creates_build_task() {
     let (anchor, orientation) = find_ladder_column(&sim, 2);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor,
@@ -6086,7 +6086,7 @@ fn cancel_ladder_removes_blueprint_and_data() {
 
     // Designate a wood ladder.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor,
@@ -6101,7 +6101,7 @@ fn cancel_ladder_removes_blueprint_and_data() {
 
     let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
     let cancel_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::CancelBuild { project_id },
     };
@@ -6127,7 +6127,7 @@ fn test_carve_skips_forest_floor() {
     assert_eq!(sim.world.get(floor), VoxelType::ForestFloor);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
             voxels: vec![floor],
@@ -6160,7 +6160,7 @@ fn test_cancel_carve_restores_originals() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
     let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
     let spawn_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -6168,7 +6168,7 @@ fn test_cancel_carve_restores_originals() {
         },
     };
     let carve_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
             voxels: vec![v1],
@@ -6184,7 +6184,7 @@ fn test_cancel_carve_restores_originals() {
     // Now cancel the build.
     let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
     let cancel_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 500_001,
         action: SimAction::CancelBuild { project_id },
     };
@@ -6208,7 +6208,7 @@ fn ladder_save_load_roundtrip() {
     let (anchor, orientation) = find_ladder_column(&sim, 2);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor,
@@ -6250,7 +6250,7 @@ fn designate_rope_ladder_rejects_no_anchor() {
     }
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor: far_anchor,
@@ -6300,7 +6300,7 @@ fn designate_rope_ladder_multiheight() {
     let (anchor, orientation) = found.expect("No suitable multi-height rope column found");
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor,
@@ -6353,7 +6353,7 @@ fn designate_ladder_determinism() {
     let mut sim_b = test_sim(42);
 
     let cmd_a = SimCommand {
-        player_id: sim_a.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor: anchor_a,
@@ -6364,7 +6364,7 @@ fn designate_ladder_determinism() {
         },
     };
     let cmd_b = SimCommand {
-        player_id: sim_b.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
             anchor: anchor_b,
@@ -6398,7 +6398,7 @@ fn test_carve_nav_graph_update() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
     let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
     let spawn_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -6406,7 +6406,7 @@ fn test_carve_nav_graph_update() {
         },
     };
     let carve_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
             voxels: vec![solid],
@@ -6443,7 +6443,7 @@ fn test_carve_save_load_roundtrip() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
     let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
     let spawn_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -6451,7 +6451,7 @@ fn test_carve_save_load_roundtrip() {
         },
     };
     let carve_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
             voxels: vec![solid],
@@ -6495,7 +6495,7 @@ fn build_rejects_overlap_with_existing_build_blueprint() {
 
     // First designation succeeds.
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -6508,7 +6508,7 @@ fn build_rejects_overlap_with_existing_build_blueprint() {
 
     // Second designation on the same voxel should be rejected.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -6539,7 +6539,7 @@ fn build_rejects_overlap_with_carve_blueprint() {
 
     // Designate a carve on the solid voxel.
     let carve_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
             voxels: vec![solid],
@@ -6552,7 +6552,7 @@ fn build_rejects_overlap_with_carve_blueprint() {
     // Attempt to build on the same voxel (carve shows as Air in overlay).
     // This should be rejected due to blueprint overlap, not silently allowed.
     let build_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Wall,
@@ -6581,7 +6581,7 @@ fn carve_filters_out_build_blueprint_voxels() {
 
     // Designate a platform build.
     let build_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -6595,7 +6595,7 @@ fn carve_filters_out_build_blueprint_voxels() {
     // Attempt to carve the same voxel — filtered out as blueprint-claimed,
     // so nothing to carve.
     let carve_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
             voxels: vec![air_coord],
@@ -6617,7 +6617,7 @@ fn carve_filters_out_carve_blueprint_voxels() {
 
     // First carve designation.
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
             voxels: vec![solid],
@@ -6629,7 +6629,7 @@ fn carve_filters_out_carve_blueprint_voxels() {
 
     // Second carve on the same voxel — filtered out.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
             voxels: vec![solid],
@@ -6658,7 +6658,7 @@ fn building_rejects_overlap_with_existing_blueprint() {
     // Need adjacency — wall_coord is above solid ground, so has a solid
     // face neighbor below.
     let platform_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -6671,7 +6671,7 @@ fn building_rejects_overlap_with_existing_blueprint() {
 
     // Now try to designate a building that overlaps.
     let building_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuilding {
             anchor: site,
@@ -6703,7 +6703,7 @@ fn ladder_rejects_overlap_with_existing_blueprint() {
 
     // Designate a platform at the ladder's anchor voxel.
     let platform_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -6716,7 +6716,7 @@ fn ladder_rejects_overlap_with_existing_blueprint() {
 
     // Now try to designate a ladder overlapping that voxel.
     let ladder_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateLadder {
             anchor,
@@ -6764,7 +6764,7 @@ fn carve_partial_overlap_filters_claimed_voxels() {
 
     // Designate a carve on the first voxel.
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
             voxels: vec![carvable[0]],
@@ -6776,7 +6776,7 @@ fn carve_partial_overlap_filters_claimed_voxels() {
 
     // Now carve both voxels — the first should be filtered out.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
             voxels: carvable.clone(),
@@ -6825,7 +6825,7 @@ fn build_partial_overlap_rejected() {
 
     // Designate first voxel.
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -6838,7 +6838,7 @@ fn build_partial_overlap_rejected() {
 
     // Try to designate both voxels (a overlaps, b is new).
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -6880,7 +6880,7 @@ fn non_overlapping_builds_both_succeed() {
     assert_ne!(a, b);
 
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -6889,7 +6889,7 @@ fn non_overlapping_builds_both_succeed() {
         },
     };
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -6919,7 +6919,7 @@ fn completed_blueprint_does_not_block_carve() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
     let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
     let spawn_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -6927,7 +6927,7 @@ fn completed_blueprint_does_not_block_carve() {
         },
     };
     let build_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -6949,7 +6949,7 @@ fn completed_blueprint_does_not_block_carve() {
     // Now carve the completed platform — should succeed since the
     // blueprint is Complete, not Designated.
     let carve_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 500_001,
         action: SimAction::DesignateCarve {
             voxels: vec![air_coord],
@@ -7155,7 +7155,7 @@ fn state_checksum_changes_after_mutation() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
     let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -7228,7 +7228,7 @@ fn furnish_structure_creates_task() {
     let structure_id = insert_completed_building(&mut sim, anchor);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7288,7 +7288,7 @@ fn furnish_structure_display_name_changes() {
     );
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7313,7 +7313,7 @@ fn furnish_preserves_custom_name() {
 
     // Give it a custom name first.
     let rename_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::RenameStructure {
             structure_id,
@@ -7328,7 +7328,7 @@ fn furnish_preserves_custom_name() {
 
     // Furnish as dormitory — custom name should be preserved.
     let furnish_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7377,7 +7377,7 @@ fn furnish_rejects_non_building() {
     sim.db.structures.insert_no_fk(structure).unwrap();
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id: id,
@@ -7405,7 +7405,7 @@ fn furnish_rejects_already_furnished() {
 
     // Furnish once.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7425,7 +7425,7 @@ fn furnish_rejects_already_furnished() {
 
     // Try to furnish again.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7454,7 +7454,7 @@ fn do_furnish_work_places_items_incrementally() {
 
     // Furnish the building.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7476,7 +7476,7 @@ fn do_furnish_work_places_items_incrementally() {
     // Spawn an elf near the building so it can claim the task.
     let spawn_pos = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z + 3);
     let spawn_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -7515,7 +7515,7 @@ fn furnish_completes_all_items() {
 
     // Furnish the building.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7535,7 +7535,7 @@ fn furnish_completes_all_items() {
     // Spawn an elf near the building.
     let spawn_pos = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z + 3);
     let spawn_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -7594,7 +7594,7 @@ fn furnish_serialization_roundtrip() {
 
     // Furnish the building.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7742,7 +7742,7 @@ fn furnish_structure_workshop() {
     let structure_id = insert_completed_building(&mut sim, anchor);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7801,7 +7801,7 @@ fn furnish_greenhouse_sets_species_and_creates_task() {
         .expect("worldgen should produce at least one cultivable fruit");
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7838,7 +7838,7 @@ fn furnish_greenhouse_rejects_non_cultivable_species() {
     // If all species happen to be cultivable in this seed, skip.
     if let Some(species_id) = species_id {
         let cmd = SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::FurnishStructure {
                 structure_id,
@@ -7865,7 +7865,7 @@ fn furnish_greenhouse_rejects_missing_species() {
 
     // No greenhouse_species provided.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7891,7 +7891,7 @@ fn furnish_greenhouse_rejects_unknown_species() {
 
     let bogus_id = FruitSpeciesId(9999);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7921,7 +7921,7 @@ fn greenhouse_produces_fruit_after_interval() {
     sim.config.greenhouse_base_production_ticks = 1000;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -7972,7 +7972,7 @@ fn greenhouse_display_name() {
     let species_id = first_cultivable_species(&sim).expect("need a cultivable species");
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -8000,7 +8000,7 @@ fn greenhouse_serde_roundtrip() {
     let species_id = first_cultivable_species(&sim).expect("need a cultivable species");
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -8061,7 +8061,7 @@ fn assign_home_sets_bidirectional_refs() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -8079,7 +8079,7 @@ fn assign_home_sets_bidirectional_refs() {
 
     // Assign elf to home.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::AssignHome {
             creature_id: elf_id,
@@ -8112,7 +8112,7 @@ fn assign_home_unassign() {
 
     // Spawn and assign.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -8130,7 +8130,7 @@ fn assign_home_unassign() {
 
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 2,
             action: SimAction::AssignHome {
                 creature_id: elf_id,
@@ -8147,7 +8147,7 @@ fn assign_home_unassign() {
     // Unassign.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 3,
             action: SimAction::AssignHome {
                 creature_id: elf_id,
@@ -8175,7 +8175,7 @@ fn assign_home_replaces_old_assignment() {
     let home_b = insert_completed_home(&mut sim, anchor_b);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -8194,7 +8194,7 @@ fn assign_home_replaces_old_assignment() {
     // Assign to home A.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 2,
             action: SimAction::AssignHome {
                 creature_id: elf_id,
@@ -8211,7 +8211,7 @@ fn assign_home_replaces_old_assignment() {
     // Reassign to home B.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 3,
             action: SimAction::AssignHome {
                 creature_id: elf_id,
@@ -8251,7 +8251,7 @@ fn assign_home_evicts_previous_occupant() {
     // Spawn two elves.
     let cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
                 species: Species::Elf,
@@ -8259,7 +8259,7 @@ fn assign_home_evicts_previous_occupant() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
                 species: Species::Elf,
@@ -8282,7 +8282,7 @@ fn assign_home_evicts_previous_occupant() {
     // Assign elf A.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 2,
             action: SimAction::AssignHome {
                 creature_id: elf_a,
@@ -8304,7 +8304,7 @@ fn assign_home_evicts_previous_occupant() {
     // Assign elf B to same home — evicts elf A.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 3,
             action: SimAction::AssignHome {
                 creature_id: elf_b,
@@ -8344,7 +8344,7 @@ fn assign_home_rejects_non_home() {
     }
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -8362,7 +8362,7 @@ fn assign_home_rejects_non_home() {
 
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 2,
             action: SimAction::AssignHome {
                 creature_id: elf_id,
@@ -8391,7 +8391,7 @@ fn assign_home_rejects_non_elf() {
 
     // Spawn a capybara.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Capybara,
@@ -8409,7 +8409,7 @@ fn assign_home_rejects_non_elf() {
 
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 2,
             action: SimAction::AssignHome {
                 creature_id: capy_id,
@@ -8450,7 +8450,7 @@ fn tired_elf_sleeps_in_assigned_home() {
 
     // Spawn and assign.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -8468,7 +8468,7 @@ fn tired_elf_sleeps_in_assigned_home() {
 
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 2,
             action: SimAction::AssignHome {
                 creature_id: elf_id,
@@ -8537,7 +8537,7 @@ fn tired_elf_without_home_uses_dormitory() {
 
     // Spawn elf (no home assignment).
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -8594,7 +8594,7 @@ fn assigned_home_unfurnished_falls_back() {
 
     // Spawn and assign.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -8612,7 +8612,7 @@ fn assigned_home_unfurnished_falls_back() {
 
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 2,
             action: SimAction::AssignHome {
                 creature_id: elf_id,
@@ -8902,7 +8902,7 @@ fn ground_sleep_generates_thought() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -8972,7 +8972,7 @@ fn eating_generates_thought() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -9099,7 +9099,7 @@ fn dormitory_sleep_generates_thought() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -9252,7 +9252,7 @@ fn home_sleep_generates_thought() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -9272,7 +9272,7 @@ fn home_sleep_generates_thought() {
     // Assign the home to the elf.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 2,
             action: SimAction::AssignHome {
                 creature_id: elf_id,
@@ -9372,7 +9372,7 @@ fn low_ceiling_generates_thought() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -10573,7 +10573,7 @@ fn set_creature_food() {
     let elf_id = spawn_elf(&mut sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetCreatureFood {
             creature_id: elf_id,
@@ -10591,7 +10591,7 @@ fn set_creature_rest() {
     let elf_id = spawn_elf(&mut sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetCreatureRest {
             creature_id: elf_id,
@@ -10610,7 +10610,7 @@ fn add_creature_item() {
     let elf_id = spawn_elf(&mut sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddCreatureItem {
             creature_id: elf_id,
@@ -10634,7 +10634,7 @@ fn add_ground_pile_item() {
     let pos = VoxelCoord::new(32, 1, 32);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddGroundPileItem {
             position: pos,
@@ -11018,7 +11018,7 @@ fn acquire_item_reserves_prevent_double_claim() {
     let elf1 = spawn_elf(&mut sim);
     let spawn_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -11068,7 +11068,7 @@ fn mope_test_setup(
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -11353,7 +11353,7 @@ fn mope_does_not_interrupt_autonomous_sleep() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -11556,7 +11556,7 @@ fn mope_task_location_is_home_when_assigned() {
 
     // Spawn an elf.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -11574,7 +11574,7 @@ fn mope_task_location_is_home_when_assigned() {
 
     // Assign elf to home.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::AssignHome {
             creature_id: elf_id,
@@ -11804,7 +11804,7 @@ fn raycast_solid_hits_blueprint_with_overlay() {
 
     // Designate a platform blueprint at the target.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -11941,12 +11941,10 @@ fn auto_ladder_orientation_no_neighbors_defaults_east() {
 #[test]
 fn debug_notification_command_creates_notification() {
     let mut sim = test_sim(42);
-    let pid = sim.player_id;
-
     assert_eq!(sim.db.notifications.iter_all().count(), 0);
 
     let cmd = SimCommand {
-        player_id: pid,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DebugNotification {
             message: "hello world".to_string(),
@@ -11963,10 +11961,9 @@ fn debug_notification_command_creates_notification() {
 #[test]
 fn notifications_persist_across_serde_roundtrip() {
     let mut sim = test_sim(42);
-    let pid = sim.player_id;
 
     let cmd = SimCommand {
-        player_id: pid,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DebugNotification {
             message: "save me".to_string(),
@@ -12317,7 +12314,7 @@ fn furnish_workshop_sets_defaults() {
     let structure_id = insert_completed_building(&mut sim, anchor);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -12522,7 +12519,7 @@ fn setup_crafting_building(sim: &mut SimState, furnishing_type: FurnishingType) 
     let anchor = find_building_site(sim);
     let structure_id = insert_completed_building(sim, anchor);
     let furnish_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id,
@@ -12594,7 +12591,7 @@ fn add_active_recipe_rejects_duplicate() {
         .len();
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -12634,7 +12631,7 @@ fn add_active_recipe_rejects_wrong_furnishing() {
         .len();
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -12671,7 +12668,7 @@ fn remove_active_recipe_deletes_recipe_and_targets() {
         .clone();
 
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -12697,7 +12694,7 @@ fn remove_active_recipe_deletes_recipe_and_targets() {
 
     // Remove it.
     let rm_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::RemoveActiveRecipe {
             active_recipe_id: ar_id,
@@ -12736,7 +12733,7 @@ fn set_recipe_output_target_updates_quantity() {
     let recipe_key_json = recipe_def.key.to_json();
 
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -12758,7 +12755,7 @@ fn set_recipe_output_target_updates_quantity() {
         .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
 
     let set_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -12786,7 +12783,7 @@ fn set_crafting_enabled_toggles_building() {
     );
 
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetCraftingEnabled {
             structure_id,
@@ -12817,7 +12814,7 @@ fn set_recipe_enabled_toggles_recipe() {
     let recipe_key_json = recipe_def.key.to_json();
 
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -12837,7 +12834,7 @@ fn set_recipe_enabled_toggles_recipe() {
     assert!(sim.db.active_recipes.get(&ar_id).unwrap().enabled);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeEnabled {
             active_recipe_id: ar_id,
@@ -12861,7 +12858,7 @@ fn set_recipe_auto_logistics_updates_fields() {
         .unwrap();
 
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -12877,7 +12874,7 @@ fn set_recipe_auto_logistics_updates_fields() {
         .id;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeAutoLogistics {
             active_recipe_id: ar_id,
@@ -12907,7 +12904,7 @@ fn move_active_recipe_up_down_swaps_sort_order() {
         .key
         .clone();
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -12932,7 +12929,7 @@ fn move_active_recipe_up_down_swaps_sort_order() {
 
     // Move second up — should swap with first.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::MoveActiveRecipeUp {
             active_recipe_id: second_id,
@@ -12950,7 +12947,7 @@ fn move_active_recipe_up_down_swaps_sort_order() {
 
     // Move second (now at top) up again — should be no-op.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::MoveActiveRecipeUp {
             active_recipe_id: second_id,
@@ -12967,7 +12964,7 @@ fn move_active_recipe_up_down_swaps_sort_order() {
 
     // Move second down — should swap back.
     let cmd3 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::MoveActiveRecipeDown {
             active_recipe_id: second_id,
@@ -12998,7 +12995,7 @@ fn add_active_recipe_to_kitchen_bread() {
     let key = recipe_def.key.clone();
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -13052,7 +13049,7 @@ fn unified_crafting_monitor_creates_craft_task() {
         .clone();
     let arrow_key_json = arrow_key.to_json();
     let add_arrow_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -13073,7 +13070,7 @@ fn unified_crafting_monitor_creates_craft_task() {
         .active_recipe_targets
         .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
     let set_target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -13126,7 +13123,7 @@ fn unified_crafting_monitor_skips_when_target_met() {
     }
 
     let enable_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetCraftingEnabled {
             structure_id,
@@ -13146,7 +13143,7 @@ fn unified_crafting_monitor_skips_when_target_met() {
     let arrow_key_json = arrow_key.to_json();
 
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -13172,7 +13169,7 @@ fn unified_crafting_monitor_skips_when_target_met() {
 
     // Set target to 5 arrows, then add 5 arrows to the building's inventory.
     let set_target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -13236,7 +13233,7 @@ fn unified_crafting_monitor_skips_when_disabled() {
 
     // Disable crafting (furnishing auto-enables it).
     let disable_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetCraftingEnabled {
             structure_id,
@@ -13256,7 +13253,7 @@ fn unified_crafting_monitor_skips_when_disabled() {
     let arrow_key_json = arrow_key.to_json();
 
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -13281,7 +13278,7 @@ fn unified_crafting_monitor_skips_when_disabled() {
         .unwrap();
 
     let set_target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -13323,7 +13320,7 @@ fn auto_logistics_generates_wants_from_active_recipe() {
     // Clear old workshop explicit wants and enable crafting.
     let setup_cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetLogisticsWants {
                 structure_id,
@@ -13331,7 +13328,7 @@ fn auto_logistics_generates_wants_from_active_recipe() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetCraftingEnabled {
                 structure_id,
@@ -13351,7 +13348,7 @@ fn auto_logistics_generates_wants_from_active_recipe() {
         .key
         .clone();
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -13370,7 +13367,7 @@ fn auto_logistics_generates_wants_from_active_recipe() {
         .active_recipe_targets
         .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
     let set_target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -13397,7 +13394,7 @@ fn auto_logistics_spare_iterations_add_extra_wants() {
     // Clear old workshop explicit wants and enable crafting.
     let setup_cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetLogisticsWants {
                 structure_id,
@@ -13405,7 +13402,7 @@ fn auto_logistics_spare_iterations_add_extra_wants() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetCraftingEnabled {
                 structure_id,
@@ -13424,7 +13421,7 @@ fn auto_logistics_spare_iterations_add_extra_wants() {
         .key
         .clone();
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -13444,7 +13441,7 @@ fn auto_logistics_spare_iterations_add_extra_wants() {
 
     // Set target: 20 bowstrings, spare_iterations: 3.
     let set_target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -13452,7 +13449,7 @@ fn auto_logistics_spare_iterations_add_extra_wants() {
         },
     };
     let set_spare_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeAutoLogistics {
             active_recipe_id: ar.id,
@@ -13478,7 +13475,7 @@ fn auto_logistics_sums_with_explicit_wants() {
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     let enable_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetCraftingEnabled {
             structure_id,
@@ -13490,7 +13487,7 @@ fn auto_logistics_sums_with_explicit_wants() {
     // Enable logistics and set an explicit want of 5 Fruit.
     let logistics_cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetLogisticsPriority {
                 structure_id,
@@ -13498,7 +13495,7 @@ fn auto_logistics_sums_with_explicit_wants() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetLogisticsWants {
                 structure_id,
@@ -13522,7 +13519,7 @@ fn auto_logistics_sums_with_explicit_wants() {
         .key
         .clone();
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -13540,7 +13537,7 @@ fn auto_logistics_sums_with_explicit_wants() {
         .active_recipe_targets
         .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
     let set_target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -13566,7 +13563,7 @@ fn auto_logistics_disabled_when_crafting_disabled() {
     // Disable crafting and clear explicit wants.
     let setup_cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetCraftingEnabled {
                 structure_id,
@@ -13574,7 +13571,7 @@ fn auto_logistics_disabled_when_crafting_disabled() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetLogisticsWants {
                 structure_id,
@@ -13606,7 +13603,7 @@ fn auto_logistics_disabled_when_crafting_disabled() {
         .active_recipe_targets
         .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
     let set_target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -13633,7 +13630,7 @@ fn auto_logistics_disabled_per_recipe() {
 
     let setup_cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetLogisticsWants {
                 structure_id,
@@ -13641,7 +13638,7 @@ fn auto_logistics_disabled_per_recipe() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetCraftingEnabled {
                 structure_id,
@@ -13660,7 +13657,7 @@ fn auto_logistics_disabled_per_recipe() {
         .key
         .clone();
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -13681,7 +13678,7 @@ fn auto_logistics_disabled_per_recipe() {
     // Set target, then disable auto-logistics.
     let cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetRecipeOutputTarget {
                 active_recipe_target_id: target.id,
@@ -13689,7 +13686,7 @@ fn auto_logistics_disabled_per_recipe() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetRecipeAutoLogistics {
                 active_recipe_id: ar.id,
@@ -13717,7 +13714,7 @@ fn auto_logistics_no_input_recipe_generates_no_wants() {
 
     let setup_cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetLogisticsWants {
                 structure_id,
@@ -13725,7 +13722,7 @@ fn auto_logistics_no_input_recipe_generates_no_wants() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetCraftingEnabled {
                 structure_id,
@@ -13746,7 +13743,7 @@ fn auto_logistics_no_input_recipe_generates_no_wants() {
         .clone();
     let arrow_key_json = arrow_key.to_json();
     let add_arrow_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -13767,7 +13764,7 @@ fn auto_logistics_no_input_recipe_generates_no_wants() {
         .active_recipe_targets
         .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC)[0];
     let set_target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -13791,7 +13788,7 @@ fn auto_logistics_spare_iterations_when_target_met() {
 
     let setup_cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetLogisticsWants {
                 structure_id,
@@ -13799,7 +13796,7 @@ fn auto_logistics_spare_iterations_when_target_met() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetCraftingEnabled {
                 structure_id,
@@ -13818,7 +13815,7 @@ fn auto_logistics_spare_iterations_when_target_met() {
         .key
         .clone();
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -13839,7 +13836,7 @@ fn auto_logistics_spare_iterations_when_target_met() {
     // Set target: 20, spare: 2.
     let cmds = vec![
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetRecipeOutputTarget {
                 active_recipe_target_id: target.id,
@@ -13847,7 +13844,7 @@ fn auto_logistics_spare_iterations_when_target_met() {
             },
         },
         SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetRecipeAutoLogistics {
                 active_recipe_id: ar.id,
@@ -13915,7 +13912,7 @@ fn remove_active_recipe_cleans_up_pending_craft_task() {
         .next()
         .unwrap();
     let target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -13950,7 +13947,7 @@ fn remove_active_recipe_cleans_up_pending_craft_task() {
 
     // Remove the active recipe.
     let rm_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::RemoveActiveRecipe {
             active_recipe_id: ar.id,
@@ -14012,7 +14009,7 @@ fn resolve_craft_via_unified_catalog_path() {
         .next()
         .unwrap();
     let target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -14044,7 +14041,7 @@ fn resolve_craft_via_unified_catalog_path() {
     // Spawn elf and assign to the task.
     let structure = sim.db.structures.get(&structure_id).unwrap();
     let elf_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -14435,7 +14432,7 @@ fn action_state_set_during_work_actions() {
     let elf_id = spawn_elf(&mut sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -14527,7 +14524,7 @@ fn task_removed_during_build_action_creature_wanders() {
     let elf_id = spawn_elf(&mut sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -14555,7 +14552,7 @@ fn task_removed_during_build_action_creature_wanders() {
     let bp = sim.db.blueprints.iter_all().next().unwrap();
     let project_id = bp.id;
     let cancel_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::CancelBuild { project_id },
     };
@@ -14739,7 +14736,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
 
     // Spawn elf (step to tick 1 only, before first activation).
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -14886,7 +14883,7 @@ fn mope_interrupts_build_action() {
 
     let tree_pos = sim.trees[&sim.player_tree_id].position;
     let cmd_spawn = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -14909,7 +14906,7 @@ fn mope_interrupts_build_action() {
 
     // Designate a build.
     let cmd_build = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -14971,7 +14968,7 @@ fn interpolated_position_with_build_action_returns_static() {
     let elf_id = spawn_elf(&mut sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -15102,7 +15099,7 @@ fn carve_uses_separate_duration_from_build() {
     let _elf_id = spawn_elf(&mut sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateCarve {
             voxels: vec![carve_coord],
@@ -15156,7 +15153,7 @@ fn abort_no_action_is_harmless() {
 
     // Spawn elf but only step to tick 1 (before first activation).
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -15223,7 +15220,7 @@ fn abort_build_action_clears_state_only() {
 
     // Spawn elf but only step to tick 1 (before first activation).
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -15267,7 +15264,7 @@ fn spawned_elf_gets_player_civ_id() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -15294,7 +15291,7 @@ fn spawned_non_elf_has_no_civ_id() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Capybara,
@@ -15340,7 +15337,7 @@ fn discover_civ_creates_relationship() {
     }
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DiscoverCiv {
             civ_id: civ_a,
@@ -15383,7 +15380,7 @@ fn discover_civ_is_idempotent() {
     // Discover twice.
     for tick in [1, 2] {
         let cmd = SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick,
             action: SimAction::DiscoverCiv {
                 civ_id: civ_a,
@@ -15412,7 +15409,7 @@ fn discover_civ_noop_for_nonexistent_civ() {
 
     // Use a CivId that doesn't exist.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DiscoverCiv {
             civ_id: CivId(999),
@@ -15450,7 +15447,7 @@ fn set_civ_opinion_updates_relationship() {
     };
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SetCivOpinion {
             civ_id: from_civ,
@@ -15471,7 +15468,7 @@ fn set_civ_opinion_noop_for_unknown_pair() {
     // Use a CivId pair with no relationship.
     // CivId(999) doesn't exist, so this should be a no-op.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SetCivOpinion {
             civ_id: CivId(999),
@@ -15545,9 +15542,8 @@ fn culture_tag_serde_roundtrip() {
 
 #[test]
 fn discover_civ_command_serde_roundtrip() {
-    let mut rng = GameRng::new(1);
     let cmd = SimCommand {
-        player_id: PlayerId::new(&mut rng),
+        player_name: "test_player".to_string(),
         tick: 42,
         action: SimAction::DiscoverCiv {
             civ_id: CivId(0),
@@ -15562,9 +15558,8 @@ fn discover_civ_command_serde_roundtrip() {
 
 #[test]
 fn set_civ_opinion_command_serde_roundtrip() {
-    let mut rng = GameRng::new(2);
     let cmd = SimCommand {
-        player_id: PlayerId::new(&mut rng),
+        player_name: "test_player".to_string(),
         tick: 99,
         action: SimAction::SetCivOpinion {
             civ_id: CivId(1),
@@ -15618,7 +15613,7 @@ fn spawn_second_elf(sim: &mut SimState) -> CreatureId {
         .collect();
     let tree_pos = sim.trees[&sim.player_tree_id].position;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -15942,7 +15937,7 @@ fn blueprint_overlay_includes_designated_blueprints() {
 
     // Designate a platform build.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -15968,7 +15963,7 @@ fn blueprint_overlay_excludes_complete_blueprints() {
 
     // Designate and then manually mark as complete.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -16006,7 +16001,7 @@ fn blueprint_overlay_maps_carve_to_air() {
         .expect("Need a carvable trunk voxel");
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
             voxels: vec![carve_coord],
@@ -16033,7 +16028,7 @@ fn second_platform_blocked_by_existing_blueprint() {
 
     // First designation succeeds.
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -16046,7 +16041,7 @@ fn second_platform_blocked_by_existing_blueprint() {
 
     // Second designation on the same voxel should be rejected.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -16116,7 +16111,7 @@ fn adjacent_platform_sees_blueprint_support() {
 
     // Designate the first batch (adjacent to trunk).
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -16130,7 +16125,7 @@ fn adjacent_platform_sees_blueprint_support() {
     // Designate the extension. Without the overlay it would fail
     // adjacency; with the overlay the blueprint batch acts as solid.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -16164,7 +16159,7 @@ fn overlapping_carve_designations_rejected() {
 
     // First carve succeeds.
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
             voxels: vec![carve_coord],
@@ -16176,7 +16171,7 @@ fn overlapping_carve_designations_rejected() {
 
     // Second carve on same voxel rejected — overlay shows Air.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
             voxels: vec![carve_coord],
@@ -16216,7 +16211,7 @@ fn building_foundation_on_designated_platform() {
     }
 
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -16249,7 +16244,7 @@ fn building_foundation_on_designated_platform() {
     }
 
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuilding {
             anchor: building_anchor,
@@ -16277,7 +16272,7 @@ fn ladder_anchored_to_designated_platform() {
 
     // Designate a platform.
     let cmd1 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -16327,7 +16322,7 @@ fn ladder_anchored_to_designated_platform() {
     );
 
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateLadder {
             anchor: ladder_coord,
@@ -16390,7 +16385,7 @@ fn interrupt_build_returns_task_to_available() {
 
     // Designate a build.
     let cmd_build = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Platform,
@@ -16435,7 +16430,7 @@ fn interrupt_craft_clears_reservations() {
     // Spawn elf near building.
     let structure = sim.db.structures.get(&structure_id).unwrap();
     let elf_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -16475,7 +16470,7 @@ fn interrupt_craft_clears_reservations() {
         .next()
         .unwrap();
     let target_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetRecipeOutputTarget {
             active_recipe_target_id: target.id,
@@ -16810,7 +16805,7 @@ fn debug_kill_sets_dead_and_emits_event() {
 
     let result = sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -16844,7 +16839,7 @@ fn dead_creature_excluded_from_count() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -16867,7 +16862,7 @@ fn damage_reduces_hp() {
 
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DamageCreature {
                 creature_id: elf_id,
@@ -16891,7 +16886,7 @@ fn damage_kills_at_zero_hp() {
 
     let result = sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DamageCreature {
                 creature_id: elf_id,
@@ -16921,7 +16916,7 @@ fn overkill_damage_clamps_hp_to_zero() {
 
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DamageCreature {
                 creature_id: elf_id,
@@ -16946,7 +16941,7 @@ fn heal_restores_hp_clamped_to_max() {
     // Damage first.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DamageCreature {
                 creature_id: elf_id,
@@ -16961,7 +16956,7 @@ fn heal_restores_hp_clamped_to_max() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::HealCreature {
                 creature_id: elf_id,
@@ -16982,7 +16977,7 @@ fn heal_does_not_revive_dead() {
     // Kill.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -16995,7 +16990,7 @@ fn heal_does_not_revive_dead() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::HealCreature {
                 creature_id: elf_id,
@@ -17019,7 +17014,7 @@ fn death_drops_inventory_as_ground_pile() {
     // Give the elf some items.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::AddCreatureItem {
                 creature_id: elf_id,
@@ -17036,7 +17031,7 @@ fn death_drops_inventory_as_ground_pile() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -17145,7 +17140,7 @@ fn death_clears_assigned_home() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::AssignHome {
                 creature_id: elf_id,
@@ -17167,7 +17162,7 @@ fn death_clears_assigned_home() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -17194,7 +17189,7 @@ fn dead_creature_heartbeat_does_not_reschedule() {
     // Kill the elf.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -17233,7 +17228,7 @@ fn dead_creature_not_assigned_tasks() {
     // Kill the elf.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -17247,7 +17242,7 @@ fn dead_creature_not_assigned_tasks() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::CreateTask {
                 kind: TaskKind::GoTo,
@@ -17278,7 +17273,7 @@ fn damage_dead_creature_is_noop() {
     // Kill.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -17291,7 +17286,7 @@ fn damage_dead_creature_is_noop() {
     let tick2 = sim.tick;
     let result = sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DamageCreature {
                 creature_id: elf_id,
@@ -17320,7 +17315,7 @@ fn death_creates_notification() {
 
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -17351,7 +17346,7 @@ fn death_interrupts_current_task() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::CreateTask {
                 kind: TaskKind::GoTo,
@@ -17370,7 +17365,7 @@ fn death_interrupts_current_task() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -17397,7 +17392,7 @@ fn kill_nonexistent_creature_is_noop() {
     // Should not panic.
     let result = sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: fake_id,
@@ -17433,7 +17428,7 @@ fn death_removes_from_spatial_index() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -17460,7 +17455,7 @@ fn hp_death_serde_roundtrip() {
     // Damage elf to half HP.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DamageCreature {
                 creature_id: elf_id,
@@ -17488,7 +17483,7 @@ fn hp_death_serde_roundtrip_dead() {
     // Kill elf.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_id,
@@ -17515,7 +17510,7 @@ fn zero_and_negative_damage_is_noop() {
     // Zero damage — should not change HP.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DamageCreature {
                 creature_id: elf_id,
@@ -17530,7 +17525,7 @@ fn zero_and_negative_damage_is_noop() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DamageCreature {
                 creature_id: elf_id,
@@ -17551,7 +17546,7 @@ fn zero_and_negative_heal_is_noop() {
     // Damage first so there's room to heal.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DamageCreature {
                 creature_id: elf_id,
@@ -17566,7 +17561,7 @@ fn zero_and_negative_heal_is_noop() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::HealCreature {
                 creature_id: elf_id,
@@ -17581,7 +17576,7 @@ fn zero_and_negative_heal_is_noop() {
     let tick3 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick3 + 1,
             action: SimAction::HealCreature {
                 creature_id: elf_id,
@@ -17608,7 +17603,7 @@ fn spawn_species(sim: &mut SimState, species: Species) -> CreatureId {
         .collect();
     let tree_pos = sim.trees[&sim.player_tree_id].position;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
             species,
@@ -17749,7 +17744,7 @@ fn test_melee_strike_deals_damage() {
     let tick = sim.tick;
     let events = sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugMeleeAttack {
                 attacker_id: goblin,
@@ -17794,7 +17789,7 @@ fn test_melee_strike_kills_target() {
     let tick = sim.tick;
     let events = sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugMeleeAttack {
                 attacker_id: goblin,
@@ -17829,7 +17824,7 @@ fn test_melee_strike_out_of_range() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugMeleeAttack {
                 attacker_id: goblin,
@@ -17860,7 +17855,7 @@ fn test_melee_strike_cooldown() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugMeleeAttack {
                 attacker_id: goblin,
@@ -17883,7 +17878,7 @@ fn test_melee_strike_cooldown() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DebugMeleeAttack {
                 attacker_id: goblin,
@@ -17910,7 +17905,7 @@ fn test_melee_strike_dead_target() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature { creature_id: elf },
         }],
@@ -17925,7 +17920,7 @@ fn test_melee_strike_dead_target() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DebugMeleeAttack {
                 attacker_id: goblin,
@@ -17957,7 +17952,7 @@ fn test_melee_strike_zero_damage_species() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugMeleeAttack {
                 attacker_id: capybara,
@@ -17999,7 +17994,7 @@ fn test_melee_strike_cooldown_expires() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugMeleeAttack {
                 attacker_id: goblin,
@@ -18052,7 +18047,7 @@ fn test_melee_strike_dead_attacker() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: goblin,
@@ -18070,7 +18065,7 @@ fn test_melee_strike_dead_attacker() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DebugMeleeAttack {
                 attacker_id: goblin,
@@ -18119,7 +18114,7 @@ fn test_shoot_arrow_spawns_projectile() {
     let tick = sim.tick;
     let events = sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18187,7 +18182,7 @@ fn test_shoot_arrow_no_bow_fails() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18226,7 +18221,7 @@ fn test_shoot_arrow_no_arrows_fails() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18257,7 +18252,7 @@ fn test_shoot_arrow_cooldown_prevents_second_shot() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18272,7 +18267,7 @@ fn test_shoot_arrow_cooldown_prevents_second_shot() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18316,7 +18311,7 @@ fn test_shoot_arrow_blocked_los_fails() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18351,7 +18346,7 @@ fn test_shoot_arrow_leaf_does_not_block_los() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18381,7 +18376,7 @@ fn test_shoot_arrow_dead_target_fails() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: goblin,
@@ -18394,7 +18389,7 @@ fn test_shoot_arrow_dead_target_fails() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18423,7 +18418,7 @@ fn test_shoot_arrow_dead_attacker_fails() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature { creature_id: elf },
         }],
@@ -18433,7 +18428,7 @@ fn test_shoot_arrow_dead_attacker_fails() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18472,7 +18467,7 @@ fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18504,7 +18499,7 @@ fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -18543,7 +18538,7 @@ fn test_shoot_arrow_rejected_when_not_idle() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: elf,
@@ -19000,7 +18995,7 @@ fn hostile_creature_wanders_after_killing_elf() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature { creature_id: elf },
         }],
@@ -19093,7 +19088,7 @@ fn hostile_waits_on_cooldown_near_elf() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugMeleeAttack {
                 attacker_id: goblin,
@@ -19393,7 +19388,7 @@ fn debug_spawn_projectile_command() {
 
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugSpawnProjectile {
                 origin,
@@ -19425,7 +19420,7 @@ fn attack_creature_command_creates_task_and_assigns() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackCreature {
             attacker_id: elf,
@@ -19468,7 +19463,7 @@ fn attack_target_task_pursues_and_strikes() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackCreature {
             attacker_id: elf,
@@ -19508,7 +19503,7 @@ fn attack_target_completes_when_target_dies() {
     // Just use commands to create the attack task and then kill the target.
     let tick = sim.tick;
     let attack_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackCreature {
             attacker_id: elf,
@@ -19521,7 +19516,7 @@ fn attack_target_completes_when_target_dies() {
 
     // Kill the goblin.
     let kill_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 3,
         action: SimAction::DebugKillCreature {
             creature_id: goblin,
@@ -19558,7 +19553,7 @@ fn attack_target_preempts_lower_priority_task() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackCreature {
             attacker_id: elf,
@@ -19594,7 +19589,7 @@ fn attack_target_cannot_attack_self() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackCreature {
             attacker_id: elf,
@@ -19621,7 +19616,7 @@ fn attack_target_cannot_attack_dead_creature() {
     // Kill goblin first.
     let tick = sim.tick;
     let kill_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DebugKillCreature {
             creature_id: goblin,
@@ -19631,7 +19626,7 @@ fn attack_target_cannot_attack_dead_creature() {
 
     // Try to attack.
     let attack_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 3,
         action: SimAction::AttackCreature {
             attacker_id: elf,
@@ -19694,7 +19689,7 @@ fn test_attack_move_creates_task() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
             creature_id: elf,
@@ -19728,7 +19723,7 @@ fn test_attack_move_walks_to_destination() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
             creature_id: elf,
@@ -19773,7 +19768,7 @@ fn test_attack_move_engages_hostile() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
             creature_id: elf,
@@ -19809,7 +19804,7 @@ fn test_attack_move_resumes_after_kill() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
             creature_id: elf,
@@ -19822,7 +19817,7 @@ fn test_attack_move_resumes_after_kill() {
 
     // Kill the goblin so the elf will disengage and resume walking.
     let kill_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 3,
         action: SimAction::DebugKillCreature {
             creature_id: goblin,
@@ -19859,7 +19854,7 @@ fn test_attack_move_nearest_target() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
             creature_id: elf,
@@ -19899,7 +19894,7 @@ fn test_attack_move_preempts_lower_priority() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
             creature_id: elf,
@@ -19940,7 +19935,7 @@ fn test_attack_move_flee_exempt() {
 
     // Issue a player-directed attack-move (creates a PlayerCombat-level task).
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::AttackMove {
             creature_id: elf_id,
@@ -20000,7 +19995,7 @@ fn directed_goto_creates_task_for_specific_creature() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
             creature_id: elf,
@@ -20047,7 +20042,7 @@ fn directed_goto_replaces_player_directed_task() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
             creature_id: elf,
@@ -20096,7 +20091,7 @@ fn directed_goto_preempts_autonomous_task() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
             creature_id: elf,
@@ -20131,7 +20126,7 @@ fn directed_goto_does_not_abort_mid_walk_action() {
     let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
     let tick = sim.tick;
     let cmd_a = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
             creature_id: elf,
@@ -20161,7 +20156,7 @@ fn directed_goto_does_not_abort_mid_walk_action() {
     let target_b = VoxelCoord::new(tree_pos.x - 3, 1, tree_pos.z);
     let tick2 = sim.tick;
     let cmd_b = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick2 + 1,
         action: SimAction::DirectedGoTo {
             creature_id: elf,
@@ -20225,7 +20220,7 @@ fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DirectedGoTo {
                 creature_id: elf,
@@ -20268,7 +20263,7 @@ fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
     // events fire between the command and our assertion.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DirectedGoTo {
                 creature_id: elf,
@@ -20303,7 +20298,7 @@ fn group_goto_spreads_creatures_to_different_nodes() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::GroupGoTo {
                 creature_ids: vec![elf_a, elf_b, elf_c],
@@ -20344,7 +20339,7 @@ fn group_goto_single_creature_delegates_to_normal() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::GroupGoTo {
                 creature_ids: vec![elf],
@@ -20374,7 +20369,7 @@ fn group_attack_move_spreads_creatures() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::GroupAttackMove {
                 creature_ids: vec![elf_a, elf_b],
@@ -20415,7 +20410,7 @@ fn group_goto_empty_list_is_noop() {
     // Should not panic or create any tasks.
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::GroupGoTo {
                 creature_ids: vec![],
@@ -20439,7 +20434,7 @@ fn group_goto_skips_dead_creatures() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: elf_dead,
@@ -20454,7 +20449,7 @@ fn group_goto_skips_dead_creatures() {
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::GroupGoTo {
                 creature_ids: vec![elf_alive, elf_dead],
@@ -20479,7 +20474,7 @@ fn group_goto_skips_dead_creatures() {
 fn group_goto_serialization_roundtrip() {
     let mut rng = crate::prng::GameRng::new(42);
     let cmd = SimCommand {
-        player_id: PlayerId::new(&mut rng),
+        player_name: "test_player".to_string(),
         tick: 100,
         action: SimAction::GroupGoTo {
             creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
@@ -20496,7 +20491,7 @@ fn group_goto_serialization_roundtrip() {
 fn group_attack_move_serialization_roundtrip() {
     let mut rng = crate::prng::GameRng::new(42);
     let cmd = SimCommand {
-        player_id: PlayerId::new(&mut rng),
+        player_name: "test_player".to_string(),
         tick: 100,
         action: SimAction::GroupAttackMove {
             creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
@@ -20523,7 +20518,7 @@ fn abort_current_action_cancels_orphaned_activation_events() {
     let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
             creature_id: elf,
@@ -21332,7 +21327,7 @@ fn elf_resumes_normal_behavior_after_threat_leaves() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugKillCreature {
                 creature_id: goblin,
@@ -21666,7 +21661,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
 
     // Spawn an elf near the tree.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -21753,7 +21748,7 @@ fn find_available_task_single_candidate_skips_dijkstra() {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -21809,7 +21804,7 @@ fn find_available_task_respects_species_filter_with_proximity() {
 
     // Spawn a capybara (non-elf).
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Capybara,
@@ -21948,7 +21943,7 @@ fn worldgen_all_civs_have_military_groups() {
 fn create_military_group_command() {
     let mut sim = test_sim(42);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::CreateMilitaryGroup {
             name: "Archers".to_string(),
@@ -21999,7 +21994,7 @@ fn creature_reassignment_to_group_and_back() {
     // Assign to soldiers.
     let soldiers = soldiers_group(&sim);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::ReassignMilitaryGroup {
             creature_id: elf_id,
@@ -22017,7 +22012,7 @@ fn creature_reassignment_to_group_and_back() {
 
     // Reassign back to civilian (None).
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::ReassignMilitaryGroup {
             creature_id: elf_id,
@@ -22042,7 +22037,7 @@ fn reassign_between_non_civilian_groups() {
 
     // Create a second group.
     let create_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::CreateMilitaryGroup {
             name: "Archers".to_string(),
@@ -22062,7 +22057,7 @@ fn reassign_between_non_civilian_groups() {
     // Assign to soldiers.
     let soldiers = soldiers_group(&sim);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::ReassignMilitaryGroup {
             creature_id: elf_id,
@@ -22077,7 +22072,7 @@ fn reassign_between_non_civilian_groups() {
 
     // Reassign to archers.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 3,
         action: SimAction::ReassignMilitaryGroup {
             creature_id: elf_id,
@@ -22160,7 +22155,7 @@ fn should_flee_player_combat_override() {
 
     // Issue a player-directed attack (creates a PlayerCombat-level task).
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::AttackCreature {
             attacker_id: elf_id,
@@ -22188,7 +22183,7 @@ fn delete_military_group_nullifies_members() {
 
     // Create a new group and assign the elf to it.
     let create_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::CreateMilitaryGroup {
             name: "Scouts".to_string(),
@@ -22206,7 +22201,7 @@ fn delete_military_group_nullifies_members() {
         .unwrap();
 
     let assign_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::ReassignMilitaryGroup {
             creature_id: elf_id,
@@ -22221,7 +22216,7 @@ fn delete_military_group_nullifies_members() {
 
     // Delete the group.
     let delete_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 3,
         action: SimAction::DeleteMilitaryGroup {
             group_id: scouts.id,
@@ -22260,7 +22255,7 @@ fn civilian_group_deletion_rejected() {
     let civ_group = civilian_group(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DeleteMilitaryGroup {
             group_id: civ_group.id,
@@ -22296,7 +22291,7 @@ fn dead_creature_not_counted_in_member_count() {
 
     // Kill elf_b.
     let kill_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DebugKillCreature { creature_id: elf_b },
     };
@@ -22351,7 +22346,7 @@ fn cross_civ_reassignment_rejected() {
 
     // Try to assign elf to AI civ's group — should be rejected.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::ReassignMilitaryGroup {
             creature_id: elf_id,
@@ -22379,7 +22374,7 @@ fn non_civ_creature_reassignment_rejected() {
 
     let soldiers = soldiers_group(&sim);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::ReassignMilitaryGroup {
             creature_id: goblin_id,
@@ -22401,7 +22396,7 @@ fn rename_civilian_group() {
     let civ_group = civilian_group(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::RenameMilitaryGroup {
             group_id: civ_group.id,
@@ -22430,7 +22425,7 @@ fn set_group_engagement_style() {
         disengage_threshold_pct: 0,
     };
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SetGroupEngagementStyle {
             group_id: civ_group.id,
@@ -22816,7 +22811,7 @@ fn player_combat_task_overrides_flee() {
     // Give the elf a player-directed attack task.
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AttackCreature {
             attacker_id: elf_id,
@@ -23261,7 +23256,7 @@ fn group_style_change_affects_should_flee() {
         disengage_threshold_pct: 100,
     };
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEngagementStyle {
             group_id: soldiers.id,
@@ -23458,7 +23453,7 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
         .expect("spawn elf");
     let soldiers = soldiers_group(&sim);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEngagementStyle {
             group_id: soldiers.id,
@@ -23693,7 +23688,7 @@ fn defensive_elf_shoots_at_target_beyond_pursuit_range() {
     // Defensive group with 0% disengage — will fight, not flee.
     let soldiers = soldiers_group(&sim);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEngagementStyle {
             group_id: soldiers.id,
@@ -23775,7 +23770,7 @@ fn defensive_elf_with_flee_ammo_shoots_troll_at_10_voxels() {
     // low disengage threshold (10%).
     let soldiers = soldiers_group(&sim);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEngagementStyle {
             group_id: soldiers.id,
@@ -23882,7 +23877,7 @@ fn defensive_elf_does_not_freeze_after_shooting_once() {
 
     let soldiers = soldiers_group(&sim);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEngagementStyle {
             group_id: soldiers.id,
@@ -23967,7 +23962,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
 
     let soldiers = soldiers_group(&sim);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEngagementStyle {
             group_id: soldiers.id,
@@ -24078,7 +24073,7 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
     // Configure soldiers: defensive, prefer ranged, flee if no ammo, 10%.
     let soldiers = soldiers_group(&sim);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEngagementStyle {
             group_id: soldiers.id,
@@ -24100,7 +24095,7 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
     // This is exactly what the debug spawn UI does.
     let troll_target = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
             species: Species::Troll,
@@ -24358,7 +24353,7 @@ fn setup_extraction_kitchen(sim: &mut SimState) -> (StructureId, crate::fruit::F
 
     // Add the extraction recipe to the kitchen.
     let add_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddActiveRecipe {
             structure_id,
@@ -24383,7 +24378,7 @@ fn setup_extraction_kitchen(sim: &mut SimState) -> (StructureId, crate::fruit::F
         .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC);
     for target in &targets {
         let set_cmd = SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SetRecipeOutputTarget {
                 active_recipe_target_id: target.id,
@@ -24845,7 +24840,7 @@ fn greenhouse_fruit_haul_to_extraction_kitchen() {
     let gh_anchor = find_building_site(&sim);
     let gh_id = insert_completed_building(&mut sim, gh_anchor);
     let furnish_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::FurnishStructure {
             structure_id: gh_id,
@@ -24939,7 +24934,7 @@ fn strut_designate_creates_blueprint_and_strut_row() {
     let line = a.line_to(b);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -24977,7 +24972,7 @@ fn strut_rejects_single_voxel() {
     let air = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -25003,7 +24998,7 @@ fn strut_rejects_invalid_bresenham_list() {
     // Submit a voxel list that doesn't match the line.
     let bogus = vec![a, VoxelCoord::new(a.x + 5, a.y + 5, a.z + 5), b];
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -25034,7 +25029,7 @@ fn strut_rejects_player_built_structure() {
     if sim.world.in_bounds(b) && sim.world.get(b) == VoxelType::Air {
         let line = air.line_to(b);
         let cmd = SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 1,
             action: SimAction::DesignateBuild {
                 build_type: BuildType::Strut,
@@ -25075,7 +25070,7 @@ fn strut_replaces_trunk_records_originals() {
 
     let line = before.line_to(after);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -25138,7 +25133,7 @@ fn strut_rejects_no_adjacency() {
     {
         let line = a.line_to(b);
         let cmd = SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: 1,
             action: SimAction::DesignateBuild {
                 build_type: BuildType::Strut,
@@ -25165,7 +25160,7 @@ fn strut_blueprint_overlap_rejected() {
 
     // Designate first strut.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -25178,7 +25173,7 @@ fn strut_blueprint_overlap_rejected() {
 
     // Try to designate overlapping strut.
     let cmd2 = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -25207,7 +25202,7 @@ fn strut_cancel_deletes_strut_row() {
     let line = a.line_to(b);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -25220,7 +25215,7 @@ fn strut_cancel_deletes_strut_row() {
 
     let bp_id = sim.db.blueprints.iter_all().next().unwrap().id;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::CancelBuild { project_id: bp_id },
     };
@@ -25239,7 +25234,7 @@ fn strut_serde_roundtrip() {
     let line = a.line_to(b);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -25298,7 +25293,7 @@ fn strut_replaces_replaceable_types() {
         sim.world.set(trunk_coord, replaceable);
         let line = a.line_to(b);
         let cmd = SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick,
             action: SimAction::DesignateBuild {
                 build_type: BuildType::Strut,
@@ -25317,7 +25312,7 @@ fn strut_replaces_replaceable_types() {
         // Cancel so we can try the next type.
         let bp_id = sim.db.blueprints.iter_all().next().unwrap().id;
         let cmd = SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick,
             action: SimAction::CancelBuild { project_id: bp_id },
         };
@@ -25383,7 +25378,7 @@ fn strut_cancel_restores_original_voxels() {
 
     // Designate strut.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -25412,7 +25407,7 @@ fn strut_cancel_restores_original_voxels() {
     // Cancel the build.
     let bp_id = sim.db.blueprints.iter_all().next().unwrap().id;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::CancelBuild { project_id: bp_id },
     };
@@ -25441,7 +25436,7 @@ fn strut_materialization_creates_voxels() {
 
     // Spawn an elf near the build site.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -25452,7 +25447,7 @@ fn strut_materialization_creates_voxels() {
 
     // Designate the strut.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -25518,7 +25513,7 @@ fn strut_save_load_roundtrip_with_completed_strut() {
 
     // Spawn elf and designate.
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
             species: Species::Elf,
@@ -25528,7 +25523,7 @@ fn strut_save_load_roundtrip_with_completed_strut() {
     sim.step(&[cmd], 1);
 
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
             build_type: BuildType::Strut,
@@ -26308,7 +26303,7 @@ fn diplomatic_relation_hostile_civs() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DiscoverCiv {
                 civ_id: civ_a,
@@ -26633,7 +26628,7 @@ fn is_non_hostile_different_civs_hostile() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DiscoverCiv {
                 civ_id: elf_a_civ,
@@ -26753,7 +26748,7 @@ fn shoot_arrow_blocked_by_friendly_in_path() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: shooter,
@@ -26805,7 +26800,7 @@ fn shoot_arrow_hostile_in_path_does_not_block() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: shooter,
@@ -27037,7 +27032,7 @@ fn in_flight_arrow_passes_through_friendly_near_origin() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: shooter,
@@ -27169,7 +27164,7 @@ fn in_flight_arrow_hits_hostile_at_origin_neighbor() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugShootAction {
                 attacker_id: shooter,
@@ -27227,7 +27222,7 @@ fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DirectedGoTo {
                 creature_id: elf,
@@ -27276,7 +27271,7 @@ fn directed_goto_on_wandering_creature_preserves_move_action() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DirectedGoTo {
                 creature_id: elf,
@@ -27335,7 +27330,7 @@ fn directed_goto_spam_does_not_accumulate_activations() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DirectedGoTo {
                 creature_id: elf,
@@ -27372,7 +27367,7 @@ fn directed_goto_spam_does_not_accumulate_activations() {
         let t = sim.tick;
         sim.step(
             &[SimCommand {
-                player_id: sim.player_id,
+                player_name: String::new(),
                 tick: t + 1,
                 action: SimAction::DirectedGoTo {
                     creature_id: elf,
@@ -27427,7 +27422,7 @@ fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
-            player_id: sim.player_id,
+            player_name: String::new(),
             tick: tick + 1,
             action: SimAction::AttackMove {
                 creature_id: elf,
@@ -27466,7 +27461,7 @@ fn attack_move_creature_reactivates_after_arriving_at_destination() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
             creature_id: elf,
@@ -27505,7 +27500,7 @@ fn attack_move_creature_wanders_after_arriving_at_destination() {
 
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
             creature_id: elf,
@@ -27542,7 +27537,7 @@ fn attack_target_creature_reactivates_after_target_dies() {
 
     let tick = sim.tick;
     let attack_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackCreature {
             attacker_id: elf,
@@ -27560,7 +27555,7 @@ fn attack_target_creature_reactivates_after_target_dies() {
 
     // Kill the goblin.
     let kill_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 3,
         action: SimAction::DebugKillCreature {
             creature_id: goblin,
@@ -27594,7 +27589,7 @@ fn attack_target_creature_wanders_after_target_dies() {
 
     let tick = sim.tick;
     let attack_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackCreature {
             attacker_id: elf,
@@ -27605,7 +27600,7 @@ fn attack_target_creature_wanders_after_target_dies() {
 
     // Kill the goblin.
     let kill_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 3,
         action: SimAction::DebugKillCreature {
             creature_id: goblin,
@@ -28556,7 +28551,7 @@ fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
     // Kill the goblin.
     let tick = sim.tick;
     let kill_cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DebugKillCreature {
             creature_id: goblin,
@@ -28607,7 +28602,7 @@ fn voxel_exclusion_attack_target_task_blocked_by_hostile() {
     // Issue AttackCreature command — this creates an AttackTarget task.
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackCreature {
             attacker_id: elf,
@@ -28654,7 +28649,7 @@ fn voxel_exclusion_attack_move_task_blocked_by_hostile() {
     // Issue AttackMove command toward node_c.
     let tick = sim.tick;
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
             creature_id: elf,
@@ -29749,7 +29744,7 @@ fn default_civilians_group_has_no_equipment_wants() {
 fn new_military_group_has_empty_equipment_wants() {
     let mut sim = test_sim(42);
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::CreateMilitaryGroup {
             name: "Rangers".to_string(),
@@ -29780,7 +29775,7 @@ fn set_group_equipment_wants_command() {
         target_quantity: 50,
     }];
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEquipmentWants {
             group_id: soldiers.id,
@@ -29809,7 +29804,7 @@ fn set_group_equipment_wants_rejects_non_player_civ() {
         .unwrap()
         .clone();
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEquipmentWants {
             group_id: ai_group.id,
@@ -31004,7 +30999,7 @@ fn set_group_equipment_wants_rejects_duplicate_equip_slot() {
         },
     ];
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEquipmentWants {
             group_id: soldiers.id,
@@ -31614,7 +31609,7 @@ fn set_group_equipment_wants_allows_different_slots() {
         },
     ];
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEquipmentWants {
             group_id: soldiers.id,
@@ -31646,7 +31641,7 @@ fn set_group_equipment_wants_allows_non_wearable_duplicates() {
         },
     ];
     let cmd = SimCommand {
-        player_id: sim.player_id,
+        player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SetGroupEquipmentWants {
             group_id: soldiers.id,
@@ -32035,4 +32030,62 @@ fn inv_force_equip_rejects_non_wearable() {
         .unwrap()
         .id;
     assert!(!sim.inv_force_equip_item(bow_id));
+}
+
+// ---------------------------------------------------------------------------
+// Player identity tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn register_player_creates_entry() {
+    let mut sim = test_sim(42);
+    assert_eq!(sim.db.players.iter_all().count(), 0);
+
+    sim.register_player("alice");
+    assert_eq!(sim.db.players.iter_all().count(), 1);
+
+    let player = sim.db.players.get(&"alice".to_string()).unwrap();
+    assert_eq!(player.name, "alice");
+    assert_eq!(player.civ_id, sim.player_civ_id);
+}
+
+#[test]
+fn register_player_is_idempotent() {
+    let mut sim = test_sim(42);
+    sim.register_player("alice");
+    sim.register_player("alice");
+    assert_eq!(sim.db.players.iter_all().count(), 1);
+}
+
+#[test]
+fn register_player_multiple_players() {
+    let mut sim = test_sim(42);
+    sim.register_player("alice");
+    sim.register_player("bob");
+    assert_eq!(sim.db.players.iter_all().count(), 2);
+    assert!(sim.db.players.get(&"alice".to_string()).is_some());
+    assert!(sim.db.players.get(&"bob".to_string()).is_some());
+}
+
+#[test]
+fn player_persists_across_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    sim.register_player("alice");
+    sim.register_player("bob");
+
+    let json = sim.to_json().unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+
+    assert_eq!(restored.db.players.iter_all().count(), 2);
+    let alice = restored.db.players.get(&"alice".to_string()).unwrap();
+    assert_eq!(alice.civ_id, sim.player_civ_id);
+    let bob = restored.db.players.get(&"bob".to_string()).unwrap();
+    assert_eq!(bob.civ_id, sim.player_civ_id);
+}
+
+#[test]
+fn tree_owner_is_civ_id() {
+    let sim = test_sim(42);
+    let tree = &sim.trees[&sim.player_tree_id];
+    assert_eq!(tree.owner, sim.player_civ_id);
 }

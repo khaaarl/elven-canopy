@@ -259,6 +259,12 @@ impl GameSession {
         let mut events = Vec::new();
         match msg {
             SessionMessage::PlayerJoined { id, name } => {
+                // Register in the sim's Player table if a game is running
+                // (mid-game join). For pre-game joins, StartGame will
+                // register all connected players.
+                if let Some(sim) = &mut self.sim {
+                    sim.register_player(&name);
+                }
                 self.players.insert(
                     id,
                     PlayerSlot {
@@ -282,6 +288,10 @@ impl GameSession {
                     events.push(SessionEvent::SimUnloaded);
                 }
                 let mut sim = SimState::with_config(seed, *config);
+                // Register all connected players in the sim's Player table.
+                for slot in self.players.values() {
+                    sim.register_player(&slot.name);
+                }
                 let mut spawn_events = Vec::new();
                 sim.spawn_initial_creatures(&mut spawn_events);
                 self.sim = Some(sim);
@@ -293,9 +303,14 @@ impl GameSession {
             }
 
             SessionMessage::LoadSim { json } => match SimState::from_json(&json) {
-                Ok(sim) => {
+                Ok(mut sim) => {
                     if self.sim.is_some() {
                         events.push(SessionEvent::SimUnloaded);
+                    }
+                    // Register all connected players in the loaded sim's
+                    // Player table (they may not exist in the save).
+                    for slot in self.players.values() {
+                        sim.register_player(&slot.name);
                     }
                     self.sim = Some(sim);
                     self.paused = false;
@@ -314,10 +329,15 @@ impl GameSession {
                 events.push(SessionEvent::SimUnloaded);
             }
 
-            SessionMessage::SimCommand { from: _, action } => {
+            SessionMessage::SimCommand { from, action } => {
                 if let Some(sim) = &mut self.sim {
+                    let player_name = self
+                        .players
+                        .get(&from)
+                        .map(|ps| ps.name.clone())
+                        .unwrap_or_default();
                     let cmd = SimCommand {
-                        player_id: sim.player_id,
+                        player_name,
                         tick: sim.tick,
                         action,
                     };
@@ -512,6 +532,71 @@ mod tests {
         assert!(session.has_sim());
         assert_eq!(session.current_tick(), 0);
         assert_eq!(events, vec![SessionEvent::GameStarted]);
+    }
+
+    #[test]
+    fn start_game_registers_players_in_sim() {
+        let mut session = GameSession::new_singleplayer();
+        // The singleplayer constructor adds a "Player" slot for LOCAL.
+        session.process(SessionMessage::StartGame {
+            seed: 42,
+            config: Box::new(session_test_config()),
+        });
+        let sim = session.sim.as_ref().unwrap();
+        // Single-player session creates one player slot named "Player".
+        assert_eq!(sim.db.players.iter_all().count(), 1);
+        let player = sim.db.players.iter_all().next().unwrap();
+        assert_eq!(player.name, "Player");
+        assert_eq!(player.civ_id, sim.player_civ_id);
+    }
+
+    #[test]
+    fn mid_game_join_registers_player_in_sim() {
+        let mut session = GameSession::new_singleplayer();
+        session.process(SessionMessage::StartGame {
+            seed: 42,
+            config: Box::new(session_test_config()),
+        });
+        assert_eq!(
+            session.sim.as_ref().unwrap().db.players.iter_all().count(),
+            1
+        );
+
+        // A new player joins mid-game.
+        session.process(SessionMessage::PlayerJoined {
+            id: SessionPlayerId(5),
+            name: "Alice".into(),
+        });
+        let sim = session.sim.as_ref().unwrap();
+        assert_eq!(sim.db.players.iter_all().count(), 2);
+        assert!(sim.db.players.get(&"Alice".to_string()).is_some());
+    }
+
+    #[test]
+    fn load_sim_registers_connected_players() {
+        let mut session = GameSession::new_singleplayer();
+        session.process(SessionMessage::StartGame {
+            seed: 42,
+            config: Box::new(session_test_config()),
+        });
+        let json = session.sim.as_ref().unwrap().to_json().unwrap();
+        session.process(SessionMessage::UnloadSim);
+
+        // Simulate a multiplayer scenario: two players connected.
+        session.players.insert(
+            SessionPlayerId(1),
+            PlayerSlot {
+                id: SessionPlayerId(1),
+                name: "Bob".into(),
+                is_local: false,
+            },
+        );
+        session.process(SessionMessage::LoadSim { json });
+        let sim = session.sim.as_ref().unwrap();
+        // Both "Player" (local) and "Bob" (remote) should be registered.
+        assert_eq!(sim.db.players.iter_all().count(), 2);
+        assert!(sim.db.players.get(&"Player".to_string()).is_some());
+        assert!(sim.db.players.get(&"Bob".to_string()).is_some());
     }
 
     #[test]

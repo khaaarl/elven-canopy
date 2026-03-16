@@ -434,6 +434,18 @@ impl SimBridge {
         godot_print!("SimBridge: shutdown complete");
     }
 
+    /// Set the local player's display name. Must be called before init_sim()
+    /// so the session's PlayerSlot has the correct name when the sim starts.
+    /// In single-player, updates the LOCAL slot. In multiplayer, the name is
+    /// set via the relay handshake instead.
+    #[func]
+    fn set_player_name(&mut self, name: GString) {
+        let name_str = name.to_string();
+        if let Some(slot) = self.session.players.get_mut(&self.local_player_id) {
+            slot.name = name_str;
+        }
+    }
+
     /// Initialize the simulation with the given seed and default config.
     #[func]
     fn init_sim(&mut self, seed: i64) {
@@ -4747,6 +4759,7 @@ impl SimBridge {
         password: GString,
         max_players: i32,
         ticks_per_turn: i32,
+        player_name: GString,
     ) -> bool {
         let pw = if password.to_string().is_empty() {
             None
@@ -4793,7 +4806,8 @@ impl SimBridge {
             handle.stop();
             return false;
         }
-        match conn.join_session(SessionId(0), "Host", SIM_VERSION_HASH, config_hash, pw) {
+        let pname = player_name.to_string();
+        match conn.join_session(SessionId(0), &pname, SIM_VERSION_HASH, config_hash, pw) {
             Ok((client, info)) => {
                 let pid = SessionPlayerId(info.player_id.0);
                 self.local_player_id = pid;

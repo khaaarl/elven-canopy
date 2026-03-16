@@ -49,7 +49,7 @@ struct Tree {
     fruit_production_rate: f32,
     carrying_capacity: f32,
     current_load: f32,
-    owner: Option<PlayerId>,
+    owner: Option<CivId>,
     disposition: f32,   // for unowned trees: how receptive to joining your network
     // generated geometry references
     trunk_voxels: Vec<VoxelCoord>,
@@ -147,7 +147,7 @@ The simulation is a pure function: `(previous_state, commands) → (new_state, e
 ```rust
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct SimCommand {
-    player_id: PlayerId,
+    player_name: String,
     tick: u64,
     action: SimAction,
 }

@@ -12,7 +12,11 @@
 ## related fields before transitioning to main.tscn. main.gd checks
 ## `multiplayer_mode` to decide between single-player and multiplayer startup.
 ##
-## On startup, sets the window title — appending branch and commit info for
+## On startup, loads the player's persistent username from user://player.cfg.
+## If no username exists (first launch), `player_name` stays empty and
+## main_menu.gd shows a username prompt before enabling menu buttons.
+##
+## Also sets the window title — appending branch and commit info for
 ## debug builds (read from .build_info, written by scripts/build.sh).
 ##
 ## Also creates a temporary SimBridge to trigger the global elfcyclopedia
@@ -29,6 +33,13 @@
 ## elfcyclopedia_server.rs, sim_bridge.rs (shutdown method).
 
 extends Node
+
+const PLAYER_CONFIG_PATH := "user://player.cfg"
+
+## Persistent player username. Loaded from user://player.cfg on startup.
+## Empty string means no username has been set yet (first launch).
+## Used as the player's identity in both single-player and multiplayer.
+var player_name: String = ""
 
 ## The simulation seed for the current game. Written by new_game_menu.gd,
 ## read by main.gd. A value of -1 means "not yet set" — main.gd falls back
@@ -58,6 +69,8 @@ var mp_ticks_per_turn: int = 50
 
 ## Multiplayer join config (join mode).
 var mp_relay_address: String = ""
+## Per-session join name — defaults to player_name but can be overridden
+## on the join screen. Does NOT persist back to player.cfg.
 var mp_player_name: String = ""
 ## Session ID to join. 0 for embedded relays, or the ID picked from the
 ## session browser for dedicated relays.
@@ -71,6 +84,9 @@ func _ready() -> void:
 	# Disable auto-quit so we can run Rust cleanup before exiting.
 	# Handled centrally here (autoload) so every scene is covered.
 	get_tree().set_auto_accept_quit(false)
+
+	# Load persistent player name from user://player.cfg.
+	_load_player_name()
 
 	# Set window title. Debug builds on non-main branches get a .build_info
 	# file written by scripts/build.sh containing "branch @ shorthash".
@@ -97,6 +113,20 @@ func _set_window_title() -> void:
 			if not info.is_empty():
 				title += "  [%s]" % info
 	DisplayServer.window_set_title(title)
+
+
+func _load_player_name() -> void:
+	var cfg := ConfigFile.new()
+	if cfg.load(PLAYER_CONFIG_PATH) == OK:
+		player_name = cfg.get_value("identity", "player_name", "")
+
+
+## Save the player name to user://player.cfg. Called after the first-launch
+## prompt in main_menu.gd and whenever the player renames themselves.
+func save_player_name() -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("identity", "player_name", player_name)
+	cfg.save(PLAYER_CONFIG_PATH)
 
 
 func _notification(what: int) -> void:

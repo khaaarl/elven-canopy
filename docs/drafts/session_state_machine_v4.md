@@ -73,14 +73,13 @@ The important properties:
 The codebase has two distinct player identity types that serve different
 purposes:
 
-### Sim's PlayerId (types.rs)
+### Sim's Player table (db.rs)
 
-A `SimUuid` -- 128-bit UUID generated from the sim's PRNG. There is
-currently only one per `SimState` (at `sim.player_id`). It represents
-**tree ownership** -- the identity of the tree spirit. In shared-tree
-multiplayer, all commands use the same `sim.player_id` because all
-players control the same tree. This is a sim-level concept tied to the
-deterministic state.
+The `Player` table in `SimDb` stores human operators by username string.
+Each player has an optional `civ_id` (which civilization they control).
+`SimCommand` carries a `player_name: String` for command attribution.
+Tree ownership uses `Option<CivId>` (trees belong to civilizations, not
+individual players). The old `PlayerId` UUID type was removed.
 
 ### Relay's RelayPlayerId (protocol/types.rs)
 
@@ -110,12 +109,11 @@ impl SessionPlayerId {
 ### How they relate
 
 - `GameSession.players` is keyed by `SessionPlayerId`.
-- `SimCommand.player_id` uses the sim's `PlayerId` (tree owner UUID).
+- `SimCommand.player_name` carries the player's username string.
 - When processing a `SessionMessage::SimCommand`, the session looks up
-  the sim's `player_id` from the loaded `SimState` and uses that for
-  the actual `SimCommand`. The `SessionPlayerId` on the message is for
-  session-level attribution (logging, UI display), not sim-level
-  identity.
+  the player's name from the `PlayerSlot` and stamps it on the
+  `SimCommand`. The `SessionPlayerId` on the message selects which
+  slot to look up.
 - `SimBridge` maintains the mapping between `RelayPlayerId` (from wire
   messages) and `SessionPlayerId` (which are the same values, just
   different types for clarity).
@@ -415,13 +413,13 @@ impl GameSession {
                     // commands get their tick from the AdvanceTo
                     // target -- assigned at flush time, not enqueue
                     // time. See section 4.1 for why this is acceptable.
-                    let sim_player_id = sim.player_id;
                     let commands: Vec<SimCommand> = self.pending_commands
                         .drain(..)
-                        .map(|pa| SimCommand {
-                            player_id: sim_player_id,
-                            tick,
-                            action: pa.action,
+                        .map(|pa| {
+                            let name = self.players.get(&pa.from)
+                                .map(|ps| ps.name.clone())
+                                .unwrap_or_default();
+                            SimCommand { player_name: name, tick, action: pa.action }
                         })
                         .collect();
                     let result = sim.step(&commands, tick);
@@ -523,11 +521,9 @@ handles edge cases like duplicate network messages gracefully.
 The new behavior matches multiplayer semantics where the relay's `Turn`
 message assigns the tick (see section 4.1).
 
-**Sim player ID:** All commands use `sim.player_id` regardless of which
-session player sent them. In the current game, all players share a
-single tree, so there is only one sim-level player identity. The
-`SessionPlayerId` on the original `SimCommand` message is retained for
-logging and attribution but not passed into the sim.
+**Player name:** Commands carry the player's username string (from the
+session's `PlayerSlot`). The sim's `Player` table stores all registered
+players. In the current game, all players share a single civilization.
 
 ---
 

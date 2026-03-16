@@ -63,10 +63,13 @@ func _ready() -> void:
 	_address_input.text = "127.0.0.1:7878"
 	_address_input.call_deferred("grab_focus")
 
-	# Player name input.
+	# Player name input — defaults to persistent player name from player.cfg.
 	_add_label(_vbox, "Player Name:")
-	_name_input = _add_line_edit(_vbox, "Player")
-	_name_input.text = "Player"
+	var default_name := (
+		GameSession.player_name if not GameSession.player_name.is_empty() else "Player"
+	)
+	_name_input = _add_line_edit(_vbox, default_name)
+	_name_input.text = default_name
 
 	# Status label (hidden initially).
 	_status_label = Label.new()

@@ -139,6 +139,7 @@ func _ready() -> void:
 				GameSession.mp_password,
 				GameSession.mp_max_players,
 				GameSession.mp_ticks_per_turn,
+				GameSession.player_name,
 			)
 		)
 		if not ok:
@@ -171,6 +172,10 @@ func _ready() -> void:
 		return
 
 	# --- Branch: load a saved game or start a new one ---
+	# Set player name for single-player sessions (both new and loaded games).
+	if GameSession.multiplayer_mode == "" and not GameSession.player_name.is_empty():
+		bridge.set_player_name(GameSession.player_name)
+
 	if GameSession.load_save_path != "":
 		is_loaded_game = _try_load_save(bridge, GameSession.load_save_path)
 		GameSession.load_save_path = ""

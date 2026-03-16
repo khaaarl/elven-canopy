@@ -10,7 +10,7 @@
 // - **Entity IDs:** Strongly-typed UUID v4 wrappers generated via the
 //   `entity_id!` macro. Each entity type gets its own newtype around `SimUuid`
 //   so the compiler prevents mixing them up. Current IDs: `TreeId`,
-//   `CreatureId`, `PlayerId`, `ProjectId`, `TaskId`.
+//   `CreatureId`, `ProjectId`, `TaskId`.
 // - **Sequential IDs:** `StructureId` is a sequential `u64` newtype (not
 //   UUID-based) for user-friendly numbering (#0, #1, #2). Assigned by
 //   `SimState` when a build completes.
@@ -280,8 +280,6 @@ entity_id!(/// Unique identifier for a tree entity.
 TreeId);
 entity_id!(/// Unique identifier for a creature entity (elf, capybara, etc.).
 CreatureId);
-entity_id!(/// Unique identifier for a player (tree spirit).
-PlayerId);
 entity_id!(/// Unique identifier for an in-progress build project.
 ProjectId);
 entity_id!(/// Unique identifier for a task (go-to, build, harvest, etc.).
@@ -297,10 +295,6 @@ impl Bounded for TreeId {
 impl Bounded for CreatureId {
     const MIN: Self = CreatureId(SimUuid::MIN);
     const MAX: Self = CreatureId(SimUuid::MAX);
-}
-impl Bounded for PlayerId {
-    const MIN: Self = PlayerId(SimUuid::MIN);
-    const MAX: Self = PlayerId(SimUuid::MAX);
 }
 impl Bounded for ProjectId {
     const MIN: Self = ProjectId(SimUuid::MIN);

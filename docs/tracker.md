@@ -143,7 +143,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-patrol               Patrol command for military groups
 [ ] F-personality          Personality axes affecting behavior
-[ ] F-player-identity      Persistent player identity with username
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
@@ -281,6 +280,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-pause-menu           In-game pause overlay
 [x] F-pile-gravity         Ground pile gravity and merging
 [x] F-placement-ui         Revamp construction placement UX
+[x] F-player-identity      Persistent player identity with username
 [x] F-preemption           Task priority and preemption system
 [x] F-projectiles          Projectile physics system (arrows)
 [x] F-recipe-hierarchy     Recipe catalog UI hierarchy and organization
@@ -3130,8 +3130,7 @@ system or use a parallel binding set.
 Requires F-game-speed-fkeys (done) to free the number keys.
 Requires F-player-identity for per-player persistent storage.
 
-**Blocked by:** F-player-identity
-**Unblocked by:** F-game-speed-fkeys
+**Unblocked by:** F-game-speed-fkeys, F-player-identity
 **Related:** F-controls-config, F-dblclick-select, F-follow-multi, F-player-identity
 
 #### F-sim-speed — Simulation speed controls UI
@@ -3604,7 +3603,7 @@ ESC menu behavior, save/load semantics, sim speed policy).
 **Related:** F-immediate-commands, F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
 
 #### F-player-identity — Persistent player identity with username
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 Persistent player identity system replacing the vestigial PlayerId UUID.
 
@@ -3626,7 +3625,7 @@ The Player table provides the per-player identity key needed for
 F-selection-groups and camera location hotkeys — data that must be
 saved per-player so multiplayer participants don't clobber each other.
 
-**Blocks:** F-selection-groups
+**Unblocked:** F-selection-groups
 **Related:** F-selection-groups
 
 #### F-relay-multi-game — Relay server supports multiple simultaneous games

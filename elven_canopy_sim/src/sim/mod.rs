@@ -364,9 +364,6 @@ pub struct SimState {
     /// The player's tree ID.
     pub player_tree_id: TreeId,
 
-    /// The player's ID.
-    pub player_id: PlayerId,
-
     /// The player-controlled civilization's ID. `None` for pre-civilization saves.
     #[serde(default)]
     pub player_civ_id: Option<CivId>,
@@ -447,7 +444,7 @@ pub struct Tree {
     pub fruit_production_rate: f32,
     pub carrying_capacity: f32,
     pub current_load: f32,
-    pub owner: Option<PlayerId>,
+    pub owner: Option<CivId>,
     pub trunk_voxels: Vec<VoxelCoord>,
     pub branch_voxels: Vec<VoxelCoord>,
     /// Leaf voxel positions (blobs at branch terminals).
@@ -593,7 +590,6 @@ impl SimState {
             ladder_orientations: BTreeMap::new(),
             next_structure_id: 0,
             player_tree_id,
-            player_id: wg.player_id,
             player_civ_id: Some(wg.player_civ_id),
             world: wg.world,
             nav_graph: wg.nav_graph,
@@ -636,6 +632,19 @@ impl SimState {
             .schedule(logistics_interval, ScheduledEventKind::LogisticsHeartbeat);
 
         state
+    }
+
+    /// Register a player by name, associating them with the player-controlled
+    /// civilization. No-op if a player with that name already exists.
+    pub fn register_player(&mut self, name: &str) {
+        use crate::db::Player;
+        let name = name.to_string();
+        if self.db.players.get(&name).is_none() {
+            let _ = self.db.players.insert_no_fk(Player {
+                name,
+                civ_id: self.player_civ_id,
+            });
+        }
     }
 
     /// Apply a batch of commands and advance the sim to the target tick,
@@ -1734,7 +1743,7 @@ impl SimState {
         for payload in payloads {
             if let Ok(action) = serde_json::from_slice::<SimAction>(payload) {
                 commands.push(SimCommand {
-                    player_id: self.player_id,
+                    player_name: String::new(),
                     tick,
                     action,
                 });

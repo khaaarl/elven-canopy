@@ -4,8 +4,12 @@
 ## "Load Game" button (enabled when saves exist), and "Quit Game" button.
 ## Transitions to the new-game screen or loads a save via GameSession.
 ##
+## On first launch (no player.cfg), shows a username prompt overlay before
+## enabling the menu buttons. The chosen name is saved to user://player.cfg
+## and reused across sessions.
+##
 ## Keyboard hotkeys: N = New Game, L = Load Game (if saves exist), Q = Quit.
-## Hotkeys are suppressed while the load dialog is open (_dialog_open flag).
+## Hotkeys are suppressed while the load dialog or name prompt is open.
 ##
 ## On startup, _preload_all_scripts() eagerly loads every .gd file in
 ## res://scripts/ to surface parse errors immediately (e.g. duplicate variable
@@ -22,6 +26,7 @@ extends Control
 
 var _load_btn: Button
 var _dialog_open: bool = false
+var _name_prompt_open: bool = false
 
 
 func _ready() -> void:
@@ -83,6 +88,10 @@ func _ready() -> void:
 	quit_btn.pressed.connect(_quit_game)
 	vbox.add_child(quit_btn)
 
+	# First launch: show username prompt if no player name is set.
+	if GameSession.player_name.is_empty():
+		_show_name_prompt()
+
 
 func _preload_all_scripts() -> void:
 	var dir := DirAccess.open("res://scripts/")
@@ -117,7 +126,7 @@ func _has_save_files() -> bool:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if _dialog_open:
+	if _dialog_open or _name_prompt_open:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_N:
@@ -161,3 +170,66 @@ func _on_load_game_pressed() -> void:
 func _on_load_selected(save_path: String) -> void:
 	GameSession.load_save_path = save_path
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
+
+
+func _show_name_prompt() -> void:
+	_name_prompt_open = true
+
+	var overlay := ColorRect.new()
+	overlay.color = Color(0, 0, 0, 0.7)
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(overlay)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+
+	var panel := PanelContainer.new()
+	center.add_child(panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 12)
+	panel.add_child(vbox)
+
+	var label := Label.new()
+	label.text = "Choose a player name"
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 24)
+	vbox.add_child(label)
+
+	var hint := Label.new()
+	hint.text = "This name identifies you in save files and multiplayer."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 14)
+	vbox.add_child(hint)
+
+	var name_input := LineEdit.new()
+	name_input.placeholder_text = "Enter your name..."
+	name_input.custom_minimum_size = Vector2(300, 40)
+	name_input.max_length = 32
+	vbox.add_child(name_input)
+
+	var confirm_btn := Button.new()
+	confirm_btn.text = "Confirm"
+	confirm_btn.custom_minimum_size = Vector2(200, 40)
+	confirm_btn.disabled = true
+	vbox.add_child(confirm_btn)
+
+	name_input.text_changed.connect(
+		func(new_text: String) -> void: confirm_btn.disabled = new_text.strip_edges().is_empty()
+	)
+
+	var on_confirm := func() -> void:
+		var chosen := name_input.text.strip_edges()
+		if chosen.is_empty():
+			return
+		GameSession.player_name = chosen
+		GameSession.save_player_name()
+		overlay.queue_free()
+		_name_prompt_open = false
+
+	confirm_btn.pressed.connect(on_confirm)
+	name_input.text_submitted.connect(func(_t: String) -> void: on_confirm.call())
+
+	# Focus the input field.
+	name_input.call_deferred("grab_focus")

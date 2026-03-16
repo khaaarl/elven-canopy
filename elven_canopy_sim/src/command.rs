@@ -11,7 +11,7 @@
 // In multiplayer (future), commands are broadcast to all peers, canonically
 // ordered by tick, then applied — guaranteeing identical state.
 //
-// A `SimCommand` carries a `player_id`, a `tick` (when to apply), and a
+// A `SimCommand` carries a `player_name`, a `tick` (when to apply), and a
 // `SimAction` enum. Current actions:
 // - `DesignateBuild` — validate and create a platform blueprint (see `blueprint.rs`).
 // - `DesignateBuilding` — validate and create a building blueprint with per-face
@@ -76,9 +76,14 @@ use serde::{Deserialize, Serialize};
 ///
 /// In single-player, `tick` is the current sim tick when the player acts.
 /// In multiplayer, `tick` is the agreed-upon canonical application tick.
+///
+/// `player_name` identifies the human operator who issued this command.
+/// Currently used for attribution only (the sim processes all actions
+/// identically regardless of who issued them). Will be used by
+/// F-selection-groups and other per-player features.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SimCommand {
-    pub player_id: PlayerId,
+    pub player_name: String,
     pub tick: u64,
     pub action: SimAction,
 }
@@ -339,13 +344,11 @@ pub enum SimAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prng::GameRng;
 
     #[test]
     fn command_serialization_roundtrip() {
-        let mut rng = GameRng::new(42);
         let cmd = SimCommand {
-            player_id: PlayerId::new(&mut rng),
+            player_name: "test_player".to_string(),
             tick: 100,
             action: SimAction::DesignateBuild {
                 build_type: BuildType::Platform,
@@ -357,7 +360,7 @@ mod tests {
         let json = serde_json::to_string(&cmd).unwrap();
         let restored: SimCommand = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(cmd.player_id, restored.player_id);
+        assert_eq!(cmd.player_name, restored.player_name);
         assert_eq!(cmd.tick, restored.tick);
         // SimAction doesn't derive PartialEq (unnecessary overhead for an
         // enum with Vec fields), so we verify via re-serialization.

@@ -145,6 +145,16 @@ impl Session {
             }
         }
 
+        // Reject duplicate player names within the same session.
+        for ps in self.players.values() {
+            if ps.name == player_name {
+                return Err(format!(
+                    "player name '{}' is already taken in this session",
+                    player_name
+                ));
+            }
+        }
+
         let id = RelayPlayerId(self.next_player_id);
         self.next_player_id += 1;
 
@@ -577,6 +587,20 @@ mod tests {
         let result = session.add_player("Bob".into(), 100, 200, None, server2);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "session is full");
+    }
+
+    #[test]
+    fn add_player_duplicate_name_rejected() {
+        let (_client1, server1) = tcp_pair();
+        let (_client2, server2) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+        let result = session.add_player("Alice".into(), 100, 200, None, server2);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already taken"));
     }
 
     #[test]

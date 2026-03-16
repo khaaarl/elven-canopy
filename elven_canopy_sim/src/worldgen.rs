@@ -46,9 +46,7 @@ use crate::nav::{self, NavGraph};
 use crate::sim::Tree;
 use crate::structural;
 use crate::tree_gen;
-use crate::types::{
-    CivId, CivOpinion, CivSpecies, CultureTag, PlayerId, TreeId, VoxelCoord, VoxelType,
-};
+use crate::types::{CivId, CivOpinion, CivSpecies, CultureTag, TreeId, VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
 use elven_canopy_prng::GameRng;
 
@@ -84,9 +82,6 @@ pub struct WorldgenResult {
     /// Large navigation graph (2x2x2 creatures like elephants).
     pub large_nav_graph: NavGraph,
 
-    /// The player's ID (generated during worldgen for deterministic ordering).
-    pub player_id: PlayerId,
-
     /// The SimDb, populated by worldgen generators (civilizations, etc.).
     pub db: SimDb,
 
@@ -107,11 +102,14 @@ pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
     let mut wg_rng = GameRng::new(seed);
 
     // Generate IDs first — order matters for determinism.
-    let player_id = PlayerId::new(&mut wg_rng);
+    // Burn two PRNG draws to maintain deterministic sequence after PlayerId
+    // removal in F-player-identity (PlayerId::new consumed next_128_bits =
+    // 2 × next_u64).
+    let _compat = wg_rng.next_128_bits();
     let player_tree_id = TreeId::new(&mut wg_rng);
 
     // --- Generator 1: Tree ---
-    let (world, home_tree) = generate_tree(&mut wg_rng, config, player_id, player_tree_id);
+    let (world, home_tree) = generate_tree(&mut wg_rng, config, player_tree_id);
 
     // Load lexicon once — used by fruit naming and civ naming.
     let lexicon = elven_canopy_lang::default_lexicon();
@@ -154,6 +152,9 @@ pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
     let player_civ_id =
         generate_civilizations(&mut wg_rng, &config.worldgen.civs, &mut db, &lexicon);
 
+    // Now that we know the player civ, assign tree ownership.
+    home_tree.owner = Some(player_civ_id);
+
     // --- Generator 4: Diplomacy ---
     generate_diplomacy(&mut wg_rng, &config.worldgen.civs, &mut db);
 
@@ -178,7 +179,6 @@ pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
         home_tree,
         nav_graph,
         large_nav_graph,
-        player_id,
         db,
         player_civ_id,
     }
@@ -191,7 +191,6 @@ pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
 fn generate_tree(
     rng: &mut GameRng,
     config: &GameConfig,
-    player_id: PlayerId,
     player_tree_id: TreeId,
 ) -> (VoxelWorld, Tree) {
     let (ws_x, ws_y, ws_z) = config.world_size;
@@ -235,7 +234,7 @@ fn generate_tree(
         fruit_production_rate: config.fruit_production_base_rate,
         carrying_capacity: 20.0,
         current_load: 0.0,
-        owner: Some(player_id),
+        owner: None, // Set after civ generation in run_worldgen.
         trunk_voxels: tree_result.trunk_voxels,
         branch_voxels: tree_result.branch_voxels,
         leaf_voxels: tree_result.leaf_voxels,
@@ -690,7 +689,7 @@ mod tests {
 
         // IDs must match.
         assert_eq!(result1.home_tree.id, result2.home_tree.id);
-        assert_eq!(result1.player_id, result2.player_id);
+        assert_eq!(result1.player_civ_id, result2.player_civ_id);
 
         // Nav graphs must match (node + edge counts).
         assert_eq!(
