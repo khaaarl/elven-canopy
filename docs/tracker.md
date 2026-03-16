@@ -3614,5 +3614,5 @@ mobile-density UI layout (full-screen slide-in panels, larger touch targets,
 simplified HUD). No keyboard hotkeys — all actions need touch-accessible
 equivalents (toolbars, radial menus, gesture shortcuts).
 
-**Draft:** `docs/drafts/F-mobile-support.md`
+**Draft:** `docs/drafts/mobile_support.md`
 
