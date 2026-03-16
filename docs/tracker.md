@@ -2789,10 +2789,45 @@ Main menu with New Game, Load, and Quit buttons.
 #### F-minimap — Minimap with tree silhouette and creature positions
 **Status:** Todo · **Phase:** 2
 
-A small top-down minimap in a screen corner showing the tree silhouette,
-creature positions (colored dots by species), construction sites, and the
-camera's current viewport frustum. Clicking the minimap jumps the camera
-to that position. Pure rendering/UI — reads existing sim data.
+Top-down (XZ) zoomable minimap in the bottom-right corner. Pure
+rendering/UI — reads existing sim data, no new sim logic.
+
+**Projection:** Top-down (XZ). Side-view (XY silhouette) is a separate
+future item.
+
+**Scope & zoom:** Zoomable with discrete steps (~5–6 levels), from
+close-in to full world. Mouse wheel when cursor is over the minimap
+captures scroll (does not zoom the camera). Tiny +/− icon buttons with
+tooltips as a discoverable fallback.
+
+**Follow mode:** Toggleable via a small icon button (tree icon = centered
+on main tree, eye icon = following camera focal point). Tooltip on hover.
+When tree-centered, a faint crosshair marks the camera position.
+
+**Rendering:** Custom `_draw()` on a Control node. Terrain/tree texture
+cached and regenerated only on voxel change. Creature overlay redrawn
+every frame (cheap — just points/sprites on a small canvas).
+
+**Creatures:** Representation scales with zoom level — sprites when
+zoomed in, small dots at medium zoom, single pixels or hidden when
+zoomed way out. Selected units rendered more prominently (brighter /
+larger).
+
+**Z-levels:** Voxels above the camera's focal height rendered at reduced
+opacity (ghostly).
+
+**Camera frustum:** Outlined on the minimap.
+
+**Interaction:** Click to jump camera. Drag to pan the minimap view. No
+command issuing (no right-click move orders) — may be added later.
+
+**Appearance:** Thin styled border. Bottom-right corner. Fixed size,
+square, ~15% of viewport height (resolution-dependent). No
+collapse, resize, or hotkeys.
+
+**Architecture:** The minimap should be an instance of general
+map-rendering code, not a one-off widget, to enable future reuse (full
+map screen, side-view panel, etc.).
 
 **Related:** F-zlevel-vis
 
