@@ -128,7 +128,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
 [ ] F-mass-conserve        Wood mass tracking and conservation
-[ ] F-military-armor       Military group armor policy
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
 [ ] F-minimap              Minimap with tree silhouette and creature positions
@@ -254,6 +253,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-main-menu            Main menu UI
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-melee-action         Melee attack action
+[x] F-military-armor       Military equipment auto-equip and slot validation
 [x] F-military-equip       Military group equipment acquisition
 [x] F-military-groups      Military group data model and configuration
 [x] F-mood-system          Mood with escalating consequences
@@ -2137,12 +2137,11 @@ case specifically.
 
 **Related:** F-hostile-detection
 
-#### F-military-armor — Military group armor policy
-**Status:** Todo
+#### F-military-armor — Military equipment auto-equip and slot validation
+**Status:** Done
 
-Military groups can specify an armor policy — what armor, if any, members should wear. Extends the military group equipment system (F-military-equip) to handle armor specifically, using the wearable armor system (F-armor) for the actual equip mechanics. Many details TBD: how armor policy is specified (any available armor? specific armor type? minimum protection level?), how the policy interacts with armor availability (wait for crafting? use whatever's available?), priority of armor acquisition vs. weapon acquisition, UI for armor policy configuration within the military group detail panel, and how armor status is displayed per creature and per group.
+Military equipment acquisition auto-equips wearable items (armor and clothing) on pickup, displacing existing items in the same slot. Displaced items remain in inventory unequipped. Equipment wants are validated to prevent multiple wearables in the same equip slot — rejected with a player notification sim-side and an inline error UI-side. The wants_editor supports an `enforce_unique_equip_slots` mode for military use. Decoupled from F-armor (durability/damage-reduction integration) — the equip mechanic stands alone.
 
-**Blocked by:** F-armor
 **Unblocked by:** F-military-equip
 **Related:** F-military-groups
 

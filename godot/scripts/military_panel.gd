@@ -55,6 +55,10 @@ var _disengage_slider: HSlider
 var _delete_btn: Button
 var _equipment_editor: Control  # WantsEditor instance
 
+# Item picker panel — middle-column sibling panel (left of this panel).
+var _picker_panel: PanelContainer
+var _picker_vbox: VBoxContainer
+
 
 func _ready() -> void:
 	set_anchors_preset(PRESET_RIGHT_WIDE)
@@ -223,12 +227,56 @@ func _ready() -> void:
 	equip_label.add_theme_font_size_override("font_size", 16)
 	_detail_vbox.add_child(equip_label)
 
+	# Item picker panel — middle-column sibling positioned left of this panel.
+	# Follows the same pattern as structure_info_panel's crafting details panel.
+	_picker_panel = PanelContainer.new()
+	_picker_panel.visible = false
+	_picker_panel.custom_minimum_size.x = 320
+
+	var picker_margin := MarginContainer.new()
+	picker_margin.add_theme_constant_override("margin_left", 12)
+	picker_margin.add_theme_constant_override("margin_right", 12)
+	picker_margin.add_theme_constant_override("margin_top", 12)
+	picker_margin.add_theme_constant_override("margin_bottom", 12)
+	_picker_panel.add_child(picker_margin)
+
+	var picker_scroll := ScrollContainer.new()
+	picker_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	picker_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	picker_margin.add_child(picker_scroll)
+
+	_picker_vbox = VBoxContainer.new()
+	_picker_vbox.add_theme_constant_override("separation", 4)
+	_picker_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	picker_scroll.add_child(_picker_vbox)
+
+	# Picker panel title.
+	var picker_header := HBoxContainer.new()
+	_picker_vbox.add_child(picker_header)
+	var picker_title := Label.new()
+	picker_title.text = "Add Item"
+	picker_title.add_theme_font_size_override("font_size", 18)
+	picker_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	picker_header.add_child(picker_title)
+	var picker_close := Button.new()
+	picker_close.text = "X"
+	picker_close.pressed.connect(_hide_picker_panel)
+	picker_header.add_child(picker_close)
+
+	_picker_vbox.add_child(HSeparator.new())
+
+	# Defer adding the picker panel to the parent CanvasLayer so it's a sibling.
+	call_deferred("_add_picker_panel_to_parent")
+
 	var editor_script = load("res://scripts/wants_editor.gd")
 	_equipment_editor = VBoxContainer.new()
 	_equipment_editor.set_script(editor_script)
 	_equipment_editor.default_add_quantity = 1
+	_equipment_editor.enforce_unique_equip_slots = true
+	_equipment_editor.picker_container = _picker_vbox
 	_equipment_editor.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_equipment_editor.wants_changed.connect(_on_equipment_wants_changed)
+	_equipment_editor.picker_visibility_changed.connect(_on_picker_visibility_changed)
 	_detail_vbox.add_child(_equipment_editor)
 
 	_detail_vbox.add_child(HSeparator.new())
@@ -294,6 +342,7 @@ func _open_panel() -> void:
 func _close_panel() -> void:
 	visible = false
 	_is_renaming = false
+	_hide_picker_panel()
 	panel_closed.emit()
 
 
@@ -302,6 +351,7 @@ func _show_summary() -> void:
 	_summary_vbox.visible = true
 	_detail_vbox.visible = false
 	_is_renaming = false
+	_hide_picker_panel()
 	_refresh_summary()
 
 
@@ -773,6 +823,30 @@ func _open_reassign_overlay(creature_id: String, creature_name: String) -> void:
 
 func _match_viewport_height() -> void:
 	custom_minimum_size.y = get_viewport().get_visible_rect().size.y
+
+
+func _add_picker_panel_to_parent() -> void:
+	var parent := get_parent()
+	if parent:
+		parent.add_child(_picker_panel)
+		_picker_panel.anchor_top = 0.0
+		_picker_panel.anchor_bottom = 1.0
+		_picker_panel.anchor_left = 1.0
+		_picker_panel.anchor_right = 1.0
+		# Position left of the military panel (320px wide main panel).
+		_picker_panel.offset_right = -328
+		_picker_panel.offset_left = -648
+		_picker_panel.offset_top = 0
+		_picker_panel.offset_bottom = 0
+
+
+func _on_picker_visibility_changed(is_visible: bool) -> void:
+	_picker_panel.visible = is_visible
+
+
+func _hide_picker_panel() -> void:
+	_picker_panel.visible = false
+	_equipment_editor.hide_pickers()
 
 
 func _on_close() -> void:

@@ -753,6 +753,32 @@ impl SimState {
         true
     }
 
+    /// Force-equip a quantity-1 wearable item, unequipping whatever is
+    /// currently in the same slot. Returns `true` if the item was equipped.
+    /// Unlike `inv_equip_item`, this does NOT fail when the slot is occupied.
+    pub(crate) fn inv_force_equip_item(&mut self, stack_id: ItemStackId) -> bool {
+        let stack = match self.db.item_stacks.get(&stack_id) {
+            Some(s) => s,
+            None => return false,
+        };
+        let slot = match stack.kind.equip_slot() {
+            Some(s) => s,
+            None => return false,
+        };
+        if stack.quantity > 1 {
+            return false;
+        }
+        // Unequip existing item in this slot (if any).
+        self.inv_unequip_slot(stack.inventory_id, slot);
+        let mut updated = match self.db.item_stacks.get(&stack_id) {
+            Some(s) => s,
+            None => return false,
+        };
+        updated.equipped_slot = Some(slot);
+        let _ = self.db.item_stacks.update_no_fk(updated);
+        true
+    }
+
     /// Unequip the item in a slot, clearing `equipped_slot` and normalizing
     /// the inventory (the unequipped item may merge with an existing stack).
     /// Returns the stack ID of the now-unequipped item, if any.

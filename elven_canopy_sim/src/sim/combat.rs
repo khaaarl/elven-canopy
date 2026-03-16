@@ -1966,6 +1966,10 @@ impl SimState {
     }
 
     /// Set a military group's equipment wants.
+    ///
+    /// Rejects the update (with a player notification) if multiple wants
+    /// target the same `EquipSlot` — a group can assign at most one
+    /// wearable per body slot.
     pub(crate) fn set_group_equipment_wants(
         &mut self,
         group_id: MilitaryGroupId,
@@ -1980,6 +1984,29 @@ impl SimState {
         if group.civ_id != player_civ {
             return;
         }
+
+        // Reject if multiple wearable wants share the same equip slot.
+        {
+            let mut seen_slots: std::collections::BTreeMap<
+                crate::inventory::EquipSlot,
+                crate::inventory::ItemKind,
+            > = std::collections::BTreeMap::new();
+            for want in &wants {
+                if let Some(slot) = want.item_kind.equip_slot() {
+                    if let Some(&existing) = seen_slots.get(&slot) {
+                        self.add_notification(format!(
+                            "Cannot assign {} — {} slot already assigned to {}",
+                            want.item_kind.display_name(),
+                            slot.display_name(),
+                            existing.display_name(),
+                        ));
+                        return;
+                    }
+                    seen_slots.insert(slot, want.item_kind);
+                }
+            }
+        }
+
         let _ = self
             .db
             .military_groups

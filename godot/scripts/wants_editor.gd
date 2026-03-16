@@ -5,6 +5,14 @@
 ## logistics (structure_info_panel.gd) and military equipment
 ## (military_panel.gd).
 ##
+## When `enforce_unique_equip_slots` is true (military usage), the editor
+## rejects adding a wearable item if another item already occupies the same
+## equip slot, showing a temporary error label.
+##
+## The item/material pickers are placed inline by default. Set
+## `picker_container` to a VBoxContainer to host them externally (e.g. in a
+## middle-column panel). The external container must already be in the tree.
+##
 ## Emits `wants_changed(wants_json: String)` whenever the list changes.
 ## The parent is responsible for routing this signal to the bridge.
 ##
@@ -14,19 +22,36 @@
 extends VBoxContainer
 
 signal wants_changed(wants_json: String)
+## Emitted when the picker panel should be shown (true) or hidden (false).
+## Only relevant when `picker_container` is set.
+signal picker_visibility_changed(is_visible: bool)
 
 ## Default quantity added when the user picks a new item kind. Callers can
 ## override this (e.g. 10 for logistics, 1 for equipment).
 var default_add_quantity: int = 10
 
+## When true, reject adding a wearable item if another item already occupies
+## the same equip slot. Used by military equipment (not logistics).
+var enforce_unique_equip_slots: bool = false
+
+## Optional external container for the item/material pickers. When set, the
+## pickers are added there instead of inline. The parent panel is responsible
+## for creating and positioning this container (e.g. in a middle column).
+var picker_container: VBoxContainer = null
+
 var _item_kinds: Array = []
 var _material_options: Dictionary = {}
+## Maps item kind name → equip slot name (e.g. "Helmet" → "Head"). Built
+## from picker data; empty for non-wearable items.
+var _equip_slot_map: Dictionary = {}
 
 var _wants_vbox: VBoxContainer
 var _add_button: Button
 var _item_picker: VBoxContainer
 var _material_picker: VBoxContainer
+var _error_label: Label
 var _pending_item_kind: String = ""
+var _pickers_added: bool = false
 
 
 func _ready() -> void:
@@ -42,13 +67,21 @@ func _ready() -> void:
 	_wants_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	wants_scroll.add_child(_wants_vbox)
 
+	# Error label (hidden by default).
+	_error_label = Label.new()
+	_error_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
+	_error_label.visible = false
+	_error_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	add_child(_error_label)
+
 	# Add item button.
 	_add_button = Button.new()
 	_add_button.text = "Add Item..."
 	_add_button.pressed.connect(_on_add_pressed)
 	add_child(_add_button)
 
-	# Pickers (hidden by default).
+	# Pickers (hidden by default, added inline). If picker_container is set,
+	# they are reparented on first use via _ensure_pickers().
 	_item_picker = VBoxContainer.new()
 	_item_picker.visible = false
 	add_child(_item_picker)
@@ -58,10 +91,28 @@ func _ready() -> void:
 	add_child(_material_picker)
 
 
+## If picker_container is set and pickers haven't been reparented yet,
+## move them from inline to the external container.
+func _ensure_pickers() -> void:
+	if _pickers_added or not picker_container:
+		return
+	_pickers_added = true
+	remove_child(_item_picker)
+	remove_child(_material_picker)
+	picker_container.add_child(_item_picker)
+	picker_container.add_child(_material_picker)
+
+
 ## Set the available item kinds and material options (from bridge).
 func set_picker_data(item_kinds: Array, material_options: Dictionary) -> void:
 	_item_kinds = item_kinds
 	_material_options = material_options
+	_equip_slot_map.clear()
+	for entry in item_kinds:
+		var kind: String = entry.get("kind", "")
+		var slot: String = entry.get("equip_slot", "")
+		if not slot.is_empty():
+			_equip_slot_map[kind] = slot
 
 
 ## Update the displayed wants list from an array of want dictionaries.
@@ -89,15 +140,27 @@ func update_wants(wants: Array) -> void:
 		_wants_vbox.add_child(row)
 
 
+## Hide the pickers and notify the parent to close the picker panel.
+func hide_pickers() -> void:
+	_item_picker.visible = false
+	_material_picker.visible = false
+	if picker_container:
+		picker_visibility_changed.emit(false)
+
+
 # --- Add item flow ---
 
 
 func _on_add_pressed() -> void:
+	_ensure_pickers()
 	_material_picker.visible = false
+	_error_label.visible = false
 	var was_visible := _item_picker.visible
 	_item_picker.visible = not was_visible
 	if not was_visible:
 		_populate_item_kind_picker()
+	if picker_container:
+		picker_visibility_changed.emit(not was_visible)
 
 
 func _populate_item_kind_picker() -> void:
@@ -139,17 +202,59 @@ func _populate_material_picker(options: Array) -> void:
 
 func _on_material_picked(filter_str: String) -> void:
 	_material_picker.visible = false
+	if picker_container:
+		picker_visibility_changed.emit(false)
 	_emit_wants_with_added(_pending_item_kind, filter_str, default_add_quantity)
 
 
 func _on_want_removed(kind: String, filter_str: String) -> void:
+	_error_label.visible = false
 	_emit_wants_without(kind, filter_str)
+
+
+# --- Slot conflict detection ---
+
+
+## Returns the equip slot name occupied by the given item kind, or "" if
+## the item is not wearable.
+func _get_equip_slot(kind: String) -> String:
+	return _equip_slot_map.get(kind, "")
+
+
+## Check if adding `kind` would conflict with an existing want that
+## occupies the same equip slot. Returns the conflicting kind name, or ""
+## if no conflict.
+func _find_slot_conflict(kind: String) -> String:
+	var new_slot: String = _get_equip_slot(kind)
+	if new_slot.is_empty():
+		return ""
+	for child in _wants_vbox.get_children():
+		if child is HBoxContainer and child.has_meta("kind"):
+			var existing_kind: String = child.get_meta("kind")
+			if existing_kind == kind:
+				continue
+			var existing_slot: String = _get_equip_slot(existing_kind)
+			if existing_slot == new_slot:
+				return existing_kind
+	return ""
 
 
 # --- JSON emission ---
 
 
 func _emit_wants_with_added(kind: String, filter_str: String, qty: int) -> void:
+	# Check for equip slot conflicts (military mode only).
+	if enforce_unique_equip_slots:
+		var conflict: String = _find_slot_conflict(kind)
+		if not conflict.is_empty():
+			var slot_name: String = _get_equip_slot(kind)
+			_error_label.text = (
+				"Cannot add %s — %s slot already assigned to %s" % [kind, slot_name, conflict]
+			)
+			_error_label.visible = true
+			return
+
+	_error_label.visible = false
 	var wants: Array = []
 	var found := false
 	var filter_val: Variant = JSON.parse_string(filter_str)

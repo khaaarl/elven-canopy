@@ -30643,6 +30643,63 @@ fn arrow_surface_hit_always_destroyed_when_min_equals_max_hp() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// F-military-armor: auto-equip on military pickup, duplicate slot validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_group_equipment_wants_rejects_duplicate_equip_slot() {
+    let mut sim = test_sim(42);
+    let soldiers = soldiers_group(&sim);
+    let initial_notif_count = sim.db.notifications.len();
+
+    // Try to assign both Hat (Head) and Helmet (Head) — same slot.
+    let wants = vec![
+        crate::building::LogisticsWant {
+            item_kind: inventory::ItemKind::Hat,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 1,
+        },
+        crate::building::LogisticsWant {
+            item_kind: inventory::ItemKind::Helmet,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 1,
+        },
+    ];
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetGroupEquipmentWants {
+            group_id: soldiers.id,
+            wants,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Wants should NOT have been updated — should still be the original
+    // soldiers defaults (Bow + Arrow), not the Hat + Helmet we tried to set.
+    let group = sim.db.military_groups.get(&soldiers.id).unwrap();
+    assert!(
+        !group
+            .equipment_wants
+            .iter()
+            .any(|w| w.item_kind == inventory::ItemKind::Hat),
+        "Hat should not appear in wants — duplicate slot should be rejected"
+    );
+
+    // A notification should explain the rejection.
+    assert!(
+        sim.db.notifications.len() > initial_notif_count,
+        "Should create a notification for duplicate slot rejection"
+    );
+    let notif = sim.db.notifications.iter_all().last().unwrap();
+    assert!(
+        notif.message.contains("Head"),
+        "Notification should mention the conflicting slot, got: {}",
+        notif.message
+    );
+}
+
 #[test]
 fn arrow_surface_hit_survives_when_no_damage() {
     let mut sim = test_sim(42);
@@ -31199,4 +31256,446 @@ fn indestructible_arrow_deals_full_damage() {
         damage_dealt, full_hp_damage,
         "Indestructible arrow should deal full damage"
     );
+}
+
+#[test]
+fn set_group_equipment_wants_allows_different_slots() {
+    let mut sim = test_sim(42);
+    let soldiers = soldiers_group(&sim);
+
+    // Helmet (Head) and Breastplate (Torso) — different slots, should succeed.
+    let wants = vec![
+        crate::building::LogisticsWant {
+            item_kind: inventory::ItemKind::Helmet,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 1,
+        },
+        crate::building::LogisticsWant {
+            item_kind: inventory::ItemKind::Breastplate,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 1,
+        },
+    ];
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetGroupEquipmentWants {
+            group_id: soldiers.id,
+            wants,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    let group = sim.db.military_groups.get(&soldiers.id).unwrap();
+    assert_eq!(group.equipment_wants.len(), 2);
+}
+
+#[test]
+fn set_group_equipment_wants_allows_non_wearable_duplicates() {
+    let mut sim = test_sim(42);
+    let soldiers = soldiers_group(&sim);
+
+    // Bow and Arrow — neither is wearable, no slot conflict possible.
+    let wants = vec![
+        crate::building::LogisticsWant {
+            item_kind: inventory::ItemKind::Bow,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 1,
+        },
+        crate::building::LogisticsWant {
+            item_kind: inventory::ItemKind::Arrow,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 20,
+        },
+    ];
+    let cmd = SimCommand {
+        player_id: sim.player_id,
+        tick: sim.tick + 1,
+        action: SimAction::SetGroupEquipmentWants {
+            group_id: soldiers.id,
+            wants,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    let group = sim.db.military_groups.get(&soldiers.id).unwrap();
+    assert_eq!(group.equipment_wants.len(), 2);
+}
+
+#[test]
+fn military_equipment_auto_equips_wearable_on_pickup() {
+    let mut sim = test_sim(42);
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+
+    // Place a helmet on the ground.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_item(
+            pile.inventory_id,
+            inventory::ItemKind::Helmet,
+            1,
+            None,
+            None,
+            Some(inventory::Material::Oak),
+            0,
+            None,
+            None,
+        );
+    }
+
+    // Spawn elf, assign to soldiers, position at pile.
+    let elf_id = spawn_elf(&mut sim);
+    let soldiers = soldiers_group(&sim);
+    set_military_group(&mut sim, elf_id, Some(soldiers.id));
+    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_node = Some(pile_nav);
+        c.position = pile_nav_pos;
+    });
+
+    // Create AcquireMilitaryEquipment task.
+    let task_id = TaskId::new(&mut sim.rng);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Helmet,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
+    let acquire_task = Task {
+        id: task_id,
+        kind: TaskKind::AcquireMilitaryEquipment {
+            source: task::HaulSource::GroundPile(pile_pos),
+            item_kind: inventory::ItemKind::Helmet,
+            quantity: 1,
+        },
+        state: TaskState::InProgress,
+        location: pile_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(acquire_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.resolve_acquire_military_equipment_action(elf_id, task_id);
+
+    // Helmet should be in elf's inventory AND equipped.
+    let creature_inv = sim.creature_inv(elf_id);
+    let equipped = sim.inv_equipped_in_slot(creature_inv, inventory::EquipSlot::Head);
+    assert!(
+        equipped.is_some(),
+        "Helmet should be auto-equipped in Head slot"
+    );
+    let stack = equipped.unwrap();
+    assert_eq!(stack.kind, inventory::ItemKind::Helmet);
+    assert_eq!(stack.material, Some(inventory::Material::Oak));
+}
+
+#[test]
+fn military_equipment_auto_equip_displaces_existing_clothing() {
+    let mut sim = test_sim(42);
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+
+    // Place a helmet on the ground.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_item(
+            pile.inventory_id,
+            inventory::ItemKind::Helmet,
+            1,
+            None,
+            None,
+            Some(inventory::Material::Oak),
+            0,
+            None,
+            None,
+        );
+    }
+
+    // Spawn elf with a hat already equipped.
+    let elf_id = spawn_elf(&mut sim);
+    let creature_inv = sim.creature_inv(elf_id);
+    sim.inv_add_simple_item(creature_inv, inventory::ItemKind::Hat, 1, None, None);
+    {
+        let hat_stack = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&creature_inv, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|s| s.kind == inventory::ItemKind::Hat)
+            .unwrap();
+        sim.inv_equip_item(hat_stack.id);
+    }
+    // Verify hat is equipped.
+    assert!(
+        sim.inv_equipped_in_slot(creature_inv, inventory::EquipSlot::Head)
+            .is_some(),
+        "Hat should be equipped before test"
+    );
+
+    // Assign to soldiers, position at pile.
+    let soldiers = soldiers_group(&sim);
+    set_military_group(&mut sim, elf_id, Some(soldiers.id));
+    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_node = Some(pile_nav);
+        c.position = pile_nav_pos;
+    });
+
+    // Create AcquireMilitaryEquipment task.
+    let task_id = TaskId::new(&mut sim.rng);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Helmet,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
+    let acquire_task = Task {
+        id: task_id,
+        kind: TaskKind::AcquireMilitaryEquipment {
+            source: task::HaulSource::GroundPile(pile_pos),
+            item_kind: inventory::ItemKind::Helmet,
+            quantity: 1,
+        },
+        state: TaskState::InProgress,
+        location: pile_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(acquire_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.resolve_acquire_military_equipment_action(elf_id, task_id);
+
+    // Helmet should now be equipped, displacing the hat.
+    let equipped = sim.inv_equipped_in_slot(creature_inv, inventory::EquipSlot::Head);
+    assert!(equipped.is_some(), "Head slot should still be occupied");
+    let stack = equipped.unwrap();
+    assert_eq!(
+        stack.kind,
+        inventory::ItemKind::Helmet,
+        "Helmet should have displaced the hat"
+    );
+
+    // Hat should still be in inventory but NOT equipped.
+    let all_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&creature_inv, tabulosity::QueryOpts::ASC);
+    let hat_stacks: Vec<_> = all_stacks
+        .iter()
+        .filter(|s| s.kind == inventory::ItemKind::Hat)
+        .collect();
+    assert_eq!(hat_stacks.len(), 1, "Hat should still be in inventory");
+    assert!(
+        hat_stacks[0].equipped_slot.is_none(),
+        "Hat should be unequipped after displacement"
+    );
+}
+
+#[test]
+fn military_equipment_non_wearable_not_equipped() {
+    let mut sim = test_sim(42);
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+
+    // Place a bow on the ground.
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
+    }
+
+    let elf_id = spawn_elf(&mut sim);
+    let soldiers = soldiers_group(&sim);
+    set_military_group(&mut sim, elf_id, Some(soldiers.id));
+    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_node = Some(pile_nav);
+        c.position = pile_nav_pos;
+    });
+
+    let task_id = TaskId::new(&mut sim.rng);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Bow,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
+    let acquire_task = Task {
+        id: task_id,
+        kind: TaskKind::AcquireMilitaryEquipment {
+            source: task::HaulSource::GroundPile(pile_pos),
+            item_kind: inventory::ItemKind::Bow,
+            quantity: 1,
+        },
+        state: TaskState::InProgress,
+        location: pile_nav,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: None,
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(acquire_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    sim.resolve_acquire_military_equipment_action(elf_id, task_id);
+
+    // Bow is not wearable — no equip slots should be occupied.
+    let creature_inv = sim.creature_inv(elf_id);
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        assert!(
+            sim.inv_equipped_in_slot(creature_inv, slot).is_none(),
+            "No slot should be equipped after picking up a non-wearable"
+        );
+    }
+}
+
+#[test]
+fn inv_force_equip_item_displaces_existing() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let inv_id = sim.creature_inv(elf_id);
+
+    // Add and equip a hat.
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Hat, 1, None, None);
+    let hat_id = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|s| s.kind == inventory::ItemKind::Hat)
+        .unwrap()
+        .id;
+    assert!(sim.inv_equip_item(hat_id));
+
+    // Add a helmet and force-equip it.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Helmet,
+        1,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        0,
+        None,
+        None,
+    );
+    let helmet_id = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|s| s.kind == inventory::ItemKind::Helmet)
+        .unwrap()
+        .id;
+    assert!(sim.inv_force_equip_item(helmet_id));
+
+    // Helmet should be equipped, hat should not.
+    let equipped = sim.inv_equipped_in_slot(inv_id, inventory::EquipSlot::Head);
+    assert!(equipped.is_some());
+    assert_eq!(equipped.unwrap().kind, inventory::ItemKind::Helmet);
+
+    // Hat should be in inventory but unequipped.
+    // (Search by kind — hat_id may have been merged by normalize.)
+    let hats: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|s| s.kind == inventory::ItemKind::Hat)
+        .collect();
+    assert_eq!(hats.len(), 1);
+    assert!(hats[0].equipped_slot.is_none());
+}
+
+#[test]
+fn inv_force_equip_rejects_non_wearable() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let inv_id = sim.creature_inv(elf_id);
+
+    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bow, 1, None, None);
+    let bow_id = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|s| s.kind == inventory::ItemKind::Bow)
+        .unwrap()
+        .id;
+    assert!(!sim.inv_force_equip_item(bow_id));
 }

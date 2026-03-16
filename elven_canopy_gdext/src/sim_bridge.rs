@@ -2135,6 +2135,9 @@ impl SimBridge {
             let mut d = VarDictionary::new();
             d.set("kind", GString::from(kind.display_name()));
             d.set("label", GString::from(kind.display_name()));
+            if let Some(slot) = kind.equip_slot() {
+                d.set("equip_slot", GString::from(slot.display_name()));
+            }
             arr.push(&d.to_variant());
         }
         arr

@@ -302,8 +302,8 @@ impl SimState {
     }
 
     /// Resolve a completed AcquireMilitaryEquipment action: same as
-    /// `resolve_acquire_item_action` but does NOT change ownership and does
-    /// NOT auto-equip clothing.
+    /// `resolve_acquire_item_action` but does NOT change ownership.
+    /// Wearable items are force-equipped (unequipping whatever was in the slot).
     pub(crate) fn resolve_acquire_military_equipment_action(
         &mut self,
         creature_id: CreatureId,
@@ -347,6 +347,7 @@ impl SimState {
             .item_stacks
             .by_inventory_id(&source_inv, tabulosity::QueryOpts::ASC);
         let mut remaining = quantity;
+        let mut moved_ids: Vec<ItemStackId> = Vec::new();
         for stack in &stacks {
             if stack.kind != item_kind || stack.reserved_by != Some(task_id) || remaining == 0 {
                 continue;
@@ -359,7 +360,27 @@ impl SimState {
                     // ownership unchanged — stays None or whatever it was
                     let _ = self.db.item_stacks.update_no_fk(moved);
                 }
+                moved_ids.push(split_id);
                 remaining -= take;
+            }
+        }
+
+        // Auto-equip wearable military equipment, displacing existing items.
+        // Non-wearable items (no equip_slot) are skipped.
+        if item_kind.equip_slot().is_some()
+            && let Some(&first_id) = moved_ids.first()
+        {
+            let equip_target = if let Some(stack) = self.db.item_stacks.get(&first_id) {
+                if stack.quantity == 1 {
+                    Some(first_id)
+                } else {
+                    self.inv_split_stack(first_id, 1)
+                }
+            } else {
+                None
+            };
+            if let Some(equip_id) = equip_target {
+                self.inv_force_equip_item(equip_id);
             }
         }
 
