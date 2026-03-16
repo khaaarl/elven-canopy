@@ -72,7 +72,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
 [ ] F-bldg-storehouse      Storehouse (item storage)
-[ ] F-bldg-transparency    Toggle building roof/wall transparency to see inside
+[ ] F-bldg-transparency    Toggle building roof visibility (hide/show)
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridge-integ-tests   Integration tests for gdext bridge functions
@@ -116,7 +116,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-game-speed-fkeys     Move game speed controls to F1/F2/F3
-[ ] F-ghost-above          Ghost out voxels above camera focus height
+[ ] F-ghost-above          Hide voxels above camera focus height
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
@@ -2451,16 +2451,33 @@ Depends on F-controls-config-A (bindings must be centralized first).
 **Blocked by:** F-controls-config-A
 **Related:** F-controls-config
 
-#### F-bldg-transparency — Toggle building roof/wall transparency to see inside
+#### F-bldg-transparency — Toggle building roof visibility (hide/show)
 **Status:** Todo · **Phase:** 2
 
-A toggle (toolbar button or hotkey) that makes building roofs and walls
-nearly fully transparent so the player can see elves and furniture inside
-enclosed structures. Applies to completed Building/Enclosure voxels only —
-platforms, bridges, and tree voxels remain opaque. Rendering-side change
-using material alpha override.
+A toggle button that hides building roofs so the player can see and
+click on elves inside enclosed structures. Implemented together with
+F-ghost-above on a shared branch since both features share UI surface
+area (right-edge icon toolbar) and rendering concerns.
 
-**Related:** F-roof-click-select, F-wireframe-ghost, F-zlevel-vis
+**UI:** Square icon button on a vertical toolbar strip along the right
+screen edge. Procedurally drawn icon (GDScript `_draw()`): a simple
+house shape — roof solidly filled when roofs are visible, roof as a
+dotted outline with nothing inside when hidden. Hover tooltip, no text
+label, no keyboard shortcut.
+
+**Rendering:** Buildings are rendered as QuadMeshes grouped by face type
+(Wall, Window, Door, Ceiling, Floor) via `building_renderer.gd`. Hiding
+roofs = toggling visibility on the Ceiling `MultiMeshInstance3D` nodes.
+No mesh regen or shader work needed.
+
+**Click-through:** When roofs are hidden, clicking where a roof would be
+must select the elf underneath, not the building. The Rust-side
+selection/ray intersection logic needs a flag indicating roof-hidden
+state so it skips ceiling faces during hit testing.
+
+**State:** Ephemeral — resets each session, not persisted in save files.
+
+**Related:** F-ghost-above, F-roof-click-select, F-wireframe-ghost, F-zlevel-vis
 
 #### F-build-queue-ui — Construction queue/progress UI
 **Status:** Todo · **Phase:** 2
@@ -2739,18 +2756,50 @@ pause/resume.
 **Blocks:** F-selection-groups
 **Related:** F-controls-config
 
-#### F-ghost-above — Ghost out voxels above camera focus height
+#### F-ghost-above — Hide voxels above camera focus height
 **Status:** Todo · **Phase:** 2
 
-Voxels above the camera focus point's Y-level render as ghosted
-(translucent or hidden) so the player can see the level they're looking
-at without upper platforms, branches, and structures obscuring the view.
-One concrete approach to the Z-level visibility problem described in
-F-zlevel-vis. The cutoff should track the orbital camera's focus/target
-Y coordinate and update in real time as the player orbits or shifts
-focus.
+A toggle button that hides all voxels above the camera's focus Y-level,
+letting the player see the level they're looking at without upper
+platforms, branches, and tree structure obscuring the view. Implemented
+together with F-bldg-transparency on a shared branch since both features
+share UI surface area (right-edge icon toolbar) and rendering concerns.
 
-**Related:** F-zlevel-vis
+**UI:** Square icon button on a vertical toolbar strip along the right
+screen edge. Procedurally drawn icon (GDScript `_draw()`): a tree with a
+horizontal dotted line across the middle — top half solidly filled when
+showing all voxels, top half as a dotted outline with nothing inside
+when upper voxels are hidden. Hover tooltip, no text label, no keyboard
+shortcut.
+
+**Cutoff source:** `orbital_camera.gd` exposes `position.y` (the orbit
+pivot) and `get_focus_voxel()` which floors to voxel coordinates. The
+cutoff Y is derived from the floored camera focus Y.
+
+**Rendering approach — mesh regen with Y cutoff (approach A):** Pass an
+optional Y cutoff into `generate_chunk_mesh()` in `mesh_gen.rs`. Voxels
+above the cutoff are treated as air during face culling, so the exposed
+top faces at the cut boundary are generated naturally (the player sees
+the top of wood/dirt, not hollow interiors). Only chunks that span the
+old or new cutoff Y need rebuilding. Since the camera Y snaps to voxel
+centers, the cutoff changes in discrete steps, not every frame, keeping
+rebuild cost manageable.
+
+**Why mesh regen, not shader discard:** The existing mesh generator
+aggressively culls interior faces (opaque↔opaque neighbor = no face).
+A shader-only approach (fragment discard above Y) would expose hollow
+interiors where those culled faces are missing. Mesh regen with the
+cutoff parameter correctly generates boundary faces.
+
+**Rebuild pipeline:** The dirty-chunk system already exists
+(`MeshCache.mark_dirty_voxels()` → `update_dirty()` →
+`tree_renderer.gd._rebuild_chunk()`). When the cutoff Y changes, mark
+chunks at the old and new Y levels as dirty and let the existing pipeline
+handle the rest.
+
+**State:** Ephemeral — resets each session, not persisted in save files.
+
+**Related:** F-bldg-transparency, F-zlevel-vis
 
 #### F-godot-setup — Godot 4 project setup
 **Status:** Done · **Phase:** 0 · **Refs:** §3
