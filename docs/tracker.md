@@ -132,6 +132,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-military-org         Squad management and organization
 [ ] F-minimap              Minimap with tree silhouette and creature positions
 [ ] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
+[ ] F-mobile-support       Mobile/touch platform support
 [ ] F-modding              Scripting layer for modding support
 [ ] F-modifier-keybinds    Modifier key combinations in bindings
 [ ] F-mouse-elevation      Ctrl+mouse wheel to move camera elevation
@@ -3594,4 +3595,19 @@ coordinate math, selection helpers, input mode transitions. Add a
 the sim or bridge — just GDScript in isolation.
 
 **Related:** F-ai-test-harness, F-bridge-integ-tests
+
+### Platform
+
+#### F-mobile-support — Mobile/touch platform support
+**Status:** Todo · **Phase:** 9
+
+Touch-based input and UI adaptation for mobile phones and tablets. Covers
+camera controls (pinch-to-zoom, two-finger rotate, single-finger pan),
+selection (tap-to-select, lasso gesture for multi-select), command input
+(explicit move/attack/attack-move buttons instead of right-click), and a
+mobile-density UI layout (full-screen slide-in panels, larger touch targets,
+simplified HUD). No keyboard hotkeys — all actions need touch-accessible
+equivalents (toolbars, radial menus, gesture shortcuts).
+
+**Draft:** `docs/drafts/F-mobile-support.md`
 
