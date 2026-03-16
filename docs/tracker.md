@@ -145,6 +145,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-patrol               Patrol command for military groups
 [ ] F-personality          Personality axes affecting behavior
+[ ] F-player-identity      Persistent player identity with username
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
@@ -156,7 +157,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-rust-sprites         Move sprite generation to new elven_canopy_sprites crate
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-selection-bar        Bottom-of-screen selection bar (SC2-style)
-[ ] F-selection-groups     Ctrl+number selection groups with double-tap zoom/follow
+[ ] F-selection-groups     Ctrl+number selection groups with double-tap camera center
 [ ] F-skirmish             Ranged skirmish/kite behavior (shoot-retreat loop)
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
@@ -3111,23 +3112,28 @@ structure_info_panel.gd, selection_controller.gd, and overall layout.
 
 **Related:** F-rts-selection
 
-#### F-selection-groups — Ctrl+number selection groups with double-tap zoom/follow
+#### F-selection-groups — Ctrl+number selection groups with double-tap camera center
 **Status:** Todo · **Phase:** 5
 
 SC2-style selection groups using number keys 1-9:
 - Ctrl+number: save current selection as group N
 - Shift+number: add current selection to group N
 - Number: recall group N
-- Double-tap number: recall group N and zoom camera to it / follow
+- Double-tap number: recall group N and center camera on group centroid (no zoom change, no follow)
 
-Groups can contain both creatures and structures. Configurable camera
-locations (SC2 camera hotkeys) may share the same system or use a
-parallel binding set.
+Groups can contain both creatures and structures. Stored in the sim
+per-player (keyed by player username from F-player-identity) so they
+persist across save/load and don't collide in multiplayer.
 
-Requires F-game-speed-fkeys to free the number keys.
+Configurable camera locations (SC2 camera hotkeys) may share the same
+system or use a parallel binding set.
 
+Requires F-game-speed-fkeys (done) to free the number keys.
+Requires F-player-identity for per-player persistent storage.
+
+**Blocked by:** F-player-identity
 **Unblocked by:** F-game-speed-fkeys
-**Related:** F-controls-config, F-dblclick-select, F-follow-multi
+**Related:** F-controls-config, F-dblclick-select, F-follow-multi, F-player-identity
 
 #### F-sim-speed — Simulation speed controls UI
 **Status:** Done · **Phase:** 4
@@ -3597,6 +3603,32 @@ session management, and UI design (main menu flow, lobby, in-game controls,
 ESC menu behavior, save/load semantics, sim speed policy).
 
 **Related:** F-immediate-commands, F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
+
+#### F-player-identity — Persistent player identity with username
+**Status:** Todo · **Phase:** 2
+
+Persistent player identity system replacing the vestigial PlayerId UUID.
+
+Core changes:
+- Remove PlayerId type (UUID-based singleton on SimState)
+- New Player table in SimDb: { name: String, civ_id: Option<CivId> }
+- SimCommand::player_id → SimCommand::player_name: String
+- Tree::owner: Option<PlayerId> → Tree::owner: Option<CivId>
+- Single-player: one Player entry created automatically
+- Multiplayer: Player entry created per human on join
+
+Client side:
+- First launch prompts for username (no player.cfg found)
+- Username saved to user://player.cfg, reused across sessions
+- Host sends username from config (no more hardcoded "Host")
+- Relay rejects duplicate usernames within a session
+
+The Player table provides the per-player identity key needed for
+F-selection-groups and camera location hotkeys — data that must be
+saved per-player so multiplayer participants don't clobber each other.
+
+**Blocks:** F-selection-groups
+**Related:** F-selection-groups
 
 #### F-relay-multi-game — Relay server supports multiple simultaneous games
 **Status:** Todo · **Phase:** 8
