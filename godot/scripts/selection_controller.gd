@@ -3,9 +3,13 @@
 ##
 ## Supports single-click selection (ray-cast to closest creature sprite),
 ## click-and-drag box selection (2D rectangle selecting all creatures whose
-## screen-space positions fall inside), and Shift modifier for additive
-## selection. Creatures are identified by stable CreatureId strings (UUID),
-## not ephemeral per-species indices.
+## screen-space positions fall inside), Shift modifier for additive
+## selection, and Alt modifier for subtractive selection (remove from
+## current selection without toggling). Alt also works when clicking a
+## creature row in the units panel or group info panel — the programmatic
+## select_creature_by_id() checks Alt state and removes instead of
+## solo-selecting. Creatures are identified by stable CreatureId strings
+## (UUID), not ephemeral per-species indices.
 ##
 ## Roof click-shield: when the ray hits a building/enclosure roof voxel,
 ## creatures inside the building (below the roof Y level) are excluded from
@@ -173,7 +177,13 @@ func remove_creature_id(creature_id: String) -> void:
 
 
 ## Programmatically select a creature by its stable ID.
+## When Alt is held, removes the creature from the current multi-selection
+## instead of solo-selecting it (mirrors Alt+click in the viewport).
 func select_creature_by_id(creature_id: String) -> void:
+	if Input.is_key_pressed(KEY_ALT):
+		remove_creature_id(creature_id)
+		_ignore_next_release = true
+		return
 	_deselect_structure_only()
 	_deselect_pile_only()
 	_selected_creature_ids = [creature_id]
@@ -230,12 +240,12 @@ func _unhandled_input(event: InputEvent) -> void:
 					_ignore_next_release = false
 					return
 				if _drag_active:
-					_finish_box_select(mb.position, mb.shift_pressed)
+					_finish_box_select(mb.position, mb.shift_pressed, mb.alt_pressed)
 					_drag_active = false
 					_box_rect.visible = false
 					get_viewport().set_input_as_handled()
 				else:
-					_try_select(mb.position, mb.shift_pressed)
+					_try_select(mb.position, mb.shift_pressed, mb.alt_pressed)
 		elif mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
 			if _attack_move_mode:
 				_execute_attack_move(mb.position)
@@ -273,7 +283,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 
 
-func _try_select(mouse_pos: Vector2, shift: bool) -> void:
+func _try_select(mouse_pos: Vector2, shift: bool, alt: bool) -> void:
 	var ray_origin := _camera.project_ray_origin(mouse_pos)
 	var ray_dir := _camera.project_ray_normal(mouse_pos)
 
@@ -310,21 +320,15 @@ func _try_select(mouse_pos: Vector2, shift: bool) -> void:
 	if best_id != "":
 		_deselect_structure_only()
 		_deselect_pile_only()
-		if shift:
-			# Toggle: add if not present, remove if already selected.
-			var idx := _selected_creature_ids.find(best_id)
-			if idx >= 0:
-				_selected_creature_ids.remove_at(idx)
-				if _selected_creature_ids.is_empty():
-					creature_deselected.emit()
-				else:
-					creatures_selected.emit(_selected_creature_ids)
+		var result := SelectionUtils.apply_click_modifier(
+			_selected_creature_ids, best_id, shift, alt
+		)
+		if result["changed"]:
+			_selected_creature_ids = result["ids"]
+			if _selected_creature_ids.is_empty():
+				creature_deselected.emit()
 			else:
-				_selected_creature_ids.append(best_id)
 				creatures_selected.emit(_selected_creature_ids)
-		else:
-			_selected_creature_ids = [best_id]
-			creatures_selected.emit(_selected_creature_ids)
 		get_viewport().set_input_as_handled()
 		return
 
@@ -361,8 +365,8 @@ func _try_select(mouse_pos: Vector2, shift: bool) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
-	# Clicked on nothing — deselect whatever was active (unless Shift held).
-	if not shift:
+	# Clicked on nothing — deselect whatever was active (unless Shift/Alt held).
+	if not shift and not alt:
 		if (
 			not _selected_creature_ids.is_empty()
 			or _selected_structure_id >= 0
@@ -374,7 +378,7 @@ func _try_select(mouse_pos: Vector2, shift: bool) -> void:
 ## Complete a box-select drag. Projects all creature world positions to screen
 ## space and selects those inside the rectangle. Prefers player-civ creatures:
 ## if the box contains any, only those are selected (RTS convention).
-func _finish_box_select(end_pos: Vector2, shift: bool) -> void:
+func _finish_box_select(end_pos: Vector2, shift: bool, alt: bool) -> void:
 	var rect := _make_screen_rect(_drag_start, end_pos)
 	var player_ids: Array = []
 	var all_ids: Array = []
@@ -399,22 +403,19 @@ func _finish_box_select(end_pos: Vector2, shift: bool) -> void:
 	var new_ids: Array = player_ids if not player_ids.is_empty() else all_ids
 
 	if new_ids.is_empty():
-		if not shift:
+		if not shift and not alt:
 			deselect()
 		return
 
 	_deselect_structure_only()
 	_deselect_pile_only()
 
-	if shift:
-		# Additive: merge new IDs into existing selection (no duplicates).
-		for cid in new_ids:
-			if _selected_creature_ids.find(cid) < 0:
-				_selected_creature_ids.append(cid)
+	var result := SelectionUtils.apply_box_modifier(_selected_creature_ids, new_ids, shift, alt)
+	_selected_creature_ids = result["ids"]
+	if _selected_creature_ids.is_empty():
+		creature_deselected.emit()
 	else:
-		_selected_creature_ids = new_ids
-
-	creatures_selected.emit(_selected_creature_ids)
+		creatures_selected.emit(_selected_creature_ids)
 
 
 ## Clear creature selection without touching structure/pile state. Emits

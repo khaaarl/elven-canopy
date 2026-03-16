@@ -128,6 +128,7 @@ elven-canopy/
 │       ├── height_grid_renderer.gd    # Wireframe height-slice grid overlay
 │       ├── placement_controller.gd  # Click-to-place for spawns and tasks
 │       ├── selection_controller.gd  # Click-to-select creatures
+│       ├── selection_utils.gd      # Pure click/box modifier helpers for selection
 │       ├── tooltip_controller.gd    # Hover tooltips for world objects
 │       ├── notification_display.gd  # Toast-style event notifications
 │       ├── status_bar.gd           # Persistent bottom-left status bar (population, idle, tasks, speed)
