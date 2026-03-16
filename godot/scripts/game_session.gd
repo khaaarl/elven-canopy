@@ -12,7 +12,10 @@
 ## related fields before transitioning to main.tscn. main.gd checks
 ## `multiplayer_mode` to decide between single-player and multiplayer startup.
 ##
-## On startup, creates a temporary SimBridge to trigger the global elfcyclopedia
+## On startup, sets the window title — appending branch and commit info for
+## debug builds (read from .build_info, written by scripts/build.sh).
+##
+## Also creates a temporary SimBridge to trigger the global elfcyclopedia
 ## HTTP server (runs on localhost, persists for the lifetime of the process).
 ## The URL is stored in `elfcyclopedia_url` for UI display.
 ##
@@ -69,6 +72,11 @@ func _ready() -> void:
 	# Handled centrally here (autoload) so every scene is covered.
 	get_tree().set_auto_accept_quit(false)
 
+	# Set window title. Debug builds on non-main branches get a .build_info
+	# file written by scripts/build.sh containing "branch @ shorthash".
+	# Release/exported builds won't have this file, so the title stays plain.
+	_set_window_title()
+
 	# Create a temporary SimBridge to trigger the global elfcyclopedia server
 	# start. The server lives in a Rust static and persists after the bridge
 	# is freed. This runs as soon as the autoload initializes (before the
@@ -78,6 +86,17 @@ func _ready() -> void:
 	bridge.free()
 	if not elfcyclopedia_url.is_empty():
 		print("Elfcyclopedia server: %s" % elfcyclopedia_url)
+
+
+func _set_window_title() -> void:
+	var title := "Elven Canopy"
+	if FileAccess.file_exists("res://.build_info"):
+		var file := FileAccess.open("res://.build_info", FileAccess.READ)
+		if file:
+			var info := file.get_as_text().strip_edges()
+			if not info.is_empty():
+				title += "  [%s]" % info
+	DisplayServer.window_set_title(title)
 
 
 func _notification(what: int) -> void:

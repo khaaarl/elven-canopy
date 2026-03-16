@@ -36,3 +36,4 @@ docs/tracker.md.lock
 !.tmp/.gitkeep
 
 .cargo/config.toml
+godot/.build_info

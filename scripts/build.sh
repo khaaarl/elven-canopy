@@ -130,17 +130,41 @@ gdscript_unit_tests() {
     echo "GDScript unit tests passed."
 }
 
+# --- Build info stamp ---------------------------------------------------------
+# Writes godot/.build_info with "branch @ shorthash" for debug builds on
+# non-main branches. Release builds delete the file so it won't exist in
+# exported games. game_session.gd reads this to set the window title.
+
+write_build_info() {
+    local BUILD_INFO="$REPO_ROOT/godot/.build_info"
+    local BRANCH
+    BRANCH="$(git branch --show-current 2>/dev/null || true)"
+    if [ -n "$BRANCH" ] && [ "$BRANCH" != "main" ]; then
+        local SHORT_HASH
+        SHORT_HASH="$(git rev-parse --short HEAD 2>/dev/null || true)"
+        printf '%s @ %s' "$BRANCH" "$SHORT_HASH" > "$BUILD_INFO"
+    else
+        rm -f "$BUILD_INFO"
+    fi
+}
+
+clear_build_info() {
+    rm -f "$REPO_ROOT/godot/.build_info"
+}
+
 # --- Build --------------------------------------------------------------------
 
 case "$MODE" in
     debug)
         echo "Building elven_canopy_gdext (debug)..."
         cargo build -p elven_canopy_gdext
+        write_build_info
         echo "Done. Run: cd godot && godot"
         ;;
     release)
         echo "Building elven_canopy_gdext (release)..."
         cargo build -p elven_canopy_gdext --release
+        clear_build_info
         echo "Done. Run: cd godot && godot"
         ;;
     test)
@@ -221,6 +245,7 @@ case "$MODE" in
     run)
         echo "Building elven_canopy_gdext (debug)..."
         cargo build -p elven_canopy_gdext
+        write_build_info
         # Delete and rebuild the global class cache. Without a fresh cache,
         # class_name globals (SpriteFactory, GeometryUtils) are unknown at
         # parse time and scripts fail to load.
@@ -299,6 +324,7 @@ case "$MODE" in
         echo ""
         echo "Building elven_canopy_gdext (debug)..."
         cargo build -p elven_canopy_gdext
+        write_build_info
         # Delete and rebuild the global class cache (see 'run' target comment).
         CLASS_CACHE="$REPO_ROOT/godot/.godot/global_script_class_cache.cfg"
         rm -f "$CLASS_CACHE"
