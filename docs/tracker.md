@@ -170,11 +170,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-unfurnish            Unfurnish/refurnish a building
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-visual-smooth        Smooth voxel surface rendering
-[ ] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
-[ ] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 ```
 
 ### Done
@@ -326,9 +324,11 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tree-info            Tree stats/info panel
 [x] F-tree-overlap         Construction overlap with tree geometry
 [x] F-unified-craft-ui     Unified data-driven building crafting UI
+[x] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [x] F-voxel-fem            Voxel FEM structural analysis
 [x] F-voxel-textures       Per-face Perlin noise voxel textures
 [x] F-worldgen-framework   Worldgen generator framework
+[x] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 ```
 
 ---
@@ -672,8 +672,12 @@ connection."
 **Status:** Todo · **Phase:** 2 · **Refs:** §11, §15
 
 Task queue with Low/Normal/High/Urgent priorities, auto-assignment of idle
-elves to highest-priority available tasks. Priority is already in the data
-model but not yet used for scheduling.
+elves to highest-priority available tasks. The Priority enum exists in
+types.rs and blueprints carry a priority field, but the Task struct itself
+has no priority field. The SetTaskPriority command handler is a TODO stub.
+Task assignment (find_available_task in activation.rs) currently uses
+Dijkstra-based proximity only (F-task-proximity). Needs: add priority to
+Task, wire it into find_available_task sorting, implement SetTaskPriority.
 
 **Blocks:** F-task-assign-opt
 **Related:** F-build-queue-ui, F-elf-needs, F-jobs, F-preemption, F-task-assign-opt
@@ -2307,7 +2311,7 @@ BTreeMap<VoxelCoord, Vec<CreatureId>> on SimState, #[serde(skip)], rebuilt on lo
 **Related:** F-projectiles
 
 #### F-voxel-exclusion — Creatures cannot enter voxels occupied by hostile creatures
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
 Creatures should not be able to enter a voxel already occupied by a hostile creature (and vice versa). Currently multiple creatures freely share voxels regardless of faction. Needs pathfinding and/or movement-step checks to enforce. Edge case: if creatures are already sharing a voxel when hostility begins, behavior is TBD (push apart, allow temporary overlap, etc.).
 
@@ -3218,7 +3222,7 @@ when the camera approaches the edge. Prevents confusion when placing
 construction near world limits.
 
 #### F-zlevel-vis — Z-level visibility (cutaway/toggle)
-**Status:** Todo · **Refs:** §27
+**Status:** Done · **Refs:** §27
 
 How to show lower platforms when upper ones occlude them. Transparency,
 cutaway, or hide-upper-levels toggle. Open design question (§27).
