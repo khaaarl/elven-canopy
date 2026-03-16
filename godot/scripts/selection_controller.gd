@@ -1,15 +1,23 @@
-## Handles click-to-select, box-select, and right-click commands for creatures,
-## structures, and ground piles.
+## Handles click-to-select, box-select, double-click-select, and right-click
+## commands for creatures, structures, and ground piles.
 ##
 ## Supports single-click selection (ray-cast to closest creature sprite),
 ## click-and-drag box selection (2D rectangle selecting all creatures whose
-## screen-space positions fall inside), Shift modifier for additive
-## selection, and Alt modifier for subtractive selection (remove from
-## current selection without toggling). Alt also works when clicking a
-## creature row in the units panel or group info panel — the programmatic
-## select_creature_by_id() checks Alt state and removes instead of
+## screen-space positions fall inside), double-click group selection (selects
+## all on-screen creatures in the same military group as the clicked creature),
+## Shift modifier for additive selection, and Alt modifier for subtractive
+## selection (remove from current selection without toggling). Alt also works
+## when clicking a creature row in the units panel or group info panel — the
+## programmatic select_creature_by_id() checks Alt state and removes instead of
 ## solo-selecting. Creatures are identified by stable CreatureId strings
 ## (UUID), not ephemeral per-species indices.
+##
+## Double-click group select (F-dblclick-select): double-clicking a player-civ
+## creature selects all visible (on-screen, not behind camera) player-civ
+## creatures in the same military group. Civilians (no military group) are
+## treated as their own implicit group. Non-player creatures are not expanded.
+## Shift+double-click adds the group to the existing selection. Uses
+## GeometryUtils.matches_double_click_group() for the matching predicate.
 ##
 ## Roof click-shield: when the ray hits a building/enclosure roof voxel,
 ## creatures inside the building (below the roof Y level) are excluded from
@@ -232,6 +240,11 @@ func _unhandled_input(event: InputEvent) -> void:
 					_ignore_next_release = true
 					get_viewport().set_input_as_handled()
 					return
+				if mb.double_click:
+					_try_double_click_select(mb.position, mb.shift_pressed)
+					_ignore_next_release = true
+					get_viewport().set_input_as_handled()
+					return
 				_drag_start = mb.position
 				_drag_active = false
 			else:
@@ -373,6 +386,111 @@ func _try_select(mouse_pos: Vector2, shift: bool, alt: bool) -> void:
 			or _selected_pile_pos != Vector3i(-1, -1, -1)
 		):
 			deselect()
+
+
+## Double-click group select: find the creature under the cursor, then select
+## all on-screen player-civ creatures in the same military group. Civilians
+## (military_group_id == -1) are treated as their own implicit group.
+## Non-player creatures are not expanded — the click falls through to a
+## normal single select.
+func _try_double_click_select(mouse_pos: Vector2, shift: bool) -> void:
+	var ray_origin := _camera.project_ray_origin(mouse_pos)
+	var ray_dir := _camera.project_ray_normal(mouse_pos)
+	var viewport_rect := Rect2(Vector2.ZERO, get_viewport().get_visible_rect().size)
+
+	# Roof shield: detect roof hits so creatures inside buildings are excluded.
+	var struct_hit := _bridge.raycast_structure_detailed(ray_origin, ray_dir, _roofs_hidden)
+	var hit_is_roof: bool = struct_hit.get("is_roof", false)
+	var roof_y: int = struct_hit.get("roof_y", -1)
+
+	# First pass: find the clicked creature AND collect all on-screen creatures.
+	var best_dist_sq := SNAP_THRESHOLD * SNAP_THRESHOLD
+	var best_id := ""
+	var best_group_id: int = -1
+	var best_is_player_civ: bool = false
+
+	# Parallel arrays for all on-screen creatures.
+	var screen_ids: Array = []
+	var screen_group_ids: Array = []
+	var screen_is_player_civ: Array = []
+
+	for species_name in SPECIES_Y_OFFSETS:
+		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
+		var ids: Array = data.get("ids", [])
+		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
+		var civ_flags: Array = data.get("is_player_civ", [])
+		var group_ids: Array = data.get("military_group_ids", [])
+		var y_off: float = SPECIES_Y_OFFSETS[species_name]
+		for i in positions.size():
+			var pos := positions[i]
+			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+
+			# Roof shield: skip creatures inside the building (below roof).
+			if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
+				continue
+
+			# Check if this creature is the one being clicked.
+			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
+			if dist_sq < best_dist_sq:
+				best_dist_sq = dist_sq
+				best_id = ids[i]
+				best_group_id = group_ids[i] if i < group_ids.size() else -1
+				best_is_player_civ = civ_flags[i] if i < civ_flags.size() else false
+
+			# Collect on-screen creatures for the group filter pass.
+			if not _camera.is_position_behind(world_pos):
+				var screen_pos := _camera.unproject_position(world_pos)
+				if viewport_rect.has_point(screen_pos):
+					screen_ids.append(ids[i])
+					screen_group_ids.append(group_ids[i] if i < group_ids.size() else -1)
+					screen_is_player_civ.append(civ_flags[i] if i < civ_flags.size() else false)
+
+	# No creature under cursor — fall through (deselect handled by caller).
+	if best_id == "":
+		if not shift:
+			deselect()
+		return
+
+	# Non-player creature — just do a normal single select.
+	if not best_is_player_civ:
+		_deselect_structure_only()
+		_deselect_pile_only()
+		if shift:
+			if _selected_creature_ids.find(best_id) < 0:
+				_selected_creature_ids.append(best_id)
+		else:
+			_selected_creature_ids = [best_id]
+		creatures_selected.emit(_selected_creature_ids)
+		return
+
+	# Filter on-screen creatures to those matching the clicked creature's group.
+	var new_ids: Array = []
+	for i in screen_ids.size():
+		if (
+			GeometryUtils
+			. matches_double_click_group(
+				screen_group_ids[i],
+				screen_is_player_civ[i],
+				best_group_id,
+				best_is_player_civ,
+			)
+		):
+			new_ids.append(screen_ids[i])
+
+	if new_ids.is_empty():
+		return
+
+	_deselect_structure_only()
+	_deselect_pile_only()
+
+	if shift:
+		for cid in new_ids:
+			if _selected_creature_ids.find(cid) < 0:
+				_selected_creature_ids.append(cid)
+	else:
+		_selected_creature_ids = new_ids
+
+	creatures_selected.emit(_selected_creature_ids)
 
 
 ## Complete a box-select drag. Projects all creature world positions to screen

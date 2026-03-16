@@ -17,8 +17,8 @@ Projectile system complete: ballistics math module (integer-only sub-voxel coord
 ## Phase 4 (Economy and Ecology)
 Kitchen cooking, workshop manufacturing (bow/arrow/bowstring recipes), elf personal item acquisition, creature thoughts, and basic mood scoring implemented. Notification system with sim-side persistence (SimDb table), multiplayer-aware command pipeline, toast UI, and moping notifications. Creature actions formalized as typed, duration-bearing operations (`ActionKind` enum, `MoveAction` table for interpolation). Unified `interrupt_task()` entry point for all task interruption and cleanup (nav invalidation, mope preemption, pursuit abandonment). Logistics material filtering: `MaterialFilter` enum (`Any`/`Specific(Material)`) threads through all inventory and logistics functions, `hauled_material` tracking on haul tasks for precise in-transit counting, dynamic two-step UI picker (item kind → material filter). Proximity-based task assignment: idle creatures pick the nearest available task by Dijkstra nav-graph distance; rest not started.
 
-## Phase 5
-Not started.
+## Phase 5 (Quality of Life)
+Partial — double-click group select (F-dblclick-select): double-clicking a player-civ creature selects all on-screen creatures in the same military group; civilians treated as implicit group.
 
 ## Phase 6 (Culture and Language)
 Music crate complete with Phase 1 waveform synthesizer (`synth.rs`) and runtime generation API (`generate.rs`). Integrated into game via gdext: construction designation triggers background composition, GDScript `construction_music.gd` plays PCM through `AudioStreamGenerator`. Shared lang crate (`elven_canopy_lang`) provides Vaelith types, lexicon, and name generation. Embedded elfcyclopedia HTTP server (localhost, species bestiary) with in-game book button to open in browser.

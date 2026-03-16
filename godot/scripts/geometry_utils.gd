@@ -1,4 +1,4 @@
-## Pure geometry helper functions shared across controllers.
+## Pure geometry and selection-logic helper functions shared across controllers.
 ##
 ## Extracted from selection_controller.gd and tooltip_controller.gd so they
 ## can be unit-tested independently without Godot scene dependencies (SimBridge,
@@ -8,11 +8,13 @@
 ## Also provides the `is_shielded_by_roof()` predicate used by both
 ## selection_controller.gd and tooltip_controller.gd for roof-click-select:
 ## when the ray hits a building roof, creatures inside (below roof Y) are
-## shielded from selection.
+## shielded from selection. And `matches_double_click_group()` for
+## double-click group selection (F-dblclick-select).
 ##
-## See also: selection_controller.gd (click-to-select, box-select),
-## tooltip_controller.gd (hover detection), placement_controller.gd
-## (click-to-place snap — inlines the same ray-distance math for performance).
+## See also: selection_controller.gd (click-to-select, box-select,
+## double-click-select), tooltip_controller.gd (hover detection),
+## placement_controller.gd (click-to-place snap — inlines the same
+## ray-distance math for performance).
 class_name GeometryUtils
 
 
@@ -41,3 +43,18 @@ static func make_screen_rect(a: Vector2, b: Vector2) -> Rect2:
 ## false (no roof was hit), no creature is ever shielded.
 static func is_shielded_by_roof(creature_y: int, is_roof: bool, roof_y: int) -> bool:
 	return is_roof and creature_y < roof_y
+
+
+## Return true if a candidate creature should be included in a double-click
+## group select. Both creatures must be player-civ, and their military group
+## IDs must match. A group_id of -1 means "civilian" (no explicit military
+## group), which is treated as its own implicit group.
+static func matches_double_click_group(
+	candidate_group_id: int,
+	candidate_is_player_civ: bool,
+	target_group_id: int,
+	target_is_player_civ: bool,
+) -> bool:
+	if not target_is_player_civ or not candidate_is_player_civ:
+		return false
+	return candidate_group_id == target_group_id

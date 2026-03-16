@@ -127,7 +127,7 @@ elven-canopy/
 │       ├── construction_controller.gd # Click-drag construction placement (5-state FSM)
 │       ├── height_grid_renderer.gd    # Wireframe height-slice grid overlay
 │       ├── placement_controller.gd  # Click-to-place for spawns and tasks
-│       ├── selection_controller.gd  # Click-to-select creatures
+│       ├── selection_controller.gd  # Click/box/double-click select creatures
 │       ├── selection_utils.gd      # Pure click/box modifier helpers for selection
 │       ├── tooltip_controller.gd    # Hover tooltips for world objects
 │       ├── notification_display.gd  # Toast-style event notifications

@@ -93,7 +93,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-creature-death       Basic creature death (starvation)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
-[ ] F-dblclick-select      Double-click to select all of same military group
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
 [ ] F-dye-application      Apply dye to equipment at workshop
@@ -215,6 +214,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-creature-actions     Creature action system: typed duration-bearing actions
 [x] F-creature-info        Creature info panel with follow button
 [x] F-creature-tooltip     Hover tooltips for world objects
+[x] F-dblclick-select      Double-click to select all of same military group
 [x] F-debug-menu           Move spawn/summon into debug menu
 [x] F-dynamic-pursuit      Dynamic repathfinding for moving-target tasks
 [x] F-elf-acquire          Elf personal item acquisition
@@ -2679,7 +2679,7 @@ Broadened from creature-only tooltip to cover all hoverable world objects.
 **Related:** F-creature-info, F-elf-names, F-selection, F-status-bar
 
 #### F-dblclick-select — Double-click to select all of same military group
-**Status:** Todo · **Phase:** 5
+**Status:** Done · **Phase:** 5
 
 Double-click a creature to select all visible creatures in the same
 military group. Civilians (no military group) are treated as their

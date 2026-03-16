@@ -1,5 +1,5 @@
-## Panel displayed when multiple creatures are selected via box-select or
-## Shift+click.
+## Panel displayed when multiple creatures are selected via box-select,
+## Shift+click, or double-click group select.
 ##
 ## Shows a scrollable list of selected creatures, each with their sprite,
 ## name, species, and current activity. Clicking a row selects just that

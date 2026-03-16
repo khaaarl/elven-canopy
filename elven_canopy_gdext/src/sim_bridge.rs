@@ -31,11 +31,11 @@
 //   quads for fruit billboard sprite rendering (fruit is not part of chunk mesh).
 // - **Creature positions:** `get_creature_positions(species_name, render_tick)`
 //   — `PackedVector3Array` for billboard sprite placement (used by renderers).
-//   `get_creature_positions_with_ids(species_name, render_tick)` — paired
-//   `ids` (VarArray of GString UUIDs), `positions` (PackedVector3Array), and
-//   `is_player_civ` (VarArray of bools) for selection hit-testing that resolves
-//   to stable creature IDs. Used by `selection_controller.gd` and
-//   `tooltip_controller.gd`.
+//   `get_creature_positions_with_ids(species_name, render_tick)` — four
+//   parallel arrays: `ids` (GString UUIDs), `positions` (PackedVector3Array),
+//   `is_player_civ` (bools), and `military_group_ids` (i64, -1 for civilians)
+//   for selection hit-testing, box-select, and double-click group select.
+//   Used by `selection_controller.gd` and `tooltip_controller.gd`.
 // - **Projectile data:** `get_projectile_positions(render_tick)` returns
 //   interpolated positions (PackedVector3Array), `get_projectile_velocities()`
 //   returns velocity vectors for orienting arrow meshes along flight direction.
@@ -2439,14 +2439,18 @@ impl SimBridge {
         arr
     }
 
-    /// Return creature positions and their stable IDs for a given species.
+    /// Return creature positions and metadata for a given species.
     ///
-    /// Returns a `VarDictionary` with two parallel arrays:
+    /// Returns a `VarDictionary` with four parallel arrays:
     /// - `"ids"`: `VarArray` of `GString` creature IDs (UUID strings)
     /// - `"positions"`: `PackedVector3Array` of interpolated positions
+    /// - `"is_player_civ"`: `VarArray` of `bool` — true if creature belongs
+    ///   to the player's civilization
+    /// - `"military_group_ids"`: `VarArray` of `i64` — military group ID, or
+    ///   -1 for civilians (no explicit group)
     ///
-    /// Used by `selection_controller.gd` for hit-testing that resolves to
-    /// stable creature IDs (not ephemeral per-species indices).
+    /// Used by `selection_controller.gd` for hit-testing, box-select, and
+    /// double-click group select.
     #[func]
     fn get_creature_positions_with_ids(
         &self,
@@ -2457,16 +2461,19 @@ impl SimBridge {
         let mut ids = VarArray::new();
         let mut positions = PackedVector3Array::new();
         let mut is_player_civ = VarArray::new();
+        let mut military_group_ids = VarArray::new();
         let Some(species) = parse_species(&species_name.to_string()) else {
             dict.set("ids", ids);
             dict.set("positions", positions);
             dict.set("is_player_civ", is_player_civ);
+            dict.set("military_group_ids", military_group_ids);
             return dict;
         };
         let Some(sim) = &self.session.sim else {
             dict.set("ids", ids);
             dict.set("positions", positions);
             dict.set("is_player_civ", is_player_civ);
+            dict.set("military_group_ids", military_group_ids);
             return dict;
         };
         let player_civ = sim.player_civ_id;
@@ -2482,10 +2489,13 @@ impl SimBridge {
             positions.push(Vector3::new(x, y, z));
             let belongs = player_civ.is_some() && creature.civ_id == player_civ;
             is_player_civ.push(&belongs.to_variant());
+            let group_id: i64 = creature.military_group.map_or(-1, |g| g.0 as i64);
+            military_group_ids.push(&group_id.to_variant());
         }
         dict.set("ids", ids);
         dict.set("positions", positions);
         dict.set("is_player_civ", is_player_civ);
+        dict.set("military_group_ids", military_group_ids);
         dict
     }
 
