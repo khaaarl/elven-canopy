@@ -1332,6 +1332,30 @@ impl SimState {
         self.db.fruit_species.get(species_id)
     }
 
+    /// Resolve the visual color for an item stack. Priority:
+    /// 1. Explicit `dye_color` on the stack → used directly.
+    /// 2. Fruit-species material → fruit's `exterior_color`, muted.
+    /// 3. Other material (wood) → `Material::base_color()`, muted.
+    /// 4. No material → `DEFAULT_ITEM_COLOR`.
+    pub fn item_color(&self, stack: &crate::db::ItemStack) -> inventory::ItemColor {
+        // Dyed items use the dye color as-is.
+        if let Some(dye) = stack.dye_color {
+            return dye;
+        }
+        match stack.material {
+            Some(inventory::Material::FruitSpecies(id)) => {
+                if let Some(species) = self.db.fruit_species.get(&id) {
+                    inventory::ItemColor::from(species.appearance.exterior_color).muted()
+                } else {
+                    // Unknown fruit species — fall back to generic fruit color, muted.
+                    inventory::Material::FruitSpecies(id).base_color().muted()
+                }
+            }
+            Some(mat) => mat.base_color().muted(),
+            None => inventory::DEFAULT_ITEM_COLOR,
+        }
+    }
+
     /// Return a human-readable display name for an item stack. For fruit with
     /// a known species, returns e.g. "Shinethúni Fruit" or "Révatórun Pod".
     /// For any other item with a fruit species material (extracted components,

@@ -32089,3 +32089,229 @@ fn tree_owner_is_civ_id() {
     let tree = &sim.trees[&sim.player_tree_id];
     assert_eq!(tree.owner, sim.player_civ_id);
 }
+
+// ---------------------------------------------------------------------------
+// Item color (F-item-color)
+// ---------------------------------------------------------------------------
+
+/// Helper: build an ItemStack value without inserting into the DB.
+fn fake_stack(
+    kind: inventory::ItemKind,
+    material: Option<inventory::Material>,
+    dye_color: Option<inventory::ItemColor>,
+) -> crate::db::ItemStack {
+    crate::db::ItemStack {
+        id: crate::types::ItemStackId(9999),
+        inventory_id: crate::types::InventoryId(1),
+        kind,
+        quantity: 1,
+        material,
+        quality: 0,
+        current_hp: 0,
+        max_hp: 0,
+        enchantment_id: None,
+        owner: None,
+        reserved_by: None,
+        equipped_slot: None,
+        dye_color,
+    }
+}
+
+#[test]
+fn item_color_no_material_returns_default() {
+    let sim = test_sim(42);
+    let stack = fake_stack(inventory::ItemKind::Bread, None, None);
+    assert_eq!(sim.item_color(&stack), inventory::DEFAULT_ITEM_COLOR);
+}
+
+#[test]
+fn item_color_wood_material_returns_muted_base() {
+    let sim = test_sim(42);
+    let stack = fake_stack(
+        inventory::ItemKind::Bow,
+        Some(inventory::Material::Oak),
+        None,
+    );
+    let color = sim.item_color(&stack);
+    let expected = inventory::Material::Oak.base_color().muted();
+    assert_eq!(color, expected);
+}
+
+#[test]
+fn item_color_dye_overrides_material() {
+    let sim = test_sim(42);
+    let dye = inventory::ItemColor::new(200, 50, 50);
+    let stack = fake_stack(
+        inventory::ItemKind::Tunic,
+        Some(inventory::Material::Oak),
+        Some(dye),
+    );
+    // Dyed color should be returned as-is, not muted.
+    assert_eq!(sim.item_color(&stack), dye);
+}
+
+#[test]
+fn item_color_fruit_material_uses_appearance_color_muted() {
+    let sim = test_sim(42);
+    let species = sim.db.fruit_species.iter_all().next().unwrap().clone();
+    let expected = inventory::ItemColor::from(species.appearance.exterior_color).muted();
+    let stack = fake_stack(
+        inventory::ItemKind::Fruit,
+        Some(inventory::Material::FruitSpecies(species.id)),
+        None,
+    );
+    assert_eq!(sim.item_color(&stack), expected);
+}
+
+#[test]
+fn item_color_unknown_fruit_species_uses_generic_fallback() {
+    let sim = test_sim(42);
+    // Use a fruit species ID that doesn't exist in the DB.
+    let bogus_id = crate::fruit::FruitSpeciesId(65535);
+    assert!(sim.db.fruit_species.get(&bogus_id).is_none());
+    let stack = fake_stack(
+        inventory::ItemKind::Fruit,
+        Some(inventory::Material::FruitSpecies(bogus_id)),
+        None,
+    );
+    let expected = inventory::Material::FruitSpecies(bogus_id)
+        .base_color()
+        .muted();
+    assert_eq!(sim.item_color(&stack), expected);
+}
+
+#[test]
+fn inv_normalize_keeps_differently_dyed_stacks_separate() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let inv_id = sim.creature_inv(elf_id);
+    // Add two stacks of the same item with different dye colors.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        Some(elf_id),
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        Some(elf_id),
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    // Dye one of them.
+    let stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|s| s.kind == inventory::ItemKind::Tunic)
+        .collect();
+    // After normalize, the two undyed tunics should have merged.
+    assert_eq!(stacks.len(), 1, "undyed tunics should merge");
+    assert_eq!(stacks[0].quantity, 2);
+    // Now dye one unit: split it off and apply dye.
+    let split_id = sim.inv_split_stack(stacks[0].id, 1).unwrap();
+    let dye = inventory::ItemColor::new(200, 0, 0);
+    let _ = sim
+        .db
+        .item_stacks
+        .modify_unchecked(&split_id, |s| s.dye_color = Some(dye));
+    sim.inv_normalize(inv_id);
+    // Should now have two separate stacks: one undyed, one dyed.
+    let stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|s| s.kind == inventory::ItemKind::Tunic)
+        .collect();
+    assert_eq!(stacks.len(), 2, "dyed and undyed tunics should not merge");
+}
+
+#[test]
+fn inv_normalize_merges_same_dye_color_stacks() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let inv_id = sim.creature_inv(elf_id);
+    let dye = inventory::ItemColor::new(0, 100, 200);
+    // Add two stacks with the same dye color.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        Some(elf_id),
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        Some(elf_id),
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    // Dye both.
+    let ids: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|s| s.kind == inventory::ItemKind::Tunic)
+        .map(|s| s.id)
+        .collect();
+    for id in &ids {
+        let _ = sim
+            .db
+            .item_stacks
+            .modify_unchecked(id, |s| s.dye_color = Some(dye));
+    }
+    sim.inv_normalize(inv_id);
+    let stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|s| s.kind == inventory::ItemKind::Tunic)
+        .collect();
+    assert_eq!(stacks.len(), 1, "same-dyed tunics should merge");
+    assert_eq!(stacks[0].quantity, 2);
+    assert_eq!(stacks[0].dye_color, Some(dye));
+}
+
+#[test]
+fn item_color_each_wood_type_distinct() {
+    let sim = test_sim(42);
+    let colors: Vec<_> = inventory::Material::WOOD_TYPES
+        .iter()
+        .map(|wood| {
+            let stack = fake_stack(inventory::ItemKind::Bow, Some(*wood), None);
+            (*wood, sim.item_color(&stack))
+        })
+        .collect();
+    for i in 0..colors.len() {
+        for j in (i + 1)..colors.len() {
+            assert_ne!(
+                colors[i].1, colors[j].1,
+                "{:?} and {:?} should produce different item colors",
+                colors[i].0, colors[j].0
+            );
+        }
+    }
+}

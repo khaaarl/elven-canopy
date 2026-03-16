@@ -1,4 +1,4 @@
-// Item type enum for the simulation.
+// Item types, materials, and color system for the simulation.
 //
 // Provides `ItemKind` (the enum of distinct item types: Bread, Fruit, Bow,
 // Arrow, Bowstring, extracted fruit components — Pulp, Husk, Seed,
@@ -9,6 +9,7 @@
 // fruits, extracted components, and processed products),
 // `MaterialFilter` (logistics want constraint: `Any` or `Specific(Material)`),
 // `EquipSlot` (body slot for wearable clothing: Head, Torso, Legs, Feet, Hands),
+// `ItemColor` (RGB color for items, derived from material or dye),
 // and `EffectKind` (stubbed enchantment effect types for future use).
 // Item storage is now handled by the `db::ItemStack` and `db::Inventory`
 // tabulosity tables. `SimState` has `inv_*` methods (in `sim/inventory_mgmt.rs`) for all
@@ -466,6 +467,72 @@ mod tests {
     }
 }
 
+/// An RGB color for items (material-derived or dye-applied).
+///
+/// Used by `item_color()` to resolve an item's visual color. Undyed items
+/// derive a muted color from their material; dyed items use the dye color
+/// directly. See also: `FruitColor` in `fruit.rs` (converted via `From`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ItemColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl ItemColor {
+    pub const fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
+    /// Desaturate and darken a color to produce a muted variant.
+    /// Used for material-derived colors when no explicit dye is applied.
+    pub fn muted(self) -> Self {
+        // Convert to approximate luminance, then blend toward grey and darken.
+        let grey = ((self.r as u16 * 77 + self.g as u16 * 150 + self.b as u16 * 29) >> 8) as u8;
+        // 60% original color + 40% grey, then darken by ~15%.
+        let mix = |c: u8| -> u8 {
+            let blended = (c as u16 * 60 + grey as u16 * 40) / 100;
+            (blended * 85 / 100).min(255) as u8
+        };
+        Self {
+            r: mix(self.r),
+            g: mix(self.g),
+            b: mix(self.b),
+        }
+    }
+}
+
+impl From<crate::fruit::FruitColor> for ItemColor {
+    fn from(fc: crate::fruit::FruitColor) -> Self {
+        Self {
+            r: fc.r,
+            g: fc.g,
+            b: fc.b,
+        }
+    }
+}
+
+impl Material {
+    /// Base color associated with this material. For wood types, returns a
+    /// characteristic wood color. For fruit species, returns a generic
+    /// fruit-brown — callers should use the fruit's `FruitAppearance` color
+    /// instead when available.
+    pub fn base_color(self) -> ItemColor {
+        match self {
+            Material::Oak => ItemColor::new(160, 120, 60),
+            Material::Birch => ItemColor::new(220, 210, 180),
+            Material::Willow => ItemColor::new(140, 160, 100),
+            Material::Ash => ItemColor::new(200, 190, 160),
+            Material::Yew => ItemColor::new(180, 100, 60),
+            // Generic fallback — callers override with actual fruit color.
+            Material::FruitSpecies(_) => ItemColor::new(170, 130, 90),
+        }
+    }
+}
+
+/// Default color for items with no material (neutral grey-tan).
+pub const DEFAULT_ITEM_COLOR: ItemColor = ItemColor::new(160, 150, 140);
+
 /// Kind of enchantment effect. Stubbed for future magic item system.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EffectKind {
@@ -478,5 +545,127 @@ impl EffectKind {
         match self {
             EffectKind::Placeholder => "Placeholder",
         }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+
+    #[test]
+    fn item_color_new() {
+        let c = ItemColor::new(100, 200, 50);
+        assert_eq!(c.r, 100);
+        assert_eq!(c.g, 200);
+        assert_eq!(c.b, 50);
+    }
+
+    #[test]
+    fn item_color_muted_is_darker_and_less_saturated() {
+        let bright = ItemColor::new(200, 50, 50); // saturated red
+        let muted = bright.muted();
+        // Muted version should be darker overall.
+        let bright_sum = bright.r as u16 + bright.g as u16 + bright.b as u16;
+        let muted_sum = muted.r as u16 + muted.g as u16 + muted.b as u16;
+        assert!(
+            muted_sum < bright_sum,
+            "muted ({muted_sum}) should be darker than original ({bright_sum})"
+        );
+        // Muted version should be less saturated (channels closer together).
+        let bright_range =
+            bright.r.max(bright.g).max(bright.b) - bright.r.min(bright.g).min(bright.b);
+        let muted_range = muted.r.max(muted.g).max(muted.b) - muted.r.min(muted.g).min(muted.b);
+        assert!(
+            muted_range < bright_range,
+            "muted range ({muted_range}) should be less than original ({bright_range})"
+        );
+    }
+
+    #[test]
+    fn item_color_muted_extreme_values() {
+        // White mutes to a dimmed grey — verify it doesn't wrap or panic.
+        let white = ItemColor::new(255, 255, 255);
+        let muted = white.muted();
+        assert!(muted.r < 255, "muted white should be dimmer");
+        assert_eq!(muted.r, muted.g);
+        assert_eq!(muted.g, muted.b);
+
+        // Black stays black.
+        let black = ItemColor::new(0, 0, 0);
+        let muted_black = black.muted();
+        assert_eq!(muted_black.r, 0);
+        assert_eq!(muted_black.g, 0);
+        assert_eq!(muted_black.b, 0);
+    }
+
+    #[test]
+    fn item_color_from_fruit_color() {
+        let fc = crate::fruit::FruitColor {
+            r: 100,
+            g: 150,
+            b: 200,
+        };
+        let ic = ItemColor::from(fc);
+        assert_eq!(ic.r, 100);
+        assert_eq!(ic.g, 150);
+        assert_eq!(ic.b, 200);
+    }
+
+    #[test]
+    fn material_base_color_all_woods_distinct() {
+        let colors: Vec<ItemColor> = Material::WOOD_TYPES
+            .iter()
+            .map(|m| m.base_color())
+            .collect();
+        // Each wood type should have a unique color.
+        for i in 0..colors.len() {
+            for j in (i + 1)..colors.len() {
+                assert_ne!(
+                    colors[i],
+                    colors[j],
+                    "{:?} and {:?} should have different base colors",
+                    Material::WOOD_TYPES[i],
+                    Material::WOOD_TYPES[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn material_base_color_fruit_species_returns_fallback() {
+        let fc = Material::FruitSpecies(crate::fruit::FruitSpeciesId(99)).base_color();
+        // Should return the generic fruit-brown fallback.
+        assert_eq!(fc, ItemColor::new(170, 130, 90));
+    }
+
+    #[test]
+    fn default_item_color_is_neutral() {
+        // Grey-tan, none of the channels should be extremely bright or dark.
+        assert!(DEFAULT_ITEM_COLOR.r > 100 && DEFAULT_ITEM_COLOR.r < 200);
+        assert!(DEFAULT_ITEM_COLOR.g > 100 && DEFAULT_ITEM_COLOR.g < 200);
+        assert!(DEFAULT_ITEM_COLOR.b > 100 && DEFAULT_ITEM_COLOR.b < 200);
+    }
+
+    #[test]
+    fn item_color_serde_roundtrip() {
+        let color = ItemColor::new(42, 128, 200);
+        let json = serde_json::to_string(&color).unwrap();
+        let restored: ItemColor = serde_json::from_str(&json).unwrap();
+        assert_eq!(color, restored);
+    }
+
+    #[test]
+    fn item_color_optional_serde_roundtrip() {
+        // None case (for dye_color field on ItemStack).
+        let none_color: Option<ItemColor> = None;
+        let json = serde_json::to_string(&none_color).unwrap();
+        let restored: Option<ItemColor> = serde_json::from_str(&json).unwrap();
+        assert_eq!(none_color, restored);
+
+        // Some case.
+        let some_color = Some(ItemColor::new(255, 0, 128));
+        let json = serde_json::to_string(&some_color).unwrap();
+        let restored: Option<ItemColor> = serde_json::from_str(&json).unwrap();
+        assert_eq!(some_color, restored);
     }
 }

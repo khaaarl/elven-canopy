@@ -122,6 +122,7 @@ impl SimState {
                 owner,
                 reserved_by,
                 equipped_slot,
+                dye_color: None,
             });
         self.inv_normalize(inv_id);
     }
@@ -160,6 +161,7 @@ impl SimState {
                 owner,
                 reserved_by,
                 equipped_slot,
+                dye_color: None,
             });
         self.inv_normalize(inv_id);
     }
@@ -357,6 +359,7 @@ impl SimState {
                 let mhp = stack.max_hp;
                 let ench = stack.enchantment_id;
                 let own = stack.owner;
+                let dye = stack.dye_color;
                 let _ = self
                     .db
                     .item_stacks
@@ -373,6 +376,7 @@ impl SimState {
                         owner: own,
                         reserved_by: Some(task_id),
                         equipped_slot: None,
+                        dye_color: dye,
                     });
             }
             remaining -= take;
@@ -497,6 +501,7 @@ impl SimState {
                 let chp = stack.current_hp;
                 let mhp = stack.max_hp;
                 let ench = stack.enchantment_id;
+                let dye = stack.dye_color;
                 let _ = self
                     .db
                     .item_stacks
@@ -513,6 +518,7 @@ impl SimState {
                         owner: None,
                         reserved_by: Some(task_id),
                         equipped_slot: None,
+                        dye_color: dye,
                     });
             }
             remaining -= take;
@@ -523,8 +529,8 @@ impl SimState {
 
     /// Consolidate matching stacks within an inventory. Two stacks are
     /// mergeable when they agree on all properties: kind, material, quality,
-    /// current_hp, max_hp, enchantment_id, owner, reserved_by, and
-    /// equipped_slot. This is the single source of truth for stack-merging
+    /// current_hp, max_hp, enchantment_id, owner, reserved_by, equipped_slot,
+    /// and dye_color. This is the single source of truth for stack-merging
     /// criteria — called after any operation that may create mergeable stacks
     /// (add, move, split, reservation changes, etc.).
     pub(crate) fn inv_normalize(&mut self, inv_id: InventoryId) {
@@ -543,6 +549,7 @@ impl SimState {
             Option<CreatureId>,
             Option<TaskId>,
             Option<inventory::EquipSlot>,
+            Option<inventory::ItemColor>,
         );
         type MergeVal = (ItemStackId, u32, Vec<ItemStackId>);
         let mut groups: BTreeMap<MergeKey, MergeVal> = BTreeMap::new();
@@ -557,6 +564,7 @@ impl SimState {
                 stack.owner,
                 stack.reserved_by,
                 stack.equipped_slot,
+                stack.dye_color,
             );
             let entry = groups.entry(key).or_insert((stack.id, 0, Vec::new()));
             entry.1 += stack.quantity;
@@ -578,8 +586,8 @@ impl SimState {
     }
 
     /// Split `quantity` items off an existing stack, preserving all properties
-    /// (material, quality, current_hp, max_hp, enchantment, owner, reserved_by)
-    /// except `equipped_slot` which is always `None` on the new stack.
+    /// (material, quality, current_hp, max_hp, enchantment, owner, reserved_by,
+    /// dye_color) except `equipped_slot` which is always `None` on the new stack.
     ///
     /// - If `quantity == 0`: returns `None`.
     /// - If `quantity >= stack.quantity`: returns `Some(stack_id)` (whole stack,
@@ -610,6 +618,7 @@ impl SimState {
         let enchantment_id = stack.enchantment_id;
         let owner = stack.owner;
         let reserved_by = stack.reserved_by;
+        let dye_color = stack.dye_color;
         // Shrink original stack.
         let _ = self
             .db
@@ -632,6 +641,7 @@ impl SimState {
                 owner,
                 reserved_by,
                 equipped_slot: None,
+                dye_color,
             })
             .unwrap();
         Some(new_id)
@@ -639,7 +649,8 @@ impl SimState {
 
     /// Move `quantity` items from `stack_id` to `dst` inventory, preserving
     /// all properties (material, quality, durability, enchantment, owner,
-    /// reserved_by). Uses `inv_split_stack` when moving a partial stack.
+    /// reserved_by, dye_color). Uses `inv_split_stack` when moving a partial
+    /// stack.
     ///
     /// - If `quantity == 0`: returns `None`.
     /// - If `quantity >= stack.quantity`: moves the entire stack.

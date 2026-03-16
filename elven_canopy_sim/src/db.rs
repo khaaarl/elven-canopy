@@ -55,7 +55,7 @@
 // BTreeMap order. No hash-based collections.
 
 use crate::fruit::{FruitSpecies, FruitSpeciesTable};
-use crate::inventory::{EffectKind, EquipSlot, ItemKind, Material};
+use crate::inventory::{EffectKind, EquipSlot, ItemColor, ItemKind, Material};
 use crate::projectile::{SubVoxelCoord, SubVoxelVec};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
@@ -841,6 +841,11 @@ pub struct ItemStack {
     pub reserved_by: Option<TaskId>,
     #[serde(default)]
     pub equipped_slot: Option<EquipSlot>,
+    /// Explicit dye color applied to this item. When present, `item_color()`
+    /// returns this color directly instead of deriving from the material.
+    /// Set by the dye-application system (F-dye-application, future).
+    #[serde(default)]
+    pub dye_color: Option<ItemColor>,
 }
 
 /// A pile of items on the ground at a specific voxel position.

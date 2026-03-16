@@ -116,7 +116,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
-[ ] F-item-color           Item color system (material-derived and dye override)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
@@ -242,6 +241,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-hp-death             HP, VitalStatus, and creature death handling
 [x] F-hp-ui                HP bars in creature UI
 [x] F-immediate-commands   Immediate command application (zero-tick updates)
+[x] F-item-color           Item color system (material-derived and dye override)
 [x] F-item-durability      Item durability system (current/max HP on items)
 [x] F-items                Items and inventory system
 [x] F-keybind-help         Keyboard shortcuts help overlay
@@ -1346,7 +1346,8 @@ equipment item to a workshop and applies the dye, setting the
 the task definition, workshop interaction, dye consumption, and UI for
 selecting which item to dye with which color.
 
-**Blocked by:** F-dye-crafting, F-item-color
+**Blocked by:** F-dye-crafting
+**Unblocked by:** F-item-color
 **Related:** F-dye-crafting
 
 #### F-dye-crafting — Dye pressing and fabric dyeing recipes
@@ -1360,8 +1361,8 @@ on the item stack (from F-item-color). Requires F-textile-crafting for
 the textile items to dye. Details TBD: dye item representation, dyeing
 recipe structure, color mixing, UI for selecting dye targets and colors.
 
-**Blocked by:** F-item-color
 **Blocks:** F-dye-application
+**Unblocked by:** F-item-color
 **Related:** F-dye-application, F-fruit-variety, F-textile-crafting
 
 #### F-elf-acquire — Elf personal item acquisition
@@ -1502,7 +1503,7 @@ task abandonment (clear reservations or drop carried items as ground pile).
 **Related:** F-elf-acquire, F-food-chain, F-logistics
 
 #### F-item-color — Item color system (material-derived and dye override)
-**Status:** Todo
+**Status:** Done
 
 Every item has a resolved color. Undyed items derive their color from
 their material (e.g., oak → warm brown, iron → grey). Dyed items use
@@ -1515,7 +1516,7 @@ with no material.
 This item covers only the schema and color retrieval logic — not the
 crafting process for creating dyes or applying them to items.
 
-**Blocks:** F-dye-application, F-dye-crafting, F-equipment-color
+**Unblocked:** F-dye-application, F-dye-crafting, F-equipment-color
 
 #### F-item-durability — Item durability system (current/max HP on items)
 **Status:** Done
@@ -2763,7 +2764,8 @@ red; an undyed oak breastplate renders oak-brown. The per-equipment
 drawing functions in `elven_canopy_sprites` accept a color parameter
 sourced from `item_color(stack)`.
 
-**Blocked by:** F-equipment-sprites, F-item-color
+**Blocked by:** F-equipment-sprites
+**Unblocked by:** F-item-color
 
 #### F-equipment-sprites — Dynamic sprite customization for equipment
 **Status:** Todo
