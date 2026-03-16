@@ -87,7 +87,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
-[ ] F-crafting             Non-construction jobs and crafting
 [ ] F-creature-biology     Biological traits for deterministic creature appearance
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
@@ -208,6 +207,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-component-recipes    Component-based crafting recipes (bread, thread, bowstring)
 [x] F-construction         Platform construction (designate/build/cancel)
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
+[x] F-crafting             Non-construction jobs and crafting
 [x] F-crate-structure      Two-crate sim/gdext structure
 [x] F-creature-actions     Creature action system: typed duration-bearing actions
 [x] F-creature-death       Basic creature death (starvation)
@@ -1325,12 +1325,12 @@ mana essence refinement.
 **Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-recipe-hierarchy, F-recipes, F-textile-crafting
 
 #### F-crafting — Non-construction jobs and crafting
-**Status:** Todo · **Phase:** 8+ · **Refs:** §11
+**Status:** Done · **Phase:** 8+ · **Refs:** §11
 
 Jobs beyond construction: woodworking, weaving, cooking, enchanting.
 Crafting system for tools, furniture, and magical items.
 
-**Blocks:** F-elf-weapons
+**Unblocked:** F-elf-weapons
 **Related:** F-bldg-workshop, F-items, F-magic-items, F-recipes
 
 #### F-dye-application — Apply dye to equipment at workshop
@@ -2038,7 +2038,8 @@ the construction system to support these build types.
 
 Weapon types with different ranges, damage, and crafting requirements.
 
-**Blocked by:** F-combat, F-crafting
+**Blocked by:** F-combat
+**Unblocked by:** F-crafting
 **Related:** F-bldg-workshop
 
 #### F-enemy-ai — Hostile creature AI (goblin/orc/troll behavior)
