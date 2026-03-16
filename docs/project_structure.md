@@ -76,7 +76,15 @@ elven-canopy/
 │       ├── lib.rs              # ExtensionLibrary entry point
 │       ├── mesh_cache.rs       # Chunk mesh cache with dirty tracking
 │       ├── elfcyclopedia_server.rs # Embedded localhost HTTP species bestiary
+│       ├── sprite_bridge.rs    # SpriteGenerator — converts pixel buffers to Godot textures
 │       └── sim_bridge.rs       # SimBridge node exposed to Godot
+├── elven_canopy_sprites/       # Procedural sprite generation (pure Rust, RGBA8 buffers)
+│   └── src/
+│       ├── lib.rs              # Crate root, public API re-exports
+│       ├── color.rs            # RGBA color type with darken/lighten helpers
+│       ├── drawing.rs          # PixelBuffer with drawing primitives (circle, ellipse, rect, line)
+│       ├── fruit.rs            # 16x16 fruit sprites (6 shapes + glow effect)
+│       └── species.rs          # Dispatcher + per-species modules (10 species, 32x32 to 96x80)
 ├── elven_canopy_music/         # Palestrina-style polyphonic music generator
 │   ├── src/
 │   │   ├── lib.rs              # Crate root, module declarations
@@ -115,7 +123,6 @@ elven-canopy/
 │       ├── elf_renderer.gd     # Billboard chibi elf sprites (pool pattern)
 │       ├── capybara_renderer.gd # Billboard chibi capybara sprites
 │       ├── tree_renderer.gd    # Tree voxel mesh rendering (MultiMesh)
-│       ├── sprite_factory.gd   # Procedural chibi sprite generation from seed
 │       ├── action_toolbar.gd   # Top toolbar (speed controls, gameplay) + toggleable debug panel
 │       ├── construction_controller.gd # Click-drag construction placement (5-state FSM)
 │       ├── height_grid_renderer.gd    # Wireframe height-slice grid overlay

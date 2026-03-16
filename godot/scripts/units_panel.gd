@@ -15,7 +15,7 @@
 ## rows as creatures appear and disappear.
 ##
 ## Sprites are cached in a dictionary keyed by creature_id and generated
-## via SpriteFactory on first encounter.
+## via SpriteGenerator on first encounter.
 ##
 ## Signals:
 ## - creature_clicked(creature_id) — select and show info for a creature
@@ -28,7 +28,7 @@
 ## See also: main.gd (creates and wires this panel), sim_bridge.rs for
 ## get_all_creatures_summary(), action_toolbar.gd for the "Units [U]" button,
 ## task_panel.gd / structure_list_panel.gd for similar full-screen overlay
-## patterns, sprite_factory.gd for creature sprite generation.
+## patterns, elven_canopy_sprites (Rust crate) for creature sprite generation.
 
 extends ColorRect
 
@@ -300,7 +300,6 @@ func _update_row(row: HBoxContainer, entry: Dictionary) -> void:
 func _get_sprite(creature_id: String, species: String, index: int) -> ImageTexture:
 	if _sprite_cache.has(creature_id):
 		return _sprite_cache[creature_id]
-	var params := SpriteFactory.species_params_from_seed(species, index)
-	var tex := SpriteFactory.create_species_sprite(species, params)
+	var tex := SpriteGenerator.species_sprite(species, index)
 	_sprite_cache[creature_id] = tex
 	return tex

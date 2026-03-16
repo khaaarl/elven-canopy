@@ -62,6 +62,7 @@ dependencies = [
  "elven_canopy_protocol",
  "elven_canopy_relay",
  "elven_canopy_sim",
+ "elven_canopy_sprites",
  "godot",
  "serde",
  "serde_json",
@@ -123,6 +124,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tabulosity",
+]
+
+[[package]]
+name = "elven_canopy_sprites"
+version = "0.1.0"
+dependencies = [
+ "elven_canopy_prng",
+ "elven_canopy_sim",
 ]
 
 [[package]]

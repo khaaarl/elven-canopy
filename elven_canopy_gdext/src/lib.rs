@@ -25,6 +25,9 @@
 // - `elfcyclopedia_server.rs`: Embedded localhost HTTP server serving a species
 //                     bestiary. Runs on a background thread with read-only
 //                     access to a shared data snapshot. Owned by SimBridge.
+// - `sprite_bridge.rs`: `SpriteGenerator` utility class — converts
+//                     `elven_canopy_sprites` pixel buffers into Godot
+//                     ImageTextures. Replaces GDScript `SpriteFactory`.
 //
 // The TCP relay client (`NetClient`) lives in `elven_canopy_relay::client`
 // so it can be shared with integration tests without a Godot dependency.
@@ -37,6 +40,7 @@ mod elfcyclopedia_server;
 mod mesh_cache;
 mod session_browser;
 mod sim_bridge;
+mod sprite_bridge;
 
 use godot::prelude::*;
 

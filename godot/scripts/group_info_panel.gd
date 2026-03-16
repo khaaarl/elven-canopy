@@ -12,7 +12,7 @@
 ##
 ## See also: selection_controller.gd for multi-select state,
 ## creature_info_panel.gd for single-creature display,
-## sprite_factory.gd for procedural sprite generation,
+## elven_canopy_sprites (Rust crate) for procedural sprite generation,
 ## main.gd for wiring and per-frame refresh.
 
 extends PanelContainer
@@ -240,8 +240,7 @@ func _get_sprite(creature_id: String, species: String, species_index: int) -> Im
 	if _sprite_cache.has(creature_id):
 		return _sprite_cache[creature_id]
 	# Use the per-species index as seed, matching renderers and units_panel.
-	var params := SpriteFactory.species_params_from_seed(species, species_index)
-	var tex := SpriteFactory.create_species_sprite(species, params)
+	var tex := SpriteGenerator.species_sprite(species, species_index)
 	_sprite_cache[creature_id] = tex
 	return tex
 

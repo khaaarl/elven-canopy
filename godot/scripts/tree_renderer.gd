@@ -20,7 +20,7 @@
 ## unique atlas textures; the leaf surface shares a single material.
 ##
 ## Fruit is rendered as billboarded Sprite3D nodes, one per fruit voxel,
-## using procedural 16x16 pixel art textures from sprite_factory.gd. Each
+## using procedural 16x16 pixel art textures from elven_canopy_sprites. Each
 ## fruit species gets a unique texture generated from its FruitAppearance
 ## data (shape, color, size, glow). Textures are cached per species ID so
 ## at most ~40 textures exist per game. Fruit sprites are rebuilt every
@@ -176,7 +176,7 @@ func _cache_fruit_textures() -> void:
 			"size_percent": dict.get("size_percent", 100),
 			"glows": dict.get("glows", false),
 		}
-		_fruit_textures[sid] = SpriteFactory.create_fruit(params)
+		_fruit_textures[sid] = SpriteGenerator.fruit_sprite_from_dict(params)
 
 
 ## Refresh fruit billboard sprites from current sim state.

@@ -26,7 +26,7 @@ For detailed per-feature status, see `docs/implementation_status.md` and `docs/t
 
 ## Project Structure
 
-Top-level crates: `elven_canopy_sim` (pure Rust sim), `elven_canopy_gdext` (GDExtension bridge), `elven_canopy_music` (polyphonic music generator), `elven_canopy_lang` (Vaelith conlang), `elven_canopy_prng` (shared PRNG), `elven_canopy_protocol` (multiplayer wire protocol), `elven_canopy_relay` (multiplayer relay server + client), `multiplayer_tests` (integration tests for relay pipeline), `tabulosity`/`tabulosity_derive` (in-memory relational store). Godot project in `godot/` (scenes + scripts). Data files in `data/`. Python offline tools in `python/`. Docs in `docs/`. Build scripts in `scripts/`.
+Top-level crates: `elven_canopy_sim` (pure Rust sim), `elven_canopy_gdext` (GDExtension bridge), `elven_canopy_sprites` (procedural sprite generation, pure Rust RGBA8 buffers), `elven_canopy_music` (polyphonic music generator), `elven_canopy_lang` (Vaelith conlang), `elven_canopy_prng` (shared PRNG), `elven_canopy_protocol` (multiplayer wire protocol), `elven_canopy_relay` (multiplayer relay server + client), `multiplayer_tests` (integration tests for relay pipeline), `tabulosity`/`tabulosity_derive` (in-memory relational store). Godot project in `godot/` (scenes + scripts). Data files in `data/`. Python offline tools in `python/`. Docs in `docs/`. Build scripts in `scripts/`.
 
 For the full annotated directory tree, see `docs/project_structure.md`.
 

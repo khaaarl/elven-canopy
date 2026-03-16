@@ -154,7 +154,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
-[ ] F-rust-sprites         Move sprite generation to new elven_canopy_sprites crate
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-selection-bar        Bottom-of-screen selection bar (SC2-style)
 [ ] F-selection-groups     Ctrl+number selection groups with double-tap camera center
@@ -290,6 +289,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-roof-click-select    Roof click selects building, not elf underneath
 [x] F-rts-selection        RTS box selection and multi-creature commands
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
+[x] F-rust-sprites         Move sprite generation to new elven_canopy_sprites crate
 [x] F-save-load            Save/load to JSON with versioning
 [x] F-select-struct        Selectable structures with interaction UI
 [x] F-selection            Click-to-select creatures
@@ -1045,7 +1045,7 @@ This enables future features like heredity, aging, and biological
 variation to affect appearance naturally. All sprite generation is fully
 determined by biological data — no seed hashing in the sprite crate.
 
-**Blocked by:** F-rust-sprites
+**Unblocked by:** F-rust-sprites
 **Related:** F-rust-sprites
 
 #### F-creature-death — Basic creature death (starvation)
@@ -2781,9 +2781,8 @@ Design decisions:
   equipped item set). The gdext bridge exposes final composited textures
   to Godot.
 
-**Blocked by:** F-rust-sprites
 **Blocks:** F-equipment-color
-**Unblocked by:** F-clothing
+**Unblocked by:** F-clothing, F-rust-sprites
 
 #### F-follow-multi — Camera zoom-to and follow for multi-selections
 **Status:** Todo · **Phase:** 5
@@ -3060,7 +3059,7 @@ Covers tree voxels (Trunk, Branch, Root, Leaf, Dirt) and construction voxels
 billboard Sprite3D rendering with per-species procedural textures.
 
 #### F-rust-sprites — Move sprite generation to new elven_canopy_sprites crate
-**Status:** Todo
+**Status:** Done
 
 Port procedural sprite generation from GDScript (sprite_factory.gd) into
 a new `elven_canopy_sprites` crate. This is a pure Rust library with no
@@ -3077,7 +3076,7 @@ palettes (hair colors, skin tones, etc.) live as constants in the crate.
 sprite_factory.gd is deleted or reduced to a thin call-through once
 complete.
 
-**Blocks:** F-creature-biology, F-equipment-sprites
+**Unblocked:** F-creature-biology, F-equipment-sprites
 **Related:** F-creature-biology, F-fruit-sprites
 
 #### F-select-struct — Selectable structures with interaction UI

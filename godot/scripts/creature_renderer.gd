@@ -7,7 +7,7 @@
 ## Sprite3D at each one with smooth interpolation.
 ##
 ## Uses the same pool pattern as elf_renderer.gd: sprites are created on
-## demand via SpriteFactory, never destroyed, and hidden when the count drops.
+## demand via SpriteGenerator, never destroyed, and hidden when the count drops.
 ## Each sprite has an overhead HP bar (see hp_bar.gd) shown only when the
 ## creature's HP is below maximum.
 ##
@@ -16,7 +16,7 @@
 ## Boar: 0.38, Deer: 0.46, Elephant: 0.8, Goblin: 0.36, Monkey: 0.44,
 ## Orc: 0.48, Squirrel: 0.28, Troll: 0.8
 ##
-## See also: sprite_factory.gd for species_params_from_seed / create_species_sprite,
+## See also: elven_canopy_sprites (Rust crate) for species sprite generation,
 ## hp_bar.gd for overhead HP bar rendering, elf_renderer.gd / capybara_renderer.gd
 ## for the original per-species renderers, sim_bridge.rs for get_creature_positions
 ## and get_creature_hp_ratios, main.gd which creates and configures instances of
@@ -62,9 +62,8 @@ func _process(_delta: float) -> void:
 	# Add sprites if we have more creatures than sprites.
 	while _sprites.size() < count:
 		var idx := _sprites.size()
-		var params = SpriteFactory.species_params_from_seed(_species_name, idx)
 		var sprite := Sprite3D.new()
-		sprite.texture = SpriteFactory.create_species_sprite(_species_name, params)
+		sprite.texture = SpriteGenerator.species_sprite(_species_name, idx)
 		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		sprite.pixel_size = 0.02
 		sprite.transparent = true

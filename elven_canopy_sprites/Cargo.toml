@@ -1,0 +1,11 @@
+[package]
+name = "elven_canopy_sprites"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+elven_canopy_sim = { path = "../elven_canopy_sim" }
+elven_canopy_prng = { path = "../elven_canopy_prng" }

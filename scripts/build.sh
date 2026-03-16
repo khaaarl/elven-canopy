@@ -178,7 +178,7 @@ case "$MODE" in
         echo "Running tabulosity serde tests..."
         cargo test -p tabulosity --features serde --test serde -- --test-threads=16
         echo ""
-        ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests"
+        ALL_TEST_PACKAGES="-p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_sprites -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests"
         echo "Running all other crate tests..."
         cargo test $ALL_TEST_PACKAGES -- --test-threads=16
         echo ""
@@ -196,7 +196,7 @@ case "$MODE" in
         # (see the 'test' target comment for details).
         TAB_PACKAGES=""
         OTHER_PACKAGES=""
-        for CRATE_DIR in elven_canopy_prng elven_canopy_lang elven_canopy_sim elven_canopy_protocol elven_canopy_relay elven_canopy_music tabulosity tabulosity_derive; do
+        for CRATE_DIR in elven_canopy_prng elven_canopy_lang elven_canopy_sim elven_canopy_sprites elven_canopy_protocol elven_canopy_relay elven_canopy_music tabulosity tabulosity_derive; do
             if printf '%s' "$CHANGED_FILES" | grep -q "^${CRATE_DIR}/"; then
                 if [ "$CRATE_DIR" = "tabulosity" ] || [ "$CRATE_DIR" = "tabulosity_derive" ]; then
                     TAB_PACKAGES="$TAB_PACKAGES -p $CRATE_DIR"
@@ -247,7 +247,7 @@ case "$MODE" in
         cargo build -p elven_canopy_gdext
         write_build_info
         # Delete and rebuild the global class cache. Without a fresh cache,
-        # class_name globals (SpriteFactory, GeometryUtils) are unknown at
+        # class_name globals (GeometryUtils, etc.) are unknown at
         # parse time and scripts fail to load.
         CLASS_CACHE="$REPO_ROOT/godot/.godot/global_script_class_cache.cfg"
         rm -f "$CLASS_CACHE"
@@ -387,7 +387,7 @@ case "$MODE" in
             UNSTAGED_CHANGES="$(git diff --name-only 2>/dev/null || true)"
             CHANGED_FILES="$(printf '%s\n%s\n%s' "$BRANCH_CHANGES" "$STAGED_CHANGES" "$UNSTAGED_CHANGES" | sort -u)"
             CLIPPY_PACKAGES=""
-            for CRATE_DIR in elven_canopy_prng elven_canopy_lang elven_canopy_sim elven_canopy_protocol elven_canopy_relay elven_canopy_music elven_canopy_gdext tabulosity tabulosity_derive multiplayer_tests; do
+            for CRATE_DIR in elven_canopy_prng elven_canopy_lang elven_canopy_sim elven_canopy_sprites elven_canopy_protocol elven_canopy_relay elven_canopy_music elven_canopy_gdext tabulosity tabulosity_derive multiplayer_tests; do
                 if printf '%s' "$CHANGED_FILES" | grep -q "^${CRATE_DIR}/"; then
                     CLIPPY_PACKAGES="$CLIPPY_PACKAGES -p $CRATE_DIR"
                 fi

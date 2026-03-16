@@ -6,7 +6,7 @@
 ## interpolated between nav nodes using the fractional render_tick computed by
 ## main.gd. Call set_render_tick() each frame before _process runs.
 ##
-## Each capybara gets a unique texture from SpriteFactory using the sprite
+## Each capybara gets a unique texture from SpriteGenerator using the sprite
 ## index as a seed (varying body color and accessory). Each sprite has an
 ## overhead HP bar (see hp_bar.gd) shown only when HP is below maximum.
 ##
@@ -15,7 +15,7 @@
 ## the floor. At pixel_size 0.02, the 32px-tall sprite is 0.64 world units
 ## (~1.3m given 2m voxels).
 ##
-## See also: sprite_factory.gd for capybara texture generation (40x32),
+## See also: elven_canopy_sprites (Rust crate) for capybara texture generation (40x32),
 ## hp_bar.gd for overhead HP bar rendering, elf_renderer.gd for the
 ## equivalent elf renderer, sim_bridge.rs for the Rust-side position data,
 ## main.gd which creates this node and calls setup() and set_render_tick().
@@ -55,9 +55,8 @@ func _process(_delta: float) -> void:
 	# Add sprites if we have more capybaras than sprites.
 	while _capybara_sprites.size() < count:
 		var idx := _capybara_sprites.size()
-		var params = SpriteFactory.capybara_params_from_seed(idx)
 		var sprite := Sprite3D.new()
-		sprite.texture = SpriteFactory.create_capybara(params)
+		sprite.texture = SpriteGenerator.species_sprite("Capybara", idx)
 		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		sprite.pixel_size = 0.02  # 40px * 0.02 = 0.80 world units wide
 		sprite.transparent = true

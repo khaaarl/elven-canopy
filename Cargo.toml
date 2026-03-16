@@ -8,6 +8,7 @@ members = [
     "elven_canopy_protocol",
     "elven_canopy_relay",
     "multiplayer_tests",
+    "elven_canopy_sprites",
     "tabulosity",
     "tabulosity_derive",
 ]

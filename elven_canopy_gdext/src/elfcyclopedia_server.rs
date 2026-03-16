@@ -13,9 +13,9 @@
 //   each frame).
 // - `tiny_http` handles HTTP on `127.0.0.1:PORT` (localhost only).
 // - Pages are server-rendered HTML with no JavaScript dependencies.
-// - Fruit sprites are generated as 16x16 RGBA pixel art (mirroring
-//   sprite_factory.gd's drawing logic), encoded as inline PNG data URIs
-//   using a minimal hand-rolled PNG encoder (no image library dependency).
+// - Fruit sprites are generated via `elven_canopy_sprites::create_fruit`,
+//   then encoded as inline PNG data URIs using a minimal hand-rolled PNG
+//   encoder (no image library dependency).
 //
 // The server is strictly read-only — it never mutates sim state, so it has
 // no impact on determinism.
@@ -318,129 +318,36 @@ fn percent_decode(input: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Fruit sprite generation (mirrors sprite_factory.gd create_fruit)
+// Fruit sprite generation (delegates to elven_canopy_sprites)
 // ---------------------------------------------------------------------------
 
-/// RGBA pixel buffer for a 16x16 fruit sprite.
-struct PixelBuffer {
-    data: [u8; 16 * 16 * 4],
-}
-
-impl PixelBuffer {
-    fn new() -> Self {
-        Self {
-            data: [0; 16 * 16 * 4],
-        }
-    }
-
-    fn set_px(&mut self, x: i32, y: i32, r: u8, g: u8, b: u8, a: u8) {
-        if (0..16).contains(&x) && (0..16).contains(&y) {
-            let idx = ((y * 16 + x) * 4) as usize;
-            self.data[idx] = r;
-            self.data[idx + 1] = g;
-            self.data[idx + 2] = b;
-            self.data[idx + 3] = a;
-        }
-    }
-
-    fn get_alpha(&self, x: i32, y: i32) -> u8 {
-        if (0..16).contains(&x) && (0..16).contains(&y) {
-            self.data[((y * 16 + x) * 4 + 3) as usize]
-        } else {
-            0
-        }
-    }
-
-    fn draw_circle(&mut self, cx: i32, cy: i32, radius: i32, r: u8, g: u8, b: u8) {
-        for py in (cy - radius)..=(cy + radius) {
-            for px in (cx - radius)..=(cx + radius) {
-                if (px - cx) * (px - cx) + (py - cy) * (py - cy) <= radius * radius {
-                    self.set_px(px, py, r, g, b, 255);
-                }
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn draw_ellipse(&mut self, cx: i32, cy: i32, rx: i32, ry: i32, r: u8, g: u8, b: u8) {
-        if rx == 0 || ry == 0 {
-            return;
-        }
-        for py in (cy - ry)..=(cy + ry) {
-            for px in (cx - rx)..=(cx + rx) {
-                let dx = (px - cx) as f32 / rx as f32;
-                let dy = (py - cy) as f32 / ry as f32;
-                if dx * dx + dy * dy <= 1.0 {
-                    self.set_px(px, py, r, g, b, 255);
-                }
-            }
-        }
-    }
-}
-
-/// Color channel helpers matching GDScript _darken/_lighten.
-fn darken(val: u8, amount: f32) -> u8 {
-    let v = val as f32 / 255.0 - amount;
-    (v.clamp(0.0, 1.0) * 255.0) as u8
-}
-
-fn lighten(val: u8, amount: f32) -> u8 {
-    let v = val as f32 / 255.0 + amount;
-    (v.clamp(0.0, 1.0) * 255.0) as u8
-}
-
-/// Generate a 16x16 RGBA fruit sprite matching the GDScript sprite_factory.gd
-/// drawing routines. Returns base64-encoded PNG as a data URI string.
+/// Generate a 16x16 RGBA fruit sprite. Returns base64-encoded PNG as a data
+/// URI string. Delegates all drawing to `elven_canopy_sprites::create_fruit`.
 fn generate_fruit_sprite_data_uri(entry: &FruitEntry) -> String {
-    let mut buf = PixelBuffer::new();
+    use elven_canopy_sim::fruit::{FruitAppearance, FruitColor, FruitShape};
 
-    // Parse hex color.
     let (cr, cg, cb) = parse_hex_color(&entry.color_hex);
-    let (dr, dg, db) = (darken(cr, 0.15), darken(cg, 0.15), darken(cb, 0.15));
-    let (lr, lg, lb) = (lighten(cr, 0.15), lighten(cg, 0.15), lighten(cb, 0.15));
-    let (or, og, ob) = (darken(cr, 0.35), darken(cg, 0.35), darken(cb, 0.35));
-
-    let scale = (entry.size_percent as f32 / 100.0).clamp(0.6, 1.5);
-    let cx = 8i32;
-    let cy = 8i32;
-
-    match entry.shape.as_str() {
-        "Round" => draw_fruit_round(
-            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
-        ),
-        "Oblong" => draw_fruit_oblong(
-            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
-        ),
-        "Clustered" => draw_fruit_clustered(
-            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
-        ),
-        "Pod" => draw_fruit_pod(
-            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
-        ),
-        "Nut" => draw_fruit_nut(
-            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
-        ),
-        "Gourd" => draw_fruit_gourd(
-            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
-        ),
-        _ => draw_fruit_round(
-            &mut buf, cx, cy, scale, cr, cg, cb, dr, dg, db, lr, lg, lb, or, og, ob,
-        ),
-    }
-
-    // Stem (top center) for non-clustered.
-    if entry.shape != "Clustered" {
-        let (sr, sg, sb) = (76u8, 128, 38);
-        buf.set_px(cx, 1, sr, sg, sb, 255);
-        buf.set_px(cx, 2, sr, sg, sb, 255);
-    }
-
-    // Glow effect.
-    if entry.glows {
-        apply_fruit_glow(&mut buf, cr, cg, cb);
-    }
-
-    let png = encode_png_16x16(&buf);
+    let shape = match entry.shape.as_str() {
+        "Round" => FruitShape::Round,
+        "Oblong" => FruitShape::Oblong,
+        "Clustered" => FruitShape::Clustered,
+        "Pod" => FruitShape::Pod,
+        "Nut" => FruitShape::Nut,
+        "Gourd" => FruitShape::Gourd,
+        _ => FruitShape::Round,
+    };
+    let appearance = FruitAppearance {
+        exterior_color: FruitColor {
+            r: cr,
+            g: cg,
+            b: cb,
+        },
+        shape,
+        size_percent: entry.size_percent,
+        glows: entry.glows,
+    };
+    let buf = elven_canopy_sprites::create_fruit(&appearance);
+    let png = encode_png_16x16(buf.data());
     let b64 = base64_encode(&png);
     format!("data:image/png;base64,{b64}")
 }
@@ -457,249 +364,13 @@ fn parse_hex_color(hex: &str) -> (u8, u8, u8) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_fruit_round(
-    buf: &mut PixelBuffer,
-    cx: i32,
-    cy: i32,
-    scale: f32,
-    cr: u8,
-    cg: u8,
-    cb: u8,
-    dr: u8,
-    dg: u8,
-    db: u8,
-    lr: u8,
-    lg: u8,
-    lb: u8,
-    or: u8,
-    og: u8,
-    ob: u8,
-) {
-    let r = (5.0 * scale) as i32;
-    buf.draw_circle(cx, cy, r, or, og, ob);
-    buf.draw_circle(cx, cy, r - 1, cr, cg, cb);
-    buf.draw_circle(cx + 1, cy + 1, r - 2, dr, dg, db);
-    buf.draw_circle(cx, cy, r - 2, cr, cg, cb);
-    buf.set_px(cx - 2, cy - 2, lr, lg, lb, 255);
-    buf.set_px(cx - 1, cy - 2, lr, lg, lb, 255);
-    buf.set_px(cx - 2, cy - 1, lr, lg, lb, 255);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_fruit_oblong(
-    buf: &mut PixelBuffer,
-    cx: i32,
-    cy: i32,
-    scale: f32,
-    cr: u8,
-    cg: u8,
-    cb: u8,
-    dr: u8,
-    dg: u8,
-    db: u8,
-    lr: u8,
-    lg: u8,
-    lb: u8,
-    or: u8,
-    og: u8,
-    ob: u8,
-) {
-    let rx = (3.0 * scale) as i32;
-    let ry = (6.0 * scale) as i32;
-    buf.draw_ellipse(cx, cy, rx, ry, or, og, ob);
-    buf.draw_ellipse(cx, cy, rx - 1, ry - 1, cr, cg, cb);
-    buf.draw_ellipse(cx + 1, cy + 1, rx - 2, ry - 2, dr, dg, db);
-    buf.draw_ellipse(cx, cy, rx - 2, ry - 2, cr, cg, cb);
-    buf.set_px(cx - 1, cy - 3, lr, lg, lb, 255);
-    buf.set_px(cx - 1, cy - 2, lr, lg, lb, 255);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_fruit_clustered(
-    buf: &mut PixelBuffer,
-    cx: i32,
-    cy: i32,
-    scale: f32,
-    cr: u8,
-    cg: u8,
-    cb: u8,
-    dr: u8,
-    dg: u8,
-    db: u8,
-    lr: u8,
-    lg: u8,
-    lb: u8,
-    or: u8,
-    og: u8,
-    ob: u8,
-) {
-    let r = (2.0 * scale) as i32;
-    let offsets = [(-3, 3), (0, 3), (3, 3), (-2, 0), (2, 0), (0, -3)];
-    for (ox, oy) in offsets {
-        let bx = cx + (ox as f32 * scale) as i32;
-        let by = cy + (oy as f32 * scale) as i32;
-        buf.draw_circle(bx, by, r, or, og, ob);
-        buf.draw_circle(bx, by, r - 1, cr, cg, cb);
-        buf.set_px(bx + 1, by + 1, dr, dg, db, 255);
-        buf.set_px(bx - 1, by - 1, lr, lg, lb, 255);
-    }
-    // Stem at top.
-    let (sr, sg, sb) = (76u8, 128, 38);
-    buf.set_px(cx, cy - (5.0 * scale) as i32, sr, sg, sb, 255);
-    buf.set_px(cx, cy - (4.0 * scale) as i32, sr, sg, sb, 255);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_fruit_pod(
-    buf: &mut PixelBuffer,
-    cx: i32,
-    cy: i32,
-    scale: f32,
-    cr: u8,
-    cg: u8,
-    cb: u8,
-    dr: u8,
-    dg: u8,
-    db: u8,
-    lr: u8,
-    lg: u8,
-    lb: u8,
-    or: u8,
-    og: u8,
-    ob: u8,
-) {
-    let rx = (2.0 * scale) as i32;
-    let ry = (6.0 * scale) as i32;
-    buf.draw_ellipse(cx, cy, rx, ry, or, og, ob);
-    buf.draw_ellipse(cx, cy, rx - 1, ry - 1, cr, cg, cb);
-    // Seam line.
-    for y in (cy - ry + 2)..=(cy + ry - 2) {
-        buf.set_px(cx, y, dr, dg, db, 255);
-    }
-    // Highlight.
-    for y in (cy - ry + 2)..=(cy + ry - 3) {
-        buf.set_px(cx - 1, y, lr, lg, lb, 255);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_fruit_nut(
-    buf: &mut PixelBuffer,
-    cx: i32,
-    cy: i32,
-    scale: f32,
-    cr: u8,
-    cg: u8,
-    cb: u8,
-    dr: u8,
-    dg: u8,
-    db: u8,
-    lr: u8,
-    lg: u8,
-    lb: u8,
-    or: u8,
-    og: u8,
-    ob: u8,
-) {
-    let r = (4.0 * scale) as i32;
-    let cap_r = darken(cr, 0.25);
-    let cap_g = darken(cg, 0.25);
-    let cap_b = darken(cb, 0.25);
-    let cap_dr = darken(cap_r, 0.15);
-    let cap_dg = darken(cap_g, 0.15);
-    let cap_db = darken(cap_b, 0.15);
-    // Cap.
-    let cap_y = cy - (2.0 * scale) as i32;
-    buf.draw_ellipse(cx, cap_y, r, (2.5 * scale) as i32, or, og, ob);
-    buf.draw_ellipse(cx, cap_y, r - 1, (2.0 * scale) as i32, cap_r, cap_g, cap_b);
-    // Cross-hatch on cap.
-    for x in ((cx - r + 2)..=(cx + r - 2)).step_by(2) {
-        buf.set_px(x, cap_y, cap_dr, cap_dg, cap_db, 255);
-    }
-    // Body.
-    let body_y = cy + scale as i32;
-    buf.draw_ellipse(cx, body_y, r - 1, (3.5 * scale) as i32, or, og, ob);
-    buf.draw_ellipse(cx, body_y, r - 2, (3.0 * scale) as i32, cr, cg, cb);
-    // Highlight.
-    buf.set_px(cx - 1, cy, lr, lg, lb, 255);
-    buf.set_px(cx - 2, cy + 1, lr, lg, lb, 255);
-    // Point at bottom.
-    buf.set_px(cx, cy + (4.0 * scale) as i32, dr, dg, db, 255);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_fruit_gourd(
-    buf: &mut PixelBuffer,
-    cx: i32,
-    cy: i32,
-    scale: f32,
-    cr: u8,
-    cg: u8,
-    cb: u8,
-    dr: u8,
-    dg: u8,
-    db: u8,
-    lr: u8,
-    lg: u8,
-    lb: u8,
-    or: u8,
-    og: u8,
-    ob: u8,
-) {
-    // Bottom bulge.
-    let br = (5.0 * scale) as i32;
-    let by = cy + (2.0 * scale) as i32;
-    buf.draw_ellipse(cx, by, br, (4.0 * scale) as i32, or, og, ob);
-    buf.draw_ellipse(cx, by, br - 1, (3.5 * scale) as i32, cr, cg, cb);
-    // Top bulge.
-    let tr = (3.0 * scale) as i32;
-    let ty = cy - (3.0 * scale) as i32;
-    buf.draw_ellipse(cx, ty, tr, (2.5 * scale) as i32, or, og, ob);
-    buf.draw_ellipse(cx, ty, tr - 1, (2.0 * scale) as i32, cr, cg, cb);
-    // Vertical ridges.
-    for x in [cx - 2, cx, cx + 2] {
-        for y in (by - (3.0 * scale) as i32)..(by + (3.0 * scale) as i32) {
-            buf.set_px(x, y, dr, dg, db, 255);
-        }
-    }
-    // Highlight.
-    buf.set_px(cx - 2, cy - 1, lr, lg, lb, 255);
-    buf.set_px(cx - 2, cy, lr, lg, lb, 255);
-}
-
-fn apply_fruit_glow(buf: &mut PixelBuffer, cr: u8, cg: u8, cb: u8) {
-    let gr = lighten(cr, 0.3);
-    let gg = lighten(cg, 0.3);
-    let gb = lighten(cb, 0.3);
-    // Collect opaque positions.
-    let mut opaque = Vec::new();
-    for y in 0..16i32 {
-        for x in 0..16i32 {
-            if buf.get_alpha(x, y) > 127 {
-                opaque.push((x, y));
-            }
-        }
-    }
-    // Paint glow in empty neighbors.
-    for (px, py) in opaque {
-        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-            let nx = px + dx;
-            let ny = py + dy;
-            if (0..16).contains(&nx) && (0..16).contains(&ny) && buf.get_alpha(nx, ny) < 25 {
-                buf.set_px(nx, ny, gr, gg, gb, 102); // alpha ~0.4*255
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Minimal PNG encoder (no dependencies, uncompressed)
 // ---------------------------------------------------------------------------
 
 /// Encode a 16x16 RGBA pixel buffer as a PNG file. Uses uncompressed deflate
 /// (store blocks) to avoid needing a zlib/deflate library.
-fn encode_png_16x16(buf: &PixelBuffer) -> Vec<u8> {
+fn encode_png_16x16(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(2048);
 
     // PNG signature.
@@ -723,7 +394,7 @@ fn encode_png_16x16(buf: &PixelBuffer) -> Vec<u8> {
     for y in 0..16 {
         raw.push(0); // filter: None
         let row_start = y * 16 * 4;
-        raw.extend_from_slice(&buf.data[row_start..row_start + 16 * 4]);
+        raw.extend_from_slice(&data[row_start..row_start + 16 * 4]);
     }
 
     let zlib = zlib_store(&raw);
@@ -1366,11 +1037,16 @@ mod tests {
     /// CRC checksums.
     #[test]
     fn png_encoder_produces_valid_png() {
-        let mut buf = PixelBuffer::new();
-        // Draw a small red circle so the image isn't all-transparent.
-        buf.draw_circle(8, 8, 4, 255, 0, 0);
+        // Use elven_canopy_sprites to draw a small red circle.
+        let mut buf = elven_canopy_sprites::PixelBuffer::new(16, 16);
+        buf.draw_circle(
+            8,
+            8,
+            4,
+            elven_canopy_sprites::Color::from_u8(255, 0, 0, 255),
+        );
 
-        let png = encode_png_16x16(&buf);
+        let png = encode_png_16x16(buf.data());
 
         // PNG signature (8 bytes).
         assert_eq!(&png[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);

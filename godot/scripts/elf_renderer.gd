@@ -8,7 +8,7 @@
 ##
 ## Uses a pool pattern: sprites are created on demand (never destroyed), and
 ## excess sprites are hidden when the elf count drops. Each sprite's texture
-## is generated once by SpriteFactory using the sprite's index as a
+## is generated once by SpriteGenerator using the sprite's index as a
 ## deterministic seed, giving every elf a unique appearance. Each sprite has
 ## an overhead HP bar (see hp_bar.gd) shown only when HP is below maximum.
 ##
@@ -18,7 +18,7 @@
 ## sprite center half its height above the floor. At pixel_size 0.02, the
 ## 48px sprite is 0.96 world units tall (~1.9m given 2m voxels).
 ##
-## See also: sprite_factory.gd for chibi elf texture generation (48x48),
+## See also: elven_canopy_sprites (Rust crate) for chibi elf texture generation (48x48),
 ## hp_bar.gd for overhead HP bar rendering, capybara_renderer.gd for the
 ## equivalent capybara renderer, sim_bridge.rs for the Rust-side position
 ## data, main.gd which creates this node and calls setup() and set_render_tick().
@@ -58,9 +58,8 @@ func _process(_delta: float) -> void:
 	# Add sprites if we have more elves than sprites.
 	while _elf_sprites.size() < elf_count:
 		var idx := _elf_sprites.size()
-		var params = SpriteFactory.elf_params_from_seed(idx)
 		var sprite := Sprite3D.new()
-		sprite.texture = SpriteFactory.create_chibi_elf(params)
+		sprite.texture = SpriteGenerator.species_sprite("Elf", idx)
 		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		sprite.pixel_size = 0.02  # Scale: 48px * 0.02 = 0.96 world units (~1.9m)
 		sprite.transparent = true
