@@ -31070,3 +31070,133 @@ fn arrow_impact_no_damage_when_min_exceeds_max() {
     assert_eq!(arrows.len(), 1, "Arrow should survive");
     assert_eq!(arrows[0].current_hp, 3, "Arrow should be at full HP");
 }
+
+// ---------------------------------------------------------------------------
+// Arrow damage scaling by durability
+// ---------------------------------------------------------------------------
+
+/// Helper: spawn a projectile, reduce the arrow's HP to `arrow_hp`, fire it
+/// at a goblin, and return the damage dealt (from the ProjectileHitCreature
+/// event).
+fn fire_arrow_at_goblin_with_hp(seed: u64, arrow_hp: i32) -> i64 {
+    let mut sim = test_sim(seed);
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    // Disable arrow durability damage on impact so it doesn't interfere.
+    sim.config.arrow_impact_damage_min = 0;
+    sim.config.arrow_impact_damage_max = 0;
+
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
+    sim.spawn_projectile(origin, goblin_pos, None);
+
+    // Modify the arrow's HP in the projectile inventory before it flies.
+    if arrow_hp < 3 {
+        let proj = sim.db.projectiles.iter_all().next().unwrap();
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&proj.inventory_id, tabulosity::QueryOpts::ASC);
+        let stack_id = stacks[0].id;
+        let _ = sim
+            .db
+            .item_stacks
+            .modify_unchecked(&stack_id, |s| s.current_hp = arrow_hp);
+    }
+
+    // Run until resolved.
+    let mut damage_dealt: i64 = 0;
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if let SimEventKind::ProjectileHitCreature { damage, .. } = &e.kind {
+                damage_dealt = *damage;
+            }
+        }
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+    assert!(damage_dealt > 0, "Projectile should have hit the goblin");
+    damage_dealt
+}
+
+#[test]
+fn damaged_arrow_deals_less_damage() {
+    let full_damage = fire_arrow_at_goblin_with_hp(42, 3);
+    let worn_damage = fire_arrow_at_goblin_with_hp(42, 2);
+    let damaged_damage = fire_arrow_at_goblin_with_hp(42, 1);
+
+    assert!(full_damage > 0, "Full HP arrow should deal damage");
+    assert!(
+        worn_damage < full_damage,
+        "Worn arrow ({worn_damage}) should deal less than full ({full_damage})"
+    );
+    assert!(
+        damaged_damage < worn_damage,
+        "Damaged arrow ({damaged_damage}) should deal less than worn ({worn_damage})"
+    );
+    // Verify proportionality: 2/3 HP → 2/3 damage, 1/3 HP → 1/3 damage.
+    // Use the exact integer division: damage * current_hp / max_hp.
+    assert_eq!(worn_damage, full_damage * 2 / 3);
+    assert_eq!(damaged_damage, full_damage * 1 / 3);
+}
+
+#[test]
+fn damaged_arrow_deals_at_least_one_damage() {
+    // Even a nearly-broken arrow should deal minimum 1 damage.
+    let damage = fire_arrow_at_goblin_with_hp(42, 1);
+    assert!(damage >= 1, "Damaged arrow should deal at least 1 damage");
+}
+
+#[test]
+fn indestructible_arrow_deals_full_damage() {
+    // An arrow with max_hp=0 (indestructible) should deal full damage.
+    let mut sim = test_sim(42);
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.config.arrow_impact_damage_min = 0;
+    sim.config.arrow_impact_damage_max = 0;
+    // Remove arrow from durability config to make it indestructible.
+    sim.config
+        .item_durability
+        .remove(&inventory::ItemKind::Arrow);
+
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
+    sim.spawn_projectile(origin, goblin_pos, None);
+
+    let mut damage_dealt: i64 = 0;
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if let SimEventKind::ProjectileHitCreature { damage, .. } = &e.kind {
+                damage_dealt = *damage;
+            }
+        }
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    // Full damage should equal what a full-HP arrow deals.
+    let full_hp_damage = fire_arrow_at_goblin_with_hp(42, 3);
+    assert_eq!(
+        damage_dealt, full_hp_damage,
+        "Indestructible arrow should deal full damage"
+    );
+}

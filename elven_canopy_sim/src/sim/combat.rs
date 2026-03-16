@@ -4,8 +4,9 @@
 // melee strikes, ranged shooting (bow + arrow with ballistic trajectories),
 // projectile simulation, damage application, creature death, flee behavior,
 // hostile pursuit, friendly-fire avoidance, and voxel exclusion enforcement.
-// Also includes civilization diplomacy, military group management, and arrow
-// durability degradation on impact (apply_arrow_impact_damage).
+// Also includes civilization diplomacy, military group management, arrow
+// durability degradation on impact (apply_arrow_impact_damage), and
+// arrow-condition damage scaling (scale_damage_by_arrow_hp).
 //
 // See also: `projectile.rs` (sub-voxel trajectory math), `preemption.rs`
 // (task priority for combat interruption), `movement.rs` (tactical repositioning).
@@ -1537,9 +1538,10 @@ impl SimState {
         self.remove_projectile(proj_id);
     }
 
-    /// Resolve a projectile hitting a creature. Computes damage from impact
-    /// velocity, applies it, then rolls random durability damage on the arrow.
-    /// If the arrow survives, transfers it to a ground pile.
+    /// Resolve a projectile hitting a creature. Computes base damage from
+    /// impact velocity, scales it by the arrow's remaining durability, applies
+    /// it, then rolls random durability damage on the arrow. If the arrow
+    /// survives, transfers it to a ground pile.
     pub(crate) fn resolve_projectile_creature_hit(
         &mut self,
         proj_id: ProjectileId,
@@ -1556,17 +1558,19 @@ impl SimState {
         let proj_inv = proj.inventory_id;
 
         // Compute damage from impact speed (momentum-based: linear in speed).
-        // For now: damage = impact_speed / REFERENCE_SPEED, minimum 1.
         // REFERENCE_SPEED is arrow_base_speed (the "normal" launch speed).
         let impact_speed_sq = impact_velocity.magnitude_sq();
         let impact_speed = crate::projectile::isqrt_i128(impact_speed_sq);
         let reference_speed = self.config.arrow_base_speed as i128;
         let multiplier = self.config.arrow_damage_multiplier.max(1) as i128;
-        let damage = if reference_speed > 0 {
+        let base_damage = if reference_speed > 0 {
             (impact_speed * multiplier / reference_speed).max(1) as i64
         } else {
             1
         };
+
+        // Scale damage by arrow durability: a worn arrow hits softer.
+        let damage = self.scale_damage_by_arrow_hp(proj_inv, base_damage);
 
         // Apply damage.
         self.apply_damage(target_id, damage, events);
@@ -1651,6 +1655,25 @@ impl SimState {
             None => return false,
         };
         self.inv_damage_item(arrow_stack_id, damage, events)
+    }
+
+    /// Scale creature damage by the arrow's remaining durability. A full-HP
+    /// arrow deals full damage; a 2/3-HP arrow deals 2/3 damage, etc.
+    /// Indestructible arrows (`max_hp == 0`) always deal full damage.
+    /// Minimum 1 damage.
+    fn scale_damage_by_arrow_hp(&self, proj_inv: InventoryId, base_damage: i64) -> i64 {
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&proj_inv, tabulosity::QueryOpts::ASC);
+        let arrow = match stacks.iter().find(|s| s.kind == inventory::ItemKind::Arrow) {
+            Some(s) => s,
+            None => return base_damage,
+        };
+        if arrow.max_hp <= 0 {
+            return base_damage;
+        }
+        (base_damage * arrow.current_hp as i64 / arrow.max_hp as i64).max(1)
     }
 
     /// A civ becomes aware of another civ. Creates a CivRelationship row.

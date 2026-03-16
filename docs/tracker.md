@@ -1928,9 +1928,11 @@ Damage is uniform random in [arrow_impact_damage_min, arrow_impact_damage_max]
 undamaged, worn (2/3 HP), damaged (1/3 HP), or destroyed. Destroyed
 arrows emit ItemBroken and are not placed in ground piles. Surviving
 arrows land in ground piles with their reduced HP preserved, and arrows
-at different HP levels remain as separate stacks.
+at different HP levels remain as separate stacks. Worn/damaged arrows
+deal proportionally less creature damage (scaled by current_hp/max_hp,
+minimum 1).
 
-**Branch:** `feature/F-item-durability-display`
+**Branch:** `feature/arrow-damage-scaling`
 
 **Unblocked by:** F-item-durability
 
