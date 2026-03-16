@@ -2508,31 +2508,16 @@ impl SimState {
                     continue;
                 }
 
-                // Check hostility.
+                // Check hostility. Non-civ attackers have an additional
+                // targeting rule: they only attack civ creatures of a
+                // *different* species (don't attack your own kind). This
+                // species-difference filter is a targeting constraint, not
+                // a diplomatic relation, so it stays here rather than in
+                // diplomatic_relation().
                 let is_target = if attacker_civ.is_none() {
-                    // Non-civ aggressive: target all civ creatures of
-                    // different species. Don't attack other non-civ creatures.
                     creature.civ_id.is_some() && creature.species != attacker_species
-                } else if let (Some(my_civ), Some(their_civ)) = (attacker_civ, creature.civ_id) {
-                    // Both are civ creatures: check CivOpinion.
-                    if my_civ == their_civ {
-                        false
-                    } else {
-                        self.db
-                            .civ_relationships
-                            .by_from_civ(&my_civ, tabulosity::QueryOpts::ASC)
-                            .into_iter()
-                            .any(|r| r.to_civ == their_civ && r.opinion == CivOpinion::Hostile)
-                    }
                 } else {
-                    // Attacker has civ, target doesn't — check if target's
-                    // species has aggressive engagement initiative.
-                    matches!(
-                        self.species_table[&creature.species]
-                            .engagement_style
-                            .initiative,
-                        crate::species::EngagementInitiative::Aggressive
-                    )
+                    self.creature_relation(attacker_id, cid).is_hostile()
                 };
 
                 if is_target {
@@ -2550,63 +2535,144 @@ impl SimState {
             .collect()
     }
 
-    /// Check whether two creatures are non-hostile to each other. This is the
-    /// inverse of the hostility logic in `detect_hostile_targets` and is used
-    /// for friendly-fire avoidance — an archer should not shoot through a
-    /// non-hostile creature.
+    /// The core diplomatic relation query. Determines how a subject (civ or
+    /// creature) feels about an object (civ or creature), based on civilization
+    /// relationships and species engagement initiative.
     ///
-    /// Returns `true` (non-hostile) for:
-    /// - Same creature
-    /// - Same civ
-    /// - Both civ, different civs, unless CivRelationship is Hostile
-    /// - Attacker has civ, target doesn't — non-hostile unless target species
-    ///   has aggressive engagement initiative
-    /// - Both non-civ — non-hostile if same species
-    pub(crate) fn is_non_hostile(&self, a: CreatureId, b: CreatureId) -> bool {
-        if a == b {
-            return true;
-        }
-        let creature_a = match self.db.creatures.get(&a) {
-            Some(c) => c,
-            None => return false,
-        };
-        let creature_b = match self.db.creatures.get(&b) {
-            Some(c) => c,
-            None => return false,
-        };
-
-        match (creature_a.civ_id, creature_b.civ_id) {
+    /// - **subject** = the perspective holder ("how do I feel about...")
+    /// - **object** = the entity being evaluated ("...this thing?")
+    ///
+    /// Both civ and species are optional on each side. At minimum one should be
+    /// present per side; if both are `None` for a side, returns `Neutral`.
+    ///
+    /// All other relation functions (`creature_relation`, `civ_creature_relation`,
+    /// etc.) delegate to this. Combat functions (`is_non_hostile`,
+    /// `detect_hostile_targets`) and bridge UI queries (`player_relation`) all
+    /// ultimately flow through here.
+    pub fn diplomatic_relation(
+        &self,
+        subject_civ: Option<CivId>,
+        subject_species: Option<Species>,
+        object_civ: Option<CivId>,
+        object_species: Option<Species>,
+    ) -> DiplomaticRelation {
+        match (subject_civ, object_civ) {
             // Both have civs.
-            (Some(civ_a), Some(civ_b)) => {
-                if civ_a == civ_b {
-                    return true;
+            (Some(s_civ), Some(o_civ)) => {
+                if s_civ == o_civ {
+                    return DiplomaticRelation::Friendly;
                 }
-                // Different civs — hostile only if CivRelationship says Hostile.
-                !self
+                // Different civs — check CivRelationship from subject → object.
+                let hostile = self
                     .db
                     .civ_relationships
-                    .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
+                    .by_from_civ(&s_civ, tabulosity::QueryOpts::ASC)
                     .into_iter()
-                    .any(|r| r.to_civ == civ_b && r.opinion == CivOpinion::Hostile)
+                    .any(|r| r.to_civ == o_civ && r.opinion == CivOpinion::Hostile);
+                if hostile {
+                    DiplomaticRelation::Hostile
+                } else {
+                    DiplomaticRelation::Neutral
+                }
             }
-            // A has civ, B doesn't — non-hostile unless B's species is aggressive.
-            (Some(_), None) => !matches!(
-                self.species_table[&creature_b.species]
-                    .engagement_style
-                    .initiative,
-                crate::species::EngagementInitiative::Aggressive
-            ),
-            // A doesn't have civ, B does — mirror of above.
-            (None, Some(_)) => !matches!(
-                self.species_table[&creature_a.species]
-                    .engagement_style
-                    .initiative,
-                crate::species::EngagementInitiative::Aggressive
-            ),
-            // Neither has a civ — always non-hostile. Non-civ aggressive
-            // creatures only target civ creatures (see detect_hostile_targets).
-            (None, None) => true,
+            // Subject has civ, object doesn't — hostile if object species is aggressive.
+            (Some(_), None) => {
+                if let Some(species) = object_species
+                    && matches!(
+                        self.species_table[&species].engagement_style.initiative,
+                        crate::species::EngagementInitiative::Aggressive
+                    )
+                {
+                    return DiplomaticRelation::Hostile;
+                }
+                DiplomaticRelation::Neutral
+            }
+            // Subject has no civ, object has civ — hostile if subject species is aggressive.
+            (None, Some(_)) => {
+                if let Some(species) = subject_species
+                    && matches!(
+                        self.species_table[&species].engagement_style.initiative,
+                        crate::species::EngagementInitiative::Aggressive
+                    )
+                {
+                    return DiplomaticRelation::Hostile;
+                }
+                DiplomaticRelation::Neutral
+            }
+            // Neither has a civ — non-civ creatures don't fight each other.
+            (None, None) => DiplomaticRelation::Neutral,
         }
+    }
+
+    /// Directional creature-to-creature relation. "How does `subject` feel
+    /// about `object`?" Looks up both creatures' civ and species from the db
+    /// and delegates to `diplomatic_relation`.
+    ///
+    /// Returns `Friendly` if subject == object, `Neutral` if either creature
+    /// is missing from the db.
+    pub fn creature_relation(&self, subject: CreatureId, object: CreatureId) -> DiplomaticRelation {
+        if subject == object {
+            return DiplomaticRelation::Friendly;
+        }
+        let Some(s) = self.db.creatures.get(&subject) else {
+            return DiplomaticRelation::Neutral;
+        };
+        let Some(o) = self.db.creatures.get(&object) else {
+            return DiplomaticRelation::Neutral;
+        };
+        self.diplomatic_relation(s.civ_id, Some(s.species), o.civ_id, Some(o.species))
+    }
+
+    /// "How does this creature feel about this civ?" Looks up the creature's
+    /// civ and species, then delegates to `diplomatic_relation`.
+    ///
+    /// Returns `Neutral` if the creature is missing from the db.
+    pub fn creature_civ_relation(
+        &self,
+        subject_creature: CreatureId,
+        object_civ: CivId,
+    ) -> DiplomaticRelation {
+        let Some(c) = self.db.creatures.get(&subject_creature) else {
+            return DiplomaticRelation::Neutral;
+        };
+        self.diplomatic_relation(c.civ_id, Some(c.species), Some(object_civ), None)
+    }
+
+    /// "How does this civ feel about this creature?" Looks up the creature's
+    /// civ and species, then delegates to `diplomatic_relation`.
+    ///
+    /// Returns `Neutral` if the creature is missing from the db.
+    pub fn civ_creature_relation(
+        &self,
+        subject_civ: CivId,
+        object_creature: CreatureId,
+    ) -> DiplomaticRelation {
+        let Some(c) = self.db.creatures.get(&object_creature) else {
+            return DiplomaticRelation::Neutral;
+        };
+        self.diplomatic_relation(Some(subject_civ), None, c.civ_id, Some(c.species))
+    }
+
+    /// "How does the player's civ feel about this creature?" Sugar for the
+    /// most common UI query (minimap dots, selection ring colors).
+    ///
+    /// Returns `Neutral` if there is no player civ yet.
+    pub fn player_relation(&self, creature_id: CreatureId) -> DiplomaticRelation {
+        let Some(player_civ) = self.player_civ_id else {
+            return DiplomaticRelation::Neutral;
+        };
+        self.civ_creature_relation(player_civ, creature_id)
+    }
+
+    /// Check whether two creatures are non-hostile to each other. Used for
+    /// friendly-fire avoidance — an archer should not shoot through a
+    /// non-hostile creature. Also used for voxel exclusion (creatures cannot
+    /// move into voxels occupied by hostiles).
+    ///
+    /// Delegates to `creature_relation` — returns `true` when the relation
+    /// is not `Hostile`.
+    pub(crate) fn is_non_hostile(&self, a: CreatureId, b: CreatureId) -> bool {
+        !self.creature_relation(a, b).is_hostile()
     }
 
     /// Check whether any voxel in the destination footprint is occupied by a

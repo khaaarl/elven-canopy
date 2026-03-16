@@ -130,6 +130,7 @@ elven-canopy/
 │       ├── selection_highlight.gd    # Faction-colored selection ring rendering (pool pattern)
 │       ├── hp_bar.gd               # Overhead HP bar textures and sprite helpers
 │       ├── projectile_renderer.gd   # In-flight projectile rendering (oriented CylinderMesh pool)
+│       ├── minimap.gd              # Zoomable top-down minimap (terrain, creatures, camera frustum)
 │       ├── construction_music.gd    # Construction music playback (PCM via AudioStreamGenerator)
 │       ├── item_utils.gd           # Item display utilities (condition_label for durability)
 │       ├── view_toolbar.gd         # Right-edge vertical toolbar for view mode toggles

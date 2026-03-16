@@ -26284,6 +26284,226 @@ fn clothing_wants_in_default_config() {
 // Friendly-fire avoidance (F-friendly-fire)
 // -----------------------------------------------------------------------
 
+// -- diplomatic_relation / creature_relation / player_relation tests --
+
+#[test]
+fn diplomatic_relation_same_civ_is_friendly() {
+    let sim = test_sim(42);
+    let player_civ = sim.player_civ_id.unwrap();
+    assert_eq!(
+        sim.diplomatic_relation(Some(player_civ), None, Some(player_civ), None),
+        DiplomaticRelation::Friendly
+    );
+}
+
+#[test]
+fn diplomatic_relation_hostile_civs() {
+    let mut sim = test_sim(42);
+    let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
+    assert!(civs.len() >= 2);
+    let civ_a = civs[0].id;
+    let civ_b = civs[1].id;
+
+    // Discover civ_b as Hostile from civ_a's perspective.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_id: sim.player_id,
+            tick: tick + 1,
+            action: SimAction::DiscoverCiv {
+                civ_id: civ_a,
+                discovered_civ: civ_b,
+                initial_opinion: CivOpinion::Hostile,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(
+        sim.diplomatic_relation(Some(civ_a), None, Some(civ_b), None),
+        DiplomaticRelation::Hostile
+    );
+}
+
+#[test]
+fn diplomatic_relation_neutral_civs() {
+    let mut sim = test_sim(42);
+    let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
+    assert!(civs.len() >= 2);
+    let civ_a = civs[0].id;
+    let civ_b = civs[1].id;
+
+    // Remove any existing relationships.
+    let existing: Vec<_> = sim
+        .db
+        .civ_relationships
+        .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|r| r.to_civ == civ_b)
+        .map(|r| r.id)
+        .collect();
+    for id in existing {
+        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    }
+
+    assert_eq!(
+        sim.diplomatic_relation(Some(civ_a), None, Some(civ_b), None),
+        DiplomaticRelation::Neutral
+    );
+}
+
+#[test]
+fn diplomatic_relation_civ_vs_aggressive_nonciv() {
+    let sim = test_sim(42);
+    let player_civ = sim.player_civ_id.unwrap();
+    // Goblin is Aggressive — should be Hostile from any civ's perspective.
+    assert_eq!(
+        sim.diplomatic_relation(Some(player_civ), None, None, Some(Species::Goblin)),
+        DiplomaticRelation::Hostile
+    );
+}
+
+#[test]
+fn diplomatic_relation_civ_vs_passive_nonciv() {
+    let sim = test_sim(42);
+    let player_civ = sim.player_civ_id.unwrap();
+    // Deer is Passive — should be Neutral.
+    assert_eq!(
+        sim.diplomatic_relation(Some(player_civ), None, None, Some(Species::Deer)),
+        DiplomaticRelation::Neutral
+    );
+}
+
+#[test]
+fn diplomatic_relation_nonciv_aggressive_vs_civ() {
+    let sim = test_sim(42);
+    let player_civ = sim.player_civ_id.unwrap();
+    // Aggressive non-civ creature looking at a civ → Hostile.
+    assert_eq!(
+        sim.diplomatic_relation(None, Some(Species::Goblin), Some(player_civ), None),
+        DiplomaticRelation::Hostile
+    );
+}
+
+#[test]
+fn diplomatic_relation_nonciv_passive_vs_civ() {
+    let sim = test_sim(42);
+    let player_civ = sim.player_civ_id.unwrap();
+    // Passive non-civ looking at a civ → Neutral.
+    assert_eq!(
+        sim.diplomatic_relation(None, Some(Species::Deer), Some(player_civ), None),
+        DiplomaticRelation::Neutral
+    );
+}
+
+#[test]
+fn diplomatic_relation_nonciv_vs_nonciv() {
+    let sim = test_sim(42);
+    // Neither has a civ → always Neutral.
+    assert_eq!(
+        sim.diplomatic_relation(None, Some(Species::Goblin), None, Some(Species::Deer)),
+        DiplomaticRelation::Neutral
+    );
+}
+
+#[test]
+fn diplomatic_relation_no_info() {
+    let sim = test_sim(42);
+    // Both sides have no info at all → Neutral.
+    assert_eq!(
+        sim.diplomatic_relation(None, None, None, None),
+        DiplomaticRelation::Neutral
+    );
+}
+
+#[test]
+fn creature_relation_self_is_friendly() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    assert_eq!(
+        sim.creature_relation(elf, elf),
+        DiplomaticRelation::Friendly
+    );
+}
+
+#[test]
+fn creature_relation_same_civ_is_friendly() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    assert_eq!(
+        sim.creature_relation(elf_a, elf_b),
+        DiplomaticRelation::Friendly
+    );
+}
+
+#[test]
+fn creature_relation_missing_creature_is_neutral() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    // Spawn an elf, then remove it so the ID exists but creature is gone.
+    let elf = spawn_elf(&mut sim);
+    let fake_id = elf;
+    let _ = sim.db.creatures.remove_no_fk(&fake_id);
+    let elf_b = spawn_elf(&mut sim);
+    assert_eq!(
+        sim.creature_relation(fake_id, elf_b),
+        DiplomaticRelation::Neutral
+    );
+}
+
+#[test]
+fn player_relation_friendly_for_elf() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let elf = spawn_elf(&mut sim);
+    assert_eq!(sim.player_relation(elf), DiplomaticRelation::Friendly);
+}
+
+#[test]
+fn player_relation_hostile_for_aggressive_nonciv() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    assert_eq!(sim.player_relation(goblin), DiplomaticRelation::Hostile);
+}
+
+#[test]
+fn player_relation_neutral_for_passive_nonciv() {
+    let mut sim = test_sim(42);
+    let deer = spawn_species(&mut sim, Species::Deer);
+    assert_eq!(sim.player_relation(deer), DiplomaticRelation::Neutral);
+}
+
+#[test]
+fn civ_creature_relation_matches_player_relation() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    let player_civ = sim.player_civ_id.unwrap();
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let deer = spawn_species(&mut sim, Species::Deer);
+    // civ_creature_relation with player civ should match player_relation.
+    assert_eq!(
+        sim.civ_creature_relation(player_civ, elf),
+        sim.player_relation(elf)
+    );
+    assert_eq!(
+        sim.civ_creature_relation(player_civ, goblin),
+        sim.player_relation(goblin)
+    );
+    assert_eq!(
+        sim.civ_creature_relation(player_civ, deer),
+        sim.player_relation(deer)
+    );
+}
+
 #[test]
 fn is_non_hostile_same_creature() {
     let mut sim = test_sim(42);

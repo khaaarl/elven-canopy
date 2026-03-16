@@ -131,7 +131,9 @@
 //   info panel for display and per-frame refresh.
 // - **Species queries:** `is_species_ground_only(species_name)` — used by
 //   the placement controller to decide which nav nodes to show.
-//   `get_all_species_names()` — returns all species names for UI iteration.
+//   `get_all_creature_positions_with_relations()` — all alive creatures with
+//     positions and player-relation classification (for minimap).
+//   `get_creature_player_relation()` — single-creature player relation query.
 // - **Placement raycasting:** `raycast_solid(origin, dir)` — DDA raycast
 //   returning the first solid voxel and entry face (actual world only).
 //   `raycast_solid_with_blueprints(origin, dir)` — same but blueprint-aware
@@ -172,9 +174,9 @@ use elven_canopy_sim::session::{
 use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
-    ActiveRecipeId, ActiveRecipeTargetId, BuildType, CreatureId, FaceDirection, FruitSpeciesId,
-    FurnishingType, FurnitureKind, LadderKind, OverlapClassification, Priority, SimUuid, Species,
-    StructureId, VitalStatus, VoxelCoord, VoxelType,
+    ActiveRecipeId, ActiveRecipeTargetId, BuildType, CreatureId, DiplomaticRelation, FaceDirection,
+    FruitSpeciesId, FurnishingType, FurnitureKind, LadderKind, OverlapClassification, Priority,
+    SimUuid, Species, StructureId, VitalStatus, VoxelCoord, VoxelType,
 };
 use godot::prelude::*;
 
@@ -1047,116 +1049,24 @@ impl SimBridge {
         }
     }
 
-    /// Check if two creatures are hostile to each other. Returns true if the
-    /// attacker would consider the target a valid hostile target.
-    #[func]
-    fn is_hostile(
-        &self,
-        attacker_species: GString,
-        attacker_index: i32,
-        target_species: GString,
-        target_index: i32,
-    ) -> bool {
-        let Some(sim) = &self.session.sim else {
-            return false;
-        };
-        let Some(a_species) = parse_species(&attacker_species.to_string()) else {
-            return false;
-        };
-        let Some(t_species) = parse_species(&target_species.to_string()) else {
-            return false;
-        };
-        let attacker = sim
-            .db
-            .creatures
-            .iter_all()
-            .filter(|c| c.species == a_species && c.vital_status == VitalStatus::Alive)
-            .nth(attacker_index as usize);
-        let target = sim
-            .db
-            .creatures
-            .iter_all()
-            .filter(|c| c.species == t_species && c.vital_status == VitalStatus::Alive)
-            .nth(target_index as usize);
-        let (Some(a), Some(t)) = (attacker, target) else {
-            return false;
-        };
-        if a.id == t.id {
-            return false;
-        }
-        // Same logic as detect_hostile_targets hostility check.
-        if a.civ_id.is_none() {
-            // Non-civ aggressive: targets civ creatures of different species.
-            t.civ_id.is_some() && t.species != a.species
-        } else if let (Some(my_civ), Some(their_civ)) = (a.civ_id, t.civ_id) {
-            if my_civ == their_civ {
-                false
-            } else {
-                use elven_canopy_sim::types::CivOpinion;
-                sim.db
-                    .civ_relationships
-                    .by_from_civ(&my_civ, elven_canopy_sim::tabulosity::QueryOpts::ASC)
-                    .into_iter()
-                    .any(|r| r.to_civ == their_civ && r.opinion == CivOpinion::Hostile)
-            }
-        } else {
-            // Attacker has civ, target doesn't — check if target's species has aggressive initiative.
-            matches!(
-                sim.species_table[&t.species].engagement_style.initiative,
-                elven_canopy_sim::species::EngagementInitiative::Aggressive
-            )
-        }
-    }
-
     /// Check if two creatures (identified by UUID strings) are hostile to each
-    /// other. Returns true if the attacker would consider the target a valid
-    /// hostile target. UUID-based variant of `is_hostile()` for use with the
-    /// stable-ID selection system.
+    /// other. Returns true if the subject would consider the object hostile.
+    /// Delegates to `SimState::creature_relation()` which uses the centralized
+    /// diplomatic relation logic (civ relationships + engagement initiative).
+    ///
+    /// Used by `selection_controller.gd` for right-click attack decisions.
     #[func]
-    fn is_hostile_by_id(&self, attacker_uuid: GString, target_uuid: GString) -> bool {
+    fn is_hostile_by_id(&self, subject_uuid: GString, object_uuid: GString) -> bool {
         let Some(sim) = &self.session.sim else {
             return false;
         };
-        let Some(a_id) = parse_creature_id(&attacker_uuid.to_string()) else {
+        let Some(s_id) = parse_creature_id(&subject_uuid.to_string()) else {
             return false;
         };
-        let Some(t_id) = parse_creature_id(&target_uuid.to_string()) else {
+        let Some(o_id) = parse_creature_id(&object_uuid.to_string()) else {
             return false;
         };
-        if a_id == t_id {
-            return false;
-        }
-        let Some(a) = sim.db.creatures.get(&a_id) else {
-            return false;
-        };
-        let Some(t) = sim.db.creatures.get(&t_id) else {
-            return false;
-        };
-        if a.vital_status != VitalStatus::Alive || t.vital_status != VitalStatus::Alive {
-            return false;
-        }
-        // Same logic as detect_hostile_targets hostility check.
-        if a.civ_id.is_none() {
-            // Non-civ aggressive: targets civ creatures of different species.
-            t.civ_id.is_some() && t.species != a.species
-        } else if let (Some(my_civ), Some(their_civ)) = (a.civ_id, t.civ_id) {
-            if my_civ == their_civ {
-                false
-            } else {
-                use elven_canopy_sim::types::CivOpinion;
-                sim.db
-                    .civ_relationships
-                    .by_from_civ(&my_civ, elven_canopy_sim::tabulosity::QueryOpts::ASC)
-                    .into_iter()
-                    .any(|r| r.to_civ == their_civ && r.opinion == CivOpinion::Hostile)
-            }
-        } else {
-            // Attacker has civ, target doesn't — check if target's species has aggressive initiative.
-            matches!(
-                sim.species_table[&t.species].engagement_style.initiative,
-                elven_canopy_sim::species::EngagementInitiative::Aggressive
-            )
-        }
+        sim.creature_relation(s_id, o_id).is_hostile()
     }
 
     /// Return info about the creature at the given species-filtered index.
@@ -1598,6 +1508,17 @@ impl SimBridge {
             return 0;
         };
         sim.auto_ladder_orientation(x, y, z, height) as i32
+    }
+
+    /// Return a top-down heightmap for minimap rendering. Each byte is the
+    /// max solid Y for that (x, z) column. Row-major, X varies fastest.
+    /// Size is `world_size.x * world_size.z` bytes.
+    #[func]
+    fn get_terrain_heightmap(&self) -> PackedByteArray {
+        let Some(sim) = &self.session.sim else {
+            return PackedByteArray::new();
+        };
+        PackedByteArray::from(sim.world.heightmap().as_slice())
     }
 
     /// Return the world dimensions as `Vector3i(size_x, size_y, size_z)`.
@@ -2618,19 +2539,72 @@ impl SimBridge {
             .is_some_and(|s| s.ground_only)
     }
 
-    /// Return the names of all species known to the simulation.
-    /// Used by UI code to iterate over species without hardcoding names.
+    /// Return all alive creatures' positions and their diplomatic relation to
+    /// the player's civilization, in a single query (no per-species iteration).
+    ///
+    /// Returns a `VarDictionary` with parallel arrays:
+    /// - `"ids"`: `VarArray` of `GString` creature IDs (UUID strings)
+    /// - `"positions"`: `PackedVector3Array` of interpolated positions
+    /// - `"relations"`: `PackedByteArray` — 0=friendly, 1=hostile, 2=neutral
+    ///
+    /// Uses `SimState::player_relation()` which delegates to the centralized
+    /// `diplomatic_relation()` logic (civ relationships + engagement initiative).
+    /// Used by `minimap.gd` for faction-colored creature dots.
     #[func]
-    fn get_all_species_names(&self) -> PackedStringArray {
-        let mut arr = PackedStringArray::new();
-        arr.push("Elf");
-        arr.push("Capybara");
-        arr.push("Boar");
-        arr.push("Deer");
-        arr.push("Elephant");
-        arr.push("Monkey");
-        arr.push("Squirrel");
-        arr
+    fn get_all_creature_positions_with_relations(&self, render_tick: f64) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let mut ids = VarArray::new();
+        let mut positions = PackedVector3Array::new();
+        let mut relations: Vec<u8> = Vec::new();
+        let Some(sim) = &self.session.sim else {
+            dict.set("ids", ids);
+            dict.set("positions", positions);
+            dict.set("relations", PackedByteArray::new());
+            return dict;
+        };
+        for creature in sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.vital_status == VitalStatus::Alive)
+        {
+            let ma = sim.db.move_actions.get(&creature.id);
+            let (x, y, z) = creature.interpolated_position(render_tick, ma.as_ref());
+            ids.push(&GString::from(creature.id.0.to_string().as_str()).to_variant());
+            positions.push(Vector3::new(x, y, z));
+            let rel = sim.player_relation(creature.id);
+            relations.push(match rel {
+                DiplomaticRelation::Friendly => 0,
+                DiplomaticRelation::Hostile => 1,
+                DiplomaticRelation::Neutral => 2,
+            });
+        }
+        dict.set("ids", ids);
+        dict.set("positions", positions);
+        dict.set("relations", PackedByteArray::from(relations.as_slice()));
+        dict
+    }
+
+    /// Return the diplomatic relation between the player's civilization and
+    /// a single creature, identified by UUID string.
+    ///
+    /// Returns `"friendly"`, `"hostile"`, or `"neutral"`.
+    /// Uses `SimState::player_relation()`.
+    /// Used by `selection_highlight.gd` for ring color-coding.
+    #[func]
+    fn get_creature_player_relation(&self, creature_uuid: GString) -> GString {
+        let Some(sim) = &self.session.sim else {
+            return GString::from("neutral");
+        };
+        let Some(cid) = parse_creature_id(&creature_uuid.to_string()) else {
+            return GString::from("neutral");
+        };
+        let rel = sim.player_relation(cid);
+        GString::from(match rel {
+            DiplomaticRelation::Friendly => "friendly",
+            DiplomaticRelation::Hostile => "hostile",
+            DiplomaticRelation::Neutral => "neutral",
+        })
     }
 
     /// Return the footprint `[width_x, height_y, depth_z]` for the named species.

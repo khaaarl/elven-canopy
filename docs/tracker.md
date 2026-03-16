@@ -130,7 +130,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-military-armor       Military group armor policy
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
-[ ] F-minimap              Minimap with tree silhouette and creature positions
 [ ] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
 [ ] F-mobile-support       Mobile/touch platform support
 [ ] F-modding              Scripting layer for modding support
@@ -259,6 +258,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-military-armor       Military equipment auto-equip and slot validation
 [x] F-military-equip       Military group equipment acquisition
 [x] F-military-groups      Military group data model and configuration
+[x] F-minimap              Minimap with tree silhouette and creature positions
 [x] F-mood-system          Mood with escalating consequences
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-move-spread          Spread destinations for multi-creature move commands
@@ -1919,8 +1919,8 @@ infrastructure.
 
 Armor items that can be worn in clothing slots, providing damage reduction in combat. Builds on the clothing/wearable system (F-clothing) for slot mechanics and equip/unequip flow. Many details TBD: armor types and their stats (leather, chain, plate?), how damage reduction is calculated (flat reduction? percentage? per-damage-type?), armor durability and repair, crafting recipes and material requirements, how armor interacts with movement speed or other stats, visual representation, whether armor and clothing can be worn simultaneously (layering), and species-specific armor availability.
 
-**Blocks:** F-military-armor
 **Unblocked by:** F-clothing, F-item-durability
+**Unblocked:** F-military-armor
 
 #### F-arrow-durability — Arrow durability and recovery
 **Status:** Done · **Phase:** 3
@@ -2145,7 +2145,7 @@ case specifically.
 
 Military equipment acquisition auto-equips wearable items (armor and clothing) on pickup, displacing existing items in the same slot. Displaced items remain in inventory unequipped. Equipment wants are validated to prevent multiple wearables in the same equip slot — rejected with a player notification sim-side and an inline error UI-side. The wants_editor supports an `enforce_unique_equip_slots` mode for military use. Decoupled from F-armor (durability/damage-reduction integration) — the equip mechanic stands alone.
 
-**Unblocked by:** F-military-equip
+**Unblocked by:** F-armor, F-military-equip
 **Related:** F-military-groups
 
 #### F-military-campaign — Send elves on world expeditions
@@ -2838,7 +2838,7 @@ Deferred until camera zoom range demands it.
 Main menu with New Game, Load, and Quit buttons.
 
 #### F-minimap — Minimap with tree silhouette and creature positions
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 Top-down (XZ) zoomable minimap in the bottom-right corner. Pure
 rendering/UI — reads existing sim data, no new sim logic.

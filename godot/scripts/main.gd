@@ -43,6 +43,7 @@
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
 ## tooltip_controller.gd for hover tooltips,
+## minimap.gd for the bottom-right zoomable top-down minimap,
 ## notification_display.gd for toast-style notifications,
 ## status_bar.gd for the persistent bottom-left status bar,
 ## keybind_help.gd for the keyboard shortcuts help overlay,
@@ -107,6 +108,7 @@ var _selection_highlight: Node3D
 var _tooltip_controller: Node
 var _notification_display: VBoxContainer
 var _status_bar: PanelContainer
+var _minimap: PanelContainer
 var _construction_music: Node
 var _view_toolbar: MarginContainer
 var _roofs_hidden: bool = false
@@ -278,6 +280,12 @@ func _setup_common(bridge: SimBridge) -> void:
 	_status_bar.set_script(status_bar_script)
 	_status_bar.bridge = bridge
 	canvas_layer.add_child(_status_bar)
+
+	# Set up minimap (bottom-right, zoomable top-down view).
+	var minimap_script = load("res://scripts/minimap.gd")
+	_minimap = PanelContainer.new()
+	_minimap.set_script(minimap_script)
+	canvas_layer.add_child(_minimap)
 
 	# Set up construction music controller.
 	var music_script = load("res://scripts/construction_music.gd")
@@ -451,6 +459,14 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	# Wire creature selection -> creature info panel.
 	_camera_pivot = $CameraPivot
+
+	# Finish minimap setup now that selector and camera pivot are available.
+	if _minimap:
+		_minimap.setup(bridge, _camera_pivot, _selector)
+		_minimap.camera_jump_requested.connect(
+			func(world_pos: Vector3): _look_at_position(world_pos)
+		)
+
 	_selector.creatures_selected.connect(
 		func(ids: Array):
 			# Mutual exclusion: hide tree info, structure info, pile, and military panels.
@@ -874,6 +890,9 @@ func _process(delta: float) -> void:
 	if _projectile_renderer:
 		_projectile_renderer.set_render_tick(render_tick)
 	_selector.set_render_tick(render_tick)
+	if _minimap:
+		_minimap.set_render_tick(render_tick)
+		_minimap.set_selected_ids(_selector.get_selected_creature_ids())
 	if _tooltip_controller:
 		_tooltip_controller.set_render_tick(render_tick)
 		# Suppress tooltip when any overlay panel is open.

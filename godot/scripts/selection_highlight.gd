@@ -1,8 +1,9 @@
 ## Renders selection circles at the feet of selected creatures.
 ##
 ## Draws flat ring meshes on the ground beneath each selected creature,
-## colored by faction: blue for player civ (elves), yellow for neutral
-## (capybara, deer, etc.), red for hostile (goblin, orc, troll). Rings
+## colored by faction: blue for player civ, yellow for neutral, red for
+## hostile. Faction is determined by the sim's diplomatic relation system
+## via bridge.get_creature_player_relation(), not by species name. Rings
 ## use no_depth_test so they show through terrain and tree trunks, letting
 ## the player see selected creatures on the other side of obstacles.
 ## Creature sprites use a higher render_priority so they draw on top of
@@ -24,9 +25,6 @@ extends Node3D
 const COLOR_PLAYER := Color(0.3, 0.5, 1.0, 0.7)
 const COLOR_NEUTRAL := Color(1.0, 0.85, 0.2, 0.7)
 const COLOR_HOSTILE := Color(1.0, 0.2, 0.2, 0.7)
-
-## Species that belong to the hostile faction.
-const HOSTILE_SPECIES = ["Goblin", "Orc", "Troll"]
 
 ## Species with 2x2 footprints that need larger rings.
 const LARGE_SPECIES = ["Elephant", "Troll"]
@@ -83,7 +81,7 @@ func update_highlights(selected_ids: Array) -> void:
 		var x: float = info.get("x", 0.0)
 		var y: float = info.get("y", 0.0)
 		var z: float = info.get("z", 0.0)
-		var color := _faction_color(species)
+		var color := _relation_color(cid)
 		var is_large := species in LARGE_SPECIES
 
 		if is_large:
@@ -195,9 +193,13 @@ func _create_plane_mesh(diameter: float) -> PlaneMesh:
 	return mesh
 
 
-func _faction_color(species: String) -> Color:
-	if species == "Elf":
+## Map a creature's diplomatic relation to the player into a ring color.
+## Queries the bridge for the sim-authoritative relation rather than
+## hardcoding species names.
+func _relation_color(creature_id: String) -> Color:
+	var relation: String = _bridge.get_creature_player_relation(creature_id)
+	if relation == "friendly":
 		return COLOR_PLAYER
-	if species in HOSTILE_SPECIES:
+	if relation == "hostile":
 		return COLOR_HOSTILE
 	return COLOR_NEUTRAL

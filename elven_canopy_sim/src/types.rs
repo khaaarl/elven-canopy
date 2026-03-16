@@ -554,6 +554,37 @@ impl CivOpinion {
     }
 }
 
+/// How a subject (creature or civ) feels about an object (creature or civ).
+///
+/// Used by combat AI (`is_non_hostile`, `detect_hostile_targets`), the bridge
+/// layer (minimap dots, selection ring colors), and GDScript UI code.
+/// Computed by `SimState::diplomatic_relation()` and its convenience wrappers.
+///
+/// Currently three variants; designed for future extension (e.g., `Allied`
+/// for a friendly non-player civ we won't defend but avoid hitting with
+/// stray arrows, or `Suspicious` for pre-hostility tension).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiplomaticRelation {
+    /// Same civilization — allies, defend each other, avoid friendly fire.
+    Friendly,
+    /// No strong opinion — neither help nor hinder.
+    Neutral,
+    /// Actively hostile — valid combat target.
+    Hostile,
+}
+
+impl DiplomaticRelation {
+    /// Returns `true` if the relation is `Hostile`.
+    pub fn is_hostile(self) -> bool {
+        matches!(self, Self::Hostile)
+    }
+
+    /// Returns `true` if the relation is `Friendly`.
+    pub fn is_friendly(self) -> bool {
+        matches!(self, Self::Friendly)
+    }
+}
+
 /// Cultural flavor tag for a civilization. Assigned during worldgen with
 /// species-biased random selection. Not mechanically significant in the
 /// initial implementation — purely for flavor and elfcyclopedia display.

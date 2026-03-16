@@ -10,7 +10,8 @@
 // `has_los()`, a similar DDA traversal for line-of-sight checks between
 // voxel positions (used by ranged combat). `has_los` skips both origin and
 // destination voxels and treats Leaf/Fruit as transparent via
-// `VoxelType::blocks_los()`.
+// `VoxelType::blocks_los()`. `heightmap()` computes a top-down max-solid-Y
+// per (x, z) column for minimap terrain rendering.
 //
 // The world is regenerated from seed at load time, so it skips
 // serialization (`#[serde(skip)]` on `SimState.world`). The `Default`
@@ -107,6 +108,33 @@ impl VoxelWorld {
     /// cache will do a full rebuild anyway, so the dirty entries are not needed.
     pub fn clear_dirty_voxels(&mut self) {
         self.dirty_voxels.clear();
+    }
+
+    /// Compute a top-down heightmap: for each (x, z) column, find the maximum
+    /// Y with a solid voxel. Returns a flat `Vec<u8>` of `size_x * size_z`
+    /// entries in row-major order (X varies fastest, then Z). A value of 0
+    /// means no solid voxel in the column (possible for all-air columns).
+    ///
+    /// Used by the minimap to render a terrain overview without per-frame
+    /// voxel queries.
+    pub fn heightmap(&self) -> Vec<u8> {
+        let sx = self.size_x as usize;
+        let sy = self.size_y as usize;
+        let sz = self.size_z as usize;
+        let mut result = vec![0u8; sx * sz];
+        // Walk Y from top to bottom so we can break early per-column.
+        for z in 0..sz {
+            for x in 0..sx {
+                for y in (0..sy).rev() {
+                    let idx = x + z * sx + y * sx * sz;
+                    if self.voxels[idx].is_solid() {
+                        result[x + z * sx] = y as u8;
+                        break;
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Returns `true` if any of the 6 face-adjacent voxels (±x, ±y, ±z) is solid.
@@ -545,5 +573,43 @@ mod tests {
         // Block a voxel along the diagonal.
         world.set(VoxelCoord::new(6, 4, 6), VoxelType::Branch);
         assert!(!world.has_los(a, b));
+    }
+
+    // -- heightmap tests --
+
+    #[test]
+    fn heightmap_empty_world() {
+        let world = VoxelWorld::new(4, 8, 4);
+        let hm = world.heightmap();
+        assert_eq!(hm.len(), 16); // 4 * 4
+        assert!(hm.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn heightmap_returns_max_solid_y() {
+        let mut world = VoxelWorld::new(4, 16, 4);
+        // Place solids at different heights in the same column (x=1, z=2).
+        world.set(VoxelCoord::new(1, 3, 2), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(1, 7, 2), VoxelType::Trunk);
+        world.set(VoxelCoord::new(1, 12, 2), VoxelType::Branch);
+
+        let hm = world.heightmap();
+        // Column (1,2) should report y=12 (the highest solid).
+        assert_eq!(hm[1 + 2 * 4], 12);
+        // Other columns should be 0.
+        assert_eq!(hm[0 + 0 * 4], 0);
+        assert_eq!(hm[3 + 3 * 4], 0);
+    }
+
+    #[test]
+    fn heightmap_non_solid_types_ignored() {
+        let mut world = VoxelWorld::new(4, 8, 4);
+        // BuildingInterior is non-solid — should not appear in heightmap.
+        world.set(VoxelCoord::new(2, 5, 1), VoxelType::BuildingInterior);
+        // But a lower solid should still be picked up.
+        world.set(VoxelCoord::new(2, 2, 1), VoxelType::GrownPlatform);
+
+        let hm = world.heightmap();
+        assert_eq!(hm[2 + 1 * 4], 2);
     }
 }
