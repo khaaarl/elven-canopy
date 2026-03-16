@@ -60,7 +60,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-ai-test-harness      Headless test harness for AI-driven manual testing
-[ ] F-alt-deselect         Alt+click to remove from selection
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-armor                Wearable armor system
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
@@ -189,6 +188,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
+[x] F-alt-deselect         Alt+click to remove from selection
 [x] F-arrow-durability     Arrow durability and recovery
 [x] F-attack-move          Attack-move task (walk + fight en route)
 [x] F-attack-task          AttackCreature task (player-directed target pursuit)
@@ -2482,7 +2482,7 @@ Replace placeholder sprites with AI-generated layered art: base body
 templates + composited clothing/hair/face layers for visual variety.
 
 #### F-alt-deselect — Alt+click to remove from selection
-**Status:** Todo · **Phase:** 5
+**Status:** Done · **Phase:** 5
 
 Alt+click a unit to remove it from the current selection. Counterpart
 to Shift+click to add. Standard RTS modifier pattern.
