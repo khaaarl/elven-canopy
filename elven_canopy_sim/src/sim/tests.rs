@@ -4327,7 +4327,7 @@ fn raycast_structure_finds_structure_voxel() {
         voxel.z as f32 + 0.5,
     ];
     let dir = [0.0, -1.0, 0.0];
-    let result = sim.raycast_structure(from, dir, 100);
+    let result = sim.raycast_structure(from, dir, 100, None);
 
     assert_eq!(
         result,
@@ -4358,7 +4358,7 @@ fn raycast_structure_stops_at_trunk() {
         voxel.z as f32 + 0.5,
     ];
     let dir = [0.0, -1.0, 0.0];
-    let result = sim.raycast_structure(from, dir, 100);
+    let result = sim.raycast_structure(from, dir, 100, None);
 
     assert_eq!(
         result, None,
@@ -4372,7 +4372,7 @@ fn raycast_structure_returns_none_for_empty_ray() {
     // Cast a ray into empty space.
     let from = [32.5, 50.0, 32.5];
     let dir = [0.0, 1.0, 0.0];
-    let result = sim.raycast_structure(from, dir, 100);
+    let result = sim.raycast_structure(from, dir, 100, None);
     assert_eq!(result, None);
 }
 
@@ -4502,7 +4502,7 @@ fn raycast_structure_with_hit_returns_coord() {
         voxel.z as f32 + 0.5,
     ];
     let dir = [0.0, -1.0, 0.0];
-    let result = sim.raycast_structure_with_hit(from, dir, 100);
+    let result = sim.raycast_structure_with_hit(from, dir, 100, false, None);
 
     assert!(result.is_some(), "Should hit the building");
     let (sid, hit_coord) = result.unwrap();
@@ -4523,7 +4523,7 @@ fn raycast_roof_voxel_is_identified_as_roof() {
 
     let from = [center_x, roof_y as f32 + 10.0, center_z];
     let dir = [0.0, -1.0, 0.0];
-    let result = sim.raycast_structure_with_hit(from, dir, 100);
+    let result = sim.raycast_structure_with_hit(from, dir, 100, false, None);
 
     assert!(result.is_some());
     let (sid, hit_coord) = result.unwrap();
@@ -4532,6 +4532,69 @@ fn raycast_roof_voxel_is_identified_as_roof() {
         structure.is_roof_voxel(hit_coord),
         "Hit voxel at {:?} should be a roof voxel (roof_y={roof_y})",
         hit_coord
+    );
+}
+
+#[test]
+fn raycast_skip_roofs_passes_through_roof_voxels() {
+    let sim = designate_and_complete_building(test_sim(42));
+    let structure = sim.db.structures.iter_all().next().unwrap();
+
+    let center_x = structure.anchor.x as f32 + structure.width as f32 / 2.0;
+    let roof_y = structure.anchor.y + structure.height - 1;
+    let center_z = structure.anchor.z as f32 + structure.depth as f32 / 2.0;
+
+    let from = [center_x, roof_y as f32 + 10.0, center_z];
+    let dir = [0.0, -1.0, 0.0];
+
+    // Without skip_roofs: hits the roof.
+    let result = sim.raycast_structure_with_hit(from, dir, 100, false, None);
+    assert!(result.is_some());
+    let (_, hit_coord) = result.unwrap();
+    assert!(structure.is_roof_voxel(hit_coord));
+
+    // With skip_roofs: passes through the roof. May hit a non-roof structure
+    // voxel below, or nothing if the building is only 1 voxel tall.
+    let result_skip = sim.raycast_structure_with_hit(from, dir, 100, true, None);
+    if let Some((_, coord)) = result_skip {
+        assert!(
+            !structure.is_roof_voxel(coord),
+            "skip_roofs should not return a roof voxel"
+        );
+    }
+}
+
+#[test]
+fn raycast_structure_with_hit_skips_above_y_cutoff() {
+    let sim = designate_and_complete_building(test_sim(42));
+    let structure = sim.db.structures.iter_all().next().unwrap();
+    let bp = sim
+        .db
+        .blueprints
+        .iter_all()
+        .find(|bp| bp.state == BlueprintState::Complete)
+        .unwrap();
+    let voxel = bp.voxels[0];
+
+    // Cast a ray from above straight down — would normally hit.
+    let from = [
+        voxel.x as f32 + 0.5,
+        voxel.y as f32 + 10.0,
+        voxel.z as f32 + 0.5,
+    ];
+    let dir = [0.0, -1.0, 0.0];
+
+    // Sanity: without y_cutoff, we do hit the structure.
+    let result_no_cutoff = sim.raycast_structure_with_hit(from, dir, 100, false, None);
+    assert!(result_no_cutoff.is_some(), "Should hit without y_cutoff");
+    assert_eq!(result_no_cutoff.unwrap().0, structure.id);
+
+    // With y_cutoff below the structure's Y, the voxel is treated as air.
+    let result = sim.raycast_structure_with_hit(from, dir, 100, false, Some(voxel.y));
+    assert_eq!(
+        result, None,
+        "Structure at y={} should be skipped with y_cutoff={}",
+        voxel.y, voxel.y,
     );
 }
 
@@ -11622,7 +11685,7 @@ fn raycast_solid_finds_solid_voxel() {
     sim.world.set(target, VoxelType::Trunk);
     let from = [5.5, 10.0, 5.5];
     let dir = [0.0, -1.0, 0.0];
-    let result = sim.raycast_solid(from, dir, 100, None);
+    let result = sim.raycast_solid(from, dir, 100, None, None);
     assert!(result.is_some(), "Should hit the trunk voxel");
     let (coord, face) = result.unwrap();
     assert_eq!(coord, target);
@@ -11639,21 +11702,27 @@ fn raycast_solid_returns_correct_face() {
     // Ray from above → enters through PosY face (index 2).
     let from_above = [5.5, 15.0, 5.5];
     let dir_down = [0.0, -1.0, 0.0];
-    let (coord, face) = sim.raycast_solid(from_above, dir_down, 100, None).unwrap();
+    let (coord, face) = sim
+        .raycast_solid(from_above, dir_down, 100, None, None)
+        .unwrap();
     assert_eq!(coord, target);
     assert_eq!(face, 2, "Ray from above should enter through PosY face");
 
     // Ray from +X side → enters through PosX face (index 0).
     let from_east = [10.5, 10.5, 5.5];
     let dir_west = [-1.0, 0.0, 0.0];
-    let (coord, face) = sim.raycast_solid(from_east, dir_west, 100, None).unwrap();
+    let (coord, face) = sim
+        .raycast_solid(from_east, dir_west, 100, None, None)
+        .unwrap();
     assert_eq!(coord, target);
     assert_eq!(face, 0, "Ray from +X should enter through PosX face");
 
     // Ray from +Z side → enters through PosZ face (index 4).
     let from_south = [5.5, 10.5, 10.5];
     let dir_north = [0.0, 0.0, -1.0];
-    let (coord, face) = sim.raycast_solid(from_south, dir_north, 100, None).unwrap();
+    let (coord, face) = sim
+        .raycast_solid(from_south, dir_north, 100, None, None)
+        .unwrap();
     assert_eq!(coord, target);
     assert_eq!(face, 4, "Ray from +Z should enter through PosZ face");
 }
@@ -11664,7 +11733,7 @@ fn raycast_solid_returns_none_for_empty_ray() {
     // Cast a ray straight up from the top of the world — should hit nothing.
     let from = [5.5, 50.0, 5.5];
     let dir = [0.0, 1.0, 0.0];
-    let result = sim.raycast_solid(from, dir, 100, None);
+    let result = sim.raycast_solid(from, dir, 100, None, None);
     assert_eq!(result, None);
 }
 
@@ -11677,14 +11746,18 @@ fn raycast_solid_negative_face_directions() {
     // Ray from -X side → enters through NegX face (index 1).
     let from_west = [0.5, 10.5, 5.5];
     let dir_east = [1.0, 0.0, 0.0];
-    let (coord, face) = sim.raycast_solid(from_west, dir_east, 100, None).unwrap();
+    let (coord, face) = sim
+        .raycast_solid(from_west, dir_east, 100, None, None)
+        .unwrap();
     assert_eq!(coord, target);
     assert_eq!(face, 1, "Ray from -X should enter through NegX face");
 
     // Ray from -Z side → enters through NegZ face (index 5).
     let from_north = [5.5, 10.5, 0.5];
     let dir_south = [0.0, 0.0, 1.0];
-    let (coord, face) = sim.raycast_solid(from_north, dir_south, 100, None).unwrap();
+    let (coord, face) = sim
+        .raycast_solid(from_north, dir_south, 100, None, None)
+        .unwrap();
     assert_eq!(coord, target);
     assert_eq!(face, 5, "Ray from -Z should enter through NegZ face");
 }
@@ -11699,7 +11772,7 @@ fn raycast_solid_skips_starting_voxel() {
     // the starting voxel and hit the lower one.
     let from = [5.5, 11.5, 5.5];
     let dir = [0.0, -1.0, 0.0];
-    let result = sim.raycast_solid(from, dir, 100, None);
+    let result = sim.raycast_solid(from, dir, 100, None, None);
     assert!(result.is_some());
     let (coord, _face) = result.unwrap();
     assert_eq!(
@@ -11722,7 +11795,7 @@ fn raycast_solid_hits_blueprint_with_overlay() {
         target.z as f32 + 0.5,
     ];
     let dir = [0.0, -1.0, 0.0];
-    let result_no_overlay = sim.raycast_solid(from, dir, 20, None);
+    let result_no_overlay = sim.raycast_solid(from, dir, 20, None, None);
     // Ray might hit something else (e.g., floor below), but not the target.
     assert!(
         result_no_overlay.is_none() || result_no_overlay.unwrap().0 != target,
@@ -11744,13 +11817,57 @@ fn raycast_solid_hits_blueprint_with_overlay() {
 
     // With overlay, ray hits the blueprint voxel.
     let overlay = sim.blueprint_overlay();
-    let result_with_overlay = sim.raycast_solid(from, dir, 20, Some(&overlay));
+    let result_with_overlay = sim.raycast_solid(from, dir, 20, Some(&overlay), None);
     assert!(
         result_with_overlay.is_some(),
         "With overlay, ray should hit the blueprint voxel"
     );
     let (coord, face) = result_with_overlay.unwrap();
     assert_eq!(coord, target);
+    assert_eq!(face, 2, "Should enter through PosY face (from above)");
+}
+
+#[test]
+fn raycast_solid_skips_above_y_cutoff() {
+    let mut sim = test_sim(42);
+    let target = VoxelCoord::new(5, 10, 5);
+    sim.world.set(target, VoxelType::Trunk);
+
+    // Sanity: without y_cutoff, we hit the voxel.
+    let from = [5.5, 15.0, 5.5];
+    let dir = [0.0, -1.0, 0.0];
+    let result = sim.raycast_solid(from, dir, 100, None, None);
+    assert!(result.is_some(), "Should hit without y_cutoff");
+    assert_eq!(result.unwrap().0, target);
+
+    // With y_cutoff at the voxel's Y, it is treated as air.
+    let result = sim.raycast_solid(from, dir, 100, None, Some(10));
+    assert_eq!(
+        result, None,
+        "Trunk at y=10 should be skipped with y_cutoff=10"
+    );
+}
+
+#[test]
+fn raycast_solid_hits_below_y_cutoff() {
+    let mut sim = test_sim(42);
+    // Place two solid voxels stacked vertically.
+    let upper = VoxelCoord::new(5, 11, 5);
+    let lower = VoxelCoord::new(5, 10, 5);
+    sim.world.set(upper, VoxelType::Trunk);
+    sim.world.set(lower, VoxelType::Trunk);
+
+    let from = [5.5, 15.0, 5.5];
+    let dir = [0.0, -1.0, 0.0];
+
+    // y_cutoff=11 skips the upper voxel but hits the lower one.
+    let result = sim.raycast_solid(from, dir, 100, None, Some(11));
+    assert!(result.is_some(), "Should hit the lower voxel");
+    let (coord, face) = result.unwrap();
+    assert_eq!(
+        coord, lower,
+        "Should skip upper (y=11) and hit lower (y=10)"
+    );
     assert_eq!(face, 2, "Should enter through PosY face (from above)");
 }
 

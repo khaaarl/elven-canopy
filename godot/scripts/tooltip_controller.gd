@@ -63,7 +63,12 @@ var _placement_controller: Node3D
 var _construction_controller: Node
 var _render_tick: float = 0.0
 
+## When true, building roof voxels are skipped during raycasts so hover
+## tooltips show creatures inside rather than the roof. Set by main.gd.
+var _roofs_hidden: bool = false
+
 ## When true, tooltip is hidden (e.g., overlay panels are open).
+
 var _suppressed: bool = false
 
 ## The tooltip label, positioned near the mouse on a CanvasLayer.
@@ -90,6 +95,10 @@ func set_placement_controller(controller: Node3D) -> void:
 
 func set_construction_controller(controller: Node) -> void:
 	_construction_controller = controller
+
+
+func set_roofs_hidden(hidden: bool) -> void:
+	_roofs_hidden = hidden
 
 
 ## Suppress or unsuppress the tooltip (e.g., when overlay panels are open).
@@ -153,7 +162,7 @@ func _find_hover_target() -> Dictionary:
 	var ray_dir := _camera.project_ray_normal(_mouse_pos)
 
 	# Check structure raycast first to detect roof hits (roof-click-select).
-	var struct_hit := _bridge.raycast_structure_detailed(ray_origin, ray_dir)
+	var struct_hit := _bridge.raycast_structure_detailed(ray_origin, ray_dir, _roofs_hidden)
 	var hit_sid: int = struct_hit.get("sid", -1)
 	var hit_is_roof: bool = struct_hit.get("is_roof", false)
 	var roof_y: int = struct_hit.get("roof_y", -1)

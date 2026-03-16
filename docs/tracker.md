@@ -72,7 +72,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
 [ ] F-bldg-storehouse      Storehouse (item storage)
-[ ] F-bldg-transparency    Toggle building roof visibility (hide/show)
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridge-integ-tests   Integration tests for gdext bridge functions
@@ -116,7 +115,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-game-speed-fkeys     Move game speed controls to F1/F2/F3
-[ ] F-ghost-above          Hide voxels above camera focus height
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
@@ -128,6 +126,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
 [ ] F-mass-conserve        Wood mass tracking and conservation
+[ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
+[ ] F-military-armor       Military group armor policy
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
 [ ] F-minimap              Minimap with tree silhouette and creature positions
@@ -198,6 +198,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
 [x] F-bldg-kitchen         Kitchen (cooking from ingredients)
+[x] F-bldg-transparency    Toggle building roof visibility (hide/show)
 [x] F-bldg-workshop        Craftself's workshop
 [x] F-bread                Bread items and elf food management
 [x] F-building             Building construction (paper-thin walls)
@@ -234,6 +235,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-game-session         Game session autoload singleton
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-gdscript-tests       GDScript unit tests (GUT or built-in)
+[x] F-ghost-above          Hide voxels above camera focus height
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
@@ -2452,7 +2454,7 @@ Depends on F-controls-config-A (bindings must be centralized first).
 **Related:** F-controls-config
 
 #### F-bldg-transparency — Toggle building roof visibility (hide/show)
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 A toggle button that hides building roofs so the player can see and
 click on elves inside enclosed structures. Implemented together with
@@ -2757,7 +2759,7 @@ pause/resume.
 **Related:** F-controls-config
 
 #### F-ghost-above — Hide voxels above camera focus height
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 A toggle button that hides all voxels above the camera's focus Y-level,
 letting the player see the level they're looking at without upper
@@ -3231,6 +3233,9 @@ already a standalone pure mutation method with no dependency on `step()` or tick
 state. The sim crate itself should need no changes.
 
 **Related:** F-multiplayer, F-multiplayer (relay ordering)., F-session-sm, F-session-sm (session architecture)
+
+#### F-mesh-cache-lru — LRU cache for chunk meshes at different Y cutoffs
+**Status:** Todo · **Phase:** 2
 
 #### F-modding — Scripting layer for modding support
 **Status:** Todo · **Refs:** §27

@@ -106,6 +106,14 @@ var _ignore_next_release: bool = false
 ## Toggled by pressing F with creatures selected; cancelled by ESC or F again.
 var _attack_move_mode: bool = false
 
+## When true, building roof voxels are skipped during raycasts so clicks pass
+## through to creatures inside. Set by main.gd when the roof-hide toggle is active.
+var _roofs_hidden: bool = false
+
+
+func set_roofs_hidden(hidden: bool) -> void:
+	_roofs_hidden = hidden
+
 
 func setup(bridge: SimBridge, camera: Camera3D) -> void:
 	_bridge = bridge
@@ -272,7 +280,7 @@ func _try_select(mouse_pos: Vector2, shift: bool) -> void:
 	# Check structure raycast first to detect roof hits. A building roof
 	# acts as a click shield: creatures inside the building (below the roof)
 	# are not selectable, but creatures on top of the roof still are.
-	var struct_hit := _bridge.raycast_structure_detailed(ray_origin, ray_dir)
+	var struct_hit := _bridge.raycast_structure_detailed(ray_origin, ray_dir, _roofs_hidden)
 	var hit_sid: int = struct_hit.get("sid", -1)
 	var hit_is_roof: bool = struct_hit.get("is_roof", false)
 	var roof_y: int = struct_hit.get("roof_y", -1)

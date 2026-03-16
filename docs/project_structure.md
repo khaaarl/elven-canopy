@@ -131,7 +131,10 @@ elven-canopy/
 │       ├── hp_bar.gd               # Overhead HP bar textures and sprite helpers
 │       ├── projectile_renderer.gd   # In-flight projectile rendering (oriented CylinderMesh pool)
 │       ├── construction_music.gd    # Construction music playback (PCM via AudioStreamGenerator)
-│       └── item_utils.gd           # Item display utilities (condition_label for durability)
+│       ├── item_utils.gd           # Item display utilities (condition_label for durability)
+│       ├── view_toolbar.gd         # Right-edge vertical toolbar for view mode toggles
+│       ├── view_toggle_button.gd   # Custom-drawn square toggle button for the view toolbar
+│       └── view_toggle_icons.gd    # Procedural icon drawing (house and tree) for view toggles
 ├── data/                       # Shared data files (lexicon, Markov models, elfcyclopedia)
 │   ├── vaelith_lexicon.json    # Vaelith vocabulary (41 entries with syllables + tones)
 │   ├── species_elfcyclopedia.json # Species bestiary data (name, description, traits)

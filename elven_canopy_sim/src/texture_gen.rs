@@ -20,6 +20,8 @@
 // this is a rendering concern and does not participate in the sim's lockstep
 // determinism contract.
 
+use std::collections::BTreeMap;
+
 /// Side length of each face texture tile in texels.
 pub const FACE_TEX_SIZE: u32 = 16;
 
@@ -58,6 +60,59 @@ pub struct FaceAtlas {
     pub height: u32,
     /// Number of tiles per row in the atlas grid.
     pub tiles_per_row: u32,
+}
+
+/// Unique identifier for a face texture tile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FaceTileKey {
+    pub wx: i32,
+    pub wy: i32,
+    pub wz: i32,
+    pub face_idx: u8,
+    pub material: u8,
+}
+
+/// Number of bytes in one face texture tile (FACE_TEX_SIZE^2 * 4 RGBA).
+pub const FACE_TILE_BYTES: usize = (FACE_TEX_SIZE * FACE_TEX_SIZE * 4) as usize;
+
+/// A single face texture tile's RGBA pixel data.
+pub type FaceTile = [u8; FACE_TILE_BYTES];
+
+/// Cache of computed face texture tiles. Tiles are deterministic pure functions
+/// of world position + face direction + material, so they never need invalidation.
+pub struct FaceTileCache {
+    tiles: BTreeMap<FaceTileKey, Box<FaceTile>>,
+}
+
+impl Default for FaceTileCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FaceTileCache {
+    pub fn new() -> Self {
+        Self {
+            tiles: BTreeMap::new(),
+        }
+    }
+
+    /// Look up a cached tile or compute it from Perlin noise.
+    pub fn get_or_compute(&mut self, key: FaceTileKey) -> &FaceTile {
+        self.tiles
+            .entry(key)
+            .or_insert_with(|| Box::new(compute_face_tile(key)))
+    }
+
+    /// Number of cached tiles.
+    pub fn len(&self) -> usize {
+        self.tiles.len()
+    }
+
+    /// Returns true if the cache contains no tiles.
+    pub fn is_empty(&self) -> bool {
+        self.tiles.is_empty()
+    }
 }
 
 /// Information about a face needed for texture generation.
@@ -166,6 +221,102 @@ pub fn generate_atlas(faces: &[FaceTexInfo], material: MaterialKind) -> FaceAtla
                 pixels[idx + 2] = b;
                 pixels[idx + 3] = 255;
             }
+        }
+    }
+
+    FaceAtlas {
+        pixels,
+        width,
+        height,
+        tiles_per_row,
+    }
+}
+
+/// Compute a single face texture tile from Perlin noise. This is the same
+/// computation performed inline by `generate_atlas()`, extracted so it can
+/// be cached by `FaceTileCache`.
+fn compute_face_tile(key: FaceTileKey) -> FaceTile {
+    let material = match key.material {
+        0 => MaterialKind::Bark,
+        _ => MaterialKind::Ground,
+    };
+    let [origin, u_dir, v_dir] = FACE_TEX_MAPPING[key.face_idx as usize];
+    let mut tile = [0u8; FACE_TILE_BYTES];
+    for ty in 0..FACE_TEX_SIZE {
+        for tx in 0..FACE_TEX_SIZE {
+            let u = tx as f64 / (FACE_TEX_SIZE - 1) as f64;
+            let v = ty as f64 / (FACE_TEX_SIZE - 1) as f64;
+
+            let wx = key.wx as f64 + origin[0] as f64 + u * u_dir[0] as f64 + v * v_dir[0] as f64;
+            let wy = key.wy as f64 + origin[1] as f64 + u * u_dir[1] as f64 + v * v_dir[1] as f64;
+            let wz = key.wz as f64 + origin[2] as f64 + u * u_dir[2] as f64 + v * v_dir[2] as f64;
+
+            let noise = sample_material_noise(wx, wy, wz, material);
+            let (r, g, b) = colorize(noise, material);
+
+            let idx = ((ty * FACE_TEX_SIZE + tx) * 4) as usize;
+            tile[idx] = r;
+            tile[idx + 1] = g;
+            tile[idx + 2] = b;
+            tile[idx + 3] = 255;
+        }
+    }
+    tile
+}
+
+/// Generate a texture atlas using a tile cache for previously computed faces.
+///
+/// Functionally identical to `generate_atlas()` but looks up each face tile
+/// in the cache first, only computing Perlin noise for cache misses.
+pub fn generate_atlas_cached(
+    faces: &[FaceTexInfo],
+    material: MaterialKind,
+    cache: &mut FaceTileCache,
+) -> FaceAtlas {
+    if faces.is_empty() {
+        return FaceAtlas {
+            pixels: vec![],
+            width: 0,
+            height: 0,
+            tiles_per_row: 0,
+        };
+    }
+
+    let count = faces.len() as u32;
+    let tiles_per_row = (count as f64).sqrt().ceil() as u32;
+    let tile_rows = count.div_ceil(tiles_per_row);
+    let width = tiles_per_row * FACE_TEX_SIZE;
+    let height = tile_rows * FACE_TEX_SIZE;
+
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+
+    let material_byte = match material {
+        MaterialKind::Bark => 0u8,
+        MaterialKind::Ground => 1u8,
+    };
+
+    for (i, face) in faces.iter().enumerate() {
+        let tile_col = i as u32 % tiles_per_row;
+        let tile_row = i as u32 / tiles_per_row;
+
+        let key = FaceTileKey {
+            wx: face.wx,
+            wy: face.wy,
+            wz: face.wz,
+            face_idx: face.face_idx as u8,
+            material: material_byte,
+        };
+        let tile = cache.get_or_compute(key);
+
+        // Copy tile pixels into atlas at (tile_col, tile_row).
+        for ty in 0..FACE_TEX_SIZE {
+            let src_start = (ty * FACE_TEX_SIZE * 4) as usize;
+            let dst_px = tile_col * FACE_TEX_SIZE;
+            let dst_py = tile_row * FACE_TEX_SIZE + ty;
+            let dst_start = ((dst_py * width + dst_px) * 4) as usize;
+            let row_bytes = (FACE_TEX_SIZE * 4) as usize;
+            pixels[dst_start..dst_start + row_bytes]
+                .copy_from_slice(&tile[src_start..src_start + row_bytes]);
         }
     }
 
@@ -541,5 +692,67 @@ mod tests {
                 "Perpendicular edge pixels should match at t={t}"
             );
         }
+    }
+
+    #[test]
+    fn face_tile_cache_returns_same_data_on_second_lookup() {
+        let key = FaceTileKey {
+            wx: 5,
+            wy: 3,
+            wz: 7,
+            face_idx: 2,
+            material: 0, // Bark
+        };
+        let mut cache = FaceTileCache::new();
+        assert_eq!(cache.len(), 0);
+
+        let first: Vec<u8> = cache.get_or_compute(key).to_vec();
+        assert_eq!(cache.len(), 1);
+
+        let second: Vec<u8> = cache.get_or_compute(key).to_vec();
+        assert_eq!(cache.len(), 1); // no new entry
+        assert_eq!(first, second, "Cached tile should return identical bytes");
+    }
+
+    #[test]
+    fn generate_atlas_cached_matches_uncached() {
+        let faces = vec![
+            FaceTexInfo {
+                wx: 0,
+                wy: 5,
+                wz: 0,
+                face_idx: 2,
+            },
+            FaceTexInfo {
+                wx: 1,
+                wy: 5,
+                wz: 0,
+                face_idx: 2,
+            },
+            FaceTexInfo {
+                wx: 0,
+                wy: 5,
+                wz: 0,
+                face_idx: 0,
+            },
+            FaceTexInfo {
+                wx: 3,
+                wy: 7,
+                wz: 2,
+                face_idx: 4,
+            },
+        ];
+
+        let uncached = generate_atlas(&faces, MaterialKind::Bark);
+        let mut cache = FaceTileCache::new();
+        let cached = generate_atlas_cached(&faces, MaterialKind::Bark, &mut cache);
+
+        assert_eq!(uncached.width, cached.width);
+        assert_eq!(uncached.height, cached.height);
+        assert_eq!(uncached.tiles_per_row, cached.tiles_per_row);
+        assert_eq!(
+            uncached.pixels, cached.pixels,
+            "Cached atlas should be pixel-identical to uncached"
+        );
     }
 }

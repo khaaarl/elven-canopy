@@ -40,7 +40,7 @@
 // does not participate in the sim's lockstep determinism contract.
 
 use crate::texture_gen::{
-    self, FACE_LOCAL_UVS, FACE_TEX_SIZE, FaceAtlas, FaceTexInfo, MaterialKind,
+    self, FACE_LOCAL_UVS, FACE_TEX_SIZE, FaceAtlas, FaceTexInfo, FaceTileCache, MaterialKind,
 };
 use crate::types::{VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
@@ -251,7 +251,17 @@ struct PendingFace {
 /// After emitting all face geometry, generates per-face Perlin noise texture
 /// atlases for bark and ground surfaces, and fixes up their UVs to point into
 /// the atlas tiles.
-pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
+///
+/// If `y_cutoff` is `Some(y)`, voxels with world Y ≥ y are treated as air:
+/// they produce no geometry, and neighbors facing them get their faces exposed.
+/// This lets the renderer hide everything above the camera's focus height while
+/// correctly showing the "cap" faces at the cut boundary.
+pub fn generate_chunk_mesh(
+    world: &VoxelWorld,
+    chunk: ChunkCoord,
+    y_cutoff: Option<i32>,
+    tile_cache: &mut FaceTileCache,
+) -> ChunkMesh {
     let mut mesh = ChunkMesh::default();
     let mut bark_pending: Vec<PendingFace> = Vec::new();
     let mut ground_pending: Vec<PendingFace> = Vec::new();
@@ -267,6 +277,14 @@ pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
                 let wy = base_y + ly;
                 let wz = base_z + lz;
                 let coord = VoxelCoord::new(wx, wy, wz);
+
+                // Skip voxels at or above the Y cutoff — they are invisible.
+                if let Some(cutoff) = y_cutoff
+                    && wy >= cutoff
+                {
+                    continue;
+                }
+
                 let vt = world.get(coord);
 
                 if !produces_geometry(vt) {
@@ -285,10 +303,18 @@ pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
                 };
 
                 for (face_idx, &(dx, dy, dz)) in FACES.iter().enumerate() {
-                    let neighbor = world.get(VoxelCoord::new(wx + dx, wy + dy, wz + dz));
+                    let ny = wy + dy;
+                    let neighbor = world.get(VoxelCoord::new(wx + dx, ny, wz + dz));
 
-                    // Cull face if neighbor is opaque.
-                    if neighbor.is_opaque() {
+                    // Treat above-cutoff neighbors as air so boundary faces
+                    // are exposed when the height cutoff is active.
+                    let neighbor_visible = match y_cutoff {
+                        Some(cutoff) if ny >= cutoff => false,
+                        _ => neighbor.is_opaque(),
+                    };
+
+                    // Cull face if neighbor is opaque and visible.
+                    if neighbor_visible {
                         continue;
                     }
 
@@ -353,13 +379,23 @@ pub fn generate_chunk_mesh(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkMesh {
 
     // Generate texture atlases and fix up UVs for bark and ground surfaces.
     if !bark_pending.is_empty() {
-        let atlas = build_atlas_and_fixup(&mut mesh.bark, &bark_pending, MaterialKind::Bark);
+        let atlas = build_atlas_and_fixup(
+            &mut mesh.bark,
+            &bark_pending,
+            MaterialKind::Bark,
+            tile_cache,
+        );
         mesh.bark.atlas_pixels = atlas.pixels;
         mesh.bark.atlas_width = atlas.width;
         mesh.bark.atlas_height = atlas.height;
     }
     if !ground_pending.is_empty() {
-        let atlas = build_atlas_and_fixup(&mut mesh.ground, &ground_pending, MaterialKind::Ground);
+        let atlas = build_atlas_and_fixup(
+            &mut mesh.ground,
+            &ground_pending,
+            MaterialKind::Ground,
+            tile_cache,
+        );
         mesh.ground.atlas_pixels = atlas.pixels;
         mesh.ground.atlas_width = atlas.width;
         mesh.ground.atlas_height = atlas.height;
@@ -374,6 +410,7 @@ fn build_atlas_and_fixup(
     surface: &mut SurfaceMesh,
     pending: &[PendingFace],
     material: MaterialKind,
+    tile_cache: &mut FaceTileCache,
 ) -> FaceAtlas {
     let face_infos: Vec<FaceTexInfo> = pending
         .iter()
@@ -384,7 +421,7 @@ fn build_atlas_and_fixup(
             face_idx: p.face_idx,
         })
         .collect();
-    let atlas = texture_gen::generate_atlas(&face_infos, material);
+    let atlas = texture_gen::generate_atlas_cached(&face_infos, material, tile_cache);
 
     // Fix up UVs: map each face's 4 vertices to their tile in the atlas.
     let tex_size = FACE_TEX_SIZE as f32;
@@ -421,7 +458,12 @@ mod tests {
     #[test]
     fn empty_chunk_produces_empty_mesh() {
         let world = one_chunk_world();
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
         assert!(mesh.is_empty());
     }
 
@@ -429,7 +471,12 @@ mod tests {
     fn single_trunk_voxel_produces_6_faces() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         // 6 faces * 4 vertices = 24 vertices
         assert_eq!(mesh.bark.vertex_count(), 24);
@@ -444,7 +491,12 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         // Each voxel alone = 6 faces. Together they share 1 face, so each loses
         // 1 face: 2 * 5 = 10 faces. 10 * 4 = 40 vertices.
@@ -458,7 +510,12 @@ mod tests {
         // Place ForestFloor and a trunk voxel above it.
         world.set(VoxelCoord::new(8, 0, 8), VoxelType::ForestFloor);
         world.set(VoxelCoord::new(8, 1, 8), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         // ForestFloor produces no geometry, but the trunk's -Y face should be
         // culled because ForestFloor is opaque. Trunk = 5 visible faces.
@@ -471,7 +528,12 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Leaf);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         // Leaf is not opaque, so leaf-to-leaf faces are NOT culled.
         // Each leaf has 6 faces, both get all 6 = 12 faces total.
@@ -485,7 +547,12 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         // Leaf: 5 faces (the +X face toward trunk is culled — trunk is opaque).
         assert_eq!(mesh.leaf.vertex_count(), 20); // 5 * 4
@@ -500,8 +567,18 @@ mod tests {
         world.set(VoxelCoord::new(15, 8, 8), VoxelType::Trunk); // last voxel in chunk 0
         world.set(VoxelCoord::new(16, 8, 8), VoxelType::Trunk); // first voxel in chunk 1
 
-        let mesh0 = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
-        let mesh1 = generate_chunk_mesh(&world, ChunkCoord::new(1, 0, 0));
+        let mesh0 = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
+        let mesh1 = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(1, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         // Each should have 5 faces (shared face culled across chunk boundary).
         assert_eq!(mesh0.bark.vertex_count(), 20);
@@ -549,7 +626,12 @@ mod tests {
     fn construction_voxels_produce_geometry() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::GrownPlatform);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
         assert_eq!(mesh.bark.vertex_count(), 24); // 6 faces * 4 verts
     }
 
@@ -557,7 +639,12 @@ mod tests {
     fn vertex_colors_match_voxel_type() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         // Check first vertex color is trunk color.
         let expected = voxel_color(VoxelType::Trunk);
@@ -571,7 +658,12 @@ mod tests {
     fn dirt_goes_to_ground_surface() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Dirt);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         // Dirt should be on the ground surface, not bark.
         assert!(mesh.bark.is_empty());
@@ -584,7 +676,12 @@ mod tests {
         let mut world = VoxelWorld::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 2), VoxelType::Trunk);
         world.set(VoxelCoord::new(8, 8, 6), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         // Each trunk has 6 faces * 4 verts = 24 verts, total 48.
         assert_eq!(mesh.bark.vertex_count(), 48);
@@ -607,7 +704,12 @@ mod tests {
     fn bark_surface_has_atlas_data() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         // Single voxel = 6 faces → atlas should be 3×2 tiles = 48×32 pixels.
         assert!(mesh.bark.atlas_width > 0);
@@ -623,7 +725,12 @@ mod tests {
     fn leaf_surface_has_no_atlas() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
 
         assert!(mesh.leaf.atlas_pixels.is_empty());
         assert_eq!(mesh.leaf.atlas_width, 0);
@@ -633,7 +740,12 @@ mod tests {
     fn fruit_does_not_produce_geometry() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Fruit);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
         assert!(mesh.is_empty());
     }
 
@@ -641,7 +753,111 @@ mod tests {
     fn building_interior_does_not_produce_geometry() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::BuildingInterior);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0));
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
         assert!(mesh.is_empty());
+    }
+
+    // --- Y cutoff tests ---
+
+    #[test]
+    fn y_cutoff_hides_voxels_at_and_above_cutoff() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 5, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(8, 10, 8), VoxelType::Trunk);
+
+        // Cutoff at y=8: voxel at y=5 visible, voxel at y=10 hidden.
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(8),
+            &mut FaceTileCache::new(),
+        );
+        // Only the y=5 voxel should produce geometry (6 faces).
+        assert_eq!(mesh.bark.vertex_count(), 24); // 6 * 4
+    }
+
+    #[test]
+    fn y_cutoff_exposes_boundary_faces() {
+        let mut world = one_chunk_world();
+        // Stack two trunk voxels vertically.
+        world.set(VoxelCoord::new(8, 7, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        // Without cutoff: shared +Y/-Y face is culled → 10 faces total.
+        let mesh_no_cutoff = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
+        assert_eq!(mesh_no_cutoff.bark.vertex_count(), 40); // 10 * 4
+
+        // With cutoff at y=8: upper voxel hidden, lower voxel's +Y face exposed.
+        let mesh_cutoff = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(8),
+            &mut FaceTileCache::new(),
+        );
+        // Lower voxel now has all 6 faces visible (upper neighbor treated as air).
+        assert_eq!(mesh_cutoff.bark.vertex_count(), 24); // 6 * 4
+    }
+
+    #[test]
+    fn y_cutoff_none_matches_no_cutoff() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        let mesh_none = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
+        let mesh_some = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(100), // well above voxel
+            &mut FaceTileCache::new(),
+        );
+
+        assert_eq!(mesh_none.bark.vertex_count(), mesh_some.bark.vertex_count());
+    }
+
+    #[test]
+    fn y_cutoff_at_voxel_hides_that_voxel() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        // Cutoff exactly at voxel Y — the voxel is at the cutoff, so hidden.
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(8),
+            &mut FaceTileCache::new(),
+        );
+        assert!(mesh.is_empty());
+    }
+
+    #[test]
+    fn y_cutoff_leaf_voxels_hidden_above() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 5, 8), VoxelType::Leaf);
+        world.set(VoxelCoord::new(8, 10, 8), VoxelType::Leaf);
+
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(8),
+            &mut FaceTileCache::new(),
+        );
+        // Only y=5 leaf visible (6 faces).
+        assert_eq!(mesh.leaf.vertex_count(), 24); // 6 * 4
+        assert!(mesh.bark.is_empty());
     }
 }

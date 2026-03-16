@@ -1555,11 +1555,22 @@ impl SimState {
     /// structure voxel hit. Like `raycast_structure()` but also returns the
     /// hit coordinate, needed by the roof-click-select feature to decide
     /// whether the hit voxel is a building roof.
+    ///
+    /// When `skip_roofs` is true, roof voxels (building ceilings) are ignored
+    /// and the ray continues through them. This supports the roof-hide feature
+    /// where hidden roofs should not intercept clicks.
+    ///
+    /// When `y_cutoff` is `Some(y)`, solid voxels at or above `y` are treated
+    /// as air for ray traversal (the ray passes through them). This supports
+    /// the height-cutoff view mode where hidden upper voxels should not block
+    /// clicks on visible surfaces below.
     pub fn raycast_structure_with_hit(
         &self,
         from: [f32; 3],
         dir: [f32; 3],
         max_steps: u32,
+        skip_roofs: bool,
+        y_cutoff: Option<i32>,
     ) -> Option<(StructureId, VoxelCoord)> {
         let mut voxel = [
             from[0].floor() as i32,
@@ -1586,13 +1597,28 @@ impl SimState {
         for _ in 0..max_steps {
             let coord = VoxelCoord::new(voxel[0], voxel[1], voxel[2]);
 
-            if let Some(&sid) = self.structure_voxels.get(&coord) {
-                return Some((sid, coord));
-            }
+            // When height cutoff is active, voxels at or above the cutoff
+            // are invisible — skip both structure hits and solid occlusion.
+            let above_cutoff = y_cutoff.is_some_and(|cutoff| coord.y >= cutoff);
 
-            let vt = self.world.get(coord);
-            if vt.is_solid() {
-                return None;
+            if !above_cutoff {
+                if let Some(&sid) = self.structure_voxels.get(&coord) {
+                    // Skip roof voxels when roofs are hidden.
+                    let is_roof = skip_roofs
+                        && self
+                            .db
+                            .structures
+                            .get(&sid)
+                            .is_some_and(|s| s.is_roof_voxel(coord));
+                    if !is_roof {
+                        return Some((sid, coord));
+                    }
+                }
+
+                let vt = self.world.get(coord);
+                if vt.is_solid() {
+                    return None;
+                }
             }
 
             let min_axis = if t_max[0] <= t_max[1] && t_max[0] <= t_max[2] {
@@ -1622,11 +1648,15 @@ impl SimState {
     /// This correctly handles non-solid structure types (ladders, building
     /// interiors) since they're in `structure_voxels` even though
     /// `is_solid()` returns false.
+    ///
+    /// When `y_cutoff` is `Some(y)`, voxels at or above `y` are treated as
+    /// air for ray traversal.
     pub fn raycast_structure(
         &self,
         from: [f32; 3],
         dir: [f32; 3],
         max_steps: u32,
+        y_cutoff: Option<i32>,
     ) -> Option<StructureId> {
         let mut voxel = [
             from[0].floor() as i32,
@@ -1653,15 +1683,19 @@ impl SimState {
         for _ in 0..max_steps {
             let coord = VoxelCoord::new(voxel[0], voxel[1], voxel[2]);
 
-            // Check structure ownership first.
-            if let Some(&sid) = self.structure_voxels.get(&coord) {
-                return Some(sid);
-            }
+            let above_cutoff = y_cutoff.is_some_and(|cutoff| coord.y >= cutoff);
 
-            // Non-structure solid voxels occlude — stop.
-            let vt = self.world.get(coord);
-            if vt.is_solid() {
-                return None;
+            if !above_cutoff {
+                // Check structure ownership first.
+                if let Some(&sid) = self.structure_voxels.get(&coord) {
+                    return Some(sid);
+                }
+
+                // Non-structure solid voxels occlude — stop.
+                let vt = self.world.get(coord);
+                if vt.is_solid() {
+                    return None;
+                }
             }
 
             // Advance along the axis with the smallest t_max.
@@ -1695,12 +1729,16 @@ impl SimState {
     /// The face returned is the face of the solid voxel that the ray entered
     /// through. A ray stepping -Y (downward) enters through the PosY face
     /// (2); a ray stepping +X enters through the NegX face (1); etc.
+    ///
+    /// When `y_cutoff` is `Some(y)`, solid voxels at or above `y` are treated
+    /// as air for ray traversal.
     pub fn raycast_solid(
         &self,
         from: [f32; 3],
         dir: [f32; 3],
         max_steps: u32,
         overlay: Option<&structural::BlueprintOverlay>,
+        y_cutoff: Option<i32>,
     ) -> Option<(VoxelCoord, u8)> {
         let mut voxel = [
             from[0].floor() as i32,
@@ -1731,11 +1769,12 @@ impl SimState {
         for _ in 0..max_steps {
             let coord = VoxelCoord::new(voxel[0], voxel[1], voxel[2]);
 
+            let above_cutoff = y_cutoff.is_some_and(|cutoff| coord.y >= cutoff);
             let vt = match overlay {
                 Some(ov) => ov.effective_type(&self.world, coord),
                 None => self.world.get(coord),
             };
-            if !first_step && vt.is_solid() {
+            if !first_step && !above_cutoff && vt.is_solid() {
                 // Compute the face: the ray entered through the face opposite
                 // to the step direction on last_axis.
                 let face = match (last_axis, step[last_axis] > 0) {

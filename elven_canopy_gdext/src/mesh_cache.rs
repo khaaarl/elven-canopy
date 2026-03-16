@@ -15,10 +15,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use elven_canopy_sim::mesh_gen::{
     CHUNK_SIZE, ChunkCoord, ChunkMesh, generate_chunk_mesh, voxel_to_chunk,
 };
+use elven_canopy_sim::texture_gen::FaceTileCache;
 use elven_canopy_sim::types::VoxelCoord;
 use elven_canopy_sim::world::VoxelWorld;
 
 /// Caches chunk meshes and tracks dirty chunks for incremental updates.
+///
+/// Supports an optional Y cutoff for the height-hiding feature: when set,
+/// voxels at or above the cutoff Y are treated as air during mesh generation,
+/// exposing boundary faces at the cut level. Changing the cutoff automatically
+/// dirties the affected chunk rows.
 pub struct MeshCache {
     /// Cached mesh data per non-empty chunk.
     chunks: BTreeMap<ChunkCoord, ChunkMesh>,
@@ -27,6 +33,18 @@ pub struct MeshCache {
     /// Chunks updated in the most recent `update_dirty()` call. Used by the
     /// bridge to know which `MeshInstance3D` nodes to rebuild.
     last_updated: Vec<ChunkCoord>,
+    /// Optional Y cutoff for height hiding. Voxels with world Y ≥ this value
+    /// produce no geometry, and their neighbors get boundary faces exposed.
+    y_cutoff: Option<i32>,
+    /// Per-face texture tile cache. Tiles are deterministic pure functions of
+    /// world position + face direction + material, so they persist across
+    /// cutoff changes and chunk rebuilds.
+    tile_cache: FaceTileCache,
+    /// World chunk bounds (set during build_all). Used by set_y_cutoff to dirty
+    /// chunks that might not be in the cache yet.
+    cx_max: i32,
+    cy_max: i32,
+    cz_max: i32,
 }
 
 impl MeshCache {
@@ -35,6 +53,11 @@ impl MeshCache {
             chunks: BTreeMap::new(),
             dirty: BTreeSet::new(),
             last_updated: Vec::new(),
+            y_cutoff: None,
+            tile_cache: FaceTileCache::new(),
+            cx_max: 0,
+            cy_max: 0,
+            cz_max: 0,
         }
     }
 
@@ -48,12 +71,16 @@ impl MeshCache {
         let cx_max = (world.size_x as i32 + CHUNK_SIZE - 1) / CHUNK_SIZE;
         let cy_max = (world.size_y as i32 + CHUNK_SIZE - 1) / CHUNK_SIZE;
         let cz_max = (world.size_z as i32 + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        self.cx_max = cx_max;
+        self.cy_max = cy_max;
+        self.cz_max = cz_max;
 
         for cy in 0..cy_max {
             for cz in 0..cz_max {
                 for cx in 0..cx_max {
                     let coord = ChunkCoord::new(cx, cy, cz);
-                    let mesh = generate_chunk_mesh(world, coord);
+                    let mesh =
+                        generate_chunk_mesh(world, coord, self.y_cutoff, &mut self.tile_cache);
                     if !mesh.is_empty() {
                         self.chunks.insert(coord, mesh);
                     }
@@ -113,7 +140,7 @@ impl MeshCache {
         self.last_updated.clear();
 
         for coord in &dirty {
-            let mesh = generate_chunk_mesh(world, *coord);
+            let mesh = generate_chunk_mesh(world, *coord, self.y_cutoff, &mut self.tile_cache);
             if mesh.is_empty() {
                 self.chunks.remove(coord);
             } else {
@@ -138,5 +165,61 @@ impl MeshCache {
     /// Get the cached mesh for a chunk, if it exists.
     pub fn get_chunk(&self, coord: &ChunkCoord) -> Option<&ChunkMesh> {
         self.chunks.get(coord)
+    }
+
+    /// Set the Y cutoff for height hiding. Dirties all chunks at or between
+    /// the old and new cutoff levels so their meshes are regenerated with the
+    /// correct boundary faces.
+    ///
+    /// Pass `None` to disable the cutoff (show all voxels).
+    pub fn set_y_cutoff(&mut self, new_cutoff: Option<i32>) {
+        if self.y_cutoff == new_cutoff {
+            return;
+        }
+
+        // Determine the range of chunk Y-levels that need rebuilding.
+        // When the cutoff moves, chunks between the old and new cutoff need
+        // regeneration. When enabling/disabling, everything above the cutoff.
+        let (cy_min, cy_max) = match (self.y_cutoff, new_cutoff) {
+            (Some(old), Some(new)) => {
+                // Cutoff moved — dirty chunks between old and new boundaries.
+                let lo = (old.min(new) - 1).div_euclid(CHUNK_SIZE);
+                let hi = old.max(new).div_euclid(CHUNK_SIZE);
+                (lo, hi)
+            }
+            (Some(old), None) | (None, Some(old)) => {
+                // Enabling or disabling — dirty everything from cutoff up.
+                let lo = (old - 1).div_euclid(CHUNK_SIZE);
+                (lo, self.cy_max - 1)
+            }
+            (None, None) => {
+                self.y_cutoff = new_cutoff;
+                return;
+            }
+        };
+        // When enabling with a new cutoff, also dirty from the new cutoff up.
+        let effective_max = if self.y_cutoff.is_none() || new_cutoff.is_none() {
+            self.cy_max - 1
+        } else {
+            cy_max
+        };
+
+        // Dirty all chunks within the affected Y range across all X/Z.
+        // Uses world bounds so we also catch chunks not currently in the cache
+        // (they may produce geometry with the new cutoff).
+        for cy in cy_min..=effective_max {
+            for cz in 0..self.cz_max {
+                for cx in 0..self.cx_max {
+                    self.dirty.insert(ChunkCoord::new(cx, cy, cz));
+                }
+            }
+        }
+
+        self.y_cutoff = new_cutoff;
+    }
+
+    /// Get the current Y cutoff.
+    pub fn y_cutoff(&self) -> Option<i32> {
+        self.y_cutoff
     }
 }

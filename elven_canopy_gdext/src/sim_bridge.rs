@@ -1421,7 +1421,8 @@ impl SimBridge {
         };
         let from = [origin.x, origin.y, origin.z];
         let d = [dir.x, dir.y, dir.z];
-        match sim.raycast_structure(from, d, 500) {
+        let y_cutoff = self.mesh_cache.as_ref().and_then(|c| c.y_cutoff());
+        match sim.raycast_structure(from, d, 500, y_cutoff) {
             Some(sid) => sid.0 as i64,
             None => -1,
         }
@@ -1438,7 +1439,12 @@ impl SimBridge {
     /// Used by `selection_controller.gd` to decide whether a click on a
     /// building roof should shield creatures inside from selection.
     #[func]
-    fn raycast_structure_detailed(&self, origin: Vector3, dir: Vector3) -> VarDictionary {
+    fn raycast_structure_detailed(
+        &self,
+        origin: Vector3,
+        dir: Vector3,
+        skip_roofs: bool,
+    ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         let Some(sim) = &self.session.sim else {
             dict.set("sid", -1_i64);
@@ -1446,7 +1452,8 @@ impl SimBridge {
         };
         let from = [origin.x, origin.y, origin.z];
         let d = [dir.x, dir.y, dir.z];
-        match sim.raycast_structure_with_hit(from, d, 500) {
+        let y_cutoff = self.mesh_cache.as_ref().and_then(|c| c.y_cutoff());
+        match sim.raycast_structure_with_hit(from, d, 500, skip_roofs, y_cutoff) {
             Some((sid, coord)) => {
                 dict.set("sid", sid.0 as i64);
                 let structure = sim.db.structures.get(&sid);
@@ -1506,7 +1513,8 @@ impl SimBridge {
         } else {
             None
         };
-        match sim.raycast_solid(from, d, 500, overlay.as_ref()) {
+        let y_cutoff = self.mesh_cache.as_ref().and_then(|c| c.y_cutoff());
+        match sim.raycast_solid(from, d, 500, overlay.as_ref(), y_cutoff) {
             Some((coord, face)) => {
                 dict.set("hit", true);
                 dict.set("voxel", Vector3i::new(coord.x, coord.y, coord.z));
@@ -4174,11 +4182,16 @@ impl SimBridge {
     // ========================================================================
 
     /// Internal: rebuild the mesh cache from the current sim state.
+    /// Preserves the current Y cutoff setting across rebuilds.
     fn rebuild_mesh_cache(&mut self) {
         let Some(sim) = &self.session.sim else {
             return;
         };
+        let old_cutoff = self.mesh_cache.as_ref().and_then(|c| c.y_cutoff());
         let mut cache = MeshCache::new();
+        if let Some(cutoff) = old_cutoff {
+            cache.set_y_cutoff(Some(cutoff));
+        }
         cache.build_all(&sim.world);
         self.mesh_cache = Some(cache);
     }
@@ -4190,7 +4203,11 @@ impl SimBridge {
         let Some(sim) = &self.session.sim else {
             return;
         };
+        let old_cutoff = self.mesh_cache.as_ref().and_then(|c| c.y_cutoff());
         let mut cache = MeshCache::new();
+        if let Some(cutoff) = old_cutoff {
+            cache.set_y_cutoff(Some(cutoff));
+        }
         cache.build_all(&sim.world);
         godot_print!(
             "SimBridge: built world mesh ({} non-empty chunks)",
@@ -4216,11 +4233,31 @@ impl SimBridge {
             return 0;
         };
         let dirty = sim.world.drain_dirty_voxels();
-        if dirty.is_empty() {
-            return 0;
+        if !dirty.is_empty() {
+            cache.mark_dirty_voxels(&dirty);
         }
-        cache.mark_dirty_voxels(&dirty);
         cache.update_dirty(&sim.world) as i32
+    }
+
+    /// Set the Y cutoff for height hiding. Voxels at or above this Y level
+    /// are treated as air during mesh generation. Pass -1 to disable (show all).
+    /// Dirties affected chunks so the next `update_world_mesh()` rebuilds them.
+    #[func]
+    fn set_mesh_y_cutoff(&mut self, y: i32) {
+        let Some(cache) = &mut self.mesh_cache else {
+            return;
+        };
+        let cutoff = if y < 0 { None } else { Some(y) };
+        cache.set_y_cutoff(cutoff);
+    }
+
+    /// Get the current Y cutoff. Returns -1 if disabled.
+    #[func]
+    fn get_mesh_y_cutoff(&self) -> i32 {
+        self.mesh_cache
+            .as_ref()
+            .and_then(|c| c.y_cutoff())
+            .unwrap_or(-1)
     }
 
     /// Return all non-empty chunk coordinates as a flat PackedInt32Array of

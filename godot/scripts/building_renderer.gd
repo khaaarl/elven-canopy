@@ -39,6 +39,8 @@ const DIRECTION_OFFSETS: Array[Vector3] = [
 
 var _bridge: SimBridge
 var _instances: Array[MultiMeshInstance3D] = []
+var _roofs_hidden: bool = false
+var _last_face_data: PackedInt32Array = PackedInt32Array()
 
 # Materials indexed by face type (1=Wall, 2=Window, 3=Door, 4=Ceiling, 5=Floor).
 var _materials: Array[StandardMaterial3D] = []
@@ -107,12 +109,15 @@ func _build_rotations() -> void:
 
 
 func refresh() -> void:
+	var data := _bridge.get_building_face_data()
+	if data == _last_face_data:
+		return
+	_last_face_data = data
+
 	# Remove previous instances.
 	for inst in _instances:
 		inst.queue_free()
 	_instances.clear()
-
-	var data := _bridge.get_building_face_data()
 	var quintuple_count := data.size() / 5
 	if quintuple_count == 0:
 		return
@@ -165,5 +170,23 @@ func refresh() -> void:
 		var instance := MultiMeshInstance3D.new()
 		instance.multimesh = mm
 		instance.name = "BuildingFaces_" + str(ftype)
+		if ftype == 4:
+			instance.visible = not _roofs_hidden
 		add_child(instance)
 		_instances.append(instance)
+	_apply_roof_visibility()
+
+
+func set_roofs_hidden(hidden: bool) -> void:
+	_roofs_hidden = hidden
+	_apply_roof_visibility()
+
+
+func is_roofs_hidden() -> bool:
+	return _roofs_hidden
+
+
+func _apply_roof_visibility() -> void:
+	for inst in _instances:
+		if inst.name == "BuildingFaces_4":
+			inst.visible = not _roofs_hidden

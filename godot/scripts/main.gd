@@ -108,6 +108,12 @@ var _tooltip_controller: Node
 var _notification_display: VBoxContainer
 var _status_bar: PanelContainer
 var _construction_music: Node
+var _view_toolbar: MarginContainer
+var _roofs_hidden: bool = false
+var _height_cutoff_active: bool = false
+var _last_cutoff_y: int = -1
+var _roof_btn: Control
+var _height_btn: Control
 ## Highest notification ID seen so far, for polling new notifications.
 ## Initialized from the sim after load so historical notifications aren't
 ## replayed as toasts.
@@ -376,6 +382,17 @@ func _setup_common(bridge: SimBridge) -> void:
 	_projectile_renderer.name = "ProjectileRenderer"
 	add_child(_projectile_renderer)
 	_projectile_renderer.setup(bridge)
+
+	# Set up view toolbar (right-edge toggles for roof/height visibility).
+	_view_toolbar = MarginContainer.new()
+	_view_toolbar.set_script(load("res://scripts/view_toolbar.gd"))
+	canvas_layer.add_child(_view_toolbar)
+
+	_roof_btn = _view_toolbar.add_toggle("Toggle roof visibility", ViewToggleIcons.draw_roof_icon)
+	_roof_btn.toggled.connect(_on_roof_toggle)
+
+	_height_btn = _view_toolbar.add_toggle("Toggle height cutoff", ViewToggleIcons.draw_height_icon)
+	_height_btn.toggled.connect(_on_height_toggle)
 
 	# Info panel layer (layer 3) — creature and structure info panels render
 	# on top of the units panel (layer 2) so clicking a unit row shows the
@@ -982,6 +999,13 @@ func _process(delta: float) -> void:
 			# Pile was removed — deselect and hide panel.
 			_selector.deselect()
 
+	# Update height cutoff when camera focus Y changes.
+	if _height_cutoff_active:
+		var new_y: int = _camera_pivot.get_focus_voxel().y + 1
+		if new_y != _last_cutoff_y:
+			_last_cutoff_y = new_y
+			bridge.set_mesh_y_cutoff(new_y)
+
 	# Poll for new notifications and push them to the toast display.
 	if _notification_display:
 		var new_notifs := bridge.get_notifications_after(_last_notification_id)
@@ -996,6 +1020,24 @@ func _process(delta: float) -> void:
 	# Poll for construction music composition completions.
 	if _construction_music:
 		_construction_music.poll_compositions()
+
+
+func _on_roof_toggle(is_active: bool) -> void:
+	_roofs_hidden = is_active
+	_bldg_renderer.set_roofs_hidden(is_active)
+	_selector.set_roofs_hidden(is_active)
+	_tooltip_controller.set_roofs_hidden(is_active)
+
+
+func _on_height_toggle(is_active: bool) -> void:
+	_height_cutoff_active = is_active
+	if is_active:
+		var y: int = _camera_pivot.get_focus_voxel().y + 1
+		_last_cutoff_y = y
+		$SimBridge.set_mesh_y_cutoff(y)
+	else:
+		_last_cutoff_y = -1
+		$SimBridge.set_mesh_y_cutoff(-1)
 
 
 ## Move the camera to look at a world-space position, stopping any active
