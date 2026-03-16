@@ -89,12 +89,14 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
 [ ] F-crafting             Non-construction jobs and crafting
+[ ] F-creature-biology     Biological traits for deterministic creature appearance
 [ ] F-creature-death       Basic creature death (starvation)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-dblclick-select      Double-click to select all of same military group
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
+[ ] F-dye-application      Apply dye to equipment at workshop
 [ ] F-dye-crafting         Dye pressing and fabric dyeing recipes
 [ ] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [ ] F-elf-assign           Elf-to-building assignment UI
@@ -102,6 +104,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-emotions             Multi-dimensional emotional state
+[ ] F-equipment-color      Equipment sprites use item resolved color
 [ ] F-equipment-sprites    Dynamic sprite customization for equipment
 [ ] F-ff-vertical-arc      Vertical arc awareness for friendly-fire checks
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
@@ -118,6 +121,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-home-camera          Home key to center camera on tree
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
+[ ] F-item-color           Item color system (material-derived and dye override)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
@@ -149,7 +153,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
-[ ] F-rust-sprites         Investigate moving sprite generation to Rust
+[ ] F-rust-sprites         Move sprite generation to new elven_canopy_sprites crate
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-selection-bar        Bottom-of-screen selection bar (SC2-style)
 [ ] F-selection-groups     Ctrl+number selection groups with double-tap zoom/follow
@@ -1025,6 +1029,24 @@ Remaining: additional test coverage audit per design doc.
 
 **Related:** F-dynamic-pursuit, F-preemption, F-task-interruption
 
+#### F-creature-biology — Biological traits for deterministic creature appearance
+**Status:** Todo
+
+Creatures get biological traits stored as sim data — hair color, skin
+tone, eye color, body proportions, and other species-specific appearance
+parameters. Includes both the database schema (new fields/table in
+SimDb) and updating sprite generation in `elven_canopy_sprites` to read
+biological traits directly instead of re-deriving appearance from a seed
+via hash functions. Makes creature appearance a first-class sim concept
+rather than a rendering-side derivation.
+
+This enables future features like heredity, aging, and biological
+variation to affect appearance naturally. All sprite generation is fully
+determined by biological data — no seed hashing in the sprite crate.
+
+**Blocked by:** F-rust-sprites
+**Related:** F-rust-sprites
+
 #### F-creature-death — Basic creature death (starvation)
 **Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
 
@@ -1310,17 +1332,32 @@ Crafting system for tools, furniture, and magical items.
 **Blocks:** F-elf-weapons
 **Related:** F-bldg-workshop, F-items, F-magic-items, F-recipes
 
+#### F-dye-application — Apply dye to equipment at workshop
+**Status:** Todo
+
+The dyeing task workflow: a creature brings a dye item and a target
+equipment item to a workshop and applies the dye, setting the
+`dye_color` field on the target item's stack (from F-item-color). Covers
+the task definition, workshop interaction, dye consumption, and UI for
+selecting which item to dye with which color.
+
+**Blocked by:** F-dye-crafting, F-item-color
+**Related:** F-dye-crafting
+
 #### F-dye-crafting — Dye pressing and fabric dyeing recipes
 **Status:** Todo · **Phase:** 7
 
 Dye pressing from pigmented fruit components and fabric dyeing recipes.
 Fruits with pigmented parts (which already have a DyeColor field) can be
 pressed into dye items. Dye can then be applied to cloth or finished
-clothing to change their color. Requires F-textile-crafting for the
-textile items to dye. Details TBD: dye item representation, dyeing
-recipe structure, how dye color is tracked on items, color mixing.
+clothing/equipment to change their color, setting the `dye_color` field
+on the item stack (from F-item-color). Requires F-textile-crafting for
+the textile items to dye. Details TBD: dye item representation, dyeing
+recipe structure, color mixing, UI for selecting dye targets and colors.
 
-**Related:** F-fruit-variety, F-textile-crafting
+**Blocked by:** F-item-color
+**Blocks:** F-dye-application
+**Related:** F-dye-application, F-fruit-variety, F-textile-crafting
 
 #### F-elf-acquire — Elf personal item acquisition
 **Status:** Done · **Phase:** 4
@@ -1458,6 +1495,22 @@ Includes item reservation system to prevent double-claiming, cleanup on
 task abandonment (clear reservations or drop carried items as ground pile).
 
 **Related:** F-elf-acquire, F-food-chain, F-logistics
+
+#### F-item-color — Item color system (material-derived and dye override)
+**Status:** Todo
+
+Every item has a resolved color. Undyed items derive their color from
+their material (e.g., oak → warm brown, iron → grey). Dyed items use
+their dye color instead. A new optional `dye_color` field on `ItemStack`
+stores the applied dye. A helper function `item_color(stack) -> Color`
+returns the resolved color, using the dye color if present, otherwise
+deriving from the stack's material, with a sensible default for items
+with no material.
+
+This item covers only the schema and color retrieval logic — not the
+crafting process for creating dyes or applying them to items.
+
+**Blocks:** F-dye-application, F-dye-crafting, F-equipment-color
 
 #### F-item-durability — Item durability system (current/max HP on items)
 **Status:** Done
@@ -2695,21 +2748,40 @@ Auto-refresh via meta tag. Independent of all sim/worldgen features.
 
 **Draft:** `docs/drafts/elfcyclopedia_civs.md` §Elfcyclopedia (Web-Based)
 
+#### F-equipment-color — Equipment sprites use item resolved color
+**Status:** Todo
+
+Equipment sprite overlays use the item's resolved color (from
+F-item-color) to tint drawn equipment. A dyed-red breastplate renders
+red; an undyed oak breastplate renders oak-brown. The per-equipment
+drawing functions in `elven_canopy_sprites` accept a color parameter
+sourced from `item_color(stack)`.
+
+**Blocked by:** F-equipment-sprites, F-item-color
+
 #### F-equipment-sprites — Dynamic sprite customization for equipment
 **Status:** Todo
 
 Creature sprites dynamically reflect equipped items — weapons, tools,
-clothing, and armor are drawn as overlays on the base procedural sprite.
-When a creature equips or unequips an item, its sprite is regenerated
-with the appropriate layers composited on top. Each equipment type gets
-a small drawing function that paints onto the sprite image at species-
-specific anchor points (hand position, head, torso). Results are cached
-keyed on (creature_seed, equipped_item_set) to avoid redundant
-regeneration. Requires sprite generation in Rust (F-rust-sprites) so
-overlays can be composited efficiently, and the clothing/equipment
-system (F-clothing) to provide the item data.
+clothing, and armor are drawn as overlays on the base procedural sprite
+in the `elven_canopy_sprites` crate.
+
+Design decisions:
+- Per-species anchor point table (hand, head, torso, legs, feet positions).
+  Code scaffolding supports multiple species, but only elves get anchor
+  data initially. Species without defined anchors show their base sprite
+  unchanged even if the sim says they have equipment.
+- Each equipment type (helmet, breastplate, greaves, gauntlets, boots,
+  weapons) gets a drawing function that paints onto the sprite image at
+  the species-specific anchor offsets.
+- Role-based outfits (warrior armor, mage robes, etc.) are replaced by
+  equipment visuals, not layered on top.
+- Composited sprites are cached in Rust keyed on (creature identity,
+  equipped item set). The gdext bridge exposes final composited textures
+  to Godot.
 
 **Blocked by:** F-rust-sprites
+**Blocks:** F-equipment-color
 **Unblocked by:** F-clothing
 
 #### F-follow-multi — Camera zoom-to and follow for multi-selections
@@ -2986,25 +3058,26 @@ Covers tree voxels (Trunk, Branch, Root, Leaf, Dirt) and construction voxels
 (GrownPlatform, GrownWall, GrownStairs, Bridge). Fruit uses separate
 billboard Sprite3D rendering with per-species procedural textures.
 
-#### F-rust-sprites — Investigate moving sprite generation to Rust
+#### F-rust-sprites — Move sprite generation to new elven_canopy_sprites crate
 **Status:** Todo
 
-Investigate moving procedural sprite generation from GDScript
-(sprite_factory.gd) into Rust. Currently all creature and fruit sprites
-are drawn pixel-by-pixel in GDScript; fruit sprites were duplicated in
-Rust for the elfcyclopedia server. Moving to Rust would eliminate the
-duplication and keep rendering logic closer to the sim data.
+Port procedural sprite generation from GDScript (sprite_factory.gd) into
+a new `elven_canopy_sprites` crate. This is a pure Rust library with no
+Godot dependency — it outputs raw RGBA8 pixel buffers (`Vec<u8>`). Depends
+on `elven_canopy_sim` (species types, item types) and `elven_canopy_prng`
+(deterministic hashing). Consumed by `elven_canopy_gdext` (thin wrapper
+to convert pixel buffers into Godot Image/ImageTexture) and the
+elfcyclopedia server (eliminating duplicated fruit drawing code).
 
-Questions to resolve: Which crate should own it? (sim is Godot-free,
-gdext is a thin bridge — may need a new crate or a non-Godot module in
-gdext.) How to pass pixel data to Godot efficiently? (PackedByteArray →
-Image → ImageTexture, or gdext Image bindings.) Impact on iteration
-speed vs compile times. Whether the existing sprite_factory.gd drawing
-helpers (circle, ellipse, rect) are easy to port. Scope: all 10 creature
-species + fruit, ~1500 lines of GDScript drawing code.
+Scope: all 10 creature species + fruit, ~1500 lines of GDScript drawing
+code. Includes porting the drawing primitives (circle, ellipse, rect,
+set_px, color helpers) and all per-species sprite functions. Color
+palettes (hair colors, skin tones, etc.) live as constants in the crate.
+sprite_factory.gd is deleted or reduced to a thin call-through once
+complete.
 
-**Blocks:** F-equipment-sprites
-**Related:** F-fruit-sprites
+**Blocks:** F-creature-biology, F-equipment-sprites
+**Related:** F-creature-biology, F-fruit-sprites
 
 #### F-select-struct — Selectable structures with interaction UI
 **Status:** Done · **Phase:** 3
