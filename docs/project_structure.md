@@ -29,7 +29,7 @@ elven-canopy/
 │       │   ├── movement.rs     #   GoTo commands, unit spreading, step execution, wandering
 │       │   ├── needs.rs        #   Eating, sleeping, moping, personal item acquisition
 │       │   └── task_helpers.rs #   Task extension table accessors, insert_task
-│       ├── db.rs               # SimDb — tabulosity relational store (35 tables, all entities)
+│       ├── db.rs               # SimDb — tabulosity relational store (36 tables, all entities)
 │       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with face culling
 │       ├── texture_gen.rs      # Procedural face textures (3D Perlin noise atlases)
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction

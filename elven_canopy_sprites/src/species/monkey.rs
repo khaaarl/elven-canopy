@@ -44,6 +44,15 @@ pub fn params_from_seed(seed: i64) -> MonkeyParams {
     }
 }
 
+pub fn params_from_traits(traits: &super::TraitMap) -> MonkeyParams {
+    use elven_canopy_sim::types::TraitKind;
+    MonkeyParams {
+        fur_color: FUR_COLORS[super::trait_idx(traits, TraitKind::FurColor, 0) % FUR_COLORS.len()],
+        face_marking: FACE_MARKINGS
+            [super::trait_idx(traits, TraitKind::FaceMarking, 0) % FACE_MARKINGS.len()],
+    }
+}
+
 pub fn create_sprite(p: &MonkeyParams) -> PixelBuffer {
     let mut img = PixelBuffer::new(40, 44);
     let fur_color = p.fur_color;

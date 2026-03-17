@@ -40,6 +40,14 @@ pub fn params_from_seed(seed: i64) -> SquirrelParams {
     }
 }
 
+pub fn params_from_traits(traits: &super::TraitMap) -> SquirrelParams {
+    use elven_canopy_sim::types::TraitKind;
+    SquirrelParams {
+        fur_color: FUR_COLORS[super::trait_idx(traits, TraitKind::FurColor, 0) % FUR_COLORS.len()],
+        tail_type: TAIL_TYPES[super::trait_idx(traits, TraitKind::TailType, 0) % TAIL_TYPES.len()],
+    }
+}
+
 pub fn create_sprite(p: &SquirrelParams) -> PixelBuffer {
     let mut img = PixelBuffer::new(32, 32);
     let fur_color = p.fur_color;

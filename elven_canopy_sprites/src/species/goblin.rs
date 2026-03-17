@@ -39,6 +39,15 @@ pub fn params_from_seed(seed: i64) -> GoblinParams {
     }
 }
 
+pub fn params_from_traits(traits: &super::TraitMap) -> GoblinParams {
+    use elven_canopy_sim::types::TraitKind;
+    GoblinParams {
+        skin_color: SKIN_COLORS
+            [super::trait_idx(traits, TraitKind::SkinColor, 0) % SKIN_COLORS.len()],
+        ear_style: EAR_STYLES[super::trait_idx(traits, TraitKind::EarStyle, 0) % EAR_STYLES.len()],
+    }
+}
+
 pub fn create_sprite(p: &GoblinParams) -> PixelBuffer {
     let mut img = PixelBuffer::new(36, 40);
     let skin = p.skin_color;

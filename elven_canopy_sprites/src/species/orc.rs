@@ -39,6 +39,15 @@ pub fn params_from_seed(seed: i64) -> OrcParams {
     }
 }
 
+pub fn params_from_traits(traits: &super::TraitMap) -> OrcParams {
+    use elven_canopy_sim::types::TraitKind;
+    OrcParams {
+        skin_color: SKIN_COLORS
+            [super::trait_idx(traits, TraitKind::SkinColor, 0) % SKIN_COLORS.len()],
+        war_paint: WAR_PAINTS[super::trait_idx(traits, TraitKind::WarPaint, 0) % WAR_PAINTS.len()],
+    }
+}
+
 pub fn create_sprite(p: &OrcParams) -> PixelBuffer {
     let mut img = PixelBuffer::new(48, 48);
     let skin = p.skin_color;

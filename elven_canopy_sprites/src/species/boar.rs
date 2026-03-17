@@ -39,6 +39,15 @@ pub fn params_from_seed(seed: i64) -> BoarParams {
     }
 }
 
+pub fn params_from_traits(traits: &super::TraitMap) -> BoarParams {
+    use elven_canopy_sim::types::TraitKind;
+    BoarParams {
+        body_color: BODY_COLORS
+            [super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len()],
+        tusk_size: TUSK_SIZES[super::trait_idx(traits, TraitKind::TuskSize, 0) % TUSK_SIZES.len()],
+    }
+}
+
 pub fn create_sprite(p: &BoarParams) -> PixelBuffer {
     let mut img = PixelBuffer::new(44, 36);
     let body_color = p.body_color;

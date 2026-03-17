@@ -40,6 +40,16 @@ pub fn params_from_seed(seed: i64) -> TrollParams {
     }
 }
 
+pub fn params_from_traits(traits: &super::TraitMap) -> TrollParams {
+    use elven_canopy_sim::types::TraitKind;
+    TrollParams {
+        skin_color: SKIN_COLORS
+            [super::trait_idx(traits, TraitKind::SkinColor, 0) % SKIN_COLORS.len()],
+        horn_style: HORN_STYLES
+            [super::trait_idx(traits, TraitKind::HornStyle, 0) % HORN_STYLES.len()],
+    }
+}
+
 pub fn create_sprite(p: &TrollParams) -> PixelBuffer {
     let mut img = PixelBuffer::new(96, 80);
     let skin = p.skin_color;

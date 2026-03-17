@@ -28,5 +28,6 @@ pub use drawing::PixelBuffer;
 pub use fruit::create_fruit;
 pub use species::elf::{CreatureDrawInfo, EquipSlotDrawInfo};
 pub use species::{
-    SpriteParams, create_creature_sprite, create_species_sprite, species_params_from_seed,
+    SpriteParams, TraitMap, create_creature_sprite, create_species_sprite,
+    species_params_from_seed, species_params_from_traits,
 };

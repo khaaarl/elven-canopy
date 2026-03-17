@@ -6,7 +6,7 @@
 //
 // ## Table layout
 //
-// The database has 35 tables organized in four tiers:
+// The database has 36 tables organized in four tiers:
 //
 // **Player tables:** `players` — human operators identified by username string.
 // One entry per connected human player; persisted in save files.
@@ -20,9 +20,9 @@
 // (`Alive`/`Dead`, `#[indexed]` for efficient filtering). Dead creatures
 // remain in the DB; all live-creature queries filter by vital_status.
 //
-// **Child tables:** `thoughts`, `move_actions`, `notifications`, `inventories`,
-// `item_stacks`, `ground_piles`, `logistics_wants`, `furniture`,
-// `music_compositions` —
+// **Child tables:** `thoughts`, `creature_traits`, `move_actions`,
+// `notifications`, `inventories`, `item_stacks`, `ground_piles`,
+// `logistics_wants`, `furniture`, `music_compositions` —
 // normalized data that was previously stored as inline `Vec` fields on parent
 // entities, plus player-visible notifications and construction music metadata.
 //
@@ -62,13 +62,13 @@ use crate::projectile::{SubVoxelCoord, SubVoxelVec};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
     ActiveRecipeId, ActiveRecipeTargetId, BuildType, CivId, CivOpinion, CivRelationshipId,
-    CivSpecies, CompositionId, CreatureId, CultureTag, EnchantmentEffectId, EnchantmentId,
-    FurnishingType, FurnitureId, GroundPileId, InventoryId, ItemStackId, ItemSubcomponentId,
-    LogisticsWantId, MilitaryGroupId, NavNodeId, NotificationId, ProjectId, ProjectileId,
-    SelectionGroupId, Species, StructureId, StrutId, TaskAcquireDataId, TaskAttackMoveDataId,
-    TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId,
-    TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, VitalStatus,
-    VoxelCoord,
+    CivSpecies, CompositionId, CreatureId, CreatureTraitId, CultureTag, EnchantmentEffectId,
+    EnchantmentId, FurnishingType, FurnitureId, GroundPileId, InventoryId, ItemStackId,
+    ItemSubcomponentId, LogisticsWantId, MilitaryGroupId, NavNodeId, NotificationId, ProjectId,
+    ProjectileId, SelectionGroupId, Species, StructureId, StrutId, TaskAcquireDataId,
+    TaskAttackMoveDataId, TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId,
+    TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId,
+    ThoughtKind, TraitKind, TraitValue, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -313,6 +313,33 @@ pub struct Thought {
     pub creature_id: CreatureId,
     pub kind: ThoughtKind,
     pub tick: u64,
+}
+
+/// A biological trait for a creature. Each row stores one trait kind and its
+/// value. The compound unique index on `(creature_id, trait_kind)` ensures
+/// at most one value per trait per creature.
+///
+/// Visual traits store palette indices as `TraitValue::Int`. `BioSeed` stores
+/// a raw PRNG output for future trait derivation. Cascade-on-delete removes
+/// all traits when the creature is deleted.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[index(
+    name = "creature_trait_kind",
+    fields("creature_id", "trait_kind"),
+    unique
+)]
+pub struct CreatureTrait {
+    #[primary_key(auto_increment)]
+    pub id: CreatureTraitId,
+    #[indexed]
+    pub creature_id: CreatureId,
+    pub trait_kind: TraitKind,
+    #[serde(default = "default_trait_value")]
+    pub value: TraitValue,
+}
+
+fn default_trait_value() -> TraitValue {
+    TraitValue::Int(0)
 }
 
 /// A player-visible notification. Persists across saves so the notification
@@ -1255,6 +1282,11 @@ pub struct SimDb {
             auto,
             fks(creature_id = "creatures" on_delete cascade))]
     pub thoughts: ThoughtTable,
+
+    #[table(singular = "creature_trait",
+            auto,
+            fks(creature_id = "creatures" on_delete cascade))]
+    pub creature_traits: CreatureTraitTable,
 
     #[table(singular = "task",
             fks(target_creature? = "creatures"))]

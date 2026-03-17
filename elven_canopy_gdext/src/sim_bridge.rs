@@ -2445,6 +2445,7 @@ impl SimBridge {
     #[func]
     fn get_elf_sprites(&mut self) -> VarDictionary {
         use elven_canopy_sim::inventory::{EquipSlot, WearCategory};
+        use elven_canopy_sim::types::TraitKind;
         use elven_canopy_sprites::{CreatureDrawInfo, EquipSlotDrawInfo};
 
         let mut textures = VarArray::new();
@@ -2488,8 +2489,12 @@ impl SimBridge {
                     });
                 }
             }
+            let cid = creature.id;
             let info = CreatureDrawInfo {
-                seed: i as i64,
+                hair_color_idx: sim.trait_int(cid, TraitKind::HairColor, 0) as u8,
+                eye_color_idx: sim.trait_int(cid, TraitKind::EyeColor, 0) as u8,
+                skin_tone_idx: sim.trait_int(cid, TraitKind::SkinTone, 0) as u8,
+                hair_style_idx: sim.trait_int(cid, TraitKind::HairStyle, 0) as u8,
                 equipment,
             };
 

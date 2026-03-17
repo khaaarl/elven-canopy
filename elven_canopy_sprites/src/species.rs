@@ -1,13 +1,15 @@
 // Creature species sprite generation — dispatcher and per-species modules.
 //
-// Each of the 10 species has a `*_params_from_seed` function that maps an
-// integer seed to deterministic visual parameters (colors, accessories, etc.)
-// via Knuth multiplicative hashing, and a `create_*` function that draws
-// the sprite pixel-by-pixel into a `PixelBuffer`.
+// Each species has `params_from_seed` (backward-compatible, seed → visual
+// parameters via Knuth hashing) and `params_from_traits` (preferred path,
+// reads palette indices from a `TraitMap` populated by the sim's
+// `creature_traits` table). The `create_*` functions draw sprites
+// pixel-by-pixel into a `PixelBuffer`.
 //
-// The `SpriteParams` enum wraps per-species params, and the top-level
-// `species_params_from_seed` / `create_species_sprite` functions dispatch
-// by `Species` variant.
+// `TraitMap` is a `BTreeMap<TraitKind, TraitValue>` — the sprite crate's
+// read-only view of a creature's biological traits. `trait_idx` extracts
+// an integer trait as a `usize`, falling back to a default on missing or
+// wrong-type values.
 //
 // See also: `drawing.rs` for the PixelBuffer, `color.rs` for Color.
 
@@ -23,9 +25,26 @@ mod orc;
 mod squirrel;
 mod troll;
 
-use elven_canopy_sim::types::Species;
+use elven_canopy_sim::types::{Species, TraitKind, TraitValue};
+use std::collections::BTreeMap;
 
 use crate::drawing::PixelBuffer;
+
+/// Read-only view of a creature's biological traits, populated from the
+/// `creature_traits` table in the sim.
+pub type TraitMap = BTreeMap<TraitKind, TraitValue>;
+
+/// Extract an integer trait as a `usize`, returning `default` if the trait
+/// is missing or holds a non-integer value.
+pub(crate) fn trait_idx(traits: &TraitMap, kind: TraitKind, default: usize) -> usize {
+    traits
+        .get(&kind)
+        .and_then(|v| match v {
+            TraitValue::Int(i) => Some(*i as usize),
+            TraitValue::Text(_) => None,
+        })
+        .unwrap_or(default)
+}
 
 /// Knuth multiplicative hash constant (2654435761), used to spread bits
 /// from integer seeds before modular indexing into palette arrays.
@@ -79,6 +98,23 @@ pub fn create_species_sprite(params: &SpriteParams) -> PixelBuffer {
         SpriteParams::Goblin(p) => goblin::create_sprite(p),
         SpriteParams::Orc(p) => orc::create_sprite(p),
         SpriteParams::Troll(p) => troll::create_sprite(p),
+    }
+}
+
+/// Build species params from biological trait data (the preferred path).
+/// Falls back to default palette indices for missing traits.
+pub fn species_params_from_traits(species: Species, traits: &TraitMap) -> SpriteParams {
+    match species {
+        Species::Elf => SpriteParams::Elf(elf::params_from_traits(traits)),
+        Species::Capybara => SpriteParams::Capybara(capybara::params_from_traits(traits)),
+        Species::Boar => SpriteParams::Boar(boar::params_from_traits(traits)),
+        Species::Deer => SpriteParams::Deer(deer::params_from_traits(traits)),
+        Species::Monkey => SpriteParams::Monkey(monkey::params_from_traits(traits)),
+        Species::Squirrel => SpriteParams::Squirrel(squirrel::params_from_traits(traits)),
+        Species::Elephant => SpriteParams::Elephant(elephant::params_from_traits(traits)),
+        Species::Goblin => SpriteParams::Goblin(goblin::params_from_traits(traits)),
+        Species::Orc => SpriteParams::Orc(orc::params_from_traits(traits)),
+        Species::Troll => SpriteParams::Troll(troll::params_from_traits(traits)),
     }
 }
 
@@ -152,6 +188,56 @@ mod tests {
             any_different,
             "No species produced different sprites for different seeds"
         );
+    }
+
+    #[test]
+    fn all_species_produce_nonempty_sprites_from_traits() {
+        use elven_canopy_sim::types::{TraitKind, TraitValue};
+
+        for species in ALL_SPECIES {
+            let mut traits = TraitMap::new();
+            traits.insert(TraitKind::BioSeed, TraitValue::Int(12345));
+            // Insert a few generic traits — species will ignore irrelevant ones.
+            traits.insert(TraitKind::HairColor, TraitValue::Int(2));
+            traits.insert(TraitKind::EyeColor, TraitValue::Int(1));
+            traits.insert(TraitKind::SkinTone, TraitValue::Int(0));
+            traits.insert(TraitKind::HairStyle, TraitValue::Int(1));
+            traits.insert(TraitKind::BodyColor, TraitValue::Int(1));
+            traits.insert(TraitKind::SkinColor, TraitValue::Int(1));
+            traits.insert(TraitKind::FurColor, TraitValue::Int(1));
+            traits.insert(TraitKind::Accessory, TraitValue::Int(0));
+            traits.insert(TraitKind::TuskSize, TraitValue::Int(0));
+            traits.insert(TraitKind::AntlerStyle, TraitValue::Int(0));
+            traits.insert(TraitKind::SpotPattern, TraitValue::Int(0));
+            traits.insert(TraitKind::TuskType, TraitValue::Int(0));
+            traits.insert(TraitKind::EarStyle, TraitValue::Int(0));
+            traits.insert(TraitKind::FaceMarking, TraitValue::Int(0));
+            traits.insert(TraitKind::WarPaint, TraitValue::Int(0));
+            traits.insert(TraitKind::TailType, TraitValue::Int(0));
+            traits.insert(TraitKind::HornStyle, TraitValue::Int(0));
+
+            let params = species_params_from_traits(species, &traits);
+            let buf = create_species_sprite(&params);
+            assert!(buf.width() > 0);
+            assert!(buf.height() > 0);
+            let data = buf.data();
+            let has_opaque = data.chunks(4).any(|px| px[3] > 0);
+            assert!(
+                has_opaque,
+                "{species:?} trait-based sprite is completely transparent"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_trait_map_produces_valid_sprites() {
+        // params_from_traits with empty map should fall back to defaults.
+        for species in ALL_SPECIES {
+            let traits = TraitMap::new();
+            let params = species_params_from_traits(species, &traits);
+            let buf = create_species_sprite(&params);
+            assert!(buf.width() > 0, "{species:?} empty traits failed");
+        }
     }
 
     #[test]

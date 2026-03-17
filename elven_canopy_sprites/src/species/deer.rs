@@ -55,6 +55,26 @@ pub fn params_from_seed(seed: i64) -> DeerParams {
     }
 }
 
+pub fn params_from_traits(traits: &super::TraitMap) -> DeerParams {
+    use elven_canopy_sim::types::TraitKind;
+    let bio_seed = traits
+        .get(&TraitKind::BioSeed)
+        .and_then(|v| match v {
+            elven_canopy_sim::types::TraitValue::Int(i) => Some(*i),
+            _ => None,
+        })
+        .unwrap_or(0);
+    DeerParams {
+        body_color: BODY_COLORS
+            [super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len()],
+        antler_style: ANTLER_STYLES
+            [super::trait_idx(traits, TraitKind::AntlerStyle, 0) % ANTLER_STYLES.len()],
+        spot_pattern: SPOT_PATTERNS
+            [super::trait_idx(traits, TraitKind::SpotPattern, 0) % SPOT_PATTERNS.len()],
+        seed: bio_seed,
+    }
+}
+
 pub fn create_sprite(p: &DeerParams) -> PixelBuffer {
     let mut img = PixelBuffer::new(44, 44);
     let body_color = p.body_color;

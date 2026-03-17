@@ -266,6 +266,405 @@ fn spawned_non_elf_has_no_name() {
     assert!(capy.name.is_empty(), "Capybara should not have a name");
 }
 
+// ---------------------------------------------------------------------------
+// Creature biology traits
+// ---------------------------------------------------------------------------
+
+/// Helper: spawn a creature and return its ID.
+fn spawn_creature(sim: &mut SimState, species: Species) -> CreatureId {
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+    sim.db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == species)
+        .expect("creature should exist")
+        .id
+}
+
+#[test]
+fn spawned_elf_has_biology_traits() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Elf should have all elf-specific traits plus BioSeed.
+    assert_ne!(sim.trait_int(elf_id, TraitKind::BioSeed, 0), 0);
+    // Hair color index should be in range 0–6.
+    let hair = sim.trait_int(elf_id, TraitKind::HairColor, -1);
+    assert!((0..7).contains(&hair), "hair_color {hair} out of range");
+    let eye = sim.trait_int(elf_id, TraitKind::EyeColor, -1);
+    assert!((0..5).contains(&eye), "eye_color {eye} out of range");
+    let skin = sim.trait_int(elf_id, TraitKind::SkinTone, -1);
+    assert!((0..4).contains(&skin), "skin_tone {skin} out of range");
+    let style = sim.trait_int(elf_id, TraitKind::HairStyle, -1);
+    assert!((0..3).contains(&style), "hair_style {style} out of range");
+
+    // Elf should NOT have non-elf traits.
+    assert_eq!(sim.trait_int(elf_id, TraitKind::BodyColor, -1), -1);
+    assert_eq!(sim.trait_int(elf_id, TraitKind::AntlerStyle, -1), -1);
+}
+
+#[test]
+fn spawned_capybara_has_biology_traits() {
+    let mut sim = test_sim(42);
+    let capy_id = spawn_creature(&mut sim, Species::Capybara);
+
+    assert_ne!(sim.trait_int(capy_id, TraitKind::BioSeed, 0), 0);
+    let body = sim.trait_int(capy_id, TraitKind::BodyColor, -1);
+    assert!((0..4).contains(&body), "body_color {body} out of range");
+    let acc = sim.trait_int(capy_id, TraitKind::Accessory, -1);
+    assert!((0..4).contains(&acc), "accessory {acc} out of range");
+
+    // Should NOT have elf traits.
+    assert_eq!(sim.trait_int(capy_id, TraitKind::HairColor, -1), -1);
+}
+
+#[test]
+fn spawned_deer_has_biology_traits() {
+    let mut sim = test_sim(42);
+    let deer_id = spawn_creature(&mut sim, Species::Deer);
+
+    assert_ne!(sim.trait_int(deer_id, TraitKind::BioSeed, 0), 0);
+    let body = sim.trait_int(deer_id, TraitKind::BodyColor, -1);
+    assert!((0..4).contains(&body), "body_color {body} out of range");
+    let antler = sim.trait_int(deer_id, TraitKind::AntlerStyle, -1);
+    assert!(
+        (0..3).contains(&antler),
+        "antler_style {antler} out of range"
+    );
+    let spots = sim.trait_int(deer_id, TraitKind::SpotPattern, -1);
+    assert!((0..2).contains(&spots), "spot_pattern {spots} out of range");
+}
+
+#[test]
+fn biology_traits_deterministic() {
+    let mut sim1 = test_sim(42);
+    let mut sim2 = test_sim(42);
+    let elf1 = spawn_creature(&mut sim1, Species::Elf);
+    let elf2 = spawn_creature(&mut sim2, Species::Elf);
+
+    assert_eq!(
+        sim1.trait_int(elf1, TraitKind::HairColor, -1),
+        sim2.trait_int(elf2, TraitKind::HairColor, -1),
+    );
+    assert_eq!(
+        sim1.trait_int(elf1, TraitKind::EyeColor, -1),
+        sim2.trait_int(elf2, TraitKind::EyeColor, -1),
+    );
+    assert_eq!(
+        sim1.trait_int(elf1, TraitKind::BioSeed, 0),
+        sim2.trait_int(elf2, TraitKind::BioSeed, 0),
+    );
+}
+
+#[test]
+fn biology_traits_cascade_on_creature_removal() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Traits should exist.
+    assert_ne!(sim.trait_int(elf_id, TraitKind::BioSeed, 0), 0);
+    let trait_count_before = sim
+        .db
+        .creature_traits
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+        .len();
+    assert!(trait_count_before > 0, "should have traits after spawn");
+
+    // Removing the creature via the DB should cascade-delete all traits.
+    // First remove FKs that would block creature removal (tasks, inventory, etc.).
+    let creature = sim.db.creatures.get(&elf_id).unwrap().clone();
+    if let Some(task_id) = creature.current_task {
+        let _ = sim.db.remove_task(&task_id);
+    }
+    let inv_id = creature.inventory_id;
+    // Remove all item stacks in the creature's inventory.
+    let stack_ids: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|s| s.id)
+        .collect();
+    for sid in stack_ids {
+        let _ = sim.db.item_stacks.remove_no_fk(&sid);
+    }
+    let _ = sim.db.inventories.remove_no_fk(&inv_id);
+    sim.db
+        .remove_creature(&elf_id)
+        .expect("creature removal should succeed");
+    assert_eq!(sim.trait_int(elf_id, TraitKind::BioSeed, 0), 0);
+    assert_eq!(
+        sim.db
+            .creature_traits
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn trait_int_returns_default_for_missing_trait() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    // TraitKind::WarPaint is not set for elves.
+    assert_eq!(sim.trait_int(elf_id, TraitKind::WarPaint, 42), 42);
+}
+
+#[test]
+fn trait_int_returns_default_for_text_value() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Manually insert a text-valued trait to verify fallback.
+    let _ = sim
+        .db
+        .creature_traits
+        .insert_auto_no_fk(|id| crate::db::CreatureTrait {
+            id,
+            creature_id: elf_id,
+            trait_kind: TraitKind::WarPaint,
+            value: TraitValue::Text("blue".into()),
+        });
+
+    // trait_int should return the default since the value is Text.
+    assert_eq!(sim.trait_int(elf_id, TraitKind::WarPaint, 99), 99);
+    // trait_text should return the text.
+    assert_eq!(sim.trait_text(elf_id, TraitKind::WarPaint, ""), "blue");
+}
+
+#[test]
+fn compound_unique_prevents_duplicate_traits() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Trying to insert a second HairColor should fail.
+    let result = sim
+        .db
+        .creature_traits
+        .insert_auto_no_fk(|id| crate::db::CreatureTrait {
+            id,
+            creature_id: elf_id,
+            trait_kind: TraitKind::HairColor,
+            value: TraitValue::Int(99),
+        });
+    assert!(result.is_err(), "duplicate trait should be rejected");
+}
+
+#[test]
+fn all_species_get_bio_seed_on_spawn() {
+    let all_species = [
+        Species::Elf,
+        Species::Capybara,
+        Species::Boar,
+        Species::Deer,
+        Species::Elephant,
+        Species::Goblin,
+        Species::Monkey,
+        Species::Orc,
+        Species::Squirrel,
+        Species::Troll,
+    ];
+    for species in all_species {
+        let mut sim = test_sim(42);
+        let id = spawn_creature(&mut sim, species);
+        assert_ne!(
+            sim.trait_int(id, TraitKind::BioSeed, 0),
+            0,
+            "{species:?} should have a BioSeed"
+        );
+    }
+}
+
+#[test]
+fn biology_traits_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    let hair_before = sim.trait_int(elf_id, TraitKind::HairColor, -1);
+    let eye_before = sim.trait_int(elf_id, TraitKind::EyeColor, -1);
+    let seed_before = sim.trait_int(elf_id, TraitKind::BioSeed, 0);
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(
+        restored.trait_int(elf_id, TraitKind::HairColor, -1),
+        hair_before
+    );
+    assert_eq!(
+        restored.trait_int(elf_id, TraitKind::EyeColor, -1),
+        eye_before
+    );
+    assert_eq!(
+        restored.trait_int(elf_id, TraitKind::BioSeed, 0),
+        seed_before
+    );
+}
+
+#[test]
+fn trait_kind_serde_roundtrip() {
+    let all_kinds = [
+        TraitKind::BioSeed,
+        TraitKind::HairColor,
+        TraitKind::EyeColor,
+        TraitKind::SkinTone,
+        TraitKind::HairStyle,
+        TraitKind::BodyColor,
+        TraitKind::AntlerStyle,
+        TraitKind::SpotPattern,
+        TraitKind::TuskSize,
+        TraitKind::HornStyle,
+        TraitKind::FurColor,
+        TraitKind::TailType,
+        TraitKind::TuskType,
+        TraitKind::FaceMarking,
+        TraitKind::WarPaint,
+        TraitKind::EarStyle,
+        TraitKind::SkinColor,
+        TraitKind::Accessory,
+    ];
+    for kind in all_kinds {
+        let json = serde_json::to_string(&kind).unwrap();
+        let restored: TraitKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, restored, "serde roundtrip failed for {kind:?}");
+    }
+}
+
+#[test]
+fn trait_value_serde_roundtrip() {
+    let values = [
+        TraitValue::Int(42),
+        TraitValue::Int(-1),
+        TraitValue::Text("blue".into()),
+    ];
+    for val in values {
+        let json = serde_json::to_string(&val).unwrap();
+        let restored: TraitValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(val, restored);
+    }
+}
+
+#[test]
+fn spawned_boar_has_biology_traits() {
+    let mut sim = test_sim(42);
+    let id = spawn_creature(&mut sim, Species::Boar);
+    let body = sim.trait_int(id, TraitKind::BodyColor, -1);
+    assert!((0..4).contains(&body), "body_color {body} out of range");
+    let tusk = sim.trait_int(id, TraitKind::TuskSize, -1);
+    assert!((0..3).contains(&tusk), "tusk_size {tusk} out of range");
+    assert_eq!(sim.trait_int(id, TraitKind::HairColor, -1), -1);
+}
+
+#[test]
+fn spawned_elephant_has_biology_traits() {
+    let mut sim = test_sim(42);
+    let id = spawn_creature(&mut sim, Species::Elephant);
+    let body = sim.trait_int(id, TraitKind::BodyColor, -1);
+    assert!((0..4).contains(&body), "body_color {body} out of range");
+    let tusk = sim.trait_int(id, TraitKind::TuskType, -1);
+    assert!((0..3).contains(&tusk), "tusk_type {tusk} out of range");
+}
+
+#[test]
+fn spawned_goblin_has_biology_traits() {
+    let mut sim = test_sim(42);
+    let id = spawn_creature(&mut sim, Species::Goblin);
+    let skin = sim.trait_int(id, TraitKind::SkinColor, -1);
+    assert!((0..4).contains(&skin), "skin_color {skin} out of range");
+    let ear = sim.trait_int(id, TraitKind::EarStyle, -1);
+    assert!((0..3).contains(&ear), "ear_style {ear} out of range");
+    assert_eq!(sim.trait_int(id, TraitKind::HairColor, -1), -1);
+}
+
+#[test]
+fn spawned_monkey_has_biology_traits() {
+    let mut sim = test_sim(42);
+    let id = spawn_creature(&mut sim, Species::Monkey);
+    let fur = sim.trait_int(id, TraitKind::FurColor, -1);
+    assert!((0..4).contains(&fur), "fur_color {fur} out of range");
+    let face = sim.trait_int(id, TraitKind::FaceMarking, -1);
+    assert!((0..3).contains(&face), "face_marking {face} out of range");
+}
+
+#[test]
+fn spawned_orc_has_biology_traits() {
+    let mut sim = test_sim(42);
+    let id = spawn_creature(&mut sim, Species::Orc);
+    let skin = sim.trait_int(id, TraitKind::SkinColor, -1);
+    assert!((0..4).contains(&skin), "skin_color {skin} out of range");
+    let paint = sim.trait_int(id, TraitKind::WarPaint, -1);
+    assert!((0..3).contains(&paint), "war_paint {paint} out of range");
+}
+
+#[test]
+fn spawned_squirrel_has_biology_traits() {
+    let mut sim = test_sim(42);
+    let id = spawn_creature(&mut sim, Species::Squirrel);
+    let fur = sim.trait_int(id, TraitKind::FurColor, -1);
+    assert!((0..4).contains(&fur), "fur_color {fur} out of range");
+    let tail = sim.trait_int(id, TraitKind::TailType, -1);
+    assert!((0..3).contains(&tail), "tail_type {tail} out of range");
+}
+
+#[test]
+fn spawned_troll_has_biology_traits() {
+    let mut sim = test_sim(42);
+    let id = spawn_creature(&mut sim, Species::Troll);
+    let skin = sim.trait_int(id, TraitKind::SkinColor, -1);
+    assert!((0..4).contains(&skin), "skin_color {skin} out of range");
+    let horn = sim.trait_int(id, TraitKind::HornStyle, -1);
+    assert!((0..3).contains(&horn), "horn_style {horn} out of range");
+}
+
+#[test]
+fn trait_text_returns_default_for_missing_trait() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    // TraitKind::WarPaint is not set for elves — trait_text should return default.
+    assert_eq!(sim.trait_text(elf_id, TraitKind::WarPaint, "none"), "none");
+}
+
+#[test]
+fn trait_text_returns_default_for_int_value() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    // HairColor is stored as Int — trait_text should return the default string.
+    assert_eq!(
+        sim.trait_text(elf_id, TraitKind::HairColor, "fallback"),
+        "fallback"
+    );
+}
+
+#[test]
+fn old_save_without_creature_traits_deserializes() {
+    // Simulate loading a save that predates creature biology.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let json = serde_json::to_string(&sim).unwrap();
+
+    // Strip the creature_traits key from the JSON to simulate an old save.
+    let mut parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    if let Some(db) = parsed.get_mut("db") {
+        db.as_object_mut().unwrap().remove("creature_traits");
+    }
+    let stripped = serde_json::to_string(&parsed).unwrap();
+
+    let restored: SimState = serde_json::from_str(&stripped).unwrap();
+    // Creatures should exist but have no traits — defaults returned.
+    assert!(restored.db.creatures.get(&elf_id).is_some());
+    assert_eq!(restored.trait_int(elf_id, TraitKind::HairColor, -1), -1);
+    assert_eq!(restored.trait_int(elf_id, TraitKind::BioSeed, 0), 0);
+}
+
 #[test]
 fn elf_wanders_after_spawn() {
     let mut sim = test_sim(42);
@@ -3484,8 +3883,10 @@ fn build_task_completes_and_all_voxels_placed() {
     let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
     let task_id = sim.db.blueprints.get(&project_id).unwrap().task_id.unwrap();
 
-    // Tick until completion (elf needs to pathfind + do work).
-    sim.step(&[], sim.tick + 200_000);
+    // Tick until completion (elf needs to pathfind + do work). The exact
+    // timing depends on PRNG state (spawn position, wander direction), so
+    // we step generously.
+    sim.step(&[], sim.tick + 400_000);
 
     // Blueprint should be Complete.
     let bp = &sim.db.blueprints.get(&project_id).unwrap();
@@ -15860,8 +16261,10 @@ fn pursuit_task_abandons_when_target_unreachable() {
         c.current_node = Some(bogus_node);
     });
 
-    // Step so pursuer's activation fires and hits the dead-node check.
-    sim.step(&[], sim.tick + 50000);
+    // Step enough ticks for pursuer's activation to fire and hit the
+    // dead-node check. The exact timing depends on PRNG state (spawn
+    // position, wander path), so we step generously.
+    sim.step(&[], sim.tick + 500_000);
 
     // Pursuer should have abandoned the pursuit task (may have claimed
     // another task from heartbeat, but not the pursuit task).
@@ -27108,8 +27511,21 @@ fn in_flight_arrow_passes_through_friendly_near_origin() {
     let goblin_pos = VoxelCoord::new(base.x + 10, base.y, base.z);
     force_position(&mut sim, goblin, goblin_pos);
 
-    force_idle(&mut sim, shooter);
+    force_idle_and_cancel_activations(&mut sim, shooter);
+    force_idle_and_cancel_activations(&mut sim, buddy);
+    force_idle_and_cancel_activations(&mut sim, goblin);
     arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+    // Re-confirm all positions after idle (ensure no drift from earlier steps).
+    force_position(&mut sim, shooter, base);
+    force_position(&mut sim, buddy, buddy_pos);
+    force_position(&mut sim, goblin, goblin_pos);
+
+    // Restore buddy HP to full in case the goblin attacked during spawn steps.
+    let buddy_max_hp = sim.species_table[&Species::Elf].hp_max;
+    let _ = sim.db.creatures.modify_unchecked(&buddy, |c| {
+        c.hp = c.hp_max;
+    });
 
     // Fire the arrow.
     let tick = sim.tick;

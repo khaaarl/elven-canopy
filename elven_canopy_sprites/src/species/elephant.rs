@@ -40,6 +40,15 @@ pub fn params_from_seed(seed: i64) -> ElephantParams {
     }
 }
 
+pub fn params_from_traits(traits: &super::TraitMap) -> ElephantParams {
+    use elven_canopy_sim::types::TraitKind;
+    ElephantParams {
+        body_color: BODY_COLORS
+            [super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len()],
+        tusk_type: TUSK_TYPES[super::trait_idx(traits, TraitKind::TuskType, 0) % TUSK_TYPES.len()],
+    }
+}
+
 pub fn create_sprite(p: &ElephantParams) -> PixelBuffer {
     let mut img = PixelBuffer::new(96, 80);
     let body_color = p.body_color;

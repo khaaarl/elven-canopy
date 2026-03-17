@@ -1,14 +1,16 @@
 // Creature lifecycle — spawning, surface placement, pile management, and task cleanup.
 //
 // Handles creature spawning (with species-specific nav graph snapping),
-// surface position finding, ground pile creation and gravity, and the task
-// interruption/preemption/cleanup pipeline used when creatures die, flee,
-// or receive new player commands.
+// biological trait rolling (hair/eye/skin/body colors etc. stored in the
+// `creature_traits` table), surface position finding, ground pile creation
+// and gravity, and the task interruption/preemption/cleanup pipeline used
+// when creatures die, flee, or receive new player commands.
 //
 // See also: `activation.rs` (creature decision loop), `combat.rs` (death
-// handling), `movement.rs` (movement execution).
+// handling), `movement.rs` (movement execution), `types.rs` for `TraitKind`
+// and `TraitValue`.
 use super::*;
-use crate::db::ActionKind;
+use crate::db::{ActionKind, CreatureTrait};
 use crate::event::{ScheduledEventKind, SimEvent, SimEventKind};
 use crate::inventory;
 use crate::task;
@@ -96,6 +98,9 @@ impl SimState {
 
         self.db.creatures.insert_no_fk(creature).unwrap();
 
+        // Roll biological traits from the PRNG and store them.
+        self.roll_creature_traits(creature_id, species);
+
         // Register in spatial index.
         let footprint = self.species_table[&species].footprint;
         Self::register_creature_in_index(&mut self.spatial_index, creature_id, node_pos, footprint);
@@ -159,6 +164,199 @@ impl SimState {
             },
         });
         Some(creature_id)
+    }
+
+    // -----------------------------------------------------------------
+    // Creature biology traits
+    // -----------------------------------------------------------------
+
+    /// Roll biological traits for a newly spawned creature and insert them
+    /// into the `creature_traits` table. Consumes exactly one PRNG call
+    /// (for the bio seed), then derives all trait indices deterministically
+    /// via Knuth hashing — so adding new traits later doesn't shift
+    /// existing trait values.
+    fn roll_creature_traits(&mut self, creature_id: CreatureId, species: Species) {
+        let bio_seed = self.rng.next_u64() as i64;
+        self.insert_trait(creature_id, TraitKind::BioSeed, TraitValue::Int(bio_seed));
+
+        // Knuth multiplicative hash to spread bits for palette indexing.
+        let h = (bio_seed.wrapping_mul(2_654_435_761)).unsigned_abs();
+
+        match species {
+            Species::Elf => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::HairColor,
+                    TraitValue::Int((h % 7) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::EyeColor,
+                    TraitValue::Int(((h / 7) % 5) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::SkinTone,
+                    TraitValue::Int(((h / 31) % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::HairStyle,
+                    TraitValue::Int(((h / 131) % 3) as i64),
+                );
+            }
+            Species::Capybara => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::BodyColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::Accessory,
+                    TraitValue::Int(((h / 13) % 4) as i64),
+                );
+            }
+            Species::Boar => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::BodyColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::TuskSize,
+                    TraitValue::Int(((h / 11) % 3) as i64),
+                );
+            }
+            Species::Deer => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::BodyColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::AntlerStyle,
+                    TraitValue::Int(((h / 11) % 3) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::SpotPattern,
+                    TraitValue::Int(((h / 41) % 2) as i64),
+                );
+            }
+            Species::Elephant => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::BodyColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::TuskType,
+                    TraitValue::Int(((h / 11) % 3) as i64),
+                );
+            }
+            Species::Goblin => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::SkinColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::EarStyle,
+                    TraitValue::Int(((h / 11) % 3) as i64),
+                );
+            }
+            Species::Monkey => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::FurColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::FaceMarking,
+                    TraitValue::Int(((h / 11) % 3) as i64),
+                );
+            }
+            Species::Orc => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::SkinColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::WarPaint,
+                    TraitValue::Int(((h / 11) % 3) as i64),
+                );
+            }
+            Species::Squirrel => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::FurColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::TailType,
+                    TraitValue::Int(((h / 11) % 3) as i64),
+                );
+            }
+            Species::Troll => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::SkinColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::HornStyle,
+                    TraitValue::Int(((h / 11) % 3) as i64),
+                );
+            }
+        }
+    }
+
+    /// Insert a single trait row for a creature.
+    fn insert_trait(&mut self, creature_id: CreatureId, trait_kind: TraitKind, value: TraitValue) {
+        let _ = self
+            .db
+            .creature_traits
+            .insert_auto_no_fk(|id| CreatureTrait {
+                id,
+                creature_id,
+                trait_kind,
+                value: value.clone(),
+            });
+    }
+
+    /// Look up an integer trait value for a creature, returning `default` if
+    /// the trait is missing or holds a non-integer value.
+    pub fn trait_int(&self, creature_id: CreatureId, kind: TraitKind, default: i64) -> i64 {
+        self.db
+            .creature_traits
+            .by_creature_trait_kind(&creature_id, &kind, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .map(|t| t.value.as_int(default))
+            .unwrap_or(default)
+    }
+
+    /// Look up a text trait value for a creature, returning `default` if
+    /// the trait is missing or holds a non-text value.
+    #[allow(dead_code)]
+    pub fn trait_text(&self, creature_id: CreatureId, kind: TraitKind, default: &str) -> String {
+        self.db
+            .creature_traits
+            .by_creature_trait_kind(&creature_id, &kind, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .map(|t| t.value.as_text(default))
+            .unwrap_or_else(|| default.to_string())
     }
 
     /// Find the lowest non-solid Y position at the given (x, z) column.

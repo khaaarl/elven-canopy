@@ -46,6 +46,16 @@ pub fn params_from_seed(seed: i64) -> CapybaraParams {
     }
 }
 
+pub fn params_from_traits(traits: &super::TraitMap) -> CapybaraParams {
+    use elven_canopy_sim::types::TraitKind;
+    CapybaraParams {
+        body_color: BODY_COLORS
+            [super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len()],
+        accessory: ACCESSORIES
+            [super::trait_idx(traits, TraitKind::Accessory, 0) % ACCESSORIES.len()],
+    }
+}
+
 pub fn create_sprite(p: &CapybaraParams) -> PixelBuffer {
     let mut img = PixelBuffer::new(40, 32);
     let body_color = p.body_color;

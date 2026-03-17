@@ -17,6 +17,7 @@ use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 use elven_canopy_sim::inventory::{EquipSlot, ItemKind, WearCategory};
+use elven_canopy_sim::types::TraitKind;
 
 const HAIR_COLORS: [Color; 7] = [
     Color::rgb(0.95, 0.85, 0.40), // blonde
@@ -56,30 +57,12 @@ const HAIR_STYLES: [HairStyle; 3] = [
     HairStyle::Wild,
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Role {
-    Warrior,
-    Mage,
-    Archer,
-    Healer,
-    Bard,
-}
-
-const ROLES: [Role; 5] = [
-    Role::Warrior,
-    Role::Mage,
-    Role::Archer,
-    Role::Healer,
-    Role::Bard,
-];
-
 #[derive(Clone, Debug)]
 pub struct ElfParams {
     pub hair_color: Color,
     pub eye_color: Color,
     pub skin_tone: Color,
     pub hair_style: HairStyle,
-    pub role: Role,
 }
 
 /// Per-slot equipment drawing info: what kind of item, what color, and wear state.
@@ -95,12 +78,16 @@ pub struct EquipSlotDrawInfo {
 /// deterministic stateless function of this struct: same `CreatureDrawInfo`
 /// always produces the same `PixelBuffer`.
 ///
-/// Adding a new visual dimension (e.g., status effects, injuries) means
+/// Biological trait indices (hair color, eye color, etc.) come from the
+/// `creature_traits` table in the sim. Adding a new visual dimension means
 /// adding a field here — the cache in gdext will automatically invalidate
 /// when the struct changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreatureDrawInfo {
-    pub seed: i64,
+    pub hair_color_idx: u8,
+    pub eye_color_idx: u8,
+    pub skin_tone_idx: u8,
+    pub hair_style_idx: u8,
     pub equipment: [Option<EquipSlotDrawInfo>; EquipSlot::COUNT],
 }
 
@@ -111,7 +98,31 @@ pub fn params_from_seed(seed: i64) -> ElfParams {
         eye_color: EYE_COLORS[((h / 7) % 5) as usize],
         skin_tone: SKIN_TONES[((h / 31) % 4) as usize],
         hair_style: HAIR_STYLES[((h / 131) % 3) as usize],
-        role: ROLES[((h / 541) % 5) as usize],
+    }
+}
+
+/// Build `ElfParams` from trait indices (as stored in the `creature_traits` table).
+/// Out-of-range indices wrap via modulo to guarantee valid palette access.
+pub fn params_from_traits(traits: &super::TraitMap) -> ElfParams {
+    let hair_idx = super::trait_idx(traits, TraitKind::HairColor, 0) % HAIR_COLORS.len();
+    let eye_idx = super::trait_idx(traits, TraitKind::EyeColor, 0) % EYE_COLORS.len();
+    let skin_idx = super::trait_idx(traits, TraitKind::SkinTone, 0) % SKIN_TONES.len();
+    let style_idx = super::trait_idx(traits, TraitKind::HairStyle, 0) % HAIR_STYLES.len();
+    ElfParams {
+        hair_color: HAIR_COLORS[hair_idx],
+        eye_color: EYE_COLORS[eye_idx],
+        skin_tone: SKIN_TONES[skin_idx],
+        hair_style: HAIR_STYLES[style_idx],
+    }
+}
+
+/// Build `ElfParams` directly from the `CreatureDrawInfo` trait indices.
+fn params_from_draw_info(info: &CreatureDrawInfo) -> ElfParams {
+    ElfParams {
+        hair_color: HAIR_COLORS[info.hair_color_idx as usize % HAIR_COLORS.len()],
+        eye_color: EYE_COLORS[info.eye_color_idx as usize % EYE_COLORS.len()],
+        skin_tone: SKIN_TONES[info.skin_tone_idx as usize % SKIN_TONES.len()],
+        hair_style: HAIR_STYLES[info.hair_style_idx as usize % HAIR_STYLES.len()],
     }
 }
 
@@ -289,7 +300,7 @@ fn slot_draw_order(slot: EquipSlot) -> u8 {
 /// Deterministic and stateless — same input always produces the same output.
 /// Equipment is drawn in a fixed z-order (legs → feet → torso → hands → head).
 pub fn create_creature_sprite(info: &CreatureDrawInfo) -> PixelBuffer {
-    let params = params_from_seed(info.seed);
+    let params = params_from_draw_info(info);
     let mut buf = create_base_sprite(&params);
 
     // Collect equipped slots, sort by draw order for correct z-layering.
@@ -324,11 +335,12 @@ const ALL_SLOTS: [EquipSlot; EquipSlot::COUNT] = [
 mod tests {
     use super::*;
 
-    const TEST_SEED: i64 = 42;
-
     fn bare_info() -> CreatureDrawInfo {
         CreatureDrawInfo {
-            seed: TEST_SEED,
+            hair_color_idx: 2,
+            eye_color_idx: 1,
+            skin_tone_idx: 0,
+            hair_style_idx: 1,
             equipment: [None; EquipSlot::COUNT],
         }
     }
@@ -350,21 +362,21 @@ mod tests {
 
     #[test]
     fn base_sprite_dimensions() {
-        let buf = create_base_sprite(&params_from_seed(TEST_SEED));
+        let buf = create_base_sprite(&params_from_seed(42));
         assert_eq!(buf.width(), 48);
         assert_eq!(buf.height(), 48);
     }
 
     #[test]
     fn base_sprite_has_opaque_pixels() {
-        let buf = create_base_sprite(&params_from_seed(TEST_SEED));
+        let buf = create_base_sprite(&params_from_seed(42));
         let has_opaque = buf.data().chunks(4).any(|px| px[3] > 0);
         assert!(has_opaque);
     }
 
     #[test]
     fn create_sprite_backward_compat() {
-        let p = params_from_seed(TEST_SEED);
+        let p = params_from_seed(42);
         let buf = create_sprite(&p);
         assert_eq!(buf.width(), 48);
         assert_eq!(buf.height(), 48);
@@ -450,7 +462,10 @@ mod tests {
     #[test]
     fn fully_equipped_creature_sprite() {
         let info = CreatureDrawInfo {
-            seed: TEST_SEED,
+            hair_color_idx: 0,
+            eye_color_idx: 0,
+            skin_tone_idx: 0,
+            hair_style_idx: 0,
             equipment: [
                 Some(EquipSlotDrawInfo {
                     kind: ItemKind::Helmet,

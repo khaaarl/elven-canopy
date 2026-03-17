@@ -91,7 +91,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
-[ ] F-creature-biology     Biological traits for deterministic creature appearance
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
@@ -210,6 +209,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-crafting             Non-construction jobs and crafting
 [x] F-crate-structure      Two-crate sim/gdext structure
 [x] F-creature-actions     Creature action system: typed duration-bearing actions
+[x] F-creature-biology     Biological traits for deterministic creature appearance
 [x] F-creature-death       Basic creature death (starvation)
 [x] F-creature-info        Creature info panel with follow button
 [x] F-creature-tooltip     Hover tooltips for world objects
@@ -1044,7 +1044,7 @@ Remaining: additional test coverage audit per design doc.
 **Related:** F-dynamic-pursuit, F-preemption, F-task-interruption
 
 #### F-creature-biology — Biological traits for deterministic creature appearance
-**Status:** Todo
+**Status:** Done
 
 Creatures get biological traits stored as sim data — hair color, skin
 tone, eye color, body proportions, and other species-specific appearance

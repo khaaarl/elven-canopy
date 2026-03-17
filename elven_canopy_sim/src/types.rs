@@ -18,6 +18,9 @@
 //   (not UUIDs) since nav nodes are rebuilt from world geometry and never
 //   persisted across sessions.
 // - **Simulation enums:** `Species`, `Priority`, `BuildType`.
+// - **Creature biology:** `TraitKind` (enum of all biological trait names)
+//   and `TraitValue` (Int or Text sum type). Stored in the `creature_traits`
+//   table in `db.rs`. See `sim/creature.rs` for trait rolling at spawn time.
 // - **Vital status:** `VitalStatus` (Alive/Dead), `DeathCause` (Debug/Damage/Starvation).
 //   Dead creatures remain in the DB; all live-creature queries filter by status.
 // - **Thought system:** `ThoughtKind` — event-driven creature thoughts with
@@ -399,6 +402,97 @@ auto_pk_id!(/// Auto-increment ID for military groups within a civilization.
 MilitaryGroupId);
 auto_pk_id!(/// Auto-increment ID for player selection groups (Ctrl+1–9).
 SelectionGroupId);
+auto_pk_id!(/// Auto-increment ID for creature biology trait rows.
+CreatureTraitId);
+
+// ---------------------------------------------------------------------------
+// Creature biology traits
+// ---------------------------------------------------------------------------
+
+/// Identifies a biological trait. Flat namespace covering all species — each
+/// creature only has rows for species-relevant traits. Stored as a column in
+/// the `creature_traits` table alongside a `TraitValue`.
+///
+/// Visual traits are palette indices (`TraitValue::Int`) into the color/style
+/// arrays in `elven_canopy_sprites`. `BioSeed` is a raw PRNG output stored
+/// for future trait derivation without advancing the sim PRNG.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum TraitKind {
+    /// Per-creature random seed for future trait derivation.
+    BioSeed,
+    // -- Elf traits --
+    /// Index into `HAIR_COLORS` palette (0–6).
+    HairColor,
+    /// Index into `EYE_COLORS` palette (0–4).
+    EyeColor,
+    /// Index into `SKIN_TONES` palette (0–3).
+    SkinTone,
+    /// Index into `HAIR_STYLES` array (0–2).
+    HairStyle,
+    // -- Shared body color (Deer, Boar, Elephant, Capybara) --
+    /// Index into species-specific `BODY_COLORS` palette.
+    BodyColor,
+    // -- Deer traits --
+    /// Index into `ANTLER_STYLES` array (0–2).
+    AntlerStyle,
+    /// Index into `SPOT_PATTERNS` array (0–1).
+    SpotPattern,
+    // -- Boar traits --
+    /// Index into `TUSK_SIZES` array (0–2).
+    TuskSize,
+    // -- Troll traits --
+    /// Index into `HORN_STYLES` array (0–2).
+    HornStyle,
+    // -- Squirrel / Monkey traits (shared name, different palettes) --
+    /// Index into species-specific `FUR_COLORS` palette.
+    FurColor,
+    /// Index into `TAIL_TYPES` array (0–2). Squirrel-specific.
+    TailType,
+    // -- Elephant traits --
+    /// Index into `TUSK_TYPES` array (0–2).
+    TuskType,
+    // -- Monkey traits --
+    /// Index into `FACE_MARKINGS` array (0–2).
+    FaceMarking,
+    // -- Orc traits --
+    /// Index into `WAR_PAINTS` array (0–2).
+    WarPaint,
+    // -- Goblin traits --
+    /// Index into `EAR_STYLES` array (0–2).
+    EarStyle,
+    // -- Shared skin color (Goblin, Orc, Troll) --
+    /// Index into species-specific `SKIN_COLORS` palette.
+    SkinColor,
+    // -- Capybara traits --
+    /// Index into `ACCESSORIES` array (0–3).
+    Accessory,
+}
+
+/// The value of a creature biological trait. `Int` covers palette indices,
+/// seeds, and future numeric stats. `Text` is available for freeform traits.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum TraitValue {
+    Int(i64),
+    Text(String),
+}
+
+impl TraitValue {
+    /// Extract as integer, returning `default` if this is a `Text` variant.
+    pub fn as_int(&self, default: i64) -> i64 {
+        match self {
+            TraitValue::Int(v) => *v,
+            TraitValue::Text(_) => default,
+        }
+    }
+
+    /// Extract as string, returning `default` if this is an `Int` variant.
+    pub fn as_text(&self, default: &str) -> String {
+        match self {
+            TraitValue::Text(s) => s.clone(),
+            TraitValue::Int(_) => default.to_string(),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Civilization IDs — sequential u16, assigned by worldgen in batch.
