@@ -61,9 +61,10 @@ Done on branch `feature/construction-build-tasks`. 13 new tests (155 total).
 
 ### 5e: Mana cost (deferred)
 
-- Mana is deducted from the tree per work unit
-- Insufficient mana pauses construction
-- (Can be deferred until the mana economy exists)
+- Each Build or Furnish work action drains mana from the creature's personal pool (not the tree). Drain amount per action is config-driven (per build type).
+- If the creature lacks sufficient mana for a work action, it spends the time but accomplishes no work (wasted action). After repeated wasted actions, the creature abandons the task; it reverts to `Available` with progress preserved.
+- Task claiming: creatures with mp_max = 0 cannot claim Build/Furnish tasks. Magical creatures use a rate-based feasibility check (generation rate vs. expenditure rate) rather than requiring total mana upfront.
+- (Deferred until the mana economy exists — see F-mana-system in `docs/tracker.md`.)
 
 ## Step 6: Incremental Nav Graph Update ✓ DONE
 
@@ -82,7 +83,7 @@ Done on branch `feature/incremental-nav-update`. Changes:
 - Platform rendering (tree_renderer or new renderer for GrownPlatform voxels)
 - Multiple workers on one build project
 - Priority system for build queue ordering
-- Mana economy: elves generate mana, tree stores it, construction spends it
+- Mana economy (see F-mana-system in `docs/tracker.md`)
 - Structural adjacency warnings in the UI
 - Circular/oval platform designation (design doc preference)
 - Other build types: bridges, stairs, walls, enclosures

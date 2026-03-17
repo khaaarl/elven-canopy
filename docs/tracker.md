@@ -122,8 +122,11 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
+[ ] F-mana-depleted-vfx    Visual feedback for mana-depleted work actions
+[ ] F-mana-grow-recipes    Grow-verb crafting recipes cost mana
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-system          Mana generation, storage, and spending
+[ ] F-mana-transfer        Tree-to-elf mana transfer
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
 [ ] F-military-armor       Military group armor policy
@@ -1336,7 +1339,7 @@ Later expansions (not in initial scope): dye pressing from pigmented
 parts, fermentation, medicinal brewing, luminous oil distillation,
 mana essence refinement.
 
-**Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-recipe-hierarchy, F-recipe-params, F-recipes, F-textile-crafting
+**Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-mana-grow-recipes, F-recipe-hierarchy, F-recipe-params, F-recipes, F-textile-crafting
 
 #### F-crafting — Non-construction jobs and crafting
 **Status:** Done · **Phase:** 8+ · **Refs:** §11
@@ -1671,15 +1674,64 @@ in-transit counting, additive overlapping want semantics.
 
 **Related:** F-fruit-variety
 
+#### F-mana-grow-recipes — Grow-verb crafting recipes cost mana
+**Status:** Todo · **Refs:** §11
+
+Grow-verb crafting recipes (magical shaping of wood, fruit cultivation, etc.)
+should cost mana from the crafting creature's personal pool, using the same
+per-action drain and wasted-action mechanics as construction. Deferred until
+crafting refactoring is complete.
+
+**Blocked by:** F-mana-system
+**Related:** F-component-recipes
+
 #### F-mana-system — Mana generation, storage, and spending
-**Status:** Todo · **Phase:** 2 · **Refs:** §11, §13
+**Status:** Todo · **Phase:** 2 · **Refs:** §11
 
-Core mana economy: tree stores mana, elves generate it (flat rate initially),
-construction and growth spend it. The central feedback loop — happy elves
-produce more mana, mana enables growth, growth makes elves happier.
+Dual-pool mana economy. Creatures have personal mana (mp / mp_max); many
+species are nonmagical (mp_max = 0). Magical creatures (elves) generate mana
+over time into their personal pool at a flat base rate (mood-dependent scaling
+deferred to F-mana-mood). Excess mana overflows to the creature's bonded tree
+each heartbeat (clamped to tree's mana_capacity; excess beyond cap is lost).
+Creatures with no civ bond (wild creatures) lose their excess. Trees store
+mana (mana_stored / mana_capacity) but do not generate it.
 
-**Blocks:** F-mana-mood, F-root-network
+Construction and furnishing tasks have a per-action mana cost (config-driven,
+per build type; types without a specific field use default_mana_cost_per_action)
+drained from the working creature's personal pool at the start of each work
+action. If the creature lacks sufficient mana, it spends the time but
+accomplishes no work (wasted action). Consecutive wasted actions are tracked
+in a wasted_action_count field on Creature (reset on successful work or task
+change). When the count reaches mana_abandon_threshold (configurable), the
+creature abandons the task; it reverts to Available with all progress preserved
+for another elf to pick up.
+
+Task claiming: creatures with mp_max = 0 cannot claim mana-requiring tasks.
+Magical creatures use a rate-based sustainability estimate (current mana +
+generation rate vs. expenditure rate) rather than requiring total mana upfront.
+Exact formula and heuristics for very large projects are future work.
+
+Implementation scope: add mp/mp_max to Creature (with #[serde(default)] for
+backward-compatible saves), wasted_action_count to Creature, mp_max to
+SpeciesData, default_mana_cost_per_action and mana_abandon_threshold to
+GameConfig, mana generation on CreatureHeartbeat, overflow-to-tree logic,
+per-action mana drain for Build and Furnish work actions, rate-based mana
+eligibility check in task claiming, blue mana bar above sprites (below HP bar)
+when mp < mp_max, mana bar on creature info panel for creatures with
+mp_max > 0, tree mana display (already exists).
+
+**Blocks:** F-mana-depleted-vfx, F-mana-grow-recipes, F-mana-mood, F-mana-transfer, F-root-network
 **Related:** F-branch-growth, F-choir-build, F-mass-conserve, F-population, F-tree-info
+
+#### F-mana-transfer — Tree-to-elf mana transfer
+**Status:** Todo · **Refs:** §11
+
+Mechanisms for the tree to transfer mana back to bonded elves. Design TBD —
+possible triggers include proximity to the trunk, resting at home, or an
+explicit player command. Enables the tree's communal mana reserve to support
+individual elves who are mana-starved.
+
+**Blocked by:** F-mana-system
 
 #### F-manufacturing — Item schema expansion + workshop manufacturing
 **Status:** Done
@@ -1890,8 +1942,12 @@ never stops being miserable.
 #### F-mana-mood — Mana generation tied to elf mood
 **Status:** Todo · **Phase:** 4 · **Refs:** §11, §18
 
-Replace flat-rate mana generation with mood-dependent rates. Happy elves
-generate more mana, completing the core feedback loop.
+Replace flat-rate per-creature mana generation with mood-dependent rates.
+Happy elves generate more mana into their personal pool, unhappy elves
+generate less. Uses the existing mana_mood_multiplier_range config to
+interpolate a multiplier from worst to best mood tier. Completes the core
+feedback loop: happy elves → more mana → faster construction → better
+village → happier elves.
 
 **Blocked by:** F-emotions, F-mana-system
 
@@ -3115,6 +3171,16 @@ Deferred until camera zoom range demands it.
 **Status:** Done · **Refs:** §26
 
 Main menu with New Game, Load, and Quit buttons.
+
+#### F-mana-depleted-vfx — Visual feedback for mana-depleted work actions
+**Status:** Todo · **Refs:** §11
+
+Visual feedback when a creature performs a wasted work action due to
+insufficient mana. Anime-esque confusion icons (e.g., question marks, swirls)
+floating above the creature's head. Provides player feedback for why
+construction has stalled.
+
+**Blocked by:** F-mana-system
 
 #### F-minimap — Minimap with tree silhouette and creature positions
 **Status:** Done · **Phase:** 2
