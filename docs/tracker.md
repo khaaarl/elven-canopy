@@ -146,6 +146,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
+[ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-recipe-params        Parameterized recipe templates
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
@@ -1707,6 +1708,23 @@ platform beneath them is deconstructed) should fall until they reach a
 surface. If a falling pile lands on a voxel that already has a ground pile,
 the two piles merge their inventories into one.
 
+#### F-recipe-any-mat — Any-material recipe parameter support
+**Status:** Todo
+
+Allow recipes to use material=Any (no specific material binding).
+When a recipe runs with material=Any, the crafting action inspects
+the reserved input stacks and propagates their material to the
+output items. The UI shows "Any" as the default material option
+for recipes where allows_any_material() is true (e.g., GrowBow,
+assembly recipes). Recipes like Extract and Press that produce
+species-dependent outputs cannot use Any.
+
+F-recipe-params ships with specific-material-only; this ticket
+adds the Any path.
+
+**Blocked by:** F-recipe-params
+**Related:** F-recipe-params
+
 #### F-recipe-hierarchy — Recipe catalog UI hierarchy and organization
 **Status:** Done · **Phase:** 4
 
@@ -1759,8 +1777,10 @@ scale — dye colors and future recipe types would cause combinatorial
 explosion. Parameterization keeps the catalog small and the UI
 navigable.
 
-**Blocks:** F-batch-craft, F-dye-application, F-dye-mixing
-**Related:** F-component-recipes, F-dye-crafting, F-recipes, F-unified-craft-ui
+**Draft:** docs/drafts/recipe_params.md
+
+**Blocks:** F-batch-craft, F-dye-application, F-dye-mixing, F-recipe-any-mat
+**Related:** F-component-recipes, F-dye-crafting, F-recipe-any-mat, F-recipes, F-unified-craft-ui
 
 #### F-recipes — Recipe system for crafting/cooking
 **Status:** Done · **Phase:** 3
