@@ -97,6 +97,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-demolish             Structure demolition
 [ ] F-dye-application      Apply dye to equipment at workshop
 [ ] F-dye-mixing           Dye color mixing recipes
+[ ] F-dye-palette          Named color palette system for dyes
 [ ] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
@@ -144,6 +145,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
+[ ] F-recipe-params        Parameterized recipe templates
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
@@ -1296,6 +1298,7 @@ completes the batch in less total time than individual tasks would take
 (configurable time discount). Examples: milling in a mill, baking in a
 bakery.
 
+**Blocked by:** F-recipe-params
 **Related:** F-furnish, F-manufacturing, F-recipes, F-unified-craft-ui
 
 #### F-clothing — Wearable clothing system
@@ -1331,7 +1334,7 @@ Later expansions (not in initial scope): dye pressing from pigmented
 parts, fermentation, medicinal brewing, luminous oil distillation,
 mana essence refinement.
 
-**Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-recipe-hierarchy, F-recipes, F-textile-crafting
+**Related:** F-bldg-kitchen, F-bldg-workshop, F-fruit-variety, F-recipe-hierarchy, F-recipe-params, F-recipes, F-textile-crafting
 
 #### F-crafting — Non-construction jobs and crafting
 **Status:** Done · **Phase:** 8+ · **Refs:** §11
@@ -1345,49 +1348,90 @@ Crafting system for tools, furniture, and magical items.
 #### F-dye-application — Apply dye to equipment at workshop
 **Status:** Todo
 
-The dyeing task workflow: a creature brings a dye item and a target
-equipment item to a workshop and applies the dye, setting the
-`dye_color` field on the target item's stack (from F-item-color).
-Covers the dyeing recipe definitions (Dye + cloth/clothing → dyed
-item), task definition, workshop interaction, dye consumption, and
-UI for selecting which item to dye with which color. Different
-target items consume different amounts of dye.
+Dyeing recipes and task workflow. A parameterized recipe template
+(from F-recipe-params) for each dyeable item kind (Cloth, Tunic,
+Leggings, Boots, Hat, Gloves) takes a dye color parameter (palette
+entry from F-dye-palette). A creature brings dye and a target item
+to a workshop, consumes the dye, and sets the palette color reference
+on the target item's stack. Different target items consume different
+amounts of dye (configurable via GameConfig).
 
+Depends on F-recipe-params for parameterized recipe templates and
+F-dye-palette for the named color system that dye color parameters
+reference.
+
+**Blocked by:** F-dye-palette, F-recipe-params
 **Unblocked by:** F-dye-crafting, F-item-color
-**Related:** F-dye-crafting
+**Related:** F-dye-crafting, F-dye-palette
 
 #### F-dye-crafting — Dye pressing from pigmented fruit components
 **Status:** Done · **Phase:** 7
 
 Dye pressing from pigmented fruit components. Fruits with pigmented
 parts (which already have a DyeColor field) can be pressed into dye
-items via a new Press recipe verb. A single new ItemKind (Dye) is
-differentiated by the `dye_color` field on ItemStack. Press recipes
-are generated automatically for any pigmented part, following the
-same property-driven pattern as other component recipes. Furnishing:
-Kitchen. Ratio: 100 pigmented component → 100 dye.
+items via the Press recipe verb. A single ItemKind (Dye) is
+differentiated by its color reference. Press recipes are generated
+automatically for any pigmented part. Furnishing: Kitchen. Ratio:
+100 pigmented component → 100 dye.
 
-Color mixing (combining primary dyes into secondaries) is tracked
-separately in F-dye-mixing. Dyeing recipes (applying dye to items)
-are tracked in F-dye-application.
+**Current state:** Initial implementation complete — Press verb,
+ItemKind::Dye, recipe generation, config fields all working. Dye
+items currently store raw RGB via dye_color on ItemStack. Needs
+retrofit to reference palette color IDs (F-dye-palette) instead of
+raw RGB once the palette system exists.
+
+Color mixing tracked in F-dye-mixing. Dyeing recipes (applying dye
+to items) tracked in F-dye-application.
 
 **Unblocked by:** F-item-color
 **Unblocked:** F-dye-application, F-dye-mixing
-**Related:** F-dye-application, F-dye-mixing, F-fruit-pigments, F-fruit-variety, F-textile-crafting
+**Related:** F-dye-application, F-dye-mixing, F-dye-palette, F-fruit-pigments, F-fruit-variety, F-recipe-params, F-textile-crafting
 
 #### F-dye-mixing — Dye color mixing recipes
 **Status:** Todo · **Phase:** 7
 
-Recipes for mixing primary dye colors (Red, Yellow, Blue) and
-modifiers (Black, White) to produce secondary dye colors (Orange,
-Green, Violet) and tinted/shaded variants. Secondaries cannot be
-obtained directly from fruit pigments — they must be mixed from
-primaries. E.g., Red Dye + Yellow Dye → Orange Dye.
-Details TBD: mixing ratios, whether mixing happens at kitchen or
-workshop, shade/tint mechanics (Black/White modifiers).
+Player-driven dye color mixing. UI with sliders for combining
+existing pigments (primary dye items) in varying ratios, with a
+live preview of the resulting color. When the player finalizes a
+mix, they name the new color, which creates a palette entry
+(F-dye-palette) storing both the RGB and the source recipe (which
+pigments, what ratios). The mixing recipe is then available for
+crafting at a workshop.
 
+Depends on F-dye-palette for the color naming system and
+F-recipe-params for representing mixing recipes with parameterized
+inputs.
+
+**Blocked by:** F-dye-palette, F-recipe-params
 **Unblocked by:** F-dye-crafting
-**Related:** F-dye-crafting, F-fruit-pigments
+**Related:** F-dye-crafting, F-dye-palette, F-fruit-pigments
+
+#### F-dye-palette — Named color palette system for dyes
+**Status:** Todo · **Phase:** 7
+
+Named color palette system for dyes. Each game has a palette table in
+the sim DB storing named colors (ID, name, RGB values, source recipe
+info). Palettes are civ-scoped so opposing players can't interfere
+with each other's color systems.
+
+Worldgen seeds the initial palette from fruit pigments — each
+pigmented fruit species contributes a named color (e.g., "Red" from
+a red-pigmented Shinethúni). F-dye-crafting is retrofitted so pressed
+dye items reference a palette color ID rather than embedding raw RGB.
+
+Dyed items also reference palette color IDs instead of raw ItemColor.
+The item_color() resolution path looks up the palette entry's RGB.
+
+Future dye mixing (F-dye-mixing) will let the player combine pigments
+with sliders, preview the resulting color, name it, and add it to
+the palette — storing the mixing recipe on the palette entry itself.
+
+**Why:** Raw RGB on items creates unbounded cardinality that breaks
+the recipe system. Named palette entries make colors a finite,
+player-curated set that recipes and UI can reference cleanly.
+
+**Blocks:** F-dye-application, F-dye-mixing
+**Related:** F-dye-application, F-dye-crafting, F-dye-mixing, F-fruit-pigments
 
 #### F-elf-acquire — Elf personal item acquisition
 **Status:** Done · **Phase:** 4
@@ -1469,7 +1513,7 @@ for color variety. Requires adding coverage categories for the new
 pigment colors, updating FRUIT_COLORS, and adjusting the coverage-biased
 generation algorithm.
 
-**Related:** F-dye-crafting, F-dye-mixing, F-fruit-variety
+**Related:** F-dye-crafting, F-dye-mixing, F-dye-palette, F-fruit-variety
 
 #### F-fruit-prod — Basic fruit production and harvesting
 **Status:** Todo · **Phase:** 2 · **Refs:** §13
@@ -1683,6 +1727,40 @@ Scope:
 
 **Related:** F-component-recipes, F-recipe-search, F-recipes
 
+#### F-recipe-params — Parameterized recipe templates
+**Status:** Todo
+
+Refactor the recipe system from a flat pre-generated catalog to
+parameterized recipe templates. Currently every material variant of a
+recipe is a separate RecipeDef (e.g., 30 "Extract {species}" recipes,
+30 "Mill {species} Pulp" recipes). Parameterized recipes collapse these
+into a single template with typed parameters that the player configures.
+
+Parameter types:
+- **Material**: selects which material applies to inputs/outputs. Can be
+  "any" or a specific material. Propagation rules define how the chosen
+  material flows to inputs and outputs.
+- **Batch size** (future, see F-batch-craft): integer multiplier on
+  input/output quantities, constrained by building workstation count.
+- **Dye color** (future, see F-dye-palette): reference to a named color
+  palette entry. Used by dyeing and dye mixing recipes.
+
+A "configured recipe instance" is a template + parameter bindings.
+The active recipe table, task reservation, crafting execution, save
+format, and GDScript UI all need updating. The recipe catalog becomes
+a small set of templates rather than hundreds of concrete recipes.
+
+This is a foundational refactor that unblocks cleaner implementations
+of dye application, dye mixing, and batch crafting.
+
+**Why:** The current approach of proliferating concrete recipes does not
+scale — dye colors and future recipe types would cause combinatorial
+explosion. Parameterization keeps the catalog small and the UI
+navigable.
+
+**Blocks:** F-batch-craft, F-dye-application, F-dye-mixing
+**Related:** F-component-recipes, F-dye-crafting, F-recipes, F-unified-craft-ui
+
 #### F-recipes — Recipe system for crafting/cooking
 **Status:** Done · **Phase:** 3
 
@@ -1692,7 +1770,7 @@ to bread; workshops use recipes to convert wood to bows. Data-driven
 via GameConfig so recipes can be added/tuned without code changes.
 Avoids hardcoding conversion logic per building type.
 
-**Related:** F-batch-craft, F-bldg-kitchen, F-bldg-workshop, F-component-recipes, F-crafting, F-food-chain, F-fruit-variety, F-recipe-hierarchy
+**Related:** F-batch-craft, F-bldg-kitchen, F-bldg-workshop, F-component-recipes, F-crafting, F-food-chain, F-fruit-variety, F-recipe-hierarchy, F-recipe-params
 
 #### F-task-assign-opt — Event-driven bidirectional task assignment
 **Status:** Todo · **Phase:** 4
@@ -1753,7 +1831,7 @@ Replace per-building-type crafting UIs (kitchen cooking toggle, workshop recipe 
 
 **Draft:** docs/drafts/unified_craft_ui.md
 
-**Related:** F-batch-craft
+**Related:** F-batch-craft, F-recipe-params
 
 ### Social & Emotional
 
