@@ -90,6 +90,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
+[ ] F-creature-stats       Creature stats (str/agi/dex/con/wil/int/per/cha)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
@@ -142,6 +143,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-narrative-log        Events and narrative log
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-patrol               Patrol command for military groups
+[ ] F-per-detection        Perception stat modifies hostile detection range
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
@@ -1061,7 +1063,7 @@ variation to affect appearance naturally. All sprite generation is fully
 determined by biological data — no seed hashing in the sprite crate.
 
 **Unblocked by:** F-rust-sprites
-**Related:** F-rust-sprites
+**Related:** F-creature-stats, F-rust-sprites
 
 #### F-creature-death — Basic creature death (starvation)
 **Status:** Done · **Phase:** 3 · **Refs:** §13, §15
@@ -1076,6 +1078,30 @@ Superseded by F-hp-death which covers the general death system including
 combat death. F-creature-death covers the starvation trigger specifically.
 
 **Related:** F-elf-needs, F-food-gauge, F-hp-death, F-soul-mech
+
+#### F-creature-stats — Creature stats (str/agi/dex/con/wil/int/per/cha)
+**Status:** Todo
+
+Eight per-creature stats rolled at spawn from species-specific distributions
+(mean + stdev in SpeciesData): Strength, Agility, Dexterity, Constitution,
+Willpower, Intelligence, Perception, Charisma. Integer scale centered on 0
+(human baseline), with exponential effect: every +10 doubles the stat's
+mechanical intensity. Lookup table maps stat → multiplier in 2^20 fixed-point.
+All integer math, no floating point (multiplayer determinism).
+
+Immediate mechanical hooks: Strength → melee damage multiplier and projectile
+velocity; Agility → move speed multiplier (and climb speed blend with str);
+Constitution → HP multiplier; Dexterity → arrow angular deviation (per-mille
+of distance, asymptotically approaching zero). Mental stats (Willpower,
+Intelligence, Perception, Charisma) rolled and stored but inert until their
+systems exist (mana, crafting quality, singing).
+
+Builds on F-creature-biology: stats are TraitKind variants stored as
+TraitValue::Int in the creature_traits table.
+
+**Draft:** docs/drafts/creature_stats.md
+
+**Related:** F-creature-biology, F-per-detection
 
 #### F-elf-assign — Elf-to-building assignment UI
 **Status:** Todo · **Phase:** 3
@@ -2332,7 +2358,7 @@ Activation-driven hostile scanning. On each creature activation, scan for hostil
 
 **Draft:** docs/drafts/combat_military.md (§6, §7)
 
-**Related:** F-los-tuning
+**Related:** F-los-tuning, F-per-detection
 
 #### F-hp-ui — HP bars in creature UI
 **Status:** Done
@@ -2464,6 +2490,16 @@ engaging hostiles encountered along the way. Useful for guarding
 perimeters and trade routes.
 
 **Related:** F-military-groups
+
+#### F-per-detection — Perception stat modifies hostile detection range
+**Status:** Todo
+
+Perception stat applies an exponential multiplier to the species-level
+`hostile_detection_range_sq` in SpeciesData. Higher PER = detects hostiles
+from further away. Uses the same 2^20 fixed-point stat multiplier table
+as other stats. Depends on F-creature-stats for the Perception trait.
+
+**Related:** F-creature-stats, F-hostile-detection
 
 #### F-projectiles — Projectile physics system (arrows)
 **Status:** Done
