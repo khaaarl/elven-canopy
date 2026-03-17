@@ -129,7 +129,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mana-transfer        Tree-to-elf mana transfer
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
-[ ] F-military-armor       Military group armor policy
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
 [ ] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally

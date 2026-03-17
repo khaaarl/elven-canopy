@@ -402,6 +402,113 @@ def rewrite_detail_fields(lines, blocks, blocked_by, unblocked, unblocked_by, re
     return out
 
 
+def reconcile_summary_with_details(lines, items):
+    """Ensure each item appears in the correct summary section based on its
+    detail **Status:** field, and only in that section.  Removes duplicates
+    and moves misplaced entries.  Items that exist only in the summary (no
+    detail entry / unknown status) are left in place."""
+
+    # Build id -> (status, title) from items that have a known status
+    status_map = {}
+    for iid, item in items.items():
+        if item.status in STATUS_TO_MARKER and item.title:
+            status_map[iid] = (item.status, item.title)
+
+    # Section heading text -> expected status
+    SECTION_STATUS = {
+        "### In Progress": "In Progress",
+        "### Todo": "Todo",
+        "### Done": "Done",
+    }
+
+    # First pass: find all summary sections and collect their line ranges and
+    # existing entries, so we can rebuild them.
+    sections = []  # [(heading_line_idx, code_start, code_end, expected_status)]
+    i = 0
+    in_summary = False
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped == "## Summary":
+            in_summary = True
+        elif H2_HEADING_RE.match(lines[i]) and "Summary" not in lines[i]:
+            in_summary = False
+        if in_summary:
+            for heading_text, expected_status in SECTION_STATUS.items():
+                if stripped == heading_text.strip():
+                    # Find the code block that follows
+                    j = i + 1
+                    while j < len(lines) and lines[j].strip() != "```":
+                        j += 1
+                    if j < len(lines):
+                        code_start = j  # opening ```
+                        k = j + 1
+                        while k < len(lines) and lines[k].strip() != "```":
+                            k += 1
+                        if k < len(lines):
+                            sections.append(
+                                (i, code_start, k, expected_status)
+                            )
+                    break
+        i += 1
+
+    if not sections:
+        return lines
+
+    # Collect all item IDs currently in any summary section
+    existing_in_summary = set()
+    for _, code_start, code_end, _ in sections:
+        for li in range(code_start + 1, code_end):
+            m = SUMMARY_LINE_RE.match(lines[li])
+            if m:
+                existing_in_summary.add(m.group(1))
+
+    # Build the desired content for each section
+    section_contents = {}  # expected_status -> list of formatted lines
+    for expected_status in ("In Progress", "Todo", "Done"):
+        entries = []
+        for iid, (status, title) in sorted(status_map.items(),
+                                            key=lambda x: x[0].lower()):
+            if status == expected_status:
+                marker = STATUS_TO_MARKER[status]
+                id_part = f"{marker} {iid}"
+                padded = id_part.ljust(SUMMARY_PAD)
+                entries.append(f"{padded} {title}\n")
+        section_contents[expected_status] = entries
+
+    # Items in summary but without a detail entry — preserve them in their
+    # current section so we don't silently drop them.
+    for _, code_start, code_end, expected_status in sections:
+        for li in range(code_start + 1, code_end):
+            m = SUMMARY_LINE_RE.match(lines[li])
+            if m:
+                iid = m.group(1)
+                if iid not in status_map:
+                    section_contents[expected_status].append(lines[li])
+
+    # Rebuild lines, replacing each section's code block content
+    out = []
+    replaced_ranges = set()
+    for _, code_start, code_end, expected_status in sections:
+        for li in range(code_start + 1, code_end):
+            replaced_ranges.add(li)
+
+    sec_by_code_start = {cs: (ce, es) for _, cs, ce, es in sections}
+    i = 0
+    while i < len(lines):
+        if i in replaced_ranges:
+            i += 1
+            continue
+        out.append(lines[i])
+        if i in sec_by_code_start:
+            code_end, expected_status = sec_by_code_start[i]
+            out.extend(section_contents[expected_status])
+            i += 1  # skip to after the replaced lines
+            continue
+        i += 1
+
+    return out
+
+
 def normalize_summary_lines(lines):
     """Reformat summary lines inside ``` blocks to consistent column alignment."""
     out = []
@@ -532,6 +639,7 @@ def run_fix(lines):
     lines = rewrite_detail_fields(
         lines, blocks, blocked_by, unblocked, unblocked_by, related
     )
+    lines = reconcile_summary_with_details(lines, items)
     lines = normalize_summary_lines(lines)
     lines = sort_summary_section(lines)
     lines = sort_detail_sections(lines)
