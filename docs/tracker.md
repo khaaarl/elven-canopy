@@ -84,6 +84,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
 [ ] F-combat               Combat and invader threat system
 [ ] F-command-queue        Shift+right-click to queue commands
+[ ] F-config-file          Game config file (user://config.json)
+[ ] F-config-ui            Settings UI panel (main menu + pause menu)
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
@@ -2625,6 +2627,51 @@ at destination).
 
 **Related:** F-rts-selection
 
+#### F-config-file — Game config file (user://config.json)
+**Status:** Todo · **Phase:** 2
+
+General game configuration file at user://config.json. Created with
+defaults on first launch, read on startup, written when settings change.
+Implemented as a GDScript autoload (GameConfig singleton) so any script
+can read settings.
+
+Initial options:
+- start_paused_on_load: bool (default false) — load saves in paused state
+- player_name: String (default "") — player display name (may unify
+  with F-player-identity's player.cfg or remain separate)
+
+The autoload exposes get/set methods and a save() that writes to disk.
+Supports override_setting(key, value) for test harness use — tests can
+override config values in memory without touching the file, keeping
+test runs side-effect-free.
+
+File format: flat JSON object with string keys. Unknown keys preserved
+on read (forward compatibility). Missing keys filled from defaults.
+
+**Blocks:** F-config-ui
+**Related:** F-bridge-integ-tests, F-player-identity
+
+#### F-config-ui — Settings UI panel (main menu + pause menu)
+**Status:** Todo · **Phase:** 2
+
+Settings panel accessible from both the main menu and the pause menu.
+Displays and edits values from F-config-file's GameConfig autoload.
+
+Initial UI:
+- Player name text field
+- "Start paused on load" checkbox
+- Save / Cancel buttons
+
+The panel is a generic settings container that other features can add
+sections to. F-controls-config-C adds the keybinding section here.
+
+Main menu gets a "Settings" button. Pause menu gets a "Settings" button
+alongside the existing Save/Load/Resume/Quit buttons.
+
+**Blocked by:** F-config-file
+**Blocks:** F-controls-config-C
+**Related:** F-controls-config
+
 #### F-controls-config — Centralized controls config with rebinding and persistence
 **Status:** Todo · **Phase:** 2
 
@@ -2643,7 +2690,7 @@ button with "Controls" button.
 
 **Draft:** docs/drafts/controls_config.md
 
-**Related:** F-binding-conflicts, F-controls-config-A, F-controls-config-B, F-controls-config-C, F-edge-scroll, F-game-speed-fkeys, F-home-camera, F-keybind-help, F-mmb-pan, F-modifier-keybinds, F-mouse-elevation, F-selection-groups
+**Related:** F-binding-conflicts, F-config-ui, F-controls-config-A, F-controls-config-B, F-controls-config-C, F-edge-scroll, F-game-speed-fkeys, F-home-camera, F-keybind-help, F-mmb-pan, F-modifier-keybinds, F-mouse-elevation, F-selection-groups
 
 #### F-controls-config-A — ControlsConfig autoload and handler migration
 **Status:** Todo · **Phase:** 2
@@ -2712,7 +2759,7 @@ keybind_help.gd, replace "? Help" toolbar button with "Controls".
 
 **Draft:** docs/drafts/controls_config.md (Phase C)
 
-**Blocked by:** F-controls-config-B
+**Blocked by:** F-config-ui, F-controls-config-B
 **Blocks:** F-modifier-keybinds
 **Related:** F-controls-config, F-keybind-help
 
@@ -3687,7 +3734,7 @@ F-selection-groups and camera location hotkeys — data that must be
 saved per-player so multiplayer participants don't clobber each other.
 
 **Unblocked:** F-selection-groups
-**Related:** F-selection-groups
+**Related:** F-config-file, F-selection-groups
 
 #### F-relay-multi-game — Relay server supports multiple simultaneous games
 **Status:** Done · **Phase:** 8
@@ -3739,6 +3786,8 @@ GDScript display) that unit tests miss, like inventories showing items
 without material info. Same infrastructure supports both AI-driven
 exploratory testing and deterministic regression scripts.
 
+**Draft:** docs/drafts/F-bridge-integ-tests-and-ai-test-harness.md
+
 **Related:** F-bridge-integ-tests, F-gdscript-tests
 
 #### F-bridge-integ-tests — Integration tests for gdext bridge functions
@@ -3752,7 +3801,9 @@ Heavier than unit tests — requires launching Godot headless. Add a CI
 job and a `scripts/build.sh integtest` target. Motivated by the
 F-move-spread segfault where an Array type mismatch crashed at runtime.
 
-**Related:** F-ai-test-harness, F-gdscript-tests
+**Draft:** docs/drafts/F-bridge-integ-tests-and-ai-test-harness.md
+
+**Related:** F-ai-test-harness, F-config-file, F-gdscript-tests
 
 #### F-gdscript-tests — GDScript unit tests (GUT or built-in)
 **Status:** Done
