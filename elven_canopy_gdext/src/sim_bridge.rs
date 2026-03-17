@@ -12,7 +12,9 @@
 // ## What it exposes
 //
 // - **Lifecycle:** `init_sim(seed)`, `init_sim_with_tree_profile_json(seed, json)`,
-//   `current_tick()`, `is_initialized()`, `tick_duration_ms()`.
+//   `init_sim_test_config(seed)` (small 64³ world for GUT tests),
+//   `current_tick()`, `is_initialized()`, `tick_duration_ms()`,
+//   `step_exactly(n)` (pause-safe deterministic tick stepping for tests).
 // - **Frame update:** `frame_update(delta)` — unified per-frame entry point.
 //   Handles tick pacing (`LocalRelay` in SP, network polling in MP) and
 //   returns a fractional render_tick for smooth creature interpolation.
@@ -497,12 +499,69 @@ impl SimBridge {
         godot_print!("SimBridge: simulation initialized with seed {seed} and custom tree profile");
     }
 
+    /// Initialize the simulation with a small, fast-validating config for tests.
+    ///
+    /// Uses a 64x64x64 world with reduced tree energy (50.0), flat terrain,
+    /// and fewer initial creatures. Mirrors the `test_config()` used by Rust
+    /// unit tests. The default `fantasy_mega` tree profile is too large to
+    /// reliably pass structural validation within the retry budget, so tests
+    /// should use this instead of `init_sim`.
+    #[func]
+    fn init_sim_test_config(&mut self, seed: i64) {
+        let mut config = GameConfig {
+            world_size: (64, 64, 64),
+            ..GameConfig::default()
+        };
+        config.tree_profile.growth.initial_energy = 50.0;
+        config.terrain_max_height = 0;
+        let seconds_per_tick = config.tick_duration_ms as f64 / 1000.0;
+        self.session.process(SessionMessage::StartGame {
+            seed: seed as u64,
+            config: Box::new(config),
+        });
+        self.local_relay = Some(LocalRelay::new(seconds_per_tick));
+        self.rebuild_mesh_cache();
+        godot_print!("SimBridge: test sim initialized with seed {seed} (small world)");
+    }
+
     /// Advance the simulation to the target tick, processing all events.
     #[func]
     fn step_to_tick(&mut self, target_tick: i64) {
         self.session.process(SessionMessage::AdvanceTo {
             tick: target_tick as u64,
         });
+    }
+
+    /// Advance the simulation by exactly `n` ticks from the current tick.
+    ///
+    /// `n` must be non-negative (negative values are clamped to 0 with a
+    /// warning). Calling with `n = 0` is a no-op.
+    ///
+    /// Works even when the session is paused: temporarily resumes, steps,
+    /// then re-pauses. This is the intended API for test time control — the
+    /// sim should be paused (speed set to "Paused") to prevent `frame_update`
+    /// from also advancing ticks via `LocalRelay`.
+    #[func]
+    fn step_exactly(&mut self, n: i64) {
+        if n <= 0 {
+            if n < 0 {
+                godot_warn!("step_exactly called with negative n={n}, ignoring");
+            }
+            return;
+        }
+        let was_paused = self.session.is_paused();
+        if was_paused {
+            self.session.process(SessionMessage::Resume {
+                by: self.local_player_id,
+            });
+        }
+        let target = self.session.current_tick() as i64 + n;
+        self.step_to_tick(target);
+        if was_paused {
+            self.session.process(SessionMessage::Pause {
+                by: self.local_player_id,
+            });
+        }
     }
 
     /// Return the current simulation tick.

@@ -74,7 +74,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-storehouse      Storehouse (item storage)
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
-[ ] F-bridge-integ-tests   Integration tests for gdext bridge functions
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-building-door        Player-controlled building door orientation
@@ -197,6 +196,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-bldg-transparency    Toggle building roof visibility (hide/show)
 [x] F-bldg-workshop        Craftself's workshop
 [x] F-bread                Bread items and elf food management
+[x] F-bridge-integ-tests   Integration tests for gdext bridge functions
 [x] F-building             Building construction (paper-thin walls)
 [x] F-cam-follow           Camera follow mode for creatures
 [x] F-capybara             Capybara species
@@ -3895,7 +3895,7 @@ exploratory testing and deterministic regression scripts.
 **Related:** F-bridge-integ-tests, F-gdscript-tests
 
 #### F-bridge-integ-tests — Integration tests for gdext bridge functions
-**Status:** Todo
+**Status:** Done
 
 Integration tests that exercise gdext bridge functions from GDScript in a
 running Godot instance. These catch type mismatches at the FFI boundary

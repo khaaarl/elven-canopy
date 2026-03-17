@@ -60,6 +60,12 @@
 
 extends Node3D
 
+## Emitted at the end of _setup_common() when the game is fully ready to play.
+## Tests poll for this (or for SimBridge.is_initialized()) to know when the
+## scene is interactive.  Also useful for any system that needs to defer work
+## until all renderers, controllers, and panels exist.
+signal setup_complete
+
 ## Y offsets per species for world-space sprite positions. Must match the
 ## values used by elf_renderer.gd, capybara_renderer.gd, and creature_renderer.gd.
 const SPECIES_Y_OFFSETS = {
@@ -270,6 +276,7 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	var toolbar_script = load("res://scripts/action_toolbar.gd")
 	var toolbar := MarginContainer.new()
+	toolbar.name = "ActionToolbar"
 	toolbar.set_script(toolbar_script)
 	canvas_layer.add_child(toolbar)
 
@@ -282,6 +289,7 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Set up status bar (bottom-left, at-a-glance stats).
 	var status_bar_script = load("res://scripts/status_bar.gd")
 	_status_bar = PanelContainer.new()
+	_status_bar.name = "StatusBar"
 	_status_bar.set_script(status_bar_script)
 	_status_bar.bridge = bridge
 	canvas_layer.add_child(_status_bar)
@@ -289,6 +297,7 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Set up minimap (bottom-right, zoomable top-down view).
 	var minimap_script = load("res://scripts/minimap.gd")
 	_minimap = PanelContainer.new()
+	_minimap.name = "Minimap"
 	_minimap.set_script(minimap_script)
 	canvas_layer.add_child(_minimap)
 
@@ -318,6 +327,7 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Set up construction controller.
 	var construction_script = load("res://scripts/construction_controller.gd")
 	_construction_controller = Node.new()
+	_construction_controller.name = "ConstructionController"
 	_construction_controller.set_script(construction_script)
 	add_child(_construction_controller)
 	_construction_controller.setup(bridge, $CameraPivot)
@@ -417,12 +427,14 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Set up creature info panel (single creature).
 	var panel_script = load("res://scripts/creature_info_panel.gd")
 	_panel = PanelContainer.new()
+	_panel.name = "CreatureInfoPanel"
 	_panel.set_script(panel_script)
 	info_panel_layer.add_child(_panel)
 
 	# Set up group info panel (multi-creature selection).
 	var group_panel_script = load("res://scripts/group_info_panel.gd")
 	_group_panel = PanelContainer.new()
+	_group_panel.name = "GroupInfoPanel"
 	_group_panel.set_script(group_panel_script)
 	info_panel_layer.add_child(_group_panel)
 	_group_panel.setup(bridge)
@@ -430,12 +442,14 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Set up structure info panel.
 	var struct_panel_script = load("res://scripts/structure_info_panel.gd")
 	_structure_info_panel = PanelContainer.new()
+	_structure_info_panel.name = "StructureInfoPanel"
 	_structure_info_panel.set_script(struct_panel_script)
 	info_panel_layer.add_child(_structure_info_panel)
 
 	# Set up ground pile info panel.
 	var pile_panel_script = load("res://scripts/ground_pile_info_panel.gd")
 	_pile_info_panel = PanelContainer.new()
+	_pile_info_panel.name = "GroundPileInfoPanel"
 	_pile_info_panel.set_script(pile_panel_script)
 	info_panel_layer.add_child(_pile_info_panel)
 
@@ -454,6 +468,7 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Set up selection controller.
 	var selector_script = load("res://scripts/selection_controller.gd")
 	_selector = Node3D.new()
+	_selector.name = "SelectionController"
 	_selector.set_script(selector_script)
 	add_child(_selector)
 	_selector.setup(bridge, $CameraPivot/Camera3D)
@@ -662,6 +677,7 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	var pause_script = load("res://scripts/pause_menu.gd")
 	_pause_menu = ColorRect.new()
+	_pause_menu.name = "PauseMenu"
 	_pause_menu.set_script(pause_script)
 	pause_layer.add_child(_pause_menu)
 	_pause_menu.setup(bridge)
@@ -674,6 +690,7 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	var task_panel_script = load("res://scripts/task_panel.gd")
 	_task_panel = ColorRect.new()
+	_task_panel.name = "TaskPanel"
 	_task_panel.set_script(task_panel_script)
 	task_panel_layer.add_child(_task_panel)
 
@@ -685,6 +702,7 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	var structure_panel_script = load("res://scripts/structure_list_panel.gd")
 	_structure_panel = ColorRect.new()
+	_structure_panel.name = "StructureListPanel"
 	_structure_panel.set_script(structure_panel_script)
 	structure_panel_layer.add_child(_structure_panel)
 
@@ -696,6 +714,7 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	var units_panel_script = load("res://scripts/units_panel.gd")
 	_units_panel = ColorRect.new()
+	_units_panel.name = "UnitsPanel"
 	_units_panel.set_script(units_panel_script)
 	units_panel_layer.add_child(_units_panel)
 
@@ -706,6 +725,7 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	var help_panel_script = load("res://scripts/keybind_help.gd")
 	_help_panel = ColorRect.new()
+	_help_panel.name = "HelpPanel"
 	_help_panel.set_script(help_panel_script)
 	help_panel_layer.add_child(_help_panel)
 
@@ -717,6 +737,7 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	var tree_panel_script = load("res://scripts/tree_info_panel.gd")
 	_tree_info_panel = PanelContainer.new()
+	_tree_info_panel.name = "TreeInfoPanel"
 	_tree_info_panel.set_script(tree_panel_script)
 	tree_panel_layer.add_child(_tree_info_panel)
 
@@ -739,6 +760,7 @@ func _setup_common(bridge: SimBridge) -> void:
 	add_child(military_panel_layer)
 	var military_panel_script = load("res://scripts/military_panel.gd")
 	_military_panel = PanelContainer.new()
+	_military_panel.name = "MilitaryPanel"
 	_military_panel.set_script(military_panel_script)
 	military_panel_layer.add_child(_military_panel)
 	_military_panel.setup(bridge)
@@ -857,6 +879,8 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	# Hydrate selection groups from sim (restores groups after loading a save).
 	_selector.hydrate_selection_groups()
+
+	setup_complete.emit()
 
 
 ## Try to load a save file. Returns true on success.
