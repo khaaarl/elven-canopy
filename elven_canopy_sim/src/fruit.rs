@@ -188,6 +188,26 @@ impl DyeColor {
             DyeColor::Orange | DyeColor::Green | DyeColor::Violet => CoverageCategory::Sweet,
         }
     }
+
+    /// Human-readable display name for this dye color.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            DyeColor::Red => "Red",
+            DyeColor::Yellow => "Yellow",
+            DyeColor::Blue => "Blue",
+            DyeColor::Black => "Black",
+            DyeColor::White => "White",
+            DyeColor::Orange => "Orange",
+            DyeColor::Green => "Green",
+            DyeColor::Violet => "Violet",
+        }
+    }
+
+    /// Convert this dye color to an `ItemColor` for use on dyed item stacks.
+    pub fn to_item_color(self) -> crate::inventory::ItemColor {
+        let rgb = dye_to_rgb(self);
+        crate::inventory::ItemColor::new(rgb.r, rgb.g, rgb.b)
+    }
 }
 
 // ---------------------------------------------------------------------------

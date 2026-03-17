@@ -5,7 +5,7 @@
 // structurally by `RecipeKey` (verb + sorted inputs/outputs), not by string
 // names. The `RecipeCatalog` is built at startup from config recipes,
 // dynamically generated fruit recipes (extraction, component processing —
-// flour, thread, cord, cloth — and clothing — tunic, leggings, boots, hat),
+// flour, thread, cord, cloth, dye — and clothing — tunic, leggings, boots, hat),
 // and per-wood-type Grow recipes (bows, arrows, armor — helmet, breastplate,
 // greaves, gauntlets, boots), then stored immutably on `SimState`.
 //
@@ -61,6 +61,8 @@ pub enum RecipeVerb {
     Sew = 11,
     /// Grow an item from the home tree's wood at a workshop.
     Grow = 12,
+    /// Press a pigmented fruit component into dye.
+    Press = 13,
     // Append new variants here with the next sequential number.
 }
 
@@ -276,6 +278,7 @@ fn build_extraction_recipe(
             quantity: part.component_units as u32,
             material: Some(material),
             quality: 0,
+            dye_color: None,
         })
         .collect();
 
@@ -304,15 +307,19 @@ fn build_extraction_recipe(
 }
 
 /// Build component processing recipes for a fruit species based on part
-/// properties. Each recipe-relevant property on a part generates a chain:
+/// properties and pigments. Each recipe-relevant property on a part generates
+/// a chain:
 ///
 /// - **Starchy**: component → flour (Mill, Kitchen), flour → bread (Bake, Kitchen)
 /// - **FibrousFine**: component → thread (Spin, Workshop), thread → bowstring (Assemble, Workshop),
 ///   thread → cloth (Weave, Workshop), cloth → tunic/leggings/boots/hat (Sew, Workshop)
 /// - **FibrousCoarse**: component → cord (Twist, Workshop), cord → bowstring (Assemble, Workshop)
+/// - **Pigmented**: component → dye (Press, Kitchen) — dye items carry a `dye_color`
 ///
 /// The dedup constraint in `generate_parts()` guarantees each recipe-relevant
 /// property appears on at most one part per species, so no ambiguous recipes.
+/// A part can have both a property and a pigment — e.g., a starchy pigmented
+/// flesh generates both Mill and Press recipes.
 fn build_component_recipes(
     config: &crate::config::GameConfig,
     species: &crate::fruit::FruitSpecies,
@@ -461,6 +468,46 @@ fn build_component_recipes(
             }
         }
 
+        // Press: pigmented component → dye
+        if let Some(pigment) = part.pigment {
+            let dye_color = pigment.to_item_color();
+            let mut inputs_key = vec![(component_item, material_filter, cr.press_input)];
+            inputs_key.sort();
+            let mut outputs_key = vec![(ItemKind::Dye, Some(material), cr.press_output)];
+            outputs_key.sort();
+
+            recipes.push(RecipeDef {
+                key: RecipeKey {
+                    verb: RecipeVerb::Press,
+                    inputs: inputs_key,
+                    outputs: outputs_key,
+                },
+                display_name: format!(
+                    "Press {name} {} {} Dye",
+                    component_item.display_name(),
+                    pigment.display_name(),
+                ),
+                category: vec!["Processing".to_string(), "Dye Pressing".to_string()],
+                furnishing_types: vec![FurnishingType::Kitchen],
+                inputs: vec![RecipeInput {
+                    item_kind: component_item,
+                    quantity: cr.press_input,
+                    material_filter,
+                }],
+                outputs: vec![RecipeOutput {
+                    item_kind: ItemKind::Dye,
+                    quantity: cr.press_output,
+                    material: Some(material),
+                    quality: 0,
+                    dye_color: Some(dye_color),
+                }],
+                work_ticks: cr.press_work_ticks,
+                subcomponent_records: vec![],
+                required_species: Some(Species::Elf),
+                auto_add_on_furnish: false,
+            });
+        }
+
         if part.properties.contains(&PartProperty::FibrousCoarse) {
             // Twist: coarse fiber component → cord
             recipes.push(build_simple_recipe(
@@ -607,6 +654,7 @@ fn build_no_input_recipe(
             quantity: output_qty,
             material: output_material,
             quality: 0,
+            dye_color: None,
         }],
         work_ticks,
         subcomponent_records: vec![],
@@ -656,6 +704,7 @@ fn build_simple_recipe(
             quantity: output_qty,
             material: output_material,
             quality: 0,
+            dye_color: None,
         }],
         work_ticks,
         subcomponent_records: vec![],
@@ -696,6 +745,7 @@ fn build_bread_recipe(config: &crate::config::GameConfig) -> RecipeDef {
             quantity: config.cook_bread_output,
             material: None,
             quality: 0,
+            dye_color: None,
         }],
         work_ticks: config.cook_bread_work_ticks,
         subcomponent_records: vec![],
@@ -1852,6 +1902,209 @@ mod tests {
         for (key, _def) in catalog
             .iter()
             .filter(|(_, d)| d.key.verb == RecipeVerb::Grow)
+        {
+            let mut sorted_inputs = key.inputs.clone();
+            sorted_inputs.sort();
+            assert_eq!(key.inputs, sorted_inputs);
+            let mut sorted_outputs = key.outputs.clone();
+            sorted_outputs.sort();
+            assert_eq!(key.outputs, sorted_outputs);
+
+            let json = key.to_json();
+            let restored = RecipeKey::from_json(&json).expect("should deserialize");
+            assert_eq!(*key, restored);
+        }
+    }
+
+    // --- Dye pressing recipe tests ---
+
+    #[test]
+    fn pigmented_part_generates_press_recipe() {
+        use crate::fruit::DyeColor;
+        use std::collections::BTreeSet;
+
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Redpulp",
+            vec![FruitPart {
+                part_type: PartType::Flesh,
+                properties: BTreeSet::new(),
+                pigment: Some(DyeColor::Red),
+                component_units: 50,
+            }],
+        )];
+
+        let catalog = build_catalog(&config, &species);
+
+        let press_recipes: Vec<_> = catalog
+            .iter()
+            .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
+            .collect();
+
+        assert_eq!(press_recipes.len(), 1);
+
+        let (_, def) = &press_recipes[0];
+        assert_eq!(def.display_name, "Press Redpulp Pulp Red Dye");
+        assert_eq!(def.category, vec!["Processing", "Dye Pressing"]);
+        assert_eq!(def.furnishing_types, vec![FurnishingType::Kitchen]);
+        assert_eq!(def.inputs.len(), 1);
+        assert_eq!(def.inputs[0].item_kind, ItemKind::Pulp);
+        assert_eq!(def.inputs[0].quantity, 100);
+        assert_eq!(def.outputs.len(), 1);
+        assert_eq!(def.outputs[0].item_kind, ItemKind::Dye);
+        assert_eq!(def.outputs[0].quantity, 100);
+        assert_eq!(
+            def.outputs[0].material,
+            Some(Material::FruitSpecies(crate::types::FruitSpeciesId(0)))
+        );
+        assert_eq!(
+            def.outputs[0].dye_color,
+            Some(DyeColor::Red.to_item_color())
+        );
+        assert!(!def.auto_add_on_furnish);
+    }
+
+    #[test]
+    fn non_pigmented_part_generates_no_press_recipe() {
+        use std::collections::BTreeSet;
+
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Plainflesh",
+            vec![FruitPart {
+                part_type: PartType::Flesh,
+                properties: BTreeSet::new(),
+                pigment: None,
+                component_units: 50,
+            }],
+        )];
+
+        let catalog = build_catalog(&config, &species);
+        let press_count = catalog
+            .iter()
+            .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
+            .count();
+        assert_eq!(press_count, 0);
+    }
+
+    #[test]
+    fn pigmented_starchy_part_generates_both_press_and_mill() {
+        use crate::fruit::DyeColor;
+        use std::collections::BTreeSet;
+
+        let config = GameConfig::default();
+        let mut props = BTreeSet::new();
+        props.insert(PartProperty::Starchy);
+        let species = vec![test_species(
+            0,
+            "Dualpurpose",
+            vec![FruitPart {
+                part_type: PartType::Flesh,
+                properties: props,
+                pigment: Some(DyeColor::Blue),
+                component_units: 60,
+            }],
+        )];
+
+        let catalog = build_catalog(&config, &species);
+
+        let press_count = catalog
+            .iter()
+            .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
+            .count();
+        let mill_count = catalog
+            .iter()
+            .filter(|(_, d)| d.key.verb == RecipeVerb::Mill)
+            .count();
+
+        assert_eq!(press_count, 1, "should have one press recipe");
+        assert_eq!(mill_count, 1, "should have one mill recipe");
+    }
+
+    #[test]
+    fn press_recipes_with_generated_fruits() {
+        use crate::fruit::generate_fruit_species;
+        use elven_canopy_prng::GameRng;
+
+        let config = GameConfig::default();
+
+        for seed in 0..10 {
+            let mut rng = GameRng::new(seed);
+            let fruit_config = crate::config::FruitConfig::default();
+            let fruits = generate_fruit_species(&mut rng, &fruit_config);
+            let catalog = build_catalog(&config, &fruits);
+
+            // Count expected press recipes: one per pigmented part.
+            let expected_press: usize = fruits
+                .iter()
+                .flat_map(|f| &f.parts)
+                .filter(|p| p.pigment.is_some())
+                .count();
+
+            let press_count = catalog
+                .iter()
+                .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
+                .count();
+
+            assert_eq!(
+                press_count, expected_press,
+                "Seed {}: press recipe count mismatch",
+                seed
+            );
+
+            // Every press recipe output should be Dye with a dye_color set.
+            for (_, def) in catalog
+                .iter()
+                .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
+            {
+                assert_eq!(def.outputs[0].item_kind, ItemKind::Dye);
+                assert!(
+                    def.outputs[0].dye_color.is_some(),
+                    "Seed {}: press recipe {} missing dye_color",
+                    seed,
+                    def.display_name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn press_verb_serde_roundtrip() {
+        let json = serde_json::to_string(&RecipeVerb::Press).unwrap();
+        let parsed: RecipeVerb = serde_json::from_str(&json).unwrap();
+        assert_eq!(RecipeVerb::Press, parsed);
+    }
+
+    #[test]
+    fn dye_item_kind_serde_roundtrip() {
+        let json = serde_json::to_string(&ItemKind::Dye).unwrap();
+        let parsed: ItemKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(ItemKind::Dye, parsed);
+    }
+
+    #[test]
+    fn press_recipe_key_sorted_and_roundtrip() {
+        use crate::fruit::DyeColor;
+        use std::collections::BTreeSet;
+
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Testdye",
+            vec![FruitPart {
+                part_type: PartType::Rind,
+                properties: BTreeSet::new(),
+                pigment: Some(DyeColor::Yellow),
+                component_units: 30,
+            }],
+        )];
+
+        let catalog = build_catalog(&config, &species);
+        for (key, _) in catalog
+            .iter()
+            .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
         {
             let mut sorted_inputs = key.inputs.clone();
             sorted_inputs.sort();

@@ -3,8 +3,8 @@
 // Provides `ItemKind` (the enum of distinct item types: Bread, Fruit, Bow,
 // Arrow, Bowstring, extracted fruit components — Pulp, Husk, Seed,
 // FruitFiber, FruitSap, FruitResin — processed products — Flour, Thread,
-// Cord, Cloth — clothing — Tunic, Leggings, Boots, Hat, Gloves — and armor —
-// Helmet, Breastplate, Greaves, Gauntlets),
+// Cord, Cloth, Dye — clothing — Tunic, Leggings, Boots, Hat, Gloves — and
+// armor — Helmet, Breastplate, Greaves, Gauntlets),
 // `Material` (wood species for crafted items, `FruitSpecies` for
 // fruits, extracted components, and processed products),
 // `MaterialFilter` (logistics want constraint: `Any` or `Specific(Material)`),
@@ -79,6 +79,9 @@ pub enum ItemKind {
     Greaves = 22,
     /// Grown wooden gauntlets (hand armor).
     Gauntlets = 23,
+    /// Pressed dye from a pigmented fruit component.
+    /// Color is stored in `dye_color` on the `ItemStack`, not in the variant.
+    Dye = 24,
     // Append new variants here with the next sequential number.
 }
 
@@ -110,6 +113,7 @@ impl ItemKind {
             ItemKind::Breastplate => "Breastplate",
             ItemKind::Greaves => "Greaves",
             ItemKind::Gauntlets => "Gauntlets",
+            ItemKind::Dye => "Dye",
         }
     }
 
@@ -127,6 +131,8 @@ impl ItemKind {
     }
 
     /// Whether this item kind is a processed fruit product (flour, thread, cord, cloth).
+    /// Dye is excluded — it uses a separate crafting path (Press) and carries
+    /// a `dye_color` rather than being differentiated purely by material.
     pub fn is_processed_component(self) -> bool {
         matches!(
             self,

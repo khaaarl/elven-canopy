@@ -94,7 +94,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
 [ ] F-dye-application      Apply dye to equipment at workshop
-[ ] F-dye-crafting         Dye pressing from pigmented fruit components
 [ ] F-dye-mixing           Dye color mixing recipes
 [ ] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [ ] F-elf-assign           Elf-to-building assignment UI
@@ -212,6 +211,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-creature-tooltip     Hover tooltips for world objects
 [x] F-dblclick-select      Double-click to select all of same military group
 [x] F-debug-menu           Move spawn/summon into debug menu
+[x] F-dye-crafting         Dye pressing from pigmented fruit components
 [x] F-dynamic-pursuit      Dynamic repathfinding for moving-target tasks
 [x] F-elf-acquire          Elf personal item acquisition
 [x] F-elf-names            Elf name generation from conlang rules
@@ -1351,12 +1351,11 @@ item), task definition, workshop interaction, dye consumption, and
 UI for selecting which item to dye with which color. Different
 target items consume different amounts of dye.
 
-**Blocked by:** F-dye-crafting
-**Unblocked by:** F-item-color
+**Unblocked by:** F-dye-crafting, F-item-color
 **Related:** F-dye-crafting
 
 #### F-dye-crafting — Dye pressing from pigmented fruit components
-**Status:** Todo · **Phase:** 7
+**Status:** Done · **Phase:** 7
 
 Dye pressing from pigmented fruit components. Fruits with pigmented
 parts (which already have a DyeColor field) can be pressed into dye
@@ -1370,8 +1369,8 @@ Color mixing (combining primary dyes into secondaries) is tracked
 separately in F-dye-mixing. Dyeing recipes (applying dye to items)
 are tracked in F-dye-application.
 
-**Blocks:** F-dye-application, F-dye-mixing
 **Unblocked by:** F-item-color
+**Unblocked:** F-dye-application, F-dye-mixing
 **Related:** F-dye-application, F-dye-mixing, F-fruit-pigments, F-fruit-variety, F-textile-crafting
 
 #### F-dye-mixing — Dye color mixing recipes
@@ -1385,7 +1384,7 @@ primaries. E.g., Red Dye + Yellow Dye → Orange Dye.
 Details TBD: mixing ratios, whether mixing happens at kitchen or
 workshop, shade/tint mechanics (Black/White modifiers).
 
-**Blocked by:** F-dye-crafting
+**Unblocked by:** F-dye-crafting
 **Related:** F-dye-crafting, F-fruit-pigments
 
 #### F-elf-acquire — Elf personal item acquisition

@@ -29,7 +29,7 @@
 // simulation logic. All clients must use identical configs for identical
 // results.
 
-use crate::inventory::{ItemKind, Material, MaterialFilter};
+use crate::inventory::{ItemColor, ItemKind, Material, MaterialFilter};
 use crate::nav::EdgeType;
 use crate::species::{
     AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, SpeciesData, WeaponPreference,
@@ -851,6 +851,10 @@ pub struct RecipeOutput {
     pub material: Option<Material>,
     #[serde(default)]
     pub quality: i32,
+    /// If set, the crafted item gets this dye color on its `ItemStack`.
+    /// Used by Press recipes to produce colored dye items.
+    #[serde(default)]
+    pub dye_color: Option<ItemColor>,
 }
 
 /// A subcomponent to attach to each output item. Records what components
@@ -1004,6 +1008,16 @@ pub struct ComponentRecipeConfig {
     /// Sew gloves: gloves produced.
     #[serde(default = "default_sew_gloves_output")]
     pub sew_gloves_output: u32,
+
+    /// Press: pigmented component → dye. Work ticks per batch.
+    #[serde(default = "default_press_work_ticks")]
+    pub press_work_ticks: u64,
+    /// Press: units of pigmented component consumed per batch.
+    #[serde(default = "default_press_input")]
+    pub press_input: u32,
+    /// Press: units of dye produced per batch.
+    #[serde(default = "default_press_output")]
+    pub press_output: u32,
 }
 
 impl Default for ComponentRecipeConfig {
@@ -1045,6 +1059,9 @@ impl Default for ComponentRecipeConfig {
             sew_gloves_work_ticks: default_sew_gloves_work_ticks(),
             sew_gloves_input: default_sew_gloves_input(),
             sew_gloves_output: default_sew_gloves_output(),
+            press_work_ticks: default_press_work_ticks(),
+            press_input: default_press_input(),
+            press_output: default_press_output(),
         }
     }
 }
@@ -1239,6 +1256,15 @@ fn default_sew_gloves_input() -> u32 {
 fn default_sew_gloves_output() -> u32 {
     1
 }
+fn default_press_work_ticks() -> u64 {
+    3000
+}
+fn default_press_input() -> u32 {
+    100
+}
+fn default_press_output() -> u32 {
+    100
+}
 
 fn default_recipes() -> Vec<Recipe> {
     vec![Recipe {
@@ -1254,6 +1280,7 @@ fn default_recipes() -> Vec<Recipe> {
             quantity: 20,
             material: None,
             quality: 0,
+            dye_color: None,
         }],
         work_ticks: 5000,
         subcomponent_records: vec![],

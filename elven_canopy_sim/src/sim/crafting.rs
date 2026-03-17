@@ -199,6 +199,7 @@ impl SimState {
                         None,
                         None,
                     );
+                    self.apply_output_dye_color(inv_id, output);
                     self.record_subcomponents(inv_id, output, &recipe.subcomponent_records);
                 }
             }
@@ -224,6 +225,7 @@ impl SimState {
                         None,
                         None,
                     );
+                    self.apply_output_dye_color(inv_id, output);
                     self.record_subcomponents(inv_id, output, &def.subcomponent_records);
                 }
             }
@@ -234,6 +236,36 @@ impl SimState {
 
         self.complete_task(task_id);
         true
+    }
+
+    /// If the recipe output specifies a `dye_color`, set it on the most
+    /// recently added matching item stack and re-normalize the inventory
+    /// (stacks with different dye_color values must not merge).
+    fn apply_output_dye_color(
+        &mut self,
+        inv_id: InventoryId,
+        output: &crate::config::RecipeOutput,
+    ) {
+        let Some(dye_color) = output.dye_color else {
+            return;
+        };
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        if let Some(stack) = stacks.iter().rev().find(|s| {
+            s.kind == output.item_kind
+                && s.material == output.material
+                && s.quality == output.quality
+                && s.dye_color.is_none()
+        }) {
+            let stack_id = stack.id;
+            let _ = self
+                .db
+                .item_stacks
+                .modify_unchecked(&stack_id, |s| s.dye_color = Some(dye_color));
+            self.inv_normalize(inv_id);
+        }
     }
 
     /// Record subcomponent records on the most recently added item stack

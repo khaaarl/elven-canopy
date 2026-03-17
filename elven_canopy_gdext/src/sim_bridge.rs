@@ -1918,6 +1918,7 @@ impl SimBridge {
             "Greaves" => Some(ItemKind::Greaves),
             "Gauntlets" => Some(ItemKind::Gauntlets),
             "Gloves" => Some(ItemKind::Gloves),
+            "Dye" => Some(ItemKind::Dye),
             _ => None,
         }
     }
@@ -2076,6 +2077,7 @@ impl SimBridge {
             ItemKind::Breastplate,
             ItemKind::Greaves,
             ItemKind::Gauntlets,
+            ItemKind::Dye,
         ] {
             let mut d = VarDictionary::new();
             d.set("kind", GString::from(kind.display_name()));
@@ -2125,6 +2127,7 @@ impl SimBridge {
             "Breastplate" => ItemKind::Breastplate,
             "Greaves" => ItemKind::Greaves,
             "Gauntlets" => ItemKind::Gauntlets,
+            "Dye" => ItemKind::Dye,
             _ => return arr,
         };
 
@@ -2156,7 +2159,8 @@ impl SimBridge {
             | ItemKind::Leggings
             | ItemKind::Boots
             | ItemKind::Hat
-            | ItemKind::Gloves => {
+            | ItemKind::Gloves
+            | ItemKind::Dye => {
                 // Add each fruit species from the DB.
                 for species in sim.db.fruit_species.iter_all() {
                     let mat = Material::FruitSpecies(species.id);
