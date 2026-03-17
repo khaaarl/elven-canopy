@@ -84,6 +84,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
 [ ] F-combat               Combat and invader threat system
 [ ] F-command-queue        Shift+right-click to queue commands
+[ ] F-compound-pk          Compound (multi-column) primary keys
 [ ] F-config-file          Game config file (user://config.json)
 [ ] F-config-ui            Settings UI panel (main menu + pause menu)
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
@@ -3583,6 +3584,11 @@ type priority prevents overwrites.
 
 #### B-tab-serde-tests — Fix tabulosity test compilation under feature unification
 **Status:** Done
+
+#### F-compound-pk — Compound (multi-column) primary keys
+**Status:** Todo
+
+Support compound (multi-column) primary keys in Tabulosity tables, analogous to existing compound secondary indexes. Currently all tables require a single-field `#[primary_key]`. Compound PKs would allow tables like `creature_traits(creature_id, trait_kind) → value` to use the natural key as the PK without a synthetic auto-increment ID.
 
 #### F-tab-auto-pk — Auto-generated primary keys
 **Status:** Done
