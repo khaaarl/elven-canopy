@@ -91,7 +91,9 @@ func _ready() -> void:
 	# Set window title. Debug builds on non-main branches get a .build_info
 	# file written by scripts/build.sh containing "branch @ shorthash".
 	# Release/exported builds won't have this file, so the title stays plain.
-	_set_window_title()
+	# Deferred because Godot applies project.godot's config/name as the window
+	# title after autoload _ready() runs, which would overwrite our custom title.
+	_set_window_title.call_deferred()
 
 	# Create a temporary SimBridge to trigger the global elfcyclopedia server
 	# start. The server lives in a Rust static and persists after the bridge
