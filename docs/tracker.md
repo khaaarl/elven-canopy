@@ -94,7 +94,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
 [ ] F-dye-application      Apply dye to equipment at workshop
-[ ] F-dye-crafting         Dye pressing and fabric dyeing recipes
+[ ] F-dye-crafting         Dye pressing from pigmented fruit components
+[ ] F-dye-mixing           Dye color mixing recipes
 [ ] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
@@ -112,6 +113,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-follow-multi         Camera zoom-to and follow for multi-selections
 [ ] F-food-chain           Food production/distribution pipeline
+[ ] F-fruit-pigments       More natural fruit pigment colors (secondaries on fruit parts)
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
@@ -1343,28 +1345,48 @@ Crafting system for tools, furniture, and magical items.
 
 The dyeing task workflow: a creature brings a dye item and a target
 equipment item to a workshop and applies the dye, setting the
-`dye_color` field on the target item's stack (from F-item-color). Covers
-the task definition, workshop interaction, dye consumption, and UI for
-selecting which item to dye with which color.
+`dye_color` field on the target item's stack (from F-item-color).
+Covers the dyeing recipe definitions (Dye + cloth/clothing → dyed
+item), task definition, workshop interaction, dye consumption, and
+UI for selecting which item to dye with which color. Different
+target items consume different amounts of dye.
 
 **Blocked by:** F-dye-crafting
 **Unblocked by:** F-item-color
 **Related:** F-dye-crafting
 
-#### F-dye-crafting — Dye pressing and fabric dyeing recipes
+#### F-dye-crafting — Dye pressing from pigmented fruit components
 **Status:** Todo · **Phase:** 7
 
-Dye pressing from pigmented fruit components and fabric dyeing recipes.
-Fruits with pigmented parts (which already have a DyeColor field) can be
-pressed into dye items. Dye can then be applied to cloth or finished
-clothing/equipment to change their color, setting the `dye_color` field
-on the item stack (from F-item-color). Requires F-textile-crafting for
-the textile items to dye. Details TBD: dye item representation, dyeing
-recipe structure, color mixing, UI for selecting dye targets and colors.
+Dye pressing from pigmented fruit components. Fruits with pigmented
+parts (which already have a DyeColor field) can be pressed into dye
+items via a new Press recipe verb. A single new ItemKind (Dye) is
+differentiated by the `dye_color` field on ItemStack. Press recipes
+are generated automatically for any pigmented part, following the
+same property-driven pattern as other component recipes. Furnishing:
+Kitchen. Ratio: 100 pigmented component → 100 dye.
 
-**Blocks:** F-dye-application
+Color mixing (combining primary dyes into secondaries) is tracked
+separately in F-dye-mixing. Dyeing recipes (applying dye to items)
+are tracked in F-dye-application.
+
+**Blocks:** F-dye-application, F-dye-mixing
 **Unblocked by:** F-item-color
-**Related:** F-dye-application, F-fruit-variety, F-textile-crafting
+**Related:** F-dye-application, F-dye-mixing, F-fruit-pigments, F-fruit-variety, F-textile-crafting
+
+#### F-dye-mixing — Dye color mixing recipes
+**Status:** Todo · **Phase:** 7
+
+Recipes for mixing primary dye colors (Red, Yellow, Blue) and
+modifiers (Black, White) to produce secondary dye colors (Orange,
+Green, Violet) and tinted/shaded variants. Secondaries cannot be
+obtained directly from fruit pigments — they must be mixed from
+primaries. E.g., Red Dye + Yellow Dye → Orange Dye.
+Details TBD: mixing ratios, whether mixing happens at kitchen or
+workshop, shade/tint mechanics (Black/White modifiers).
+
+**Blocked by:** F-dye-crafting
+**Related:** F-dye-crafting, F-fruit-pigments
 
 #### F-elf-acquire — Elf personal item acquisition
 **Status:** Done · **Phase:** 4
@@ -1435,6 +1457,19 @@ Does NOT include downstream transformation recipes (bread, thread, etc.)
 
 **Related:** F-bldg-kitchen, F-food-chain, F-fruit-variety
 
+#### F-fruit-pigments — More natural fruit pigment colors (secondaries on fruit parts)
+**Status:** Todo · **Phase:** 7
+
+Allow secondary dye colors (Orange, Green, Violet) to appear naturally
+on fruit parts during worldgen, not just the current 5 primaries +
+modifiers (Red, Yellow, Blue, Black, White). This would expand the
+palette of directly-pressable dyes and reduce dependence on F-dye-mixing
+for color variety. Requires adding coverage categories for the new
+pigment colors, updating FRUIT_COLORS, and adjusting the coverage-biased
+generation algorithm.
+
+**Related:** F-dye-crafting, F-dye-mixing, F-fruit-variety
+
 #### F-fruit-prod — Basic fruit production and harvesting
 **Status:** Todo · **Phase:** 2 · **Refs:** §13
 
@@ -1477,7 +1512,7 @@ rendering/visual differentiation, deeper integration with food chain
 and cooking.
 
 **Blocks:** F-civ-knowledge
-**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-dye-crafting, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-greenhouse-revamp, F-logistics-filter, F-recipes, F-textile-crafting
+**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-dye-crafting, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-pigments, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-greenhouse-revamp, F-logistics-filter, F-recipes, F-textile-crafting
 
 #### F-greenhouse-revamp — Greenhouse planter growth cycle and pluck tasks
 **Status:** Todo
