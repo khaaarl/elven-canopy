@@ -289,6 +289,39 @@ impl MaterialFilter {
     }
 }
 
+/// Durability condition category for an item, derived from its HP ratio
+/// and the game config thresholds (`durability_worn_pct`, `durability_damaged_pct`).
+///
+/// Used by the sprite system (`CreatureDrawInfo`) to fingerprint equipment
+/// appearance, and by `SimState::condition_label` for display strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum WearCategory {
+    /// HP above the worn threshold (or full/indestructible).
+    Good,
+    /// HP at or below the worn threshold but above the damaged threshold.
+    Worn,
+    /// HP at or below the damaged threshold.
+    Damaged,
+}
+
+impl WearCategory {
+    /// Compute the wear category from HP values and config thresholds.
+    /// Items with `max_hp <= 0` or `current_hp >= max_hp` are `Good`.
+    pub fn from_hp(current_hp: i32, max_hp: i32, worn_pct: i32, damaged_pct: i32) -> Self {
+        if max_hp <= 0 || current_hp >= max_hp {
+            return WearCategory::Good;
+        }
+        let ratio = current_hp * 100 / max_hp;
+        if ratio <= damaged_pct {
+            WearCategory::Damaged
+        } else if ratio <= worn_pct {
+            WearCategory::Worn
+        } else {
+            WearCategory::Good
+        }
+    }
+}
+
 /// Body slot for wearable items (clothing and armor).
 ///
 /// Each wearable `ItemKind` maps to exactly one slot via `ItemKind::equip_slot()`.
@@ -305,6 +338,9 @@ pub enum EquipSlot {
 }
 
 impl EquipSlot {
+    /// Number of equip slots (for fixed-size arrays indexed by slot).
+    pub const COUNT: usize = 5;
+
     /// Human-readable display name for this slot.
     pub fn display_name(self) -> &'static str {
         match self {
@@ -320,6 +356,53 @@ impl EquipSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wear_category_good_at_full_hp() {
+        assert_eq!(WearCategory::from_hp(100, 100, 70, 40), WearCategory::Good);
+    }
+
+    #[test]
+    fn wear_category_good_above_worn_threshold() {
+        assert_eq!(WearCategory::from_hp(71, 100, 70, 40), WearCategory::Good);
+    }
+
+    #[test]
+    fn wear_category_worn_at_threshold() {
+        assert_eq!(WearCategory::from_hp(70, 100, 70, 40), WearCategory::Worn);
+    }
+
+    #[test]
+    fn wear_category_worn_between_thresholds() {
+        assert_eq!(WearCategory::from_hp(50, 100, 70, 40), WearCategory::Worn);
+    }
+
+    #[test]
+    fn wear_category_damaged_at_threshold() {
+        assert_eq!(
+            WearCategory::from_hp(40, 100, 70, 40),
+            WearCategory::Damaged
+        );
+    }
+
+    #[test]
+    fn wear_category_damaged_below_threshold() {
+        assert_eq!(
+            WearCategory::from_hp(10, 100, 70, 40),
+            WearCategory::Damaged
+        );
+    }
+
+    #[test]
+    fn wear_category_zero_hp_positive_max_is_damaged() {
+        assert_eq!(WearCategory::from_hp(0, 100, 70, 40), WearCategory::Damaged);
+    }
+
+    #[test]
+    fn wear_category_indestructible_is_good() {
+        assert_eq!(WearCategory::from_hp(0, 0, 70, 40), WearCategory::Good);
+        assert_eq!(WearCategory::from_hp(0, -1, 70, 40), WearCategory::Good);
+    }
 
     #[test]
     fn is_armor_includes_armor_pieces() {
@@ -490,6 +573,57 @@ impl ItemColor {
         Self { r, g, b }
     }
 
+    /// Human-readable color name based on the dominant hue.
+    /// Used in item display names for dyed items (e.g., "Red Oak Breastplate").
+    pub fn display_name(self) -> &'static str {
+        let (r, g, b) = (self.r as u16, self.g as u16, self.b as u16);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let lum = (max + min) / 2;
+
+        // Very dark or very light → achromatic names.
+        if max <= 40 {
+            return "Black";
+        }
+        if min >= 210 {
+            return "White";
+        }
+        // Low saturation → grey.
+        if max - min < 30 {
+            return if lum > 160 { "Light Grey" } else { "Grey" };
+        }
+
+        // Chromatic: find dominant hue.
+        if r >= g && r >= b {
+            if r - g < 30 && b < r / 2 {
+                "Yellow"
+            } else if r - b < 30 && g < r / 2 {
+                "Purple"
+            } else if g > b + 20 {
+                "Orange"
+            } else {
+                "Red"
+            }
+        } else if g >= r && g >= b {
+            if g - r < 30 && b < g / 2 {
+                "Yellow"
+            } else if g - b < 30 && r < g / 2 {
+                "Teal"
+            } else {
+                "Green"
+            }
+        } else {
+            // b is dominant
+            if b - r <= 40 && g < b / 2 {
+                "Purple"
+            } else if b - g < 30 && r < b / 2 {
+                "Teal"
+            } else {
+                "Blue"
+            }
+        }
+    }
+
     /// Desaturate and darken a color to produce a muted variant.
     /// Used for material-derived colors when no explicit dye is applied.
     pub fn muted(self) -> Self {
@@ -650,6 +784,24 @@ mod color_tests {
         assert!(DEFAULT_ITEM_COLOR.r > 100 && DEFAULT_ITEM_COLOR.r < 200);
         assert!(DEFAULT_ITEM_COLOR.g > 100 && DEFAULT_ITEM_COLOR.g < 200);
         assert!(DEFAULT_ITEM_COLOR.b > 100 && DEFAULT_ITEM_COLOR.b < 200);
+    }
+
+    #[test]
+    fn item_color_display_name_basic_hues() {
+        assert_eq!(ItemColor::new(200, 30, 30).display_name(), "Red");
+        assert_eq!(ItemColor::new(30, 180, 30).display_name(), "Green");
+        assert_eq!(ItemColor::new(30, 30, 200).display_name(), "Blue");
+        assert_eq!(ItemColor::new(200, 180, 30).display_name(), "Yellow");
+        assert_eq!(ItemColor::new(200, 100, 30).display_name(), "Orange");
+        assert_eq!(ItemColor::new(130, 50, 160).display_name(), "Purple");
+    }
+
+    #[test]
+    fn item_color_display_name_achromatic() {
+        assert_eq!(ItemColor::new(10, 10, 10).display_name(), "Black");
+        assert_eq!(ItemColor::new(240, 240, 240).display_name(), "White");
+        assert_eq!(ItemColor::new(130, 130, 130).display_name(), "Grey");
+        assert_eq!(ItemColor::new(190, 190, 190).display_name(), "Light Grey");
     }
 
     #[test]

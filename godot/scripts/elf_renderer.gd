@@ -1,16 +1,13 @@
 ## Renders elves as billboard chibi sprites driven by the simulation.
 ##
-## Each frame, reads elf positions from SimBridge.get_elf_positions(render_tick)
-## and places a Sprite3D at each one. Positions are smoothly interpolated
-## between nav nodes using the fractional render_tick returned by
-## bridge.frame_update(delta). Call set_render_tick() each frame before
-## _process runs.
+## Each frame, reads elf positions and sprite textures from SimBridge. Sprite
+## textures are cached in Rust (keyed on CreatureDrawInfo — seed, equipment,
+## wear state); the bridge returns textures and per-elf change flags so we
+## only set_texture on sprites that actually changed.
 ##
 ## Uses a pool pattern: sprites are created on demand (never destroyed), and
-## excess sprites are hidden when the elf count drops. Each sprite's texture
-## is generated once by SpriteGenerator using the sprite's index as a
-## deterministic seed, giving every elf a unique appearance. Each sprite has
-## an overhead HP bar (see hp_bar.gd) shown only when HP is below maximum.
+## excess sprites are hidden when the elf count drops. Each sprite has an
+## overhead HP bar (see hp_bar.gd) shown only when HP is below maximum.
 ##
 ## Sprites use BILLBOARD_ENABLED so they always face the camera. Positions
 ## are offset by (+0.5, +0.48, +0.5) from the interpolated coordinate — the
@@ -18,10 +15,10 @@
 ## sprite center half its height above the floor. At pixel_size 0.02, the
 ## 48px sprite is 0.96 world units tall (~1.9m given 2m voxels).
 ##
-## See also: elven_canopy_sprites (Rust crate) for chibi elf texture generation (48x48),
-## hp_bar.gd for overhead HP bar rendering, capybara_renderer.gd for the
-## equivalent capybara renderer, sim_bridge.rs for the Rust-side position
-## data, main.gd which creates this node and calls setup() and set_render_tick().
+## See also: elven_canopy_sprites (Rust crate) for chibi elf texture generation
+## (48x48), elf_equipment.rs for equipment overlay drawing, hp_bar.gd for
+## overhead HP bar rendering, sim_bridge.rs for the Rust-side sprite cache,
+## main.gd which creates this node and calls setup() and set_render_tick().
 
 extends Node3D
 
@@ -53,13 +50,18 @@ func _process(_delta: float) -> void:
 
 	var positions := _bridge.get_elf_positions(_render_tick)
 	var hp_ratios := _bridge.get_creature_hp_ratios("Elf")
+	var sprite_data: Dictionary = _bridge.get_elf_sprites()
+	var sprite_textures: Array = sprite_data.get("textures", [])
+	var sprite_changed: PackedByteArray = sprite_data.get("changed", PackedByteArray())
 	var elf_count := positions.size()
 
 	# Add sprites if we have more elves than sprites.
 	while _elf_sprites.size() < elf_count:
 		var idx := _elf_sprites.size()
 		var sprite := Sprite3D.new()
-		sprite.texture = SpriteGenerator.species_sprite("Elf", idx)
+		# Initial texture comes from the Rust cache (already in sprite_textures).
+		if idx < sprite_textures.size():
+			sprite.texture = sprite_textures[idx]
 		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		sprite.pixel_size = 0.02  # Scale: 48px * 0.02 = 0.96 world units (~1.9m)
 		sprite.transparent = true
@@ -71,7 +73,7 @@ func _process(_delta: float) -> void:
 		add_child(bar)
 		_hp_bars.append(bar)
 
-	# Update positions, HP bars, and hide excess sprites.
+	# Update positions, HP bars, textures, and hide excess sprites.
 	for i in _elf_sprites.size():
 		if i < elf_count:
 			_elf_sprites[i].visible = true
@@ -83,6 +85,10 @@ func _process(_delta: float) -> void:
 			_hp_bars[i].global_position = Vector3(
 				pos.x + 0.5, pos.y + Y_OFFSET * 2.0 + HP_BAR_GAP, pos.z + 0.5
 			)
+			# Only update texture when Rust reports a change.
+			if i < sprite_changed.size() and sprite_changed[i] != 0:
+				if i < sprite_textures.size():
+					_elf_sprites[i].texture = sprite_textures[i]
 		else:
 			_elf_sprites[i].visible = false
 			_hp_bars[i].visible = false

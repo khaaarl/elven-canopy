@@ -1497,28 +1497,54 @@ impl SimState {
         }
     }
 
-    /// Return a human-readable display name for an item stack. For fruit with
-    /// a known species, returns e.g. "Shinethúni Fruit" or "Révatórun Pod".
-    /// For any other item with a fruit species material (extracted components,
-    /// processed components, species-specific bread/bowstrings), returns
-    /// "SpeciesName ItemType". For all other items, returns the basic
-    /// `ItemKind::display_name()`. Appends "(equipped)" if the item is in an
-    /// equip slot, and a condition label ("(worn)" or "(damaged)") if the
-    /// item's HP is below the configured thresholds.
+    /// Build the full display name for an item stack.
+    ///
+    /// Format: `[DyeColor] [Material/Species] ItemKind [suffixes]`.
+    ///
+    /// Examples:
+    /// - `"Red Oak Breastplate (worn)"`
+    /// - `"Blue Tunic (equipped)"`
+    /// - `"Shinethúni Pod"`
+    /// - `"Oak Helmet"`
+    /// - `"Bread"`
+    ///
+    /// Dye color names come from `ItemColor::display_name()`. Material
+    /// prefix uses `Material::display_name()` for wood types; fruit-species
+    /// items use the Vaelith species name. Suffixes: "(equipped)" if in a
+    /// slot, "(worn)"/"(damaged)" if durability is below threshold.
     pub fn item_display_name(&self, stack: &crate::db::ItemStack) -> String {
-        let mut name = if let Some(inventory::Material::FruitSpecies(id)) = stack.material
+        let mut name = String::new();
+
+        // Dye color prefix (only for explicitly dyed items).
+        if let Some(dye) = stack.dye_color {
+            name.push_str(dye.display_name());
+            name.push(' ');
+        }
+
+        // Material/species + item kind.
+        if let Some(inventory::Material::FruitSpecies(id)) = stack.material
             && let Some(species) = self.db.fruit_species.get(&id)
         {
             if stack.kind == inventory::ItemKind::Fruit {
                 let noun = species.appearance.shape.item_noun();
-                format!("{} {}", species.vaelith_name, noun)
+                name.push_str(&format!("{} {}", species.vaelith_name, noun));
             } else {
-                // All other fruit-species items: "SpeciesName ItemType".
-                format!("{} {}", species.vaelith_name, stack.kind.display_name())
+                name.push_str(&format!(
+                    "{} {}",
+                    species.vaelith_name,
+                    stack.kind.display_name()
+                ));
             }
+        } else if let Some(mat) = stack.material
+            && mat.is_wood()
+        {
+            name.push_str(mat.display_name());
+            name.push(' ');
+            name.push_str(stack.kind.display_name());
         } else {
-            stack.kind.display_name().to_owned()
-        };
+            name.push_str(stack.kind.display_name());
+        }
+
         if stack.equipped_slot.is_some() {
             name.push_str(" (equipped)");
         }
@@ -1542,16 +1568,10 @@ impl SimState {
         worn_pct: i32,
         damaged_pct: i32,
     ) -> Option<&'static str> {
-        if max_hp <= 0 || current_hp >= max_hp {
-            return None;
-        }
-        let ratio = current_hp * 100 / max_hp;
-        if ratio <= damaged_pct {
-            Some("(damaged)")
-        } else if ratio <= worn_pct {
-            Some("(worn)")
-        } else {
-            None
+        match inventory::WearCategory::from_hp(current_hp, max_hp, worn_pct, damaged_pct) {
+            inventory::WearCategory::Good => None,
+            inventory::WearCategory::Worn => Some("(worn)"),
+            inventory::WearCategory::Damaged => Some("(damaged)"),
         }
     }
 

@@ -1,16 +1,20 @@
 // GDExtension bridge for elven_canopy_sprites — converts pixel buffers to Godot textures.
 //
-// `SpriteGenerator` is a static utility class (like the GDScript `SpriteFactory`)
-// that GDScript calls to generate creature and fruit sprites. Internally it
-// delegates to `elven_canopy_sprites` for all drawing, then wraps the raw RGBA8
-// bytes in a Godot `Image` → `ImageTexture`.
+// `SpriteGenerator` is a static utility class that GDScript calls to generate
+// creature and fruit sprites. Internally it delegates to `elven_canopy_sprites`
+// for all drawing, then wraps the raw RGBA8 bytes in a Godot `Image` →
+// `ImageTexture`.
 //
-// This replaces the GDScript `SpriteFactory` class with the same API shape:
-// - `species_sprite(species_name, seed)` → `ImageTexture`
+// API:
+// - `species_sprite(species_name, seed)` → `ImageTexture` (base sprite, no equipment)
 // - `fruit_sprite(shape, r, g, b, size_percent, glows)` → `ImageTexture`
 //
+// Elf sprites with equipment are handled by the Rust-side sprite cache in
+// `sim_bridge.rs` (`get_elf_sprites`), not by direct GDScript calls. The
+// `species_sprite` API remains for non-elf species and the elfcyclopedia.
+//
 // See also: `elven_canopy_sprites` for the pure Rust sprite generation,
-// `sim_bridge.rs` for the main Godot↔Sim interface.
+// `sim_bridge.rs` for the main Godot↔Sim interface and elf sprite caching.
 
 use elven_canopy_sim::fruit::{FruitAppearance, FruitColor, FruitShape};
 use elven_canopy_sim::types::Species;
@@ -26,7 +30,7 @@ use godot::prelude::*;
 struct SpriteGenerator;
 
 /// Convert a PixelBuffer to a Godot ImageTexture.
-fn pixel_buffer_to_texture(buf: &PixelBuffer) -> Option<Gd<ImageTexture>> {
+pub(crate) fn pixel_buffer_to_texture(buf: &PixelBuffer) -> Option<Gd<ImageTexture>> {
     let data = buf.data();
     let byte_array = PackedByteArray::from(data);
     let image = Image::create_from_data(

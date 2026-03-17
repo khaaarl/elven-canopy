@@ -990,6 +990,7 @@ mod tests {
                 food_pcts: vec![100, 60],
                 rest_pcts: vec![90, 50],
                 bread_counts: vec![0, 2],
+                initial_equipment: vec![],
             },
             InitialCreatureSpec {
                 species: Species::Capybara,
@@ -998,6 +999,7 @@ mod tests {
                 food_pcts: vec![],
                 rest_pcts: vec![],
                 bread_counts: vec![],
+                initial_equipment: vec![],
             },
         ];
         config.initial_ground_piles = vec![InitialGroundPileSpec {
@@ -1005,6 +1007,7 @@ mod tests {
             item_kind: crate::inventory::ItemKind::Bread,
             quantity: 5,
             material: None,
+            dye_color: None,
         }];
 
         let mut session_a = GameSession::new_singleplayer();

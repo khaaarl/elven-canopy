@@ -84,7 +84,9 @@ elven-canopy/
 │       ├── color.rs            # RGBA color type with darken/lighten helpers
 │       ├── drawing.rs          # PixelBuffer with drawing primitives (circle, ellipse, rect, line)
 │       ├── fruit.rs            # 16x16 fruit sprites (6 shapes + glow effect)
-│       └── species.rs          # Dispatcher + per-species modules (10 species, 32x32 to 96x80)
+│       └── species/            # Dispatcher + per-species modules (10 species, 32x32 to 96x80)
+│           ├── elf.rs          # Elf base sprite + CreatureDrawInfo compositing
+│           └── elf_equipment.rs # Equipment overlay drawing (9 equippable item kinds)
 ├── elven_canopy_music/         # Palestrina-style polyphonic music generator
 │   ├── src/
 │   │   ├── lib.rs              # Crate root, module declarations

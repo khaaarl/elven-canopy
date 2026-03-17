@@ -815,6 +815,10 @@ pub struct InitialCreatureSpec {
     pub rest_pcts: Vec<u32>,
     #[serde(default)]
     pub bread_counts: Vec<u32>,
+    /// Per-creature starting equipment (indexed by creature index).
+    /// Each inner Vec is a list of items to equip on that creature.
+    #[serde(default)]
+    pub initial_equipment: Vec<Vec<InitialEquipSpec>>,
 }
 
 /// Describes items to place on the ground when the game starts.
@@ -825,7 +829,20 @@ pub struct InitialGroundPileSpec {
     pub quantity: u32,
     /// Optional material for the spawned items (e.g., Oak for wood armor).
     #[serde(default)]
-    pub material: Option<crate::inventory::Material>,
+    pub material: Option<Material>,
+    /// Optional dye color for the spawned items.
+    #[serde(default)]
+    pub dye_color: Option<ItemColor>,
+}
+
+/// Describes an equipment item to give a starting creature.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InitialEquipSpec {
+    pub item_kind: ItemKind,
+    #[serde(default)]
+    pub material: Option<Material>,
+    #[serde(default)]
+    pub dye_color: Option<ItemColor>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2336,6 +2353,48 @@ impl Default for GameConfig {
                     food_pcts: vec![100, 90, 70, 60, 48],
                     rest_pcts: vec![100, 95, 80, 60, 45],
                     bread_counts: vec![2, 2, 2, 2, 2],
+                    initial_equipment: vec![
+                        // Elf 0: red-dyed tunic + undyed oak boots.
+                        vec![
+                            InitialEquipSpec {
+                                item_kind: ItemKind::Tunic,
+                                material: None,
+                                dye_color: Some(ItemColor::new(180, 40, 40)),
+                            },
+                            InitialEquipSpec {
+                                item_kind: ItemKind::Boots,
+                                material: Some(Material::Oak),
+                                dye_color: None,
+                            },
+                        ],
+                        // Elf 1: leggings only (no dye).
+                        vec![InitialEquipSpec {
+                            item_kind: ItemKind::Leggings,
+                            material: None,
+                            dye_color: None,
+                        }],
+                        // Elf 2: blue tunic + hat.
+                        vec![
+                            InitialEquipSpec {
+                                item_kind: ItemKind::Tunic,
+                                material: None,
+                                dye_color: Some(ItemColor::new(50, 70, 180)),
+                            },
+                            InitialEquipSpec {
+                                item_kind: ItemKind::Hat,
+                                material: None,
+                                dye_color: Some(ItemColor::new(50, 70, 180)),
+                            },
+                        ],
+                        // Elf 3: no equipment (bare).
+                        vec![],
+                        // Elf 4: green-dyed leggings only.
+                        vec![InitialEquipSpec {
+                            item_kind: ItemKind::Leggings,
+                            material: None,
+                            dye_color: Some(ItemColor::new(50, 150, 50)),
+                        }],
+                    ],
                 },
                 InitialCreatureSpec {
                     species: Species::Capybara,
@@ -2344,6 +2403,7 @@ impl Default for GameConfig {
                     food_pcts: vec![],
                     rest_pcts: vec![],
                     bread_counts: vec![],
+                    initial_equipment: vec![],
                 },
                 InitialCreatureSpec {
                     species: Species::Boar,
@@ -2352,6 +2412,7 @@ impl Default for GameConfig {
                     food_pcts: vec![],
                     rest_pcts: vec![],
                     bread_counts: vec![],
+                    initial_equipment: vec![],
                 },
                 InitialCreatureSpec {
                     species: Species::Deer,
@@ -2360,6 +2421,7 @@ impl Default for GameConfig {
                     food_pcts: vec![],
                     rest_pcts: vec![],
                     bread_counts: vec![],
+                    initial_equipment: vec![],
                 },
                 InitialCreatureSpec {
                     species: Species::Squirrel,
@@ -2368,6 +2430,7 @@ impl Default for GameConfig {
                     food_pcts: vec![],
                     rest_pcts: vec![],
                     bread_counts: vec![],
+                    initial_equipment: vec![],
                 },
             ],
             initial_ground_piles: vec![
@@ -2376,78 +2439,101 @@ impl Default for GameConfig {
                     item_kind: ItemKind::Bread,
                     quantity: 5,
                     material: None,
+                    dye_color: None,
                 },
+                // Undyed tunics.
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Tunic,
-                    quantity: 2,
+                    quantity: 1,
                     material: None,
+                    dye_color: None,
+                },
+                // Purple-dyed tunic.
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Tunic,
+                    quantity: 1,
+                    material: None,
+                    dye_color: Some(ItemColor::new(130, 50, 160)),
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Leggings,
                     quantity: 2,
                     material: None,
+                    dye_color: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Boots,
                     quantity: 2,
                     material: None,
+                    dye_color: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Hat,
                     quantity: 2,
                     material: None,
+                    dye_color: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Gloves,
                     quantity: 2,
                     material: None,
+                    dye_color: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Bow,
                     quantity: 2,
                     material: None,
+                    dye_color: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Arrow,
                     quantity: 30,
                     material: None,
+                    dye_color: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Helmet,
                     quantity: 1,
                     material: Some(Material::Oak),
+                    dye_color: None,
                 },
+                // Red-dyed oak breastplate.
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Breastplate,
                     quantity: 1,
                     material: Some(Material::Oak),
+                    dye_color: Some(ItemColor::new(180, 40, 40)),
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Greaves,
                     quantity: 1,
                     material: Some(Material::Oak),
+                    dye_color: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Gauntlets,
                     quantity: 1,
                     material: Some(Material::Oak),
+                    dye_color: None,
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(128, 1, 138),
                     item_kind: ItemKind::Boots,
                     quantity: 1,
                     material: Some(Material::Oak),
+                    dye_color: None,
                 },
             ],
             recipes: default_recipes(),

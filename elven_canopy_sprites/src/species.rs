@@ -15,7 +15,8 @@ mod boar;
 mod capybara;
 mod deer;
 mod elephant;
-mod elf;
+pub mod elf;
+mod elf_equipment;
 mod goblin;
 mod monkey;
 mod orc;
@@ -79,6 +80,12 @@ pub fn create_species_sprite(params: &SpriteParams) -> PixelBuffer {
         SpriteParams::Orc(p) => orc::create_sprite(p),
         SpriteParams::Troll(p) => troll::create_sprite(p),
     }
+}
+
+/// Create a fully composited elf sprite from a `CreatureDrawInfo`.
+/// Delegates to `elf::create_creature_sprite`.
+pub fn create_creature_sprite(info: &elf::CreatureDrawInfo) -> PixelBuffer {
+    elf::create_creature_sprite(info)
 }
 
 #[cfg(test)]

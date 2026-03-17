@@ -10676,6 +10676,7 @@ fn initial_spawn_test_config() -> GameConfig {
             food_pcts: vec![100, 50],
             rest_pcts: vec![80, 40],
             bread_counts: vec![0, 3],
+            initial_equipment: vec![],
         },
         InitialCreatureSpec {
             species: Species::Capybara,
@@ -10684,6 +10685,7 @@ fn initial_spawn_test_config() -> GameConfig {
             food_pcts: vec![],
             rest_pcts: vec![],
             bread_counts: vec![],
+            initial_equipment: vec![],
         },
     ];
     config.initial_ground_piles = vec![InitialGroundPileSpec {
@@ -10691,6 +10693,7 @@ fn initial_spawn_test_config() -> GameConfig {
         item_kind: crate::inventory::ItemKind::Bread,
         quantity: 5,
         material: None,
+        dye_color: None,
     }];
     config
 }
@@ -27002,6 +27005,86 @@ fn item_display_name_shows_equipped_suffix() {
         .unwrap();
     assert_eq!(sim.item_display_name(tunic), "Tunic");
     assert_eq!(sim.item_display_name(hat), "Hat (equipped)");
+}
+
+#[test]
+fn item_display_name_dye_color_prefix() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    // Undyed oak helmet.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Helmet,
+        1,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        0,
+        None,
+        None,
+    );
+    // Dyed tunic (no material).
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let helmet = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Helmet)
+        .unwrap();
+    let tunic = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Tunic)
+        .unwrap();
+
+    // Undyed oak helmet: "Oak Helmet".
+    assert_eq!(sim.item_display_name(helmet), "Oak Helmet");
+
+    // Now dye the tunic blue.
+    let tunic_id = tunic.id;
+    let _ = sim.db.item_stacks.modify_unchecked(&tunic_id, |s| {
+        s.dye_color = Some(inventory::ItemColor::new(50, 70, 180));
+    });
+    let tunic_dyed = sim.db.item_stacks.get(&tunic_id).unwrap();
+    assert_eq!(sim.item_display_name(&tunic_dyed), "Blue Tunic");
+
+    // Dyed oak breastplate.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Breastplate,
+        1,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        0,
+        None,
+        None,
+    );
+    let stacks2 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let bp = stacks2
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Breastplate)
+        .unwrap();
+    let bp_id = bp.id;
+    let _ = sim.db.item_stacks.modify_unchecked(&bp_id, |s| {
+        s.dye_color = Some(inventory::ItemColor::new(180, 40, 40));
+    });
+    let bp_dyed = sim.db.item_stacks.get(&bp_id).unwrap();
+    assert_eq!(sim.item_display_name(&bp_dyed), "Red Oak Breastplate");
 }
 
 #[test]

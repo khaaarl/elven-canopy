@@ -37,6 +37,16 @@ impl Color {
         Self { r, g, b, a }
     }
 
+    /// Convert from the sim's `ItemColor` (material-derived or dye color).
+    pub const fn from_item_color(ic: elven_canopy_sim::inventory::ItemColor) -> Self {
+        Self {
+            r: ic.r,
+            g: ic.g,
+            b: ic.b,
+            a: 255,
+        }
+    }
+
     /// Fully transparent black.
     pub const TRANSPARENT: Self = Self {
         r: 0,
@@ -65,6 +75,12 @@ impl Color {
             b: add_f32(self.b, amount),
             a: self.a,
         }
+    }
+}
+
+impl From<elven_canopy_sim::inventory::ItemColor> for Color {
+    fn from(ic: elven_canopy_sim::inventory::ItemColor) -> Self {
+        Self::from_item_color(ic)
     }
 }
 
@@ -140,5 +156,15 @@ mod tests {
         let c = Color::from_f32(0.5, 0.5, 0.5, 0.4);
         let l = c.lighten(0.2);
         assert_eq!(l.a, c.a);
+    }
+
+    #[test]
+    fn from_item_color() {
+        let ic = elven_canopy_sim::inventory::ItemColor::new(100, 200, 50);
+        let c = Color::from(ic);
+        assert_eq!(c.r, 100);
+        assert_eq!(c.g, 200);
+        assert_eq!(c.b, 50);
+        assert_eq!(c.a, 255);
     }
 }

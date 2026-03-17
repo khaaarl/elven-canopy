@@ -72,6 +72,34 @@ impl SimState {
                         None,
                     );
                 }
+
+                // Apply per-creature starting equipment.
+                if let Some(equip_list) = spec.initial_equipment.get(i) {
+                    let inv_id = self.creature_inv(creature_id);
+                    for equip in equip_list {
+                        let slot = equip.item_kind.equip_slot();
+                        self.inv_add_item(
+                            inv_id,
+                            equip.item_kind,
+                            1,
+                            Some(creature_id),
+                            None,
+                            equip.material,
+                            0,
+                            None,
+                            slot,
+                        );
+                        // Apply dye color if specified.
+                        if let Some(dye) = equip.dye_color
+                            && let Some(slot) = slot
+                            && let Some(stack) = self.inv_equipped_in_slot(inv_id, slot)
+                        {
+                            let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                                s.dye_color = Some(dye);
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -80,8 +108,9 @@ impl SimState {
             let pos = self.find_surface_position(pile_spec.position.x, pile_spec.position.z);
             let pile_id = self.ensure_ground_pile(pos);
             let pile = self.db.ground_piles.get(&pile_id).unwrap();
+            let pile_inv = pile.inventory_id;
             self.inv_add_item(
-                pile.inventory_id,
+                pile_inv,
                 pile_spec.item_kind,
                 pile_spec.quantity,
                 None,
@@ -91,6 +120,22 @@ impl SimState {
                 None,
                 None,
             );
+            // Apply dye color if specified. Finds the first undyed stack
+            // matching (kind, material) — avoid multiple specs with the same
+            // kind+material but different dye colors at the same position.
+            if let Some(dye) = pile_spec.dye_color {
+                for stack in self.inv_items(pile_inv) {
+                    if stack.kind == pile_spec.item_kind
+                        && stack.material == pile_spec.material
+                        && stack.dye_color.is_none()
+                    {
+                        let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
+                            s.dye_color = Some(dye);
+                        });
+                        break;
+                    }
+                }
+            }
         }
     }
 

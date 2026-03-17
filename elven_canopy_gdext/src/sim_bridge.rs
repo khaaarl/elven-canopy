@@ -182,12 +182,14 @@ use elven_canopy_sim::types::{
     FruitSpeciesId, FurnishingType, FurnitureKind, LadderKind, OverlapClassification, Priority,
     SimUuid, Species, StructureId, VitalStatus, VoxelCoord, VoxelType,
 };
+use godot::classes::ImageTexture;
 use godot::prelude::*;
 
 use elven_canopy_protocol::types::SessionId;
 use elven_canopy_relay::client::{NetClient, RelayConnection};
 
 use crate::mesh_cache::MeshCache;
+use crate::sprite_bridge::pixel_buffer_to_texture;
 
 /// Compile-time version hash. Bump when making breaking protocol changes.
 const SIM_VERSION_HASH: u64 = 1;
@@ -382,6 +384,10 @@ pub struct SimBridge {
     /// Background music composition results, keyed by CompositionId.
     /// Each entry is None while generating, Some(pcm_data) when ready.
     pending_compositions: BTreeMap<u64, Arc<Mutex<Option<Vec<f32>>>>>,
+    /// Cached elf sprite textures and the draw info that produced them.
+    /// Indexed parallel to alive-elf iteration order. The cache invalidates
+    /// per-elf when `CreatureDrawInfo` changes (equipment, wear, etc.).
+    elf_sprite_cache: Vec<(elven_canopy_sprites::CreatureDrawInfo, Gd<ImageTexture>)>,
 }
 
 #[godot_api]
@@ -403,6 +409,7 @@ impl INode for SimBridge {
             mp_ticks_per_turn: 50,
             mp_time_since_turn: 0.0,
             pending_compositions: BTreeMap::new(),
+            elf_sprite_cache: Vec::new(),
         }
     }
 }
@@ -2421,6 +2428,110 @@ impl SimBridge {
             arr.push(ratio.clamp(0.0, 1.0));
         }
         arr
+    }
+
+    /// Return sprite textures and change flags for all alive elves.
+    ///
+    /// Returns a `VarDictionary` with two keys:
+    /// - `"textures"`: `VarArray` of `ImageTexture`, one per alive elf
+    ///   (parallel to `get_elf_positions`).
+    /// - `"changed"`: `PackedByteArray` of 0/1 flags indicating which
+    ///   textures were regenerated this frame.
+    ///
+    /// The cache is keyed on `CreatureDrawInfo` — a struct that captures
+    /// everything affecting sprite appearance (seed, equipment, wear state).
+    /// Adding new visual dimensions later is a Rust-only change: extend
+    /// `CreatureDrawInfo`, and the cache invalidates automatically.
+    #[func]
+    fn get_elf_sprites(&mut self) -> VarDictionary {
+        use elven_canopy_sim::inventory::{EquipSlot, WearCategory};
+        use elven_canopy_sprites::{CreatureDrawInfo, EquipSlotDrawInfo};
+
+        let mut textures = VarArray::new();
+        let mut changed = PackedByteArray::new();
+        let Some(sim) = &self.session.sim else {
+            let mut result = VarDictionary::new();
+            result.set("textures", textures);
+            result.set("changed", changed);
+            return result;
+        };
+
+        let worn_pct = sim.config.durability_worn_pct;
+        let damaged_pct = sim.config.durability_damaged_pct;
+
+        let alive_elves: Vec<_> = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == Species::Elf && c.vital_status == VitalStatus::Alive)
+            .collect();
+
+        // Resize cache if elf count changed.
+        // We'll rebuild entries that need it below.
+        let elf_count = alive_elves.len();
+
+        for (i, creature) in alive_elves.iter().enumerate() {
+            // Build the draw info from current sim state.
+            let mut equipment = [None; EquipSlot::COUNT];
+            for stack in sim.inv_items(creature.inventory_id) {
+                if let Some(slot) = stack.equipped_slot {
+                    let color = sim.item_color(&stack);
+                    equipment[slot as usize] = Some(EquipSlotDrawInfo {
+                        kind: stack.kind,
+                        color: elven_canopy_sprites::Color::from_item_color(color),
+                        wear: WearCategory::from_hp(
+                            stack.current_hp,
+                            stack.max_hp,
+                            worn_pct,
+                            damaged_pct,
+                        ),
+                    });
+                }
+            }
+            let info = CreatureDrawInfo {
+                seed: i as i64,
+                equipment,
+            };
+
+            // Check cache hit.
+            let is_changed = if i < self.elf_sprite_cache.len() {
+                self.elf_sprite_cache[i].0 != info
+            } else {
+                true
+            };
+
+            if is_changed {
+                let buf = elven_canopy_sprites::create_creature_sprite(&info);
+                if let Some(tex) = pixel_buffer_to_texture(&buf) {
+                    if i < self.elf_sprite_cache.len() {
+                        self.elf_sprite_cache[i] = (info, tex.clone());
+                    } else {
+                        self.elf_sprite_cache.push((info, tex.clone()));
+                    }
+                    textures.push(&tex.to_variant());
+                    changed.push(1);
+                } else {
+                    // pixel_buffer_to_texture failed (shouldn't happen).
+                    // Push cached texture if available, otherwise skip to
+                    // keep textures/changed arrays aligned.
+                    if i < self.elf_sprite_cache.len() {
+                        textures.push(&self.elf_sprite_cache[i].1.to_variant());
+                    }
+                    changed.push(0);
+                }
+            } else {
+                textures.push(&self.elf_sprite_cache[i].1.to_variant());
+                changed.push(0);
+            }
+        }
+
+        // Trim cache if elf count shrank (deaths).
+        self.elf_sprite_cache.truncate(elf_count);
+
+        let mut result = VarDictionary::new();
+        result.set("textures", textures);
+        result.set("changed", changed);
+        result
     }
 
     /// Return positions of all in-flight projectiles as a PackedVector3Array.

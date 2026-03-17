@@ -101,8 +101,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-emotions             Multi-dimensional emotional state
-[ ] F-equipment-color      Equipment sprites use item resolved color
-[ ] F-equipment-sprites    Dynamic sprite customization for equipment
 [ ] F-ff-vertical-arc      Vertical arc awareness for friendly-fire checks
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
@@ -220,6 +218,8 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-elfcyclopedia-srv    Embedded localhost HTTP elfcyclopedia server
 [x] F-emotions-basic       Mood score from thought weights
 [x] F-engagement-style     Unified engagement style (species + military group combat tactics)
+[x] F-equipment-color      Equipment sprites use item resolved color
+[x] F-equipment-sprites    Dynamic sprite customization for equipment
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-flee                 Flee behavior for civilians
 [x] F-food-gauge           Creature food gauge with decay
@@ -2811,7 +2811,7 @@ Auto-refresh via meta tag. Independent of all sim/worldgen features.
 **Draft:** `docs/drafts/elfcyclopedia_civs.md` §Elfcyclopedia (Web-Based)
 
 #### F-equipment-color — Equipment sprites use item resolved color
-**Status:** Todo
+**Status:** Done
 
 Equipment sprite overlays use the item's resolved color (from
 F-item-color) to tint drawn equipment. A dyed-red breastplate renders
@@ -2819,11 +2819,10 @@ red; an undyed oak breastplate renders oak-brown. The per-equipment
 drawing functions in `elven_canopy_sprites` accept a color parameter
 sourced from `item_color(stack)`.
 
-**Blocked by:** F-equipment-sprites
-**Unblocked by:** F-item-color
+**Unblocked by:** F-equipment-sprites, F-item-color
 
 #### F-equipment-sprites — Dynamic sprite customization for equipment
-**Status:** Todo
+**Status:** Done
 
 Creature sprites dynamically reflect equipped items — weapons, tools,
 clothing, and armor are drawn as overlays on the base procedural sprite
@@ -2843,8 +2842,8 @@ Design decisions:
   equipped item set). The gdext bridge exposes final composited textures
   to Godot.
 
-**Blocks:** F-equipment-color
 **Unblocked by:** F-clothing, F-rust-sprites
+**Unblocked:** F-equipment-color
 
 #### F-follow-multi — Camera zoom-to and follow for multi-selections
 **Status:** Todo · **Phase:** 5
