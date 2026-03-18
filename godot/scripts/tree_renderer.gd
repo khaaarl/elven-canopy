@@ -209,7 +209,6 @@ func _build_tiling_material(material_id: int) -> ShaderMaterial:
 	return mat
 
 
-
 ## Build or rebuild the MeshInstance3D for a single chunk.
 ##
 ## The Rust side always emits exactly 3 surfaces in fixed order:
@@ -260,7 +259,6 @@ func _extract_frustum_planes() -> PackedFloat32Array:
 		arr[i * 4 + 2] = p.normal.z
 		arr[i * 4 + 3] = p.d
 	return arr
-
 
 
 ## Generate and cache fruit textures for all species in the world.

@@ -26,10 +26,15 @@
 // - **Save/load:** `save_game_json()` returns the sim state as a JSON string,
 //   `load_game_json(json)` replaces the current sim from a JSON string.
 //   File I/O is handled in GDScript via Godot's `user://` paths.
-// - **World data / chunk mesh:** `build_world_mesh()` builds the initial
-//   chunk mesh cache, `update_world_mesh()` incrementally regenerates dirty
-//   chunks, `build_chunk_array_mesh(cx,cy,cz)` returns a Godot `ArrayMesh`
-//   for one chunk. `get_fruit_voxels()` — flat `PackedInt32Array` of (x,y,z,species_id)
+// - **World data / chunk mesh:** `build_world_mesh()` scans the world and
+//   populates the MegaChunk spatial index (no meshes generated yet).
+//   `update_world_mesh()` incrementally regenerates dirty visible chunks.
+//   `update_visibility(cam_x,cam_y,cam_z,frustum)` performs draw-distance and
+//   frustum culling, generates meshes on demand, and produces delta lists:
+//   `get_chunks_to_show/hide()`, `get_chunks_generated()`, `get_chunks_evicted()`.
+//   `set_draw_distance()` / `set_mesh_memory_budget()` configure culling/LRU.
+//   `build_chunk_array_mesh(cx,cy,cz)` returns a Godot `ArrayMesh` for one chunk.
+//   `get_fruit_voxels()` — flat `PackedInt32Array` of (x,y,z,species_id)
 //   quads for fruit billboard sprite rendering (fruit is not part of chunk mesh).
 // - **Creature positions:** `get_creature_positions(species_name, render_tick)`
 //   — `PackedVector3Array` for billboard sprite placement (used by renderers).
@@ -4512,7 +4517,7 @@ impl SimBridge {
         if let Some(cutoff) = old_cutoff {
             cache.set_y_cutoff(Some(cutoff));
         }
-        cache.build_all(&sim.world);
+        cache.scan_nonempty_chunks(&sim.world);
         self.mesh_cache = Some(cache);
     }
 
@@ -4528,10 +4533,10 @@ impl SimBridge {
         if let Some(cutoff) = old_cutoff {
             cache.set_y_cutoff(Some(cutoff));
         }
-        cache.build_all(&sim.world);
+        cache.scan_nonempty_chunks(&sim.world);
         godot_print!(
-            "SimBridge: built world mesh ({} non-empty chunks)",
-            cache.chunk_coords().len()
+            "SimBridge: scanned world mesh ({} megachunks)",
+            cache.megachunk_count()
         );
         self.mesh_cache = Some(cache);
     }

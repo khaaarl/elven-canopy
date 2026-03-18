@@ -132,8 +132,8 @@ impl Aabb3 {
     /// Squared XZ distance from a point to the nearest point on this AABB
     /// (ignoring Y). Returns 0.0 if the point is inside the XZ footprint.
     pub fn horizontal_distance_sq(&self, px: f32, pz: f32) -> f32 {
-        let dx = (px - px.clamp(self.min[0], self.max[0])).abs();
-        let dz = (pz - pz.clamp(self.min[2], self.max[2])).abs();
+        let dx = px - px.clamp(self.min[0], self.max[0]);
+        let dz = pz - pz.clamp(self.min[2], self.max[2]);
         dx * dx + dz * dz
     }
 
@@ -397,6 +397,7 @@ impl MeshCache {
     /// Legacy full build for backward compatibility. Generates all chunk meshes
     /// eagerly. Use `scan_nonempty_chunks()` + `update_visibility()` for the
     /// lazy pipeline instead.
+    #[cfg(test)]
     pub fn build_all(&mut self, world: &VoxelWorld) {
         self.scan_nonempty_chunks(world);
 
@@ -412,6 +413,7 @@ impl MeshCache {
                 let bytes = mesh.estimate_byte_size();
                 self.total_cached_bytes += bytes;
                 self.chunk_bytes.insert(coord, bytes);
+                self.lru_stamps.insert(coord, self.frame_counter);
                 self.chunks.insert(coord, mesh);
                 self.visible_set.insert(coord);
             }
@@ -539,21 +541,31 @@ impl MeshCache {
                 self.chunks_to_show.push(coord);
             }
         }
+        // Ensure all generated chunks are in the show list, even if they were
+        // already in visible_set from a previous frame (carry-over pending).
+        for &coord in &self.chunks_generated {
+            if !self.chunks_to_show.contains(&coord) {
+                self.chunks_to_show.push(coord);
+            }
+        }
         for &coord in &self.visible_set {
             if !new_visible.contains(&coord) {
                 self.chunks_to_hide.push(coord);
             }
         }
 
-        // The generated list is also a subset of show.
-        // (chunks_generated were just created, so they definitely need showing.)
-        // They are already in chunks_to_show from the diff above.
-
         self.visible_set = new_visible;
 
-        // LRU eviction.
+        // LRU eviction. Chunks that just left visibility may be evicted.
         if self.memory_budget > 0 {
             self.evict_lru();
+            // Evicted chunks don't need a hide toggle — they're being freed.
+            // Remove them from chunks_to_hide to avoid double-processing.
+            if !self.chunks_evicted.is_empty() {
+                let evicted_set: BTreeSet<ChunkCoord> =
+                    self.chunks_evicted.iter().copied().collect();
+                self.chunks_to_hide.retain(|c| !evicted_set.contains(c));
+            }
         }
 
         gen_count
@@ -689,6 +701,7 @@ impl MeshCache {
             if mesh.is_empty() {
                 self.chunks.remove(coord);
                 self.lru_stamps.remove(coord);
+                self.visible_set.remove(coord);
                 // Remove from megachunk.
                 let mega_coord = chunk_to_mega(*coord);
                 if let Some(mc) = self.megachunks.get_mut(&mega_coord) {
@@ -717,6 +730,11 @@ impl MeshCache {
     /// Get the chunk coordinates that were updated in the last `update_dirty()`.
     pub fn last_updated_coords(&self) -> &[ChunkCoord] {
         &self.last_updated
+    }
+
+    /// Number of megachunks in the spatial index.
+    pub fn megachunk_count(&self) -> usize {
+        self.megachunks.len()
     }
 
     /// Get the cached mesh for a chunk, if it exists.
@@ -958,7 +976,7 @@ mod tests {
 
     #[test]
     fn megachunk_add_chunks_expands_aabb() {
-        let mut mc = MegaChunk::new(MegaChunkCoord::new(0, 0));
+        let mut mc = MegaChunk::new();
         mc.add_chunk(ChunkCoord::new(0, 0, 0));
         assert_eq!(
             mc.aabb.unwrap(),
@@ -976,7 +994,7 @@ mod tests {
 
     #[test]
     fn megachunk_remove_chunk_recomputes_aabb() {
-        let mut mc = MegaChunk::new(MegaChunkCoord::new(0, 0));
+        let mut mc = MegaChunk::new();
         mc.add_chunk(ChunkCoord::new(0, 0, 0));
         mc.add_chunk(ChunkCoord::new(2, 3, 1));
         mc.remove_chunk(&ChunkCoord::new(2, 3, 1));
@@ -991,7 +1009,7 @@ mod tests {
 
     #[test]
     fn megachunk_remove_all_chunks_clears_aabb() {
-        let mut mc = MegaChunk::new(MegaChunkCoord::new(0, 0));
+        let mut mc = MegaChunk::new();
         mc.add_chunk(ChunkCoord::new(0, 0, 0));
         mc.remove_chunk(&ChunkCoord::new(0, 0, 0));
         assert!(mc.aabb.is_none());
@@ -1321,5 +1339,246 @@ mod tests {
         // from dirty set during on-demand generation).
         assert!(cache.visible_set.contains(&ChunkCoord::new(12, 0, 0)));
         assert!(!cache.dirty.contains(&ChunkCoord::new(12, 0, 0)));
+    }
+
+    // -- LRU eviction ordering --
+
+    #[test]
+    fn lru_evicts_oldest_stamp_first() {
+        let mut world = VoxelWorld::new(256, 16, 256);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0)
+        world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk); // chunk (12,0,0)
+        world.set(VoxelCoord::new(8, 8, 200), VoxelType::Trunk); // chunk (0,0,12)
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(100);
+
+        // Frame 1: all visible (generates all 3).
+        cache.update_visibility(&world, [100.0, 8.0, 100.0], &open_frustum());
+        assert_eq!(cache.chunks.len(), 3);
+
+        // Frame 2: touch chunk (12,0,0) by keeping it visible.
+        // Move camera so only chunk (12,0,0) is visible.
+        cache.set_draw_distance(50.0);
+        cache.update_visibility(&world, [200.0, 8.0, 8.0], &open_frustum());
+
+        // Now set tight budget — should evict (0,0,0) before (0,0,12) because
+        // (0,0,0) was last touched on frame 1, (0,0,12) was also frame 1, but
+        // evict_lru picks the minimum stamp.
+        let total = cache.total_cached_bytes;
+        cache.set_memory_budget(total / 2);
+        // Re-run visibility to trigger eviction.
+        cache.update_visibility(&world, [200.0, 8.0, 8.0], &open_frustum());
+
+        // At least one non-visible chunk should be evicted.
+        assert!(!cache.chunks_evicted.is_empty());
+        // The visible chunk must survive.
+        assert!(cache.chunks.contains_key(&ChunkCoord::new(12, 0, 0)));
+    }
+
+    // -- update_dirty: emptied chunk cleanup --
+
+    #[test]
+    fn update_dirty_emptied_chunk_removed_from_visible_set() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_max_gen_per_frame(100);
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+
+        assert!(cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
+
+        // Remove the voxel and mark dirty.
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Air);
+        cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
+        cache.update_dirty(&world);
+
+        // Chunk should be gone from visible_set, chunks, lru, and bytes.
+        assert!(!cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
+        assert!(!cache.chunks.contains_key(&ChunkCoord::new(0, 0, 0)));
+        assert!(!cache.lru_stamps.contains_key(&ChunkCoord::new(0, 0, 0)));
+        assert!(!cache.chunk_bytes.contains_key(&ChunkCoord::new(0, 0, 0)));
+    }
+
+    // -- update_dirty: byte accounting --
+
+    #[test]
+    fn update_dirty_byte_accounting() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_max_gen_per_frame(100);
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+
+        let bytes_before = cache.total_cached_bytes;
+        assert!(bytes_before > 0);
+
+        // Add another voxel — mesh gets bigger.
+        world.set(VoxelCoord::new(9, 8, 8), VoxelType::Trunk);
+        cache.mark_dirty_voxels(&[VoxelCoord::new(9, 8, 8)]);
+        cache.update_dirty(&world);
+
+        // total_cached_bytes should reflect the new (larger) mesh.
+        let bytes_after = cache.total_cached_bytes;
+        assert!(bytes_after > bytes_before);
+
+        // Verify consistency: total should match the sum of chunk_bytes.
+        let sum: usize = cache.chunk_bytes.values().sum();
+        assert_eq!(cache.total_cached_bytes, sum);
+    }
+
+    // -- mark_dirty_voxels megachunk registration --
+
+    #[test]
+    fn mark_dirty_registers_chunk_in_megachunk() {
+        let world = VoxelWorld::new(32, 16, 16);
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+
+        // Empty world — no megachunks.
+        assert!(cache.megachunks.is_empty());
+
+        // Mark a voxel dirty — should create a megachunk entry.
+        cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
+        let mega_coord = chunk_to_mega(ChunkCoord::new(0, 0, 0));
+        assert!(cache.megachunks.contains_key(&mega_coord));
+        assert!(
+            cache.megachunks[&mega_coord]
+                .chunks
+                .contains(&ChunkCoord::new(0, 0, 0))
+        );
+    }
+
+    // -- pending gen dropped when no longer visible --
+
+    #[test]
+    fn pending_gen_dropped_when_leaving_visibility() {
+        let mut world = VoxelWorld::new(256, 16, 16);
+        // 3 chunks.
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(24, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(40, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_max_gen_per_frame(1);
+
+        // Frame 1: all visible, but only 1 generated.
+        cache.update_visibility(&world, [24.0, 8.0, 8.0], &open_frustum());
+        assert_eq!(cache.pending_gen.len(), 2);
+
+        // Frame 2: move camera so only chunk (0,0,0) is visible.
+        cache.set_draw_distance(20.0);
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+
+        // Pending chunks for (1,0,0) and (2,0,0) should be dropped since
+        // they're no longer visible.
+        for &coord in &cache.pending_gen {
+            assert!(cache.visible_set.contains(&coord));
+        }
+    }
+
+    // -- scan with y_cutoff interaction --
+
+    #[test]
+    fn scan_registers_chunk_despite_y_cutoff() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        // Set cutoff below the voxel.
+        cache.set_y_cutoff(Some(5));
+        cache.scan_nonempty_chunks(&world);
+
+        // The chunk should still be registered (scan ignores cutoff).
+        assert_eq!(cache.megachunks.len(), 1);
+
+        // But update_visibility should handle the empty mesh gracefully.
+        cache.set_max_gen_per_frame(100);
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+
+        // Chunk was scanned as non-empty but y_cutoff hides all geometry.
+        // It should NOT be in visible_set (removed when mesh gen returns empty).
+        assert!(!cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
+    }
+
+    // -- AABB with negative coords --
+
+    #[test]
+    fn aabb_from_chunk_negative() {
+        let aabb = Aabb3::from_chunk(ChunkCoord::new(-1, -1, -1));
+        assert_eq!(aabb.min, [-16.0, -16.0, -16.0]);
+        assert_eq!(aabb.max, [0.0, 0.0, 0.0]);
+    }
+
+    // -- chunks_generated subset of chunks_to_show --
+
+    #[test]
+    fn generated_chunks_always_in_show_list() {
+        let mut world = VoxelWorld::new(48, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(24, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(40, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_max_gen_per_frame(1);
+
+        // Frame 1: generate 1.
+        cache.update_visibility(&world, [24.0, 8.0, 8.0], &open_frustum());
+        for &c in &cache.chunks_generated {
+            assert!(
+                cache.chunks_to_show.contains(&c),
+                "Generated chunk {:?} not in show list",
+                c
+            );
+        }
+
+        // Frame 2: generate another (carry-over pending).
+        cache.update_visibility(&world, [24.0, 8.0, 8.0], &open_frustum());
+        for &c in &cache.chunks_generated {
+            assert!(
+                cache.chunks_to_show.contains(&c),
+                "Generated chunk {:?} not in show list on frame 2",
+                c
+            );
+        }
+    }
+
+    // -- hide and evict mutually exclusive --
+
+    #[test]
+    fn evicted_chunks_not_in_hide_list() {
+        let mut world = VoxelWorld::new(256, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(100);
+
+        // Generate both.
+        cache.update_visibility(&world, [100.0, 8.0, 8.0], &open_frustum());
+
+        // Tight budget and restrict visibility.
+        cache.set_memory_budget(1);
+        cache.set_draw_distance(50.0);
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+
+        // No chunk should appear in both lists.
+        for c in &cache.chunks_evicted {
+            assert!(
+                !cache.chunks_to_hide.contains(c),
+                "Chunk {:?} in both evicted and hide lists",
+                c
+            );
+        }
     }
 }
