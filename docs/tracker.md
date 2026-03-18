@@ -1801,9 +1801,10 @@ task abandonment (clear reservations or drop carried items as ground pile).
 **Status:** Todo
 
 Gathering forest plants and brewing them into useful products — healing
-salves (F-rescue), combat buffs, mood tonics, poultices for tree diseases
-(F-tree-disease). Requires foraging from the forest floor (F-forest-ecology)
-and a workshop or alchemist's station. Needs more design research before
+salves (F-rescue), combat buffs, mood tonics, mana potions (restore or
+boost mana generation), poultices for tree diseases (F-tree-disease).
+Requires foraging from the forest floor (F-forest-ecology) and a
+workshop or alchemist's station. Needs more design research before
 implementation.
 
 **Related:** F-forest-ecology, F-rescue, F-tree-disease
