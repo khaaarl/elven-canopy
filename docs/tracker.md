@@ -231,6 +231,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-war-magic            War magic (combat spells)
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
+[ ] F-wood-stats           Wood-type material variation for crafted items
 [ ] F-world-boundary       World boundary visualization
 [ ] F-world-map            World map view
 [ ] F-zone-world           Zone-based world with fidelity partitioning
@@ -2159,6 +2160,11 @@ into the tree's living surface.
 
 **Related:** F-fruit-prod, F-greenhouse-revamp
 
+#### F-wood-stats — Wood-type material variation for crafted items
+**Status:** Todo
+
+**Related:** F-elf-weapons
+
 ### Social & Emotional
 
 #### F-apprentice — Skill transfer via proximity
@@ -2604,7 +2610,7 @@ the construction system to support these build types.
 Weapon types with different ranges, damage, and crafting requirements.
 
 **Unblocked by:** F-crafting
-**Related:** F-bldg-workshop, F-combat
+**Related:** F-bldg-workshop, F-combat, F-wood-stats
 
 #### F-enemy-ai — Hostile creature AI (goblin/orc/troll behavior)
 **Status:** In Progress
