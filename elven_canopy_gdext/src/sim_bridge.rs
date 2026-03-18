@@ -4839,6 +4839,126 @@ impl SimBridge {
     }
 
     // ========================================================================
+    // MegaChunk visibility methods
+    // ========================================================================
+
+    /// Set the draw distance in voxels (XZ). Chunks beyond this radius from
+    /// the camera are hidden. Pass 0.0 for unlimited (show everything).
+    #[func]
+    fn set_draw_distance(&mut self, radius_voxels: f32) {
+        if let Some(cache) = &mut self.mesh_cache {
+            cache.set_draw_distance(radius_voxels);
+        }
+    }
+
+    /// Set the mesh memory budget in bytes. Cached chunk meshes beyond this
+    /// budget are evicted LRU. Pass 0 for unlimited (no eviction).
+    #[func]
+    fn set_mesh_memory_budget(&mut self, bytes: i64) {
+        if let Some(cache) = &mut self.mesh_cache {
+            cache.set_memory_budget(bytes.max(0) as usize);
+        }
+    }
+
+    /// Update chunk visibility based on camera position and frustum planes.
+    /// `frustum` is a PackedFloat32Array of 24 floats: 6 planes × [nx,ny,nz,d].
+    /// Returns the number of chunk meshes generated this frame.
+    #[func]
+    fn update_visibility(
+        &mut self,
+        cam_x: f32,
+        cam_y: f32,
+        cam_z: f32,
+        frustum: PackedFloat32Array,
+    ) -> i32 {
+        let Some(sim) = &self.session.sim else {
+            return 0;
+        };
+        let Some(cache) = &mut self.mesh_cache else {
+            return 0;
+        };
+        let cam_pos = [cam_x, cam_y, cam_z];
+        let planes: Vec<[f32; 4]> = frustum
+            .as_slice()
+            .chunks_exact(4)
+            .map(|c| [c[0], c[1], c[2], c[3]])
+            .collect();
+        cache.update_visibility(&sim.world, cam_pos, &planes) as i32
+    }
+
+    /// Return chunks that should become visible this frame (set .visible=true).
+    /// Flat PackedInt32Array of (cx,cy,cz) triples.
+    #[func]
+    fn get_chunks_to_show(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for c in cache.chunks_to_show() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
+    /// Return chunks that should become hidden this frame (set .visible=false).
+    /// Flat PackedInt32Array of (cx,cy,cz) triples.
+    #[func]
+    fn get_chunks_to_hide(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for c in cache.chunks_to_hide() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
+    /// Return freshly generated chunks (subset of chunks_to_show that need
+    /// new MeshInstance3D creation). Flat PackedInt32Array of (cx,cy,cz) triples.
+    #[func]
+    fn get_chunks_generated(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for c in cache.chunks_generated() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
+    /// Return chunks evicted from the LRU cache (free their MeshInstance3D).
+    /// Flat PackedInt32Array of (cx,cy,cz) triples.
+    #[func]
+    fn get_chunks_evicted(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for c in cache.chunks_evicted() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
+    /// Return total cached mesh memory in bytes.
+    #[func]
+    fn get_total_mesh_bytes(&self) -> i64 {
+        self.mesh_cache
+            .as_ref()
+            .map_or(0, |c| c.total_cached_bytes() as i64)
+    }
+
+    // ========================================================================
     // Ladder methods
     // ========================================================================
 
