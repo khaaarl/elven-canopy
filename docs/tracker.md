@@ -171,7 +171,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-recipe-params        Parameterized recipe templates
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
-[ ] F-rle-voxels           RLE column-based voxel storage
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-round-building       Round/circular building construction
@@ -336,6 +335,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-recipes              Recipe system for crafting/cooking
 [x] F-relay-multi-game     Relay server supports multiple simultaneous games
 [x] F-relay-release        Standalone relay server release build
+[x] F-rle-voxels           RLE column-based voxel storage
 [x] F-roof-click-select    Roof click selects building, not elf underneath
 [x] F-rts-selection        RTS box selection and multi-creature commands
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
@@ -1089,8 +1089,8 @@ instead of ~134M.
 
 Also replace the flat `Vec<u32>` nav spatial index with a `HashMap<VoxelCoord, NavNodeId>` — point queries only, never iterated in order, so no determinism concern. Eliminates the 4-bytes-per-voxel overhead that would otherwise scale with world volume.
 
-**Blocked by:** F-rle-voxels
 **Blocks:** F-bigger-world
+**Unblocked by:** F-rle-voxels
 
 #### F-nav-graph — Navigation graph construction
 **Status:** Done · **Phase:** 1 · **Refs:** §10
@@ -2885,7 +2885,8 @@ Increase the playable area beyond the current single-tree-centered map.
 Likely involves chunk streaming, camera bounds expansion, and world gen
 changes. Prerequisite or co-requisite for lesser trees and multi-tree play.
 
-**Blocked by:** F-nav-gen-opt, F-rle-voxels
+**Blocked by:** F-nav-gen-opt
+**Unblocked by:** F-rle-voxels
 **Related:** F-lesser-trees, F-multi-tree, F-world-map, F-zone-world
 
 #### F-civ-knowledge — Civilization knowledge system (fruit tiers, discovery)
@@ -3734,7 +3735,7 @@ and any future bulk voxel queries.
 Depends on the bulk iteration API (column_spans / chunk_columns) from
 F-rle-voxels.
 
-**Blocked by:** F-rle-voxels
+**Unblocked by:** F-rle-voxels
 
 #### F-minimap — Minimap with tree silhouette and creature positions
 **Status:** Done · **Phase:** 2
@@ -4167,7 +4168,7 @@ Plugin/scripting system for custom structures, elf behaviors, invader
 types. Open design question (§27).
 
 #### F-rle-voxels — RLE column-based voxel storage
-**Status:** Todo
+**Status:** Done
 
 Replace the flat `Vec<VoxelType>` voxel storage with a compressed
 column-based representation. Each column stores a sorted list of
@@ -4193,7 +4194,7 @@ of VoxelWorld completely replaced.
 
 **Draft:** `docs/drafts/rle_voxels.md`
 
-**Blocks:** F-bigger-world, F-mesh-gen-rle, F-nav-gen-opt
+**Unblocked:** F-bigger-world, F-mesh-gen-rle, F-nav-gen-opt
 
 #### F-save-load — Save/load to JSON with versioning
 **Status:** Done · **Phase:** 2 · **Refs:** §4, §5

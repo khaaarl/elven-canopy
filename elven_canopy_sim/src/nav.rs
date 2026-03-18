@@ -58,7 +58,7 @@
 // `NavGraph` as part of `SimState`, `species.rs` for the `footprint` field.
 //
 // **Critical constraint: determinism.** The graph is built by iterating voxels
-// in fixed order (matching the flat index of `VoxelWorld`). Node/edge IDs are
+// in fixed order (Y-then-Z-then-X iteration over world bounds). Node/edge IDs are
 // sequential integers assigned in that order. Incremental updates are also
 // deterministic — they process affected positions in a fixed order.
 

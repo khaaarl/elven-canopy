@@ -30,8 +30,9 @@ if the topmost material is Air, that final Air span is omitted (since Air
 above the last explicit span is implied). This saves 2 bytes per column in
 the overwhelmingly common case.
 
-**World height constraint:** `size_y` must be ≤ 256 so that Y coordinates
-fit in a `u8`. The current default (128) and likely maximum (255) both fit.
+**World height constraint:** `size_y` must be in `[1, 255]`. Y coordinates
+are stored as `u8` with valid range `[0, size_y - 1]`. The current default
+is 128.
 
 ### Examples
 

@@ -37,7 +37,7 @@ elven-canopy/
 │       ├── pathfinding.rs      # A* search over NavGraph
 │       ├── projectile.rs       # Integer-only ballistic trajectories, aim solver
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
-│       ├── world.rs            # Dense 3D voxel grid
+│       ├── world.rs            # RLE column-based voxel grid
 │       └── worldgen.rs         # Worldgen framework — generator sequencing, worldgen PRNG
 ├── elven_canopy_lang/          # Shared Vaelith conlang (types, lexicon, name gen)
 │   └── src/

@@ -1110,6 +1110,7 @@ impl FaceData {
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
 )]
+#[repr(u8)]
 pub enum VoxelType {
     #[default]
     Air,
@@ -1203,6 +1204,25 @@ impl VoxelType {
         matches!(self, VoxelType::WoodLadder | VoxelType::RopeLadder)
     }
 
+    /// Number of VoxelType variants. Used for compile-time validation.
+    pub const COUNT: usize = 16;
+
+    /// Convert a `u8` discriminant back to a `VoxelType`. Returns `Air` for
+    /// out-of-range values. Safe because `VoxelType` is `#[repr(u8)]`.
+    pub fn from_u8(v: u8) -> Self {
+        if (v as usize) < Self::COUNT {
+            // SAFETY: VoxelType is #[repr(u8)] with COUNT variants numbered 0..COUNT-1.
+            unsafe { std::mem::transmute::<u8, VoxelType>(v) }
+        } else {
+            VoxelType::Air
+        }
+    }
+
+    /// Convert to the `u8` discriminant. Safe because `VoxelType` is `#[repr(u8)]`.
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
     /// Classify this voxel type for construction overlap with tree geometry.
     pub fn classify_for_overlap(self) -> OverlapClassification {
         match self {
@@ -1224,6 +1244,23 @@ impl VoxelType {
         }
     }
 }
+
+// Compile-time check: VoxelType::COUNT must match the actual variant count.
+// If a variant is added or removed without updating COUNT, this will fail.
+const _: () = assert!(std::mem::size_of::<VoxelType>() == 1);
+// This array has COUNT elements; if COUNT != actual variants, from_u8 is unsound.
+const _VOXEL_TYPE_EXHAUSTIVE: [(); VoxelType::COUNT] = {
+    // Ensure every discriminant 0..COUNT maps to a known variant by round-tripping.
+    let mut arr = [(); VoxelType::COUNT];
+    let mut i = 0;
+    while i < VoxelType::COUNT {
+        // Transmute is valid because repr(u8) and i < COUNT.
+        let v: VoxelType = unsafe { std::mem::transmute(i as u8) };
+        arr[v as u8 as usize] = ();
+        i += 1;
+    }
+    arr
+};
 
 /// Compute the `FaceData` for a ladder voxel with the given orientation.
 ///
