@@ -69,7 +69,7 @@
 //
 // **Critical constraint: determinism.** The solver iterates nodes in flat-array
 // order (x inner, z mid, y outer), uses fixed iteration count, and avoids
-// HashMap. All floating-point operations are deterministic given identical input.
+// iterated HashMap. All floating-point operations are deterministic given identical input.
 
 use crate::config::GameConfig;
 use crate::db::Strut;

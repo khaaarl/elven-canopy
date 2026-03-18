@@ -50,7 +50,7 @@
 // passed by the caller. The FIFO work queue ensures breadth-first processing
 // order. RNG draws happen in fixed patterns per step (always draw split roll
 // when eligible, always draw curvature rolls). `f32` trig is IEEE 754.
-// No HashMap.
+// No iterated HashMap.
 
 use crate::config::{GameConfig, LeafShape, TreeProfile};
 use crate::prng::GameRng;

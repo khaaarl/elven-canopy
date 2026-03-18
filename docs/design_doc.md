@@ -175,7 +175,7 @@ In single-player, the GDScript glue translates UI actions into `SimCommand` and 
 
 **Floating point:** Basic arithmetic (+, -, ×, ÷) is deterministic on the same platform/architecture. Avoid transcendental functions (sin, cos, sqrt) in the sim, or use fixed-point/soft-float alternatives. Initial target: determinism across x86_64 clients. Cross-architecture determinism (x86 vs ARM) deferred.
 
-**Collection ordering:** No `HashMap` in the sim crate. Use `BTreeMap` for ordered iteration, or `Vec` with explicit sorting. Iteration order must be deterministic.
+**Collection ordering:** No iterating `HashMap` in the sim crate. Use `BTreeMap` for ordered iteration, `LookupMap` (non-iterable `HashMap` wrapper) for point-query-only O(1) access, or `Vec` with explicit sorting. Iteration order must be deterministic.
 
 **No system dependencies:** The sim must not depend on system time, thread scheduling, memory layout, or allocation order.
 

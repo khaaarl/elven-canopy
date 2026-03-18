@@ -3,7 +3,7 @@
 // Implements standard A* search using a `BinaryHeap` (min-heap via reversed
 // ordering, same pattern as `EventQueue`). Node scores and came-from data
 // are stored in `Vec`s indexed by `NavNodeId` for O(1) access and
-// deterministic behavior (no `HashMap`).
+// deterministic behavior (no iterated `HashMap` — use `LookupMap` for point queries).
 //
 // Edge costs are species-dependent: `edge.distance * ticks_per_voxel`, where
 // `ticks_per_voxel` is `walk_ticks_per_voxel` for flat edges and

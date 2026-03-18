@@ -28,6 +28,7 @@
 // - `blueprint.rs`:   Blueprint data model for the construction system.
 // - `structural.rs`:  Spring-mass structural integrity solver.
 // - `inventory.rs`:   Item type enum (`ItemKind`). Storage is in `db.rs` tabulosity tables.
+// - `lookup_map.rs`:  LookupMap — non-iterable HashMap wrapper for deterministic point-query access.
 // - `session.rs`:     GameSession — message-driven session management (players, commands, pause/resume).
 // - `local_relay.rs`: LocalRelay — accumulator-based tick pacer for single-player mode.
 // - `checksum.rs`:    FNV-1a hashing + interval constant for multiplayer desync detection.
@@ -41,8 +42,9 @@
 //
 // **Critical constraint: determinism.** The simulation is a pure function:
 // `(state, commands) -> (new_state, events)`. All randomness comes from a
-// seeded xoshiro256++ PRNG (re-exported from `elven_canopy_prng`). No `HashMap`, no system time,
-// no OS entropy. Use `BTreeMap` for ordered collections.
+// seeded xoshiro256++ PRNG (re-exported from `elven_canopy_prng`). No iterating `HashMap` —
+// use `BTreeMap` for ordered iteration, `LookupMap` for point-query-only O(1) access.
+// No system time, no OS entropy.
 
 pub mod blueprint;
 pub mod building;
@@ -54,6 +56,7 @@ pub mod event;
 pub mod fruit;
 pub mod inventory;
 pub mod local_relay;
+pub mod lookup_map;
 pub mod mesh_gen;
 pub mod nav;
 pub mod pathfinding;

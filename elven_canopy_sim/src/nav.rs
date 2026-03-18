@@ -51,7 +51,7 @@
 // via `graph_for_species()` based on the species' footprint.
 //
 // All storage uses `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
-// and deterministic iteration order. No `HashMap`.
+// and deterministic iteration order. Point-query-only maps may use `LookupMap`.
 //
 // See also: `world.rs` for the voxel grid, `tree_gen.rs` for tree geometry,
 // `pathfinding.rs` for A* search over this graph, `sim/mod.rs` which owns the

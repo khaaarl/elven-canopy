@@ -34,9 +34,9 @@
 // tree profile config stays at the top level of `GameConfig`.
 //
 // **Critical constraint: determinism.** All generators use the worldgen PRNG
-// exclusively. No HashMap, no system time, no OS entropy. Use BTreeMap for
-// ordered collections. The generator order is fixed and must not change
-// without updating all downstream seeds.
+// exclusively. No iterated HashMap — use BTreeMap for ordered iteration,
+// LookupMap for point queries. No system time, no OS entropy. The generator
+// order is fixed and must not change without updating all downstream seeds.
 
 use std::collections::BTreeMap;
 

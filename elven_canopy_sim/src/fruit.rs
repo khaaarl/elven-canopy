@@ -25,7 +25,7 @@
 // `docs/drafts/fruit_variety.md` for the full design document.
 //
 // **Critical constraint: determinism.** All generation uses the worldgen PRNG.
-// No HashMap, no float (all integer math), no system entropy.
+// No iterated HashMap (use LookupMap for point queries), no float (all integer math), no system entropy.
 
 use std::collections::{BTreeMap, BTreeSet};
 

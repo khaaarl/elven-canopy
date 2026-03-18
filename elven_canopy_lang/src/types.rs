@@ -16,7 +16,7 @@
 // - `Word` — a complete word (root + optional suffixes) with syllable breakdown
 //
 // Determinism constraint: these types are used by `elven_canopy_sim` and must
-// not introduce any non-deterministic behavior (no HashMap, no system RNG).
+// not introduce any non-deterministic behavior (no iterated HashMap, no system RNG).
 
 use serde::{Deserialize, Serialize};
 

@@ -47,7 +47,7 @@
 // ## Determinism
 //
 // All tabulosity collections use `BTreeMap`/`BTreeSet` internally, matching
-// the determinism requirement. No `HashMap` usage.
+// the determinism requirement. No iterated `HashMap` — use `LookupMap` for point queries.
 //
 // See also: `sim/mod.rs` for `SimState` which owns the `SimDb` instance,
 // `types.rs` for all ID types, `docs/drafts/sim_db_schema_v4.md` for the
