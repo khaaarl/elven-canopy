@@ -135,6 +135,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-insect-husbandry     Beekeeping and insect husbandry
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
+[ ] F-leaf-tex-rethink     Evaluate bringing leaves into tiling texture system
 [ ] F-lesser-trees         Lesser trees (non-sentient, resource/ecology)
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
@@ -191,6 +192,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-priority        Priority queue and auto-assignment
+[ ] F-tiling-tex           Prime-period tiling textures for bark and ground
 [ ] F-traders              Visiting traders from other civs
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-db              Trees as DB entities with elf-tree bonding
@@ -2892,10 +2894,18 @@ costs, casting times, and effects.
 #### F-bigger-world — Larger playable area
 **Status:** Todo
 
-Increase the playable area beyond the current single-tree-centered map.
-Likely involves chunk streaming, camera bounds expansion, and world gen
-changes. Prerequisite or co-requisite for lesser trees and multi-tree play.
+Increase world size to 1024×255×1024. The tree and terrain start at
+~y=50, leaving room below for underground content (caves, drow, mining).
+Noisy hilly dirt terrain extends to the full map extent. Camera starts
+correspondingly higher.
 
+No chunk streaming needed — the RLE voxel storage (F-rle-voxels),
+RLE-aware mesh gen (F-mesh-gen-rle), and LookupMap nav spatial index
+(F-nav-gen-opt) already scale with surface complexity rather than world
+volume. The tiling texture system (F-tiling-tex) eliminates per-face
+atlas overhead that would otherwise be prohibitive at this scale.
+
+**Blocked by:** F-tiling-tex
 **Unblocked by:** F-nav-gen-opt, F-rle-voxels
 **Related:** F-lesser-trees, F-multi-tree, F-world-map, F-zone-world
 
@@ -3710,6 +3720,19 @@ chain, construction mode keys, etc. Pure GDScript UI — no sim changes.
 
 **Related:** F-build-queue-ui, F-controls-config, F-controls-config-C
 
+#### F-leaf-tex-rethink — Evaluate bringing leaves into tiling texture system
+**Status:** Todo
+
+Evaluate whether the leaf rendering system (currently a single shared
+alpha-scissor texture with full-range UVs) should be brought into the
+prime-period tiling texture system (F-tiling-tex). Leaves currently look
+uniform — tiling textures could add variety. But the alpha-scissor
+approach serves a different purpose (shape masking, not surface detail),
+so the integration may not be straightforward. Decision item, not
+implementation.
+
+**Related:** F-tiling-tex
+
 #### F-lod-sprites — LOD sprites (chibi / detailed)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
 
@@ -4033,6 +4056,37 @@ buttons instead of hex IDs. Adds `TaskOrigin` enum to `task.rs` with
 `PlayerDirected`, `Autonomous`, and `Automated` variants.
 
 **Modified files:** `task.rs`, `sim.rs`, `sim_bridge.rs`, `task_panel.gd`
+
+#### F-tiling-tex — Prime-period tiling textures for bark and ground
+**Status:** Todo
+
+Replace per-face atlas texture generation with a prime-period tiling
+system. Three independent caches (A, B, C) each generate monochrome
+face tiles from trig-based formulas that tile at different prime periods
+per axis:
+
+- Cache A: periods (11, 3, 7) for (x, y, z)
+- Cache B: periods (7, 5, 11)
+- Cache C: periods (5, 7, 5)
+
+No two caches share the same period on the same axis, so alignment
+artifacts never coincide. Y periods are smaller (less vertical variation
+needed, especially for ground) to keep cache sizes down: A=231, B=385,
+C=175 tiles total. Each cache also has irrational-ish per-axis phase
+offsets (e.g., x+3.72) so sine zeroes don't align at the origin.
+
+Tiles are generated lazily and cached by modular coordinates. The shader
+combines the three monochrome textures and applies a color ramp (same
+ramps as current voxel_color()). Face orientation maps UV axes to
+different world axes, adding another dimension of variety.
+
+Fully replaces the current FaceTileCache / FaceAtlas / per-chunk atlas
+pipeline in texture_gen.rs and the PendingFace / build_atlas_and_fixup
+code in mesh_gen.rs. Leaf surfaces are unaffected (they use a separate
+alpha-scissor texture).
+
+**Blocks:** F-bigger-world
+**Related:** F-leaf-tex-rethink
 
 #### F-tree-info — Tree stats/info panel
 **Status:** Done · **Phase:** 2
