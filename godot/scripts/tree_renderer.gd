@@ -5,10 +5,11 @@
 ## real time. The Rust sim generates per-chunk ArrayMesh data with up to three
 ## surfaces:
 ## - Surface 0 (bark): Trunk, Branch, Root, and construction voxels with
-##   per-face culling. Each face has a unique 16x16 Perlin noise texture tile
-##   packed into a per-chunk atlas.
-## - Surface 1 (ground): Dirt voxels with per-face atlas textures (same
-##   mechanism as bark but different noise coloring).
+##   per-face culling. Textured via a custom tiling shader that samples three
+##   global Texture2DArray caches at prime periods per axis. Bark caches use
+##   anisotropic noise with domain warping for organic grain lines.
+## - Surface 1 (ground): Dirt voxels, same shader but different tiling
+##   textures with isotropic noise (no grain, no warping).
 ## - Surface 2 (leaf): Leaf voxels with alpha-scissor transparency, cull
 ##   disabled so leaves are visible from both sides.
 ##
@@ -16,8 +17,9 @@
 ## side so surface indices are always stable (bark=0, ground=1, leaf=2).
 ##
 ## Each non-empty 16x16x16 chunk becomes one MeshInstance3D child with the
-## chunk's ArrayMesh. Bark and ground surfaces get per-chunk materials with
-## unique atlas textures; the leaf surface shares a single material.
+## chunk's ArrayMesh. Bark and ground each get a global ShaderMaterial with
+## material-specific tiling textures; the leaf surface shares a single
+## StandardMaterial3D.
 ##
 ## Fruit is rendered as billboarded Sprite3D nodes, one per fruit voxel,
 ## using procedural 16x16 pixel art textures from elven_canopy_sprites. Each
@@ -27,9 +29,10 @@
 ## frame via _refresh_fruit(), grouped by species for texture reuse.
 ##
 ## See also: mesh_gen.rs (sim crate) for the face-culled mesh generation
-## algorithm, texture_gen.rs for the 3D Perlin noise atlas generation,
+## algorithm, texture_gen.rs for the prime-period tiling texture system,
 ## mesh_cache.rs (gdext crate) for the chunk caching layer,
 ## sim_bridge.rs for build_world_mesh()/update_world_mesh()/build_chunk_array_mesh(),
+## bark_ground.gdshader for the tiling shader,
 ## main.gd which creates this node and calls setup() + refresh().
 
 extends Node3D
@@ -39,6 +42,10 @@ var _bridge: SimBridge
 var _leaf_texture: ImageTexture
 ## Leaf material: vertex color tinted alpha-scissor with procedural texture.
 var _leaf_material: StandardMaterial3D
+## Global tiling material for bark surfaces (anisotropic + domain-warped noise).
+var _bark_material: ShaderMaterial
+## Global tiling material for ground surfaces (isotropic noise).
+var _ground_material: ShaderMaterial
 ## Map from chunk key ("cx,cy,cz") to MeshInstance3D for fast lookup.
 var _chunk_instances: Dictionary = {}
 ## Fruit sprite texture cache: species_id (int) → ImageTexture.
@@ -54,6 +61,8 @@ func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
 	_leaf_texture = _generate_leaf_texture()
 	_leaf_material = _build_leaf_material()
+	_bark_material = _build_tiling_material(0)  # material 0 = bark
+	_ground_material = _build_tiling_material(1)  # material 1 = ground
 	_fruit_container = Node3D.new()
 	_fruit_container.name = "FruitSprites"
 	add_child(_fruit_container)
@@ -89,6 +98,41 @@ func _build_leaf_material() -> StandardMaterial3D:
 	return mat
 
 
+## Build a ShaderMaterial with the tiling shader for a specific material type.
+## material_id: 0=bark (anisotropic+warped), 1=ground (isotropic).
+func _build_tiling_material(material_id: int) -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	var shader := load("res://shaders/bark_ground.gdshader") as Shader
+	mat.shader = shader
+
+	# Upload the three tiling caches for this material type.
+	var cache_names := ["a", "b", "c"]
+	for ci in 3:
+		var layer_count := _bridge.get_tiling_layer_count(ci)
+		var periods := _bridge.get_tiling_periods(ci)
+		var tpap := _bridge.get_tiling_tiles_per_axis_pair(ci)
+		var data := _bridge.get_tiling_texture_data(material_id, ci)
+
+		# Build Texture2DArray from flat R8 data.
+		var images: Array[Image] = []
+		var tile_bytes := 16 * 16  # TILE_SIZE^2
+		for layer_idx in layer_count:
+			var offset := layer_idx * tile_bytes
+			var layer_data := data.slice(offset, offset + tile_bytes)
+			var img := Image.create_from_data(16, 16, false, Image.FORMAT_R8, layer_data)
+			images.append(img)
+
+		var tex_array := Texture2DArray.new()
+		tex_array.create_from_images(images)
+
+		var suffix: String = cache_names[ci]
+		mat.set_shader_parameter("cache_" + suffix, tex_array)
+		mat.set_shader_parameter("periods_" + suffix, periods)
+		mat.set_shader_parameter("tpap_" + suffix, tpap)
+
+	return mat
+
+
 ## Build MeshInstance3D nodes for all non-empty chunks from the initial
 ## world mesh build.
 func _build_all_chunks() -> void:
@@ -108,8 +152,8 @@ func _build_all_chunks() -> void:
 ## 0 = bark, 1 = ground, 2 = leaf (empty surfaces get a degenerate
 ## placeholder triangle so the indices stay stable).
 ##
-## Bark and ground surfaces get per-chunk materials with atlas textures
-## from the Rust-generated Perlin noise. Leaf uses a shared material.
+## Bark and ground each use their own global tiling material (different
+## noise character). Leaf uses the shared leaf material.
 func _rebuild_chunk(cx: int, cy: int, cz: int) -> void:
 	var key := "%d,%d,%d" % [cx, cy, cz]
 
@@ -123,15 +167,13 @@ func _rebuild_chunk(cx: int, cy: int, cz: int) -> void:
 	if array_mesh.get_surface_count() == 0:
 		return
 
-	# Surface 0 = bark: create per-chunk material from atlas texture.
-	var bark_mat := _create_atlas_material(cx, cy, cz, 0)
-	array_mesh.surface_set_material(0, bark_mat)
+	# Surface 0 = bark: anisotropic grain noise.
+	array_mesh.surface_set_material(0, _bark_material)
 
-	# Surface 1 = ground: create per-chunk material from atlas texture.
-	var ground_mat := _create_atlas_material(cx, cy, cz, 1)
-	array_mesh.surface_set_material(1, ground_mat)
+	# Surface 1 = ground: isotropic noise.
+	array_mesh.surface_set_material(1, _ground_material)
 
-	# Surface 2 = leaf: shared material.
+	# Surface 2 = leaf: shared leaf material.
 	array_mesh.surface_set_material(2, _leaf_material)
 
 	var instance := MeshInstance3D.new()
@@ -139,25 +181,6 @@ func _rebuild_chunk(cx: int, cy: int, cz: int) -> void:
 	instance.name = "Chunk_%s" % key
 	add_child(instance)
 	_chunk_instances[key] = instance
-
-
-## Create a StandardMaterial3D with the atlas texture for a chunk surface.
-## If no atlas data is available, returns a plain vertex-color material.
-func _create_atlas_material(cx: int, cy: int, cz: int, surface: int) -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.vertex_color_use_as_albedo = true
-	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-
-	var atlas_data := _bridge.get_chunk_atlas_data(cx, cy, cz, surface)
-	var atlas_size := _bridge.get_chunk_atlas_size(cx, cy, cz, surface)
-	if atlas_data.size() > 0 and atlas_size.x > 0 and atlas_size.y > 0:
-		var img := Image.create_from_data(
-			atlas_size.x, atlas_size.y, false, Image.FORMAT_RGBA8, atlas_data
-		)
-		var tex := ImageTexture.create_from_image(img)
-		mat.albedo_texture = tex
-
-	return mat
 
 
 ## Generate and cache fruit textures for all species in the world.

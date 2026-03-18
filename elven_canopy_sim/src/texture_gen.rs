@@ -1,387 +1,378 @@
-// Procedural face texture generation using 3D Perlin noise.
+// Prime-period tiling texture generation for bark and ground surfaces.
 //
-// Generates per-face textures that are seamless across adjacent voxel faces
-// because the noise is sampled at 3D world coordinates. Each visible face
-// gets a small tile (FACE_TEX_SIZE × FACE_TEX_SIZE) packed into a per-chunk
-// texture atlas. Two faces sharing an edge — regardless of orientation —
-// sample the same noise values along that edge, so there are no seams even
-// at corners where three faces meet.
+// Replaces the old per-face Perlin noise atlas system with a three-cache
+// tiling approach. Each cache (A, B, C) generates monochrome R8 tiles that
+// tile at different prime periods per world axis:
 //
-// The atlas is a simple grid of tiles. UVs for each face's vertices map into
-// the tile's region within the atlas. The calling code (`mesh_gen.rs`) handles
-// UV assignment; this module handles noise generation and pixel writing.
+//   Cache A: periods (11, 3, 7)  — 231 tiles × 3 axis pairs = 693 layers
+//   Cache B: periods (7, 5, 11)  — 385 tiles × 3 axis pairs = 1155 layers
+//   Cache C: periods (5, 7, 5)   — 175 tiles × 3 axis pairs = 525 layers
 //
-// See also: `mesh_gen.rs` for atlas UV computation and face emission,
-// `sim_bridge.rs` for passing atlas data to Godot, `tree_renderer.gd` for
-// creating per-chunk materials from the atlas textures.
+// No two caches share the same period on any axis, so alignment artifacts
+// from one cache are masked by the other two. The shader samples all three
+// caches, blends additively, and multiplies by vertex color (the existing
+// per-voxel-type color ramp).
 //
-// **Determinism note:** Perlin noise is computed from a fixed permutation
-// table and pure math — fully deterministic. However, like `mesh_gen.rs`,
-// this is a rendering concern and does not participate in the sim's lockstep
-// determinism contract.
+// Two material types produce different tile content from the same period
+// structure:
+// - **Bark**: anisotropic noise (Y compressed to 37.5% of X/Z frequency)
+//   plus domain warping for organic grain lines. Same character as the old
+//   per-face atlas bark noise.
+// - **Ground**: isotropic fractal noise, plain and uniform.
+//
+// Bark and ground each get their own 3 Texture2DArrays and shader material
+// so the noise character is distinct even though the tiling periods match.
+//
+// Tiles are 16×16 single-channel (R8) textures stored as `Texture2DArray`
+// layers on the GPU. The shader computes tile UVs and layer indices from
+// the fragment's world position and face normal — no per-vertex UVs needed.
+//
+// Each cache has irrational-ish per-axis phase offsets so noise zeros don't
+// coincide at the world origin across caches.
+//
+// Tile content is tileable fractal Perlin noise: the standard improved Perlin
+// hash is modified to wrap lattice coordinates at the cache's periods, making
+// the noise seamlessly periodic. Five octaves of FBM give multi-scale detail.
+//
+// See also: `mesh_gen.rs` for chunk mesh generation (no longer handles textures),
+// `mesh_cache.rs` (gdext) for tiling cache ownership, `sim_bridge.rs` for
+// passing texture data to Godot, `tree_renderer.gd` for shader setup and
+// material creation.
+//
+// **Determinism note:** Like the old atlas system, tile generation is pure and
+// deterministic but is a rendering concern — it does not participate in the
+// sim's lockstep determinism contract.
 
-use std::collections::BTreeMap;
+/// Side length of each tile in texels.
+pub const TILE_SIZE: u32 = 16;
 
-/// Side length of each face texture tile in texels.
-pub const FACE_TEX_SIZE: u32 = 16;
+/// Bytes per tile (TILE_SIZE², R8 format — one byte per texel).
+pub const TILE_BYTES: usize = (TILE_SIZE * TILE_SIZE) as usize;
 
-/// Base frequency for Perlin noise sampling. Higher = more detail per face.
-/// With FACE_TEX_SIZE=16, a base frequency of 8.0 gives ~8 noise periods
-/// per voxel face at the coarsest octave — high-frequency, detailed noise.
+/// Base frequency for noise sampling. Controls how many noise features
+/// appear per voxel face. With TILE_SIZE=16 and BASE_FREQ=8.0, the
+/// coarsest octave has ~8 noise periods per voxel.
 const BASE_FREQ: f64 = 8.0;
 
-/// Number of fractal noise octaves. More octaves = more fine detail.
-/// 5 octaves with high persistence gives a prickly, detailed texture.
+/// Base frequency as integer for tileable period scaling.
+const BASE_FREQ_INT: i32 = 8;
+
+/// Number of fractal noise octaves.
 const OCTAVES: u32 = 5;
 
 /// Persistence for fractal noise: amplitude multiplier per octave.
-/// Higher values (closer to 1.0) preserve more high-frequency energy,
-/// giving a sharper, more jagged appearance.
 const PERSISTENCE: f64 = 0.65;
 
-/// Which material family a face belongs to, controlling the color tinting
-/// applied on top of the noise pattern.
-#[derive(Clone, Copy)]
+/// Bark Y-axis compression factor (3/8 = 0.375). Compresses noise in Y
+/// to create vertical grain lines. Chosen as a rational 3/8 so that
+/// `py * BASE_FREQ * Y_COMPRESS = py * 3` is always an integer (required
+/// for tileable Perlin lattice wrapping). Close to the old value of 0.35.
+const BARK_Y_COMPRESS: f64 = 0.375;
+
+/// Bark Y-axis noise-space period multiplier: BASE_FREQ * Y_COMPRESS = 3.
+const BARK_Y_PERIOD_MULT: i32 = 3;
+
+/// Domain warp frequency for bark (integer for tileable compatibility).
+const BARK_WARP_FREQ: i32 = 3;
+
+/// Domain warp strength for bark.
+const BARK_WARP_STRENGTH: f64 = 0.6;
+
+/// Number of tiling caches per material.
+pub const CACHE_COUNT: usize = 3;
+
+/// Number of material types.
+pub const MATERIAL_COUNT: usize = 2;
+
+/// Number of face axis pair groups.
+pub const AXIS_PAIR_COUNT: usize = 3;
+
+/// Which material family a face belongs to, controlling the noise character.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum MaterialKind {
-    /// Bark: trunk, branch, root, construction. Warm brownish tint.
-    Bark,
-    /// Ground: dirt/grass. Cool greenish tint.
-    Ground,
+    /// Bark: trunk, branch, root, construction. Anisotropic + domain warped.
+    Bark = 0,
+    /// Ground: dirt/grass. Isotropic fractal noise.
+    Ground = 1,
 }
 
-/// A packed texture atlas containing one FACE_TEX_SIZE × FACE_TEX_SIZE tile
-/// per face, arranged in a grid.
-pub struct FaceAtlas {
-    /// Raw RGBA pixel data (4 bytes per pixel), row-major.
-    pub pixels: Vec<u8>,
-    /// Atlas width in pixels.
-    pub width: u32,
-    /// Atlas height in pixels.
-    pub height: u32,
-    /// Number of tiles per row in the atlas grid.
-    pub tiles_per_row: u32,
+/// Face axis pair: which two world axes form the face's UV plane.
+/// Opposite faces (±X, ±Y, ±Z) share the same axis pair and tiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AxisPair {
+    /// ±Y faces: U = X, V = Z.
+    Xz = 0,
+    /// ±X faces: U = Z, V = Y.
+    Zy = 1,
+    /// ±Z faces: U = X, V = Y.
+    Xy = 2,
 }
 
-/// Unique identifier for a face texture tile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FaceTileKey {
-    pub wx: i32,
-    pub wy: i32,
-    pub wz: i32,
-    pub face_idx: u8,
-    pub material: u8,
+impl AxisPair {
+    /// Convert a face direction index (0..5, matching mesh_gen::FACES) to
+    /// its axis pair. Faces 0,1 (±X) → Zy; 2,3 (±Y) → Xz; 4,5 (±Z) → Xy.
+    pub fn from_face_idx(face_idx: usize) -> Self {
+        match face_idx {
+            0 | 1 => AxisPair::Zy,
+            2 | 3 => AxisPair::Xz,
+            4 | 5 => AxisPair::Xy,
+            _ => panic!("invalid face_idx: {face_idx}"),
+        }
+    }
 }
 
-/// Number of bytes in one face texture tile (FACE_TEX_SIZE^2 * 4 RGBA).
-pub const FACE_TILE_BYTES: usize = (FACE_TEX_SIZE * FACE_TEX_SIZE * 4) as usize;
+/// Cache periods for each axis [x, y, z]. No two caches share the same
+/// period on any axis. Y periods are smaller (less vertical variation
+/// needed) to keep cache sizes down.
+pub const CACHE_PERIODS: [[i32; 3]; CACHE_COUNT] = [
+    [11, 3, 7], // Cache A: 231 tiles/axis pair, 693 total
+    [7, 5, 11], // Cache B: 385 tiles/axis pair, 1155 total
+    [5, 7, 5],  // Cache C: 175 tiles/axis pair, 525 total
+];
 
-/// A single face texture tile's RGBA pixel data.
-pub type FaceTile = [u8; FACE_TILE_BYTES];
+/// Phase offsets per cache — irrational-ish values so noise zeros don't
+/// align at the world origin across caches.
+pub const CACHE_PHASES: [[f64; 3]; CACHE_COUNT] =
+    [[3.72, 1.41, 2.89], [5.17, 0.83, 4.31], [1.63, 3.94, 6.27]];
 
-/// Cache of computed face texture tiles. Tiles are deterministic pure functions
-/// of world position + face direction + material, so they never need invalidation.
-pub struct FaceTileCache {
-    tiles: BTreeMap<FaceTileKey, Box<FaceTile>>,
+/// Two-material tiling texture system. Generates monochrome R8 tiles for
+/// bark and ground separately, each with 3 caches × 3 axis pairs.
+///
+/// Tile data is laid out for direct upload as `Texture2DArray` layers:
+/// each cache's data is a flat `Vec<u8>` with layers ordered as
+/// `[axis_pair_0 tiles..., axis_pair_1 tiles..., axis_pair_2 tiles...]`.
+/// Within each axis pair group, tiles are indexed by
+/// `mx * (py * pz) + my * pz + mz`.
+pub struct TilingCache {
+    /// `caches[material][cache_idx]` — 2 materials × 3 caches = 6 sub-caches.
+    caches: [[SubCache; CACHE_COUNT]; MATERIAL_COUNT],
 }
 
-impl Default for FaceTileCache {
+struct SubCache {
+    periods: [i32; 3],
+    /// Number of unique tiles per axis pair: px * py * pz.
+    tiles_per_axis_pair: usize,
+    /// Total layers: 3 * tiles_per_axis_pair.
+    total_layers: usize,
+    /// Flat R8 tile data. Length = total_layers * TILE_BYTES.
+    data: Vec<u8>,
+}
+
+impl Default for TilingCache {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl FaceTileCache {
+impl TilingCache {
+    /// Create a new tiling cache and eagerly generate all tiles for both
+    /// bark and ground materials.
+    ///
+    /// Total memory: ~1.2 MB (2 materials × 2373 layers × 256 bytes).
+    /// Generation is single-threaded but fast (pure math, no allocation
+    /// per tile).
     pub fn new() -> Self {
-        Self {
-            tiles: BTreeMap::new(),
-        }
+        let caches = std::array::from_fn(|mat_idx| {
+            let material = match mat_idx {
+                0 => MaterialKind::Bark,
+                _ => MaterialKind::Ground,
+            };
+            std::array::from_fn(|cache_idx| {
+                let periods = CACHE_PERIODS[cache_idx];
+                let phases = CACHE_PHASES[cache_idx];
+                let tpap = (periods[0] * periods[1] * periods[2]) as usize;
+                let total_layers = AXIS_PAIR_COUNT * tpap;
+                let mut data = vec![0u8; total_layers * TILE_BYTES];
+
+                for ap in 0..AXIS_PAIR_COUNT {
+                    let axis_pair = match ap {
+                        0 => AxisPair::Xz,
+                        1 => AxisPair::Zy,
+                        _ => AxisPair::Xy,
+                    };
+                    for mx in 0..periods[0] {
+                        for my in 0..periods[1] {
+                            for mz in 0..periods[2] {
+                                let layer = ap * tpap
+                                    + (mx * periods[1] * periods[2] + my * periods[2] + mz)
+                                        as usize;
+                                let offset = layer * TILE_BYTES;
+                                generate_tile(
+                                    &mut data[offset..offset + TILE_BYTES],
+                                    &TileParams {
+                                        periods,
+                                        phases,
+                                        axis_pair,
+                                        material,
+                                        mx,
+                                        my,
+                                        mz,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+
+                SubCache {
+                    periods,
+                    tiles_per_axis_pair: tpap,
+                    total_layers,
+                    data,
+                }
+            })
+        });
+
+        TilingCache { caches }
     }
 
-    /// Look up a cached tile or compute it from Perlin noise.
-    pub fn get_or_compute(&mut self, key: FaceTileKey) -> &FaceTile {
-        self.tiles
-            .entry(key)
-            .or_insert_with(|| Box::new(compute_face_tile(key)))
+    /// Number of Texture2DArray layers for the given cache.
+    pub fn layer_count(&self, material: MaterialKind, cache_idx: usize) -> usize {
+        self.caches[material as usize][cache_idx].total_layers
     }
 
-    /// Number of cached tiles.
-    pub fn len(&self) -> usize {
-        self.tiles.len()
+    /// Periods [px, py, pz] for the given cache index (same for both materials).
+    pub fn periods(&self, cache_idx: usize) -> [i32; 3] {
+        self.caches[0][cache_idx].periods
     }
 
-    /// Returns true if the cache contains no tiles.
-    pub fn is_empty(&self) -> bool {
-        self.tiles.is_empty()
-    }
-}
-
-/// Information about a face needed for texture generation.
-pub struct FaceTexInfo {
-    /// Voxel world-space integer coordinates.
-    pub wx: i32,
-    pub wy: i32,
-    pub wz: i32,
-    /// Face direction index (0..5, matching mesh_gen::FACES).
-    pub face_idx: usize,
-}
-
-/// For each face direction: [origin, u_dir, v_dir] defining how the texture's
-/// 2D coordinate system maps to 3D world offsets relative to the voxel origin.
-///
-/// - origin: corner of the face at texture UV (0,0)
-/// - u_dir: unit vector from UV(0,0) toward UV(1,0)
-/// - v_dir: unit vector from UV(0,0) toward UV(0,1)
-///
-/// These are chosen so that adjacent coplanar faces share the same U/V
-/// orientation, ensuring the 3D Perlin noise is sampled consistently.
-pub const FACE_TEX_MAPPING: [[[f32; 3]; 3]; 6] = [
-    // +X: face at x=1 plane, spans Z (U) and Y (V)
-    [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
-    // -X: face at x=0 plane, spans Z (U) and Y (V)
-    [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
-    // +Y: face at y=1 plane, spans X (U) and Z (V)
-    [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
-    // -Y: face at y=0 plane, spans X (U) and Z (V)
-    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
-    // +Z: face at z=1 plane, spans X (U) and Y (V)
-    [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-    // -Z: face at z=0 plane, spans X (U) and Y (V)
-    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-];
-
-/// Face-local UV coordinates for each vertex of each face direction.
-/// Derived from FACE_VERTICES (in mesh_gen.rs) and FACE_TEX_MAPPING above.
-/// Used by mesh_gen to compute atlas UVs during the UV fixup pass.
-pub const FACE_LOCAL_UVS: [[[f32; 2]; 4]; 6] = [
-    // +X: vertices [1,0,1], [1,1,1], [1,1,0], [1,0,0]
-    [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]],
-    // -X: vertices [0,0,0], [0,1,0], [0,1,1], [0,0,1]
-    [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
-    // +Y: vertices [0,1,0], [1,1,0], [1,1,1], [0,1,1]
-    [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-    // -Y: vertices [0,0,1], [1,0,1], [1,0,0], [0,0,0]
-    [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
-    // +Z: vertices [0,0,1], [0,1,1], [1,1,1], [1,0,1]
-    [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
-    // -Z: vertices [1,0,0], [1,1,0], [0,1,0], [0,0,0]
-    [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]],
-];
-
-/// Generate a texture atlas for a set of faces.
-///
-/// Each face gets a FACE_TEX_SIZE × FACE_TEX_SIZE tile. The atlas is a grid
-/// of tiles large enough to hold all faces. Returns an empty atlas if the
-/// face list is empty.
-pub fn generate_atlas(faces: &[FaceTexInfo], material: MaterialKind) -> FaceAtlas {
-    if faces.is_empty() {
-        return FaceAtlas {
-            pixels: vec![],
-            width: 0,
-            height: 0,
-            tiles_per_row: 0,
-        };
+    /// Tiles per axis pair for the given cache index (same for both materials).
+    pub fn tiles_per_axis_pair(&self, cache_idx: usize) -> usize {
+        self.caches[0][cache_idx].tiles_per_axis_pair
     }
 
-    let count = faces.len() as u32;
-    let tiles_per_row = (count as f64).sqrt().ceil() as u32;
-    let tile_rows = count.div_ceil(tiles_per_row);
-    let width = tiles_per_row * FACE_TEX_SIZE;
-    let height = tile_rows * FACE_TEX_SIZE;
-
-    let mut pixels = vec![0u8; (width * height * 4) as usize];
-
-    for (i, face) in faces.iter().enumerate() {
-        let tile_col = i as u32 % tiles_per_row;
-        let tile_row = i as u32 / tiles_per_row;
-
-        let [origin, u_dir, v_dir] = FACE_TEX_MAPPING[face.face_idx];
-
-        for ty in 0..FACE_TEX_SIZE {
-            for tx in 0..FACE_TEX_SIZE {
-                // Normalized position within the tile (0.0 to 1.0).
-                let u = tx as f64 / (FACE_TEX_SIZE - 1) as f64;
-                let v = ty as f64 / (FACE_TEX_SIZE - 1) as f64;
-
-                // 3D world position for this texel.
-                let wx =
-                    face.wx as f64 + origin[0] as f64 + u * u_dir[0] as f64 + v * v_dir[0] as f64;
-                let wy =
-                    face.wy as f64 + origin[1] as f64 + u * u_dir[1] as f64 + v * v_dir[1] as f64;
-                let wz =
-                    face.wz as f64 + origin[2] as f64 + u * u_dir[2] as f64 + v * v_dir[2] as f64;
-
-                let noise = sample_material_noise(wx, wy, wz, material);
-                let (r, g, b) = colorize(noise, material);
-
-                let px = tile_col * FACE_TEX_SIZE + tx;
-                let py = tile_row * FACE_TEX_SIZE + ty;
-                let idx = ((py * width + px) * 4) as usize;
-                pixels[idx] = r;
-                pixels[idx + 1] = g;
-                pixels[idx + 2] = b;
-                pixels[idx + 3] = 255;
-            }
-        }
-    }
-
-    FaceAtlas {
-        pixels,
-        width,
-        height,
-        tiles_per_row,
+    /// Flat R8 data for all layers of a cache, ready for `Texture2DArray`.
+    /// Each layer is TILE_SIZE × TILE_SIZE bytes, laid out sequentially.
+    pub fn texture_data(&self, material: MaterialKind, cache_idx: usize) -> &[u8] {
+        &self.caches[material as usize][cache_idx].data
     }
 }
 
-/// Compute a single face texture tile from Perlin noise. This is the same
-/// computation performed inline by `generate_atlas()`, extracted so it can
-/// be cached by `FaceTileCache`.
-fn compute_face_tile(key: FaceTileKey) -> FaceTile {
-    let material = match key.material {
-        0 => MaterialKind::Bark,
-        _ => MaterialKind::Ground,
-    };
-    let [origin, u_dir, v_dir] = FACE_TEX_MAPPING[key.face_idx as usize];
-    let mut tile = [0u8; FACE_TILE_BYTES];
-    for ty in 0..FACE_TEX_SIZE {
-        for tx in 0..FACE_TEX_SIZE {
-            let u = tx as f64 / (FACE_TEX_SIZE - 1) as f64;
-            let v = ty as f64 / (FACE_TEX_SIZE - 1) as f64;
-
-            let wx = key.wx as f64 + origin[0] as f64 + u * u_dir[0] as f64 + v * v_dir[0] as f64;
-            let wy = key.wy as f64 + origin[1] as f64 + u * u_dir[1] as f64 + v * v_dir[1] as f64;
-            let wz = key.wz as f64 + origin[2] as f64 + u * u_dir[2] as f64 + v * v_dir[2] as f64;
-
-            let noise = sample_material_noise(wx, wy, wz, material);
-            let (r, g, b) = colorize(noise, material);
-
-            let idx = ((ty * FACE_TEX_SIZE + tx) * 4) as usize;
-            tile[idx] = r;
-            tile[idx + 1] = g;
-            tile[idx + 2] = b;
-            tile[idx + 3] = 255;
-        }
-    }
-    tile
-}
-
-/// Generate a texture atlas using a tile cache for previously computed faces.
-///
-/// Functionally identical to `generate_atlas()` but looks up each face tile
-/// in the cache first, only computing Perlin noise for cache misses.
-pub fn generate_atlas_cached(
-    faces: &[FaceTexInfo],
+/// Parameters for tile generation, bundled to avoid too-many-arguments.
+struct TileParams {
+    periods: [i32; 3],
+    phases: [f64; 3],
+    axis_pair: AxisPair,
     material: MaterialKind,
-    cache: &mut FaceTileCache,
-) -> FaceAtlas {
-    if faces.is_empty() {
-        return FaceAtlas {
-            pixels: vec![],
-            width: 0,
-            height: 0,
-            tiles_per_row: 0,
-        };
-    }
+    mx: i32,
+    my: i32,
+    mz: i32,
+}
 
-    let count = faces.len() as u32;
-    let tiles_per_row = (count as f64).sqrt().ceil() as u32;
-    let tile_rows = count.div_ceil(tiles_per_row);
-    let width = tiles_per_row * FACE_TEX_SIZE;
-    let height = tile_rows * FACE_TEX_SIZE;
+/// Generate one tile's R8 data into the provided buffer.
+///
+/// The tile represents one voxel face at modular coordinates (mx, my, mz)
+/// for the given axis pair and material. Noise character depends on material:
+/// bark uses anisotropic + domain-warped noise, ground uses isotropic.
+fn generate_tile(buf: &mut [u8], p: &TileParams) {
+    let [px, py, pz] = p.periods;
+    let [phx, phy, phz] = p.phases;
 
-    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    for ty in 0..TILE_SIZE {
+        for tx in 0..TILE_SIZE {
+            // Edge-to-edge sampling: texel 0 = 0.0, texel N-1 = 1.0.
+            // This ensures seamless tiling when adjacent tiles meet at
+            // voxel boundaries (both tiles sample the same noise at the edge).
+            let u = tx as f64 / (TILE_SIZE - 1) as f64;
+            let v = ty as f64 / (TILE_SIZE - 1) as f64;
 
-    let material_byte = match material {
-        MaterialKind::Bark => 0u8,
-        MaterialKind::Ground => 1u8,
-    };
+            // Map (u, v) to 3D world coordinates based on the axis pair.
+            // The fixed axis gets the modular coordinate directly; the two
+            // varying axes span [m, m+1] across the tile.
+            let (wx, wy, wz) = match p.axis_pair {
+                AxisPair::Xz => (
+                    p.mx as f64 + u + phx,
+                    p.my as f64 + phy,
+                    p.mz as f64 + v + phz,
+                ),
+                AxisPair::Zy => (
+                    p.mx as f64 + phx,
+                    p.my as f64 + v + phy,
+                    p.mz as f64 + u + phz,
+                ),
+                AxisPair::Xy => (
+                    p.mx as f64 + u + phx,
+                    p.my as f64 + v + phy,
+                    p.mz as f64 + phz,
+                ),
+            };
 
-    for (i, face) in faces.iter().enumerate() {
-        let tile_col = i as u32 % tiles_per_row;
-        let tile_row = i as u32 / tiles_per_row;
+            let noise = sample_material_noise(wx, wy, wz, px, py, pz, p.material);
 
-        let key = FaceTileKey {
-            wx: face.wx,
-            wy: face.wy,
-            wz: face.wz,
-            face_idx: face.face_idx as u8,
-            material: material_byte,
-        };
-        let tile = cache.get_or_compute(key);
-
-        // Copy tile pixels into atlas at (tile_col, tile_row).
-        for ty in 0..FACE_TEX_SIZE {
-            let src_start = (ty * FACE_TEX_SIZE * 4) as usize;
-            let dst_px = tile_col * FACE_TEX_SIZE;
-            let dst_py = tile_row * FACE_TEX_SIZE + ty;
-            let dst_start = ((dst_py * width + dst_px) * 4) as usize;
-            let row_bytes = (FACE_TEX_SIZE * 4) as usize;
-            pixels[dst_start..dst_start + row_bytes]
-                .copy_from_slice(&tile[src_start..src_start + row_bytes]);
+            // Map [-1, 1] noise to [0, 255] grayscale.
+            let val = ((noise * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8;
+            buf[(ty * TILE_SIZE + tx) as usize] = val;
         }
-    }
-
-    FaceAtlas {
-        pixels,
-        width,
-        height,
-        tiles_per_row,
     }
 }
 
 /// Sample noise appropriate for the material type.
 ///
-/// Bark uses anisotropic scaling (Y compressed → vertical grain) plus
-/// domain warping (one noise layer displaces the coordinates of the main
-/// noise, creating organic wobble around knots and grain irregularities).
+/// Bark uses anisotropic scaling (Y compressed to 37.5% of X/Z frequency)
+/// plus domain warping (a separate tileable noise layer displaces the X/Z
+/// coordinates of the main noise, creating organic grain wobble). Both the
+/// warp and main noise are tileable at the cache's periods.
 ///
-/// Ground uses plain isotropic fractal noise.
-fn sample_material_noise(wx: f64, wy: f64, wz: f64, material: MaterialKind) -> f64 {
+/// Ground uses plain isotropic tileable fractal noise.
+fn sample_material_noise(
+    wx: f64,
+    wy: f64,
+    wz: f64,
+    px: i32,
+    py: i32,
+    pz: i32,
+    material: MaterialKind,
+) -> f64 {
     match material {
         MaterialKind::Bark => {
-            // Anisotropic scaling: compress Y to ~35% of X/Z frequency.
-            // This stretches the noise vertically → implicit grain lines.
+            // Anisotropic scaling: compress Y to 37.5% of X/Z frequency.
+            // Noise-space coords: X and Z scaled by BASE_FREQ, Y by BASE_FREQ * 3/8.
             let bx = wx * BASE_FREQ;
-            let by = wy * BASE_FREQ * 0.35;
+            let by = wy * BASE_FREQ * BARK_Y_COMPRESS;
             let bz = wz * BASE_FREQ;
 
-            // Domain warping: sample a low-frequency noise to displace the
-            // main sample coordinates. This makes grain lines wobble and
-            // flow organically rather than running perfectly straight.
-            // The warp offset is sampled at different coordinates (shifted
-            // by large primes) so it's uncorrelated with the main noise.
-            let warp_strength = 0.6;
-            let warp_freq = 2.5;
-            let warp_x =
-                perlin_3d(wx * warp_freq + 31.7, wy * warp_freq, wz * warp_freq) * warp_strength;
-            let warp_z =
-                perlin_3d(wx * warp_freq, wy * warp_freq + 47.3, wz * warp_freq) * warp_strength;
+            // Noise-space tiling periods.
+            let npx = px * BASE_FREQ_INT;
+            let npy = py * BARK_Y_PERIOD_MULT; // py * 3
+            let npz = pz * BASE_FREQ_INT;
 
-            fractal_noise_3d(bx + warp_x, by, bz + warp_z, OCTAVES)
+            // Domain warping: tileable warp noise displaces X and Z to create
+            // organic grain irregularities. Warp noise uses BARK_WARP_FREQ
+            // scaling and is sampled at shifted coordinates (offset by large
+            // constants) so it's uncorrelated with the main noise.
+            let wf = BARK_WARP_FREQ as f64;
+            let wpx = px * BARK_WARP_FREQ;
+            let wpy = py * BARK_WARP_FREQ;
+            let wpz = pz * BARK_WARP_FREQ;
+
+            let warp_x = tileable_perlin_3d(wx * wf + 31.7, wy * wf, wz * wf, wpx, wpy, wpz)
+                * BARK_WARP_STRENGTH;
+            let warp_z = tileable_perlin_3d(wx * wf, wy * wf + 47.3, wz * wf, wpx, wpy, wpz)
+                * BARK_WARP_STRENGTH;
+
+            tileable_fractal_noise_3d(bx + warp_x, by, bz + warp_z, npx, npy, npz, OCTAVES)
         }
         MaterialKind::Ground => {
-            fractal_noise_3d(wx * BASE_FREQ, wy * BASE_FREQ, wz * BASE_FREQ, OCTAVES)
+            let bx = wx * BASE_FREQ;
+            let by = wy * BASE_FREQ;
+            let bz = wz * BASE_FREQ;
+            tileable_fractal_noise_3d(
+                bx,
+                by,
+                bz,
+                px * BASE_FREQ_INT,
+                py * BASE_FREQ_INT,
+                pz * BASE_FREQ_INT,
+                OCTAVES,
+            )
         }
     }
 }
 
-/// Map a noise value in [-1, 1] to an RGB color appropriate for the material.
-/// Wide contrast range (0.35–1.0) so the texture produces visible dark
-/// crevices and bright highlights when multiplied with vertex colors.
-fn colorize(noise: f64, material: MaterialKind) -> (u8, u8, u8) {
-    let val = (0.75 + noise * 0.35).clamp(0.35, 1.0);
-    let (rf, gf, bf) = match material {
-        MaterialKind::Bark => (val * 1.08, val * 0.92, val * 0.80),
-        MaterialKind::Ground => (val * 0.85, val * 1.08, val * 0.82),
-    };
-    (
-        (rf * 255.0).clamp(0.0, 255.0) as u8,
-        (gf * 255.0).clamp(0.0, 255.0) as u8,
-        (bf * 255.0).clamp(0.0, 255.0) as u8,
-    )
-}
-
 // ============================================================================
-// 3D Perlin noise (improved, deterministic)
+// Tileable 3D Perlin noise
 // ============================================================================
 
 /// Classic improved Perlin noise permutation table.
@@ -434,8 +425,13 @@ fn grad3(hash: i32, x: f64, y: f64, z: f64) -> f64 {
     (if h & 1 == 0 { u } else { -u }) + (if h & 2 == 0 { v } else { -v })
 }
 
-/// 3D Perlin noise. Returns a value in approximately [-1, 1].
-pub fn perlin_3d(x: f64, y: f64, z: f64) -> f64 {
+/// 3D Perlin noise with tileable wrapping. Lattice coordinates wrap at the
+/// specified periods, making the noise seamlessly periodic. Returns a value
+/// in approximately [-1, 1].
+///
+/// The periods must be positive integers. For non-tileable noise, use very
+/// large periods (effectively non-repeating within the world).
+fn tileable_perlin_3d(x: f64, y: f64, z: f64, px: i32, py: i32, pz: i32) -> f64 {
     let xi = x.floor() as i32;
     let yi = y.floor() as i32;
     let zi = z.floor() as i32;
@@ -448,20 +444,28 @@ pub fn perlin_3d(x: f64, y: f64, z: f64) -> f64 {
     let v = fade(yf);
     let w = fade(zf);
 
-    // Hash the 8 corners of the unit cube.
-    let aa = perm(perm(xi) + yi);
-    let ab = perm(perm(xi) + yi + 1);
-    let ba = perm(perm(xi + 1) + yi);
-    let bb = perm(perm(xi + 1) + yi + 1);
+    // Wrap lattice coordinates to tile periods.
+    let x0 = xi.rem_euclid(px);
+    let x1 = (xi + 1).rem_euclid(px);
+    let y0 = yi.rem_euclid(py);
+    let y1 = (yi + 1).rem_euclid(py);
+    let z0 = zi.rem_euclid(pz);
+    let z1 = (zi + 1).rem_euclid(pz);
 
-    let aaa = perm(aa + zi);
-    let aab = perm(aa + zi + 1);
-    let aba = perm(ab + zi);
-    let abb = perm(ab + zi + 1);
-    let baa = perm(ba + zi);
-    let bab = perm(ba + zi + 1);
-    let bba = perm(bb + zi);
-    let bbb = perm(bb + zi + 1);
+    // Hash the 8 corners of the unit cube using wrapped coordinates.
+    let aa = perm(perm(x0) + y0);
+    let ab = perm(perm(x0) + y1);
+    let ba = perm(perm(x1) + y0);
+    let bb = perm(perm(x1) + y1);
+
+    let aaa = perm(aa + z0);
+    let aab = perm(aa + z1);
+    let aba = perm(ab + z0);
+    let abb = perm(ab + z1);
+    let baa = perm(ba + z0);
+    let bab = perm(ba + z1);
+    let bba = perm(bb + z0);
+    let bbb = perm(bb + z1);
 
     // Trilinear interpolation of gradient dot products.
     lerp(
@@ -491,16 +495,34 @@ pub fn perlin_3d(x: f64, y: f64, z: f64) -> f64 {
     )
 }
 
-/// Fractal Brownian motion: sum multiple octaves of Perlin noise for
-/// multi-scale detail.
-pub fn fractal_noise_3d(x: f64, y: f64, z: f64, octaves: u32) -> f64 {
+/// Fractal Brownian motion with tileable Perlin noise.
+///
+/// Each octave doubles the frequency and scales the tiling period accordingly,
+/// keeping the overall pattern periodic at the base period.
+fn tileable_fractal_noise_3d(
+    x: f64,
+    y: f64,
+    z: f64,
+    px: i32,
+    py: i32,
+    pz: i32,
+    octaves: u32,
+) -> f64 {
     let mut total = 0.0;
     let mut amplitude = 1.0;
     let mut frequency = 1.0;
     let mut max_value = 0.0;
 
-    for _ in 0..octaves {
-        total += perlin_3d(x * frequency, y * frequency, z * frequency) * amplitude;
+    for i in 0..octaves {
+        let freq_mult = 1i32 << i;
+        total += tileable_perlin_3d(
+            x * frequency,
+            y * frequency,
+            z * frequency,
+            px * freq_mult,
+            py * freq_mult,
+            pz * freq_mult,
+        ) * amplitude;
         max_value += amplitude;
         amplitude *= PERSISTENCE;
         frequency *= 2.0;
@@ -514,245 +536,397 @@ mod tests {
     use super::*;
 
     #[test]
-    fn perlin_noise_is_deterministic() {
-        let a = perlin_3d(1.5, 2.7, 3.3);
-        let b = perlin_3d(1.5, 2.7, 3.3);
+    fn tileable_perlin_is_deterministic() {
+        let a = tileable_perlin_3d(1.5, 2.7, 3.3, 11, 3, 7);
+        let b = tileable_perlin_3d(1.5, 2.7, 3.3, 11, 3, 7);
         assert_eq!(a, b);
     }
 
     #[test]
-    fn perlin_noise_range() {
-        // Sample many points and verify values are in a reasonable range.
+    fn tileable_perlin_actually_tiles() {
+        // Noise should be identical when offset by a full period on each axis.
+        let px = 11;
+        let py = 3;
+        let pz = 7;
+        for i in 0..50 {
+            let x = i as f64 * 0.37;
+            let y = i as f64 * 0.23;
+            let z = i as f64 * 0.41;
+            let base = tileable_perlin_3d(x, y, z, px, py, pz);
+
+            let tiled_x = tileable_perlin_3d(x + px as f64, y, z, px, py, pz);
+            assert!(
+                (base - tiled_x).abs() < 1e-10,
+                "X tiling failed at ({x},{y},{z}): {base} vs {tiled_x}"
+            );
+
+            let tiled_y = tileable_perlin_3d(x, y + py as f64, z, px, py, pz);
+            assert!(
+                (base - tiled_y).abs() < 1e-10,
+                "Y tiling failed at ({x},{y},{z}): {base} vs {tiled_y}"
+            );
+
+            let tiled_z = tileable_perlin_3d(x, y, z + pz as f64, px, py, pz);
+            assert!(
+                (base - tiled_z).abs() < 1e-10,
+                "Z tiling failed at ({x},{y},{z}): {base} vs {tiled_z}"
+            );
+        }
+    }
+
+    #[test]
+    fn tileable_perlin_range() {
         for i in 0..1000 {
             let x = i as f64 * 0.13;
             let y = i as f64 * 0.17;
             let z = i as f64 * 0.23;
-            let val = perlin_3d(x, y, z);
+            let val = tileable_perlin_3d(x, y, z, 11, 5, 7);
             assert!(
                 (-1.5..=1.5).contains(&val),
-                "Perlin noise out of expected range: {val} at ({x},{y},{z})"
+                "Tileable Perlin out of range: {val} at ({x},{y},{z})"
             );
         }
     }
 
     #[test]
-    fn perlin_noise_varies() {
-        let a = perlin_3d(0.0, 0.0, 0.0);
-        let b = perlin_3d(0.5, 0.5, 0.5);
+    fn tileable_fractal_noise_tiles() {
+        let px = 7;
+        let py = 5;
+        let pz = 11;
+        for i in 0..20 {
+            let x = i as f64 * 0.6 + 0.1;
+            let y = i as f64 * 0.4 + 0.2;
+            let z = i as f64 * 0.5 + 0.3;
+            let base = tileable_fractal_noise_3d(x, y, z, px, py, pz, OCTAVES);
+            let tiled = tileable_fractal_noise_3d(
+                x + px as f64,
+                y + py as f64,
+                z + pz as f64,
+                px,
+                py,
+                pz,
+                OCTAVES,
+            );
+            assert!(
+                (base - tiled).abs() < 1e-10,
+                "Fractal tiling failed at ({x},{y},{z}): {base} vs {tiled}"
+            );
+        }
+    }
+
+    #[test]
+    fn tileable_perlin_varies() {
+        let a = tileable_perlin_3d(0.0, 0.0, 0.0, 11, 3, 7);
+        let b = tileable_perlin_3d(0.5, 0.5, 0.5, 11, 3, 7);
         assert!(
             (a - b).abs() > 1e-10,
-            "Perlin noise should vary: {a} vs {b}"
+            "Tileable Perlin should vary: {a} vs {b}"
         );
     }
 
     #[test]
-    fn fractal_noise_is_deterministic() {
-        let a = fractal_noise_3d(1.5, 2.7, 3.3, 4);
-        let b = fractal_noise_3d(1.5, 2.7, 3.3, 4);
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn generate_atlas_empty() {
-        let atlas = generate_atlas(&[], MaterialKind::Bark);
-        assert!(atlas.pixels.is_empty());
-        assert_eq!(atlas.width, 0);
-        assert_eq!(atlas.height, 0);
-    }
-
-    #[test]
-    fn generate_atlas_single_face() {
-        let faces = vec![FaceTexInfo {
-            wx: 5,
-            wy: 3,
-            wz: 7,
-            face_idx: 2, // +Y
-        }];
-        let atlas = generate_atlas(&faces, MaterialKind::Bark);
-        assert_eq!(atlas.width, FACE_TEX_SIZE);
-        assert_eq!(atlas.height, FACE_TEX_SIZE);
-        assert_eq!(
-            atlas.pixels.len(),
-            (FACE_TEX_SIZE * FACE_TEX_SIZE * 4) as usize
-        );
-        assert_eq!(atlas.tiles_per_row, 1);
-
-        // All alpha values should be 255.
-        for i in 0..(FACE_TEX_SIZE * FACE_TEX_SIZE) as usize {
-            assert_eq!(atlas.pixels[i * 4 + 3], 255, "Alpha should be 255");
+    fn tiling_cache_creates_expected_layer_counts() {
+        let cache = TilingCache::new();
+        for mat in [MaterialKind::Bark, MaterialKind::Ground] {
+            assert_eq!(cache.layer_count(mat, 0), 693);
+            assert_eq!(cache.layer_count(mat, 1), 1155);
+            assert_eq!(cache.layer_count(mat, 2), 525);
         }
     }
 
     #[test]
-    fn generate_atlas_layout() {
-        // 5 faces → ceil(sqrt(5)) = 3 tiles per row, 2 rows.
-        let faces: Vec<FaceTexInfo> = (0..5)
-            .map(|i| FaceTexInfo {
-                wx: i,
-                wy: 0,
-                wz: 0,
-                face_idx: 0,
-            })
-            .collect();
-        let atlas = generate_atlas(&faces, MaterialKind::Ground);
-        assert_eq!(atlas.tiles_per_row, 3);
-        assert_eq!(atlas.width, 3 * FACE_TEX_SIZE);
-        assert_eq!(atlas.height, 2 * FACE_TEX_SIZE);
+    fn tiling_cache_data_size_matches_layers() {
+        let cache = TilingCache::new();
+        for mat in [MaterialKind::Bark, MaterialKind::Ground] {
+            for i in 0..CACHE_COUNT {
+                assert_eq!(
+                    cache.texture_data(mat, i).len(),
+                    cache.layer_count(mat, i) * TILE_BYTES,
+                    "Cache {i} data size mismatch"
+                );
+            }
+        }
     }
 
     #[test]
-    fn adjacent_coplanar_faces_match_at_edge() {
-        // Two adjacent +Y faces: voxels at (0,5,0) and (1,5,0).
-        // Their shared edge is at world x=1, y=6, z=0..1.
-        // The right edge of face 0 (u=1) and the left edge of face 1 (u=0)
-        // should sample the same 3D Perlin noise positions.
-        let faces = vec![
-            FaceTexInfo {
-                wx: 0,
-                wy: 5,
-                wz: 0,
-                face_idx: 2,
-            }, // +Y
-            FaceTexInfo {
-                wx: 1,
-                wy: 5,
-                wz: 0,
-                face_idx: 2,
-            }, // +Y
-        ];
-        let atlas = generate_atlas(&faces, MaterialKind::Bark);
+    fn tiling_cache_tiles_have_variation() {
+        let cache = TilingCache::new();
+        for mat in [MaterialKind::Bark, MaterialKind::Ground] {
+            for ci in 0..CACHE_COUNT {
+                let data = cache.texture_data(mat, ci);
+                let first = data[0];
+                let has_variation = data[..TILE_BYTES].iter().any(|&b| b != first);
+                assert!(has_variation, "Cache {ci} first tile has no variation");
+            }
+        }
+    }
 
-        // Face 0 is tile (0,0), face 1 is tile (1,0).
-        // Right edge of face 0: tx=15, ty=0..15.
-        // Left edge of face 1: tx=0, ty=0..15.
-        for ty in 0..FACE_TEX_SIZE {
-            let px0 = FACE_TEX_SIZE - 1; // face 0 right edge
-            let px1 = FACE_TEX_SIZE; // face 1 left edge
-            let idx0 = ((ty * atlas.width + px0) * 4) as usize;
-            let idx1 = ((ty * atlas.width + px1) * 4) as usize;
-            assert_eq!(
-                &atlas.pixels[idx0..idx0 + 4],
-                &atlas.pixels[idx1..idx1 + 4],
-                "Edge pixels should match at ty={ty}"
+    #[test]
+    fn bark_and_ground_tiles_differ() {
+        // Same cache/position should produce different tile content for bark vs ground.
+        let cache = TilingCache::new();
+        let bark_data = cache.texture_data(MaterialKind::Bark, 0);
+        let ground_data = cache.texture_data(MaterialKind::Ground, 0);
+        // Compare first tile.
+        assert_ne!(
+            &bark_data[..TILE_BYTES],
+            &ground_data[..TILE_BYTES],
+            "Bark and ground first tiles should differ"
+        );
+    }
+
+    #[test]
+    fn adjacent_tiles_match_at_shared_edge() {
+        // Two adjacent Xz tiles (Y-faces) at modular x coords 0 and 1.
+        let cache = TilingCache::new();
+        let periods = cache.periods(0);
+        let [_px, py, pz] = periods;
+        let tpap = cache.tiles_per_axis_pair(0);
+
+        for mat in [MaterialKind::Bark, MaterialKind::Ground] {
+            let data = cache.texture_data(mat, 0);
+
+            let my = 0;
+            let mz = 0;
+            let ap = AxisPair::Xz as usize;
+
+            let layer0 = ap * tpap + (0 * py * pz + my * pz + mz) as usize;
+            let tile0 = &data[layer0 * TILE_BYTES..(layer0 + 1) * TILE_BYTES];
+
+            let layer1 = ap * tpap + (1 * py * pz + my * pz + mz) as usize;
+            let tile1 = &data[layer1 * TILE_BYTES..(layer1 + 1) * TILE_BYTES];
+
+            for ty in 0..TILE_SIZE as usize {
+                let right_edge = tile0[ty * TILE_SIZE as usize + (TILE_SIZE - 1) as usize];
+                let left_edge = tile1[ty * TILE_SIZE as usize];
+                assert_eq!(
+                    right_edge, left_edge,
+                    "{mat:?} edge mismatch at ty={ty}: right={right_edge}, left={left_edge}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tiles_wrap_around_period_boundary() {
+        let cache = TilingCache::new();
+        let periods = cache.periods(0);
+        let [px, py, pz] = periods;
+        let tpap = cache.tiles_per_axis_pair(0);
+
+        for mat in [MaterialKind::Bark, MaterialKind::Ground] {
+            let data = cache.texture_data(mat, 0);
+
+            let my = 1;
+            let mz = 2;
+            let ap = AxisPair::Xz as usize;
+
+            let layer_last = ap * tpap + ((px - 1) * py * pz + my * pz + mz) as usize;
+            let tile_last = &data[layer_last * TILE_BYTES..(layer_last + 1) * TILE_BYTES];
+
+            let layer_first = ap * tpap + (0 * py * pz + my * pz + mz) as usize;
+            let tile_first = &data[layer_first * TILE_BYTES..(layer_first + 1) * TILE_BYTES];
+
+            for ty in 0..TILE_SIZE as usize {
+                let right = tile_last[ty * TILE_SIZE as usize + (TILE_SIZE - 1) as usize];
+                let left = tile_first[ty * TILE_SIZE as usize];
+                assert_eq!(
+                    right, left,
+                    "{mat:?} wrap mismatch at ty={ty}: right={right}, left={left}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn axis_pair_from_face_idx_correct() {
+        assert_eq!(AxisPair::from_face_idx(0), AxisPair::Zy); // +X
+        assert_eq!(AxisPair::from_face_idx(1), AxisPair::Zy); // -X
+        assert_eq!(AxisPair::from_face_idx(2), AxisPair::Xz); // +Y
+        assert_eq!(AxisPair::from_face_idx(3), AxisPair::Xz); // -Y
+        assert_eq!(AxisPair::from_face_idx(4), AxisPair::Xy); // +Z
+        assert_eq!(AxisPair::from_face_idx(5), AxisPair::Xy); // -Z
+    }
+
+    #[test]
+    fn tileable_fractal_noise_range() {
+        // Fractal noise is normalized by max_value, should stay in [-1, 1].
+        for i in 0..500 {
+            let x = i as f64 * 0.19 + 0.05;
+            let y = i as f64 * 0.23 + 0.07;
+            let z = i as f64 * 0.31 + 0.11;
+            let val = tileable_fractal_noise_3d(x, y, z, 88, 24, 56, OCTAVES);
+            assert!(
+                (-1.0..=1.0).contains(&val),
+                "Fractal noise out of [-1,1]: {val} at ({x},{y},{z})"
             );
         }
     }
 
     #[test]
-    fn perpendicular_faces_match_at_shared_edge() {
-        // A +Y face at (0,5,0) and a +X face at (0,5,0) share an edge
-        // at world position x=1, y=6, z=0..1.
-        //
-        // +Y face: origin=(0,6,0), u_dir=(1,0,0), v_dir=(0,0,1)
-        //   Right edge (u=1): world (1, 6, v) for v in 0..1.
-        //
-        // +X face: origin=(1,5,0), u_dir=(0,0,1), v_dir=(0,1,0)
-        //   Top edge (v=1): world (1, 5+1, u) = (1, 6, u) for u in 0..1.
-        //
-        // Both sample the same line (1, 6, t) for t in [0,1].
-        let faces = vec![
-            FaceTexInfo {
-                wx: 0,
-                wy: 5,
-                wz: 0,
-                face_idx: 2,
-            }, // +Y
-            FaceTexInfo {
-                wx: 0,
-                wy: 5,
-                wz: 0,
-                face_idx: 0,
-            }, // +X
-        ];
-        let atlas = generate_atlas(&faces, MaterialKind::Bark);
+    fn bark_warp_noise_tiles_correctly() {
+        // Bark noise (with domain warping) should tile at the cache periods.
+        for ci in 0..CACHE_COUNT {
+            let [px, py, pz] = CACHE_PERIODS[ci];
+            for i in 0..10 {
+                let x = i as f64 * 0.7 + 0.3;
+                let y = i as f64 * 0.5 + 0.1;
+                let z = i as f64 * 0.6 + 0.2;
+                let base = sample_material_noise(x, y, z, px, py, pz, MaterialKind::Bark);
+                let tiled = sample_material_noise(
+                    x + px as f64,
+                    y + py as f64,
+                    z + pz as f64,
+                    px,
+                    py,
+                    pz,
+                    MaterialKind::Bark,
+                );
+                assert!(
+                    (base - tiled).abs() < 1e-10,
+                    "Bark noise tiling failed for cache {ci} at ({x},{y},{z}): {base} vs {tiled}"
+                );
+            }
+        }
+    }
 
-        // +Y face (tile 0): right edge at tx=15, ty varies.
-        // World pos at (tx=15, ty): (0 + 0 + 1*1.0, 6, 0 + 0 + ty/(15)*1.0)
-        //   = (1, 6, ty/15)
-        //
-        // +X face (tile 1): top edge at ty=15, tx varies.
-        // World pos at (tx, ty=15): (1, 5 + 0 + 1*1.0, 0 + tx/(15)*1.0)
-        //   = (1, 6, tx/15)
-        //
-        // When tx_plusY = ty_plusX, they sample the same point.
-        for t in 0..FACE_TEX_SIZE {
-            // +Y face right edge: tile 0, px = 15, py = t
-            let px0 = FACE_TEX_SIZE - 1;
-            let py0 = t;
-            let idx0 = ((py0 * atlas.width + px0) * 4) as usize;
+    #[test]
+    fn cache_periods_no_shared_axis() {
+        // Core invariant: no two caches share the same period on any axis.
+        for axis in 0..3 {
+            let values: Vec<i32> = (0..CACHE_COUNT).map(|c| CACHE_PERIODS[c][axis]).collect();
+            for i in 0..values.len() {
+                for j in (i + 1)..values.len() {
+                    assert_ne!(
+                        values[i], values[j],
+                        "Caches {i} and {j} share period {} on axis {axis}",
+                        values[i]
+                    );
+                }
+            }
+        }
+    }
 
-            // +X face top edge: tile 1, px = FACE_TEX_SIZE + t, py = 15
-            let px1 = FACE_TEX_SIZE + t;
-            let py1 = FACE_TEX_SIZE - 1;
-            let idx1 = ((py1 * atlas.width + px1) * 4) as usize;
+    #[test]
+    fn tile_pixels_not_saturated() {
+        // Tiles should have interior values, not be clamped to all-0 or all-255.
+        let cache = TilingCache::new();
+        for mat in [MaterialKind::Bark, MaterialKind::Ground] {
+            for ci in 0..CACHE_COUNT {
+                let data = cache.texture_data(mat, ci);
+                let tile = &data[..TILE_BYTES];
+                let min = *tile.iter().min().unwrap();
+                let max = *tile.iter().max().unwrap();
+                assert!(
+                    max - min > 20,
+                    "{mat:?} cache {ci} first tile has narrow range [{min}, {max}]"
+                );
+            }
+        }
+    }
 
+    #[test]
+    fn adjacent_tiles_match_all_axis_pairs() {
+        // Verify edge matching for all three axis pairs, not just Xz.
+        let cache = TilingCache::new();
+        let periods = cache.periods(0);
+        let [_px, py, pz] = periods;
+        let tpap = cache.tiles_per_axis_pair(0);
+        let data = cache.texture_data(MaterialKind::Bark, 0);
+
+        // For each axis pair, test U-direction adjacency (incrementing the
+        // first varying axis's modular coordinate by 1).
+        for (ap_idx, ap) in [AxisPair::Xz, AxisPair::Zy, AxisPair::Xy]
+            .iter()
+            .enumerate()
+        {
+            // Increment the U-axis modular coord. For Xz: U=X (mx), Zy: U=Z (mz), Xy: U=X (mx).
+            let (mut m0, mut m1) = ([0i32; 3], [0i32; 3]);
+            match ap {
+                AxisPair::Xz => {
+                    m1[0] = 1; // mx: 0 → 1
+                }
+                AxisPair::Zy => {
+                    m1[2] = 1; // mz: 0 → 1
+                }
+                AxisPair::Xy => {
+                    m1[0] = 1; // mx: 0 → 1
+                }
+            }
+
+            let layer0 = ap_idx * tpap + (m0[0] * py * pz + m0[1] * pz + m0[2]) as usize;
+            let layer1 = ap_idx * tpap + (m1[0] * py * pz + m1[1] * pz + m1[2]) as usize;
+
+            let tile0 = &data[layer0 * TILE_BYTES..(layer0 + 1) * TILE_BYTES];
+            let tile1 = &data[layer1 * TILE_BYTES..(layer1 + 1) * TILE_BYTES];
+
+            // Right edge of tile0 (tx=15) should match left edge of tile1 (tx=0).
+            for ty in 0..TILE_SIZE as usize {
+                let right = tile0[ty * TILE_SIZE as usize + (TILE_SIZE - 1) as usize];
+                let left = tile1[ty * TILE_SIZE as usize];
+                assert_eq!(
+                    right, left,
+                    "{ap:?} U-edge mismatch at ty={ty}: right={right}, left={left}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn adjacent_tiles_match_v_direction() {
+        // Verify V-direction edge matching (incrementing second varying axis).
+        let cache = TilingCache::new();
+        let periods = cache.periods(0);
+        let [_px, py, pz] = periods;
+        let tpap = cache.tiles_per_axis_pair(0);
+        let data = cache.texture_data(MaterialKind::Bark, 0);
+
+        // Xz axis pair: V = Z. Tiles at mz=0 and mz=1 should match at
+        // bottom edge (ty=15) of mz=0 and top edge (ty=0) of mz=1.
+        let ap = AxisPair::Xz as usize;
+        let layer0 = ap * tpap; // mx=0, my=0, mz=0
+        let layer1 = ap * tpap + 1; // mx=0, my=0, mz=1
+
+        let tile0 = &data[layer0 * TILE_BYTES..(layer0 + 1) * TILE_BYTES];
+        let tile1 = &data[layer1 * TILE_BYTES..(layer1 + 1) * TILE_BYTES];
+
+        for tx in 0..TILE_SIZE as usize {
+            let bottom = tile0[(TILE_SIZE as usize - 1) * TILE_SIZE as usize + tx];
+            let top = tile1[tx]; // ty=0
             assert_eq!(
-                &atlas.pixels[idx0..idx0 + 4],
-                &atlas.pixels[idx1..idx1 + 4],
-                "Perpendicular edge pixels should match at t={t}"
+                bottom, top,
+                "Xz V-edge mismatch at tx={tx}: bottom={bottom}, top={top}"
             );
         }
     }
 
     #[test]
-    fn face_tile_cache_returns_same_data_on_second_lookup() {
-        let key = FaceTileKey {
-            wx: 5,
-            wy: 3,
-            wz: 7,
-            face_idx: 2,
-            material: 0, // Bark
-        };
-        let mut cache = FaceTileCache::new();
-        assert_eq!(cache.len(), 0);
-
-        let first: Vec<u8> = cache.get_or_compute(key).to_vec();
-        assert_eq!(cache.len(), 1);
-
-        let second: Vec<u8> = cache.get_or_compute(key).to_vec();
-        assert_eq!(cache.len(), 1); // no new entry
-        assert_eq!(first, second, "Cached tile should return identical bytes");
+    fn tileable_perlin_negative_coords() {
+        // Tiling should work for negative input coordinates.
+        let px = 7;
+        let py = 5;
+        let pz = 11;
+        for i in 0..20 {
+            let x = -(i as f64) * 0.37 - 0.5;
+            let y = -(i as f64) * 0.23 - 0.3;
+            let z = -(i as f64) * 0.41 - 0.7;
+            let base = tileable_perlin_3d(x, y, z, px, py, pz);
+            let tiled = tileable_perlin_3d(x + px as f64, y + py as f64, z + pz as f64, px, py, pz);
+            assert!(
+                (base - tiled).abs() < 1e-10,
+                "Negative-coord tiling failed at ({x},{y},{z}): {base} vs {tiled}"
+            );
+        }
     }
 
     #[test]
-    fn generate_atlas_cached_matches_uncached() {
-        let faces = vec![
-            FaceTexInfo {
-                wx: 0,
-                wy: 5,
-                wz: 0,
-                face_idx: 2,
-            },
-            FaceTexInfo {
-                wx: 1,
-                wy: 5,
-                wz: 0,
-                face_idx: 2,
-            },
-            FaceTexInfo {
-                wx: 0,
-                wy: 5,
-                wz: 0,
-                face_idx: 0,
-            },
-            FaceTexInfo {
-                wx: 3,
-                wy: 7,
-                wz: 2,
-                face_idx: 4,
-            },
-        ];
-
-        let uncached = generate_atlas(&faces, MaterialKind::Bark);
-        let mut cache = FaceTileCache::new();
-        let cached = generate_atlas_cached(&faces, MaterialKind::Bark, &mut cache);
-
-        assert_eq!(uncached.width, cached.width);
-        assert_eq!(uncached.height, cached.height);
-        assert_eq!(uncached.tiles_per_row, cached.tiles_per_row);
+    fn bark_y_period_multiplier_is_exact() {
+        // Guard: BARK_Y_COMPRESS * BASE_FREQ must be an exact integer
+        // (BARK_Y_PERIOD_MULT) so tileable lattice wrapping works.
+        let product = BARK_Y_COMPRESS * BASE_FREQ;
         assert_eq!(
-            uncached.pixels, cached.pixels,
-            "Cached atlas should be pixel-identical to uncached"
+            product, BARK_Y_PERIOD_MULT as f64,
+            "BARK_Y_COMPRESS * BASE_FREQ must equal BARK_Y_PERIOD_MULT"
         );
     }
 }

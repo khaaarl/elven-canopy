@@ -34,7 +34,7 @@ elven-canopy/
 │       │   └── task_helpers.rs #   Task extension table accessors, insert_task
 │       ├── db.rs               # SimDb — tabulosity relational store (36 tables, all entities)
 │       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with face culling
-│       ├── texture_gen.rs      # Procedural face textures (3D Perlin noise atlases)
+│       ├── texture_gen.rs      # Prime-period tiling textures (tileable Perlin noise, bark + ground)
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
 │       ├── pathfinding.rs      # A* search over NavGraph
 │       ├── projectile.rs       # Integer-only ballistic trajectories, aim solver
@@ -112,6 +112,8 @@ elven-canopy/
 │   ├── project.godot           # Project config + input map + autoloads
 │   ├── elven_canopy.gdextension
 │   ├── target -> ../target     # Symlink so Godot can find the compiled .so
+│   ├── shaders/
+│   │   └── bark_ground.gdshader # Prime-period tiling shader for bark/ground surfaces
 │   ├── scenes/
 │   │   ├── main.tscn           # Game scene (3D world, camera, renderers)
 │   │   ├── main_menu.tscn      # Main menu (New Game / Load / Quit)
@@ -127,7 +129,7 @@ elven-canopy/
 │       ├── orbital_camera.gd   # Camera controls (orbit, follow, vertical snap)
 │       ├── elf_renderer.gd     # Billboard chibi elf sprites (pool pattern)
 │       ├── capybara_renderer.gd # Billboard chibi capybara sprites
-│       ├── tree_renderer.gd    # Tree voxel mesh rendering (MultiMesh)
+│       ├── tree_renderer.gd    # Tree voxel chunk mesh rendering (tiling shader materials)
 │       ├── action_toolbar.gd   # Top toolbar (speed controls, gameplay) + toggleable debug panel
 │       ├── construction_controller.gd # Click-drag construction placement (5-state FSM)
 │       ├── height_grid_renderer.gd    # Wireframe height-slice grid overlay

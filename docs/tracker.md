@@ -213,7 +213,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-terrain-manip        Temporary voxel/zone placement with expiry
-[ ] F-tiling-tex           Prime-period tiling textures for bark and ground
 [ ] F-traders              Visiting traders from other civs
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-db              Trees as DB entities with elf-tree bonding
@@ -399,6 +398,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-task-proximity       Proximity-based task assignment (Dijkstra nearest)
 [x] F-textile-crafting     Textile and clothing crafting recipes
 [x] F-thoughts             Creature thoughts (DF-style event reactions)
+[x] F-tiling-tex           Prime-period tiling textures for bark and ground
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
 [x] F-tree-overlap         Construction overlap with tree geometry
@@ -3202,8 +3202,8 @@ RLE-aware mesh gen (F-mesh-gen-rle), and LookupMap nav spatial index
 volume. The tiling texture system (F-tiling-tex) eliminates per-face
 atlas overhead that would otherwise be prohibitive at this scale.
 
-**Blocked by:** F-megachunk, F-tiling-tex
-**Unblocked by:** F-nav-gen-opt, F-rle-voxels
+**Blocked by:** F-megachunk
+**Unblocked by:** F-nav-gen-opt, F-rle-voxels, F-tiling-tex
 **Related:** F-lesser-trees, F-multi-tree, F-world-map, F-zone-world
 
 #### F-civ-knowledge — Civilization knowledge system (fruit tiers, discovery)
@@ -4386,7 +4386,7 @@ buttons instead of hex IDs. Adds `TaskOrigin` enum to `task.rs` with
 **Modified files:** `task.rs`, `sim.rs`, `sim_bridge.rs`, `task_panel.gd`
 
 #### F-tiling-tex — Prime-period tiling textures for bark and ground
-**Status:** Todo
+**Status:** Done
 
 Replace per-face atlas texture generation with a prime-period tiling
 system. Three independent caches (A, B, C) each generate monochrome
@@ -4413,7 +4413,7 @@ pipeline in texture_gen.rs and the PendingFace / build_atlas_and_fixup
 code in mesh_gen.rs. Leaf surfaces are unaffected (they use a separate
 alpha-scissor texture).
 
-**Blocks:** F-bigger-world
+**Unblocked:** F-bigger-world
 **Related:** F-leaf-tex-rethink
 
 #### F-tree-info — Tree stats/info panel

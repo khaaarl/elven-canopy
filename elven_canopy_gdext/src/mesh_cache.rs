@@ -6,16 +6,21 @@
 // once at init, then `mark_dirty_voxels()` + `update_dirty()` each frame
 // for incremental updates.
 //
+// Also owns the `TilingCache` (global prime-period tiling textures) which
+// is built once and shared across all chunks — it doesn't depend on world
+// state, only on the noise parameters baked into `texture_gen.rs`.
+//
 // See also: `mesh_gen.rs` (sim crate) for the core mesh generation algorithm,
+// `texture_gen.rs` (sim crate) for the tiling texture system,
 // `sim_bridge.rs` for the Godot-facing methods that convert `ChunkMesh` into
-// `ArrayMesh` objects.
+// `ArrayMesh` objects and upload tiling textures.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use elven_canopy_sim::mesh_gen::{
     CHUNK_SIZE, ChunkCoord, ChunkMesh, generate_chunk_mesh, voxel_to_chunk,
 };
-use elven_canopy_sim::texture_gen::FaceTileCache;
+use elven_canopy_sim::texture_gen::TilingCache;
 use elven_canopy_sim::types::VoxelCoord;
 use elven_canopy_sim::world::VoxelWorld;
 
@@ -36,10 +41,8 @@ pub struct MeshCache {
     /// Optional Y cutoff for height hiding. Voxels with world Y ≥ this value
     /// produce no geometry, and their neighbors get boundary faces exposed.
     y_cutoff: Option<i32>,
-    /// Per-face texture tile cache. Tiles are deterministic pure functions of
-    /// world position + face direction + material, so they persist across
-    /// cutoff changes and chunk rebuilds.
-    tile_cache: FaceTileCache,
+    /// Global tiling texture cache. Built once, independent of world state.
+    tiling_cache: TilingCache,
     /// World chunk bounds (set during build_all). Used by set_y_cutoff to dirty
     /// chunks that might not be in the cache yet.
     cx_max: i32,
@@ -54,7 +57,7 @@ impl MeshCache {
             dirty: BTreeSet::new(),
             last_updated: Vec::new(),
             y_cutoff: None,
-            tile_cache: FaceTileCache::new(),
+            tiling_cache: TilingCache::new(),
             cx_max: 0,
             cy_max: 0,
             cz_max: 0,
@@ -79,8 +82,7 @@ impl MeshCache {
             for cz in 0..cz_max {
                 for cx in 0..cx_max {
                     let coord = ChunkCoord::new(cx, cy, cz);
-                    let mesh =
-                        generate_chunk_mesh(world, coord, self.y_cutoff, &mut self.tile_cache);
+                    let mesh = generate_chunk_mesh(world, coord, self.y_cutoff);
                     if !mesh.is_empty() {
                         self.chunks.insert(coord, mesh);
                     }
@@ -140,7 +142,7 @@ impl MeshCache {
         self.last_updated.clear();
 
         for coord in &dirty {
-            let mesh = generate_chunk_mesh(world, *coord, self.y_cutoff, &mut self.tile_cache);
+            let mesh = generate_chunk_mesh(world, *coord, self.y_cutoff);
             if mesh.is_empty() {
                 self.chunks.remove(coord);
             } else {
@@ -165,6 +167,11 @@ impl MeshCache {
     /// Get the cached mesh for a chunk, if it exists.
     pub fn get_chunk(&self, coord: &ChunkCoord) -> Option<&ChunkMesh> {
         self.chunks.get(coord)
+    }
+
+    /// Access the global tiling texture cache.
+    pub fn tiling_cache(&self) -> &TilingCache {
+        &self.tiling_cache
     }
 
     /// Set the Y cutoff for height hiding. Dirties all chunks at or between

@@ -4687,7 +4687,9 @@ impl SimBridge {
     }
 
     /// Helper: convert a `SurfaceMesh` into a Godot surface array and add it
-    /// to the `ArrayMesh`. Skips empty surfaces.
+    /// to the `ArrayMesh`. Skips empty surfaces. UVs are only included if
+    /// the surface has them (leaf surfaces have UVs; bark/ground do not —
+    /// the tiling shader derives texture coordinates from world position).
     fn add_surface_to_array_mesh(
         mesh: &mut Gd<godot::classes::ArrayMesh>,
         surface: &elven_canopy_sim::mesh_gen::SurfaceMesh,
@@ -4734,13 +4736,6 @@ impl SimBridge {
             ));
         }
 
-        // Build PackedVector2Array for UVs.
-        let mut uvs = PackedVector2Array::new();
-        for i in 0..vert_count {
-            let base = i * 2;
-            uvs.push(Vector2::new(surface.uvs[base], surface.uvs[base + 1]));
-        }
-
         // Build PackedInt32Array for indices.
         let mut indices = PackedInt32Array::new();
         for &idx in &surface.indices {
@@ -4756,69 +4751,91 @@ impl SimBridge {
         arrays.set(1, &Variant::from(normals)); // ARRAY_NORMAL
         // 2: ARRAY_TANGENT — skip (nil)
         arrays.set(3, &Variant::from(colors)); // ARRAY_COLOR
-        arrays.set(4, &Variant::from(uvs)); // ARRAY_TEX_UV
+
+        // UVs: only present for surfaces that need them (leaf).
+        if !surface.uvs.is_empty() {
+            let mut uvs = PackedVector2Array::new();
+            for i in 0..vert_count {
+                let base = i * 2;
+                uvs.push(Vector2::new(surface.uvs[base], surface.uvs[base + 1]));
+            }
+            arrays.set(4, &Variant::from(uvs)); // ARRAY_TEX_UV
+        }
+
         // 5-11: skip (nil)
         arrays.set(12, &Variant::from(indices)); // ARRAY_INDEX
 
         mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);
     }
 
-    /// Get the texture atlas pixel data for a chunk surface. Returns a
-    /// PackedByteArray of RGBA pixels (empty if no atlas for this surface).
-    /// Surface indices: 0=bark, 1=ground.
+    /// Get the R8 texture data for a tiling cache.
+    /// `material`: 0=bark, 1=ground. `cache_idx`: 0..2.
+    /// Returns a flat PackedByteArray of all layers, each TILE_SIZE×TILE_SIZE
+    /// bytes, suitable for building a Texture2DArray on the GDScript side.
     #[func]
-    fn get_chunk_atlas_data(&self, cx: i32, cy: i32, cz: i32, surface: i32) -> PackedByteArray {
-        use elven_canopy_sim::mesh_gen::ChunkCoord;
+    fn get_tiling_texture_data(&self, material: i32, cache_idx: i32) -> PackedByteArray {
+        use elven_canopy_sim::texture_gen::MaterialKind;
 
         let Some(cache) = &self.mesh_cache else {
             return PackedByteArray::new();
         };
-        let coord = ChunkCoord::new(cx, cy, cz);
-        let Some(chunk_mesh) = cache.get_chunk(&coord) else {
-            return PackedByteArray::new();
-        };
-
-        let pixels = match surface {
-            0 => &chunk_mesh.bark.atlas_pixels,
-            1 => &chunk_mesh.ground.atlas_pixels,
+        let mat = match material {
+            0 => MaterialKind::Bark,
+            1 => MaterialKind::Ground,
             _ => return PackedByteArray::new(),
         };
-
-        if pixels.is_empty() {
+        let idx = cache_idx as usize;
+        if idx >= elven_canopy_sim::texture_gen::CACHE_COUNT {
             return PackedByteArray::new();
         }
-
+        let data = cache.tiling_cache().texture_data(mat, idx);
         let mut arr = PackedByteArray::new();
-        arr.resize(pixels.len());
-        let slice = arr.as_mut_slice();
-        slice.copy_from_slice(pixels);
+        arr.resize(data.len());
+        arr.as_mut_slice().copy_from_slice(data);
         arr
     }
 
-    /// Get the atlas dimensions for a chunk surface. Returns Vector2i(width, height).
-    /// Returns (0,0) if no atlas exists for this surface.
+    /// Get the number of Texture2DArray layers for a tiling cache.
+    /// Layers are the same for bark and ground (same period structure).
     #[func]
-    fn get_chunk_atlas_size(&self, cx: i32, cy: i32, cz: i32, surface: i32) -> Vector2i {
-        use elven_canopy_sim::mesh_gen::ChunkCoord;
+    fn get_tiling_layer_count(&self, cache_idx: i32) -> i32 {
+        use elven_canopy_sim::texture_gen::MaterialKind;
 
         let Some(cache) = &self.mesh_cache else {
-            return Vector2i::ZERO;
+            return 0;
         };
-        let coord = ChunkCoord::new(cx, cy, cz);
-        let Some(chunk_mesh) = cache.get_chunk(&coord) else {
-            return Vector2i::ZERO;
-        };
+        let idx = cache_idx as usize;
+        if idx >= elven_canopy_sim::texture_gen::CACHE_COUNT {
+            return 0;
+        }
+        cache.tiling_cache().layer_count(MaterialKind::Bark, idx) as i32
+    }
 
-        let (w, h) = match surface {
-            0 => (chunk_mesh.bark.atlas_width, chunk_mesh.bark.atlas_height),
-            1 => (
-                chunk_mesh.ground.atlas_width,
-                chunk_mesh.ground.atlas_height,
-            ),
-            _ => (0, 0),
+    /// Get the tiling periods [px, py, pz] for a cache as a Vector3i.
+    #[func]
+    fn get_tiling_periods(&self, cache_idx: i32) -> Vector3i {
+        let Some(cache) = &self.mesh_cache else {
+            return Vector3i::ZERO;
         };
+        let idx = cache_idx as usize;
+        if idx >= elven_canopy_sim::texture_gen::CACHE_COUNT {
+            return Vector3i::ZERO;
+        }
+        let p = cache.tiling_cache().periods(idx);
+        Vector3i::new(p[0], p[1], p[2])
+    }
 
-        Vector2i::new(w as i32, h as i32)
+    /// Get the tiles-per-axis-pair count for a cache (px * py * pz).
+    #[func]
+    fn get_tiling_tiles_per_axis_pair(&self, cache_idx: i32) -> i32 {
+        let Some(cache) = &self.mesh_cache else {
+            return 0;
+        };
+        let idx = cache_idx as usize;
+        if idx >= elven_canopy_sim::texture_gen::CACHE_COUNT {
+            return 0;
+        }
+        cache.tiling_cache().tiles_per_axis_pair(idx) as i32
     }
 
     // ========================================================================
