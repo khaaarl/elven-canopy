@@ -3,7 +3,7 @@ use crate::blueprint::Blueprint;
 use crate::building;
 use crate::db::{CompletedStructure, MoveAction, TaskKindTag};
 use crate::event::SimEventKind;
-use crate::inventory::Material;
+use crate::inventory::{ItemKind, Material};
 use crate::preemption;
 use crate::recipe::Recipe;
 use crate::task::{Task, TaskKind, TaskOrigin, TaskState};
@@ -3940,14 +3940,15 @@ fn all_small_species_spawn_and_coexist() {
     let mut sim = test_sim(300);
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
+    // Only non-hostile species — hostile species (Goblin, Orc) would fight
+    // and kill friendlies during the 50k-tick coexistence window, especially
+    // with expanded melee ranges (range_sq=3 covers 3D diagonals).
     let species_list = [
         Species::Elf,
         Species::Capybara,
         Species::Boar,
         Species::Deer,
-        Species::Goblin,
         Species::Monkey,
-        Species::Orc,
         Species::Squirrel,
     ];
     let mut tick = 1;
@@ -3964,14 +3965,14 @@ fn all_small_species_spawn_and_coexist() {
         tick = sim.tick + 1;
     }
 
-    assert_eq!(sim.db.creatures.len(), 8);
+    assert_eq!(sim.db.creatures.len(), 6);
     for &species in &species_list {
         assert_eq!(sim.creature_count(species), 1, "Expected 1 {:?}", species);
     }
 
     // Run for a while — all should remain alive with valid nodes.
     sim.step(&[], 50000);
-    assert_eq!(sim.db.creatures.len(), 8);
+    assert_eq!(sim.db.creatures.len(), 6);
     for creature in sim.db.creatures.iter_all() {
         assert!(
             creature.current_node.is_some(),
@@ -17624,7 +17625,7 @@ impl SimState {
 
 #[test]
 fn test_in_melee_range_adjacent() {
-    // Face-adjacent 1x1 creatures: dist² = 1, within default range_sq = 2.
+    // Face-adjacent 1x1 creatures: dist² = 1, within range_sq = 2.
     assert!(in_melee_range(
         VoxelCoord::new(5, 1, 5),
         [1, 1, 1],
@@ -17636,7 +17637,7 @@ fn test_in_melee_range_adjacent() {
 
 #[test]
 fn test_in_melee_range_diagonal() {
-    // 2D diagonal: dist² = 1² + 1² = 2, within default range.
+    // 2D diagonal: dist² = 1² + 1² = 2, within range_sq = 2.
     assert!(in_melee_range(
         VoxelCoord::new(5, 1, 5),
         [1, 1, 1],
@@ -20487,7 +20488,7 @@ fn hostile_waits_on_cooldown_near_elf() {
 
     let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
     let dist = goblin_final.manhattan_distance(elf_pos);
-    // Should still be within melee range (manhattan dist ≤ 2 for range_sq=2).
+    // Should still be within melee range (manhattan dist ≤ 2 for range_sq=3).
     assert!(
         dist <= 2,
         "Goblin should stay near elf on cooldown, not wander away (dist={dist})"
@@ -36309,5 +36310,1150 @@ fn grow_craft_task_total_cost_rounds_up() {
     assert_eq!(
         task.total_cost, 2,
         "div_ceil should round up: 7000/4000 = 2 actions"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Melee weapon tests (F-elf-weapons)
+// -----------------------------------------------------------------------
+
+/// Give an elf a club and verify the club's higher damage replaces species base.
+#[test]
+fn melee_weapon_club_replaces_species_damage() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    // Give the elf a club.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    let target_hp_before = sim.db.creatures.get(&target).unwrap().hp;
+    let club_damage = sim.config.club_base_damage;
+    let species_damage = sim.species_table[&Species::Elf].melee_damage;
+    assert!(
+        club_damage > species_damage,
+        "Club damage ({club_damage}) should exceed species base ({species_damage})"
+    );
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    let target_hp_after = sim.db.creatures.get(&target).unwrap().hp;
+    assert_eq!(
+        target_hp_after,
+        target_hp_before - club_damage,
+        "Club damage ({club_damage}) should replace species base"
+    );
+}
+
+/// Give an elf a spear and place target at distance-squared = 4 (extended reach).
+/// Spear should reach but bare hands (range_sq=3) should not.
+#[test]
+fn melee_weapon_spear_extended_range() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    // Place elf 2 voxels away (distance_sq = 4 for a single axis offset of 2).
+    let elf_pos = VoxelCoord::new(target_pos.x + 2, target_pos.y, target_pos.z);
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    // Without a weapon, elf can't reach (species melee_range_sq = 3, dist_sq = 4).
+    let target_hp_before = sim.db.creatures.get(&target).unwrap().hp;
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&target).unwrap().hp,
+        target_hp_before,
+        "Bare-hands elf should not reach target at distance 2"
+    );
+
+    // Now give the elf a spear (range_sq = 8, covers dist_sq = 4).
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Spear,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+    force_idle(&mut sim, elf);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    let spear_damage = sim.config.spear_base_damage;
+    assert_eq!(
+        sim.db.creatures.get(&target).unwrap().hp,
+        target_hp_before - spear_damage,
+        "Spear should reach target at distance 2 (dist_sq=4)"
+    );
+}
+
+/// When elf has both spear and club, and target is adjacent (dist_sq <= 2),
+/// prefer the club (higher damage).
+#[test]
+fn melee_weapon_prefers_highest_damage_when_both_in_range() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Spear,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    let target_hp_before = sim.db.creatures.get(&target).unwrap().hp;
+    let club_damage = sim.config.club_base_damage;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(
+        sim.db.creatures.get(&target).unwrap().hp,
+        target_hp_before - club_damage,
+        "Should prefer club (damage {club_damage}) over spear when both in range"
+    );
+}
+
+/// When target is at extended range (dist_sq=4), only spear can reach
+/// (club range_sq=3) — club should not be selected.
+#[test]
+fn melee_weapon_spear_only_at_extended_range() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let elf_pos = VoxelCoord::new(target_pos.x + 2, target_pos.y, target_pos.z);
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Spear,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    let target_hp_before = sim.db.creatures.get(&target).unwrap().hp;
+    let spear_damage = sim.config.spear_base_damage;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(
+        sim.db.creatures.get(&target).unwrap().hp,
+        target_hp_before - spear_damage,
+        "Only spear should reach at dist_sq=4"
+    );
+}
+
+/// Melee weapons degrade on use (0-2 HP per strike).
+#[test]
+fn melee_weapon_degrades_on_strike() {
+    let mut sim = test_sim(42);
+    // Force degradation to always apply by setting min = max = 1.
+    sim.config.melee_weapon_impact_damage_min = 1;
+    sim.config.melee_weapon_impact_damage_max = 1;
+
+    let elf = spawn_elf(&mut sim);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    // Find the club stack and check its HP.
+    let club_max_hp = sim.config.item_durability[&ItemKind::Club];
+    let club_stack = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|s| s.kind == ItemKind::Club)
+        .unwrap();
+    assert_eq!(club_stack.max_hp, club_max_hp);
+    assert_eq!(club_stack.current_hp, club_max_hp);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Club should have lost 1 HP.
+    let club_stack_after = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|s| s.kind == ItemKind::Club)
+        .unwrap();
+    assert_eq!(
+        club_stack_after.current_hp,
+        club_max_hp - 1,
+        "Club should lose 1 HP per strike"
+    );
+}
+
+/// Bare-handed melee still works when creature has no weapons.
+#[test]
+fn melee_bare_hands_fallback() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().hp,
+        elf_hp_before - goblin_damage,
+        "Bare-handed melee should still use species base damage"
+    );
+}
+
+/// max_melee_range_sq returns species range when no weapons, and
+/// weapon range when weapons extend it.
+#[test]
+fn max_melee_range_sq_accounts_for_weapons() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    let species_range = sim.species_table[&Species::Elf].melee_range_sq;
+    assert_eq!(
+        sim.max_melee_range_sq(elf),
+        species_range,
+        "No weapons: should return species range"
+    );
+
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Spear,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    let spear_range = sim.config.spear_melee_range_sq;
+    assert_eq!(
+        sim.max_melee_range_sq(elf),
+        spear_range,
+        "With spear: should return spear range (extended)"
+    );
+
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+    // Club range (3) < spear range (8), so max should still be spear.
+    assert_eq!(
+        sim.max_melee_range_sq(elf),
+        spear_range,
+        "With both: should return max (spear range)"
+    );
+}
+
+/// Creatures with zero species melee_damage can still melee with a weapon.
+#[test]
+fn melee_weapon_enables_attack_for_zero_damage_species() {
+    let mut sim = test_sim(42);
+    // Capybara has melee_damage = 0.
+    let capybara = spawn_species(&mut sim, Species::Capybara);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, capybara);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let cap_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
+    force_position(&mut sim, capybara, cap_pos);
+    force_idle(&mut sim, capybara);
+
+    // Without weapon, capybara can't melee.
+    assert!(!sim.can_melee(capybara));
+
+    // Give capybara a club.
+    let inv_id = sim.db.creatures.get(&capybara).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    assert!(sim.can_melee(capybara));
+
+    let target_hp_before = sim.db.creatures.get(&target).unwrap().hp;
+    let club_damage = sim.config.club_base_damage;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: capybara,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(
+        sim.db.creatures.get(&target).unwrap().hp,
+        target_hp_before - club_damage,
+        "Capybara with club should deal club damage"
+    );
+}
+
+/// Spear and Club ItemKind serde roundtrip.
+#[test]
+fn item_kind_spear_club_serde_roundtrip() {
+    for kind in [ItemKind::Spear, ItemKind::Club] {
+        let json = serde_json::to_string(&kind).unwrap();
+        let restored: ItemKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, restored, "roundtrip failed for {json}");
+    }
+}
+
+/// GrowSpear and GrowClub recipe resolve correctly.
+#[test]
+fn recipe_grow_spear_and_club() {
+    let config = crate::config::GameConfig::default();
+    let params = crate::recipe::RecipeParams {
+        material: Some(Material::Oak),
+    };
+
+    let spear = Recipe::GrowSpear
+        .resolve(&params, &config, &[])
+        .expect("GrowSpear should resolve");
+    assert!(spear.inputs.is_empty());
+    assert_eq!(spear.outputs[0].item_kind, ItemKind::Spear);
+    assert_eq!(spear.outputs[0].quantity, 1);
+    assert_eq!(spear.outputs[0].material, Some(Material::Oak));
+    assert_eq!(spear.work_ticks, config.grow_recipes.grow_spear_work_ticks);
+
+    let club = Recipe::GrowClub
+        .resolve(&params, &config, &[])
+        .expect("GrowClub should resolve");
+    assert!(club.inputs.is_empty());
+    assert_eq!(club.outputs[0].item_kind, ItemKind::Club);
+    assert_eq!(club.outputs[0].quantity, 1);
+    assert_eq!(club.outputs[0].material, Some(Material::Oak));
+    assert_eq!(club.work_ticks, config.grow_recipes.grow_club_work_ticks);
+}
+
+/// GrowSpear and GrowClub reject non-wood materials.
+#[test]
+fn recipe_grow_weapons_reject_non_wood() {
+    let config = crate::config::GameConfig::default();
+    let params = crate::recipe::RecipeParams {
+        material: Some(Material::FruitSpecies(crate::fruit::FruitSpeciesId(0))),
+    };
+    assert!(Recipe::GrowSpear.resolve(&params, &config, &[]).is_none());
+    assert!(Recipe::GrowClub.resolve(&params, &config, &[]).is_none());
+}
+
+/// GrowSpear and GrowClub are workshop recipes with Grow verb.
+#[test]
+fn recipe_grow_weapons_metadata() {
+    use crate::recipe::RecipeVerb;
+    use crate::types::FurnishingType;
+
+    assert_eq!(Recipe::GrowSpear.verb(), RecipeVerb::Grow);
+    assert_eq!(Recipe::GrowClub.verb(), RecipeVerb::Grow);
+    assert_eq!(
+        Recipe::GrowSpear.furnishing_types(),
+        vec![FurnishingType::Workshop]
+    );
+    assert_eq!(
+        Recipe::GrowClub.furnishing_types(),
+        vec![FurnishingType::Workshop]
+    );
+    assert_eq!(Recipe::GrowSpear.category(), vec!["Woodcraft", "Weapons"]);
+    assert_eq!(Recipe::GrowClub.category(), vec!["Woodcraft", "Weapons"]);
+}
+
+/// GrowSpear and GrowClub display names.
+#[test]
+fn recipe_grow_weapons_display_names() {
+    let params = crate::recipe::RecipeParams {
+        material: Some(Material::Oak),
+    };
+    assert_eq!(
+        Recipe::GrowSpear.display_name(&params, &[]),
+        "Grow Oak Spear"
+    );
+    assert_eq!(Recipe::GrowClub.display_name(&params, &[]), "Grow Oak Club");
+}
+
+/// Spear and Club have durability configured.
+#[test]
+fn weapon_durability_configured() {
+    let config = crate::config::GameConfig::default();
+    assert!(config.item_durability.contains_key(&ItemKind::Spear));
+    assert!(config.item_durability.contains_key(&ItemKind::Club));
+    assert!(config.item_durability[&ItemKind::Spear] > 0);
+    assert!(config.item_durability[&ItemKind::Club] > 0);
+}
+
+/// is_melee_weapon returns true for Spear and Club, false for others.
+#[test]
+fn is_melee_weapon_classification() {
+    assert!(ItemKind::Spear.is_melee_weapon());
+    assert!(ItemKind::Club.is_melee_weapon());
+    assert!(!ItemKind::Bow.is_melee_weapon());
+    assert!(!ItemKind::Arrow.is_melee_weapon());
+    assert!(!ItemKind::Bread.is_melee_weapon());
+    assert!(!ItemKind::Helmet.is_melee_weapon());
+}
+
+/// Spear and Club have no equip slot (no dedicated weapon slot yet).
+#[test]
+fn weapons_have_no_equip_slot() {
+    assert!(ItemKind::Spear.equip_slot().is_none());
+    assert!(ItemKind::Club.equip_slot().is_none());
+}
+
+/// GrowSpear and GrowClub serde roundtrip.
+#[test]
+fn recipe_grow_weapons_serde_roundtrip() {
+    for recipe in [Recipe::GrowSpear, Recipe::GrowClub] {
+        let json = serde_json::to_string(&recipe).unwrap();
+        let restored: Recipe = serde_json::from_str(&json).unwrap();
+        assert_eq!(recipe, restored, "roundtrip failed for {json}");
+    }
+    assert_eq!(
+        serde_json::to_string(&Recipe::GrowSpear).unwrap(),
+        "\"GrowSpear\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Recipe::GrowClub).unwrap(),
+        "\"GrowClub\""
+    );
+}
+
+/// When a weapon breaks (reaches 0 HP), the next melee strike should fall
+/// back to bare hands (or another weapon).
+#[test]
+fn melee_weapon_breaks_then_fallback_to_bare_hands() {
+    let mut sim = test_sim(42);
+    // Force degradation to always break (1 HP weapon, 1 damage per strike).
+    sim.config.melee_weapon_impact_damage_min = 1;
+    sim.config.melee_weapon_impact_damage_max = 1;
+
+    let elf = spawn_elf(&mut sim);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    // Give the elf a club with only 1 HP remaining.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    let club_max_hp = sim.config.item_durability[&ItemKind::Club];
+    sim.inv_add_item_with_durability(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        1,
+        club_max_hp,
+        None,
+        None,
+    );
+
+    let club_damage = sim.config.club_base_damage;
+    let species_damage = sim.species_table[&Species::Elf].melee_damage;
+    let target_hp_before = sim.db.creatures.get(&target).unwrap().hp;
+
+    // First strike: club is used, deals club damage, then breaks.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&target).unwrap().hp,
+        target_hp_before - club_damage,
+        "First strike should use club damage"
+    );
+
+    // Club should be gone (broken).
+    let clubs_remaining =
+        sim.inv_item_count(inv_id, ItemKind::Club, inventory::MaterialFilter::Any);
+    assert_eq!(clubs_remaining, 0, "Club should have broken");
+
+    // Second strike: bare hands fallback.
+    force_idle(&mut sim, elf);
+    let target_hp_after_first = sim.db.creatures.get(&target).unwrap().hp;
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&target).unwrap().hp,
+        target_hp_after_first - species_damage,
+        "Second strike should use bare-hands species damage"
+    );
+}
+
+/// Weapon stacks with quantity 0 should be ignored by weapon selection.
+#[test]
+fn melee_weapon_zero_quantity_stack_ignored() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    // Add a club with quantity 0 (simulating a fully consumed stack).
+    sim.inv_add_item_with_durability(
+        inv_id,
+        ItemKind::Club,
+        0,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        50,
+        50,
+        None,
+        None,
+    );
+
+    // max_melee_range_sq should only reflect species range, not the q=0 club.
+    let species_range = sim.species_table[&Species::Elf].melee_range_sq;
+    assert_eq!(
+        sim.max_melee_range_sq(elf),
+        species_range,
+        "Zero-quantity weapon should be ignored"
+    );
+}
+
+/// When melee_weapon_impact_damage_min > max, degradation is a no-op.
+#[test]
+fn melee_weapon_degradation_noop_when_min_greater_than_max() {
+    let mut sim = test_sim(42);
+    sim.config.melee_weapon_impact_damage_min = 5;
+    sim.config.melee_weapon_impact_damage_max = 2;
+
+    let elf = spawn_elf(&mut sim);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    let club_max_hp = sim.config.item_durability[&ItemKind::Club];
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Club should not have degraded.
+    let club_stack = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|s| s.kind == ItemKind::Club)
+        .unwrap();
+    assert_eq!(
+        club_stack.current_hp, club_max_hp,
+        "Weapon should not degrade when min > max"
+    );
+}
+
+/// When melee_weapon_impact_damage_max = 0, degradation is disabled.
+#[test]
+fn melee_weapon_degradation_disabled_when_max_zero() {
+    let mut sim = test_sim(42);
+    sim.config.melee_weapon_impact_damage_min = 0;
+    sim.config.melee_weapon_impact_damage_max = 0;
+
+    let elf = spawn_elf(&mut sim);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    let club_max_hp = sim.config.item_durability[&ItemKind::Club];
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    let club_stack = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|s| s.kind == ItemKind::Club)
+        .unwrap();
+    assert_eq!(
+        club_stack.current_hp, club_max_hp,
+        "Weapon should not degrade when max = 0"
+    );
+}
+
+/// melee_distance_sq is consistent with in_melee_range.
+#[test]
+fn melee_distance_sq_consistent_with_in_melee_range() {
+    let cases = [
+        // (attacker_pos, attacker_fp, target_pos, target_fp)
+        (
+            VoxelCoord::new(0, 0, 0),
+            [1, 1, 1],
+            VoxelCoord::new(1, 0, 0),
+            [1, 1, 1],
+        ), // dx=1
+        (
+            VoxelCoord::new(0, 0, 0),
+            [1, 1, 1],
+            VoxelCoord::new(1, 1, 0),
+            [1, 1, 1],
+        ), // diagonal
+        (
+            VoxelCoord::new(0, 0, 0),
+            [1, 1, 1],
+            VoxelCoord::new(1, 1, 1),
+            [1, 1, 1],
+        ), // 3D diag
+        (
+            VoxelCoord::new(0, 0, 0),
+            [1, 1, 1],
+            VoxelCoord::new(2, 0, 0),
+            [1, 1, 1],
+        ), // dx=2
+        (
+            VoxelCoord::new(0, 0, 0),
+            [1, 1, 1],
+            VoxelCoord::new(3, 0, 0),
+            [1, 1, 1],
+        ), // dx=3
+        (
+            VoxelCoord::new(0, 0, 0),
+            [2, 1, 2],
+            VoxelCoord::new(1, 0, 1),
+            [1, 1, 1],
+        ), // overlapping
+    ];
+
+    for range_sq in [1, 2, 3, 4, 8, 9] {
+        for &(a_pos, a_fp, t_pos, t_fp) in &cases {
+            let dist = melee_distance_sq(a_pos, a_fp, t_pos, t_fp);
+            let in_range = in_melee_range(a_pos, a_fp, t_pos, t_fp, range_sq);
+            assert_eq!(
+                dist <= range_sq,
+                in_range,
+                "Mismatch: dist_sq={dist}, range_sq={range_sq}, a={a_pos:?} t={t_pos:?}"
+            );
+        }
+    }
+}
+
+/// Weapon damage goes through armor reduction correctly (weapon base, not
+/// species base, is what armor subtracts from).
+#[test]
+fn weapon_damage_reduced_by_armor() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    // Give elf a club (damage = 20).
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    // Equip goblin with full armor (total = 9). Disable degradation.
+    equip_full_armor(&mut sim, target);
+    sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
+
+    let club_damage = sim.config.club_base_damage;
+    let expected = (club_damage - 9).max(sim.config.armor_min_damage);
+    let target_hp_before = sim.db.creatures.get(&target).unwrap().hp;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    let target_hp_after = sim.db.creatures.get(&target).unwrap().hp;
+    assert_eq!(
+        target_hp_after,
+        target_hp_before - expected,
+        "Club damage ({club_damage}) minus armor (9) = {expected}"
+    );
+}
+
+/// STR scaling applies on top of weapon base damage, not species base.
+#[test]
+fn weapon_damage_scales_with_strength() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let target = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, target);
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
+    force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+
+    // Give elf a club and set STR to +10 (doubles damage).
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Club,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+    let trait_rows: Vec<_> = sim.db.creature_traits.by_creature_trait_kind(
+        &elf,
+        &TraitKind::Strength,
+        tabulosity::QueryOpts::ASC,
+    );
+    assert!(!trait_rows.is_empty());
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&trait_rows[0].id, |t| {
+            t.value = TraitValue::Int(10);
+        });
+
+    let club_damage = sim.config.club_base_damage;
+    let expected = crate::stats::apply_stat_multiplier(club_damage, 10);
+    assert!(
+        expected > club_damage,
+        "STR +10 should increase damage: {expected} > {club_damage}"
+    );
+
+    let target_hp_before = sim.db.creatures.get(&target).unwrap().hp;
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: elf,
+                target_id: target,
+            },
+        }],
+        tick + 1,
+    );
+
+    let target_hp_after = sim.db.creatures.get(&target).unwrap().hp;
+    assert_eq!(
+        target_hp_after,
+        target_hp_before - expected,
+        "Club damage ({club_damage}) × STR+10 scaling = {expected}"
+    );
+}
+
+/// AttackTarget task: elf with spear stops at spear range and attacks without
+/// closing to adjacent. Place elf 2 voxels from goblin (dist_sq=4, within
+/// spear range_sq=8 but outside bare-hands range_sq=3).
+#[test]
+fn attack_target_spear_stops_at_extended_range() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, elf);
+    zero_creature_stats(&mut sim, goblin);
+
+    // Give the elf a spear.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Spear,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    // Place goblin 2 voxels away from elf (dist_sq=4).
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
+    let spear_damage = sim.config.spear_base_damage;
+
+    // Issue attack command — step just far enough for the command to process
+    // and one activation to fire (the elf should strike immediately since
+    // it's already in spear range).
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Elf should have dealt exactly one spear strike.
+    let goblin_hp_after = sim.db.creatures.get(&goblin).unwrap().hp;
+    assert_eq!(
+        goblin_hp_after,
+        goblin_hp_before - spear_damage,
+        "Elf with spear should strike once for {spear_damage} damage at distance 2"
+    );
+
+    // Elf should NOT have moved closer — still at original position.
+    let elf_final_pos = sim.db.creatures.get(&elf).unwrap().position;
+    assert_eq!(
+        elf_final_pos, elf_pos,
+        "Elf should stay at spear range, not close to adjacent"
+    );
+}
+
+/// Hostile AI with spear: a goblin with a spear placed 2 voxels from an elf
+/// should attack at spear range without closing further.
+#[test]
+fn hostile_ai_spear_attacks_at_extended_range() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+
+    // Give the goblin a spear.
+    let inv_id = sim.db.creatures.get(&goblin).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Spear,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    // Place goblin 2 voxels from elf (dist_sq=4, within spear range_sq=8).
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Schedule goblin activation so it enters the hostile AI decision cascade.
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation {
+            creature_id: goblin,
+        },
+    );
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+    let spear_damage = sim.config.spear_base_damage;
+    // Goblin species base damage is 15, spear is also 15, so spear wins
+    // over bare hands at this range (bare hands can't reach dist_sq=4).
+
+    // Run one activation cycle.
+    sim.step(&[], tick + 2);
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_after,
+        elf_hp_before - spear_damage,
+        "Hostile goblin with spear should melee-strike elf at distance 2 (dist_sq=4)"
+    );
+
+    // Goblin should NOT have moved — it attacked from spear range.
+    let goblin_final_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    assert_eq!(
+        goblin_final_pos, goblin_pos,
+        "Goblin should stay at spear range, not close to adjacent"
     );
 }

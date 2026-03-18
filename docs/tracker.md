@@ -113,7 +113,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elf-mana-pool        Per-elf mana pool wired to WIL/INT stats
-[ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-festivals            Festivals and community ceremonies
@@ -282,6 +281,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-elf-names            Elf name generation from conlang rules
 [x] F-elf-needs            Hunger and rest self-direction
 [x] F-elf-sprite           Billboard elf sprite rendering
+[x] F-elf-weapons          Bows, spears, clubs for elf combat
 [x] F-elfcyclopedia-srv    Embedded localhost HTTP elfcyclopedia server
 [x] F-emotions-basic       Mood score from thought weights
 [x] F-enemy-raids          Enemy civilizations send raids
@@ -2605,9 +2605,11 @@ the construction system to support these build types.
 **Blocked by:** F-combat
 
 #### F-elf-weapons — Bows, spears, clubs for elf combat
-**Status:** Todo · **Phase:** 8+ · **Refs:** §16
+**Status:** Done · **Phase:** 8+ · **Refs:** §16
 
 Weapon types with different ranges, damage, and crafting requirements.
+
+**Done so far:** Spear and Club item kinds added. GrowSpear/GrowClub single-step workshop recipes (wood only, zero inputs). Weapon selection in melee combat: best weapon chosen by distance — club preferred at close range (higher damage, range_sq=3), spear at extended range (range_sq=8), bare hands fallback. Weapon damage replaces species base; STR scaling still applies. Melee weapon degradation (0–2 HP per strike, configurable). Config fields for weapon base damage, range, work ticks, and degradation. GDExt bridge updated. 22 unit tests.
 
 **Unblocked by:** F-crafting
 **Related:** F-bldg-workshop, F-combat, F-wood-stats

@@ -1,7 +1,7 @@
 // Parameterized recipe templates for the crafting system.
 //
 // Key types:
-// - `Recipe` — fixed enum (21 variants), each a recipe template.
+// - `Recipe` — fixed enum (23 variants), each a recipe template.
 // - `RecipeParams` — parameter bindings (currently just material).
 // - `ResolvedRecipe` — concrete inputs/outputs from `Recipe::resolve()`.
 // - `RecipeVerb` — verb enum used for UI grouping via `Recipe::verb()`.
@@ -120,12 +120,16 @@ pub enum Recipe {
     GrowGauntlets = 19,
     /// (no input) → Boots.
     GrowBoots = 20,
+    /// (no input) → Spear.
+    GrowSpear = 21,
+    /// (no input) → Club.
+    GrowClub = 22,
     // Future: DyeTunic, DyeLeggings, etc. (F-dye-application)
     // Future: MixDye (F-dye-mixing)
 }
 
 /// All Recipe variants in definition order.
-pub const ALL_RECIPES: [Recipe; 21] = [
+pub const ALL_RECIPES: [Recipe; 23] = [
     Recipe::Extract,
     Recipe::Mill,
     Recipe::Bake,
@@ -147,6 +151,8 @@ pub const ALL_RECIPES: [Recipe; 21] = [
     Recipe::GrowGreaves,
     Recipe::GrowGauntlets,
     Recipe::GrowBoots,
+    Recipe::GrowSpear,
+    Recipe::GrowClub,
 ];
 
 /// Parameter bindings for a configured recipe instance.
@@ -190,7 +196,9 @@ impl Recipe {
             | Recipe::GrowBreastplate
             | Recipe::GrowGreaves
             | Recipe::GrowGauntlets
-            | Recipe::GrowBoots => Material::WOOD_TYPES.to_vec(),
+            | Recipe::GrowBoots
+            | Recipe::GrowSpear
+            | Recipe::GrowClub => Material::WOOD_TYPES.to_vec(),
 
             // Extract: any fruit species (all have parts to extract).
             Recipe::Extract => fruit_species
@@ -557,6 +565,9 @@ impl Recipe {
             Recipe::GrowGreaves => self.resolve_grow_armor(material, config, ItemKind::Greaves),
             Recipe::GrowGauntlets => self.resolve_grow_armor(material, config, ItemKind::Gauntlets),
             Recipe::GrowBoots => self.resolve_grow_armor(material, config, ItemKind::Boots),
+
+            Recipe::GrowSpear => self.resolve_grow_weapon(material, config, ItemKind::Spear),
+            Recipe::GrowClub => self.resolve_grow_weapon(material, config, ItemKind::Club),
         }
     }
 
@@ -611,6 +622,8 @@ impl Recipe {
             Recipe::GrowGreaves => format!("Grow {mat_name} Greaves"),
             Recipe::GrowGauntlets => format!("Grow {mat_name} Gauntlets"),
             Recipe::GrowBoots => format!("Grow {mat_name} Boots"),
+            Recipe::GrowSpear => format!("Grow {mat_name} Spear"),
+            Recipe::GrowClub => format!("Grow {mat_name} Club"),
         }
     }
 
@@ -632,7 +645,9 @@ impl Recipe {
             | Recipe::SewBoots
             | Recipe::SewHat
             | Recipe::SewGloves => vec!["Processing", "Tailoring"],
-            Recipe::GrowBow | Recipe::GrowArrow => vec!["Woodcraft", "Weapons"],
+            Recipe::GrowBow | Recipe::GrowArrow | Recipe::GrowSpear | Recipe::GrowClub => {
+                vec!["Woodcraft", "Weapons"]
+            }
             Recipe::GrowHelmet
             | Recipe::GrowBreastplate
             | Recipe::GrowGreaves
@@ -663,7 +678,9 @@ impl Recipe {
             | Recipe::GrowBreastplate
             | Recipe::GrowGreaves
             | Recipe::GrowGauntlets
-            | Recipe::GrowBoots => vec![FurnishingType::Workshop],
+            | Recipe::GrowBoots
+            | Recipe::GrowSpear
+            | Recipe::GrowClub => vec![FurnishingType::Workshop],
         }
     }
 
@@ -689,7 +706,9 @@ impl Recipe {
             | Recipe::GrowBreastplate
             | Recipe::GrowGreaves
             | Recipe::GrowGauntlets
-            | Recipe::GrowBoots => RecipeVerb::Grow,
+            | Recipe::GrowBoots
+            | Recipe::GrowSpear
+            | Recipe::GrowClub => RecipeVerb::Grow,
         }
     }
 
@@ -909,6 +928,36 @@ impl Recipe {
             ItemKind::Gauntlets => gr.grow_gauntlets_work_ticks,
             ItemKind::Boots => gr.grow_boots_work_ticks,
             _ => unreachable!("resolve_grow_armor called with non-armor ItemKind"),
+        };
+        Some(ResolvedRecipe {
+            inputs: vec![],
+            outputs: vec![RecipeOutput {
+                item_kind: output_kind,
+                quantity: 1,
+                material: Some(material),
+                quality: 0,
+                dye_color: None,
+            }],
+            work_ticks,
+            subcomponent_records: vec![],
+        })
+    }
+
+    /// Resolve a Grow melee weapon recipe (zero inputs → 1 weapon).
+    fn resolve_grow_weapon(
+        &self,
+        material: Material,
+        config: &crate::config::GameConfig,
+        output_kind: ItemKind,
+    ) -> Option<ResolvedRecipe> {
+        if !material.is_wood() {
+            return None;
+        }
+        let gr = &config.grow_recipes;
+        let work_ticks = match output_kind {
+            ItemKind::Spear => gr.grow_spear_work_ticks,
+            ItemKind::Club => gr.grow_club_work_ticks,
+            _ => unreachable!("resolve_grow_weapon called with non-weapon ItemKind"),
         };
         Some(ResolvedRecipe {
             inputs: vec![],

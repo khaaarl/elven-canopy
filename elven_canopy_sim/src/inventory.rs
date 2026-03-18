@@ -85,6 +85,10 @@ pub enum ItemKind {
     /// Pressed dye from a pigmented fruit component.
     /// Color is stored in `dye_color` on the `ItemStack`, not in the variant.
     Dye = 24,
+    /// Grown wooden spear (melee weapon with extended reach).
+    Spear = 25,
+    /// Grown wooden club (melee weapon with high damage).
+    Club = 26,
     // Append new variants here with the next sequential number.
 }
 
@@ -117,6 +121,8 @@ impl ItemKind {
             ItemKind::Greaves => "Greaves",
             ItemKind::Gauntlets => "Gauntlets",
             ItemKind::Dye => "Dye",
+            ItemKind::Spear => "Spear",
+            ItemKind::Club => "Club",
         }
     }
 
@@ -167,6 +173,11 @@ impl ItemKind {
             ItemKind::Gloves | ItemKind::Gauntlets => Some(EquipSlot::Hands),
             _ => None,
         }
+    }
+
+    /// Whether this item kind is a melee weapon (spear, club).
+    pub fn is_melee_weapon(self) -> bool {
+        matches!(self, ItemKind::Spear | ItemKind::Club)
     }
 
     /// Whether this item kind is an armor piece.

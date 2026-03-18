@@ -526,6 +526,47 @@ pub fn in_melee_range(
     dx * dx + dy * dy + dz * dz <= melee_range_sq
 }
 
+/// Compute the closest-point squared euclidean distance between two
+/// footprint bounding boxes. Used by weapon selection to pick the best
+/// melee weapon for the actual distance to target.
+pub fn melee_distance_sq(
+    attacker_pos: VoxelCoord,
+    attacker_footprint: [u8; 3],
+    target_pos: VoxelCoord,
+    target_footprint: [u8; 3],
+) -> i64 {
+    let gap = |a_min: i32, a_size: u8, b_min: i32, b_size: u8| -> i64 {
+        let a_max = a_min + a_size as i32 - 1;
+        let b_max = b_min + b_size as i32 - 1;
+        if a_max < b_min {
+            (b_min - a_max) as i64
+        } else if b_max < a_min {
+            (a_min - b_max) as i64
+        } else {
+            0
+        }
+    };
+    let dx = gap(
+        attacker_pos.x,
+        attacker_footprint[0],
+        target_pos.x,
+        target_footprint[0],
+    );
+    let dy = gap(
+        attacker_pos.y,
+        attacker_footprint[1],
+        target_pos.y,
+        target_footprint[1],
+    );
+    let dz = gap(
+        attacker_pos.z,
+        attacker_footprint[2],
+        target_pos.z,
+        target_footprint[2],
+    );
+    dx * dx + dy * dy + dz * dz
+}
+
 mod activation;
 mod combat;
 mod construction;

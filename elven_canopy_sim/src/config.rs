@@ -1119,6 +1119,14 @@ pub struct GrowRecipeConfig {
     /// Grow boots: work ticks.
     #[serde(default = "default_grow_boots_work_ticks")]
     pub grow_boots_work_ticks: u64,
+
+    /// Grow spear: work ticks.
+    #[serde(default = "default_grow_spear_work_ticks")]
+    pub grow_spear_work_ticks: u64,
+
+    /// Grow club: work ticks.
+    #[serde(default = "default_grow_club_work_ticks")]
+    pub grow_club_work_ticks: u64,
 }
 
 impl Default for GrowRecipeConfig {
@@ -1133,6 +1141,8 @@ impl Default for GrowRecipeConfig {
             grow_greaves_work_ticks: default_grow_greaves_work_ticks(),
             grow_gauntlets_work_ticks: default_grow_gauntlets_work_ticks(),
             grow_boots_work_ticks: default_grow_boots_work_ticks(),
+            grow_spear_work_ticks: default_grow_spear_work_ticks(),
+            grow_club_work_ticks: default_grow_club_work_ticks(),
         }
     }
 }
@@ -1164,6 +1174,12 @@ fn default_grow_gauntlets_work_ticks() -> u64 {
 }
 fn default_grow_boots_work_ticks() -> u64 {
     6000
+}
+fn default_grow_spear_work_ticks() -> u64 {
+    6000
+}
+fn default_grow_club_work_ticks() -> u64 {
+    5000
 }
 
 fn default_mill_work_ticks() -> u64 {
@@ -1371,6 +1387,8 @@ fn default_item_durability() -> BTreeMap<ItemKind, i32> {
         (ItemKind::Arrow, 3),
         // Weapons — moderate durability.
         (ItemKind::Bow, 50),
+        (ItemKind::Spear, 40),
+        (ItemKind::Club, 50),
         // Armor — high durability.
         (ItemKind::Helmet, 40),
         (ItemKind::Breastplate, 60),
@@ -1383,6 +1401,25 @@ fn default_item_durability() -> BTreeMap<ItemKind, i32> {
         (ItemKind::Hat, 20),
         (ItemKind::Gloves, 15),
     ])
+}
+
+fn default_spear_base_damage() -> i64 {
+    15
+}
+fn default_spear_melee_range_sq() -> i64 {
+    8
+}
+fn default_club_base_damage() -> i64 {
+    20
+}
+fn default_club_melee_range_sq() -> i64 {
+    3
+}
+fn default_melee_weapon_impact_damage_min() -> i32 {
+    0
+}
+fn default_melee_weapon_impact_damage_max() -> i32 {
+    2
 }
 
 // ---------------------------------------------------------------------------
@@ -1892,6 +1929,33 @@ pub struct GameConfig {
     /// degradation occurs. Default \[5, 4, 3, 2, 1\].
     #[serde(default = "default_armor_degrade_location_weights")]
     pub armor_degrade_location_weights: [i32; 5],
+
+    // -- Melee weapon stats --
+    /// Base melee damage dealt by a spear, replacing species base damage.
+    /// STR scaling still applies on top. Default 15.
+    #[serde(default = "default_spear_base_damage")]
+    pub spear_base_damage: i64,
+
+    /// Squared melee range for spear attacks (extended reach). Default 8.
+    #[serde(default = "default_spear_melee_range_sq")]
+    pub spear_melee_range_sq: i64,
+
+    /// Base melee damage dealt by a club, replacing species base damage.
+    /// STR scaling still applies on top. Default 20.
+    #[serde(default = "default_club_base_damage")]
+    pub club_base_damage: i64,
+
+    /// Squared melee range for club attacks (normal reach). Default 3.
+    #[serde(default = "default_club_melee_range_sq")]
+    pub club_melee_range_sq: i64,
+
+    /// Minimum durability damage a melee weapon takes per strike. Default 0.
+    #[serde(default = "default_melee_weapon_impact_damage_min")]
+    pub melee_weapon_impact_damage_min: i32,
+
+    /// Maximum durability damage a melee weapon takes per strike. Default 2.
+    #[serde(default = "default_melee_weapon_impact_damage_max")]
+    pub melee_weapon_impact_damage_max: i32,
 }
 
 fn default_platform_mana_cost_per_mille() -> u32 {
@@ -2081,7 +2145,7 @@ impl Default for GameConfig {
                 rest_per_sleep_tick: 60_000_000_000,
                 melee_damage: 10,
                 melee_interval_ticks: 1000,
-                melee_range_sq: 2,
+                melee_range_sq: 3,
                 engagement_style: EngagementStyle {
                     weapon_preference: WeaponPreference::PreferRanged,
                     ammo_exhausted: AmmoExhaustedBehavior::Flee,
@@ -2127,7 +2191,7 @@ impl Default for GameConfig {
                 rest_per_sleep_tick: 60_000_000_000,
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
-                melee_range_sq: 2,
+                melee_range_sq: 3,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
@@ -2168,7 +2232,7 @@ impl Default for GameConfig {
                 rest_per_sleep_tick: 60_000_000_000,
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
-                melee_range_sq: 2,
+                melee_range_sq: 3,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
@@ -2209,7 +2273,7 @@ impl Default for GameConfig {
                 rest_per_sleep_tick: 60_000_000_000,
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
-                melee_range_sq: 2,
+                melee_range_sq: 3,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
@@ -2250,7 +2314,7 @@ impl Default for GameConfig {
                 rest_per_sleep_tick: 60_000_000_000,
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
-                melee_range_sq: 2,
+                melee_range_sq: 3,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
@@ -2291,7 +2355,7 @@ impl Default for GameConfig {
                 rest_per_sleep_tick: 60_000_000_000,
                 melee_damage: 15,
                 melee_interval_ticks: 1000,
-                melee_range_sq: 2,
+                melee_range_sq: 3,
                 engagement_style: EngagementStyle {
                     weapon_preference: WeaponPreference::PreferMelee,
                     ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
@@ -2337,7 +2401,7 @@ impl Default for GameConfig {
                 rest_per_sleep_tick: 60_000_000_000,
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
-                melee_range_sq: 2,
+                melee_range_sq: 3,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
@@ -2378,7 +2442,7 @@ impl Default for GameConfig {
                 rest_per_sleep_tick: 60_000_000_000,
                 melee_damage: 25,
                 melee_interval_ticks: 1200,
-                melee_range_sq: 2,
+                melee_range_sq: 3,
                 engagement_style: EngagementStyle {
                     weapon_preference: WeaponPreference::PreferMelee,
                     ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
@@ -2424,7 +2488,7 @@ impl Default for GameConfig {
                 rest_per_sleep_tick: 60_000_000_000,
                 melee_damage: 0,
                 melee_interval_ticks: 1000,
-                melee_range_sq: 2,
+                melee_range_sq: 3,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
@@ -2465,7 +2529,7 @@ impl Default for GameConfig {
                 rest_per_sleep_tick: 60_000_000_000,
                 melee_damage: 50,
                 melee_interval_ticks: 1500,
-                melee_range_sq: 2,
+                melee_range_sq: 3,
                 engagement_style: EngagementStyle {
                     weapon_preference: WeaponPreference::PreferMelee,
                     ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
@@ -2731,6 +2795,20 @@ impl Default for GameConfig {
                     material: Some(Material::Oak),
                     dye_color: None,
                 },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Spear,
+                    quantity: 3,
+                    material: Some(Material::Oak),
+                    dye_color: None,
+                },
+                InitialGroundPileSpec {
+                    position: VoxelCoord::new(128, 1, 138),
+                    item_kind: ItemKind::Club,
+                    quantity: 3,
+                    material: Some(Material::Oak),
+                    dye_color: None,
+                },
             ],
             workshop_default_priority: default_workshop_priority(),
             greenhouse_default_priority: default_greenhouse_default_priority(),
@@ -2755,6 +2833,12 @@ impl Default for GameConfig {
             armor_worn_penalty: default_armor_worn_penalty(),
             armor_damaged_penalty: default_armor_damaged_penalty(),
             armor_degrade_location_weights: default_armor_degrade_location_weights(),
+            spear_base_damage: default_spear_base_damage(),
+            spear_melee_range_sq: default_spear_melee_range_sq(),
+            club_base_damage: default_club_base_damage(),
+            club_melee_range_sq: default_club_melee_range_sq(),
+            melee_weapon_impact_damage_min: default_melee_weapon_impact_damage_min(),
+            melee_weapon_impact_damage_max: default_melee_weapon_impact_damage_max(),
         }
     }
 }

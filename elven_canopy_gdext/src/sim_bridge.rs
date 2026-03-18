@@ -2057,6 +2057,8 @@ impl SimBridge {
             "Gauntlets" => Some(ItemKind::Gauntlets),
             "Gloves" => Some(ItemKind::Gloves),
             "Dye" => Some(ItemKind::Dye),
+            "Spear" => Some(ItemKind::Spear),
+            "Club" => Some(ItemKind::Club),
             _ => None,
         }
     }
@@ -2216,6 +2218,8 @@ impl SimBridge {
             ItemKind::Greaves,
             ItemKind::Gauntlets,
             ItemKind::Dye,
+            ItemKind::Spear,
+            ItemKind::Club,
         ] {
             let mut d = VarDictionary::new();
             d.set("kind", GString::from(kind.display_name()));
@@ -2266,6 +2270,8 @@ impl SimBridge {
             "Greaves" => ItemKind::Greaves,
             "Gauntlets" => ItemKind::Gauntlets,
             "Dye" => ItemKind::Dye,
+            "Spear" => ItemKind::Spear,
+            "Club" => ItemKind::Club,
             _ => return arr,
         };
 
@@ -2317,7 +2323,9 @@ impl SimBridge {
             | ItemKind::Helmet
             | ItemKind::Breastplate
             | ItemKind::Greaves
-            | ItemKind::Gauntlets => {
+            | ItemKind::Gauntlets
+            | ItemKind::Spear
+            | ItemKind::Club => {
                 // Add each wood material.
                 for mat in [
                     Material::Oak,

@@ -1,11 +1,13 @@
 // Combat system — melee, ranged, projectiles, fleeing, hostile AI, and diplomacy.
 //
 // Covers the complete combat pipeline: player attack commands, attack-move AI,
-// melee strikes, ranged shooting (bow + arrow with ballistic trajectories),
-// projectile simulation, damage application, creature death, flee behavior,
-// hostile pursuit, friendly-fire avoidance, and voxel exclusion enforcement.
-// Also includes civilization diplomacy, military group management, arrow
-// durability degradation on impact (apply_arrow_impact_damage),
+// melee strikes (with weapon selection — spears for reach, clubs for damage,
+// bare hands as fallback), ranged shooting (bow + arrow with ballistic
+// trajectories), projectile simulation, damage application, creature death,
+// flee behavior, hostile pursuit, friendly-fire avoidance, and voxel exclusion
+// enforcement. Also includes civilization diplomacy, military group management,
+// arrow durability degradation on impact (apply_arrow_impact_damage),
+// melee weapon degradation on strike (apply_melee_weapon_impact_damage),
 // arrow-condition damage scaling (scale_damage_by_arrow_hp), and armor
 // damage reduction with equipment degradation (apply_armor_reduction).
 //
@@ -556,15 +558,16 @@ impl SimState {
         let attacker_footprint = species_data.footprint;
         let target_pos = target.position;
         let target_footprint = self.species_table[&target.species].footprint;
+        let max_melee_range = self.max_melee_range_sq(creature_id);
 
-        // Try melee if in range.
-        if species_data.melee_damage > 0
+        // Try melee if in range (considers both bare hands and melee weapons).
+        if max_melee_range > 0
             && in_melee_range(
                 attacker_pos,
                 attacker_footprint,
                 target_pos,
                 target_footprint,
-                species_data.melee_range_sq,
+                max_melee_range,
             )
         {
             if self.try_melee_strike(creature_id, target_id, events) {
@@ -674,15 +677,16 @@ impl SimState {
         let attacker_footprint = species_data.footprint;
         let target_pos = target.position;
         let target_footprint = self.species_table[&target.species].footprint;
+        let max_melee_range = self.max_melee_range_sq(creature_id);
 
-        // Try melee if in range.
-        if species_data.melee_damage > 0
+        // Try melee if in range (considers both bare hands and melee weapons).
+        if max_melee_range > 0
             && in_melee_range(
                 attacker_pos,
                 attacker_footprint,
                 target_pos,
                 target_footprint,
-                species_data.melee_range_sq,
+                max_melee_range,
             )
         {
             if self.try_melee_strike(creature_id, target_id, events) {
@@ -1107,12 +1111,138 @@ impl SimState {
         });
     }
 
+    /// Compute the maximum melee range a creature can achieve, considering
+    /// both its species base range and any melee weapons in inventory.
+    /// Used by callers to decide whether to attempt melee before calling
+    /// `try_melee_strike()`.
+    pub(crate) fn max_melee_range_sq(&self, creature_id: CreatureId) -> i64 {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return 0,
+        };
+        let species_data = &self.species_table[&creature.species];
+        let mut max_range = if species_data.melee_damage > 0 {
+            species_data.melee_range_sq
+        } else {
+            0
+        };
+        // Check for melee weapons that might extend range.
+        let inv_id = creature.inventory_id;
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        for stack in &stacks {
+            if stack.quantity == 0 {
+                continue;
+            }
+            let weapon_range = match stack.kind {
+                inventory::ItemKind::Spear => self.config.spear_melee_range_sq,
+                inventory::ItemKind::Club => self.config.club_melee_range_sq,
+                _ => continue,
+            };
+            if weapon_range > max_range {
+                max_range = weapon_range;
+            }
+        }
+        max_range
+    }
+
+    /// Whether a creature can perform any melee attack (has species melee
+    /// damage > 0, or has a melee weapon in inventory).
+    #[allow(dead_code)] // Used by tests; future use for AI weapon preference checks
+    pub(crate) fn can_melee(&self, creature_id: CreatureId) -> bool {
+        self.max_melee_range_sq(creature_id) > 0
+    }
+
+    /// Select the best melee weapon for a given distance-squared to target.
+    /// Returns `(base_damage, range_sq, Option<weapon_stack_id>)`.
+    /// `None` stack_id means bare hands (species base damage).
+    /// Prefers highest damage among weapons whose range covers the distance.
+    /// If no weapon reaches, falls back to bare hands if in species range.
+    fn select_melee_weapon(
+        &self,
+        creature_id: CreatureId,
+        distance_sq: i64,
+    ) -> Option<(i64, i64, Option<ItemStackId>)> {
+        let creature = self.db.creatures.get(&creature_id)?;
+        let species_data = &self.species_table[&creature.species];
+        let inv_id = creature.inventory_id;
+
+        let mut best: Option<(i64, i64, Option<ItemStackId>)> = None;
+
+        // Check inventory for melee weapons.
+        let stacks = self
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+        for stack in &stacks {
+            if stack.quantity == 0 {
+                continue;
+            }
+            let (weapon_damage, weapon_range) = match stack.kind {
+                inventory::ItemKind::Spear => (
+                    self.config.spear_base_damage,
+                    self.config.spear_melee_range_sq,
+                ),
+                inventory::ItemKind::Club => (
+                    self.config.club_base_damage,
+                    self.config.club_melee_range_sq,
+                ),
+                _ => continue,
+            };
+            if distance_sq <= weapon_range {
+                match &best {
+                    Some((best_dmg, _, _)) if *best_dmg >= weapon_damage => {}
+                    _ => best = Some((weapon_damage, weapon_range, Some(stack.id))),
+                }
+            }
+        }
+
+        // Consider bare hands if species has melee damage.
+        if species_data.melee_damage > 0 && distance_sq <= species_data.melee_range_sq {
+            match &best {
+                Some((best_dmg, _, _)) if *best_dmg >= species_data.melee_damage => {}
+                _ => {
+                    best = Some((species_data.melee_damage, species_data.melee_range_sq, None));
+                }
+            }
+        }
+
+        best
+    }
+
+    /// Apply random durability damage to a melee weapon after a strike.
+    /// Returns `true` if the weapon broke.
+    fn apply_melee_weapon_impact_damage(
+        &mut self,
+        stack_id: ItemStackId,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        let min = self.config.melee_weapon_impact_damage_min.max(0);
+        let max = self.config.melee_weapon_impact_damage_max;
+        if min > max || max <= 0 {
+            return false;
+        }
+        let range = (max - min + 1) as u64;
+        // Always consume the PRNG even when the rolled damage is 0 — this
+        // keeps the PRNG sequence stable regardless of config, which is
+        // important for deterministic replay.
+        let damage = min + (self.rng.next_u64() % range) as i32;
+        if damage <= 0 {
+            return false;
+        }
+        self.inv_damage_item(stack_id, damage, events)
+    }
+
     /// Attempt a melee strike from attacker against target.
     ///
-    /// Validates: both alive, attacker has melee_damage > 0, attacker is idle
-    /// (NoAction + next_available_tick elapsed), target in melee range.
-    /// On success: starts MeleeStrike action, applies damage, emits
-    /// CreatureDamaged event. Returns true if the strike was executed.
+    /// Selects the best melee weapon for the current distance: prefers highest
+    /// damage among weapons/bare-hands whose range covers the target. Weapon
+    /// damage replaces the species base damage; STR scaling still applies.
+    /// On success: starts MeleeStrike action, applies damage, degrades weapon
+    /// (if used), emits CreatureDamaged event. Returns true if the strike was
+    /// executed.
     pub(crate) fn try_melee_strike(
         &mut self,
         attacker_id: CreatureId,
@@ -1129,13 +1259,7 @@ impl SimState {
             _ => return false,
         };
 
-        // 2. Attacker species must have melee_damage > 0.
-        let species_data = &self.species_table[&attacker.species];
-        if species_data.melee_damage <= 0 {
-            return false;
-        }
-
-        // 3. Attacker must be idle.
+        // 2. Attacker must be idle.
         if attacker.action_kind != ActionKind::NoAction {
             return false;
         }
@@ -1145,26 +1269,34 @@ impl SimState {
             return false;
         }
 
-        // 4. Target must be in melee range.
+        // 3. Compute distance and select best weapon for this range.
+        let species_data = &self.species_table[&attacker.species];
         let attacker_footprint = species_data.footprint;
         let target_footprint = self.species_table[&target.species].footprint;
-        if !in_melee_range(
+        let distance_sq = melee_distance_sq(
             attacker.position,
             attacker_footprint,
             target.position,
             target_footprint,
-            species_data.melee_range_sq,
-        ) {
-            return false;
-        }
+        );
 
-        let base_damage = species_data.melee_damage;
+        let (base_damage, _range_sq, weapon_stack_id) =
+            match self.select_melee_weapon(attacker_id, distance_sq) {
+                Some(w) => w,
+                None => return false, // No weapon or bare hands can reach
+            };
+
         let strength = self.trait_int(attacker_id, TraitKind::Strength, 0);
         let raw_damage = crate::stats::apply_stat_multiplier(base_damage, strength);
         let duration = species_data.melee_interval_ticks;
 
         // Start the action (sets action_kind + next_available_tick, schedules activation).
         self.start_simple_action(attacker_id, ActionKind::MeleeStrike, duration);
+
+        // Degrade melee weapon if one was used.
+        if let Some(stack_id) = weapon_stack_id {
+            self.apply_melee_weapon_impact_damage(stack_id, events);
+        }
 
         // Apply armor reduction and degrade equipped armor/clothing.
         let damage = self.apply_armor_reduction(target_id, raw_damage, events);
@@ -2403,7 +2535,7 @@ impl SimState {
         let attacker_civ = attacker.civ_id;
         let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
         let attacker_footprint = self.species_table[&species].footprint;
-        let melee_range_sq = self.species_table[&species].melee_range_sq;
+        let melee_range_sq = self.max_melee_range_sq(creature_id);
 
         let style = self.resolve_engagement_style(creature_id);
 
