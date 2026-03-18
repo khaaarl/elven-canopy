@@ -1,11 +1,11 @@
-// Crafting and cooking system — recipe execution, active recipe management.
+// Crafting system — recipe execution, active recipe management.
 //
 // Implements the unified crafting monitor that creates and manages crafting
-// tasks based on active recipes at workstations. Handles both legacy cooking
-// (bread from fruit) and the general crafting pipeline (component recipes).
-// Includes recipe queue management (add, remove, reorder, enable/disable).
+// tasks based on active recipes at workstations. Bread production goes through
+// the Extract → Mill → Bake chain. Includes recipe queue management (add,
+// remove, reorder, enable/disable).
 //
-// See also: `recipe.rs` (recipe catalog and definitions), `logistics.rs`
+// See also: `recipe.rs` (recipe catalog/enum and definitions), `logistics.rs`
 // (item hauling to workstations), `inventory_mgmt.rs` (item operations).
 use super::*;
 use crate::db::ActionKind;
@@ -14,106 +14,20 @@ use crate::inventory;
 use crate::task;
 
 impl SimState {
-    /// Start a Cook action: set action kind and schedule next activation.
-    /// Cook is a single-action task. Legacy path — new bread tasks go through
-    /// `start_craft_action` via the unified crafting monitor.
-    pub(crate) fn start_cook_action(&mut self, creature_id: CreatureId) {
-        // Look up bread recipe work_ticks from catalog; fall back to 5000.
-        let duration = self
-            .recipe_catalog
-            .iter()
-            .find(|(_, d)| d.display_name == "Bread")
-            .map(|(_, d)| d.work_ticks)
-            .unwrap_or(5000);
-        let tick = self.tick;
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-            c.action_kind = ActionKind::Cook;
-            c.next_available_tick = Some(tick + duration);
-        });
-        self.event_queue.schedule(
-            self.tick + duration,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
-    }
-
-    /// Resolve a completed Cook action: consume reserved fruit, produce bread.
-    /// Always returns true (single-action task).
-    pub(crate) fn resolve_cook_action(&mut self, creature_id: CreatureId) -> bool {
-        let task_id = match self
-            .db
-            .creatures
-            .get(&creature_id)
-            .and_then(|c| c.current_task)
-        {
-            Some(t) => t,
-            None => return false,
-        };
-        let structure_id =
-            match self.task_structure_ref(task_id, crate::db::TaskStructureRole::CookAt) {
-                Some(s) => s,
-                None => return false,
-            };
-
-        // Cooking complete — consume fruit, produce bread.
-        let fruit_input = self.config.cook_fruit_input;
-        let bread_output = self.config.cook_bread_output;
-        let inv_id = self.structure_inv(structure_id);
-        let removed = self.inv_remove_reserved_items(
-            inv_id,
-            inventory::ItemKind::Fruit,
-            fruit_input,
-            task_id,
-        );
-        if removed < fruit_input {
-            self.inv_clear_reservations(inv_id, task_id);
-        } else {
-            self.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, bread_output, None, None);
-        }
-        self.complete_task(task_id);
-        true
-    }
-
-    /// Clean up a Cook task on node invalidation: release reserved fruit in
-    /// the kitchen's inventory and set the task to Complete so the kitchen
-    /// monitor can create a fresh task on the next heartbeat.
-    pub(crate) fn cleanup_cook_task(&mut self, task_id: TaskId) {
-        let structure_id =
-            match self.task_structure_ref(task_id, crate::db::TaskStructureRole::CookAt) {
-                Some(s) => s,
-                None => return,
-            };
-        self.inv_clear_reservations(self.structure_inv(structure_id), task_id);
-        if let Some(mut t) = self.db.tasks.get(&task_id) {
-            t.state = task::TaskState::Complete;
-            let _ = self.db.tasks.update_no_fk(t);
-        }
-    }
-
     /// Start a Craft action: set action kind and schedule next activation
     /// after `recipe.work_ticks`. Craft is a single-action task.
     pub(crate) fn start_craft_action(&mut self, creature_id: CreatureId, task_id: TaskId) {
-        // Look up the recipe to get work_ticks. Try config recipes first,
-        // then fall back to the unified recipe catalog.
         let craft_data = self.task_craft_data(task_id);
+        let fruit_species: Vec<_> = self.db.fruit_species.iter_all().cloned().collect();
         let duration = craft_data
             .as_ref()
             .and_then(|d| {
-                self.config
-                    .recipes
-                    .iter()
-                    .find(|r| r.id == d.recipe_id)
+                let params = crate::recipe::RecipeParams {
+                    material: d.material,
+                };
+                d.recipe
+                    .resolve(&params, &self.config, &fruit_species)
                     .map(|r| r.work_ticks)
-            })
-            .or_else(|| {
-                craft_data.as_ref().and_then(|d| {
-                    d.active_recipe_id.and_then(|ar_id| {
-                        self.db.active_recipes.get(&ar_id).and_then(|ar| {
-                            crate::recipe::RecipeKey::from_json(&ar.recipe_key_json).and_then(
-                                |key| self.recipe_catalog.get(&key).map(|def| def.work_ticks),
-                            )
-                        })
-                    })
-                })
             })
             .unwrap_or(5000);
 
@@ -146,8 +60,6 @@ impl SimState {
                 None => return false,
             };
 
-        // Look up recipe via TaskCraftData. Try config recipes first (legacy
-        // workshop path), then fall back to the unified recipe catalog.
         let craft_data = match self.task_craft_data(task_id) {
             Some(d) => d,
             None => {
@@ -156,81 +68,34 @@ impl SimState {
             }
         };
 
-        // Try config recipe lookup first (legacy path).
-        let config_recipe = self
-            .config
-            .recipes
-            .iter()
-            .find(|r| r.id == craft_data.recipe_id)
-            .cloned();
-
-        // Catalog lookup via active_recipe_id (unified path). Cloned to
-        // avoid holding an immutable borrow on self.recipe_catalog.
-        let catalog_def = craft_data.active_recipe_id.and_then(|ar_id| {
-            self.db.active_recipes.get(&ar_id).and_then(|ar| {
-                crate::recipe::RecipeKey::from_json(&ar.recipe_key_json)
-                    .and_then(|key| self.recipe_catalog.get(&key).cloned())
-            })
-        });
+        let fruit_species: Vec<_> = self.db.fruit_species.iter_all().cloned().collect();
+        let params = crate::recipe::RecipeParams {
+            material: craft_data.material,
+        };
+        let resolved = craft_data
+            .recipe
+            .resolve(&params, &self.config, &fruit_species);
 
         let inv_id = self.structure_inv(structure_id);
 
-        // Resolve via whichever path found the recipe.
-        match (&config_recipe, &catalog_def) {
-            (Some(recipe), _) => {
-                // Legacy config recipe path.
-                for input in &recipe.inputs {
-                    self.inv_remove_reserved_items(
-                        inv_id,
-                        input.item_kind,
-                        input.quantity,
-                        task_id,
-                    );
-                }
-                for output in &recipe.outputs {
-                    self.inv_add_item(
-                        inv_id,
-                        output.item_kind,
-                        output.quantity,
-                        None,
-                        None,
-                        output.material,
-                        output.quality,
-                        None,
-                        None,
-                    );
-                    self.apply_output_dye_color(inv_id, output);
-                    self.record_subcomponents(inv_id, output, &recipe.subcomponent_records);
-                }
+        if let Some(resolved) = &resolved {
+            for input in &resolved.inputs {
+                self.inv_remove_reserved_items(inv_id, input.item_kind, input.quantity, task_id);
             }
-            (None, Some(def)) => {
-                // Unified catalog recipe path.
-                for input in &def.inputs {
-                    self.inv_remove_reserved_items(
-                        inv_id,
-                        input.item_kind,
-                        input.quantity,
-                        task_id,
-                    );
-                }
-                for output in &def.outputs {
-                    self.inv_add_item(
-                        inv_id,
-                        output.item_kind,
-                        output.quantity,
-                        None,
-                        None,
-                        output.material,
-                        output.quality,
-                        None,
-                        None,
-                    );
-                    self.apply_output_dye_color(inv_id, output);
-                    self.record_subcomponents(inv_id, output, &def.subcomponent_records);
-                }
-            }
-            (None, None) => {
-                // Recipe not found in either path — skip.
+            for output in &resolved.outputs {
+                self.inv_add_item(
+                    inv_id,
+                    output.item_kind,
+                    output.quantity,
+                    None,
+                    None,
+                    output.material,
+                    output.quality,
+                    None,
+                    None,
+                );
+                self.apply_output_dye_color(inv_id, output);
+                self.record_subcomponents(inv_id, output, &resolved.subcomponent_records);
             }
         }
 
@@ -327,7 +192,6 @@ impl SimState {
     ///
     /// All crafting buildings (kitchens, workshops, etc.) use this unified system.
     pub(crate) fn process_unified_crafting_monitor(&mut self) {
-        // Collect structure IDs with crafting_enabled.
         let crafting_sids: Vec<StructureId> = self
             .db
             .structures
@@ -335,6 +199,8 @@ impl SimState {
             .filter(|s| s.crafting_enabled && s.furnishing.is_some())
             .map(|s| s.id)
             .collect();
+
+        let fruit_species: Vec<_> = self.db.fruit_species.iter_all().cloned().collect();
 
         for sid in crafting_sids {
             let structure = match self.db.structures.get(&sid) {
@@ -350,8 +216,7 @@ impl SimState {
                 .by_structure_id(&sid, tabulosity::QueryOpts::ASC)
                 .iter()
                 .any(|r| {
-                    (r.role == crate::db::TaskStructureRole::CraftAt
-                        || r.role == crate::db::TaskStructureRole::CookAt)
+                    r.role == crate::db::TaskStructureRole::CraftAt
                         && self
                             .db
                             .tasks
@@ -372,59 +237,56 @@ impl SimState {
             // Find first recipe with unmet targets and available inputs.
             let mut chosen: Option<(
                 ActiveRecipeId,
-                crate::recipe::RecipeKey,
-                crate::recipe::RecipeDef,
+                crate::recipe::Recipe,
+                Option<inventory::Material>,
+                crate::recipe::ResolvedRecipe,
             )> = None;
             for ar in &active_recipes {
                 if !ar.enabled {
                     continue;
                 }
 
-                let Some(recipe_key) = crate::recipe::RecipeKey::from_json(&ar.recipe_key_json)
+                let params = crate::recipe::RecipeParams {
+                    material: ar.material,
+                };
+                let Some(resolved) = ar.recipe.resolve(&params, &self.config, &fruit_species)
                 else {
                     continue;
                 };
-                let Some(recipe_def) = self.recipe_catalog.get(&recipe_key) else {
-                    continue;
-                };
 
-                // Compute runs_needed from per-output targets.
                 let targets = self
                     .db
                     .active_recipe_targets
                     .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC);
 
-                let runs_needed = self.compute_runs_needed(recipe_def, &targets, inv_id);
+                let runs_needed = self.compute_runs_needed(&resolved, &targets, inv_id);
                 if runs_needed == 0 {
                     continue;
                 }
 
-                // Check if all inputs are available (unreserved).
-                let all_available = recipe_def.inputs.iter().all(|input| {
+                let all_available = resolved.inputs.iter().all(|input| {
                     self.inv_unreserved_item_count(inv_id, input.item_kind, input.material_filter)
                         >= input.quantity
                 });
                 if all_available {
-                    chosen = Some((ar.id, recipe_key, recipe_def.clone()));
+                    chosen = Some((ar.id, ar.recipe, ar.material, resolved));
                     break;
                 }
             }
 
-            let (ar_id, recipe_key, recipe_def) = match chosen {
+            let (ar_id, recipe, material, resolved) = match chosen {
                 Some(c) => c,
                 None => continue,
             };
 
-            // Find nav node inside the building.
             let interior_pos = self.db.structures.get(&sid).unwrap().anchor;
             let location = match self.nav_graph.find_nearest_node(interior_pos) {
                 Some(n) => n,
                 None => continue,
             };
 
-            // Reserve all inputs.
             let task_id = TaskId::new(&mut self.rng);
-            for input in &recipe_def.inputs {
+            for input in &resolved.inputs {
                 self.inv_reserve_items(
                     inv_id,
                     input.item_kind,
@@ -434,31 +296,29 @@ impl SimState {
                 );
             }
 
-            // Create a Craft task. We reuse the existing Craft TaskKind,
-            // storing the recipe's old-style ID for backward compatibility
-            // with resolve_craft_action. We also look up the old recipe ID
-            // from the catalog for the task kind.
-            let recipe_id = self.recipe_key_to_legacy_id(&recipe_key);
             let new_task = task::Task {
                 id: task_id,
                 kind: task::TaskKind::Craft {
                     structure_id: sid,
-                    recipe_id,
+                    active_recipe_id: ar_id,
                 },
                 state: task::TaskState::Available,
                 location,
                 progress: 0.0,
-                total_cost: recipe_def.work_ticks as f32,
-                required_species: recipe_def.required_species,
+                total_cost: resolved.work_ticks as f32,
+                required_species: recipe.required_species(),
                 origin: task::TaskOrigin::Automated,
                 target_creature: None,
             };
             self.insert_task(new_task);
 
-            // Update the TaskCraftData to record the active_recipe_id.
+            // Overwrite the TaskCraftData with the recipe + material + ar_id
+            // (insert_task already created a row via task decomposition).
             if let Some(tcd) = self.task_craft_data(task_id) {
                 let _ = self.db.task_craft_data.modify_unchecked(&tcd.id, |d| {
-                    d.active_recipe_id = Some(ar_id);
+                    d.recipe = recipe;
+                    d.material = material;
+                    d.active_recipe_id = ar_id;
                 });
             }
         }
@@ -468,7 +328,7 @@ impl SimState {
     /// Returns 0 if all targets are met or all targets are zero.
     pub(crate) fn compute_runs_needed(
         &self,
-        recipe_def: &crate::recipe::RecipeDef,
+        resolved: &crate::recipe::ResolvedRecipe,
         targets: &[crate::db::ActiveRecipeTarget],
         inv_id: InventoryId,
     ) -> u32 {
@@ -486,9 +346,7 @@ impl SimState {
             if shortfall == 0 {
                 continue;
             }
-            // Find the output quantity for this item in the recipe's outputs.
-            // Use 1 as a fallback to avoid division by zero.
-            let output_qty = recipe_def
+            let output_qty = resolved
                 .outputs
                 .iter()
                 .find(|o| {
@@ -504,13 +362,6 @@ impl SimState {
 
     /// Compute the effective logistics wants for a building, merging explicit
     /// `LogisticsWantRow` entries with auto-logistics wants from active recipes.
-    ///
-    /// Auto-logistics wants are only generated for `ActiveRecipe` rows with
-    /// `auto_logistics = true` and `enabled = true` on buildings with
-    /// `crafting_enabled = true`. The auto-want for each input is
-    /// `input.quantity * (runs_needed + spare_iterations)`, summed across all
-    /// qualifying recipes. The final want per `(ItemKind, MaterialFilter)` is
-    /// the **sum** of explicit wants and auto-wants (not max).
     pub(crate) fn compute_effective_wants(
         &self,
         structure_id: StructureId,
@@ -521,7 +372,6 @@ impl SimState {
         };
         let inv_id = structure.inventory_id;
 
-        // Start with explicit wants from the DB.
         let mut merged: std::collections::BTreeMap<
             (inventory::ItemKind, inventory::MaterialFilter),
             u32,
@@ -533,8 +383,8 @@ impl SimState {
             *entry += row.target_quantity;
         }
 
-        // Add auto-logistics from active recipes if crafting is enabled.
         if structure.crafting_enabled {
+            let fruit_species: Vec<_> = self.db.fruit_species.iter_all().cloned().collect();
             let active_recipes = self.db.active_recipes.by_structure_sort(
                 &structure_id,
                 tabulosity::MatchAll,
@@ -545,11 +395,11 @@ impl SimState {
                     continue;
                 }
 
-                let Some(recipe_key) = crate::recipe::RecipeKey::from_json(&ar.recipe_key_json)
-                else {
-                    continue;
+                let params = crate::recipe::RecipeParams {
+                    material: ar.material,
                 };
-                let Some(recipe_def) = self.recipe_catalog.get(&recipe_key) else {
+                let Some(resolved) = ar.recipe.resolve(&params, &self.config, &fruit_species)
+                else {
                     continue;
                 };
 
@@ -557,14 +407,14 @@ impl SimState {
                     .db
                     .active_recipe_targets
                     .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC);
-                let runs_needed = self.compute_runs_needed(recipe_def, &targets, inv_id);
+                let runs_needed = self.compute_runs_needed(&resolved, &targets, inv_id);
 
                 let total_runs = runs_needed + ar.spare_iterations;
                 if total_runs == 0 {
                     continue;
                 }
 
-                for input in &recipe_def.inputs {
+                for input in &resolved.inputs {
                     let auto_qty = input.quantity * total_runs;
                     let entry = merged
                         .entry((input.item_kind, input.material_filter))
@@ -586,76 +436,6 @@ impl SimState {
             .collect()
     }
 
-    /// Map a RecipeKey back to a legacy recipe ID string for backward
-    /// compatibility with TaskKind::Craft { recipe_id }.
-    pub(crate) fn recipe_key_to_legacy_id(&self, key: &crate::recipe::RecipeKey) -> String {
-        // Check bread recipe first.
-        let bread_key = {
-            let def = self
-                .recipe_catalog
-                .iter()
-                .find(|(_, d)| d.display_name == "Bread")
-                .map(|(_, d)| d);
-            def.map(|d| d.key.clone())
-        };
-        if bread_key.as_ref() == Some(key) {
-            return "bread".to_string();
-        }
-        // Check config recipes.
-        for recipe in &self.config.recipes {
-            let def_key = crate::recipe::convert_config_recipe_key(recipe);
-            if def_key == *key {
-                return recipe.id.clone();
-            }
-        }
-        // Fallback: serialize the key.
-        key.to_json()
-    }
-
-    /// Remove `ActiveRecipe` rows whose `recipe_key_json` no longer matches
-    /// any entry in the current recipe catalog. Called during
-    /// `rebuild_transient_state()` (i.e., on save load) to handle recipes
-    /// removed between game versions. Creates a notification for each orphan.
-    /// Uses `db.remove_active_recipe()` (DB-level cascade) rather than
-    /// `self.remove_active_recipe()` because no creatures are mid-action
-    /// during transient state rebuild.
-    pub(crate) fn cleanup_orphaned_active_recipes(&mut self) {
-        let orphan_ids: Vec<(crate::types::ActiveRecipeId, String, String)> = self
-            .db
-            .active_recipes
-            .iter_all()
-            .filter(|ar| {
-                crate::recipe::RecipeKey::from_json(&ar.recipe_key_json)
-                    .and_then(|key| self.recipe_catalog.get(&key))
-                    .is_none()
-            })
-            .map(|ar| {
-                let building_name = self
-                    .db
-                    .structures
-                    .get(&ar.structure_id)
-                    .and_then(|s| s.name.clone())
-                    .unwrap_or_else(|| "a building".to_string());
-                (ar.id, ar.recipe_display_name.clone(), building_name)
-            })
-            .collect();
-        for (ar_id, recipe_name, building_name) in &orphan_ids {
-            let msg = format!(
-                "Recipe \"{}\" on {} is no longer available and has been removed.",
-                recipe_name, building_name
-            );
-            let _ = self
-                .db
-                .notifications
-                .insert_auto_no_fk(|id| crate::db::Notification {
-                    id,
-                    tick: self.tick,
-                    message: msg,
-                });
-            let _ = self.db.remove_active_recipe(ar_id);
-        }
-    }
-
     /// Set the unified crafting toggle for a building. Validates the structure
     /// exists and has a furnishing type. No-op for unfurnished structures.
     pub(crate) fn set_crafting_enabled(&mut self, structure_id: StructureId, enabled: bool) {
@@ -672,13 +452,13 @@ impl SimState {
         });
     }
 
-    /// Add a recipe to a building's active recipe list. Validates recipe exists
-    /// in catalog, building's FurnishingType matches, and recipe isn't already
-    /// active on this structure.
+    /// Add a recipe to a building's active recipe list. Validates via
+    /// `recipe.resolve()` and `recipe.furnishing_types()`. Rejects duplicates.
     pub(crate) fn add_active_recipe(
         &mut self,
         structure_id: StructureId,
-        recipe_key: crate::recipe::RecipeKey,
+        recipe: crate::recipe::Recipe,
+        material: Option<inventory::Material>,
     ) {
         let Some(structure) = self.db.structures.get(&structure_id) else {
             return;
@@ -686,24 +466,29 @@ impl SimState {
         let Some(ft) = structure.furnishing else {
             return;
         };
-        let Some(recipe_def) = self.recipe_catalog.get(&recipe_key) else {
-            return;
-        };
-        if !recipe_def.furnishing_types.contains(&ft) {
+        if !recipe.furnishing_types().contains(&ft) {
             return;
         }
 
-        // Check for duplicate: same recipe_key already active on this structure.
-        let key_json = recipe_key.to_json();
+        // Validate the recipe resolves with the given material.
+        let fruit_species: Vec<_> = self.db.fruit_species.iter_all().cloned().collect();
+        let params = crate::recipe::RecipeParams { material };
+        let Some(resolved) = recipe.resolve(&params, &self.config, &fruit_species) else {
+            return;
+        };
+
+        // Check for duplicate: same (recipe, material) already active on this structure.
         let existing = self
             .db
             .active_recipes
             .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
-        if existing.iter().any(|ar| ar.recipe_key_json == key_json) {
+        if existing
+            .iter()
+            .any(|ar| ar.recipe == recipe && ar.material == material)
+        {
             return;
         }
 
-        // Compute next sort_order (globally unique).
         let max_sort = self
             .db
             .active_recipes
@@ -713,21 +498,19 @@ impl SimState {
             .unwrap_or(0);
         let sort_order = max_sort + 1;
 
-        let display_name = recipe_def.display_name.clone();
-        let outputs: Vec<_> = recipe_def
+        let outputs: Vec<_> = resolved
             .outputs
             .iter()
             .map(|o| (o.item_kind, o.material))
             .collect();
 
-        // Insert the active recipe.
         let ar_id = self
             .db
             .insert_active_recipe_auto(|id| crate::db::ActiveRecipe {
                 id,
                 structure_id,
-                recipe_key_json: key_json,
-                recipe_display_name: display_name,
+                recipe,
+                material,
                 enabled: true,
                 sort_order,
                 auto_logistics: true,
@@ -735,15 +518,14 @@ impl SimState {
             })
             .expect("ActiveRecipe insert should not violate FK");
 
-        // Create one target row per recipe output, all at 0.
-        for (item_kind, material) in outputs {
+        for (item_kind, mat) in outputs {
             let _ = self
                 .db
                 .insert_active_recipe_target_auto(|id| crate::db::ActiveRecipeTarget {
                     id,
                     active_recipe_id: ar_id,
                     output_item_kind: item_kind,
-                    output_material: material,
+                    output_material: mat,
                     target_quantity: 0,
                 });
         }
@@ -760,7 +542,7 @@ impl SimState {
             .db
             .task_craft_data
             .iter_all()
-            .filter(|tcd| tcd.active_recipe_id == Some(active_recipe_id))
+            .filter(|tcd| tcd.active_recipe_id == active_recipe_id)
             .cloned()
             .collect::<Vec<_>>()
         {

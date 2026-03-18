@@ -187,9 +187,6 @@
 //     Single-action: picks up items from source.
 //   Haul — ActionKind::PickUp then ActionKind::DropOff.
 //     Two actions: pickup at source, dropoff at destination.
-//   Cook — ActionKind::Cook, duration from bread recipe `work_ticks`.
-//     Single-action: consumes fruit, produces bread. Legacy path; new
-//     bread tasks use the Craft action via unified crafting monitor.
 //   Craft — ActionKind::Craft, duration `recipe.work_ticks`.
 //     Single-action: consumes inputs, produces outputs.
 //   Mope — ActionKind::Mope, duration `mope_action_ticks`.
@@ -385,11 +382,6 @@ pub struct SimState {
     #[serde(skip)]
     pub species_table: BTreeMap<Species, SpeciesData>,
 
-    /// Immutable recipe catalog built at startup from config + dynamic recipes.
-    /// Not serialized — deterministically rebuilt from config on load.
-    #[serde(skip)]
-    pub recipe_catalog: crate::recipe::RecipeCatalog,
-
     /// Vaelith lexicon for elf name generation. Transient — loaded from the
     /// embedded JSON at startup and after deserialization. Not serialized.
     #[serde(skip)]
@@ -578,10 +570,8 @@ impl SimState {
         let mut trees = BTreeMap::new();
         trees.insert(player_tree_id, wg.home_tree);
 
-        // Build species table and recipe catalog from config + worldgen fruits.
+        // Build species table from config.
         let species_table = config.species.clone();
-        let fruit_species: Vec<_> = wg.db.fruit_species.iter_all().cloned().collect();
-        let recipe_catalog = crate::recipe::build_catalog(&config, &fruit_species);
 
         let mut state = Self {
             tick: 0,
@@ -603,7 +593,6 @@ impl SimState {
             nav_graph: wg.nav_graph,
             large_nav_graph: wg.large_nav_graph,
             species_table,
-            recipe_catalog,
             lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
             structure_voxels: BTreeMap::new(),
@@ -946,9 +935,10 @@ impl SimState {
             }
             SimAction::AddActiveRecipe {
                 structure_id,
-                recipe_key,
+                recipe,
+                material,
             } => {
-                self.add_active_recipe(*structure_id, recipe_key.clone());
+                self.add_active_recipe(*structure_id, *recipe, *material);
             }
             SimAction::RemoveActiveRecipe { active_recipe_id } => {
                 self.remove_active_recipe(*active_recipe_id);
@@ -1436,7 +1426,6 @@ impl SimState {
 
         match action_kind {
             ActionKind::Furnish => self.resolve_furnish_action(creature_id),
-            ActionKind::Cook => self.resolve_cook_action(creature_id),
             ActionKind::Craft => self.resolve_craft_action(creature_id),
             ActionKind::Sleep => self.resolve_sleep_action(creature_id),
             ActionKind::Mope => self.resolve_mope_action(creature_id),
@@ -1810,9 +1799,6 @@ impl SimState {
         self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
         self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
-        let fruit_species: Vec<_> = self.db.fruit_species.iter_all().cloned().collect();
-        self.recipe_catalog = crate::recipe::build_catalog(&self.config, &fruit_species);
-        self.cleanup_orphaned_active_recipes();
         self.lexicon = Some(elven_canopy_lang::default_lexicon());
 
         // Rebuild spatial_index from all living creatures. Must run after

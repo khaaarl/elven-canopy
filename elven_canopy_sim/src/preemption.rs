@@ -78,7 +78,6 @@ pub fn preemption_level(kind: TaskKindTag, origin: TaskOrigin) -> PreemptionLeve
         // AcquireItem is stocking up (carrying spare bread, fetching clothing),
         // not immediate self-care — it belongs here, not at Survival level.
         TaskKindTag::Haul
-        | TaskKindTag::Cook
         | TaskKindTag::Craft
         | TaskKindTag::Harvest
         | TaskKindTag::AcquireItem
@@ -213,12 +212,7 @@ mod tests {
 
     #[test]
     fn background_work_maps_to_autonomous() {
-        for kind in [
-            TaskKindTag::Haul,
-            TaskKindTag::Cook,
-            TaskKindTag::Craft,
-            TaskKindTag::Harvest,
-        ] {
+        for kind in [TaskKindTag::Haul, TaskKindTag::Craft, TaskKindTag::Harvest] {
             for origin in [
                 TaskOrigin::Autonomous,
                 TaskOrigin::Automated,

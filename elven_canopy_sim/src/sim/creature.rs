@@ -585,7 +585,7 @@ impl SimState {
 
     /// Preempt a creature's current task for a player command. If the creature
     /// is mid-Move, the action completes naturally (only the task is swapped).
-    /// For all other action kinds (Build, Cook, Eat, MeleeStrike, etc.), the
+    /// For all other action kinds (Build, Eat, MeleeStrike, etc.), the
     /// action is aborted because their resolve functions read `current_task`
     /// for task-specific data and would operate on the wrong (new) task.
     ///
@@ -630,9 +630,6 @@ impl SimState {
         match kind_tag {
             crate::db::TaskKindTag::Haul => {
                 self.cleanup_haul_task(creature_id, task_id);
-            }
-            crate::db::TaskKindTag::Cook => {
-                self.cleanup_cook_task(task_id);
             }
             crate::db::TaskKindTag::Craft => {
                 self.cleanup_craft_task(task_id);

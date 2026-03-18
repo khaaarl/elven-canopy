@@ -267,7 +267,6 @@ impl SimState {
         if matches!(
             action_kind,
             ActionKind::Furnish
-                | ActionKind::Cook
                 | ActionKind::Craft
                 | ActionKind::Sleep
                 | ActionKind::Eat
@@ -679,10 +678,6 @@ impl SimState {
                     task::HaulPhase::GoingToSource => self.start_pickup_action(creature_id),
                     task::HaulPhase::GoingToDestination => self.start_dropoff_action(creature_id),
                 }
-                return;
-            }
-            crate::db::TaskKindTag::Cook => {
-                self.start_cook_action(creature_id);
                 return;
             }
             crate::db::TaskKindTag::Harvest => {

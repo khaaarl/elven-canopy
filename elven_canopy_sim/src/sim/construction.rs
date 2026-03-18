@@ -1393,9 +1393,6 @@ impl SimState {
         let _ = self.db.structures.update_no_fk(structure);
         self.set_inv_wants(inv_id, &default_wants);
 
-        // Add default ActiveRecipe entries for crafting buildings.
-        self.add_default_active_recipes(structure_id, furnishing_type);
-
         let location = match self.nav_graph.find_nearest_node(task_pos) {
             Some(n) => n,
             None => return,
@@ -1416,52 +1413,6 @@ impl SimState {
             target_creature: None,
         };
         self.insert_task(new_task);
-    }
-
-    /// Add default `ActiveRecipe` entries when a building is furnished.
-    /// For kitchens: adds the bread recipe with the default bread target.
-    /// For workshops: adds all workshop recipes with zero targets (user must set).
-    /// Extraction recipes are NOT auto-added (user adds them from the catalog).
-    pub(crate) fn add_default_active_recipes(
-        &mut self,
-        structure_id: StructureId,
-        furnishing_type: FurnishingType,
-    ) {
-        let recipes_to_add: Vec<crate::recipe::RecipeKey> = self
-            .recipe_catalog
-            .default_recipes_for_furnishing(furnishing_type)
-            .iter()
-            .map(|r| r.key.clone())
-            .collect();
-
-        for key in &recipes_to_add {
-            self.add_active_recipe(structure_id, key.clone());
-        }
-
-        // Set default output targets for kitchen (bread).
-        if furnishing_type == FurnishingType::Kitchen {
-            let bread_target = self.config.kitchen_default_bread_target;
-            let active_recipes = self
-                .db
-                .active_recipes
-                .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
-            for ar in &active_recipes {
-                let targets = self
-                    .db
-                    .active_recipe_targets
-                    .by_active_recipe_id(&ar.id, tabulosity::QueryOpts::ASC);
-                for target in &targets {
-                    if target.output_item_kind == inventory::ItemKind::Bread {
-                        let _ = self
-                            .db
-                            .active_recipe_targets
-                            .modify_unchecked(&target.id, |t| {
-                                t.target_quantity = bread_target;
-                            });
-                    }
-                }
-            }
-        }
     }
 
     /// Assign a creature to a home structure, or unassign if `structure_id`

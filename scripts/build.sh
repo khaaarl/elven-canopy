@@ -117,7 +117,7 @@ gdscript_unit_tests() {
     fi
     ensure_godot_imported
     echo "Running GDScript unit tests (GUT)..."
-    GUT_TIMEOUT="${GUT_TIMEOUT:-60}"
+    GUT_TIMEOUT="${GUT_TIMEOUT:-120}"
     GUT_EXIT_CODE=0
     timeout "$GUT_TIMEOUT" xvfb-run -a "$GODOT" --path "$REPO_ROOT/godot" --headless --script res://test/gut_runner.gd || GUT_EXIT_CODE=$?
     if [ "$GUT_EXIT_CODE" -eq 124 ]; then

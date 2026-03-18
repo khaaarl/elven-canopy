@@ -167,7 +167,7 @@ impl SimState {
     }
 
     /// Convenience wrapper for adding items with no material, quality, or enchantment.
-    pub(crate) fn inv_add_simple_item(
+    pub fn inv_add_simple_item(
         &mut self,
         inv_id: InventoryId,
         kind: inventory::ItemKind,

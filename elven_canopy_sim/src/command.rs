@@ -70,7 +70,8 @@
 
 use crate::building::LogisticsWant;
 use crate::inventory::ItemKind;
-use crate::recipe::RecipeKey;
+use crate::inventory::Material;
+use crate::recipe::Recipe;
 use crate::species::EngagementStyle;
 use crate::task::TaskKind;
 use crate::types::*;
@@ -204,7 +205,8 @@ pub enum SimAction {
     /// Rejects duplicates (same recipe_key already active on the structure).
     AddActiveRecipe {
         structure_id: StructureId,
-        recipe_key: RecipeKey,
+        recipe: Recipe,
+        material: Option<Material>,
     },
     /// Remove an active recipe from a building. Interrupts any in-progress
     /// craft task for this recipe.

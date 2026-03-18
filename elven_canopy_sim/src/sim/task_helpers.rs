@@ -209,16 +209,6 @@ impl SimState {
                     }
                 });
             }
-            task::TaskKind::Cook { structure_id } => {
-                let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
-                    crate::db::TaskStructureRef {
-                        id,
-                        task_id,
-                        structure_id: *structure_id,
-                        role: crate::db::TaskStructureRole::CookAt,
-                    }
-                });
-            }
             task::TaskKind::Sleep { bed_pos, location } => {
                 if let Some(pos) = bed_pos {
                     let _ =
@@ -364,7 +354,7 @@ impl SimState {
             }
             task::TaskKind::Craft {
                 structure_id,
-                recipe_id,
+                active_recipe_id,
             } => {
                 let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
                     crate::db::TaskStructureRef {
@@ -374,15 +364,18 @@ impl SimState {
                         role: crate::db::TaskStructureRole::CraftAt,
                     }
                 });
-                let rid = recipe_id.clone();
+                // TaskCraftData is populated by the crafting monitor after
+                // insert_task — it overwrites recipe/material/active_recipe_id.
+                // We insert a placeholder here for task decomposition.
                 let _ = self
                     .db
                     .task_craft_data
                     .insert_auto_no_fk(|id| crate::db::TaskCraftData {
                         id,
                         task_id,
-                        recipe_id: rid,
-                        active_recipe_id: None,
+                        recipe: crate::recipe::Recipe::Extract,
+                        material: None,
+                        active_recipe_id: *active_recipe_id,
                     });
             }
             task::TaskKind::AttackTarget { target } => {

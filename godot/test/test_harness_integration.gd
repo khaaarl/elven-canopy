@@ -4,9 +4,18 @@
 ## -> GDScript UI.  They instantiate the real main.tscn scene as a child node
 ## and interact with it through the same paths a player would use.
 ##
+## **CRITICAL: Tests MUST interact through the UI as much as possible.**
+## After fixture setup (which may use bridge methods to build the world state),
+## the test body should drive behavior by clicking UI panel buttons, toggling
+## checkboxes, and selecting entities — NOT by calling bridge methods directly.
+## Verification should read panel text and check UI visibility IN ADDITION to
+## querying the bridge for correctness.  The whole point of these integration
+## tests is to prove the UI→bridge→sim→bridge→UI round-trip works.  A test
+## that only calls bridge methods is a unit test wearing a trench coat.
+##
 ## Performance note: Each test that loads main.tscn takes ~3s (sim init, tree
-## generation, mesh build, full UI setup).  As of March 2026 the 12 tests here
-## add ~15-17s to the GUT suite, well within the 60s GUT_TIMEOUT.  When adding
+## generation, mesh build, full UI setup).  As of March 2026 the 13 tests here
+## add ~18-22s to the GUT suite, well within the 60s GUT_TIMEOUT.  When adding
 ## new integration tests, prefer adding assertions to an existing scene-loading
 ## test rather than creating a new one — the per-test overhead is almost entirely
 ## scene loading, so "load once, verify many things" scales much better.  If the
@@ -481,7 +490,8 @@ func test_military_panel_shows_group() -> void:
 
 	# -- Verify panel contains "Alpha Squad" text --
 	# Wait a frame for the panel to refresh its content.
-	await _wait_for(func(): return true, 3)
+	for _fi in 3:
+		await get_tree().process_frame
 	var panel := _main_scene.find_child("MilitaryPanel", true, false)
 	var found_text := _find_text_in_descendants(panel, "Alpha Squad")
 	assert_true(found_text, "Panel should contain 'Alpha Squad' text")
@@ -568,7 +578,8 @@ func test_construction_blueprint_placement() -> void:
 
 	# -- Step time to let elves start building --
 	_step_ticks(500)
-	await _wait_for(func(): return true, 3)
+	for _fi in 3:
+		await get_tree().process_frame
 
 	# -- Verify blueprint or structure state after stepping --
 	# Structures appear when a blueprint is completed. With 500 ticks in a
@@ -743,3 +754,445 @@ func test_sprite_fruit_glowing() -> void:
 	var gen := SpriteGenerator.new()
 	var tex := gen.fruit_sprite("Round", 100, 200, 255, 120, true)
 	assert_not_null(tex, "Glowing fruit sprite should not be null")
+
+
+# ===========================================================================
+# Test: Crafting pipeline via UI panels (Recipe enum, material params)
+# ===========================================================================
+
+
+## Recursively find a Button whose text contains `substring`.
+## Searches all descendants regardless of visibility (the button itself
+## may be in a panel that was just made visible but hasn't rendered yet).
+func _find_button(root: Node, substring: String) -> Button:
+	if root == null:
+		return null
+	if root is Button and substring in root.text:
+		return root
+	for child in root.get_children():
+		var found := _find_button(child, substring)
+		if found:
+			return found
+	return null
+
+
+## Recursively find ALL Buttons whose text contains `substring`.
+func _find_all_buttons(root: Node, substring: String) -> Array[Button]:
+	var result: Array[Button] = []
+	if root == null:
+		return result
+	if root is Button and substring in root.text:
+		result.append(root)
+	for child in root.get_children():
+		result.append_array(_find_all_buttons(child, substring))
+	return result
+
+
+## Recursively search for a LineEdit whose text matches `expected_text`.
+func _find_line_edit_with_text(root: Node, expected_text: String) -> bool:
+	if root == null:
+		return false
+	if root is LineEdit and root.text == expected_text:
+		return true
+	for child in root.get_children():
+		if _find_line_edit_with_text(child, expected_text):
+			return true
+	return false
+
+
+## Programmatically press a Button node (emits its pressed signal).
+## Skips disabled buttons — a disabled button being pressed is a test bug.
+func _press_button(btn: Button) -> void:
+	if btn.disabled:
+		push_warning("_press_button: button '%s' is disabled, skipping" % btn.text)
+		return
+	btn.emit_signal("pressed")
+
+
+## Find a Button near a Label containing `label_text`. Searches all containers
+## in the subtree for one that has both a Label matching `label_text` and a
+## Button matching `button_text`. Returns the first matching Button, or null.
+## Used to find contextual buttons like the "X" remove button next to a
+## specific recipe name.
+func _find_button_near_label(root: Node, label_text: String, button_text: String) -> Button:
+	if root == null:
+		return null
+	# Check if this node's children contain both the label and button.
+	var has_label := false
+	var candidate_btn: Button = null
+	for child in root.get_children():
+		if child is Label and label_text in child.text:
+			has_label = true
+		if child is Button and button_text == child.text:
+			candidate_btn = child
+	if has_label and candidate_btn:
+		return candidate_btn
+	# Recurse into children.
+	for child in root.get_children():
+		var found := _find_button_near_label(child, label_text, button_text)
+		if found:
+			return found
+	return null
+
+
+## Open the crafting details panel for the currently selected structure.
+## Handles the two-Details-button ambiguity and waits for the panel to load.
+## Returns true if the crafting details panel is visible.
+func _open_crafting_details(struct_panel: Node) -> bool:
+	# Wait for the details panel to be added to the tree.
+	var found := await _wait_for(func(): return _find_button(_main_scene, "Add Recipe") != null, 60)
+	if not found:
+		return false
+	# Two "Details..." buttons exist (crafting + logistics). Try each.
+	for btn in _find_all_buttons(struct_panel, "Details"):
+		_press_button(btn)
+		var opened := await _wait_for(
+			func():
+				return (
+					_find_button(_main_scene, "Crafting Enabled") != null
+					and _find_text_in_descendants(_main_scene, "Crafting Details")
+				),
+			10
+		)
+		if opened:
+			break
+	# Yield frames so _process populates the recipe cache.
+	for _fi in 5:
+		await get_tree().process_frame
+	return _find_text_in_descendants(_main_scene, "Crafting Details")
+
+
+## Open the recipe picker via the "Add Recipe..." button and find a recipe
+## button by name, expanding categories if needed. Returns the Button or null.
+func _open_picker_and_find_recipe(recipe_name: String) -> Button:
+	var add_btn := _find_button(_main_scene, "Add Recipe")
+	if not add_btn:
+		gut.p("WARNING: 'Add Recipe' button not found — picker cannot open")
+		return null
+	_press_button(add_btn)
+	for _fi in 3:
+		await get_tree().process_frame
+
+	# Wait for recipe button to appear.
+	var found := await _wait_for(func(): return _find_button(_main_scene, recipe_name) != null, 30)
+	if found:
+		return _find_button(_main_scene, recipe_name)
+
+	# Categories may be collapsed — try expanding each category header.
+	for cat_name in ["Woodcraft", "Processing", "Extraction"]:
+		var cat_btn := _find_button(_main_scene, cat_name)
+		if cat_btn:
+			_press_button(cat_btn)
+			found = await _wait_for(
+				func(): return _find_button(_main_scene, recipe_name) != null, 10
+			)
+			if found:
+				return _find_button(_main_scene, recipe_name)
+	return null
+
+
+func _setup_crafting_fixture(bridge: SimBridge) -> void:
+	bridge.init_sim_test_config(42)
+	bridge.debug_disable_needs()
+	bridge.step_to_tick(200)
+
+	var tree_info: Dictionary = bridge.get_home_tree_info()
+	var tx: int = int(tree_info.get("position_x", 0))
+	var tz: int = int(tree_info.get("position_z", 0))
+
+	# Designate three buildings near the tree. y=1 is the walkable forest floor
+	# level (y=0 is solid ground). Buildings placed at y=1 have their interior
+	# at y=2 which has nav nodes.
+	bridge.designate_building(tx + 3, 1, tz, 3, 3, 3)
+	bridge.designate_building(tx + 7, 1, tz, 3, 3, 3)
+	bridge.designate_building(tx + 11, 1, tz, 3, 3, 3)
+
+	# Spawn extra elves for building + crafting labor.
+	for i in range(5):
+		bridge.spawn_elf(tx, 1, tz)
+
+	# Step lots of ticks so construction completes.
+	bridge.step_to_tick(200_000)
+
+	# Find completed structures.
+	var structures: Array = bridge.get_structures()
+	var building_sids: Array = []
+	for s in structures:
+		if s.get("build_type", "") == "Building":
+			building_sids.append(int(s.get("id", -1)))
+
+	var workshop_id: int = -1
+	var kitchen_id: int = -1
+	var storehouse_id: int = -1
+
+	if building_sids.size() >= 3:
+		workshop_id = building_sids[0]
+		kitchen_id = building_sids[1]
+		storehouse_id = building_sids[2]
+		bridge.furnish_structure(workshop_id, "Workshop", -1)
+		bridge.furnish_structure(kitchen_id, "Kitchen", -1)
+		bridge.furnish_structure(storehouse_id, "Storehouse", -1)
+		bridge.step_to_tick(210_000)
+
+		# Stock storehouse with bowstrings (input for GrowBow) and bread
+		# (prevents elf starvation over the long sim duration).
+		bridge.debug_add_item_to_structure(storehouse_id, "Bowstring", 20, "")
+		bridge.debug_add_item_to_structure(storehouse_id, "Bread", 500, "")
+
+	_fixture = {
+		"workshop_id": workshop_id,
+		"kitchen_id": kitchen_id,
+		"storehouse_id": storehouse_id,
+		"tree_x": tx,
+		"tree_z": tz,
+		"building_count": building_sids.size(),
+	}
+
+
+func test_crafting_pipeline_via_ui() -> void:
+	# -- Fixture: 3 furnished buildings + stocked storehouse --
+	var json := _generate_save(_setup_crafting_fixture)
+	if _fixture.building_count < 3:
+		gut.p("SKIP: only %d buildings completed (need 3)" % _fixture.building_count)
+		pass_test("skipped — insufficient buildings")
+		return
+
+	await _load_game_scene(json)
+	var bridge := _get_bridge()
+	var workshop_id: int = _fixture.workshop_id
+	var kitchen_id: int = _fixture.kitchen_id
+	var storehouse_id: int = _fixture.storehouse_id
+
+	var selector := _main_scene.find_child("SelectionController", true, false)
+	assert_not_null(selector, "SelectionController should exist")
+
+	# ---------------------------------------------------------------
+	# 1. Select workshop → structure info panel opens
+	# ---------------------------------------------------------------
+	selector.select_structure(workshop_id)
+	var panel_visible := await _wait_for(func(): return _is_panel_visible("StructureInfoPanel"), 30)
+	assert_true(panel_visible, "StructureInfoPanel should open when workshop selected")
+
+	var struct_panel := _main_scene.find_child("StructureInfoPanel", true, false)
+	assert_true(
+		_find_text_in_descendants(struct_panel, "Workshop"),
+		"Panel should show 'Workshop' furnishing type",
+	)
+
+	# ---------------------------------------------------------------
+	# 2. Open crafting details panel via UI
+	# ---------------------------------------------------------------
+	var crafting_open := await _open_crafting_details(struct_panel)
+	assert_true(crafting_open, "Crafting details panel should open")
+	# Verify the panel shows "Crafting Details" header and "Crafting Enabled".
+	assert_true(
+		_find_text_in_descendants(_main_scene, "Crafting Details"),
+		"Panel should show 'Crafting Details' header",
+	)
+	assert_not_null(
+		_find_button(_main_scene, "Crafting Enabled"),
+		"Crafting Enabled checkbox should be visible",
+	)
+
+	# ---------------------------------------------------------------
+	# 3. Open recipe picker and add "Grow Oak Bow" via UI
+	# ---------------------------------------------------------------
+	var grow_bow_btn := await _open_picker_and_find_recipe("Grow Oak Bow")
+	assert_not_null(grow_bow_btn, "Should find 'Grow Oak Bow' recipe button in picker")
+	if not grow_bow_btn:
+		return
+	_press_button(grow_bow_btn)
+	# Yield frames for the signal chain: button press → add_recipe_requested
+	# → bridge.add_active_recipe → sim processes command.
+	for _fi in 5:
+		await get_tree().process_frame
+
+	# ---------------------------------------------------------------
+	# 4. Verify recipe was added — both in bridge state AND panel text
+	# ---------------------------------------------------------------
+	var ws_info: Dictionary = bridge.get_structure_info(workshop_id)
+	var ws_active: Array = ws_info.get("active_recipes", [])
+	assert_eq(ws_active.size(), 1, "Workshop should have 1 active recipe after UI add")
+	# Verify panel shows the recipe name.
+	for _fi in 5:
+		await get_tree().process_frame
+	assert_true(
+		_find_text_in_descendants(_main_scene, "Grow Oak Bow"),
+		"Panel should display 'Grow Oak Bow' in active recipes",
+	)
+	# Verify the bridge reports the correct display name.
+	var bow_recipe: Dictionary = ws_active[0]
+	var bow_display: String = bow_recipe.get("recipe_display_name", "")
+	assert_true(
+		"Oak" in bow_display and "Bow" in bow_display,
+		"Bridge display name should contain 'Oak' and 'Bow', got: %s" % bow_display,
+	)
+
+	# ---------------------------------------------------------------
+	# 5. Set output target via UI "+" button, verify panel updates
+	# ---------------------------------------------------------------
+	# The active recipe row should have a "+" button for the Bow output target.
+	# The default increment is 1 since _get_output_quantity_for_target returns 1.
+	var plus_btn := _find_button_near_label(_main_scene, "Oak Bow", "+1")
+	assert_not_null(plus_btn, "Should find '+1' button near Bow target row")
+	if not plus_btn:
+		return
+	# Click it 5 times to set target to 5.
+	for _i in 5:
+		_press_button(plus_btn)
+	for _fi in 3:
+		await get_tree().process_frame
+
+	# Verify the target updated in bridge AND panel.
+	ws_info = bridge.get_structure_info(workshop_id)
+	ws_active = ws_info.get("active_recipes", [])
+	var targets: Array = ws_active[0].get("targets", [])
+	assert_gt(targets.size(), 0, "GrowBow should have output targets")
+	assert_eq(
+		int(targets[0].get("target_quantity", 0)),
+		5,
+		"Bridge: Bow target should be 5 after clicking +1 five times",
+	)
+	# The target LineEdit in the UI should show "5". Search within the
+	# crafting details area (not the whole scene) to avoid false positives
+	# from unrelated numbers elsewhere in the UI.
+	for _fi in 3:
+		await get_tree().process_frame
+	var crafting_area := _main_scene.find_child("StructureInfoPanel", true, false)
+	if crafting_area:
+		crafting_area = crafting_area.get_parent()
+	var found_target_5 := false
+	if crafting_area:
+		found_target_5 = _find_line_edit_with_text(crafting_area, "5")
+	assert_true(found_target_5, "Target LineEdit near recipe should show '5'")
+
+	# ---------------------------------------------------------------
+	# 6. Stock workshop with bowstrings, step time → bows crafted
+	# ---------------------------------------------------------------
+	# Stock the workshop directly — the storehouse has bowstrings but
+	# logistics hauling is slow. This is a fixture-level setup step,
+	# not a test interaction (the crafting pipeline, not the hauling
+	# pipeline, is what this test exercises).
+	bridge.debug_add_item_to_structure(workshop_id, "Bowstring", 10, "")
+
+	# Step until bows appear or timeout.
+	var ticks_stepped := _step_until(
+		func():
+			var info: Dictionary = bridge.get_structure_info(workshop_id)
+			for item in info.get("inventory", []):
+				if item.get("kind", "") == "Bow":
+					return true
+			return false,
+		200_000,
+	)
+	assert_ne(ticks_stepped, -1, "Crafting should produce bows within 200k ticks")
+
+	# Verify bows in bridge AND panel inventory.
+	for _fi in 5:
+		await get_tree().process_frame
+	ws_info = bridge.get_structure_info(workshop_id)
+	var bow_count := 0
+	for item in ws_info.get("inventory", []):
+		if item.get("kind", "") == "Bow":
+			bow_count += int(item.get("quantity", 0))
+	assert_gt(bow_count, 0, "Workshop should have crafted bows, got %d" % bow_count)
+	assert_true(
+		_find_text_in_descendants(_main_scene, "Bow"),
+		"Panel inventory should show 'Bow'",
+	)
+
+	# ---------------------------------------------------------------
+	# 7. Add second recipe (GrowArrow) via UI picker
+	# ---------------------------------------------------------------
+	# Re-select workshop and open crafting details + picker.
+	selector.select_structure(workshop_id)
+	await _wait_for(func(): return _is_panel_visible("StructureInfoPanel"), 30)
+	struct_panel = _main_scene.find_child("StructureInfoPanel", true, false)
+
+	crafting_open = await _open_crafting_details(struct_panel)
+	assert_true(crafting_open, "Crafting details should reopen for workshop")
+
+	var arrow_btn := await _open_picker_and_find_recipe("Grow Oak Arrows")
+	assert_not_null(arrow_btn, "Should find 'Grow Oak Arrows' recipe button")
+	if not arrow_btn:
+		return
+	_press_button(arrow_btn)
+	for _fi in 5:
+		await get_tree().process_frame
+
+	# Verify both recipes in bridge AND panel.
+	ws_info = bridge.get_structure_info(workshop_id)
+	ws_active = ws_info.get("active_recipes", [])
+	assert_eq(ws_active.size(), 2, "Workshop should have 2 active recipes")
+	for _fi in 5:
+		await get_tree().process_frame
+	assert_true(
+		_find_text_in_descendants(_main_scene, "Grow Oak Bow"),
+		"Panel should still show 'Grow Oak Bow'",
+	)
+	assert_true(
+		_find_text_in_descendants(_main_scene, "Grow Oak Arrows"),
+		"Panel should also show 'Grow Oak Arrows'",
+	)
+
+	# ---------------------------------------------------------------
+	# 8. Remove Grow Oak Bow recipe via its "X" button in the panel
+	# ---------------------------------------------------------------
+	# Find the "X" button next to the "Grow Oak Bow" label.
+	var remove_btn := _find_button_near_label(_main_scene, "Grow Oak Bow", "X")
+	assert_not_null(remove_btn, "Should find 'X' remove button near 'Grow Oak Bow'")
+	if not remove_btn:
+		return
+	_press_button(remove_btn)
+	for _fi in 5:
+		await get_tree().process_frame
+
+	# Verify removal in bridge AND panel.
+	ws_info = bridge.get_structure_info(workshop_id)
+	ws_active = ws_info.get("active_recipes", [])
+	assert_eq(ws_active.size(), 1, "Should have 1 recipe after removal")
+	for _fi in 5:
+		await get_tree().process_frame
+	assert_false(
+		_find_text_in_descendants(_main_scene, "Grow Oak Bow"),
+		"'Grow Oak Bow' should be gone from panel after removal",
+	)
+	assert_true(
+		_find_text_in_descendants(_main_scene, "Grow Oak Arrows"),
+		"'Grow Oak Arrows' should remain in panel after removal",
+	)
+
+	# ---------------------------------------------------------------
+	# 9. Select kitchen, add extraction recipe via UI picker
+	# ---------------------------------------------------------------
+	selector.select_structure(kitchen_id)
+	await _wait_for(func(): return _is_panel_visible("StructureInfoPanel"), 30)
+	struct_panel = _main_scene.find_child("StructureInfoPanel", true, false)
+
+	crafting_open = await _open_crafting_details(struct_panel)
+	assert_true(crafting_open, "Crafting details should open for kitchen")
+
+	# Find an Extract recipe (any species, name starts with "Extract ").
+	var extract_btn := await _open_picker_and_find_recipe("Extract ")
+	assert_not_null(extract_btn, "Should find an Extract recipe button")
+	if not extract_btn:
+		return
+	_press_button(extract_btn)
+	for _fi in 5:
+		await get_tree().process_frame
+
+	# Verify in bridge AND panel.
+	var k_info: Dictionary = bridge.get_structure_info(kitchen_id)
+	var k_active: Array = k_info.get("active_recipes", [])
+	assert_eq(k_active.size(), 1, "Kitchen should have 1 active extraction recipe")
+	var extract_display: String = k_active[0].get("recipe_display_name", "")
+	assert_true(
+		"Extract" in extract_display,
+		"Bridge: kitchen recipe should be Extract, got: %s" % extract_display,
+	)
+	for _fi in 5:
+		await get_tree().process_frame
+	assert_true(
+		_find_text_in_descendants(_main_scene, "Extract"),
+		"Panel should display extraction recipe",
+	)

@@ -166,7 +166,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-raid-detection       Raid detection gating and stealth spawning
 [ ] F-recipe-any-mat       Any-material recipe parameter support
-[ ] F-recipe-params        Parameterized recipe templates
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
@@ -332,6 +331,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-preemption           Task priority and preemption system
 [x] F-projectiles          Projectile physics system (arrows)
 [x] F-recipe-hierarchy     Recipe catalog UI hierarchy and organization
+[x] F-recipe-params        Parameterized recipe templates
 [x] F-recipe-search        Recipe catalog search/filter
 [x] F-recipes              Recipe system for crafting/cooking
 [x] F-relay-multi-game     Relay server supports multiple simultaneous games
@@ -1452,7 +1452,7 @@ completes the batch in less total time than individual tasks would take
 (configurable time discount). Examples: milling in a mill, baking in a
 bakery.
 
-**Blocked by:** F-recipe-params
+**Unblocked by:** F-recipe-params
 **Related:** F-furnish, F-manufacturing, F-recipes, F-unified-craft-ui
 
 #### F-cloak-slot — Cloak/cape equipment slot
@@ -1525,8 +1525,8 @@ Depends on F-recipe-params for parameterized recipe templates and
 F-dye-palette for the named color system that dye color parameters
 reference.
 
-**Blocked by:** F-dye-palette, F-recipe-params
-**Unblocked by:** F-dye-crafting, F-item-color
+**Blocked by:** F-dye-palette
+**Unblocked by:** F-dye-crafting, F-item-color, F-recipe-params
 **Related:** F-dye-crafting, F-dye-palette
 
 #### F-dye-crafting — Dye pressing from pigmented fruit components
@@ -1567,8 +1567,8 @@ Depends on F-dye-palette for the color naming system and
 F-recipe-params for representing mixing recipes with parameterized
 inputs.
 
-**Blocked by:** F-dye-palette, F-recipe-params
-**Unblocked by:** F-dye-crafting
+**Blocked by:** F-dye-palette
+**Unblocked by:** F-dye-crafting, F-recipe-params
 **Related:** F-dye-crafting, F-dye-palette, F-fruit-pigments
 
 #### F-dye-palette — Named color palette system for dyes
@@ -1957,7 +1957,7 @@ species-dependent outputs cannot use Any.
 F-recipe-params ships with specific-material-only; this ticket
 adds the Any path.
 
-**Blocked by:** F-recipe-params
+**Unblocked by:** F-recipe-params
 **Related:** F-recipe-params
 
 #### F-recipe-hierarchy — Recipe catalog UI hierarchy and organization
@@ -1982,7 +1982,7 @@ Scope:
 **Related:** F-component-recipes, F-recipe-search, F-recipes
 
 #### F-recipe-params — Parameterized recipe templates
-**Status:** Todo
+**Status:** Done
 
 Refactor the recipe system from a flat pre-generated catalog to
 parameterized recipe templates. Currently every material variant of a
@@ -2014,7 +2014,7 @@ navigable.
 
 **Draft:** docs/drafts/recipe_params.md
 
-**Blocks:** F-batch-craft, F-dye-application, F-dye-mixing, F-recipe-any-mat
+**Unblocked:** F-batch-craft, F-dye-application, F-dye-mixing, F-recipe-any-mat
 **Related:** F-component-recipes, F-dye-crafting, F-recipe-any-mat, F-recipes, F-unified-craft-ui
 
 #### F-recipes — Recipe system for crafting/cooking

@@ -99,8 +99,7 @@ pub enum ActionKind {
     Build = 2,
     /// Placing one furniture item.
     Furnish = 3,
-    /// Cooking one batch.
-    Cook = 4,
+    // 4 = reserved (was Cook)
     /// Crafting one recipe output.
     Craft = 5,
     /// One sleep cycle (~1s). Repeated until rest is full.
@@ -139,7 +138,6 @@ pub enum TaskKindTag {
     AttackMove,
     AttackTarget,
     Build,
-    Cook,
     Craft,
     EatBread,
     EatFruit,
@@ -166,7 +164,6 @@ impl TaskKindTag {
             Self::AttackMove => "AttackMove",
             Self::AttackTarget => "Attack",
             Self::Build => "Build",
-            Self::Cook => "Cook",
             Self::Craft => "Craft",
             Self::EatBread => "EatBread",
             Self::EatFruit => "EatFruit",
@@ -188,7 +185,6 @@ impl TaskKindTag {
             TaskKind::AttackMove => Self::AttackMove,
             TaskKind::AttackTarget { .. } => Self::AttackTarget,
             TaskKind::Build { .. } => Self::Build,
-            TaskKind::Cook { .. } => Self::Cook,
             TaskKind::Craft { .. } => Self::Craft,
             TaskKind::EatBread => Self::EatBread,
             TaskKind::EatFruit { .. } => Self::EatFruit,
@@ -207,7 +203,6 @@ impl TaskKindTag {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TaskStructureRole {
     FurnishTarget,
-    CookAt,
     HaulDestination,
     HaulSourceBuilding,
     SleepAt,
@@ -966,11 +961,12 @@ pub struct TaskCraftData {
     pub id: TaskCraftDataId,
     #[indexed]
     pub task_id: TaskId,
-    pub recipe_id: String,
+    pub recipe: crate::recipe::Recipe,
+    #[serde(default)]
+    pub material: Option<crate::inventory::Material>,
     /// FK to the active recipe that spawned this craft task. Used by
     /// `RemoveActiveRecipe` to interrupt in-progress tasks.
-    #[serde(default)]
-    pub active_recipe_id: Option<ActiveRecipeId>,
+    pub active_recipe_id: ActiveRecipeId,
 }
 
 // ---------------------------------------------------------------------------
@@ -991,11 +987,12 @@ pub struct ActiveRecipe {
     #[indexed]
     pub structure_id: StructureId,
 
-    /// Structural identity of the recipe (serialized JSON).
-    pub recipe_key_json: String,
+    /// The recipe template for this active recipe.
+    pub recipe: crate::recipe::Recipe,
 
-    /// Cached display name for orphan notification messages on load.
-    pub recipe_display_name: String,
+    /// Material binding for the recipe.
+    #[serde(default)]
+    pub material: Option<crate::inventory::Material>,
 
     /// Can be toggled without removing the recipe.
     pub enabled: bool,

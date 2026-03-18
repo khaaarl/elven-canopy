@@ -1,25 +1,14 @@
-// Unified recipe catalog for data-driven crafting.
-//
-// Replaces the per-building-type crafting systems (kitchen bread baking,
-// workshop recipe list) with a single unified model. Recipes are identified
-// structurally by `RecipeKey` (verb + sorted inputs/outputs), not by string
-// names. The `RecipeCatalog` is built at startup from config recipes,
-// dynamically generated fruit recipes (extraction, component processing —
-// flour, thread, cord, cloth, dye — and clothing — tunic, leggings, boots, hat),
-// and per-wood-type Grow recipes (bows, arrows, armor — helmet, breastplate,
-// greaves, gauntlets, boots), then stored immutably on `SimState`.
+// Parameterized recipe templates for the crafting system.
 //
 // Key types:
-// - `RecipeVerb` — stable enum distinguishing crafting methods (Cook, Assemble,
-//   etc.). Part of `RecipeKey` serialization contract.
-// - `RecipeKey` — structural identity for a recipe. Two recipes with identical
-//   keys are the same recipe. Serialized as deterministic JSON.
-// - `RecipeDef` — full recipe definition with display name, category, inputs,
-//   outputs, work ticks, and building type constraints.
-// - `RecipeCatalog` — immutable BTreeMap of all recipes, keyed by `RecipeKey`.
+// - `Recipe` — fixed enum (21 variants), each a recipe template.
+// - `RecipeParams` — parameter bindings (currently just material).
+// - `ResolvedRecipe` — concrete inputs/outputs from `Recipe::resolve()`.
+// - `RecipeVerb` — verb enum used for UI grouping via `Recipe::verb()`.
 //
-// GDScript receives `RecipeKey` as a JSON string and treats it as opaque —
-// never parsed or constructed on the GDScript side.
+// Each `Recipe` variant is one specific transformation (e.g., Mill, SewTunic).
+// Combined with `RecipeParams` (material selection) and resolved against
+// `GameConfig` + fruit species data to produce concrete inputs/outputs.
 //
 // See also: `config.rs` for `RecipeInput`/`RecipeOutput` structs,
 // `db.rs` for `ActiveRecipe`/`ActiveRecipeTarget` tables,
@@ -29,7 +18,6 @@ use crate::config::{RecipeInput, RecipeOutput, RecipeSubcomponentRecord};
 use crate::inventory::{ItemKind, Material, MaterialFilter};
 use crate::types::{FurnishingType, Species};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // RecipeVerb
@@ -38,19 +26,18 @@ use std::collections::BTreeMap;
 /// Distinguishes fundamentally different crafting processes that happen to
 /// share the same inputs and outputs (e.g., "husk fruit" vs "press fruit").
 ///
-/// **STABLE ENUM:** Discriminant values are persisted in save files via
-/// `RecipeKey`. Never reorder, never reuse a number. Append new variants
-/// at the end with the next available discriminant. Comment out removed
-/// variants (do not delete) to prevent accidental reuse.
+/// **STABLE ENUM:** Discriminant values are used for UI grouping.
+/// Never reorder, never reuse a number. Append new variants at the end
+/// with the next sequential discriminant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u16)]
 pub enum RecipeVerb {
     Assemble = 0,
-    Brew = 1,
-    Cook = 2,
+    // 1 = reserved (was Brew)
+    // 2 = reserved (was Cook)
     Extract = 3,
-    Fletch = 4,
-    Husk = 5,
+    // 4 = reserved (was Fletch)
+    // 5 = reserved (was Husk)
     Mill = 6,
     Spin = 7,
     Twist = 8,
@@ -67,938 +54,970 @@ pub enum RecipeVerb {
 }
 
 // ---------------------------------------------------------------------------
-// RecipeKey
+// Recipe enum — parameterized recipe templates (F-recipe-params)
 // ---------------------------------------------------------------------------
 
-/// Structural identity for a recipe. Two recipes with identical keys are the
-/// same recipe, regardless of display name changes.
+/// A fixed recipe template. Each variant is one specific transformation
+/// (e.g., Mill, SewTunic). Combined with `RecipeParams` (material selection)
+/// and resolved against `GameConfig` + fruit species data to produce concrete
+/// inputs/outputs via `resolve()`.
 ///
-/// Input and output Vecs MUST be sorted in canonical order (derived `Ord`)
-/// to ensure identical recipes produce identical keys regardless of definition
-/// order. The catalog builder enforces this at construction time.
+/// **STABLE ENUM:** Variant names are serialized into save files. Never rename
+/// variants. Discriminant values (`#[repr(u16)]`) are for in-memory
+/// representation only — never reorder or reuse discriminants.
 ///
-/// **Serialization contract:** Field declaration order is stable — reordering
-/// fields would change the JSON representation and orphan all saved keys.
-/// Serde JSON serializes enum variants by name, so don't rename enum variants.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct RecipeKey {
-    // STABLE FIELD ORDER — do not reorder. See doc comment above.
-    pub verb: RecipeVerb,
-    pub inputs: Vec<(ItemKind, MaterialFilter, u32)>,
-    pub outputs: Vec<(ItemKind, Option<Material>, u32)>,
+/// See also: `RecipeParams` for parameter bindings, `ResolvedRecipe` for
+/// concrete inputs/outputs, the design doc at `docs/drafts/recipe_params.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[repr(u16)]
+pub enum Recipe {
+    // --- Fruit processing (material param: FruitSpecies) ---
+    /// Fruit → components (outputs vary by species part composition).
+    Extract = 0,
+    /// Starchy component → Flour.
+    Mill = 1,
+    /// Flour → Bread.
+    Bake = 2,
+    /// Fine-fiber component → Thread.
+    Spin = 3,
+    /// Coarse-fiber component → Cord.
+    Twist = 4,
+    /// Thread → Cloth.
+    Weave = 5,
+    /// Pigmented component → Dye.
+    Press = 6,
+
+    // --- Assembly (material param: FruitSpecies) ---
+    /// Thread → Bowstring.
+    AssembleThreadBowstring = 7,
+    /// Cord → Bowstring.
+    AssembleCordBowstring = 8,
+
+    // --- Clothing (material param: FruitSpecies) ---
+    /// Cloth → Tunic.
+    SewTunic = 9,
+    /// Cloth → Leggings.
+    SewLeggings = 10,
+    /// Cloth → Boots.
+    SewBoots = 11,
+    /// Cloth → Hat.
+    SewHat = 12,
+    /// Cloth → Gloves.
+    SewGloves = 13,
+
+    // --- Wood equipment (material param: wood type) ---
+    /// Bowstring(any) → Bow.
+    GrowBow = 14,
+    /// (no input) → Arrows.
+    GrowArrow = 15,
+    /// (no input) → Helmet.
+    GrowHelmet = 16,
+    /// (no input) → Breastplate.
+    GrowBreastplate = 17,
+    /// (no input) → Greaves.
+    GrowGreaves = 18,
+    /// (no input) → Gauntlets.
+    GrowGauntlets = 19,
+    /// (no input) → Boots.
+    GrowBoots = 20,
+    // Future: DyeTunic, DyeLeggings, etc. (F-dye-application)
+    // Future: MixDye (F-dye-mixing)
 }
 
-impl RecipeKey {
-    /// Serialize this key to a deterministic JSON string.
-    ///
-    /// Used as the opaque key representation passed to GDScript and stored in
-    /// save files alongside `ActiveRecipe` rows.
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).expect("RecipeKey should always serialize")
-    }
+/// All Recipe variants in definition order.
+pub const ALL_RECIPES: [Recipe; 21] = [
+    Recipe::Extract,
+    Recipe::Mill,
+    Recipe::Bake,
+    Recipe::Spin,
+    Recipe::Twist,
+    Recipe::Weave,
+    Recipe::Press,
+    Recipe::AssembleThreadBowstring,
+    Recipe::AssembleCordBowstring,
+    Recipe::SewTunic,
+    Recipe::SewLeggings,
+    Recipe::SewBoots,
+    Recipe::SewHat,
+    Recipe::SewGloves,
+    Recipe::GrowBow,
+    Recipe::GrowArrow,
+    Recipe::GrowHelmet,
+    Recipe::GrowBreastplate,
+    Recipe::GrowGreaves,
+    Recipe::GrowGauntlets,
+    Recipe::GrowBoots,
+];
 
-    /// Deserialize a key from its JSON representation.
-    pub fn from_json(json: &str) -> Option<Self> {
-        serde_json::from_str(json).ok()
-    }
+/// Parameter bindings for a configured recipe instance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipeParams {
+    /// Material selection. Always `Some(m)` in the initial implementation.
+    /// F-recipe-any-mat adds `None` = "any" support.
+    pub material: Option<Material>,
 }
 
-// ---------------------------------------------------------------------------
-// RecipeDef
-// ---------------------------------------------------------------------------
-
-/// Full definition of a recipe. Stored in the `RecipeCatalog`.
-///
-/// The `key` field is the structural identity. `inputs` and `outputs` are the
-/// full structs with all metadata (quality, etc.), while `RecipeKey` contains
-/// only the identity-relevant subset.
-#[derive(Clone, Debug)]
-pub struct RecipeDef {
-    pub key: RecipeKey,
-    pub display_name: String,
-    /// Category path for hierarchical browsing, e.g. `["Brewing", "Cordials"]`.
-    /// Empty vec = root level (no nesting).
-    pub category: Vec<String>,
-    /// Which building furnishing types can use this recipe.
-    pub furnishing_types: Vec<FurnishingType>,
+/// A fully resolved recipe: concrete inputs, outputs, and work cost.
+/// Produced by `Recipe::resolve()`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedRecipe {
     pub inputs: Vec<RecipeInput>,
     pub outputs: Vec<RecipeOutput>,
     pub work_ticks: u64,
     pub subcomponent_records: Vec<RecipeSubcomponentRecord>,
-    /// Species restriction. `None` = any species can craft.
-    pub required_species: Option<Species>,
-    /// Whether this recipe is auto-added to buildings when they are furnished.
-    /// Config recipes (bread, weapons) are true; dynamic extraction recipes are
-    /// false (user adds them manually from the available catalog).
-    pub auto_add_on_furnish: bool,
 }
 
-// ---------------------------------------------------------------------------
-// RecipeCatalog
-// ---------------------------------------------------------------------------
-
-/// Immutable catalog of all recipes, built at game startup.
-///
-/// Keyed by `RecipeKey` for O(log n) lookups. Iteration order is the canonical
-/// order: config recipes first (in config Vec order), then dynamically generated
-/// fruit-variety recipes (ordered by FruitSpeciesId, then by verb). The
-/// `BTreeMap` ordering matches this because keys are constructed in that order
-/// and `RecipeKey`'s derived `Ord` produces a consistent sort.
-#[derive(Clone, Debug, Default)]
-pub struct RecipeCatalog {
-    recipes: BTreeMap<RecipeKey, RecipeDef>,
-}
-
-impl RecipeCatalog {
-    /// Look up a recipe by its structural key.
-    pub fn get(&self, key: &RecipeKey) -> Option<&RecipeDef> {
-        self.recipes.get(key)
+impl Recipe {
+    /// Whether this recipe has a material parameter.
+    /// All current recipes return true.
+    pub fn has_material_param(&self) -> bool {
+        true
     }
 
-    /// Iterate all recipes in canonical order.
-    pub fn iter(&self) -> impl Iterator<Item = (&RecipeKey, &RecipeDef)> {
-        self.recipes.iter()
-    }
+    /// Valid materials for this recipe given the current world state.
+    ///
+    /// Fruit-processing recipes return `FruitSpecies` materials filtered by
+    /// whether the species has the required part property. Wood recipes return
+    /// `Material::WOOD_TYPES`.
+    pub fn valid_materials(&self, fruit_species: &[crate::fruit::FruitSpecies]) -> Vec<Material> {
+        use crate::fruit::PartProperty;
 
-    /// Number of recipes in the catalog.
-    pub fn len(&self) -> usize {
-        self.recipes.len()
-    }
+        match self {
+            // Wood equipment recipes accept any wood type.
+            Recipe::GrowBow
+            | Recipe::GrowArrow
+            | Recipe::GrowHelmet
+            | Recipe::GrowBreastplate
+            | Recipe::GrowGreaves
+            | Recipe::GrowGauntlets
+            | Recipe::GrowBoots => Material::WOOD_TYPES.to_vec(),
 
-    /// Whether the catalog is empty.
-    pub fn is_empty(&self) -> bool {
-        self.recipes.is_empty()
-    }
+            // Extract: any fruit species (all have parts to extract).
+            Recipe::Extract => fruit_species
+                .iter()
+                .map(|s| Material::FruitSpecies(s.id))
+                .collect(),
 
-    /// Get all recipes available for a given furnishing type.
-    pub fn recipes_for_furnishing(&self, ft: FurnishingType) -> Vec<&RecipeDef> {
-        self.recipes
-            .values()
-            .filter(|r| r.furnishing_types.contains(&ft))
-            .collect()
-    }
+            // Mill/Bake: species with a Starchy part.
+            Recipe::Mill | Recipe::Bake => fruit_species
+                .iter()
+                .filter(|s| {
+                    s.parts
+                        .iter()
+                        .any(|p| p.properties.contains(&PartProperty::Starchy))
+                })
+                .map(|s| Material::FruitSpecies(s.id))
+                .collect(),
 
-    /// Get recipes that should be auto-added when a building is furnished.
-    /// Filters by furnishing type AND `auto_add_on_furnish == true`.
-    pub fn default_recipes_for_furnishing(&self, ft: FurnishingType) -> Vec<&RecipeDef> {
-        self.recipes
-            .values()
-            .filter(|r| r.furnishing_types.contains(&ft) && r.auto_add_on_furnish)
-            .collect()
-    }
-}
+            // Spin, Weave, SewX, AssembleThreadBowstring: species with FibrousFine.
+            Recipe::Spin
+            | Recipe::Weave
+            | Recipe::AssembleThreadBowstring
+            | Recipe::SewTunic
+            | Recipe::SewLeggings
+            | Recipe::SewBoots
+            | Recipe::SewHat
+            | Recipe::SewGloves => fruit_species
+                .iter()
+                .filter(|s| {
+                    s.parts
+                        .iter()
+                        .any(|p| p.properties.contains(&PartProperty::FibrousFine))
+                })
+                .map(|s| Material::FruitSpecies(s.id))
+                .collect(),
 
-// ---------------------------------------------------------------------------
-// Catalog builder
-// ---------------------------------------------------------------------------
+            // Twist, AssembleCordBowstring: species with FibrousCoarse.
+            Recipe::Twist | Recipe::AssembleCordBowstring => fruit_species
+                .iter()
+                .filter(|s| {
+                    s.parts
+                        .iter()
+                        .any(|p| p.properties.contains(&PartProperty::FibrousCoarse))
+                })
+                .map(|s| Material::FruitSpecies(s.id))
+                .collect(),
 
-/// Builds a `RecipeCatalog` from config recipes, cooking parameters, and
-/// fruit species (for extraction recipes).
-///
-/// `fruit_species` should be the full list of fruit species from the world.
-/// For each species, one extraction recipe is generated (1 fruit → N component
-/// items based on the species' parts). Pass an empty slice when fruit species
-/// are not yet available (e.g., during early initialization before worldgen).
-pub fn build_catalog(
-    config: &crate::config::GameConfig,
-    fruit_species: &[crate::fruit::FruitSpecies],
-) -> RecipeCatalog {
-    let mut recipes = BTreeMap::new();
-
-    // Convert the bread recipe (formerly hardcoded kitchen logic).
-    let bread_def = build_bread_recipe(config);
-    recipes.insert(bread_def.key.clone(), bread_def);
-
-    // Convert config workshop recipes.
-    for recipe in &config.recipes {
-        let def = convert_config_recipe(recipe);
-        recipes.insert(def.key.clone(), def);
-    }
-
-    // Generate extraction recipes for each fruit species.
-    for species in fruit_species {
-        let def = build_extraction_recipe(config, species);
-        recipes.insert(def.key.clone(), def);
-    }
-
-    // Generate component processing recipes for each fruit species based on
-    // part properties (starchy → flour/bread, fine fiber → thread, etc.).
-    for species in fruit_species {
-        for def in build_component_recipes(config, species) {
-            recipes.insert(def.key.clone(), def);
+            // Press: species with a pigmented part.
+            Recipe::Press => fruit_species
+                .iter()
+                .filter(|s| s.parts.iter().any(|p| p.pigment.is_some()))
+                .map(|s| Material::FruitSpecies(s.id))
+                .collect(),
         }
     }
 
-    // Generate per-wood-type Grow recipes (bows, arrows, armor).
-    for def in build_wood_type_recipes(config) {
-        recipes.insert(def.key.clone(), def);
+    /// Which species can perform this recipe. All current recipes are elf-only.
+    pub fn required_species(&self) -> Option<Species> {
+        Some(Species::Elf)
     }
 
-    RecipeCatalog { recipes }
-}
+    /// Resolve this recipe template with the given parameters into concrete
+    /// inputs and outputs.
+    ///
+    /// Returns `None` if the params are invalid for this recipe (e.g., wrong
+    /// material category, species lacks required property).
+    pub fn resolve(
+        &self,
+        params: &RecipeParams,
+        config: &crate::config::GameConfig,
+        fruit_species: &[crate::fruit::FruitSpecies],
+    ) -> Option<ResolvedRecipe> {
+        let material = params.material?;
 
-/// Build an extraction recipe for a specific fruit species.
-///
-/// Input: 1 fruit of the given species.
-/// Outputs: one item stack per part, using `PartType::extracted_item_kind()`
-/// with quantity from `part.component_units`.
-fn build_extraction_recipe(
-    config: &crate::config::GameConfig,
-    species: &crate::fruit::FruitSpecies,
-) -> RecipeDef {
-    let material = Material::FruitSpecies(species.id);
-    let material_filter = MaterialFilter::Specific(material);
+        match self {
+            Recipe::Extract => {
+                let species_id = match material {
+                    Material::FruitSpecies(id) => id,
+                    _ => return None,
+                };
+                let species = fruit_species.iter().find(|s| s.id == species_id)?;
+                let mat_filter = MaterialFilter::Specific(material);
 
-    let inputs_key = vec![(ItemKind::Fruit, material_filter, 1)];
+                let inputs = vec![RecipeInput {
+                    item_kind: ItemKind::Fruit,
+                    quantity: 1,
+                    material_filter: mat_filter,
+                }];
 
-    let mut outputs_key: Vec<(ItemKind, Option<Material>, u32)> = species
-        .parts
-        .iter()
-        .map(|part| {
-            (
-                part.part_type.extracted_item_kind(),
-                Some(material),
-                part.component_units as u32,
-            )
-        })
-        .collect();
-    outputs_key.sort();
+                let outputs: Vec<RecipeOutput> = species
+                    .parts
+                    .iter()
+                    .map(|part| RecipeOutput {
+                        item_kind: part.part_type.extracted_item_kind(),
+                        quantity: part.component_units as u32,
+                        material: Some(material),
+                        quality: 0,
+                        dye_color: None,
+                    })
+                    .collect();
 
-    let inputs = vec![crate::config::RecipeInput {
-        item_kind: ItemKind::Fruit,
-        quantity: 1,
-        material_filter,
-    }];
+                Some(ResolvedRecipe {
+                    inputs,
+                    outputs,
+                    work_ticks: config.extract_work_ticks,
+                    subcomponent_records: vec![],
+                })
+            }
 
-    let outputs: Vec<crate::config::RecipeOutput> = species
-        .parts
-        .iter()
-        .map(|part| crate::config::RecipeOutput {
-            item_kind: part.part_type.extracted_item_kind(),
-            quantity: part.component_units as u32,
-            material: Some(material),
-            quality: 0,
-            dye_color: None,
-        })
-        .collect();
+            Recipe::Mill => self.resolve_starchy_component(
+                material,
+                fruit_species,
+                |cr, component_item| {
+                    let mat_filter = MaterialFilter::Specific(material);
+                    ResolvedRecipe {
+                        inputs: vec![RecipeInput {
+                            item_kind: component_item,
+                            quantity: cr.mill_input,
+                            material_filter: mat_filter,
+                        }],
+                        outputs: vec![RecipeOutput {
+                            item_kind: ItemKind::Flour,
+                            quantity: cr.mill_output,
+                            material: Some(material),
+                            quality: 0,
+                            dye_color: None,
+                        }],
+                        work_ticks: cr.mill_work_ticks,
+                        subcomponent_records: vec![],
+                    }
+                },
+                config,
+            ),
 
-    let display_name = if species.vaelith_name.is_empty() {
-        format!("Extract Fruit #{}", species.id.0)
-    } else {
-        format!("Extract {}", species.vaelith_name)
-    };
+            Recipe::Bake => self.resolve_starchy_check(material, fruit_species, || {
+                let mat_filter = MaterialFilter::Specific(material);
+                let cr = &config.component_recipes;
+                ResolvedRecipe {
+                    inputs: vec![RecipeInput {
+                        item_kind: ItemKind::Flour,
+                        quantity: cr.bake_input,
+                        material_filter: mat_filter,
+                    }],
+                    outputs: vec![RecipeOutput {
+                        item_kind: ItemKind::Bread,
+                        quantity: cr.bake_output,
+                        material: Some(material),
+                        quality: 0,
+                        dye_color: None,
+                    }],
+                    work_ticks: cr.bake_work_ticks,
+                    subcomponent_records: vec![],
+                }
+            }),
 
-    RecipeDef {
-        key: RecipeKey {
-            verb: RecipeVerb::Extract,
-            inputs: inputs_key,
-            outputs: outputs_key,
-        },
-        display_name,
-        category: vec!["Extraction".to_string()],
-        furnishing_types: vec![FurnishingType::Kitchen],
-        inputs,
-        outputs,
-        work_ticks: config.extract_work_ticks,
-        subcomponent_records: vec![],
-        required_species: Some(Species::Elf),
-        auto_add_on_furnish: false,
-    }
-}
+            Recipe::Spin => self.resolve_fine_fiber_component(
+                material,
+                fruit_species,
+                |cr, component_item| {
+                    let mat_filter = MaterialFilter::Specific(material);
+                    ResolvedRecipe {
+                        inputs: vec![RecipeInput {
+                            item_kind: component_item,
+                            quantity: cr.spin_input,
+                            material_filter: mat_filter,
+                        }],
+                        outputs: vec![RecipeOutput {
+                            item_kind: ItemKind::Thread,
+                            quantity: cr.spin_output,
+                            material: Some(material),
+                            quality: 0,
+                            dye_color: None,
+                        }],
+                        work_ticks: cr.spin_work_ticks,
+                        subcomponent_records: vec![],
+                    }
+                },
+                config,
+            ),
 
-/// Build component processing recipes for a fruit species based on part
-/// properties and pigments. Each recipe-relevant property on a part generates
-/// a chain:
-///
-/// - **Starchy**: component → flour (Mill, Kitchen), flour → bread (Bake, Kitchen)
-/// - **FibrousFine**: component → thread (Spin, Workshop), thread → bowstring (Assemble, Workshop),
-///   thread → cloth (Weave, Workshop), cloth → tunic/leggings/boots/hat (Sew, Workshop)
-/// - **FibrousCoarse**: component → cord (Twist, Workshop), cord → bowstring (Assemble, Workshop)
-/// - **Pigmented**: component → dye (Press, Kitchen) — dye items carry a `dye_color`
-///
-/// The dedup constraint in `generate_parts()` guarantees each recipe-relevant
-/// property appears on at most one part per species, so no ambiguous recipes.
-/// A part can have both a property and a pigment — e.g., a starchy pigmented
-/// flesh generates both Mill and Press recipes.
-fn build_component_recipes(
-    config: &crate::config::GameConfig,
-    species: &crate::fruit::FruitSpecies,
-) -> Vec<RecipeDef> {
-    use crate::fruit::PartProperty;
+            Recipe::Twist => self.resolve_coarse_fiber_component(
+                material,
+                fruit_species,
+                |cr, component_item| {
+                    let mat_filter = MaterialFilter::Specific(material);
+                    ResolvedRecipe {
+                        inputs: vec![RecipeInput {
+                            item_kind: component_item,
+                            quantity: cr.twist_input,
+                            material_filter: mat_filter,
+                        }],
+                        outputs: vec![RecipeOutput {
+                            item_kind: ItemKind::Cord,
+                            quantity: cr.twist_output,
+                            material: Some(material),
+                            quality: 0,
+                            dye_color: None,
+                        }],
+                        work_ticks: cr.twist_work_ticks,
+                        subcomponent_records: vec![],
+                    }
+                },
+                config,
+            ),
 
-    let cr = &config.component_recipes;
-    let material = Material::FruitSpecies(species.id);
-    let material_filter = MaterialFilter::Specific(material);
-    let name = &species.vaelith_name;
+            Recipe::Weave => self.resolve_fine_fiber_check(material, fruit_species, || {
+                let mat_filter = MaterialFilter::Specific(material);
+                let cr = &config.component_recipes;
+                ResolvedRecipe {
+                    inputs: vec![RecipeInput {
+                        item_kind: ItemKind::Thread,
+                        quantity: cr.weave_input,
+                        material_filter: mat_filter,
+                    }],
+                    outputs: vec![RecipeOutput {
+                        item_kind: ItemKind::Cloth,
+                        quantity: cr.weave_output,
+                        material: Some(material),
+                        quality: 0,
+                        dye_color: None,
+                    }],
+                    work_ticks: cr.weave_work_ticks,
+                    subcomponent_records: vec![],
+                }
+            }),
 
-    let mut recipes = Vec::new();
+            Recipe::Press => {
+                let species_id = match material {
+                    Material::FruitSpecies(id) => id,
+                    _ => return None,
+                };
+                let species = fruit_species.iter().find(|s| s.id == species_id)?;
 
-    for part in &species.parts {
-        let component_item = part.part_type.extracted_item_kind();
+                // Find the pigmented part.
+                let pigmented_part = species.parts.iter().find(|p| p.pigment.is_some())?;
+                let dye_color = pigmented_part.pigment?.to_item_color();
+                let component_item = pigmented_part.part_type.extracted_item_kind();
+                let mat_filter = MaterialFilter::Specific(material);
+                let cr = &config.component_recipes;
 
-        if part.properties.contains(&PartProperty::Starchy) {
-            // Mill: starchy component → flour
-            recipes.push(build_simple_recipe(
-                RecipeVerb::Mill,
-                &format!("Mill {name} {}", component_item.display_name()),
-                vec!["Processing".to_string(), "Milling".to_string()],
-                vec![FurnishingType::Kitchen],
-                component_item,
-                material_filter,
-                cr.mill_input,
-                ItemKind::Flour,
-                Some(material),
-                cr.mill_output,
-                cr.mill_work_ticks,
-            ));
+                Some(ResolvedRecipe {
+                    inputs: vec![RecipeInput {
+                        item_kind: component_item,
+                        quantity: cr.press_input,
+                        material_filter: mat_filter,
+                    }],
+                    outputs: vec![RecipeOutput {
+                        item_kind: ItemKind::Dye,
+                        quantity: cr.press_output,
+                        material: Some(material),
+                        quality: 0,
+                        dye_color: Some(dye_color),
+                    }],
+                    work_ticks: cr.press_work_ticks,
+                    subcomponent_records: vec![],
+                })
+            }
 
-            // Bake: flour → bread
-            recipes.push(build_simple_recipe(
-                RecipeVerb::Bake,
-                &format!("Bake {name} Bread"),
-                vec!["Processing".to_string(), "Baking".to_string()],
-                vec![FurnishingType::Kitchen],
-                ItemKind::Flour,
-                material_filter,
-                cr.bake_input,
-                ItemKind::Bread,
-                Some(material),
-                cr.bake_output,
-                cr.bake_work_ticks,
-            ));
+            Recipe::AssembleThreadBowstring => {
+                self.resolve_fine_fiber_check(material, fruit_species, || {
+                    let mat_filter = MaterialFilter::Specific(material);
+                    let cr = &config.component_recipes;
+                    ResolvedRecipe {
+                        inputs: vec![RecipeInput {
+                            item_kind: ItemKind::Thread,
+                            quantity: cr.thread_bowstring_input,
+                            material_filter: mat_filter,
+                        }],
+                        outputs: vec![RecipeOutput {
+                            item_kind: ItemKind::Bowstring,
+                            quantity: cr.thread_bowstring_output,
+                            material: Some(material),
+                            quality: 0,
+                            dye_color: None,
+                        }],
+                        work_ticks: cr.thread_bowstring_work_ticks,
+                        subcomponent_records: vec![],
+                    }
+                })
+            }
+
+            Recipe::AssembleCordBowstring => {
+                self.resolve_coarse_fiber_check(material, fruit_species, || {
+                    let mat_filter = MaterialFilter::Specific(material);
+                    let cr = &config.component_recipes;
+                    ResolvedRecipe {
+                        inputs: vec![RecipeInput {
+                            item_kind: ItemKind::Cord,
+                            quantity: cr.cord_bowstring_input,
+                            material_filter: mat_filter,
+                        }],
+                        outputs: vec![RecipeOutput {
+                            item_kind: ItemKind::Bowstring,
+                            quantity: cr.cord_bowstring_output,
+                            material: Some(material),
+                            quality: 0,
+                            dye_color: None,
+                        }],
+                        work_ticks: cr.cord_bowstring_work_ticks,
+                        subcomponent_records: vec![],
+                    }
+                })
+            }
+
+            Recipe::SewTunic => self.resolve_sew(material, fruit_species, config, ItemKind::Tunic),
+            Recipe::SewLeggings => {
+                self.resolve_sew(material, fruit_species, config, ItemKind::Leggings)
+            }
+            Recipe::SewBoots => self.resolve_sew(material, fruit_species, config, ItemKind::Boots),
+            Recipe::SewHat => self.resolve_sew(material, fruit_species, config, ItemKind::Hat),
+            Recipe::SewGloves => {
+                self.resolve_sew(material, fruit_species, config, ItemKind::Gloves)
+            }
+
+            Recipe::GrowBow => {
+                if !material.is_wood() {
+                    return None;
+                }
+                let gr = &config.grow_recipes;
+                Some(ResolvedRecipe {
+                    inputs: vec![RecipeInput {
+                        item_kind: ItemKind::Bowstring,
+                        quantity: 1,
+                        material_filter: MaterialFilter::Any,
+                    }],
+                    outputs: vec![RecipeOutput {
+                        item_kind: ItemKind::Bow,
+                        quantity: 1,
+                        material: Some(material),
+                        quality: 0,
+                        dye_color: None,
+                    }],
+                    work_ticks: gr.grow_bow_work_ticks,
+                    subcomponent_records: vec![RecipeSubcomponentRecord {
+                        input_kind: ItemKind::Bowstring,
+                        quantity_per_item: 1,
+                    }],
+                })
+            }
+
+            Recipe::GrowArrow => {
+                if !material.is_wood() {
+                    return None;
+                }
+                let gr = &config.grow_recipes;
+                Some(ResolvedRecipe {
+                    inputs: vec![],
+                    outputs: vec![RecipeOutput {
+                        item_kind: ItemKind::Arrow,
+                        quantity: gr.grow_arrow_output,
+                        material: Some(material),
+                        quality: 0,
+                        dye_color: None,
+                    }],
+                    work_ticks: gr.grow_arrow_work_ticks,
+                    subcomponent_records: vec![],
+                })
+            }
+
+            Recipe::GrowHelmet => self.resolve_grow_armor(material, config, ItemKind::Helmet),
+            Recipe::GrowBreastplate => {
+                self.resolve_grow_armor(material, config, ItemKind::Breastplate)
+            }
+            Recipe::GrowGreaves => self.resolve_grow_armor(material, config, ItemKind::Greaves),
+            Recipe::GrowGauntlets => self.resolve_grow_armor(material, config, ItemKind::Gauntlets),
+            Recipe::GrowBoots => self.resolve_grow_armor(material, config, ItemKind::Boots),
         }
+    }
 
-        if part.properties.contains(&PartProperty::FibrousFine) {
-            // Spin: fine fiber component → thread
-            recipes.push(build_simple_recipe(
-                RecipeVerb::Spin,
-                &format!("Spin {name} {}", component_item.display_name()),
-                vec!["Processing".to_string(), "Spinning".to_string()],
-                vec![FurnishingType::Workshop],
-                component_item,
-                material_filter,
-                cr.spin_input,
-                ItemKind::Thread,
-                Some(material),
-                cr.spin_output,
-                cr.spin_work_ticks,
-            ));
+    /// Human-readable name, incorporating material if bound.
+    pub fn display_name(
+        &self,
+        params: &RecipeParams,
+        fruit_species: &[crate::fruit::FruitSpecies],
+    ) -> String {
+        let mat_name = match params.material {
+            Some(Material::FruitSpecies(id)) => fruit_species
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.vaelith_name.as_str())
+                .unwrap_or("Unknown"),
+            Some(m) => m.display_name(),
+            None => "Any",
+        };
 
-            // Thread → bowstring
-            recipes.push(build_simple_recipe(
-                RecipeVerb::Assemble,
-                &format!("{name} Thread Bowstring"),
-                vec!["Processing".to_string(), "Bowstrings".to_string()],
-                vec![FurnishingType::Workshop],
-                ItemKind::Thread,
-                material_filter,
-                cr.thread_bowstring_input,
-                ItemKind::Bowstring,
-                Some(material),
-                cr.thread_bowstring_output,
-                cr.thread_bowstring_work_ticks,
-            ));
+        match self {
+            Recipe::Extract => format!("Extract {mat_name}"),
+            Recipe::Mill => {
+                let component_name = self.starchy_component_name(params, fruit_species);
+                format!("Mill {mat_name} {component_name}")
+            }
+            Recipe::Bake => format!("Bake {mat_name} Bread"),
+            Recipe::Spin => {
+                let component_name = self.fine_fiber_component_name(params, fruit_species);
+                format!("Spin {mat_name} {component_name}")
+            }
+            Recipe::Twist => {
+                let component_name = self.coarse_fiber_component_name(params, fruit_species);
+                format!("Twist {mat_name} {component_name}")
+            }
+            Recipe::Weave => format!("Weave {mat_name} Cloth"),
+            Recipe::Press => {
+                let (component_name, color_name) =
+                    self.pigment_component_info(params, fruit_species);
+                format!("Press {mat_name} {component_name} {color_name} Dye")
+            }
+            Recipe::AssembleThreadBowstring => format!("{mat_name} Thread Bowstring"),
+            Recipe::AssembleCordBowstring => format!("{mat_name} Cord Bowstring"),
+            Recipe::SewTunic => format!("Sew {mat_name} Tunic"),
+            Recipe::SewLeggings => format!("Sew {mat_name} Leggings"),
+            Recipe::SewBoots => format!("Sew {mat_name} Boots"),
+            Recipe::SewHat => format!("Sew {mat_name} Hat"),
+            Recipe::SewGloves => format!("Sew {mat_name} Gloves"),
+            Recipe::GrowBow => format!("Grow {mat_name} Bow"),
+            Recipe::GrowArrow => format!("Grow {mat_name} Arrows"),
+            Recipe::GrowHelmet => format!("Grow {mat_name} Helmet"),
+            Recipe::GrowBreastplate => format!("Grow {mat_name} Breastplate"),
+            Recipe::GrowGreaves => format!("Grow {mat_name} Greaves"),
+            Recipe::GrowGauntlets => format!("Grow {mat_name} Gauntlets"),
+            Recipe::GrowBoots => format!("Grow {mat_name} Boots"),
+        }
+    }
 
-            // Thread → cloth (weave)
-            recipes.push(build_simple_recipe(
-                RecipeVerb::Weave,
-                &format!("Weave {name} Cloth"),
-                vec!["Processing".to_string(), "Weaving".to_string()],
-                vec![FurnishingType::Workshop],
-                ItemKind::Thread,
-                material_filter,
-                cr.weave_input,
-                ItemKind::Cloth,
-                Some(material),
-                cr.weave_output,
-                cr.weave_work_ticks,
-            ));
+    /// Category path for UI hierarchy.
+    pub fn category(&self) -> Vec<&'static str> {
+        match self {
+            Recipe::Extract => vec!["Extraction"],
+            Recipe::Mill => vec!["Processing", "Milling"],
+            Recipe::Bake => vec!["Processing", "Baking"],
+            Recipe::Spin => vec!["Processing", "Spinning"],
+            Recipe::Twist => vec!["Processing", "Twisting"],
+            Recipe::Weave => vec!["Processing", "Weaving"],
+            Recipe::Press => vec!["Processing", "Dye Pressing"],
+            Recipe::AssembleThreadBowstring | Recipe::AssembleCordBowstring => {
+                vec!["Processing", "Bowstrings"]
+            }
+            Recipe::SewTunic
+            | Recipe::SewLeggings
+            | Recipe::SewBoots
+            | Recipe::SewHat
+            | Recipe::SewGloves => vec!["Processing", "Tailoring"],
+            Recipe::GrowBow | Recipe::GrowArrow => vec!["Woodcraft", "Weapons"],
+            Recipe::GrowHelmet
+            | Recipe::GrowBreastplate
+            | Recipe::GrowGreaves
+            | Recipe::GrowGauntlets
+            | Recipe::GrowBoots => vec!["Woodcraft", "Armor"],
+        }
+    }
 
-            // Cloth → clothing (sew)
-            for (item, label, input, output, ticks) in [
-                (
-                    ItemKind::Tunic,
-                    "Tunic",
+    /// Which furnishing types can use this recipe.
+    pub fn furnishing_types(&self) -> Vec<FurnishingType> {
+        match self {
+            Recipe::Extract | Recipe::Mill | Recipe::Bake | Recipe::Press => {
+                vec![FurnishingType::Kitchen]
+            }
+            Recipe::Spin
+            | Recipe::Twist
+            | Recipe::Weave
+            | Recipe::AssembleThreadBowstring
+            | Recipe::AssembleCordBowstring
+            | Recipe::SewTunic
+            | Recipe::SewLeggings
+            | Recipe::SewBoots
+            | Recipe::SewHat
+            | Recipe::SewGloves
+            | Recipe::GrowBow
+            | Recipe::GrowArrow
+            | Recipe::GrowHelmet
+            | Recipe::GrowBreastplate
+            | Recipe::GrowGreaves
+            | Recipe::GrowGauntlets
+            | Recipe::GrowBoots => vec![FurnishingType::Workshop],
+        }
+    }
+
+    /// The crafting verb associated with this recipe (for UI grouping).
+    pub fn verb(&self) -> RecipeVerb {
+        match self {
+            Recipe::Extract => RecipeVerb::Extract,
+            Recipe::Mill => RecipeVerb::Mill,
+            Recipe::Bake => RecipeVerb::Bake,
+            Recipe::Spin => RecipeVerb::Spin,
+            Recipe::Twist => RecipeVerb::Twist,
+            Recipe::Weave => RecipeVerb::Weave,
+            Recipe::Press => RecipeVerb::Press,
+            Recipe::AssembleThreadBowstring | Recipe::AssembleCordBowstring => RecipeVerb::Assemble,
+            Recipe::SewTunic
+            | Recipe::SewLeggings
+            | Recipe::SewBoots
+            | Recipe::SewHat
+            | Recipe::SewGloves => RecipeVerb::Sew,
+            Recipe::GrowBow
+            | Recipe::GrowArrow
+            | Recipe::GrowHelmet
+            | Recipe::GrowBreastplate
+            | Recipe::GrowGreaves
+            | Recipe::GrowGauntlets
+            | Recipe::GrowBoots => RecipeVerb::Grow,
+        }
+    }
+
+    // --- Private resolution helpers ---
+
+    /// Resolve a recipe that needs a Starchy component, passing the component's
+    /// ItemKind (from the part that has Starchy) to the builder function.
+    fn resolve_starchy_component(
+        &self,
+        material: Material,
+        fruit_species: &[crate::fruit::FruitSpecies],
+        builder: impl FnOnce(&crate::config::ComponentRecipeConfig, ItemKind) -> ResolvedRecipe,
+        config: &crate::config::GameConfig,
+    ) -> Option<ResolvedRecipe> {
+        use crate::fruit::PartProperty;
+        let species_id = match material {
+            Material::FruitSpecies(id) => id,
+            _ => return None,
+        };
+        let species = fruit_species.iter().find(|s| s.id == species_id)?;
+        let starchy_part = species
+            .parts
+            .iter()
+            .find(|p| p.properties.contains(&PartProperty::Starchy))?;
+        Some(builder(
+            &config.component_recipes,
+            starchy_part.part_type.extracted_item_kind(),
+        ))
+    }
+
+    /// Check that a species has Starchy property, then call builder.
+    fn resolve_starchy_check(
+        &self,
+        material: Material,
+        fruit_species: &[crate::fruit::FruitSpecies],
+        builder: impl FnOnce() -> ResolvedRecipe,
+    ) -> Option<ResolvedRecipe> {
+        use crate::fruit::PartProperty;
+        let species_id = match material {
+            Material::FruitSpecies(id) => id,
+            _ => return None,
+        };
+        let species = fruit_species.iter().find(|s| s.id == species_id)?;
+        if !species
+            .parts
+            .iter()
+            .any(|p| p.properties.contains(&PartProperty::Starchy))
+        {
+            return None;
+        }
+        Some(builder())
+    }
+
+    /// Resolve a recipe that needs a FibrousFine component.
+    fn resolve_fine_fiber_component(
+        &self,
+        material: Material,
+        fruit_species: &[crate::fruit::FruitSpecies],
+        builder: impl FnOnce(&crate::config::ComponentRecipeConfig, ItemKind) -> ResolvedRecipe,
+        config: &crate::config::GameConfig,
+    ) -> Option<ResolvedRecipe> {
+        use crate::fruit::PartProperty;
+        let species_id = match material {
+            Material::FruitSpecies(id) => id,
+            _ => return None,
+        };
+        let species = fruit_species.iter().find(|s| s.id == species_id)?;
+        let fine_part = species
+            .parts
+            .iter()
+            .find(|p| p.properties.contains(&PartProperty::FibrousFine))?;
+        Some(builder(
+            &config.component_recipes,
+            fine_part.part_type.extracted_item_kind(),
+        ))
+    }
+
+    /// Check that a species has FibrousFine property, then call builder.
+    fn resolve_fine_fiber_check(
+        &self,
+        material: Material,
+        fruit_species: &[crate::fruit::FruitSpecies],
+        builder: impl FnOnce() -> ResolvedRecipe,
+    ) -> Option<ResolvedRecipe> {
+        use crate::fruit::PartProperty;
+        let species_id = match material {
+            Material::FruitSpecies(id) => id,
+            _ => return None,
+        };
+        let species = fruit_species.iter().find(|s| s.id == species_id)?;
+        if !species
+            .parts
+            .iter()
+            .any(|p| p.properties.contains(&PartProperty::FibrousFine))
+        {
+            return None;
+        }
+        Some(builder())
+    }
+
+    /// Resolve a recipe that needs a FibrousCoarse component.
+    fn resolve_coarse_fiber_component(
+        &self,
+        material: Material,
+        fruit_species: &[crate::fruit::FruitSpecies],
+        builder: impl FnOnce(&crate::config::ComponentRecipeConfig, ItemKind) -> ResolvedRecipe,
+        config: &crate::config::GameConfig,
+    ) -> Option<ResolvedRecipe> {
+        use crate::fruit::PartProperty;
+        let species_id = match material {
+            Material::FruitSpecies(id) => id,
+            _ => return None,
+        };
+        let species = fruit_species.iter().find(|s| s.id == species_id)?;
+        let coarse_part = species
+            .parts
+            .iter()
+            .find(|p| p.properties.contains(&PartProperty::FibrousCoarse))?;
+        Some(builder(
+            &config.component_recipes,
+            coarse_part.part_type.extracted_item_kind(),
+        ))
+    }
+
+    /// Check that a species has FibrousCoarse property, then call builder.
+    fn resolve_coarse_fiber_check(
+        &self,
+        material: Material,
+        fruit_species: &[crate::fruit::FruitSpecies],
+        builder: impl FnOnce() -> ResolvedRecipe,
+    ) -> Option<ResolvedRecipe> {
+        use crate::fruit::PartProperty;
+        let species_id = match material {
+            Material::FruitSpecies(id) => id,
+            _ => return None,
+        };
+        let species = fruit_species.iter().find(|s| s.id == species_id)?;
+        if !species
+            .parts
+            .iter()
+            .any(|p| p.properties.contains(&PartProperty::FibrousCoarse))
+        {
+            return None;
+        }
+        Some(builder())
+    }
+
+    /// Resolve a Sew recipe for a specific clothing item.
+    fn resolve_sew(
+        &self,
+        material: Material,
+        fruit_species: &[crate::fruit::FruitSpecies],
+        config: &crate::config::GameConfig,
+        output_kind: ItemKind,
+    ) -> Option<ResolvedRecipe> {
+        self.resolve_fine_fiber_check(material, fruit_species, || {
+            let mat_filter = MaterialFilter::Specific(material);
+            let cr = &config.component_recipes;
+            let (input_qty, output_qty, work_ticks) = match output_kind {
+                ItemKind::Tunic => (
                     cr.sew_tunic_input,
                     cr.sew_tunic_output,
                     cr.sew_tunic_work_ticks,
                 ),
-                (
-                    ItemKind::Leggings,
-                    "Leggings",
+                ItemKind::Leggings => (
                     cr.sew_leggings_input,
                     cr.sew_leggings_output,
                     cr.sew_leggings_work_ticks,
                 ),
-                (
-                    ItemKind::Boots,
-                    "Boots",
+                ItemKind::Boots => (
                     cr.sew_boots_input,
                     cr.sew_boots_output,
                     cr.sew_boots_work_ticks,
                 ),
-                (
-                    ItemKind::Hat,
-                    "Hat",
-                    cr.sew_hat_input,
-                    cr.sew_hat_output,
-                    cr.sew_hat_work_ticks,
-                ),
-                (
-                    ItemKind::Gloves,
-                    "Gloves",
+                ItemKind::Hat => (cr.sew_hat_input, cr.sew_hat_output, cr.sew_hat_work_ticks),
+                ItemKind::Gloves => (
                     cr.sew_gloves_input,
                     cr.sew_gloves_output,
                     cr.sew_gloves_work_ticks,
                 ),
-            ] {
-                recipes.push(build_simple_recipe(
-                    RecipeVerb::Sew,
-                    &format!("Sew {name} {label}"),
-                    vec!["Processing".to_string(), "Tailoring".to_string()],
-                    vec![FurnishingType::Workshop],
-                    ItemKind::Cloth,
-                    material_filter,
-                    input,
-                    item,
-                    Some(material),
-                    output,
-                    ticks,
-                ));
-            }
-        }
-
-        // Press: pigmented component → dye
-        if let Some(pigment) = part.pigment {
-            let dye_color = pigment.to_item_color();
-            let mut inputs_key = vec![(component_item, material_filter, cr.press_input)];
-            inputs_key.sort();
-            let mut outputs_key = vec![(ItemKind::Dye, Some(material), cr.press_output)];
-            outputs_key.sort();
-
-            recipes.push(RecipeDef {
-                key: RecipeKey {
-                    verb: RecipeVerb::Press,
-                    inputs: inputs_key,
-                    outputs: outputs_key,
-                },
-                display_name: format!(
-                    "Press {name} {} {} Dye",
-                    component_item.display_name(),
-                    pigment.display_name(),
-                ),
-                category: vec!["Processing".to_string(), "Dye Pressing".to_string()],
-                furnishing_types: vec![FurnishingType::Kitchen],
+                _ => unreachable!("resolve_sew called with non-clothing ItemKind"),
+            };
+            ResolvedRecipe {
                 inputs: vec![RecipeInput {
-                    item_kind: component_item,
-                    quantity: cr.press_input,
-                    material_filter,
+                    item_kind: ItemKind::Cloth,
+                    quantity: input_qty,
+                    material_filter: mat_filter,
                 }],
                 outputs: vec![RecipeOutput {
-                    item_kind: ItemKind::Dye,
-                    quantity: cr.press_output,
+                    item_kind: output_kind,
+                    quantity: output_qty,
                     material: Some(material),
                     quality: 0,
-                    dye_color: Some(dye_color),
+                    dye_color: None,
                 }],
-                work_ticks: cr.press_work_ticks,
+                work_ticks,
                 subcomponent_records: vec![],
-                required_species: Some(Species::Elf),
-                auto_add_on_furnish: false,
-            });
-        }
-
-        if part.properties.contains(&PartProperty::FibrousCoarse) {
-            // Twist: coarse fiber component → cord
-            recipes.push(build_simple_recipe(
-                RecipeVerb::Twist,
-                &format!("Twist {name} {}", component_item.display_name()),
-                vec!["Processing".to_string(), "Twisting".to_string()],
-                vec![FurnishingType::Workshop],
-                component_item,
-                material_filter,
-                cr.twist_input,
-                ItemKind::Cord,
-                Some(material),
-                cr.twist_output,
-                cr.twist_work_ticks,
-            ));
-
-            // Cord → bowstring
-            recipes.push(build_simple_recipe(
-                RecipeVerb::Assemble,
-                &format!("{name} Cord Bowstring"),
-                vec!["Processing".to_string(), "Bowstrings".to_string()],
-                vec![FurnishingType::Workshop],
-                ItemKind::Cord,
-                material_filter,
-                cr.cord_bowstring_input,
-                ItemKind::Bowstring,
-                Some(material),
-                cr.cord_bowstring_output,
-                cr.cord_bowstring_work_ticks,
-            ));
-        }
+            }
+        })
     }
 
-    recipes
-}
-
-/// Build per-wood-type Grow recipes for bows, arrows, and armor pieces.
-///
-/// For each of the 5 wood materials (Oak, Birch, Willow, Ash, Yew), generates:
-/// - Grow {Wood} Bow (1 Bowstring input → 1 Bow output)
-/// - Grow {Wood} Arrow (zero inputs → N arrows)
-/// - Grow {Wood} Helmet/Breastplate/Greaves/Gauntlets/Boots (zero inputs → 1 armor piece)
-///
-/// All recipes use `RecipeVerb::Grow`, target `FurnishingType::Workshop`,
-/// require `Species::Elf`, and are not auto-added on furnish (player selects
-/// which wood-type recipes to activate based on their home tree).
-fn build_wood_type_recipes(config: &crate::config::GameConfig) -> Vec<RecipeDef> {
-    let gr = &config.grow_recipes;
-    let mut recipes = Vec::new();
-
-    for &wood in &Material::WOOD_TYPES {
-        let name = wood.display_name();
-        let material_filter = MaterialFilter::Specific(wood);
-
-        // Bow: 1 Bowstring → 1 Bow
-        recipes.push(build_simple_recipe(
-            RecipeVerb::Grow,
-            &format!("Grow {name} Bow"),
-            vec!["Woodcraft".to_string(), "Weapons".to_string()],
-            vec![FurnishingType::Workshop],
-            ItemKind::Bowstring,
-            MaterialFilter::Any,
-            1,
-            ItemKind::Bow,
-            Some(wood),
-            1,
-            gr.grow_bow_work_ticks,
-        ));
-
-        // Arrow: zero inputs → N arrows
-        recipes.push(build_no_input_recipe(
-            RecipeVerb::Grow,
-            &format!("Grow {name} Arrows"),
-            vec!["Woodcraft".to_string(), "Weapons".to_string()],
-            vec![FurnishingType::Workshop],
-            ItemKind::Arrow,
-            Some(wood),
-            gr.grow_arrow_output,
-            gr.grow_arrow_work_ticks,
-        ));
-
-        // Armor pieces: zero inputs → 1 piece each
-        for (item, label, ticks) in [
-            (ItemKind::Helmet, "Helmet", gr.grow_helmet_work_ticks),
-            (
-                ItemKind::Breastplate,
-                "Breastplate",
-                gr.grow_breastplate_work_ticks,
-            ),
-            (ItemKind::Greaves, "Greaves", gr.grow_greaves_work_ticks),
-            (
-                ItemKind::Gauntlets,
-                "Gauntlets",
-                gr.grow_gauntlets_work_ticks,
-            ),
-            (ItemKind::Boots, "Boots", gr.grow_boots_work_ticks),
-        ] {
-            recipes.push(build_no_input_recipe(
-                RecipeVerb::Grow,
-                &format!("Grow {name} {label}"),
-                vec!["Woodcraft".to_string(), "Armor".to_string()],
-                vec![FurnishingType::Workshop],
-                item,
-                Some(wood),
-                1,
-                ticks,
-            ));
+    /// Resolve a Grow armor recipe (zero inputs → 1 armor piece).
+    fn resolve_grow_armor(
+        &self,
+        material: Material,
+        config: &crate::config::GameConfig,
+        output_kind: ItemKind,
+    ) -> Option<ResolvedRecipe> {
+        if !material.is_wood() {
+            return None;
         }
-
-        // Suppress unused variable warning — material_filter is available for
-        // future recipes that need wood-specific inputs.
-        let _ = material_filter;
-    }
-
-    recipes
-}
-
-/// Build a zero-input recipe (e.g., arrows grown from the tree, armor pieces).
-#[allow(clippy::too_many_arguments)]
-fn build_no_input_recipe(
-    verb: RecipeVerb,
-    display_name: &str,
-    category: Vec<String>,
-    furnishing_types: Vec<FurnishingType>,
-    output_kind: ItemKind,
-    output_material: Option<Material>,
-    output_qty: u32,
-    work_ticks: u64,
-) -> RecipeDef {
-    let outputs_key = vec![(output_kind, output_material, output_qty)];
-
-    RecipeDef {
-        key: RecipeKey {
-            verb,
+        let gr = &config.grow_recipes;
+        let work_ticks = match output_kind {
+            ItemKind::Helmet => gr.grow_helmet_work_ticks,
+            ItemKind::Breastplate => gr.grow_breastplate_work_ticks,
+            ItemKind::Greaves => gr.grow_greaves_work_ticks,
+            ItemKind::Gauntlets => gr.grow_gauntlets_work_ticks,
+            ItemKind::Boots => gr.grow_boots_work_ticks,
+            _ => unreachable!("resolve_grow_armor called with non-armor ItemKind"),
+        };
+        Some(ResolvedRecipe {
             inputs: vec![],
-            outputs: outputs_key,
-        },
-        display_name: display_name.to_string(),
-        category,
-        furnishing_types,
-        inputs: vec![],
-        outputs: vec![RecipeOutput {
-            item_kind: output_kind,
-            quantity: output_qty,
-            material: output_material,
-            quality: 0,
-            dye_color: None,
-        }],
-        work_ticks,
-        subcomponent_records: vec![],
-        required_species: Some(Species::Elf),
-        auto_add_on_furnish: false,
+            outputs: vec![RecipeOutput {
+                item_kind: output_kind,
+                quantity: 1,
+                material: Some(material),
+                quality: 0,
+                dye_color: None,
+            }],
+            work_ticks,
+            subcomponent_records: vec![],
+        })
+    }
+
+    // --- Display name helpers ---
+
+    /// Get the component name for a starchy recipe's display.
+    fn starchy_component_name(
+        &self,
+        params: &RecipeParams,
+        fruit_species: &[crate::fruit::FruitSpecies],
+    ) -> &'static str {
+        self.find_component_name_by_property(
+            params,
+            fruit_species,
+            crate::fruit::PartProperty::Starchy,
+        )
+    }
+
+    /// Get the component name for a fine-fiber recipe's display.
+    fn fine_fiber_component_name(
+        &self,
+        params: &RecipeParams,
+        fruit_species: &[crate::fruit::FruitSpecies],
+    ) -> &'static str {
+        self.find_component_name_by_property(
+            params,
+            fruit_species,
+            crate::fruit::PartProperty::FibrousFine,
+        )
+    }
+
+    /// Get the component name for a coarse-fiber recipe's display.
+    fn coarse_fiber_component_name(
+        &self,
+        params: &RecipeParams,
+        fruit_species: &[crate::fruit::FruitSpecies],
+    ) -> &'static str {
+        self.find_component_name_by_property(
+            params,
+            fruit_species,
+            crate::fruit::PartProperty::FibrousCoarse,
+        )
+    }
+
+    /// Look up the extracted item kind display name for the first part with
+    /// the given property on the species identified by the material param.
+    fn find_component_name_by_property(
+        &self,
+        params: &RecipeParams,
+        fruit_species: &[crate::fruit::FruitSpecies],
+        property: crate::fruit::PartProperty,
+    ) -> &'static str {
+        if let Some(Material::FruitSpecies(id)) = params.material
+            && let Some(species) = fruit_species.iter().find(|s| s.id == id)
+            && let Some(part) = species
+                .parts
+                .iter()
+                .find(|p| p.properties.contains(&property))
+        {
+            return part.part_type.extracted_item_kind().display_name();
+        }
+        "Component"
+    }
+
+    /// Get the component name and color name for a Press recipe's display.
+    fn pigment_component_info(
+        &self,
+        params: &RecipeParams,
+        fruit_species: &[crate::fruit::FruitSpecies],
+    ) -> (&'static str, &'static str) {
+        if let Some(Material::FruitSpecies(id)) = params.material
+            && let Some(species) = fruit_species.iter().find(|s| s.id == id)
+            && let Some(part) = species.parts.iter().find(|p| p.pigment.is_some())
+        {
+            let component = part.part_type.extracted_item_kind().display_name();
+            let color = part.pigment.map_or("Unknown", |p| p.display_name());
+            return (component, color);
+        }
+        ("Component", "Unknown")
     }
 }
 
-/// Helper to build a simple 1-input → 1-output recipe. Used by the component
-/// recipe generator to avoid repetitive struct construction.
-#[allow(clippy::too_many_arguments)]
-fn build_simple_recipe(
-    verb: RecipeVerb,
-    display_name: &str,
-    category: Vec<String>,
-    furnishing_types: Vec<FurnishingType>,
-    input_kind: ItemKind,
-    input_material: MaterialFilter,
-    input_qty: u32,
-    output_kind: ItemKind,
-    output_material: Option<Material>,
-    output_qty: u32,
-    work_ticks: u64,
-) -> RecipeDef {
-    let mut inputs_key = vec![(input_kind, input_material, input_qty)];
-    inputs_key.sort();
-
-    let mut outputs_key = vec![(output_kind, output_material, output_qty)];
-    outputs_key.sort();
-
-    RecipeDef {
-        key: RecipeKey {
-            verb,
-            inputs: inputs_key,
-            outputs: outputs_key,
-        },
-        display_name: display_name.to_string(),
-        category,
-        furnishing_types,
-        inputs: vec![RecipeInput {
-            item_kind: input_kind,
-            quantity: input_qty,
-            material_filter: input_material,
-        }],
-        outputs: vec![RecipeOutput {
-            item_kind: output_kind,
-            quantity: output_qty,
-            material: output_material,
-            quality: 0,
-            dye_color: None,
-        }],
-        work_ticks,
-        subcomponent_records: vec![],
-        required_species: Some(Species::Elf),
-        auto_add_on_furnish: false,
-    }
-}
-
-/// Build the bread recipe from kitchen config parameters.
-fn build_bread_recipe(config: &crate::config::GameConfig) -> RecipeDef {
-    let mut inputs_key: Vec<(ItemKind, MaterialFilter, u32)> = vec![(
-        ItemKind::Fruit,
-        MaterialFilter::Any,
-        config.cook_fruit_input,
-    )];
-    inputs_key.sort();
-
-    let mut outputs_key: Vec<(ItemKind, Option<Material>, u32)> =
-        vec![(ItemKind::Bread, None, config.cook_bread_output)];
-    outputs_key.sort();
-
-    RecipeDef {
-        key: RecipeKey {
-            verb: RecipeVerb::Cook,
-            inputs: inputs_key,
-            outputs: outputs_key,
-        },
-        display_name: "Bread".to_string(),
-        category: vec![],
-        furnishing_types: vec![FurnishingType::Kitchen],
-        inputs: vec![RecipeInput {
-            item_kind: ItemKind::Fruit,
-            quantity: config.cook_fruit_input,
-            material_filter: MaterialFilter::Any,
-        }],
-        outputs: vec![RecipeOutput {
-            item_kind: ItemKind::Bread,
-            quantity: config.cook_bread_output,
-            material: None,
-            quality: 0,
-            dye_color: None,
-        }],
-        work_ticks: config.cook_bread_work_ticks,
-        subcomponent_records: vec![],
-        required_species: Some(Species::Elf),
-        auto_add_on_furnish: true,
-    }
-}
-
-/// Extract a `RecipeKey` from an old-style `Recipe` config entry.
-/// Used for backward-compatible mapping between the unified system and
-/// legacy `TaskKind::Craft { recipe_id }`.
-pub fn convert_config_recipe_key(recipe: &crate::config::Recipe) -> RecipeKey {
-    let verb = match recipe.id.as_str() {
-        "bowstring" => RecipeVerb::Assemble,
-        _ => RecipeVerb::Assemble,
-    };
-    let mut inputs_key: Vec<(ItemKind, MaterialFilter, u32)> = recipe
-        .inputs
-        .iter()
-        .map(|i| (i.item_kind, i.material_filter, i.quantity))
-        .collect();
-    inputs_key.sort();
-    let mut outputs_key: Vec<(ItemKind, Option<Material>, u32)> = recipe
-        .outputs
-        .iter()
-        .map(|o| (o.item_kind, o.material, o.quantity))
-        .collect();
-    outputs_key.sort();
-    RecipeKey {
-        verb,
-        inputs: inputs_key,
-        outputs: outputs_key,
-    }
-}
-
-/// Convert an old-style `Recipe` to a `RecipeDef`.
-fn convert_config_recipe(recipe: &crate::config::Recipe) -> RecipeDef {
-    // Determine verb from the recipe ID. Remaining config recipe is bowstring
-    // (assembly); bow and arrow moved to per-wood-type Grow generation.
-    let verb = match recipe.id.as_str() {
-        "bowstring" => RecipeVerb::Assemble,
-        _ => RecipeVerb::Assemble,
-    };
-
-    let mut inputs_key: Vec<(ItemKind, MaterialFilter, u32)> = recipe
-        .inputs
-        .iter()
-        .map(|i| (i.item_kind, i.material_filter, i.quantity))
-        .collect();
-    inputs_key.sort();
-
-    let mut outputs_key: Vec<(ItemKind, Option<Material>, u32)> = recipe
-        .outputs
-        .iter()
-        .map(|o| (o.item_kind, o.material, o.quantity))
-        .collect();
-    outputs_key.sort();
-
-    RecipeDef {
-        key: RecipeKey {
-            verb,
-            inputs: inputs_key,
-            outputs: outputs_key,
-        },
-        display_name: recipe.display_name.clone(),
-        category: vec![],
-        furnishing_types: vec![FurnishingType::Workshop],
-        inputs: recipe.inputs.clone(),
-        outputs: recipe.outputs.clone(),
-        work_ticks: recipe.work_ticks,
-        subcomponent_records: recipe.subcomponent_records.clone(),
-        required_species: Some(Species::Elf),
-        auto_add_on_furnish: true,
-    }
-}
+// ---------------------------------------------------------------------------
+// Recipe enum tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+mod recipe_enum_tests {
     use super::*;
     use crate::config::GameConfig;
-
-    #[test]
-    fn recipe_key_json_roundtrip() {
-        let key = RecipeKey {
-            verb: RecipeVerb::Cook,
-            inputs: vec![(ItemKind::Fruit, MaterialFilter::Any, 1)],
-            outputs: vec![(ItemKind::Bread, None, 10)],
-        };
-        let json = key.to_json();
-        let restored = RecipeKey::from_json(&json).expect("should deserialize");
-        assert_eq!(key, restored);
-    }
-
-    #[test]
-    fn recipe_key_canonical_sort() {
-        // Keys with sorted inputs/outputs should be deterministic.
-        let key1 = RecipeKey {
-            verb: RecipeVerb::Assemble,
-            inputs: vec![
-                (ItemKind::Bowstring, MaterialFilter::Any, 1),
-                (ItemKind::Fruit, MaterialFilter::Any, 2),
-            ],
-            outputs: vec![(ItemKind::Bow, None, 1)],
-        };
-        let key2 = RecipeKey {
-            verb: RecipeVerb::Assemble,
-            inputs: vec![
-                (ItemKind::Bowstring, MaterialFilter::Any, 1),
-                (ItemKind::Fruit, MaterialFilter::Any, 2),
-            ],
-            outputs: vec![(ItemKind::Bow, None, 1)],
-        };
-        assert_eq!(key1, key2);
-        assert_eq!(key1.to_json(), key2.to_json());
-    }
-
-    #[test]
-    fn build_catalog_contains_expected_recipes() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-
-        // bread (1) + bowstring config (1) + wood-type grow recipes
-        // (5 woods × 7 items = 35) = 37 total.
-        assert_eq!(catalog.len(), 37);
-
-        // Kitchen should have exactly 1 recipe (bread).
-        let kitchen_recipes = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
-        assert_eq!(kitchen_recipes.len(), 1);
-        assert_eq!(kitchen_recipes[0].display_name, "Bread");
-
-        // Workshop should have bowstring (1) + wood-type grow recipes (35) = 36.
-        let workshop_recipes = catalog.recipes_for_furnishing(FurnishingType::Workshop);
-        assert_eq!(workshop_recipes.len(), 36);
-    }
-
-    #[test]
-    fn catalog_outputs_have_nonzero_quantity() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-        for (_key, def) in catalog.iter() {
-            for output in &def.outputs {
-                assert!(
-                    output.quantity >= 1,
-                    "Recipe '{}' has zero-quantity output {:?}",
-                    def.display_name,
-                    output.item_kind,
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn recipe_key_inputs_outputs_are_sorted() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-        for (key, _def) in catalog.iter() {
-            let mut sorted_inputs = key.inputs.clone();
-            sorted_inputs.sort();
-            assert_eq!(
-                key.inputs, sorted_inputs,
-                "RecipeKey inputs not sorted for {:?}",
-                key.verb,
-            );
-            let mut sorted_outputs = key.outputs.clone();
-            sorted_outputs.sort();
-            assert_eq!(
-                key.outputs, sorted_outputs,
-                "RecipeKey outputs not sorted for {:?}",
-                key.verb,
-            );
-        }
-    }
-
-    #[test]
-    fn extraction_recipes_generated_from_fruit_species() {
-        use crate::fruit::{
-            FruitAppearance, FruitColor, FruitPart, FruitShape, FruitSpecies, GrowthHabitat,
-            PartType, Rarity,
-        };
-        use std::collections::BTreeSet;
-
-        let config = GameConfig::default();
-        let species = vec![FruitSpecies {
-            id: crate::types::FruitSpeciesId(0),
-            vaelith_name: "Testaleth".to_string(),
-            english_gloss: "test-berry".to_string(),
-            parts: vec![
-                FruitPart {
-                    part_type: PartType::Flesh,
-                    properties: BTreeSet::new(),
-                    pigment: None,
-                    component_units: 40,
-                },
-                FruitPart {
-                    part_type: PartType::Seed,
-                    properties: BTreeSet::new(),
-                    pigment: None,
-                    component_units: 10,
-                },
-            ],
-            habitat: GrowthHabitat::Branch,
-            rarity: Rarity::Common,
-            greenhouse_cultivable: false,
-            appearance: FruitAppearance {
-                exterior_color: FruitColor {
-                    r: 200,
-                    g: 100,
-                    b: 50,
-                },
-                shape: FruitShape::Round,
-                size_percent: 100,
-                glows: false,
-            },
-        }];
-
-        let catalog = build_catalog(&config, &species);
-
-        // bread (1) + bowstring (1) + wood-type (35) + extraction (1) = 38.
-        assert_eq!(catalog.len(), 38);
-
-        // Kitchen should have bread + extraction = 2.
-        let kitchen_recipes = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
-        assert_eq!(kitchen_recipes.len(), 2);
-
-        let extract_def = kitchen_recipes
-            .iter()
-            .find(|r| r.display_name == "Extract Testaleth")
-            .expect("extraction recipe should exist");
-
-        assert_eq!(extract_def.key.verb, RecipeVerb::Extract);
-        assert_eq!(extract_def.outputs.len(), 2);
-        assert!(!extract_def.auto_add_on_furnish);
-        assert_eq!(extract_def.category, vec!["Extraction".to_string()]);
-        assert_eq!(extract_def.work_ticks, config.extract_work_ticks);
-
-        // Keys should be sorted.
-        let mut sorted_outputs = extract_def.key.outputs.clone();
-        sorted_outputs.sort();
-        assert_eq!(extract_def.key.outputs, sorted_outputs);
-
-        // Default recipes should NOT include extraction.
-        let defaults = catalog.default_recipes_for_furnishing(FurnishingType::Kitchen);
-        assert_eq!(defaults.len(), 1);
-        assert_eq!(defaults[0].display_name, "Bread");
-    }
-
-    // --- Test helpers for component recipe tests ---
-
     use crate::fruit::{
-        FruitAppearance, FruitColor, FruitPart, FruitShape, FruitSpecies, GrowthHabitat,
+        DyeColor, FruitAppearance, FruitColor, FruitPart, FruitShape, FruitSpecies, GrowthHabitat,
         PartProperty, PartType, Rarity,
     };
     use crate::types::FruitSpeciesId;
+    use std::collections::BTreeSet;
+
     fn test_species(id: u16, name: &str, parts: Vec<FruitPart>) -> FruitSpecies {
         FruitSpecies {
             id: FruitSpeciesId(id),
@@ -1030,1092 +1049,723 @@ mod tests {
         }
     }
 
-    // --- Component recipe generation tests ---
-
-    #[test]
-    fn starchy_fruit_generates_mill_and_bake_recipes() {
-        let config = GameConfig::default();
-        let species = vec![test_species(
-            0,
-            "Starchi",
-            vec![part(PartType::Flesh, &[PartProperty::Starchy], 40)],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-
-        // Should find mill and bake recipes for kitchen.
-        let kitchen = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
-        let mill = kitchen
-            .iter()
-            .find(|r| r.display_name == "Mill Starchi Pulp")
-            .expect("mill recipe should exist");
-        assert_eq!(mill.key.verb, RecipeVerb::Mill);
-        assert_eq!(mill.inputs[0].item_kind, ItemKind::Pulp);
-        assert_eq!(mill.inputs[0].quantity, config.component_recipes.mill_input);
-        assert_eq!(mill.outputs[0].item_kind, ItemKind::Flour);
-        assert_eq!(
-            mill.outputs[0].quantity,
-            config.component_recipes.mill_output
-        );
-        assert!(!mill.auto_add_on_furnish);
-
-        let bake = kitchen
-            .iter()
-            .find(|r| r.display_name == "Bake Starchi Bread")
-            .expect("bake recipe should exist");
-        assert_eq!(bake.key.verb, RecipeVerb::Bake);
-        assert_eq!(bake.inputs[0].item_kind, ItemKind::Flour);
-        assert_eq!(bake.outputs[0].item_kind, ItemKind::Bread);
-        assert_eq!(
-            bake.outputs[0].quantity,
-            config.component_recipes.bake_output
-        );
+    fn pigmented_part(
+        pt: PartType,
+        props: &[PartProperty],
+        pigment: DyeColor,
+        units: u16,
+    ) -> FruitPart {
+        FruitPart {
+            part_type: pt,
+            properties: props.iter().copied().collect(),
+            pigment: Some(pigment),
+            component_units: units,
+        }
     }
 
-    #[test]
-    fn fibrous_fine_generates_spin_and_bowstring_recipes() {
-        let config = GameConfig::default();
-        let species = vec![test_species(
-            0,
-            "Silkweed",
-            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-
-        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
-        let spin = workshop
-            .iter()
-            .find(|r| r.display_name == "Spin Silkweed Fiber")
-            .expect("spin recipe should exist");
-        assert_eq!(spin.key.verb, RecipeVerb::Spin);
-        assert_eq!(spin.inputs[0].item_kind, ItemKind::FruitFiber);
-        assert_eq!(spin.outputs[0].item_kind, ItemKind::Thread);
-
-        let bowstring = workshop
-            .iter()
-            .find(|r| r.display_name == "Silkweed Thread Bowstring")
-            .expect("thread bowstring recipe should exist");
-        assert_eq!(bowstring.key.verb, RecipeVerb::Assemble);
-        assert_eq!(bowstring.inputs[0].item_kind, ItemKind::Thread);
-        assert_eq!(bowstring.outputs[0].item_kind, ItemKind::Bowstring);
+    fn make_params(material: Material) -> RecipeParams {
+        RecipeParams {
+            material: Some(material),
+        }
     }
 
-    #[test]
-    fn fibrous_coarse_generates_twist_and_bowstring_recipes() {
-        let config = GameConfig::default();
-        let species = vec![test_species(
-            0,
-            "Ropevine",
-            vec![part(PartType::Fiber, &[PartProperty::FibrousCoarse], 50)],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-
-        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
-        let twist = workshop
-            .iter()
-            .find(|r| r.display_name == "Twist Ropevine Fiber")
-            .expect("twist recipe should exist");
-        assert_eq!(twist.key.verb, RecipeVerb::Twist);
-        assert_eq!(twist.inputs[0].item_kind, ItemKind::FruitFiber);
-        assert_eq!(twist.outputs[0].item_kind, ItemKind::Cord);
-
-        let bowstring = workshop
-            .iter()
-            .find(|r| r.display_name == "Ropevine Cord Bowstring")
-            .expect("cord bowstring recipe should exist");
-        assert_eq!(bowstring.key.verb, RecipeVerb::Assemble);
-        assert_eq!(bowstring.inputs[0].item_kind, ItemKind::Cord);
-        assert_eq!(bowstring.outputs[0].item_kind, ItemKind::Bowstring);
-    }
+    // --- Serde roundtrip ---
 
     #[test]
-    fn no_component_recipes_for_non_recipe_properties() {
-        let config = GameConfig::default();
-        // Fruit with only Aromatic and Sweet — no recipe-relevant properties.
-        let species = vec![test_species(
-            0,
-            "Sweetbloom",
-            vec![
-                part(PartType::Flesh, &[PartProperty::Sweet], 40),
-                part(PartType::Rind, &[PartProperty::Aromatic], 20),
-            ],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-
-        // Base (37) + 1 extraction = 38. No component recipes.
-        assert_eq!(catalog.len(), 38);
-    }
-
-    #[test]
-    fn multi_property_fruit_generates_all_chains() {
-        let config = GameConfig::default();
-        // Fruit with starchy flesh AND fine fiber — both chains should generate.
-        let species = vec![test_species(
-            0,
-            "Allberry",
-            vec![
-                part(PartType::Flesh, &[PartProperty::Starchy], 40),
-                part(PartType::Fiber, &[PartProperty::FibrousFine], 30),
-            ],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-
-        // Base (37) + extraction (1) + mill + bake + spin + thread bowstring
-        // + weave + sew tunic + sew leggings + sew boots + sew hat
-        // + sew gloves = 48.
-        assert_eq!(catalog.len(), 48);
-
-        // Starchy chain in kitchen.
-        let kitchen = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
-        assert!(
-            kitchen
-                .iter()
-                .any(|r| r.display_name == "Mill Allberry Pulp")
-        );
-        assert!(
-            kitchen
-                .iter()
-                .any(|r| r.display_name == "Bake Allberry Bread")
-        );
-
-        // Fiber chain in workshop.
-        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
-        assert!(
-            workshop
-                .iter()
-                .any(|r| r.display_name == "Spin Allberry Fiber")
-        );
-        assert!(
-            workshop
-                .iter()
-                .any(|r| r.display_name == "Allberry Thread Bowstring")
-        );
-    }
-
-    #[test]
-    fn component_recipes_carry_species_material() {
-        let config = GameConfig::default();
-        let species = vec![test_species(
-            7,
-            "Testfruit",
-            vec![part(PartType::Flesh, &[PartProperty::Starchy], 40)],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-
-        let kitchen = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
-        let mill = kitchen
-            .iter()
-            .find(|r| r.key.verb == RecipeVerb::Mill)
-            .expect("mill recipe");
-
-        // Input requires specific species material.
-        assert_eq!(
-            mill.inputs[0].material_filter,
-            MaterialFilter::Specific(Material::FruitSpecies(FruitSpeciesId(7)))
-        );
-        // Output carries species material.
-        assert_eq!(
-            mill.outputs[0].material,
-            Some(Material::FruitSpecies(FruitSpeciesId(7)))
-        );
-
-        let bake = kitchen
-            .iter()
-            .find(|r| r.key.verb == RecipeVerb::Bake)
-            .expect("bake recipe");
-        // Bake input is flour with species material.
-        assert_eq!(bake.inputs[0].item_kind, ItemKind::Flour);
-        assert_eq!(
-            bake.inputs[0].material_filter,
-            MaterialFilter::Specific(Material::FruitSpecies(FruitSpeciesId(7)))
-        );
-        // Bake output is bread with species material.
-        assert_eq!(
-            bake.outputs[0].material,
-            Some(Material::FruitSpecies(FruitSpeciesId(7)))
-        );
-    }
-
-    #[test]
-    fn component_recipes_not_auto_added_on_furnish() {
-        let config = GameConfig::default();
-        let species = vec![test_species(
-            0,
-            "Starchi",
-            vec![
-                part(PartType::Flesh, &[PartProperty::Starchy], 40),
-                part(PartType::Fiber, &[PartProperty::FibrousFine], 30),
-            ],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-
-        // Default kitchen recipes should only include generic bread.
-        let defaults = catalog.default_recipes_for_furnishing(FurnishingType::Kitchen);
-        assert_eq!(defaults.len(), 1);
-        assert_eq!(defaults[0].display_name, "Bread");
-
-        // Default workshop recipes should only include the bowstring config recipe.
-        let defaults = catalog.default_recipes_for_furnishing(FurnishingType::Workshop);
-        assert_eq!(defaults.len(), 1);
-    }
-
-    #[test]
-    fn component_recipe_keys_sorted_and_roundtrip() {
-        let config = GameConfig::default();
-        let species = vec![test_species(
-            0,
-            "Testfruit",
-            vec![
-                part(PartType::Flesh, &[PartProperty::Starchy], 40),
-                part(PartType::Fiber, &[PartProperty::FibrousFine], 30),
-                part(PartType::Fiber, &[PartProperty::FibrousCoarse], 20),
-            ],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-        for (key, _def) in catalog.iter() {
-            // Keys should be sorted.
-            let mut sorted_inputs = key.inputs.clone();
-            sorted_inputs.sort();
-            assert_eq!(key.inputs, sorted_inputs);
-            let mut sorted_outputs = key.outputs.clone();
-            sorted_outputs.sort();
-            assert_eq!(key.outputs, sorted_outputs);
-
-            // JSON roundtrip.
-            let json = key.to_json();
-            let restored = RecipeKey::from_json(&json).expect("should deserialize");
-            assert_eq!(*key, restored);
+    fn recipe_serde_roundtrip_all_variants() {
+        for recipe in &ALL_RECIPES {
+            let json = serde_json::to_string(recipe).unwrap();
+            let parsed: Recipe = serde_json::from_str(&json).unwrap();
+            assert_eq!(*recipe, parsed, "roundtrip failed for {json}");
         }
     }
 
     #[test]
-    fn starchy_seed_uses_seed_item_kind() {
-        // If seed has starchy, mill input should be Seed, not Pulp.
+    fn recipe_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Recipe::Extract).unwrap();
+        assert_eq!(json, "\"Extract\"");
+        let json = serde_json::to_string(&Recipe::SewTunic).unwrap();
+        assert_eq!(json, "\"SewTunic\"");
+        let json = serde_json::to_string(&Recipe::GrowBow).unwrap();
+        assert_eq!(json, "\"GrowBow\"");
+    }
+
+    // --- resolve() tests ---
+
+    #[test]
+    fn resolve_extract() {
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Starchi",
+            vec![
+                part(PartType::Flesh, &[PartProperty::Starchy], 40),
+                part(PartType::Seed, &[], 10),
+            ],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+
+        let resolved = Recipe::Extract
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
+
+        assert_eq!(resolved.inputs.len(), 1);
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::Fruit);
+        assert_eq!(resolved.inputs[0].quantity, 1);
+        assert_eq!(resolved.outputs.len(), 2);
+        assert_eq!(resolved.work_ticks, config.extract_work_ticks);
+    }
+
+    #[test]
+    fn resolve_extract_wrong_material_returns_none() {
+        let config = GameConfig::default();
+        let params = make_params(Material::Oak);
+        assert!(Recipe::Extract.resolve(&params, &config, &[]).is_none());
+    }
+
+    #[test]
+    fn resolve_extract_unknown_species_returns_none() {
+        let config = GameConfig::default();
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(99)));
+        assert!(Recipe::Extract.resolve(&params, &config, &[]).is_none());
+    }
+
+    #[test]
+    fn resolve_mill() {
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Starchi",
+            vec![part(PartType::Flesh, &[PartProperty::Starchy], 40)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+
+        let resolved = Recipe::Mill
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
+
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::Pulp);
+        assert_eq!(
+            resolved.inputs[0].quantity,
+            config.component_recipes.mill_input
+        );
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Flour);
+        assert_eq!(
+            resolved.outputs[0].quantity,
+            config.component_recipes.mill_output
+        );
+        assert_eq!(
+            resolved.work_ticks,
+            config.component_recipes.mill_work_ticks
+        );
+    }
+
+    #[test]
+    fn resolve_mill_seed_uses_seed_item_kind() {
         let config = GameConfig::default();
         let species = vec![test_species(
             0,
             "Nutfruit",
             vec![part(PartType::Seed, &[PartProperty::Starchy], 25)],
         )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
 
-        let catalog = build_catalog(&config, &species);
-        let kitchen = catalog.recipes_for_furnishing(FurnishingType::Kitchen);
-        let mill = kitchen
-            .iter()
-            .find(|r| r.key.verb == RecipeVerb::Mill)
-            .expect("mill recipe");
-        assert_eq!(mill.inputs[0].item_kind, ItemKind::Seed);
-        assert_eq!(mill.display_name, "Mill Nutfruit Seed");
+        let resolved = Recipe::Mill
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
+
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::Seed);
     }
 
     #[test]
-    fn component_recipes_with_generated_fruits() {
-        // Test with actual procedurally generated fruits across multiple seeds.
-        use crate::fruit::generate_fruit_species;
-        use elven_canopy_prng::GameRng;
-
+    fn resolve_mill_non_starchy_returns_none() {
         let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Sweetberry",
+            vec![part(PartType::Flesh, &[PartProperty::Sweet], 40)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
 
-        for seed in 0..10 {
-            let mut rng = GameRng::new(seed);
-            let fruit_config = crate::config::FruitConfig::default();
-            let fruits = generate_fruit_species(&mut rng, &fruit_config);
-            let catalog = build_catalog(&config, &fruits);
-
-            // Every recipe should have valid keys and nonzero outputs.
-            for (_key, def) in catalog.iter() {
-                for output in &def.outputs {
-                    assert!(
-                        output.quantity >= 1,
-                        "Seed {}: recipe '{}' has zero-quantity output",
-                        seed,
-                        def.display_name,
-                    );
-                }
-            }
-
-            // Count component recipes: should match properties in fruits.
-            let mut expected_starchy = 0;
-            let mut expected_fine = 0;
-            let mut expected_coarse = 0;
-            for fruit in &fruits {
-                for p in &fruit.parts {
-                    if p.properties.contains(&PartProperty::Starchy) {
-                        expected_starchy += 1;
-                    }
-                    if p.properties.contains(&PartProperty::FibrousFine) {
-                        expected_fine += 1;
-                    }
-                    if p.properties.contains(&PartProperty::FibrousCoarse) {
-                        expected_coarse += 1;
-                    }
-                }
-            }
-
-            let mill_count = catalog
-                .iter()
-                .filter(|(_, d)| d.key.verb == RecipeVerb::Mill)
-                .count();
-            let bake_count = catalog
-                .iter()
-                .filter(|(_, d)| d.key.verb == RecipeVerb::Bake)
-                .count();
-            let spin_count = catalog
-                .iter()
-                .filter(|(_, d)| d.key.verb == RecipeVerb::Spin)
-                .count();
-            let twist_count = catalog
-                .iter()
-                .filter(|(_, d)| d.key.verb == RecipeVerb::Twist)
-                .count();
-
-            assert_eq!(
-                mill_count, expected_starchy,
-                "Seed {}: mill recipe count mismatch",
-                seed
-            );
-            assert_eq!(
-                bake_count, expected_starchy,
-                "Seed {}: bake recipe count mismatch",
-                seed
-            );
-            assert_eq!(
-                spin_count, expected_fine,
-                "Seed {}: spin recipe count mismatch",
-                seed
-            );
-            assert_eq!(
-                twist_count, expected_coarse,
-                "Seed {}: twist recipe count mismatch",
-                seed
-            );
-        }
+        assert!(Recipe::Mill.resolve(&params, &config, &species).is_none());
     }
 
-    // --- Textile and clothing recipe tests ---
+    #[test]
+    fn resolve_bake() {
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Starchi",
+            vec![part(PartType::Flesh, &[PartProperty::Starchy], 40)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+
+        let resolved = Recipe::Bake
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
+
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::Flour);
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Bread);
+        assert_eq!(
+            resolved.work_ticks,
+            config.component_recipes.bake_work_ticks
+        );
+    }
 
     #[test]
-    fn fibrous_fine_generates_weave_and_clothing_recipes() {
+    fn resolve_spin() {
         let config = GameConfig::default();
         let species = vec![test_species(
             0,
             "Silkweed",
             vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
         )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
 
-        let catalog = build_catalog(&config, &species);
+        let resolved = Recipe::Spin
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
 
-        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
-
-        // Weave: thread → cloth
-        let weave = workshop
-            .iter()
-            .find(|r| r.key.verb == RecipeVerb::Weave)
-            .expect("weave recipe should exist");
-        assert_eq!(weave.inputs[0].item_kind, ItemKind::Thread);
-        assert_eq!(weave.outputs[0].item_kind, ItemKind::Cloth);
-        assert_eq!(
-            weave.inputs[0].quantity,
-            config.component_recipes.weave_input
-        );
-        assert_eq!(
-            weave.outputs[0].quantity,
-            config.component_recipes.weave_output
-        );
-        assert_eq!(weave.display_name, "Weave Silkweed Cloth");
-        assert!(!weave.auto_add_on_furnish);
-
-        // Sew: cloth → tunic
-        let tunic = workshop
-            .iter()
-            .find(|r| r.display_name == "Sew Silkweed Tunic")
-            .expect("tunic recipe should exist");
-        assert_eq!(tunic.key.verb, RecipeVerb::Sew);
-        assert_eq!(tunic.inputs[0].item_kind, ItemKind::Cloth);
-        assert_eq!(tunic.outputs[0].item_kind, ItemKind::Tunic);
-        assert_eq!(
-            tunic.inputs[0].quantity,
-            config.component_recipes.sew_tunic_input
-        );
-
-        // Sew: cloth → leggings
-        let leggings = workshop
-            .iter()
-            .find(|r| r.display_name == "Sew Silkweed Leggings")
-            .expect("leggings recipe should exist");
-        assert_eq!(leggings.key.verb, RecipeVerb::Sew);
-        assert_eq!(leggings.inputs[0].item_kind, ItemKind::Cloth);
-        assert_eq!(leggings.outputs[0].item_kind, ItemKind::Leggings);
-        assert_eq!(
-            leggings.inputs[0].quantity,
-            config.component_recipes.sew_leggings_input
-        );
-
-        // Sew: cloth → boots
-        let boots = workshop
-            .iter()
-            .find(|r| r.display_name == "Sew Silkweed Boots")
-            .expect("boots recipe should exist");
-        assert_eq!(boots.key.verb, RecipeVerb::Sew);
-        assert_eq!(boots.inputs[0].item_kind, ItemKind::Cloth);
-        assert_eq!(boots.outputs[0].item_kind, ItemKind::Boots);
-        assert_eq!(
-            boots.inputs[0].quantity,
-            config.component_recipes.sew_boots_input
-        );
-
-        // Sew: cloth → hat
-        let hat = workshop
-            .iter()
-            .find(|r| r.display_name == "Sew Silkweed Hat")
-            .expect("hat recipe should exist");
-        assert_eq!(hat.key.verb, RecipeVerb::Sew);
-        assert_eq!(hat.inputs[0].item_kind, ItemKind::Cloth);
-        assert_eq!(hat.outputs[0].item_kind, ItemKind::Hat);
-        assert_eq!(
-            hat.inputs[0].quantity,
-            config.component_recipes.sew_hat_input
-        );
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::FruitFiber);
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Thread);
     }
 
     #[test]
-    fn textile_recipes_carry_species_material() {
-        let config = GameConfig::default();
-        let species = vec![test_species(
-            5,
-            "Lintberry",
-            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-        let mat = Material::FruitSpecies(FruitSpeciesId(5));
-        let mat_filter = MaterialFilter::Specific(mat);
-
-        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
-
-        // Weave input/output carry material.
-        let weave = workshop
-            .iter()
-            .find(|r| r.key.verb == RecipeVerb::Weave)
-            .expect("weave recipe");
-        assert_eq!(weave.inputs[0].material_filter, mat_filter);
-        assert_eq!(weave.outputs[0].material, Some(mat));
-
-        // Sew tunic input/output carry material.
-        let tunic = workshop
-            .iter()
-            .find(|r| r.outputs[0].item_kind == ItemKind::Tunic)
-            .expect("tunic recipe");
-        assert_eq!(tunic.inputs[0].material_filter, mat_filter);
-        assert_eq!(tunic.outputs[0].material, Some(mat));
-    }
-
-    #[test]
-    fn textile_recipe_categories() {
-        let config = GameConfig::default();
-        let species = vec![test_species(
-            0,
-            "Silkweed",
-            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
-
-        let weave = workshop
-            .iter()
-            .find(|r| r.key.verb == RecipeVerb::Weave)
-            .unwrap();
-        assert_eq!(
-            weave.category,
-            vec!["Processing".to_string(), "Weaving".to_string()]
-        );
-
-        let tunic = workshop
-            .iter()
-            .find(|r| r.outputs[0].item_kind == ItemKind::Tunic)
-            .unwrap();
-        assert_eq!(
-            tunic.category,
-            vec!["Processing".to_string(), "Tailoring".to_string()]
-        );
-    }
-
-    #[test]
-    fn multi_property_fruit_generates_textile_chain_too() {
-        let config = GameConfig::default();
-        // Fruit with starchy flesh AND fine fiber — textile chain should generate.
-        let species = vec![test_species(
-            0,
-            "Allberry",
-            vec![
-                part(PartType::Flesh, &[PartProperty::Starchy], 40),
-                part(PartType::Fiber, &[PartProperty::FibrousFine], 30),
-            ],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-
-        // Base (37) + extraction (1) + mill + bake + spin + thread bowstring
-        // + weave + sew tunic + sew leggings + sew boots + sew hat
-        // + sew gloves = 48.
-        assert_eq!(catalog.len(), 48);
-
-        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
-        assert!(
-            workshop
-                .iter()
-                .any(|r| r.display_name == "Weave Allberry Cloth")
-        );
-        assert!(
-            workshop
-                .iter()
-                .any(|r| r.display_name == "Sew Allberry Tunic")
-        );
-        assert!(
-            workshop
-                .iter()
-                .any(|r| r.display_name == "Sew Allberry Leggings")
-        );
-        assert!(
-            workshop
-                .iter()
-                .any(|r| r.display_name == "Sew Allberry Boots")
-        );
-        assert!(
-            workshop
-                .iter()
-                .any(|r| r.display_name == "Sew Allberry Hat")
-        );
-    }
-
-    #[test]
-    fn coarse_fiber_does_not_generate_textile_recipes() {
+    fn resolve_twist() {
         let config = GameConfig::default();
         let species = vec![test_species(
             0,
             "Ropevine",
             vec![part(PartType::Fiber, &[PartProperty::FibrousCoarse], 50)],
         )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
 
-        let catalog = build_catalog(&config, &species);
+        let resolved = Recipe::Twist
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
 
-        // No weave or sew recipes for coarse fiber.
-        let workshop = catalog.recipes_for_furnishing(FurnishingType::Workshop);
-        assert!(
-            !workshop.iter().any(|r| r.key.verb == RecipeVerb::Weave),
-            "coarse fiber should not generate weave recipes"
-        );
-        assert!(
-            !workshop.iter().any(|r| r.key.verb == RecipeVerb::Sew),
-            "coarse fiber should not generate sew recipes"
-        );
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::FruitFiber);
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Cord);
     }
 
     #[test]
-    fn textile_recipes_with_generated_fruits() {
-        // Test with actual procedurally generated fruits across multiple seeds.
-        use crate::fruit::generate_fruit_species;
-        use elven_canopy_prng::GameRng;
-
+    fn resolve_weave() {
         let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Silkweed",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
 
-        for seed in 0..10 {
-            let mut rng = GameRng::new(seed);
-            let fruit_config = crate::config::FruitConfig::default();
-            let fruits = generate_fruit_species(&mut rng, &fruit_config);
-            let catalog = build_catalog(&config, &fruits);
+        let resolved = Recipe::Weave
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
 
-            // Count expected textile recipe sets (one per FibrousFine species).
-            let mut expected_fine = 0;
-            for fruit in &fruits {
-                for p in &fruit.parts {
-                    if p.properties.contains(&PartProperty::FibrousFine) {
-                        expected_fine += 1;
-                    }
-                }
-            }
-
-            let weave_count = catalog
-                .iter()
-                .filter(|(_, d)| d.key.verb == RecipeVerb::Weave)
-                .count();
-            let sew_count = catalog
-                .iter()
-                .filter(|(_, d)| d.key.verb == RecipeVerb::Sew)
-                .count();
-
-            assert_eq!(
-                weave_count, expected_fine,
-                "Seed {}: weave recipe count mismatch",
-                seed
-            );
-            // 5 sew recipes per FibrousFine species (tunic, leggings, boots, hat, gloves).
-            assert_eq!(
-                sew_count,
-                expected_fine * 5,
-                "Seed {}: sew recipe count mismatch",
-                seed
-            );
-        }
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::Thread);
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Cloth);
     }
 
     #[test]
-    fn new_textile_verb_serde_roundtrip() {
-        for verb in [RecipeVerb::Weave, RecipeVerb::Sew] {
-            let json = serde_json::to_string(&verb).unwrap();
-            let parsed: RecipeVerb = serde_json::from_str(&json).unwrap();
-            assert_eq!(verb, parsed);
-        }
-    }
-
-    #[test]
-    fn new_textile_item_kind_serde_roundtrip() {
-        for kind in [
-            ItemKind::Cloth,
-            ItemKind::Tunic,
-            ItemKind::Leggings,
-            ItemKind::Boots,
-            ItemKind::Hat,
-        ] {
-            let json = serde_json::to_string(&kind).unwrap();
-            let parsed: ItemKind = serde_json::from_str(&json).unwrap();
-            assert_eq!(kind, parsed);
-        }
-    }
-
-    #[test]
-    fn new_recipe_verb_serde_roundtrip() {
-        for verb in [RecipeVerb::Spin, RecipeVerb::Twist, RecipeVerb::Bake] {
-            let json = serde_json::to_string(&verb).unwrap();
-            let parsed: RecipeVerb = serde_json::from_str(&json).unwrap();
-            assert_eq!(verb, parsed);
-        }
-    }
-
-    #[test]
-    fn new_item_kind_serde_roundtrip() {
-        for kind in [ItemKind::Flour, ItemKind::Thread, ItemKind::Cord] {
-            let json = serde_json::to_string(&kind).unwrap();
-            let parsed: ItemKind = serde_json::from_str(&json).unwrap();
-            assert_eq!(kind, parsed);
-        }
-    }
-
-    // --- Wood-type Grow recipe tests ---
-
-    #[test]
-    fn grow_verb_serde_roundtrip() {
-        let json = serde_json::to_string(&RecipeVerb::Grow).unwrap();
-        let parsed: RecipeVerb = serde_json::from_str(&json).unwrap();
-        assert_eq!(RecipeVerb::Grow, parsed);
-    }
-
-    #[test]
-    fn armor_item_kind_serde_roundtrip() {
-        for kind in [
-            ItemKind::Helmet,
-            ItemKind::Breastplate,
-            ItemKind::Greaves,
-            ItemKind::Gauntlets,
-        ] {
-            let json = serde_json::to_string(&kind).unwrap();
-            let parsed: ItemKind = serde_json::from_str(&json).unwrap();
-            assert_eq!(kind, parsed);
-        }
-    }
-
-    #[test]
-    fn wood_type_recipes_generated_for_all_materials() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-
-        let grow_recipes: Vec<_> = catalog
-            .iter()
-            .filter(|(_, d)| d.key.verb == RecipeVerb::Grow)
-            .map(|(_, d)| d)
-            .collect();
-
-        // 5 wood types × 7 items (bow, arrow, helmet, breastplate, greaves,
-        // gauntlets, boots) = 35 total.
-        assert_eq!(grow_recipes.len(), 35);
-
-        // Each wood type should have exactly 7 recipes.
-        for wood in &Material::WOOD_TYPES {
-            let name = wood.display_name();
-            let wood_recipes: Vec<_> = grow_recipes
-                .iter()
-                .filter(|r| r.display_name.starts_with(&format!("Grow {name}")))
-                .collect();
-            assert_eq!(
-                wood_recipes.len(),
-                7,
-                "{name} should have 7 grow recipes, got {}",
-                wood_recipes.len()
-            );
-        }
-    }
-
-    #[test]
-    fn grow_bow_recipe_has_bowstring_input() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-
-        let oak_bow = catalog
-            .iter()
-            .find(|(_, d)| d.display_name == "Grow Oak Bow")
-            .map(|(_, d)| d)
-            .expect("Grow Oak Bow recipe should exist");
-
-        assert_eq!(oak_bow.key.verb, RecipeVerb::Grow);
-        assert_eq!(oak_bow.inputs.len(), 1);
-        assert_eq!(oak_bow.inputs[0].item_kind, ItemKind::Bowstring);
-        assert_eq!(oak_bow.inputs[0].quantity, 1);
-        assert_eq!(oak_bow.inputs[0].material_filter, MaterialFilter::Any);
-        assert_eq!(oak_bow.outputs.len(), 1);
-        assert_eq!(oak_bow.outputs[0].item_kind, ItemKind::Bow);
-        assert_eq!(oak_bow.outputs[0].quantity, 1);
-        assert_eq!(oak_bow.outputs[0].material, Some(Material::Oak));
-        assert_eq!(oak_bow.work_ticks, config.grow_recipes.grow_bow_work_ticks);
-    }
-
-    #[test]
-    fn grow_arrow_recipe_has_no_inputs() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-
-        let oak_arrows = catalog
-            .iter()
-            .find(|(_, d)| d.display_name == "Grow Oak Arrows")
-            .map(|(_, d)| d)
-            .expect("Grow Oak Arrows recipe should exist");
-
-        assert_eq!(oak_arrows.inputs.len(), 0);
-        assert_eq!(oak_arrows.outputs.len(), 1);
-        assert_eq!(oak_arrows.outputs[0].item_kind, ItemKind::Arrow);
-        assert_eq!(
-            oak_arrows.outputs[0].quantity,
-            config.grow_recipes.grow_arrow_output
-        );
-        assert_eq!(oak_arrows.outputs[0].material, Some(Material::Oak));
-    }
-
-    #[test]
-    fn grow_armor_recipes_have_no_inputs() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-
-        for (name, item_kind) in [
-            ("Grow Oak Helmet", ItemKind::Helmet),
-            ("Grow Oak Breastplate", ItemKind::Breastplate),
-            ("Grow Oak Greaves", ItemKind::Greaves),
-            ("Grow Oak Gauntlets", ItemKind::Gauntlets),
-            ("Grow Oak Boots", ItemKind::Boots),
-        ] {
-            let recipe = catalog
-                .iter()
-                .find(|(_, d)| d.display_name == name)
-                .map(|(_, d)| d)
-                .unwrap_or_else(|| panic!("{name} recipe should exist"));
-
-            assert_eq!(recipe.key.verb, RecipeVerb::Grow);
-            assert!(recipe.inputs.is_empty(), "{name} should have no inputs");
-            assert_eq!(recipe.outputs.len(), 1);
-            assert_eq!(recipe.outputs[0].item_kind, item_kind);
-            assert_eq!(recipe.outputs[0].quantity, 1);
-            assert_eq!(recipe.outputs[0].material, Some(Material::Oak));
-        }
-    }
-
-    #[test]
-    fn grow_armor_recipes_carry_wood_material() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-
-        // Check that each wood type produces armor with that material.
-        for wood in &Material::WOOD_TYPES {
-            let name = wood.display_name();
-            let helmet = catalog
-                .iter()
-                .find(|(_, d)| d.display_name == format!("Grow {name} Helmet"))
-                .map(|(_, d)| d)
-                .unwrap_or_else(|| panic!("Grow {name} Helmet should exist"));
-            assert_eq!(helmet.outputs[0].material, Some(*wood));
-        }
-    }
-
-    #[test]
-    fn grow_recipes_not_auto_added_on_furnish() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-
-        let defaults = catalog.default_recipes_for_furnishing(FurnishingType::Workshop);
-        // Only the bowstring config recipe should be auto-added.
-        assert_eq!(defaults.len(), 1);
-        assert_eq!(defaults[0].display_name, "Bowstring");
-
-        // No grow recipes should be auto-added.
-        assert!(
-            !defaults.iter().any(|r| r.key.verb == RecipeVerb::Grow),
-            "Grow recipes should not be auto-added on furnish"
-        );
-    }
-
-    #[test]
-    fn grow_recipe_categories() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-
-        let bow = catalog
-            .iter()
-            .find(|(_, d)| d.display_name == "Grow Oak Bow")
-            .map(|(_, d)| d)
-            .unwrap();
-        assert_eq!(
-            bow.category,
-            vec!["Woodcraft".to_string(), "Weapons".to_string()]
-        );
-
-        let helmet = catalog
-            .iter()
-            .find(|(_, d)| d.display_name == "Grow Oak Helmet")
-            .map(|(_, d)| d)
-            .unwrap();
-        assert_eq!(
-            helmet.category,
-            vec!["Woodcraft".to_string(), "Armor".to_string()]
-        );
-    }
-
-    #[test]
-    fn grow_recipe_keys_sorted_and_roundtrip() {
-        let config = GameConfig::default();
-        let catalog = build_catalog(&config, &[]);
-
-        for (key, _def) in catalog
-            .iter()
-            .filter(|(_, d)| d.key.verb == RecipeVerb::Grow)
-        {
-            let mut sorted_inputs = key.inputs.clone();
-            sorted_inputs.sort();
-            assert_eq!(key.inputs, sorted_inputs);
-            let mut sorted_outputs = key.outputs.clone();
-            sorted_outputs.sort();
-            assert_eq!(key.outputs, sorted_outputs);
-
-            let json = key.to_json();
-            let restored = RecipeKey::from_json(&json).expect("should deserialize");
-            assert_eq!(*key, restored);
-        }
-    }
-
-    // --- Dye pressing recipe tests ---
-
-    #[test]
-    fn pigmented_part_generates_press_recipe() {
-        use crate::fruit::DyeColor;
-        use std::collections::BTreeSet;
-
+    fn resolve_press() {
         let config = GameConfig::default();
         let species = vec![test_species(
             0,
             "Redpulp",
-            vec![FruitPart {
-                part_type: PartType::Flesh,
-                properties: BTreeSet::new(),
-                pigment: Some(DyeColor::Red),
-                component_units: 50,
-            }],
+            vec![pigmented_part(PartType::Flesh, &[], DyeColor::Red, 50)],
         )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
 
-        let catalog = build_catalog(&config, &species);
+        let resolved = Recipe::Press
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
 
-        let press_recipes: Vec<_> = catalog
-            .iter()
-            .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
-            .collect();
-
-        assert_eq!(press_recipes.len(), 1);
-
-        let (_, def) = &press_recipes[0];
-        assert_eq!(def.display_name, "Press Redpulp Pulp Red Dye");
-        assert_eq!(def.category, vec!["Processing", "Dye Pressing"]);
-        assert_eq!(def.furnishing_types, vec![FurnishingType::Kitchen]);
-        assert_eq!(def.inputs.len(), 1);
-        assert_eq!(def.inputs[0].item_kind, ItemKind::Pulp);
-        assert_eq!(def.inputs[0].quantity, 100);
-        assert_eq!(def.outputs.len(), 1);
-        assert_eq!(def.outputs[0].item_kind, ItemKind::Dye);
-        assert_eq!(def.outputs[0].quantity, 100);
-        assert_eq!(
-            def.outputs[0].material,
-            Some(Material::FruitSpecies(crate::types::FruitSpeciesId(0)))
-        );
-        assert_eq!(
-            def.outputs[0].dye_color,
-            Some(DyeColor::Red.to_item_color())
-        );
-        assert!(!def.auto_add_on_furnish);
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::Pulp);
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Dye);
+        assert!(resolved.outputs[0].dye_color.is_some());
     }
 
     #[test]
-    fn non_pigmented_part_generates_no_press_recipe() {
-        use std::collections::BTreeSet;
-
+    fn resolve_press_non_pigmented_returns_none() {
         let config = GameConfig::default();
         let species = vec![test_species(
             0,
-            "Plainflesh",
-            vec![FruitPart {
-                part_type: PartType::Flesh,
-                properties: BTreeSet::new(),
-                pigment: None,
-                component_units: 50,
-            }],
+            "Plainberry",
+            vec![part(PartType::Flesh, &[], 50)],
         )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
 
-        let catalog = build_catalog(&config, &species);
-        let press_count = catalog
-            .iter()
-            .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
-            .count();
-        assert_eq!(press_count, 0);
+        assert!(Recipe::Press.resolve(&params, &config, &species).is_none());
     }
 
     #[test]
-    fn pigmented_starchy_part_generates_both_press_and_mill() {
-        use crate::fruit::DyeColor;
-        use std::collections::BTreeSet;
-
+    fn resolve_assemble_thread_bowstring() {
         let config = GameConfig::default();
-        let mut props = BTreeSet::new();
-        props.insert(PartProperty::Starchy);
         let species = vec![test_species(
             0,
-            "Dualpurpose",
-            vec![FruitPart {
-                part_type: PartType::Flesh,
-                properties: props,
-                pigment: Some(DyeColor::Blue),
-                component_units: 60,
-            }],
+            "Silkweed",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
         )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
 
-        let catalog = build_catalog(&config, &species);
+        let resolved = Recipe::AssembleThreadBowstring
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
 
-        let press_count = catalog
-            .iter()
-            .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
-            .count();
-        let mill_count = catalog
-            .iter()
-            .filter(|(_, d)| d.key.verb == RecipeVerb::Mill)
-            .count();
-
-        assert_eq!(press_count, 1, "should have one press recipe");
-        assert_eq!(mill_count, 1, "should have one mill recipe");
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::Thread);
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Bowstring);
     }
 
     #[test]
-    fn press_recipes_with_generated_fruits() {
+    fn resolve_assemble_cord_bowstring() {
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Ropevine",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousCoarse], 50)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+
+        let resolved = Recipe::AssembleCordBowstring
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
+
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::Cord);
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Bowstring);
+    }
+
+    #[test]
+    fn resolve_sew_tunic() {
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Silkweed",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+
+        let resolved = Recipe::SewTunic
+            .resolve(&params, &config, &species)
+            .expect("should resolve");
+
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::Cloth);
+        assert_eq!(
+            resolved.inputs[0].quantity,
+            config.component_recipes.sew_tunic_input
+        );
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Tunic);
+    }
+
+    #[test]
+    fn resolve_sew_all_clothing() {
+        let config = GameConfig::default();
+        let species = vec![test_species(
+            0,
+            "Silkweed",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+
+        for (recipe, expected_kind) in [
+            (Recipe::SewTunic, ItemKind::Tunic),
+            (Recipe::SewLeggings, ItemKind::Leggings),
+            (Recipe::SewBoots, ItemKind::Boots),
+            (Recipe::SewHat, ItemKind::Hat),
+            (Recipe::SewGloves, ItemKind::Gloves),
+        ] {
+            let resolved = recipe
+                .resolve(&params, &config, &species)
+                .unwrap_or_else(|| panic!("{recipe:?} should resolve"));
+            assert_eq!(resolved.outputs[0].item_kind, expected_kind);
+        }
+    }
+
+    #[test]
+    fn resolve_grow_bow() {
+        let config = GameConfig::default();
+        let params = make_params(Material::Oak);
+
+        let resolved = Recipe::GrowBow
+            .resolve(&params, &config, &[])
+            .expect("should resolve");
+
+        assert_eq!(resolved.inputs.len(), 1);
+        assert_eq!(resolved.inputs[0].item_kind, ItemKind::Bowstring);
+        assert_eq!(resolved.inputs[0].material_filter, MaterialFilter::Any);
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Bow);
+        assert_eq!(resolved.outputs[0].material, Some(Material::Oak));
+        assert_eq!(resolved.work_ticks, config.grow_recipes.grow_bow_work_ticks);
+        assert_eq!(resolved.subcomponent_records.len(), 1);
+    }
+
+    #[test]
+    fn resolve_grow_arrow() {
+        let config = GameConfig::default();
+        let params = make_params(Material::Yew);
+
+        let resolved = Recipe::GrowArrow
+            .resolve(&params, &config, &[])
+            .expect("should resolve");
+
+        assert!(resolved.inputs.is_empty());
+        assert_eq!(resolved.outputs[0].item_kind, ItemKind::Arrow);
+        assert_eq!(
+            resolved.outputs[0].quantity,
+            config.grow_recipes.grow_arrow_output
+        );
+        assert_eq!(resolved.outputs[0].material, Some(Material::Yew));
+    }
+
+    #[test]
+    fn resolve_grow_armor_all_pieces() {
+        let config = GameConfig::default();
+        let params = make_params(Material::Birch);
+
+        for (recipe, expected_kind) in [
+            (Recipe::GrowHelmet, ItemKind::Helmet),
+            (Recipe::GrowBreastplate, ItemKind::Breastplate),
+            (Recipe::GrowGreaves, ItemKind::Greaves),
+            (Recipe::GrowGauntlets, ItemKind::Gauntlets),
+            (Recipe::GrowBoots, ItemKind::Boots),
+        ] {
+            let resolved = recipe
+                .resolve(&params, &config, &[])
+                .unwrap_or_else(|| panic!("{recipe:?} should resolve"));
+            assert!(resolved.inputs.is_empty());
+            assert_eq!(resolved.outputs[0].item_kind, expected_kind);
+            assert_eq!(resolved.outputs[0].quantity, 1);
+            assert_eq!(resolved.outputs[0].material, Some(Material::Birch));
+        }
+    }
+
+    #[test]
+    fn resolve_grow_rejects_non_wood() {
+        let config = GameConfig::default();
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+
+        assert!(Recipe::GrowBow.resolve(&params, &config, &[]).is_none());
+        assert!(Recipe::GrowArrow.resolve(&params, &config, &[]).is_none());
+        assert!(Recipe::GrowHelmet.resolve(&params, &config, &[]).is_none());
+    }
+
+    #[test]
+    fn resolve_none_material_returns_none() {
+        let config = GameConfig::default();
+        let params = RecipeParams { material: None };
+
+        for recipe in &ALL_RECIPES {
+            assert!(
+                recipe.resolve(&params, &config, &[]).is_none(),
+                "{recipe:?} should return None for None material"
+            );
+        }
+    }
+
+    // --- valid_materials() tests ---
+
+    #[test]
+    fn valid_materials_wood_recipes() {
+        let species = vec![test_species(
+            0,
+            "Starchi",
+            vec![part(PartType::Flesh, &[PartProperty::Starchy], 40)],
+        )];
+
+        let mats = Recipe::GrowBow.valid_materials(&species);
+        assert_eq!(mats.len(), 5);
+        for m in &mats {
+            assert!(m.is_wood());
+        }
+    }
+
+    #[test]
+    fn valid_materials_extract_returns_all_species() {
+        let species = vec![
+            test_species(0, "A", vec![part(PartType::Flesh, &[], 40)]),
+            test_species(1, "B", vec![part(PartType::Seed, &[], 10)]),
+        ];
+
+        let mats = Recipe::Extract.valid_materials(&species);
+        assert_eq!(mats.len(), 2);
+    }
+
+    #[test]
+    fn valid_materials_mill_filters_starchy() {
+        let species = vec![
+            test_species(
+                0,
+                "Starchy",
+                vec![part(PartType::Flesh, &[PartProperty::Starchy], 40)],
+            ),
+            test_species(
+                1,
+                "Sweet",
+                vec![part(PartType::Flesh, &[PartProperty::Sweet], 40)],
+            ),
+        ];
+
+        let mats = Recipe::Mill.valid_materials(&species);
+        assert_eq!(mats.len(), 1);
+        assert_eq!(mats[0], Material::FruitSpecies(FruitSpeciesId(0)));
+    }
+
+    #[test]
+    fn valid_materials_spin_filters_fine_fiber() {
+        let species = vec![
+            test_species(
+                0,
+                "Fine",
+                vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
+            ),
+            test_species(
+                1,
+                "Coarse",
+                vec![part(PartType::Fiber, &[PartProperty::FibrousCoarse], 30)],
+            ),
+        ];
+
+        let mats = Recipe::Spin.valid_materials(&species);
+        assert_eq!(mats.len(), 1);
+        assert_eq!(mats[0], Material::FruitSpecies(FruitSpeciesId(0)));
+    }
+
+    #[test]
+    fn valid_materials_twist_filters_coarse_fiber() {
+        let species = vec![
+            test_species(
+                0,
+                "Fine",
+                vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
+            ),
+            test_species(
+                1,
+                "Coarse",
+                vec![part(PartType::Fiber, &[PartProperty::FibrousCoarse], 30)],
+            ),
+        ];
+
+        let mats = Recipe::Twist.valid_materials(&species);
+        assert_eq!(mats.len(), 1);
+        assert_eq!(mats[0], Material::FruitSpecies(FruitSpeciesId(1)));
+    }
+
+    #[test]
+    fn valid_materials_press_filters_pigmented() {
+        let species = vec![
+            test_species(
+                0,
+                "Pigmented",
+                vec![pigmented_part(PartType::Flesh, &[], DyeColor::Red, 50)],
+            ),
+            test_species(1, "Plain", vec![part(PartType::Flesh, &[], 50)]),
+        ];
+
+        let mats = Recipe::Press.valid_materials(&species);
+        assert_eq!(mats.len(), 1);
+        assert_eq!(mats[0], Material::FruitSpecies(FruitSpeciesId(0)));
+    }
+
+    // --- display_name() tests ---
+
+    #[test]
+    fn display_name_extract() {
+        let species = vec![test_species(0, "Shinethúni", vec![])];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+        assert_eq!(
+            Recipe::Extract.display_name(&params, &species),
+            "Extract Shinethúni"
+        );
+    }
+
+    #[test]
+    fn display_name_mill() {
+        let species = vec![test_species(
+            0,
+            "Starchi",
+            vec![part(PartType::Flesh, &[PartProperty::Starchy], 40)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+        assert_eq!(
+            Recipe::Mill.display_name(&params, &species),
+            "Mill Starchi Pulp"
+        );
+    }
+
+    #[test]
+    fn display_name_grow_bow() {
+        let params = make_params(Material::Oak);
+        assert_eq!(Recipe::GrowBow.display_name(&params, &[]), "Grow Oak Bow");
+    }
+
+    #[test]
+    fn display_name_sew_tunic() {
+        let species = vec![test_species(
+            0,
+            "Silkweed",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+        assert_eq!(
+            Recipe::SewTunic.display_name(&params, &species),
+            "Sew Silkweed Tunic"
+        );
+    }
+
+    #[test]
+    fn display_name_press() {
+        let species = vec![test_species(
+            0,
+            "Redpulp",
+            vec![pigmented_part(PartType::Flesh, &[], DyeColor::Red, 50)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+        assert_eq!(
+            Recipe::Press.display_name(&params, &species),
+            "Press Redpulp Pulp Red Dye"
+        );
+    }
+
+    #[test]
+    fn display_name_assemble_thread_bowstring() {
+        let species = vec![test_species(
+            0,
+            "Silkweed",
+            vec![part(PartType::Fiber, &[PartProperty::FibrousFine], 30)],
+        )];
+        let params = make_params(Material::FruitSpecies(FruitSpeciesId(0)));
+        assert_eq!(
+            Recipe::AssembleThreadBowstring.display_name(&params, &species),
+            "Silkweed Thread Bowstring"
+        );
+    }
+
+    // --- furnishing_types() tests ---
+
+    #[test]
+    fn furnishing_types_kitchen() {
+        for recipe in [Recipe::Extract, Recipe::Mill, Recipe::Bake, Recipe::Press] {
+            assert_eq!(
+                recipe.furnishing_types(),
+                vec![FurnishingType::Kitchen],
+                "{recipe:?} should be Kitchen"
+            );
+        }
+    }
+
+    #[test]
+    fn furnishing_types_workshop() {
+        for recipe in [
+            Recipe::Spin,
+            Recipe::Twist,
+            Recipe::Weave,
+            Recipe::AssembleThreadBowstring,
+            Recipe::AssembleCordBowstring,
+            Recipe::SewTunic,
+            Recipe::GrowBow,
+            Recipe::GrowArrow,
+            Recipe::GrowHelmet,
+        ] {
+            assert_eq!(
+                recipe.furnishing_types(),
+                vec![FurnishingType::Workshop],
+                "{recipe:?} should be Workshop"
+            );
+        }
+    }
+
+    // --- verb() tests ---
+
+    #[test]
+    fn verb_mapping() {
+        assert_eq!(Recipe::Extract.verb(), RecipeVerb::Extract);
+        assert_eq!(Recipe::Mill.verb(), RecipeVerb::Mill);
+        assert_eq!(Recipe::Bake.verb(), RecipeVerb::Bake);
+        assert_eq!(Recipe::Spin.verb(), RecipeVerb::Spin);
+        assert_eq!(Recipe::Twist.verb(), RecipeVerb::Twist);
+        assert_eq!(Recipe::Weave.verb(), RecipeVerb::Weave);
+        assert_eq!(Recipe::Press.verb(), RecipeVerb::Press);
+        assert_eq!(Recipe::AssembleThreadBowstring.verb(), RecipeVerb::Assemble);
+        assert_eq!(Recipe::AssembleCordBowstring.verb(), RecipeVerb::Assemble);
+        assert_eq!(Recipe::SewTunic.verb(), RecipeVerb::Sew);
+        assert_eq!(Recipe::GrowBow.verb(), RecipeVerb::Grow);
+    }
+
+    // --- category() tests ---
+
+    #[test]
+    fn category_extraction() {
+        assert_eq!(Recipe::Extract.category(), vec!["Extraction"]);
+    }
+
+    #[test]
+    fn category_processing() {
+        assert_eq!(Recipe::Mill.category(), vec!["Processing", "Milling"]);
+        assert_eq!(Recipe::Bake.category(), vec!["Processing", "Baking"]);
+        assert_eq!(Recipe::SewTunic.category(), vec!["Processing", "Tailoring"]);
+    }
+
+    #[test]
+    fn category_woodcraft() {
+        assert_eq!(Recipe::GrowBow.category(), vec!["Woodcraft", "Weapons"]);
+        assert_eq!(Recipe::GrowHelmet.category(), vec!["Woodcraft", "Armor"]);
+    }
+
+    // --- has_material_param() ---
+
+    #[test]
+    fn all_recipes_have_material_param() {
+        for recipe in &ALL_RECIPES {
+            assert!(recipe.has_material_param(), "{recipe:?}");
+        }
+    }
+
+    // --- required_species() ---
+
+    #[test]
+    fn all_recipes_require_elf() {
+        for recipe in &ALL_RECIPES {
+            assert_eq!(recipe.required_species(), Some(Species::Elf), "{recipe:?}");
+        }
+    }
+
+    // --- Cross-check: resolve matches catalog for all generated fruits ---
+
+    #[test]
+    fn resolve_matches_catalog_output_items_for_generated_fruits() {
         use crate::fruit::generate_fruit_species;
         use elven_canopy_prng::GameRng;
 
         let config = GameConfig::default();
 
-        for seed in 0..10 {
+        for seed in 0..5 {
             let mut rng = GameRng::new(seed);
             let fruit_config = crate::config::FruitConfig::default();
             let fruits = generate_fruit_species(&mut rng, &fruit_config);
-            let catalog = build_catalog(&config, &fruits);
 
-            // Count expected press recipes: one per pigmented part.
-            let expected_press: usize = fruits
-                .iter()
-                .flat_map(|f| &f.parts)
-                .filter(|p| p.pigment.is_some())
-                .count();
-
-            let press_count = catalog
-                .iter()
-                .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
-                .count();
-
-            assert_eq!(
-                press_count, expected_press,
-                "Seed {}: press recipe count mismatch",
-                seed
-            );
-
-            // Every press recipe output should be Dye with a dye_color set.
-            for (_, def) in catalog
-                .iter()
-                .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
-            {
-                assert_eq!(def.outputs[0].item_kind, ItemKind::Dye);
-                assert!(
-                    def.outputs[0].dye_color.is_some(),
-                    "Seed {}: press recipe {} missing dye_color",
-                    seed,
-                    def.display_name
-                );
+            // For each recipe variant, resolve with each valid material and
+            // verify we get Some with the expected output item kind.
+            for recipe in &ALL_RECIPES {
+                for mat in recipe.valid_materials(&fruits) {
+                    let params = make_params(mat);
+                    let resolved = recipe.resolve(&params, &config, &fruits);
+                    assert!(
+                        resolved.is_some(),
+                        "Seed {seed}: {recipe:?} with {mat:?} should resolve"
+                    );
+                    let resolved = resolved.unwrap();
+                    assert!(
+                        !resolved.outputs.is_empty(),
+                        "Seed {seed}: {recipe:?} should have outputs"
+                    );
+                    for output in &resolved.outputs {
+                        assert!(
+                            output.quantity >= 1,
+                            "Seed {seed}: {recipe:?} output {:?} has zero quantity",
+                            output.item_kind,
+                        );
+                    }
+                }
             }
-        }
-    }
-
-    #[test]
-    fn press_verb_serde_roundtrip() {
-        let json = serde_json::to_string(&RecipeVerb::Press).unwrap();
-        let parsed: RecipeVerb = serde_json::from_str(&json).unwrap();
-        assert_eq!(RecipeVerb::Press, parsed);
-    }
-
-    #[test]
-    fn dye_item_kind_serde_roundtrip() {
-        let json = serde_json::to_string(&ItemKind::Dye).unwrap();
-        let parsed: ItemKind = serde_json::from_str(&json).unwrap();
-        assert_eq!(ItemKind::Dye, parsed);
-    }
-
-    #[test]
-    fn press_recipe_key_sorted_and_roundtrip() {
-        use crate::fruit::DyeColor;
-        use std::collections::BTreeSet;
-
-        let config = GameConfig::default();
-        let species = vec![test_species(
-            0,
-            "Testdye",
-            vec![FruitPart {
-                part_type: PartType::Rind,
-                properties: BTreeSet::new(),
-                pigment: Some(DyeColor::Yellow),
-                component_units: 30,
-            }],
-        )];
-
-        let catalog = build_catalog(&config, &species);
-        for (key, _) in catalog
-            .iter()
-            .filter(|(_, d)| d.key.verb == RecipeVerb::Press)
-        {
-            let mut sorted_inputs = key.inputs.clone();
-            sorted_inputs.sort();
-            assert_eq!(key.inputs, sorted_inputs);
-            let mut sorted_outputs = key.outputs.clone();
-            sorted_outputs.sort();
-            assert_eq!(key.outputs, sorted_outputs);
-
-            let json = key.to_json();
-            let restored = RecipeKey::from_json(&json).expect("should deserialize");
-            assert_eq!(*key, restored);
         }
     }
 }

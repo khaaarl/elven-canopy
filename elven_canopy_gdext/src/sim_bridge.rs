@@ -926,6 +926,71 @@ impl SimBridge {
         });
     }
 
+    /// Test helper: disable food and rest decay for all species.
+    /// Prevents elf starvation during long test runs.
+    #[func]
+    fn debug_disable_needs(&mut self) {
+        let Some(sim) = &mut self.session.sim else {
+            return;
+        };
+        for species_data in sim.config.species.values_mut() {
+            species_data.food_decay_per_tick = 0;
+            species_data.rest_decay_per_tick = 0;
+        }
+        // Also update the cached species table.
+        sim.species_table = sim.config.species.clone();
+    }
+
+    /// Test helper: add items directly to a structure's inventory.
+    /// `material_json` is a JSON-serialized Material (e.g., `"Oak"` or
+    /// `{"FruitSpecies":0}`), or empty for no material.
+    #[func]
+    fn debug_add_item_to_structure(
+        &mut self,
+        structure_id: i64,
+        item_kind_name: GString,
+        quantity: i32,
+        material_json: GString,
+    ) {
+        let Some(sim) = &mut self.session.sim else {
+            return;
+        };
+        let sid = StructureId(structure_id as u64);
+        let Some(structure) = sim.db.structures.get(&sid) else {
+            return;
+        };
+        let inv_id = structure.inventory_id;
+        let item_kind: elven_canopy_sim::inventory::ItemKind =
+            match serde_json::from_str(&format!("\"{item_kind_name}\"")) {
+                Ok(k) => k,
+                Err(_) => return,
+            };
+        let mat_str = material_json.to_string();
+        let material: Option<elven_canopy_sim::inventory::Material> = if mat_str.is_empty() {
+            None
+        } else {
+            serde_json::from_str(&mat_str).ok()
+        };
+        sim.inv_add_simple_item(inv_id, item_kind, quantity as u32, None, None);
+        // If material is specified, update the most recent stack.
+        if let Some(mat) = material {
+            let stacks = sim
+                .db
+                .item_stacks
+                .by_inventory_id(&inv_id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+            if let Some(stack) = stacks
+                .iter()
+                .rev()
+                .find(|s| s.kind == item_kind && s.material.is_none())
+            {
+                let stack_id = stack.id;
+                let _ = sim.db.item_stacks.modify_unchecked(&stack_id, |s| {
+                    s.material = Some(mat);
+                });
+            }
+        }
+    }
+
     /// Spawn an elf at the given voxel position.
     /// Legacy wrapper — delegates to `spawn_creature("Elf", ...)`.
     #[func]
@@ -1768,14 +1833,17 @@ impl SimBridge {
         for ar in &sorted_recipes {
             let mut recipe_dict = VarDictionary::new();
             recipe_dict.set("active_recipe_id", ar.id.0 as i64);
-            recipe_dict.set(
-                "recipe_key_json",
-                GString::from(ar.recipe_key_json.as_str()),
-            );
-            recipe_dict.set(
-                "recipe_display_name",
-                GString::from(ar.recipe_display_name.as_str()),
-            );
+            recipe_dict.set("recipe_variant", ar.recipe as u16 as i64);
+            let fruit_species: Vec<_> = sim.db.fruit_species.iter_all().cloned().collect();
+            let params = elven_canopy_sim::recipe::RecipeParams {
+                material: ar.material,
+            };
+            let display_name = ar.recipe.display_name(&params, &fruit_species);
+            recipe_dict.set("recipe_display_name", GString::from(display_name.as_str()));
+            if let Some(mat) = ar.material {
+                let mat_json = serde_json::to_string(&mat).unwrap_or_default();
+                recipe_dict.set("material_json", GString::from(mat_json.as_str()));
+            }
             recipe_dict.set("enabled", ar.enabled);
             recipe_dict.set("auto_logistics", ar.auto_logistics);
             recipe_dict.set("spare_iterations", ar.spare_iterations as i64);
@@ -1850,8 +1918,7 @@ impl SimBridge {
                     .by_structure_id(&sid, elven_canopy_sim::tabulosity::QueryOpts::ASC)
                     .iter()
                     .any(|r| {
-                        (r.role == elven_canopy_sim::db::TaskStructureRole::CraftAt
-                            || r.role == elven_canopy_sim::db::TaskStructureRole::CookAt)
+                        r.role == elven_canopy_sim::db::TaskStructureRole::CraftAt
                             && sim.db.tasks.get(&r.task_id).is_some_and(|t| {
                                 t.state != elven_canopy_sim::task::TaskState::Complete
                             })
@@ -2298,10 +2365,11 @@ impl SimBridge {
     }
 
     /// Get the recipe catalog for a building, filtered to recipes available
-    /// for its furnishing type. Returns a flat list of recipe dicts, each with
-    /// a `category` array that the GDScript side renders as a collapsible tree.
+    /// Get the list of Recipe enum variants valid for a building's furnishing
+    /// type. Returns an array of recipe dicts with variant int, display name,
+    /// category, and whether the recipe has a material parameter.
     #[func]
-    fn get_recipe_catalog_for_building(&self, structure_id: i64) -> VarArray {
+    fn get_available_recipes(&self, structure_id: i64) -> VarArray {
         let Some(sim) = &self.session.sim else {
             return VarArray::new();
         };
@@ -2312,43 +2380,38 @@ impl SimBridge {
         let Some(ft) = structure.furnishing else {
             return VarArray::new();
         };
-        let recipes = sim.recipe_catalog.recipes_for_furnishing(ft);
+        let fruit_species: Vec<_> = sim.db.fruit_species.iter_all().cloned().collect();
         let mut arr = VarArray::new();
-        for def in &recipes {
+        for recipe in &elven_canopy_sim::recipe::ALL_RECIPES {
+            if !recipe.furnishing_types().contains(&ft) {
+                continue;
+            }
             let mut d = VarDictionary::new();
-            d.set("key_json", GString::from(def.key.to_json().as_str()));
-            d.set("display_name", GString::from(def.display_name.as_str()));
-            d.set("work_ticks", def.work_ticks as i64);
+            d.set("recipe", *recipe as u16 as i64);
+            let name = format!("{:?}", recipe);
+            d.set("display_name", GString::from(name.as_str()));
             let mut category = VarArray::new();
-            for part in &def.category {
-                category.push(&GString::from(part.as_str()).to_variant());
+            for part in recipe.category() {
+                category.push(&GString::from(part).to_variant());
             }
             d.set("category", category);
-            let mut inputs = VarArray::new();
-            for input in &def.inputs {
-                let mut inp = VarDictionary::new();
-                inp.set("item_kind", GString::from(input.item_kind.display_name()));
-                inp.set("quantity", input.quantity as i64);
-                inputs.push(&inp.to_variant());
+            d.set("has_material_param", recipe.has_material_param());
+
+            // Include valid materials for this recipe.
+            let mut materials = VarArray::new();
+            for mat in recipe.valid_materials(&fruit_species) {
+                let mut mat_dict = VarDictionary::new();
+                let mat_json = serde_json::to_string(&mat).unwrap_or_default();
+                mat_dict.set("material_json", GString::from(mat_json.as_str()));
+                let params = elven_canopy_sim::recipe::RecipeParams {
+                    material: Some(mat),
+                };
+                let display = recipe.display_name(&params, &fruit_species);
+                mat_dict.set("display_name", GString::from(display.as_str()));
+                materials.push(&mat_dict.to_variant());
             }
-            d.set("inputs", inputs);
-            let mut outputs = VarArray::new();
-            for output in &def.outputs {
-                let mut out = VarDictionary::new();
-                out.set("item_kind", GString::from(output.item_kind.display_name()));
-                out.set("quantity", output.quantity as i64);
-                if let Some(mat) = output.material {
-                    out.set(
-                        "material",
-                        GString::from(
-                            sim.material_item_display_name(output.item_kind, mat)
-                                .as_str(),
-                        ),
-                    );
-                }
-                outputs.push(&out.to_variant());
-            }
-            d.set("outputs", outputs);
+            d.set("materials", materials);
+
             arr.push(&d.to_variant());
         }
         arr
@@ -2363,17 +2426,40 @@ impl SimBridge {
         });
     }
 
-    /// Add an active recipe to a building by its RecipeKey JSON string.
+    /// Add an active recipe to a building by Recipe variant int + material JSON.
     #[func]
-    fn add_active_recipe(&mut self, structure_id: i64, recipe_key_json: GString) {
-        let json_str = recipe_key_json.to_string();
-        let Some(key) = elven_canopy_sim::recipe::RecipeKey::from_json(&json_str) else {
-            godot_error!("SimBridge: failed to parse recipe key JSON: {json_str}");
-            return;
+    fn add_active_recipe(
+        &mut self,
+        structure_id: i64,
+        recipe_variant: i64,
+        material_json: GString,
+    ) {
+        let recipe = match elven_canopy_sim::recipe::ALL_RECIPES
+            .iter()
+            .find(|r| **r as u16 as i64 == recipe_variant)
+        {
+            Some(r) => *r,
+            None => {
+                godot_error!("SimBridge: invalid recipe variant {recipe_variant}");
+                return;
+            }
+        };
+        let mat_str = material_json.to_string();
+        let material: Option<elven_canopy_sim::inventory::Material> = if mat_str.is_empty() {
+            None
+        } else {
+            match serde_json::from_str(&mat_str) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    godot_error!("SimBridge: failed to parse material JSON: {e}");
+                    return;
+                }
+            }
         };
         self.apply_or_send(SimAction::AddActiveRecipe {
             structure_id: StructureId(structure_id as u64),
-            recipe_key: key,
+            recipe,
+            material,
         });
     }
 

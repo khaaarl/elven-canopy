@@ -609,7 +609,8 @@ func _setup_common(bridge: SimBridge) -> void:
 		func(sid: int, enabled: bool): bridge.set_crafting_enabled(sid, enabled)
 	)
 	_structure_info_panel.add_recipe_requested.connect(
-		func(sid: int, key_json: String): bridge.add_active_recipe(sid, key_json)
+		func(sid: int, recipe_variant: int, material_json: String):
+			bridge.add_active_recipe(sid, recipe_variant, material_json)
 	)
 	_structure_info_panel.remove_recipe_requested.connect(
 		func(ar_id: int): bridge.remove_active_recipe(ar_id)
@@ -1045,7 +1046,7 @@ func _process(delta: float) -> void:
 				_structure_info_panel.set_elf_list(bridge.get_all_elves())
 			if _structure_info_panel.is_crafting_details_visible():
 				_structure_info_panel.set_building_recipes(
-					bridge.get_recipe_catalog_for_building(_selector.get_selected_structure_id())
+					bridge.get_available_recipes(_selector.get_selected_structure_id())
 				)
 		else:
 			# Structure was demolished — deselect and hide panel.

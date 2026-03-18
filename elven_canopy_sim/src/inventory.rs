@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 /// The kind of item. Each variant is a distinct item type.
 ///
 /// **STABLE ENUM:** Discriminant values are persisted in save files via
-/// `RecipeKey`. Never reorder, never reuse a number. Append new variants
+/// `Recipe` enum. Never reorder, never reuse a number. Append new variants
 /// at the end with the next available discriminant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u16)]
@@ -212,7 +212,7 @@ impl ItemKind {
 /// procedurally generated fruit species an item came from (see `fruit.rs`).
 ///
 /// **STABLE ENUM:** Discriminant values are persisted in save files via
-/// `RecipeKey`. Never reorder, never reuse a number. Append new variants
+/// `Recipe` enum. Never reorder, never reuse a number. Append new variants
 /// at the end with the next available discriminant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u16)]
@@ -262,7 +262,7 @@ impl Material {
 /// backward compatibility, and `Ord` for use as a BTreeMap key (determinism).
 ///
 /// **STABLE ENUM:** Discriminant values are persisted in save files via
-/// `RecipeKey`. Never reorder, never reuse a number. Append new variants
+/// `Recipe` enum. Never reorder, never reuse a number. Append new variants
 /// at the end with the next available discriminant.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,

@@ -885,19 +885,6 @@ pub struct RecipeSubcomponentRecord {
     pub quantity_per_item: u32,
 }
 
-/// A data-driven crafting recipe. Defines inputs, outputs, work time, and
-/// subcomponent records for the workshop manufacturing pipeline.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Recipe {
-    pub id: String,
-    pub display_name: String,
-    pub inputs: Vec<RecipeInput>,
-    pub outputs: Vec<RecipeOutput>,
-    pub work_ticks: u64,
-    #[serde(default)]
-    pub subcomponent_records: Vec<RecipeSubcomponentRecord>,
-}
-
 /// Parameters for component-based crafting recipes generated per fruit species.
 ///
 /// Each recipe chain transforms extracted fruit components into useful items
@@ -1284,27 +1271,6 @@ fn default_press_input() -> u32 {
 }
 fn default_press_output() -> u32 {
     100
-}
-
-fn default_recipes() -> Vec<Recipe> {
-    vec![Recipe {
-        id: "bowstring".to_string(),
-        display_name: "Bowstring".to_string(),
-        inputs: vec![RecipeInput {
-            item_kind: ItemKind::Fruit,
-            quantity: 1,
-            material_filter: MaterialFilter::Any,
-        }],
-        outputs: vec![RecipeOutput {
-            item_kind: ItemKind::Bowstring,
-            quantity: 20,
-            material: None,
-            quality: 0,
-            dye_color: None,
-        }],
-        work_ticks: 5000,
-        subcomponent_records: vec![],
-    }]
 }
 
 fn default_workshop_priority() -> u8 {
@@ -1752,22 +1718,9 @@ pub struct GameConfig {
     #[serde(default = "default_kitchen_default_bread_target")]
     pub kitchen_default_bread_target: u32,
 
-    /// Ticks of work to complete one bread cook cycle (5000 = 5 sim-seconds).
-    /// Used by the bread RecipeDef in the recipe catalog.
-    #[serde(default = "default_cook_bread_work_ticks", alias = "cook_work_ticks")]
-    pub cook_bread_work_ticks: u64,
-
     /// Ticks of work to complete one fruit extraction (3000 = 3 sim-seconds).
     #[serde(default = "default_extract_work_ticks")]
     pub extract_work_ticks: u64,
-
-    /// Fruit consumed per cook cycle.
-    #[serde(default = "default_cook_fruit_input")]
-    pub cook_fruit_input: u32,
-
-    /// Bread produced per cook cycle.
-    #[serde(default = "default_cook_bread_output")]
-    pub cook_bread_output: u32,
 
     /// Parameters for component-based crafting recipes (flour, thread, cord,
     /// and their downstream products). Recipes are dynamically generated per
@@ -1788,10 +1741,6 @@ pub struct GameConfig {
     /// Ground item piles to place when a new game starts.
     #[serde(default)]
     pub initial_ground_piles: Vec<InitialGroundPileSpec>,
-
-    /// Data-driven crafting recipes for the workshop manufacturing system.
-    #[serde(default = "default_recipes")]
-    pub recipes: Vec<Recipe>,
 
     /// Default logistics priority for newly furnished workshops.
     #[serde(default = "default_workshop_priority")]
@@ -2059,20 +2008,8 @@ fn default_mope_action_ticks() -> u64 {
     1000
 }
 
-fn default_cook_bread_work_ticks() -> u64 {
-    5000
-}
-
 fn default_extract_work_ticks() -> u64 {
     3000
-}
-
-fn default_cook_fruit_input() -> u32 {
-    1
-}
-
-fn default_cook_bread_output() -> u32 {
-    10
 }
 
 /// Build a stat distribution map from (TraitKind, mean, stdev) triples.
@@ -2083,7 +2020,6 @@ fn stat_dists(entries: &[(TraitKind, i32, i32)]) -> BTreeMap<TraitKind, StatDist
         .map(|&(kind, mean, stdev)| (kind, StatDistribution { mean, stdev }))
         .collect()
 }
-
 impl Default for GameConfig {
     fn default() -> Self {
         let mut species = BTreeMap::new();
@@ -2566,10 +2502,7 @@ impl Default for GameConfig {
             kitchen_default_priority: 8,
             kitchen_default_fruit_want: 5,
             kitchen_default_bread_target: 50,
-            cook_bread_work_ticks: 5000,
             extract_work_ticks: 3000,
-            cook_fruit_input: 1,
-            cook_bread_output: 10,
             component_recipes: ComponentRecipeConfig::default(),
             grow_recipes: GrowRecipeConfig::default(),
             initial_creatures: vec![
@@ -2763,7 +2696,6 @@ impl Default for GameConfig {
                     dye_color: None,
                 },
             ],
-            recipes: default_recipes(),
             workshop_default_priority: default_workshop_priority(),
             greenhouse_default_priority: default_greenhouse_default_priority(),
             greenhouse_base_production_ticks: default_greenhouse_base_production_ticks(),

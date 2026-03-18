@@ -414,9 +414,6 @@
   "kitchen_default_priority": 8,
   "kitchen_default_fruit_want": 5,
   "kitchen_default_bread_target": 50,
-  "cook_bread_work_ticks": 5000,
-  "cook_fruit_input": 1,
-  "cook_bread_output": 10,
   "structural": {
     "gravity": 1.0,
     "max_iterations": 200,
@@ -593,15 +590,6 @@
       "item_kind": "Boots",
       "quantity": 1,
       "material": "Oak"
-    }
-  ],
-  "recipes": [
-    {
-      "id": "bowstring",
-      "display_name": "Bowstring",
-      "inputs": [{ "item_kind": "Fruit", "quantity": 1 }],
-      "outputs": [{ "item_kind": "Bowstring", "quantity": 20 }],
-      "work_ticks": 5000
     }
   ],
   "workshop_default_priority": 8,

@@ -67,10 +67,6 @@
 //   Items are reserved at source creation to prevent double-claiming. On
 //   abandonment: GoingToSource clears reservations; GoingToDestination drops
 //   carried items as a ground pile.
-// - `Cook { structure_id }` — converts reserved fruit into bread at a kitchen.
-//   Created by `process_unified_crafting_monitor()` when a kitchen has an active
-//   bread recipe with unreserved fruit. Progress increments each tick; on
-//   completion, fruit is consumed and bread is added to the kitchen's inventory.
 // - `Harvest { fruit_pos }` — walk to a fruit voxel, remove it, and create a
 //   ground pile with 1 Fruit at the elf's position. Instant (`total_cost = 0`).
 //   Created by `process_harvest_tasks()` when logistics buildings want fruit
@@ -114,7 +110,9 @@
 // the sim PRNG.
 
 use crate::inventory::ItemKind;
-use crate::types::{CreatureId, NavNodeId, ProjectId, Species, StructureId, TaskId, VoxelCoord};
+use crate::types::{
+    ActiveRecipeId, CreatureId, NavNodeId, ProjectId, Species, StructureId, TaskId, VoxelCoord,
+};
 use serde::{Deserialize, Serialize};
 
 /// Where a haul task picks up items from.
@@ -190,10 +188,6 @@ pub enum TaskKind {
         phase: HaulPhase,
         destination_nav_node: NavNodeId,
     },
-    /// Cook food in a kitchen. Legacy path — new bread tasks use
-    /// `TaskKind::Craft` via the unified crafting monitor. An elf walks to
-    /// the kitchen, works, then converts fruit into bread.
-    Cook { structure_id: StructureId },
     /// Harvest a fruit voxel from a tree. The elf walks to the fruit's nav
     /// node, removes the fruit voxel from the world and tree, and creates a
     /// ground pile with 1 Fruit item at the elf's position. Instant
@@ -221,7 +215,7 @@ pub enum TaskKind {
     /// when a building has an active recipe with available inputs.
     Craft {
         structure_id: StructureId,
-        recipe_id: String,
+        active_recipe_id: ActiveRecipeId,
     },
     /// Player-directed attack on a specific creature. Pursue the target via
     /// dynamic pursuit, attempt melee when adjacent, ranged when in LOS with

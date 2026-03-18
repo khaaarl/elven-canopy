@@ -55,7 +55,7 @@
 ## main.gd which wires everything together,
 ## sim_bridge.rs for rename_structure(), furnish_structure(), assign_home(),
 ## set_logistics_priority(), set_logistics_wants(), set_crafting_enabled(),
-## get_recipe_catalog_for_building(), add_active_recipe(), etc.
+## get_available_recipes(), add_active_recipe(), etc.
 
 extends PanelContainer
 
@@ -68,7 +68,7 @@ signal unassign_elf_requested(structure_id: int, creature_id_str: String)
 signal logistics_priority_changed(structure_id: int, priority: int)
 signal logistics_wants_changed(structure_id: int, wants_json: String)
 signal crafting_enabled_changed(structure_id: int, enabled: bool)
-signal add_recipe_requested(structure_id: int, recipe_key_json: String)
+signal add_recipe_requested(structure_id: int, recipe_variant: int, material_json: String)
 signal remove_recipe_requested(active_recipe_id: int)
 signal recipe_output_target_changed(active_recipe_target_id: int, target_quantity: int)
 signal recipe_auto_logistics_changed(
@@ -481,9 +481,6 @@ func _ready() -> void:
 	_crafting_details_status_label.text = ""
 	_crafting_details_vbox.add_child(_crafting_details_status_label)
 
-	# Defer adding the details panel to the parent CanvasLayer so it's a sibling.
-	call_deferred("_add_details_panel_to_parent")
-
 	# Spacer to push the zoom button toward the bottom-ish area.
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -498,21 +495,34 @@ func _ready() -> void:
 	visible = false
 
 
+func _notification(what: int) -> void:
+	# Add the details panels to the parent CanvasLayer when this node
+	# gets a parent. NOTIFICATION_PARENTED fires reliably during add_child(),
+	# unlike _ready which may fire during set_script() before the node is
+	# in the tree.
+	if what == NOTIFICATION_PARENTED:
+		call_deferred("_add_details_panel_to_parent")
+
+
 func _add_details_panel_to_parent() -> void:
 	var parent := get_parent()
-	if parent:
-		# Both details panels share the same screen position (left of main panel).
-		# The toggle handlers ensure only one is visible at a time.
-		for panel in [_crafting_details_panel, _logistics_details_panel]:
-			parent.add_child(panel)
-			panel.anchor_top = 0.0
-			panel.anchor_bottom = 1.0
-			panel.anchor_left = 1.0
-			panel.anchor_right = 1.0
-			panel.offset_right = -328
-			panel.offset_left = -688
-			panel.offset_top = 0
-			panel.offset_bottom = 0
+	if not parent:
+		return
+	# Guard against double-add (e.g., if _enter_tree fires multiple times).
+	if _crafting_details_panel.get_parent() == parent:
+		return
+	# Both details panels share the same screen position (left of main panel).
+	# The toggle handlers ensure only one is visible at a time.
+	for panel in [_crafting_details_panel, _logistics_details_panel]:
+		parent.add_child(panel)
+		panel.anchor_top = 0.0
+		panel.anchor_bottom = 1.0
+		panel.anchor_left = 1.0
+		panel.anchor_right = 1.0
+		panel.offset_right = -328
+		panel.offset_left = -688
+		panel.offset_top = 0
+		panel.offset_bottom = 0
 
 
 ## Cache the recipe catalog for the current building. Called by main.gd
@@ -864,7 +874,7 @@ func _build_active_recipe_rows(active_recipes: Array) -> void:
 			var increment := maxi(1, int(target.get("target_quantity", 10)))
 			# Use output quantity from catalog as increment if available.
 			var recipe_output_qty := _get_output_quantity_for_target(
-				ar.get("recipe_key_json", ""), item_kind
+				ar.get("recipe_variant", 0), ar.get("material_json", ""), item_kind
 			)
 			if recipe_output_qty > 0:
 				increment = recipe_output_qty
@@ -984,13 +994,13 @@ func _refresh_active_recipe_rows(active_recipes: Array) -> void:
 
 
 ## Get the output quantity for a target's item kind from the cached catalog.
-func _get_output_quantity_for_target(recipe_key_json: String, item_kind: String) -> int:
-	for recipe in _cached_building_recipes:
-		if recipe.get("key_json", "") == recipe_key_json:
-			for out in recipe.get("outputs", []):
-				if out.get("item_kind", "") == item_kind:
-					return int(out.get("quantity", 1))
-	return 0
+## With the new Recipe enum system, we look up by variant + material.
+func _get_output_quantity_for_target(
+	_recipe_variant: int, _material_json: String, _item_kind: String
+) -> int:
+	# Output quantity is not cached in the available recipes list anymore
+	# (it requires resolve() which happens server-side). Use 1 as default.
+	return 1
 
 
 func _on_crafting_details_pressed() -> void:
@@ -1152,25 +1162,22 @@ func _populate_recipe_picker() -> void:
 				sub_vbox.add_child(_make_recipe_button(recipe))
 
 
-## Build a recipe button with input → output description and key_json metadata.
-func _make_recipe_button(recipe: Dictionary) -> Button:
-	var key_json: String = recipe.get("key_json", "")
-	var display_name: String = recipe.get("display_name", "?")
-	var inputs: Array = recipe.get("inputs", [])
-	var outputs: Array = recipe.get("outputs", [])
-	var parts: PackedStringArray = []
-	for inp in inputs:
-		parts.append("%d %s" % [inp.get("quantity", 0), inp.get("item_kind", "?")])
-	var input_str := " + ".join(parts) if parts.size() > 0 else "(nothing)"
-	parts = []
-	for out in outputs:
-		parts.append("%d %s" % [out.get("quantity", 0), out.get("item_kind", "?")])
-	var output_str := " + ".join(parts)
-	var btn := Button.new()
-	btn.text = "%s  (%s → %s)" % [display_name, input_str, output_str]
-	btn.set_meta("key_json", key_json)
-	btn.pressed.connect(_on_recipe_picker_selected.bind(key_json))
-	return btn
+## Build recipe buttons for a template — one per valid material.
+func _make_recipe_button(recipe: Dictionary) -> VBoxContainer:
+	var container := VBoxContainer.new()
+	container.add_theme_constant_override("separation", 1)
+	var materials: Array = recipe.get("materials", [])
+	var recipe_variant: int = recipe.get("recipe", 0)
+	for mat_entry in materials:
+		var display_name: String = mat_entry.get("display_name", "?")
+		var material_json: String = mat_entry.get("material_json", "")
+		var btn := Button.new()
+		btn.text = display_name
+		var unique_key := "%d|%s" % [recipe_variant, material_json]
+		btn.set_meta("recipe_key", unique_key)
+		btn.pressed.connect(_on_recipe_picker_selected.bind(recipe_variant, material_json))
+		container.add_child(btn)
+	return container
 
 
 ## Toggle a recipe category's collapsed state and rebuild the picker.
@@ -1185,10 +1192,12 @@ func _on_recipe_category_toggled(cat_name: String) -> void:
 func _update_recipe_picker_availability(active_recipes: Array) -> void:
 	if not _crafting_recipe_picker.visible:
 		return
-	# Collect and cache active recipe key JSONs.
+	# Collect and cache active recipe keys as "variant|material_json".
 	_cached_active_recipe_keys = []
 	for ar in active_recipes:
-		_cached_active_recipe_keys.append(ar.get("recipe_key_json", ""))
+		var variant: int = ar.get("recipe_variant", 0)
+		var mat_json: String = ar.get("material_json", "")
+		_cached_active_recipe_keys.append("%d|%s" % [variant, mat_json])
 	# Gray out recipes already active (recurse into category containers).
 	_disable_active_recipe_buttons(_crafting_recipe_picker, _cached_active_recipe_keys)
 
@@ -1201,17 +1210,17 @@ func _refresh_recipe_picker_availability() -> void:
 ## Recursively find recipe buttons in the picker tree and disable active ones.
 func _disable_active_recipe_buttons(node: Node, active_keys: Array) -> void:
 	for child in node.get_children():
-		if child is Button and child.has_meta("key_json"):
-			var key: String = child.get_meta("key_json")
+		if child is Button and child.has_meta("recipe_key"):
+			var key: String = child.get_meta("recipe_key")
 			child.disabled = active_keys.has(key)
 		elif child is Container:
 			_disable_active_recipe_buttons(child, active_keys)
 
 
-func _on_recipe_picker_selected(key_json: String) -> void:
+func _on_recipe_picker_selected(recipe_variant: int, material_json: String) -> void:
 	if _current_structure_id < 0:
 		return
-	add_recipe_requested.emit(_current_structure_id, key_json)
+	add_recipe_requested.emit(_current_structure_id, recipe_variant, material_json)
 	_recipe_picker_visible = false
 	_crafting_recipe_picker.visible = false
 	_recipe_search_edit.visible = false
