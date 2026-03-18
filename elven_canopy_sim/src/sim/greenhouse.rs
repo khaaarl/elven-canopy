@@ -86,9 +86,9 @@ impl SimState {
             return false;
         }
 
-        // Roll spawn chance.
-        let roll = self.rng.next_f32();
-        if roll >= self.config.fruit_production_base_rate {
+        // Roll spawn chance (integer PPM comparison, deterministic).
+        let roll = self.rng.next_u32() % 1_000_000;
+        if roll >= self.config.fruit_production_rate_ppm {
             return false;
         }
 

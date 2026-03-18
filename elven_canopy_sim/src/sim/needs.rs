@@ -545,13 +545,8 @@ impl SimState {
         let duration = self.config.sleep_action_ticks;
 
         // On first sleep action, check for low ceiling.
-        let progress = self
-            .db
-            .tasks
-            .get(&task_id)
-            .map(|t| t.progress)
-            .unwrap_or(0.0);
-        if progress == 0.0 {
+        let progress = self.db.tasks.get(&task_id).map(|t| t.progress).unwrap_or(0);
+        if progress == 0 {
             let location = self.task_sleep_location(task_id);
             if let Some(location) = &location {
                 let structure_id = match location {
@@ -610,7 +605,7 @@ impl SimState {
 
         // Increment progress by 1 (one action).
         let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
-            t.progress += 1.0;
+            t.progress += 1;
         });
 
         // Check if done by progress or rest full.
@@ -674,7 +669,7 @@ impl SimState {
             None => return false,
         };
 
-        let increment = self.config.mope_action_ticks as f32;
+        let increment = self.config.mope_action_ticks as i64;
         let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
             t.progress += increment;
         });

@@ -426,8 +426,8 @@ pub struct Task {
     #[indexed]
     pub state: TaskState,
     pub location: NavNodeId,
-    pub progress: f32,
-    pub total_cost: f32,
+    pub progress: i64,
+    pub total_cost: i64,
     #[indexed]
     pub required_species: Option<Species>,
     pub origin: TaskOrigin,

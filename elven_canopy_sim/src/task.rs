@@ -19,7 +19,7 @@
 // A `Task` has a `kind` (`TaskKind` enum), a `state` (`TaskState` lifecycle),
 // a `location` (nav node where work happens), and progress tracking. Tasks
 // with nonzero `total_cost` track `progress` toward completion; tasks with
-// `total_cost == 0.0` (like `GoTo`) complete instantly on arrival.
+// `total_cost == 0` (like `GoTo`) complete instantly on arrival.
 //
 // `required_species` optionally restricts which species can claim the task.
 // If `Some(Species::Elf)`, only elves will pick it up. If `None`, any idle
@@ -38,7 +38,7 @@
 // - `GoTo` — walk toward `location`; complete instantly on arrival. Used by
 //   the "Summon Elf" UI button to direct an elf to a clicked location.
 // - `Build { project_id }` — walk to the build site, then do incremental
-//   work. Each activation adds 1.0 to progress; every
+//   work. Each activation adds 1 to progress; every
 //   `build_work_ticks_per_voxel` units, one blueprint voxel materializes.
 //   Linked to a `Blueprint` via `project_id`. See `sim/construction.rs` `do_build_work()`.
 // - `EatBread` — eat bread from inventory, restoring food. Created
@@ -80,7 +80,7 @@
 //   check when a creature's inventory is below its personal `wants` target.
 //   On abandonment, reservations are cleared at the source.
 // - `Mope` — idle at a location due to low mood. Multi-activation: each tick
-//   increments progress by 1.0 until reaching `total_cost`. Created by the
+//   increments progress by 1 until reaching `total_cost`. Created by the
 //   heartbeat mood check (Phase 2b½) when mood is Unhappy or worse. Location
 //   is the creature's assigned home if available, else current node. No side
 //   effects beyond consuming the creature's time.
@@ -274,10 +274,10 @@ pub struct Task {
     /// The nav node where creatures go to work on this task.
     pub location: NavNodeId,
     /// Creatures currently assigned to this task.
-    /// Current progress toward completion (0.0 to 1.0).
-    pub progress: f32,
-    /// Total work units needed to complete. 0.0 for instant tasks (e.g. GoTo).
-    pub total_cost: f32,
+    /// Current progress toward completion (integer work units).
+    pub progress: i64,
+    /// Total work units needed to complete. 0 for instant tasks (e.g. GoTo).
+    pub total_cost: i64,
     /// If set, only creatures of this species can claim this task.
     pub required_species: Option<Species>,
     /// Where this task originated (player command, autonomous decision, etc.).
@@ -308,8 +308,8 @@ mod tests {
             state: TaskState::Available,
             location,
 
-            progress: 0.0,
-            total_cost: 5000.0,
+            progress: 0,
+            total_cost: 5000,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::PlayerDirected,
             target_creature: None,
@@ -323,7 +323,7 @@ mod tests {
             TaskKind::Build { project_id: pid } => assert_eq!(*pid, project_id),
             _ => panic!("Expected Build task kind"),
         }
-        assert_eq!(restored.total_cost, 5000.0);
+        assert_eq!(restored.total_cost, 5000);
         assert_eq!(restored.required_species, Some(Species::Elf));
         assert_eq!(restored.origin, TaskOrigin::PlayerDirected);
     }
@@ -341,8 +341,8 @@ mod tests {
             state: TaskState::InProgress,
             location,
 
-            progress: 0.0,
-            total_cost: 0.0,
+            progress: 0,
+            total_cost: 0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
             target_creature: None,
@@ -373,8 +373,8 @@ mod tests {
             state: TaskState::InProgress,
             location,
 
-            progress: 0.0,
-            total_cost: 0.0,
+            progress: 0,
+            total_cost: 0,
             required_species: None,
             origin: TaskOrigin::Autonomous,
             target_creature: None,
@@ -404,8 +404,8 @@ mod tests {
             state: TaskState::InProgress,
             location,
 
-            progress: 0.0,
-            total_cost: 10000.0,
+            progress: 0,
+            total_cost: 10000,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
             target_creature: None,
@@ -466,8 +466,8 @@ mod tests {
             state: TaskState::Available,
             location,
 
-            progress: 0.0,
-            total_cost: 0.0,
+            progress: 0,
+            total_cost: 0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Automated,
             target_creature: None,
@@ -511,8 +511,8 @@ mod tests {
             state: TaskState::InProgress,
             location: dest_node,
 
-            progress: 0.0,
-            total_cost: 0.0,
+            progress: 0,
+            total_cost: 0,
             required_species: None,
             origin: TaskOrigin::Automated,
             target_creature: None,
@@ -545,8 +545,8 @@ mod tests {
             state: TaskState::InProgress,
             location,
 
-            progress: 0.0,
-            total_cost: 0.0,
+            progress: 0,
+            total_cost: 0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
             target_creature: None,
@@ -583,8 +583,8 @@ mod tests {
             state: TaskState::InProgress,
             location,
 
-            progress: 50.0,
-            total_cost: 10000.0,
+            progress: 50,
+            total_cost: 10000,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
             target_creature: None,
@@ -596,8 +596,8 @@ mod tests {
         assert_eq!(restored.id, task_id);
         assert!(matches!(restored.kind, TaskKind::Mope));
         assert_eq!(restored.state, TaskState::InProgress);
-        assert_eq!(restored.progress, 50.0);
-        assert_eq!(restored.total_cost, 10000.0);
+        assert_eq!(restored.progress, 50);
+        assert_eq!(restored.total_cost, 10000);
         assert_eq!(restored.required_species, Some(Species::Elf));
         assert_eq!(restored.origin, TaskOrigin::Autonomous);
     }
@@ -616,8 +616,8 @@ mod tests {
             state: TaskState::Available,
             location,
 
-            progress: 0.0,
-            total_cost: 0.0,
+            progress: 0,
+            total_cost: 0,
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
             target_creature: None,
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(retrieved.state, TaskState::Available);
         assert_eq!(retrieved.location, location);
 
-        assert_eq!(retrieved.progress, 0.0);
-        assert_eq!(retrieved.total_cost, 0.0);
+        assert_eq!(retrieved.progress, 0);
+        assert_eq!(retrieved.total_cost, 0);
     }
 }

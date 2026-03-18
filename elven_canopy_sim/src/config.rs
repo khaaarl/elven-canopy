@@ -1527,12 +1527,14 @@ pub struct GameConfig {
     /// mana capacity updates).
     pub tree_heartbeat_interval_ticks: u64,
 
-    /// Base mana generated per elf per heartbeat tick.
-    pub mana_base_generation_rate: f32,
+    /// Base tree mana generated per elf per heartbeat, in millimana
+    /// (1000 = 1.0 display mana).
+    pub mana_base_generation_rate_mm: i64,
 
-    /// Range of mood-based multipliers on mana generation.
-    /// `(min_multiplier, max_multiplier)` — interpolated from worst to best mood.
-    pub mana_mood_multiplier_range: (f32, f32),
+    /// Range of mood-based multipliers on mana generation, in per-mille
+    /// (1000 = 1.0×). `(min_multiplier, max_multiplier)` — interpolated
+    /// from worst to best mood.
+    pub mana_mood_multiplier_range_permille: (i64, i64),
 
     /// Mana cost to grow one voxel of platform, in per-mille of the
     /// creature's mp_max (20 = 2%). Creature-scale cost = mp_max / 1000 × this.
@@ -1560,8 +1562,9 @@ pub struct GameConfig {
     #[serde(default = "default_mana_abandon_threshold")]
     pub mana_abandon_threshold: u32,
 
-    /// Base rate of fruit production per tree per heartbeat tick.
-    pub fruit_production_base_rate: f32,
+    /// Fruit spawn chance per tree per heartbeat, in parts per million
+    /// (500_000 = 50%).
+    pub fruit_production_rate_ppm: u32,
 
     /// Maximum number of fruit a single tree can bear at once.
     pub fruit_max_per_tree: u32,
@@ -1580,11 +1583,12 @@ pub struct GameConfig {
     /// transient state after deserialization.
     pub floor_extent: i32,
 
-    /// Initial mana stored in the player's home tree.
-    pub starting_mana: f32,
+    /// Initial mana stored in the player's home tree, in millimana
+    /// (1000 = 1.0 display mana).
+    pub starting_mana_mm: i64,
 
-    /// Maximum mana the starting tree can hold.
-    pub starting_mana_capacity: f32,
+    /// Maximum mana the starting tree can hold, in millimana.
+    pub starting_mana_capacity_mm: i64,
 
     /// Ticks of work per voxel during construction. An elf must accumulate
     /// this many activations-worth of work before one blueprint voxel
@@ -2488,20 +2492,20 @@ impl Default for GameConfig {
         Self {
             tick_duration_ms: 1,
             tree_heartbeat_interval_ticks: 10000,
-            mana_base_generation_rate: 1.0,
-            mana_mood_multiplier_range: (0.2, 2.0),
+            mana_base_generation_rate_mm: 1000,
+            mana_mood_multiplier_range_permille: (200, 2000),
             platform_mana_cost_per_mille: 20,
             bridge_mana_cost_per_mille: 30,
             default_mana_cost_per_mille: 20,
             grow_mana_cost_per_mille: 20,
             mana_abandon_threshold: 3,
-            fruit_production_base_rate: 0.5,
+            fruit_production_rate_ppm: 500_000,
             fruit_max_per_tree: 20,
             fruit_initial_attempts: 12,
             world_size: (256, 128, 256),
             floor_extent: 20,
-            starting_mana: 100.0,
-            starting_mana_capacity: 500.0,
+            starting_mana_mm: 100_000,
+            starting_mana_capacity_mm: 500_000,
             build_work_ticks_per_voxel: 1000,
             carve_work_ticks_per_voxel: 1000,
             furnish_work_ticks_per_item: 2000,
@@ -2805,18 +2809,18 @@ mod tests {
         let json = r#"{
             "tick_duration_ms": 1,
             "tree_heartbeat_interval_ticks": 10000,
-            "mana_base_generation_rate": 1.0,
-            "mana_mood_multiplier_range": [0.2, 2.0],
+            "mana_base_generation_rate_mm": 1000,
+            "mana_mood_multiplier_range_permille": [200, 2000],
             "platform_mana_cost_per_mille": 20,
             "bridge_mana_cost_per_mille": 30,
-            "fruit_production_base_rate": 0.5,
+            "fruit_production_rate_ppm": 500000,
             "fruit_max_per_tree": 20,
             "fruit_initial_attempts": 12,
             "build_work_ticks_per_voxel": 1000,
             "world_size": [256, 128, 256],
             "floor_extent": 20,
-            "starting_mana": 100.0,
-            "starting_mana_capacity": 500.0,
+            "starting_mana_mm": 100000,
+            "starting_mana_capacity_mm": 500000,
             "tree_profile": {
                 "growth": { "initial_energy": 200.0, "energy_to_radius": 0.07, "min_radius": 0.5, "growth_step_length": 1.0, "energy_per_step": 1.0 },
                 "split": { "split_chance_base": 0.15, "split_count": 2, "split_energy_ratio": 0.3, "split_angle": 0.5, "split_angle_variance": 0.3, "min_progress_for_split": 0.1 },
@@ -2839,18 +2843,18 @@ mod tests {
         let json = r#"{
             "tick_duration_ms": 1,
             "tree_heartbeat_interval_ticks": 10000,
-            "mana_base_generation_rate": 2.0,
-            "mana_mood_multiplier_range": [0.1, 3.0],
+            "mana_base_generation_rate_mm": 2000,
+            "mana_mood_multiplier_range_permille": [100, 3000],
             "platform_mana_cost_per_mille": 16,
             "bridge_mana_cost_per_mille": 24,
-            "fruit_production_base_rate": 0.8,
+            "fruit_production_rate_ppm": 800000,
             "fruit_max_per_tree": 25,
             "fruit_initial_attempts": 15,
             "build_work_ticks_per_voxel": 2000,
             "world_size": [128, 64, 128],
             "floor_extent": 15,
-            "starting_mana": 200.0,
-            "starting_mana_capacity": 1000.0,
+            "starting_mana_mm": 200000,
+            "starting_mana_capacity_mm": 1000000,
             "tree_profile": {
                 "growth": {
                     "initial_energy": 300.0,
