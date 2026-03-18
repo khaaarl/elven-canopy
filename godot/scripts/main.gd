@@ -270,6 +270,13 @@ func _setup_common(bridge: SimBridge) -> void:
 	add_child(_selection_highlight)
 	_selection_highlight.setup(bridge)
 
+	# Set up mana-wasted VFX (floating blue swirls).
+	var mana_vfx_script = load("res://scripts/mana_vfx.gd")
+	var mana_vfx := Node3D.new()
+	mana_vfx.set_script(mana_vfx_script)
+	add_child(mana_vfx)
+	mana_vfx.setup(bridge)
+
 	# Set up action toolbar UI (rendered on top of 3D via CanvasLayer).
 	var canvas_layer := CanvasLayer.new()
 	add_child(canvas_layer)

@@ -140,7 +140,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
-[ ] F-mana-depleted-vfx    Visual feedback for mana-depleted work actions
 [ ] F-mana-grow-recipes    Grow-verb crafting recipes cost mana
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-transfer        Tree-to-elf mana transfer
@@ -302,6 +301,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-logistics            Spatial resource flow (Kanban-style)
 [x] F-logistics-filter     Logistics material filter
 [x] F-main-menu            Main menu UI
+[x] F-mana-depleted-vfx    Visual feedback for mana-depleted work actions
 [x] F-mana-system          Mana generation, storage, and spending
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-melee-action         Melee attack action
@@ -3712,7 +3712,7 @@ Deferred until camera zoom range demands it.
 Main menu with New Game, Load, and Quit buttons.
 
 #### F-mana-depleted-vfx — Visual feedback for mana-depleted work actions
-**Status:** Todo · **Refs:** §11
+**Status:** Done · **Refs:** §11
 
 Visual feedback when a creature performs a wasted work action due to
 insufficient mana. Anime-esque confusion icons (e.g., question marks, swirls)

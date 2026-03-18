@@ -2519,6 +2519,25 @@ impl SimBridge {
         arr
     }
 
+    /// Return positions where mana-wasted work actions occurred this step.
+    /// Each position is a `Vector3` (x, y, z). The buffer is cleared at the
+    /// start of each sim step, so this returns only positions from the most
+    /// recent step. Used by `mana_vfx.gd` to spawn floating blue swirls.
+    #[func]
+    fn get_mana_wasted_positions(&self) -> VarArray {
+        let Some(sim) = &self.session.sim else {
+            return VarArray::new();
+        };
+        let mut arr = VarArray::new();
+        for pos in &sim.mana_wasted_positions {
+            arr.push(
+                &Vector3::new(pos.x as f32 + 0.5, pos.y as f32 + 0.5, pos.z as f32 + 0.5)
+                    .to_variant(),
+            );
+        }
+        arr
+    }
+
     /// Return sprite textures and change flags for all alive elves.
     ///
     /// Returns a `VarDictionary` with two keys:

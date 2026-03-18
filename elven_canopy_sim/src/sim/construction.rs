@@ -1002,7 +1002,8 @@ impl SimState {
             });
             true
         } else {
-            // Insufficient mana: wasted action.
+            // Insufficient mana: wasted action. Record position for VFX.
+            self.mana_wasted_positions.push(creature.position);
             let threshold = self.config.mana_abandon_threshold;
             let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
                 c.wasted_action_count += 1;

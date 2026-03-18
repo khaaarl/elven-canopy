@@ -35462,3 +35462,90 @@ fn drained_elf_can_still_claim_non_mana_tasks() {
         "drained elf should still find non-mana tasks"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mana system — F-mana-depleted-vfx: wasted position buffer
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mana_wasted_position_recorded_on_failed_drain() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+
+    // Give the elf a task so try_drain_mana has something to work with.
+    let task_id = TaskId::new(&mut sim.rng);
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: elf_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(task);
+    let mut elf = sim.db.creatures.get(&elf_id).unwrap();
+    elf.current_task = Some(task_id);
+    elf.mp = 0;
+    let _ = sim.db.creatures.update_no_fk(elf);
+
+    assert!(sim.mana_wasted_positions.is_empty());
+
+    let cost = sim.mana_cost_per_action(Some(BuildType::Platform));
+    sim.try_drain_mana(elf_id, cost);
+
+    assert_eq!(sim.mana_wasted_positions.len(), 1);
+    assert_eq!(sim.mana_wasted_positions[0], elf_pos);
+}
+
+#[test]
+fn mana_wasted_positions_cleared_each_step() {
+    let mut sim = test_sim(42);
+    // Manually push a position to simulate a previous step.
+    sim.mana_wasted_positions.push(VoxelCoord::new(0, 0, 0));
+    assert_eq!(sim.mana_wasted_positions.len(), 1);
+
+    // step() should clear the buffer.
+    sim.step(&[], sim.tick + 1);
+    assert!(
+        sim.mana_wasted_positions.is_empty(),
+        "buffer should be cleared at start of step()"
+    );
+}
+
+#[test]
+fn successful_drain_does_not_record_position() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Give the elf a task.
+    let task_id = TaskId::new(&mut sim.rng);
+    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: elf_node,
+        progress: 0.0,
+        total_cost: 0.0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(task);
+    let mut elf = sim.db.creatures.get(&elf_id).unwrap();
+    elf.current_task = Some(task_id);
+    let _ = sim.db.creatures.update_no_fk(elf);
+
+    let cost = sim.mana_cost_per_action(Some(BuildType::Platform));
+    let result = sim.try_drain_mana(elf_id, cost);
+    assert!(result, "drain should succeed — elf has full mana");
+    assert!(
+        sim.mana_wasted_positions.is_empty(),
+        "no position recorded on success"
+    );
+}

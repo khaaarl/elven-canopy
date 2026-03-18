@@ -139,7 +139,8 @@ elven-canopy/
 │       ├── creature_info_panel.gd   # Right-side creature info + follow button
 │       ├── group_info_panel.gd     # Right-side multi-creature selection panel
 │       ├── selection_highlight.gd    # Faction-colored selection ring rendering (pool pattern)
-│       ├── hp_bar.gd               # Overhead HP bar textures and sprite helpers
+│       ├── hp_bar.gd               # Overhead HP/MP bar textures and sprite helpers
+│       ├── mana_vfx.gd             # Floating blue swirl VFX for mana-depleted work actions
 │       ├── projectile_renderer.gd   # In-flight projectile rendering (oriented CylinderMesh pool)
 │       ├── minimap.gd              # Zoomable top-down minimap (terrain, creatures, camera frustum)
 │       ├── construction_music.gd    # Construction music playback (PCM via AudioStreamGenerator)

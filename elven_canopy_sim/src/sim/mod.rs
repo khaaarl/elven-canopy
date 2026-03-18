@@ -430,6 +430,13 @@ pub struct SimState {
     /// `do_eat_fruit` / `do_harvest` (remove).
     #[serde(skip)]
     pub fruit_voxel_species: BTreeMap<VoxelCoord, crate::fruit::FruitSpeciesId>,
+
+    /// Positions where mana-wasted work actions occurred during the current
+    /// step. Cleared at the start of each `step()` call. Read by the GDScript
+    /// VFX layer via `sim_bridge.rs::get_mana_wasted_positions()` to spawn
+    /// floating blue swirl sprites.
+    #[serde(skip)]
+    pub mana_wasted_positions: Vec<VoxelCoord>,
 }
 
 /// A tree entity — the primary world structure.
@@ -602,6 +609,7 @@ impl SimState {
             spatial_index: BTreeMap::new(),
             fruit_voxel_species_list: Vec::new(),
             fruit_voxel_species: BTreeMap::new(),
+            mana_wasted_positions: Vec::new(),
         };
 
         // The world rebuild above produces thousands of set() calls that
@@ -772,6 +780,7 @@ impl SimState {
     /// Commands must be sorted by tick. Commands with tick > `target_tick`
     /// are ignored (caller error).
     pub fn step(&mut self, commands: &[SimCommand], target_tick: u64) -> StepResult {
+        self.mana_wasted_positions.clear();
         let mut events = Vec::new();
 
         // Index into the sorted command slice.
