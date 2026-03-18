@@ -32,9 +32,12 @@
 use crate::inventory::{ItemColor, ItemKind, Material, MaterialFilter};
 use crate::nav::EdgeType;
 use crate::species::{
-    AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, SpeciesData, WeaponPreference,
+    AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, SpeciesData, StatDistribution,
+    WeaponPreference,
 };
-use crate::types::{CivSpecies, FaceType, MoodTier, Species, ThoughtKind, VoxelCoord, VoxelType};
+use crate::types::{
+    CivSpecies, FaceType, MoodTier, Species, ThoughtKind, TraitKind, VoxelCoord, VoxelType,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -1328,6 +1331,10 @@ fn default_arrow_base_speed() -> i64 {
     crate::projectile::SUB_VOXEL_ONE / 20 // ~50 voxels/sec
 }
 
+fn default_arrow_base_deviation_ppm() -> i64 {
+    50_000 // 5% of range at DEX 0 (human baseline)
+}
+
 fn default_shoot_cooldown_ticks() -> u64 {
     3000 // 3 seconds between shots at 1000 ticks/sec
 }
@@ -1819,6 +1826,13 @@ pub struct GameConfig {
     #[serde(default = "default_arrow_base_speed")]
     pub arrow_base_speed: i64,
 
+    /// Base arrow aim deviation at DEX 0, in parts-per-million of the
+    /// velocity magnitude. Applied as random lateral offsets to the aim
+    /// vector. The actual deviation is `base * (1 << 20) / stat_multiplier(dex)`,
+    /// so higher DEX reduces it. Default 50000 = 5% of velocity magnitude.
+    #[serde(default = "default_arrow_base_deviation_ppm")]
+    pub arrow_base_deviation_ppm: i64,
+
     /// Multiplier applied to arrow impact damage. The base formula yields
     /// damage = impact_speed / reference_speed (≈1 at normal launch speed);
     /// this multiplier scales the result before applying.
@@ -2061,6 +2075,15 @@ fn default_cook_bread_output() -> u32 {
     10
 }
 
+/// Build a stat distribution map from (TraitKind, mean, stdev) triples.
+/// Stats not listed default to (0, 5) at query time in `roll_creature_traits`.
+fn stat_dists(entries: &[(TraitKind, i32, i32)]) -> BTreeMap<TraitKind, StatDistribution> {
+    entries
+        .iter()
+        .map(|&(kind, mean, stdev)| (kind, StatDistribution { mean, stdev }))
+        .collect()
+}
+
 impl Default for GameConfig {
     fn default() -> Self {
         let mut species = BTreeMap::new();
@@ -2097,6 +2120,16 @@ impl Default for GameConfig {
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
                 mp_max: 1_000_000_000_000_000,   // same scale as food_max/rest_max
                 mana_per_tick: 3_333_333_333,    // same rate as food_decay_per_tick
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, -3, 4),
+                    (TraitKind::Agility, 5, 4),
+                    (TraitKind::Dexterity, 5, 4),
+                    (TraitKind::Constitution, -5, 4),
+                    (TraitKind::Willpower, 5, 4),
+                    (TraitKind::Intelligence, 3, 4),
+                    (TraitKind::Perception, 3, 4),
+                    (TraitKind::Charisma, 3, 4),
+                ]),
             },
         );
         species.insert(
@@ -2127,6 +2160,16 @@ impl Default for GameConfig {
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
                 mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, -10, 4),
+                    (TraitKind::Agility, -5, 4),
+                    (TraitKind::Dexterity, -10, 4),
+                    (TraitKind::Constitution, 5, 4),
+                    (TraitKind::Willpower, 10, 4),
+                    (TraitKind::Intelligence, -10, 4),
+                    (TraitKind::Perception, 5, 4),
+                    (TraitKind::Charisma, 15, 4),
+                ]),
             },
         );
         species.insert(
@@ -2157,6 +2200,16 @@ impl Default for GameConfig {
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
                 mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, 5, 4),
+                    (TraitKind::Agility, 3, 4),
+                    (TraitKind::Dexterity, -5, 4),
+                    (TraitKind::Constitution, 10, 4),
+                    (TraitKind::Willpower, -3, 4),
+                    (TraitKind::Intelligence, -10, 4),
+                    (TraitKind::Perception, 3, 4),
+                    (TraitKind::Charisma, -10, 4),
+                ]),
             },
         );
         species.insert(
@@ -2187,6 +2240,16 @@ impl Default for GameConfig {
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
                 mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, -5, 4),
+                    (TraitKind::Agility, 15, 4),
+                    (TraitKind::Dexterity, 3, 4),
+                    (TraitKind::Constitution, -3, 4),
+                    (TraitKind::Willpower, 0, 4),
+                    (TraitKind::Intelligence, -5, 4),
+                    (TraitKind::Perception, 10, 4),
+                    (TraitKind::Charisma, 0, 4),
+                ]),
             },
         );
         species.insert(
@@ -2217,6 +2280,16 @@ impl Default for GameConfig {
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
                 mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, 25, 5),
+                    (TraitKind::Agility, -15, 5),
+                    (TraitKind::Dexterity, -10, 5),
+                    (TraitKind::Constitution, 35, 5),
+                    (TraitKind::Willpower, 5, 5),
+                    (TraitKind::Intelligence, 5, 5),
+                    (TraitKind::Perception, 3, 5),
+                    (TraitKind::Charisma, 5, 5),
+                ]),
             },
         );
         species.insert(
@@ -2252,6 +2325,16 @@ impl Default for GameConfig {
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
                 mp_max: 0,
                 mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, -5, 4),
+                    (TraitKind::Agility, 5, 4),
+                    (TraitKind::Dexterity, 3, 4),
+                    (TraitKind::Constitution, -3, 4),
+                    (TraitKind::Willpower, -3, 4),
+                    (TraitKind::Intelligence, -5, 4),
+                    (TraitKind::Perception, 5, 4),
+                    (TraitKind::Charisma, -5, 4),
+                ]),
             },
         );
         species.insert(
@@ -2282,6 +2365,16 @@ impl Default for GameConfig {
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
                 mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, -5, 4),
+                    (TraitKind::Agility, 10, 4),
+                    (TraitKind::Dexterity, 10, 4),
+                    (TraitKind::Constitution, -5, 4),
+                    (TraitKind::Willpower, 0, 4),
+                    (TraitKind::Intelligence, 5, 4),
+                    (TraitKind::Perception, 5, 4),
+                    (TraitKind::Charisma, 5, 4),
+                ]),
             },
         );
         species.insert(
@@ -2317,6 +2410,16 @@ impl Default for GameConfig {
                 hostile_detection_range_sq: 400, // 20-voxel detection radius
                 mp_max: 0,
                 mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, 10, 4),
+                    (TraitKind::Agility, -3, 4),
+                    (TraitKind::Dexterity, -5, 4),
+                    (TraitKind::Constitution, 10, 4),
+                    (TraitKind::Willpower, 3, 4),
+                    (TraitKind::Intelligence, -8, 4),
+                    (TraitKind::Perception, 0, 4),
+                    (TraitKind::Charisma, -5, 4),
+                ]),
             },
         );
         species.insert(
@@ -2347,6 +2450,16 @@ impl Default for GameConfig {
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
                 mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, -15, 4),
+                    (TraitKind::Agility, 15, 4),
+                    (TraitKind::Dexterity, 10, 4),
+                    (TraitKind::Constitution, -10, 4),
+                    (TraitKind::Willpower, 0, 4),
+                    (TraitKind::Intelligence, 3, 4),
+                    (TraitKind::Perception, 10, 4),
+                    (TraitKind::Charisma, 3, 4),
+                ]),
             },
         );
         species.insert(
@@ -2382,6 +2495,16 @@ impl Default for GameConfig {
                 hostile_detection_range_sq: 144, // 12-voxel detection radius
                 mp_max: 0,
                 mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, 20, 5),
+                    (TraitKind::Agility, -10, 5),
+                    (TraitKind::Dexterity, -5, 5),
+                    (TraitKind::Constitution, 30, 5),
+                    (TraitKind::Willpower, 5, 5),
+                    (TraitKind::Intelligence, -15, 5),
+                    (TraitKind::Perception, -5, 5),
+                    (TraitKind::Charisma, -10, 5),
+                ]),
             },
         );
 
@@ -2637,6 +2760,7 @@ impl Default for GameConfig {
             worldgen: crate::worldgen::WorldgenConfig::default(),
             arrow_gravity: default_arrow_gravity(),
             arrow_base_speed: default_arrow_base_speed(),
+            arrow_base_deviation_ppm: default_arrow_base_deviation_ppm(),
             arrow_damage_multiplier: default_arrow_damage_multiplier(),
             shoot_cooldown_ticks: default_shoot_cooldown_ticks(),
             attack_path_retry_limit: default_attack_path_retry_limit(),

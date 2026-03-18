@@ -273,15 +273,16 @@ fn spawned_non_elf_has_no_name() {
 /// Helper: spawn a creature and return its ID.
 fn spawn_creature(sim: &mut SimState, species: Species) -> CreatureId {
     let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tick = sim.tick + 1;
     let cmd = SimCommand {
         player_name: String::new(),
-        tick: 1,
+        tick,
         action: SimAction::SpawnCreature {
             species,
             position: tree_pos,
         },
     };
-    sim.step(&[cmd], 2);
+    sim.step(&[cmd], tick + 1);
     sim.db
         .creatures
         .iter_all()
@@ -531,6 +532,14 @@ fn trait_kind_serde_roundtrip() {
         TraitKind::EarStyle,
         TraitKind::SkinColor,
         TraitKind::Accessory,
+        TraitKind::Strength,
+        TraitKind::Agility,
+        TraitKind::Dexterity,
+        TraitKind::Constitution,
+        TraitKind::Willpower,
+        TraitKind::Intelligence,
+        TraitKind::Perception,
+        TraitKind::Charisma,
     ];
     for kind in all_kinds {
         let json = serde_json::to_string(&kind).unwrap();
@@ -551,6 +560,150 @@ fn trait_value_serde_roundtrip() {
         let restored: TraitValue = serde_json::from_str(&json).unwrap();
         assert_eq!(val, restored);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Creature stats (F-creature-stats)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn creature_stats_rolled_at_spawn() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // All 8 stats should be present as Int traits.
+    for &kind in &crate::stats::STAT_TRAIT_KINDS {
+        let val = sim.trait_int(elf_id, kind, i64::MIN);
+        assert_ne!(val, i64::MIN, "{kind:?} should be set at spawn");
+    }
+}
+
+#[test]
+fn creature_stats_deterministic() {
+    let mut sim1 = test_sim(42);
+    let mut sim2 = test_sim(42);
+    let elf1 = spawn_creature(&mut sim1, Species::Elf);
+    let elf2 = spawn_creature(&mut sim2, Species::Elf);
+
+    for &kind in &crate::stats::STAT_TRAIT_KINDS {
+        assert_eq!(
+            sim1.trait_int(elf1, kind, 0),
+            sim2.trait_int(elf2, kind, 0),
+            "{kind:?} should be deterministic"
+        );
+    }
+}
+
+#[test]
+fn constitution_modifies_hp_max() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let con = sim.trait_int(elf_id, TraitKind::Constitution, 0);
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let base_hp = sim.species_table[&Species::Elf].hp_max;
+    let expected_hp = crate::stats::apply_stat_multiplier(base_hp, con);
+    assert_eq!(elf.hp_max, expected_hp);
+    assert_eq!(elf.hp, expected_hp); // spawns at full HP
+}
+
+#[test]
+fn stat_zero_preserves_baseline() {
+    // With all stats at 0, behavior matches species base values.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    zero_creature_stats(&mut sim, elf_id);
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let base_hp = sim.species_table[&Species::Elf].hp_max;
+    assert_eq!(elf.hp_max, base_hp);
+    assert_eq!(elf.hp, base_hp);
+}
+
+#[test]
+fn all_species_get_stats_on_spawn() {
+    let all_species = [
+        Species::Elf,
+        Species::Capybara,
+        Species::Boar,
+        Species::Deer,
+        Species::Elephant,
+        Species::Goblin,
+        Species::Monkey,
+        Species::Orc,
+        Species::Squirrel,
+        Species::Troll,
+    ];
+    for species in all_species {
+        let mut sim = test_sim(42);
+        let id = spawn_creature(&mut sim, species);
+        for &kind in &crate::stats::STAT_TRAIT_KINDS {
+            let val = sim.trait_int(id, kind, i64::MIN);
+            assert_ne!(val, i64::MIN, "{species:?} should have {kind:?} at spawn");
+        }
+    }
+}
+
+#[test]
+fn strength_modifies_melee_damage() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+
+    let base_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    // Set goblin STR to +10 (doubles damage).
+    let trait_rows: Vec<_> = sim.db.creature_traits.by_creature_trait_kind(
+        &goblin,
+        &TraitKind::Strength,
+        tabulosity::QueryOpts::ASC,
+    );
+    assert!(!trait_rows.is_empty());
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&trait_rows[0].id, |t| {
+            t.value = TraitValue::Int(10);
+        });
+
+    // Position them adjacent and make the goblin strike.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    let mut events = Vec::new();
+    sim.try_melee_strike(goblin, elf, &mut events);
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    let expected_damage = crate::stats::apply_stat_multiplier(base_damage, 10);
+    assert_eq!(
+        elf_hp_before - elf_hp_after,
+        expected_damage,
+        "STR +10 should double damage: base={base_damage}, expected={expected_damage}"
+    );
+}
+
+#[test]
+fn stat_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    let str_before = sim.trait_int(elf_id, TraitKind::Strength, 0);
+    let agi_before = sim.trait_int(elf_id, TraitKind::Agility, 0);
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(
+        restored.trait_int(elf_id, TraitKind::Strength, 0),
+        str_before
+    );
+    assert_eq!(
+        restored.trait_int(elf_id, TraitKind::Agility, 0),
+        agi_before
+    );
 }
 
 #[test]
@@ -17199,6 +17352,7 @@ fn spatial_index_consistent_after_many_ticks() {
 fn spawn_sets_hp_from_species_data() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf_id);
     let creature = sim.db.creatures.get(&elf_id).unwrap();
     let hp_max = sim.species_table[&Species::Elf].hp_max;
     assert_eq!(creature.hp, hp_max);
@@ -17266,6 +17420,7 @@ fn dead_creature_excluded_from_count() {
 fn damage_reduces_hp() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf_id);
     let hp_max = sim.species_table[&Species::Elf].hp_max;
     let tick = sim.tick;
 
@@ -17344,6 +17499,7 @@ fn overkill_damage_clamps_hp_to_zero() {
 fn heal_restores_hp_clamped_to_max() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf_id);
     let hp_max = sim.species_table[&Species::Elf].hp_max;
     let tick = sim.tick;
 
@@ -17859,6 +18015,7 @@ fn death_removes_from_spatial_index() {
 fn hp_death_serde_roundtrip() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf_id);
     let tick = sim.tick;
 
     // Damage elf to half HP.
@@ -18064,6 +18221,34 @@ fn force_idle_and_cancel_activations(sim: &mut SimState, creature_id: CreatureId
     sim.event_queue.cancel_creature_activations(creature_id);
 }
 
+/// Zero all 8 stat traits for a creature and reset HP to the species base.
+/// Use in tests that were written before the creature-stats feature, so that
+/// stat modifiers (CON → HP, STR → melee damage, DEX → arrow deviation)
+/// don't perturb the hardcoded expected values.
+fn zero_creature_stats(sim: &mut SimState, creature_id: CreatureId) {
+    use crate::stats::STAT_TRAIT_KINDS;
+    use crate::types::TraitValue;
+    for kind in STAT_TRAIT_KINDS {
+        let rows = sim.db.creature_traits.by_creature_trait_kind(
+            &creature_id,
+            &kind,
+            tabulosity::QueryOpts::ASC,
+        );
+        for row in rows {
+            let _ = sim.db.creature_traits.modify_unchecked(&row.id, |t| {
+                t.value = TraitValue::Int(0);
+            });
+        }
+    }
+    // Reset HP to species base (undo CON modifier applied at spawn).
+    let species = sim.db.creatures.get(&creature_id).unwrap().species;
+    let base_hp = sim.species_table[&species].hp_max;
+    let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
+        c.hp_max = base_hp;
+        c.hp = base_hp;
+    });
+}
+
 impl SimState {
     /// Test helper: count pending `CreatureActivation` events for a creature.
     fn count_pending_activations_for(&self, creature_id: CreatureId) -> usize {
@@ -18141,6 +18326,8 @@ fn test_melee_strike_deals_damage() {
     let mut sim = test_sim(42);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     // Place goblin adjacent (x+1).
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
@@ -18184,6 +18371,8 @@ fn test_melee_strike_kills_target() {
     let mut sim = test_sim(42);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -18252,6 +18441,8 @@ fn test_melee_strike_cooldown() {
     let mut sim = test_sim(42);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -18390,6 +18581,8 @@ fn test_melee_strike_cooldown_expires() {
     let mut sim = test_sim(42);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -18571,9 +18764,11 @@ fn armor_reduces_melee_damage() {
     // Disable degradation to isolate the damage-reduction test.
     sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
 
-    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let base_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let strength = sim.trait_int(goblin, TraitKind::Strength, 0);
+    let raw_damage = crate::stats::apply_stat_multiplier(base_damage, strength);
     // With 9 armor and min_damage=1, effective = max(raw - 9, 1).
-    let expected_effective = (goblin_damage - 9).max(sim.config.armor_min_damage);
+    let expected_effective = (raw_damage - 9).max(sim.config.armor_min_damage);
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
 
     let tick = sim.tick;
@@ -18594,7 +18789,7 @@ fn armor_reduces_melee_damage() {
         elf_hp_after,
         elf_hp_before - expected_effective,
         "Armor should reduce damage from {} to {}",
-        goblin_damage,
+        raw_damage,
         expected_effective
     );
 }
@@ -18674,7 +18869,9 @@ fn no_armor_means_full_damage() {
         sim.inv_unequip_slot(inv_id, slot);
     }
 
-    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let base_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let strength = sim.trait_int(goblin, TraitKind::Strength, 0);
+    let goblin_damage = crate::stats::apply_stat_multiplier(base_damage, strength);
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
 
     let tick = sim.tick;
@@ -18753,7 +18950,9 @@ fn worn_armor_provides_less_protection() {
     sim.config.armor_non_penetrating_degrade_chance_recip = 0;
     sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
 
-    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let base_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let strength = sim.trait_int(goblin, TraitKind::Strength, 0);
+    let goblin_damage = crate::stats::apply_stat_multiplier(base_damage, strength);
     let expected = (goblin_damage - worn_armor as i64).max(sim.config.armor_min_damage);
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
 
@@ -18836,7 +19035,9 @@ fn damaged_armor_provides_even_less_protection() {
     sim.config.armor_non_penetrating_degrade_chance_recip = 0;
     sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
 
-    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let base_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let strength = sim.trait_int(goblin, TraitKind::Strength, 0);
+    let goblin_damage = crate::stats::apply_stat_multiplier(base_damage, strength);
     let expected = (goblin_damage - damaged_armor as i64).max(sim.config.armor_min_damage);
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
 
@@ -19362,8 +19563,10 @@ fn armor_mixed_condition_pieces_sum_correctly() {
     // Disable degradation.
     sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
 
-    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
-    let expected = (goblin_damage - 5).max(sim.config.armor_min_damage);
+    let base_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let strength = sim.trait_int(goblin, TraitKind::Strength, 0);
+    let raw_damage = crate::stats::apply_stat_multiplier(base_damage, strength);
+    let expected = (raw_damage - 5).max(sim.config.armor_min_damage);
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
 
     let tick = sim.tick;
@@ -19384,7 +19587,7 @@ fn armor_mixed_condition_pieces_sum_correctly() {
         elf_hp_after,
         elf_hp_before - expected,
         "Mixed-condition armor (total=5) should reduce {} damage to {}",
-        goblin_damage,
+        raw_damage,
         expected,
     );
 }
@@ -19681,7 +19884,9 @@ fn armor_save_load_roundtrip_preserves_combat() {
 
     // Verify combat uses the restored armor.
     force_idle(&mut restored, goblin);
-    let goblin_damage = restored.species_table[&Species::Goblin].melee_damage;
+    let base_damage = restored.species_table[&Species::Goblin].melee_damage;
+    let strength = restored.trait_int(goblin, TraitKind::Strength, 0);
+    let goblin_damage = crate::stats::apply_stat_multiplier(base_damage, strength);
     let expected = (goblin_damage - 2).max(restored.config.armor_min_damage);
     let elf_hp_before = restored.db.creatures.get(&elf).unwrap().hp;
 
@@ -20542,6 +20747,8 @@ fn hostile_creature_attacks_adjacent_elf() {
     let mut sim = test_sim(42);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     // Place goblin adjacent to elf.
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
@@ -24467,6 +24674,7 @@ fn disengage_threshold_creature_flees_at_low_hp() {
     };
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
 
     // At full HP, should not flee.
     assert!(
@@ -28901,6 +29109,9 @@ fn in_flight_arrow_passes_through_friendly_near_origin() {
     let shooter = spawn_elf(&mut sim);
     let buddy = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, shooter);
+    zero_creature_stats(&mut sim, buddy);
+    zero_creature_stats(&mut sim, goblin);
 
     // Place on flat ground away from the tree.
     let base = VoxelCoord::new(5, 1, 32);
@@ -28923,7 +29134,6 @@ fn in_flight_arrow_passes_through_friendly_near_origin() {
     force_position(&mut sim, goblin, goblin_pos);
 
     // Restore buddy HP to full in case the goblin attacked during spawn steps.
-    let buddy_max_hp = sim.species_table[&Species::Elf].hp_max;
     let _ = sim.db.creatures.modify_unchecked(&buddy, |c| {
         c.hp = c.hp_max;
     });

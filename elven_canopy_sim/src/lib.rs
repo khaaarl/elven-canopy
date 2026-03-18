@@ -22,6 +22,7 @@
 // - `fruit.rs`:       Procedural fruit species: types, generation, coverage, Vaelith naming.
 // - `config.rs`:      GameConfig + TreeProfile + FruitConfig — all tunable parameters.
 // - `species.rs`:     SpeciesData — data-driven creature behavior (DF-style).
+// - `stats.rs`:       Creature stat multiplier table (2^20 fixed-point exponential).
 // - `db.rs`:          SimDb — tabulosity relational store for all entities (creatures, tasks, structures, etc.).
 // - `task.rs`:        Task creation DTOs (`Task`, `TaskKind`) — decomposed into DB tables by `insert_task()`.
 // - `blueprint.rs`:   Blueprint data model for the construction system.
@@ -64,6 +65,7 @@ pub mod recipe;
 pub mod session;
 pub mod sim;
 pub mod species;
+pub mod stats;
 pub mod structural;
 pub mod task;
 pub mod texture_gen;

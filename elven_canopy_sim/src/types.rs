@@ -466,6 +466,25 @@ pub enum TraitKind {
     // -- Capybara traits --
     /// Index into `ACCESSORIES` array (0–3).
     Accessory,
+    // -- Creature stats (F-creature-stats) --
+    // Integer scale centered on 0 (human baseline). Every +10 doubles
+    // mechanical intensity via the exponential stat multiplier table.
+    /// Physical power. Melee damage multiplier, projectile velocity.
+    Strength,
+    /// Nimbleness. Move speed, climb speed (blended with Strength).
+    Agility,
+    /// Fine motor control. Arrow deviation, crafting quality (future).
+    Dexterity,
+    /// Toughness. HP max multiplier.
+    Constitution,
+    /// Mental fortitude. Mana pool, mana recharge rate (future).
+    Willpower,
+    /// Cognitive ability. Mana recharge rate, crafting quality (future).
+    Intelligence,
+    /// Awareness. Hostile detection range (F-per-detection), crafting (future).
+    Perception,
+    /// Social magnetism. Singing effectiveness, mana recharge rate (future).
+    Charisma,
 }
 
 /// The value of a creature biological trait. `Int` covers palette indices,

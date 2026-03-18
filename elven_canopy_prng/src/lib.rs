@@ -147,6 +147,29 @@ impl GameRng {
         self.range_u64(low as u64, high as u64) as u8
     }
 
+    /// Generate a uniform random `i64` in `[low, high]` (inclusive on both ends).
+    ///
+    /// Uses rejection sampling to avoid modulo bias, same as `range_u64`.
+    /// Panics if `low > high`.
+    pub fn range_i64_inclusive(&mut self, low: i64, high: i64) -> i64 {
+        assert!(low <= high, "range_i64_inclusive: low must be <= high");
+        let range = (high as i128 - low as i128 + 1) as u64;
+        if range == 0 {
+            // Full i64 range — just return a random i64.
+            return self.next_u64() as i64;
+        }
+        if range.is_power_of_two() {
+            return low.wrapping_add((self.next_u64() & (range - 1)) as i64);
+        }
+        let threshold = range.wrapping_neg() % range;
+        loop {
+            let r = self.next_u64();
+            if r >= threshold {
+                return low.wrapping_add((r % range) as i64);
+            }
+        }
+    }
+
     /// Return `true` with probability `p`, `false` otherwise.
     ///
     /// `p` should be in [0.0, 1.0]. Values outside this range are clamped:
@@ -257,6 +280,64 @@ mod tests {
             saw_max,
             "range_usize_inclusive should reach the upper bound"
         );
+    }
+
+    #[test]
+    fn range_i64_inclusive_within_bounds() {
+        let mut rng = GameRng::new(777);
+        for _ in 0..10_000 {
+            let v = rng.range_i64_inclusive(-10, 10);
+            assert!(
+                (-10..=10).contains(&v),
+                "range_i64_inclusive out of range: {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn range_i64_inclusive_reaches_both_bounds() {
+        let mut rng = GameRng::new(1);
+        let mut saw_min = false;
+        let mut saw_max = false;
+        for _ in 0..100_000 {
+            let v = rng.range_i64_inclusive(-5, 5);
+            if v == -5 {
+                saw_min = true;
+            }
+            if v == 5 {
+                saw_max = true;
+            }
+            if saw_min && saw_max {
+                break;
+            }
+        }
+        assert!(saw_min, "should reach lower bound");
+        assert!(saw_max, "should reach upper bound");
+    }
+
+    #[test]
+    fn range_i64_inclusive_single_value() {
+        let mut rng = GameRng::new(42);
+        for _ in 0..100 {
+            assert_eq!(rng.range_i64_inclusive(7, 7), 7);
+        }
+    }
+
+    #[test]
+    fn range_i64_inclusive_large_range() {
+        // Should not panic even with ranges approaching i64 limits.
+        let mut rng = GameRng::new(42);
+        for _ in 0..1000 {
+            let v = rng.range_i64_inclusive(i64::MIN, 0);
+            assert!(v >= i64::MIN && v <= 0);
+        }
+    }
+
+    #[test]
+    fn range_i64_inclusive_full_range() {
+        // Full i64 range should not panic.
+        let mut rng = GameRng::new(42);
+        let _ = rng.range_i64_inclusive(i64::MIN, i64::MAX);
     }
 
     #[test]

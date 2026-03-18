@@ -105,6 +105,16 @@ impl SimState {
         // Roll biological traits from the PRNG and store them.
         self.roll_creature_traits(creature_id, species);
 
+        // Apply Constitution to HP max (after traits are rolled).
+        let constitution = self.trait_int(creature_id, TraitKind::Constitution, 0);
+        if constitution != 0 {
+            let effective_hp = crate::stats::apply_stat_multiplier(hp_max, constitution).max(1);
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.hp_max = effective_hp;
+                c.hp = effective_hp; // spawn at full HP
+            });
+        }
+
         // Register in spatial index.
         let footprint = self.species_table[&species].footprint;
         Self::register_creature_in_index(&mut self.spatial_index, creature_id, node_pos, footprint);
@@ -174,11 +184,11 @@ impl SimState {
     // Creature biology traits
     // -----------------------------------------------------------------
 
-    /// Roll biological traits for a newly spawned creature and insert them
-    /// into the `creature_traits` table. Consumes exactly one PRNG call
-    /// (for the bio seed), then derives all trait indices deterministically
-    /// via Knuth hashing — so adding new traits later doesn't shift
-    /// existing trait values.
+    /// Roll biological traits and creature stats for a newly spawned creature.
+    /// Visual traits (hair color, body color, etc.) use one PRNG call for a
+    /// bio seed, then Knuth hashing for palette indices. Creature stats
+    /// (Strength through Charisma) use 12 PRNG calls each for a normal-ish
+    /// distribution from the species config. Total: 1 + 96 PRNG calls.
     fn roll_creature_traits(&mut self, creature_id: CreatureId, species: Species) {
         let bio_seed = self.rng.next_u64() as i64;
         self.insert_trait(creature_id, TraitKind::BioSeed, TraitValue::Int(bio_seed));
@@ -322,6 +332,29 @@ impl SimState {
                     TraitValue::Int(((h / 11) % 3) as i64),
                 );
             }
+        }
+
+        // Roll creature stats from species-specific distributions.
+        // Uses sum-of-12-uniform-samples for a normal-ish distribution.
+        // Stats are rolled in STAT_TRAIT_KINDS order after visual traits.
+        // Extract distribution params up front to avoid borrow conflicts.
+        let stat_params: Vec<(TraitKind, i64, i64)> = crate::stats::STAT_TRAIT_KINDS
+            .iter()
+            .map(|&kind| {
+                let (mean, stdev) = self.species_table[&species]
+                    .stat_distributions
+                    .get(&kind)
+                    .map(|d| (d.mean as i64, d.stdev as i64))
+                    .unwrap_or((0, 5));
+                (kind, mean, stdev)
+            })
+            .collect();
+        for (stat_kind, mean, stdev) in stat_params {
+            let sum: i64 = (0..12)
+                .map(|_| self.rng.range_i64_inclusive(-stdev, stdev))
+                .sum();
+            let stat_value = mean + sum / 2;
+            self.insert_trait(creature_id, stat_kind, TraitValue::Int(stat_value));
         }
     }
 

@@ -96,7 +96,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
-[ ] F-creature-stats       Creature stats (str/agi/dex/con/wil/int/per/cha)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
@@ -255,6 +254,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-creature-biology     Biological traits for deterministic creature appearance
 [x] F-creature-death       Basic creature death (starvation)
 [x] F-creature-info        Creature info panel with follow button
+[x] F-creature-stats       Creature stats (str/agi/dex/con/wil/int/per/cha)
 [x] F-creature-tooltip     Hover tooltips for world objects
 [x] F-dblclick-select      Double-click to select all of same military group
 [x] F-debug-menu           Move spawn/summon into debug menu
@@ -1191,7 +1191,7 @@ combat death. F-creature-death covers the starvation trigger specifically.
 **Related:** F-elf-needs, F-food-gauge, F-hp-death, F-soul-mech
 
 #### F-creature-stats — Creature stats (str/agi/dex/con/wil/int/per/cha)
-**Status:** Todo
+**Status:** Done
 
 Eight per-creature stats rolled at spawn from species-specific distributions
 (mean + stdev in SpeciesData): Strength, Agility, Dexterity, Constitution,

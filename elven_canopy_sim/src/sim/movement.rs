@@ -217,10 +217,14 @@ impl SimState {
             None
         };
 
-        let walk_tpv = species_data.walk_ticks_per_voxel;
-        let climb_tpv = species_data.climb_ticks_per_voxel;
-        let wood_ladder_tpv = species_data.wood_ladder_tpv;
-        let rope_ladder_tpv = species_data.rope_ladder_tpv;
+        // Apply creature stats to movement speeds.
+        let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+        let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
+        let speeds = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
+        let walk_tpv = speeds.walk_tpv;
+        let climb_tpv = speeds.climb_tpv;
+        let wood_ladder_tpv = speeds.wood_ladder_tpv;
+        let rope_ladder_tpv = speeds.rope_ladder_tpv;
 
         let (edge_idx, dest_node) = if let Some(step) = next_step {
             step
@@ -297,14 +301,7 @@ impl SimState {
             return;
         }
 
-        let tpv = match edge.edge_type {
-            crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
-                climb_tpv.unwrap_or(walk_tpv)
-            }
-            crate::nav::EdgeType::WoodLadderClimb => wood_ladder_tpv.unwrap_or(walk_tpv),
-            crate::nav::EdgeType::RopeLadderClimb => rope_ladder_tpv.unwrap_or(walk_tpv),
-            _ => walk_tpv,
-        };
+        let tpv = speeds.tpv_for_edge(edge.edge_type);
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
 
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
@@ -433,19 +430,11 @@ impl SimState {
             }
         }
 
-        // Compute traversal time from distance * species ticks-per-voxel.
-        let tpv = match edge.edge_type {
-            crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => species_data
-                .climb_ticks_per_voxel
-                .unwrap_or(species_data.walk_ticks_per_voxel),
-            crate::nav::EdgeType::WoodLadderClimb => species_data
-                .wood_ladder_tpv
-                .unwrap_or(species_data.walk_ticks_per_voxel),
-            crate::nav::EdgeType::RopeLadderClimb => species_data
-                .rope_ladder_tpv
-                .unwrap_or(species_data.walk_ticks_per_voxel),
-            _ => species_data.walk_ticks_per_voxel,
-        };
+        // Compute stat-modified ticks-per-voxel.
+        let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+        let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
+        let speeds = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
+        let tpv = speeds.tpv_for_edge(edge.edge_type);
         let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
 
         // Move creature to the destination.

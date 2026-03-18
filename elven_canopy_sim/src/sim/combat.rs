@@ -1154,7 +1154,9 @@ impl SimState {
             return false;
         }
 
-        let raw_damage = species_data.melee_damage;
+        let base_damage = species_data.melee_damage;
+        let strength = self.trait_int(attacker_id, TraitKind::Strength, 0);
+        let raw_damage = crate::stats::apply_stat_multiplier(base_damage, strength);
         let duration = species_data.melee_interval_ticks;
 
         // Start the action (sets action_kind + next_available_tick, schedules activation).
@@ -1262,13 +1264,24 @@ impl SimState {
         }
 
         // 5. Aim feasibility — use the aim solver to check if a trajectory exists.
+        // Strength modifies arrow speed (stronger draw → faster arrow).
         let origin_sub = SubVoxelCoord::from_voxel_center(attacker_pos);
-        let speed = self.config.arrow_base_speed;
+        let attacker_str = self.trait_int(attacker_id, TraitKind::Strength, 0);
+        let speed = crate::stats::apply_stat_multiplier(self.config.arrow_base_speed, attacker_str);
         let gravity = self.config.arrow_gravity;
         let aim = compute_aim_velocity(origin_sub, los_target_voxel, speed, gravity, 5, 5000);
         if aim.hit_tick.is_none() {
             return false;
         }
+
+        // 5a-ii. Apply DEX-based aim deviation to the velocity vector.
+        let dexterity = self.trait_int(attacker_id, TraitKind::Dexterity, 0);
+        let aim_velocity = crate::stats::apply_dex_deviation(
+            &mut self.rng,
+            aim.velocity,
+            dexterity,
+            self.config.arrow_base_deviation_ppm,
+        );
 
         // 5b. Friendly-fire check — reject if a non-hostile creature is in
         // the flight path between the shooter and the target.
@@ -1277,7 +1290,7 @@ impl SimState {
                 attacker_id,
                 attacker_pos,
                 los_target_voxel,
-                aim.velocity,
+                aim_velocity,
             )
             .is_some()
         {
@@ -1308,7 +1321,7 @@ impl SimState {
                 shooter: Some(attacker_id),
                 inventory_id: proj_inv_id,
                 position: origin_sub,
-                velocity: aim.velocity,
+                velocity: aim_velocity,
                 prev_voxel: attacker_pos,
                 origin_voxel: attacker_pos,
             });
@@ -1352,9 +1365,15 @@ impl SimState {
         let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
         self.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
 
-        // Compute aim velocity.
+        // Compute aim velocity (apply shooter's STR to arrow speed if present).
         let origin_sub = SubVoxelCoord::from_voxel_center(origin);
-        let speed = self.config.arrow_base_speed;
+        let base_speed = self.config.arrow_base_speed;
+        let speed = if let Some(sid) = shooter_id {
+            let str_stat = self.trait_int(sid, TraitKind::Strength, 0);
+            crate::stats::apply_stat_multiplier(base_speed, str_stat)
+        } else {
+            base_speed
+        };
         let gravity = self.config.arrow_gravity;
         let aim = compute_aim_velocity(origin_sub, target, speed, gravity, 5, 5000);
 

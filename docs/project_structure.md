@@ -12,6 +12,7 @@ elven-canopy/
 │       ├── command.rs          # SimCommand, SimAction
 │       ├── config.rs           # GameConfig (loaded from JSON)
 │       ├── species.rs          # SpeciesData — data-driven creature behavior
+│       ├── stats.rs            # Creature stat multiplier table (2^20 fixed-point exponential)
 │       ├── event.rs            # EventQueue (priority queue), SimEvent
 │       ├── fruit.rs            # Procedural fruit species: types, generation, coverage, Vaelith naming
 │       ├── session.rs          # GameSession — message-driven session management

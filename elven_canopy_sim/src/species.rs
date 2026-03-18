@@ -69,6 +69,7 @@
 // config and must be identical across all clients.
 
 use crate::nav::EdgeType;
+use crate::types::TraitKind;
 use serde::{Deserialize, Serialize};
 
 /// Weapon preference for combat engagement.
@@ -272,6 +273,21 @@ pub struct SpeciesData {
     /// bonded tree. 0 = no natural mana generation.
     #[serde(default)]
     pub mana_per_tick: i64,
+
+    /// Per-stat distribution parameters for rolling creature stats at spawn.
+    /// Key: a stat `TraitKind` (Strength through Charisma). Value: mean and
+    /// stdev for the species. Stats not present default to `(0, 5)` (human
+    /// baseline with moderate variation). See `docs/drafts/creature_stats.md`.
+    #[serde(default)]
+    pub stat_distributions: std::collections::BTreeMap<TraitKind, StatDistribution>,
+}
+
+/// Species-specific distribution parameters for a single creature stat.
+/// Mean is the species average (0 = human baseline); stdev controls spread.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StatDistribution {
+    pub mean: i32,
+    pub stdev: i32,
 }
 
 fn default_footprint() -> [u8; 3] {
