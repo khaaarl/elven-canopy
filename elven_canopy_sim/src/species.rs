@@ -44,6 +44,10 @@
 //   idle creature will seek sleep (default 50).
 // - `rest_per_sleep_tick` — rest restored per sim tick of sleeping, applied
 //   at each sleep task activation.
+// - `mp_max` — maximum mana pool. 0 = nonmagical (cannot construct or perform
+//   mana-requiring tasks). Uses the same large-integer scale as `food_max`.
+// - `mana_per_tick` — mana generated per sim tick. Batch-applied at heartbeat.
+//   Excess overflows to the bonded tree.
 // - `engagement_style` — `EngagementStyle` struct controlling combat behavior:
 //   weapon preference (melee/ranged), engagement initiative (aggressive/
 //   defensive/passive), ammo exhaustion behavior (switch to melee/flee), and
@@ -255,6 +259,19 @@ pub struct SpeciesData {
     /// activation. Higher values mean faster rest recovery per tick of sleep.
     #[serde(default = "default_rest_per_sleep_tick")]
     pub rest_per_sleep_tick: i64,
+
+    /// Maximum mana pool for this species. 0 = nonmagical (cannot construct or
+    /// perform other mana-requiring tasks). Uses the same large-integer scale
+    /// as `food_max` / `rest_max` to avoid floating-point determinism issues.
+    /// Current mana starts at `mp_max` on spawn.
+    #[serde(default)]
+    pub mp_max: i64,
+
+    /// Mana generated per sim tick. Batch-applied at heartbeat as
+    /// `mana_per_tick * heartbeat_interval_ticks`, then excess overflows to the
+    /// bonded tree. 0 = no natural mana generation.
+    #[serde(default)]
+    pub mana_per_tick: i64,
 }
 
 fn default_footprint() -> [u8; 3] {

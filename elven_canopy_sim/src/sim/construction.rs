@@ -907,11 +907,22 @@ impl SimState {
             None => return false,
         };
 
-        let is_carve = self
-            .db
-            .blueprints
-            .get(&project_id)
-            .is_some_and(|bp| bp.build_type.is_carve());
+        let build_type = self.db.blueprints.get(&project_id).map(|bp| bp.build_type);
+
+        // Drain mana. On failure, this is a wasted action (no progress).
+        // try_drain_mana handles wasted_action_count and abandon threshold.
+        let cost = self.mana_cost_per_action(build_type);
+        if cost > 0 && !self.try_drain_mana(creature_id, cost) {
+            // Wasted action — creature may have been unassigned by abandon.
+            return self
+                .db
+                .creatures
+                .get(&creature_id)
+                .and_then(|c| c.current_task)
+                .is_none();
+        }
+
+        let is_carve = build_type.is_some_and(|bt| bt.is_carve());
 
         // Materialize one voxel.
         if is_carve {
@@ -935,6 +946,87 @@ impl SimState {
             return true;
         }
         false
+    }
+
+    /// Compute the creature-scale (i64) mana cost for one work action of the
+    /// given build type. Platform and Bridge use their specific config costs;
+    /// all others (Furnish, Carve, Stairs, etc.) use `default_mana_cost_per_action`.
+    ///
+    /// Conversion from tree-scale (f32) to creature-scale (i64): the tree
+    /// config cost is expressed relative to `starting_mana_capacity`. An elf's
+    /// creature-scale cost is `(tree_cost / mana_capacity) × elf.mp_max`.
+    /// E.g., platform cost 10.0 with capacity 500.0 → 2% of elf mp_max per voxel.
+    ///
+    /// NOTE: currently hardcodes Elf's mp_max for the conversion. If a future
+    /// magical species has a different mp_max, this will need a creature_id
+    /// parameter to look up the correct species.
+    pub(crate) fn mana_cost_per_action(&self, build_type: Option<BuildType>) -> i64 {
+        let tree_cost = match build_type {
+            Some(BuildType::Platform) => self.config.platform_mana_cost_per_voxel,
+            Some(BuildType::Bridge) => self.config.bridge_mana_cost_per_voxel,
+            _ => self.config.default_mana_cost_per_action,
+        };
+        let capacity = self.config.starting_mana_capacity;
+        if capacity <= 0.0 {
+            return 0;
+        }
+        let elf_mp_max = self.species_table[&Species::Elf].mp_max;
+        let cost = (tree_cost as f64 / capacity as f64) * elf_mp_max as f64;
+        (cost as i64).max(0)
+    }
+
+    /// Try to drain mana from a creature for a work action. Returns true if
+    /// the creature had enough mana (action proceeds). Returns false if
+    /// insufficient (wasted action — creature still spends time but no progress).
+    ///
+    /// On wasted action: increments `wasted_action_count`. If the count reaches
+    /// `mana_abandon_threshold`, the creature abandons the task (interrupt_task).
+    /// On success: resets `wasted_action_count` to 0.
+    pub(crate) fn try_drain_mana(&mut self, creature_id: CreatureId, cost: i64) -> bool {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return false,
+        };
+
+        if creature.mp_max == 0 {
+            // Nonmagical creature — no mana cost applies (shouldn't be here,
+            // but handle gracefully).
+            return true;
+        }
+
+        if creature.mp >= cost {
+            // Enough mana: drain and reset wasted counter.
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.mp -= cost;
+                c.wasted_action_count = 0;
+            });
+            true
+        } else {
+            // Insufficient mana: wasted action.
+            let threshold = self.config.mana_abandon_threshold;
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.wasted_action_count += 1;
+            });
+            // Check if we've hit the abandon threshold.
+            let count = self
+                .db
+                .creatures
+                .get(&creature_id)
+                .map(|c| c.wasted_action_count)
+                .unwrap_or(0);
+            if count >= threshold {
+                // Abandon: interrupt_task reverts it to Available.
+                if let Some(task_id) = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .and_then(|c| c.current_task)
+                {
+                    self.interrupt_task(creature_id, task_id);
+                }
+            }
+            false
+        }
     }
 
     /// Pick the next blueprint voxel to materialize and place it.
@@ -1453,6 +1545,18 @@ impl SimState {
             Some(t) => t,
             None => return false,
         };
+
+        // Drain mana (furnishing uses default_mana_cost_per_action).
+        let cost = self.mana_cost_per_action(None);
+        if cost > 0 && !self.try_drain_mana(creature_id, cost) {
+            return self
+                .db
+                .creatures
+                .get(&creature_id)
+                .and_then(|c| c.current_task)
+                .is_none();
+        }
+
         let structure_id =
             match self.task_structure_ref(task_id, crate::db::TaskStructureRole::FurnishTarget) {
                 Some(s) => s,

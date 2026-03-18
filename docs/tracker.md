@@ -145,7 +145,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mana-depleted-vfx    Visual feedback for mana-depleted work actions
 [ ] F-mana-grow-recipes    Grow-verb crafting recipes cost mana
 [ ] F-mana-mood            Mana generation tied to elf mood
-[ ] F-mana-system          Mana generation, storage, and spending
 [ ] F-mana-transfer        Tree-to-elf mana transfer
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
@@ -301,6 +300,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-logistics            Spatial resource flow (Kanban-style)
 [x] F-logistics-filter     Logistics material filter
 [x] F-main-menu            Main menu UI
+[x] F-mana-system          Mana generation, storage, and spending
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-melee-action         Melee attack action
 [x] F-military-armor       Military equipment auto-equip and slot validation
@@ -1850,11 +1850,11 @@ should cost mana from the crafting creature's personal pool, using the same
 per-action drain and wasted-action mechanics as construction. Deferred until
 crafting refactoring is complete.
 
-**Blocked by:** F-mana-system
+**Unblocked by:** F-mana-system
 **Related:** F-component-recipes
 
 #### F-mana-system — Mana generation, storage, and spending
-**Status:** Todo · **Phase:** 2 · **Refs:** §11
+**Status:** Done · **Phase:** 2 · **Refs:** §11
 
 Dual-pool mana economy. Creatures have personal mana (mp / mp_max); many
 species are nonmagical (mp_max = 0). Magical creatures (elves) generate mana
@@ -1875,20 +1875,11 @@ creature abandons the task; it reverts to Available with all progress preserved
 for another elf to pick up.
 
 Task claiming: creatures with mp_max = 0 cannot claim mana-requiring tasks.
-Magical creatures use a rate-based sustainability estimate (current mana +
-generation rate vs. expenditure rate) rather than requiring total mana upfront.
-Exact formula and heuristics for very large projects are future work.
+Magical creatures must have enough mana for at least one work action to claim
+a mana-requiring task. More sophisticated rate-based sustainability estimates
+are future work.
 
-Implementation scope: add mp/mp_max to Creature (with #[serde(default)] for
-backward-compatible saves), wasted_action_count to Creature, mp_max to
-SpeciesData, default_mana_cost_per_action and mana_abandon_threshold to
-GameConfig, mana generation on CreatureHeartbeat, overflow-to-tree logic,
-per-action mana drain for Build and Furnish work actions, rate-based mana
-eligibility check in task claiming, blue mana bar above sprites (below HP bar)
-when mp < mp_max, mana bar on creature info panel for creatures with
-mp_max > 0, tree mana display (already exists).
-
-**Blocks:** F-mana-depleted-vfx, F-mana-grow-recipes, F-mana-mood, F-mana-transfer, F-root-network
+**Unblocked:** F-mana-depleted-vfx, F-mana-grow-recipes, F-mana-mood, F-mana-transfer, F-root-network
 **Related:** F-branch-growth, F-choir-build, F-forest-radar, F-mass-conserve, F-population, F-sung-furniture, F-tree-info, F-war-magic
 
 #### F-mana-transfer — Tree-to-elf mana transfer
@@ -1899,7 +1890,7 @@ possible triggers include proximity to the trunk, resting at home, or an
 explicit player command. Enables the tree's communal mana reserve to support
 individual elves who are mana-starved.
 
-**Blocked by:** F-mana-system
+**Unblocked by:** F-mana-system
 
 #### F-manufacturing — Item schema expansion + workshop manufacturing
 **Status:** Done
@@ -2172,7 +2163,8 @@ interpolate a multiplier from worst to best mood tier. Completes the core
 feedback loop: happy elves → more mana → faster construction → better
 village → happier elves.
 
-**Blocked by:** F-emotions, F-mana-system
+**Blocked by:** F-emotions
+**Unblocked by:** F-mana-system
 
 #### F-mood-system — Mood with escalating consequences
 **Status:** Done · **Phase:** 4 · **Refs:** §18
@@ -3017,7 +3009,8 @@ Player grows roots toward other trees. Diplomacy phase: mana offerings
 convince trees to join the network. Expands buildable space and perception
 radius.
 
-**Blocked by:** F-mana-system, F-multi-tree
+**Blocked by:** F-multi-tree
+**Unblocked by:** F-mana-system
 **Related:** F-fog-of-war, F-forest-radar
 
 #### F-settlement-gen — Procedural NPC settlement generation
@@ -3701,7 +3694,7 @@ insufficient mana. Anime-esque confusion icons (e.g., question marks, swirls)
 floating above the creature's head. Provides player feedback for why
 construction has stalled.
 
-**Blocked by:** F-mana-system
+**Unblocked by:** F-mana-system
 
 #### F-minimap — Minimap with tree silhouette and creature positions
 **Status:** Done · **Phase:** 2

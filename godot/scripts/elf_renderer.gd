@@ -7,7 +7,8 @@
 ##
 ## Uses a pool pattern: sprites are created on demand (never destroyed), and
 ## excess sprites are hidden when the elf count drops. Each sprite has an
-## overhead HP bar (see hp_bar.gd) shown only when HP is below maximum.
+## overhead HP bar (red/yellow/green) and MP bar (blue), both from hp_bar.gd.
+## HP bars show when HP is below maximum; MP bars show when mana is below max.
 ##
 ## Sprites use BILLBOARD_ENABLED so they always face the camera. Positions
 ## are offset by (+0.5, +0.48, +0.5) from the interpolated coordinate — the
@@ -25,10 +26,12 @@ extends Node3D
 const HpBar = preload("res://scripts/hp_bar.gd")
 const Y_OFFSET := 0.48
 const HP_BAR_GAP := 0.06
+const MP_BAR_GAP := -0.01  # MP bar sits just below the HP bar (negative = lower)
 
 var _bridge: SimBridge
 var _elf_sprites: Array[Sprite3D] = []
 var _hp_bars: Array[Sprite3D] = []
+var _mp_bars: Array[Sprite3D] = []
 var _render_tick: float = 0.0
 
 
@@ -50,6 +53,7 @@ func _process(_delta: float) -> void:
 
 	var positions := _bridge.get_elf_positions(_render_tick)
 	var hp_ratios := _bridge.get_creature_hp_ratios("Elf")
+	var mp_ratios := _bridge.get_creature_mp_ratios("Elf")
 	var sprite_data: Dictionary = _bridge.get_elf_sprites()
 	var sprite_textures: Array = sprite_data.get("textures", [])
 	var sprite_changed: PackedByteArray = sprite_data.get("changed", PackedByteArray())
@@ -72,6 +76,9 @@ func _process(_delta: float) -> void:
 		var bar: Sprite3D = HpBar.create_bar_sprite()
 		add_child(bar)
 		_hp_bars.append(bar)
+		var mp_bar: Sprite3D = HpBar.create_mp_bar_sprite()
+		add_child(mp_bar)
+		_mp_bars.append(mp_bar)
 
 	# Update positions, HP bars, textures, and hide excess sprites.
 	for i in _elf_sprites.size():
@@ -85,6 +92,11 @@ func _process(_delta: float) -> void:
 			_hp_bars[i].global_position = Vector3(
 				pos.x + 0.5, pos.y + Y_OFFSET * 2.0 + HP_BAR_GAP, pos.z + 0.5
 			)
+			var mp_ratio: float = mp_ratios[i] if i < mp_ratios.size() else 1.0
+			HpBar.update_mp_bar(_mp_bars[i], mp_ratio)
+			_mp_bars[i].global_position = Vector3(
+				pos.x + 0.5, pos.y + Y_OFFSET * 2.0 + MP_BAR_GAP, pos.z + 0.5
+			)
 			# Only update texture when Rust reports a change.
 			if i < sprite_changed.size() and sprite_changed[i] != 0:
 				if i < sprite_textures.size():
@@ -92,3 +104,4 @@ func _process(_delta: float) -> void:
 		else:
 			_elf_sprites[i].visible = false
 			_hp_bars[i].visible = false
+			_mp_bars[i].visible = false

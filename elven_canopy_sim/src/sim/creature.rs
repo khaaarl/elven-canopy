@@ -28,6 +28,7 @@ impl SimState {
         let food_max = species_data.food_max;
         let rest_max = species_data.rest_max;
         let hp_max = species_data.hp_max;
+        let mp_max = species_data.mp_max;
         let heartbeat_interval = species_data.heartbeat_interval_ticks;
         let ground_only = species_data.ground_only;
         let graph = self.graph_for_species(species);
@@ -94,6 +95,9 @@ impl SimState {
             hp: hp_max,
             hp_max,
             vital_status: VitalStatus::Alive,
+            mp: mp_max,
+            mp_max,
+            wasted_action_count: 0,
         };
 
         self.db.creatures.insert_no_fk(creature).unwrap();
@@ -516,6 +520,7 @@ impl SimState {
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = None;
             creature.path = None;
+            creature.wasted_action_count = 0;
             let _ = self.db.creatures.update_no_fk(creature);
         }
     }
@@ -567,6 +572,7 @@ impl SimState {
                 if let Some(mut c) = self.db.creatures.get(&creature_id) {
                     c.current_task = None;
                     c.path = None;
+                    c.wasted_action_count = 0;
                     let _ = self.db.creatures.update_no_fk(c);
                 }
                 return;

@@ -417,6 +417,10 @@ impl SimState {
         let creature = self.db.creatures.get(&creature_id)?;
         let species = creature.species;
         let current_node = creature.current_node?;
+        let is_nonmagical = creature.mp_max == 0;
+        // Minimum mana needed to attempt one mana-requiring work action.
+        let min_mana_cost = self.mana_cost_per_action(None);
+        let has_mana_for_work = creature.mp >= min_mana_cost;
 
         // Collect all candidate tasks (id + location) that this creature can work.
         let candidates: Vec<(TaskId, NavNodeId)> = self
@@ -426,6 +430,10 @@ impl SimState {
             .filter(|t| {
                 t.state == task::TaskState::Available
                     && t.required_species.is_none_or(|s| s == species)
+                    // Nonmagical creatures cannot claim mana-requiring tasks.
+                    // Magical creatures need enough mana for at least one action.
+                    && (!t.kind_tag.requires_mana()
+                        || (!is_nonmagical && has_mana_for_work))
             })
             .map(|t| (t.id, t.location))
             .collect();

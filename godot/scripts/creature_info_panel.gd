@@ -40,6 +40,9 @@ var _food_bar: ProgressBar
 var _food_label: Label
 var _rest_bar: ProgressBar
 var _rest_label: Label
+var _mp_bar: ProgressBar
+var _mp_label: Label
+var _mp_row: HBoxContainer
 var _military_group_btn: Button
 var _military_group_id: int = -1
 var _mood_label: Label
@@ -127,6 +130,34 @@ func _ready() -> void:
 	_hp_label.custom_minimum_size.x = 70
 	_hp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	hp_row.add_child(_hp_label)
+
+	# MP (mana) gauge — hidden for nonmagical creatures (mp_max = 0).
+	_mp_row = HBoxContainer.new()
+	_mp_row.add_theme_constant_override("separation", 6)
+	_mp_row.visible = false
+	vbox.add_child(_mp_row)
+
+	var mp_title := Label.new()
+	mp_title.text = "MP:"
+	_mp_row.add_child(mp_title)
+
+	_mp_bar = ProgressBar.new()
+	_mp_bar.min_value = 0.0
+	_mp_bar.max_value = 100.0
+	_mp_bar.value = 100.0
+	_mp_bar.show_percentage = false
+	_mp_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_mp_bar.custom_minimum_size.y = 20
+	var mp_style := StyleBoxFlat.new()
+	mp_style.bg_color = Color(0.15, 0.25, 0.7)
+	_mp_bar.add_theme_stylebox_override("fill", mp_style)
+	_mp_row.add_child(_mp_bar)
+
+	_mp_label = Label.new()
+	_mp_label.text = "0 / 0"
+	_mp_label.custom_minimum_size.x = 70
+	_mp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_mp_row.add_child(_mp_label)
 
 	# Position.
 	_position_label = Label.new()
@@ -252,6 +283,7 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 		else:
 			_name_label.text = "Name: %s (%s)" % [creature_name, meaning]
 	_update_hp(info)
+	_update_mp(info)
 	_update_position(info)
 	_update_task(info)
 	_update_food(info)
@@ -267,6 +299,7 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 
 func update_info(info: Dictionary) -> void:
 	_update_hp(info)
+	_update_mp(info)
 	_update_position(info)
 	_update_task(info)
 	_update_food(info)
@@ -298,6 +331,18 @@ func _update_hp(info: Dictionary) -> void:
 	var pct: float = 100.0 * float(hp) / float(hp_max)
 	_hp_bar.value = pct
 	_hp_label.text = "%d / %d" % [hp, hp_max]
+
+
+func _update_mp(info: Dictionary) -> void:
+	var mp_max: int = info.get("mp_max", 0)
+	if mp_max <= 0:
+		_mp_row.visible = false
+		return
+	_mp_row.visible = true
+	var mp: int = info.get("mp", 0)
+	var pct: float = 100.0 * float(mp) / float(mp_max)
+	_mp_bar.value = pct
+	_mp_label.text = "%d%%" % int(pct)
 
 
 func _update_food(info: Dictionary) -> void:

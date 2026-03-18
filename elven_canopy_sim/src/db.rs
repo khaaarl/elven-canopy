@@ -152,6 +152,12 @@ pub enum TaskKindTag {
 }
 
 impl TaskKindTag {
+    /// Whether tasks of this kind require mana. Creatures with mp_max = 0
+    /// cannot claim mana-requiring tasks.
+    pub fn requires_mana(self) -> bool {
+        matches!(self, Self::Build | Self::Furnish)
+    }
+
     /// Human-readable display name for UI purposes.
     pub fn display_name(&self) -> &'static str {
         match self {
@@ -302,6 +308,19 @@ pub struct Creature {
     #[serde(default)]
     #[indexed]
     pub vital_status: VitalStatus,
+    /// Current mana points. 0 for nonmagical creatures.
+    #[serde(default)]
+    pub mp: i64,
+    /// Maximum mana points (set from `SpeciesData::mp_max` at spawn).
+    /// 0 = nonmagical — cannot claim mana-requiring tasks.
+    #[serde(default)]
+    pub mp_max: i64,
+    /// Consecutive wasted work actions due to insufficient mana. Reset to 0
+    /// on any successful work action or task change (including mope interrupts).
+    /// When this reaches `GameConfig::mana_abandon_threshold`, the creature
+    /// abandons the current task.
+    #[serde(default)]
+    pub wasted_action_count: u32,
 }
 
 /// A timestamped thought belonging to a creature.

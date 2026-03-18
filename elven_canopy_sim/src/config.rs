@@ -1535,6 +1535,18 @@ pub struct GameConfig {
     /// Mana cost to grow one voxel of bridge/walkway.
     pub bridge_mana_cost_per_voxel: f32,
 
+    /// Default mana cost per work action for build types that don't have a
+    /// specific config field (stairs, walls, struts, carving, ladders,
+    /// furnishing). Uses the same f32 scale as the per-voxel costs above.
+    #[serde(default = "default_mana_cost_per_action")]
+    pub default_mana_cost_per_action: f32,
+
+    /// Number of consecutive wasted work actions (insufficient mana) before
+    /// a creature abandons its current task. The task reverts to Available
+    /// with all progress preserved.
+    #[serde(default = "default_mana_abandon_threshold")]
+    pub mana_abandon_threshold: u32,
+
     /// Base rate of fruit production per tree per heartbeat tick.
     pub fruit_production_base_rate: f32,
 
@@ -1844,6 +1856,14 @@ pub struct GameConfig {
     pub arrow_impact_damage_max: i32,
 }
 
+fn default_mana_cost_per_action() -> f32 {
+    10.0
+}
+
+fn default_mana_abandon_threshold() -> u32 {
+    3
+}
+
 fn default_carve_ticks() -> u64 {
     1000
 }
@@ -2023,6 +2043,8 @@ impl Default for GameConfig {
                     disengage_threshold_pct: 100,
                 },
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
+                mp_max: 1_000_000_000_000_000,   // same scale as food_max/rest_max
+                mana_per_tick: 3_333_333_333,    // same rate as food_decay_per_tick
             },
         );
         species.insert(
@@ -2051,6 +2073,8 @@ impl Default for GameConfig {
                 melee_range_sq: 2,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
+                mp_max: 0,
+                mana_per_tick: 0,
             },
         );
         species.insert(
@@ -2079,6 +2103,8 @@ impl Default for GameConfig {
                 melee_range_sq: 2,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
+                mp_max: 0,
+                mana_per_tick: 0,
             },
         );
         species.insert(
@@ -2107,6 +2133,8 @@ impl Default for GameConfig {
                 melee_range_sq: 2,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
+                mp_max: 0,
+                mana_per_tick: 0,
             },
         );
         species.insert(
@@ -2135,6 +2163,8 @@ impl Default for GameConfig {
                 melee_range_sq: 2,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
+                mp_max: 0,
+                mana_per_tick: 0,
             },
         );
         species.insert(
@@ -2168,6 +2198,8 @@ impl Default for GameConfig {
                     disengage_threshold_pct: 0,
                 },
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
+                mp_max: 0,
+                mana_per_tick: 0,
             },
         );
         species.insert(
@@ -2196,6 +2228,8 @@ impl Default for GameConfig {
                 melee_range_sq: 2,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
+                mp_max: 0,
+                mana_per_tick: 0,
             },
         );
         species.insert(
@@ -2229,6 +2263,8 @@ impl Default for GameConfig {
                     disengage_threshold_pct: 0,
                 },
                 hostile_detection_range_sq: 400, // 20-voxel detection radius
+                mp_max: 0,
+                mana_per_tick: 0,
             },
         );
         species.insert(
@@ -2257,6 +2293,8 @@ impl Default for GameConfig {
                 melee_range_sq: 2,
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
+                mp_max: 0,
+                mana_per_tick: 0,
             },
         );
         species.insert(
@@ -2290,6 +2328,8 @@ impl Default for GameConfig {
                     disengage_threshold_pct: 0,
                 },
                 hostile_detection_range_sq: 144, // 12-voxel detection radius
+                mp_max: 0,
+                mana_per_tick: 0,
             },
         );
 
@@ -2300,6 +2340,8 @@ impl Default for GameConfig {
             mana_mood_multiplier_range: (0.2, 2.0),
             platform_mana_cost_per_voxel: 10.0,
             bridge_mana_cost_per_voxel: 15.0,
+            default_mana_cost_per_action: 10.0,
+            mana_abandon_threshold: 3,
             fruit_production_base_rate: 0.5,
             fruit_max_per_tree: 20,
             fruit_initial_attempts: 12,

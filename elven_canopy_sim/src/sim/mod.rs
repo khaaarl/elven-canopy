@@ -1131,6 +1131,16 @@ impl SimState {
                         let rest_decay = species_data.rest_decay_per_tick * interval as i64;
                         creature.rest = (creature.rest - rest_decay).max(0);
 
+                        // Mana generation: batch-apply mana_per_tick over the
+                        // heartbeat interval. Excess beyond mp_max overflows
+                        // to the bonded tree.
+                        let mana_gen = species_data.mana_per_tick * interval as i64;
+                        let mp_before = creature.mp;
+                        let mp_after = (mp_before + mana_gen).min(creature.mp_max);
+                        let mana_overflow = (mp_before + mana_gen) - mp_after;
+                        creature.mp = mp_after;
+                        let civ_for_overflow = creature.civ_id;
+
                         let is_starving = creature.food == 0;
 
                         let food_threshold =
@@ -1145,6 +1155,29 @@ impl SimState {
 
                         // Write back mutated fields.
                         let _ = self.db.creatures.update_no_fk(creature);
+
+                        // Overflow mana to the bonded tree (the tree owned by
+                        // the creature's civilization). Wild creatures (no civ)
+                        // lose their excess.
+                        if mana_overflow > 0
+                            && mana_gen > 0
+                            && let Some(civ_id) = civ_for_overflow
+                        {
+                            // Convert: overflow fraction × base_generation_rate
+                            // gives tree-scale mana. When fully overflowing
+                            // (overflow == mana_gen), the tree gains exactly
+                            // mana_base_generation_rate per heartbeat.
+                            // Clamp to 1.0 in case mp > mp_max (e.g., config change).
+                            let overflow_frac = (mana_overflow as f64 / mana_gen as f64).min(1.0);
+                            let tree_gain =
+                                overflow_frac as f32 * self.config.mana_base_generation_rate;
+                            if let Some(tree) =
+                                self.trees.values_mut().find(|t| t.owner == Some(civ_id))
+                            {
+                                tree.mana_stored =
+                                    (tree.mana_stored + tree_gain).min(tree.mana_capacity);
+                            }
+                        }
 
                         // Expire old thoughts.
                         self.expire_creature_thoughts(creature_id);
@@ -1330,7 +1363,8 @@ impl SimState {
                     // Fruit production.
                     self.attempt_fruit_spawn(tree_id);
 
-                    // TODO: mana updates.
+                    // Tree mana accumulates from elf overflow in
+                    // CreatureHeartbeat; trees do not generate mana.
 
                     // Reschedule.
                     let next_tick = self.tick + self.config.tree_heartbeat_interval_ticks;
