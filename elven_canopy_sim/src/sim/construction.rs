@@ -235,8 +235,8 @@ impl SimState {
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
             location: task_location,
-            progress: 0.0,
-            total_cost: num_voxels as f32,
+            progress: 0,
+            total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
@@ -390,8 +390,8 @@ impl SimState {
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
             location: task_location,
-            progress: 0.0,
-            total_cost: num_voxels as f32,
+            progress: 0,
+            total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
@@ -546,8 +546,8 @@ impl SimState {
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
             location: task_location,
-            progress: 0.0,
-            total_cost: num_voxels as f32,
+            progress: 0,
+            total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
@@ -668,8 +668,8 @@ impl SimState {
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
             location: task_location,
-            progress: 0.0,
-            total_cost: num_voxels as f32,
+            progress: 0,
+            total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
@@ -832,8 +832,8 @@ impl SimState {
             kind,
             state: task::TaskState::Available,
             location,
-            progress: 0.0,
-            total_cost: 0.0,
+            progress: 0,
+            total_cost: 0,
             required_species,
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
@@ -862,13 +862,8 @@ impl SimState {
         };
 
         // Mark composition as build_started on the first Build action.
-        let progress = self
-            .db
-            .tasks
-            .get(&task_id)
-            .map(|t| t.progress)
-            .unwrap_or(0.0);
-        if progress == 0.0
+        let progress = self.db.tasks.get(&task_id).map(|t| t.progress).unwrap_or(0);
+        if progress == 0
             && let Some(bp) = self.db.blueprints.get(&project_id)
             && let Some(comp_id) = bp.composition_id
         {
@@ -933,7 +928,7 @@ impl SimState {
 
         // Increment progress by 1 (one voxel).
         let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
-            t.progress += 1.0;
+            t.progress += 1;
         });
 
         // Check if the build is complete.
@@ -1399,14 +1394,14 @@ impl SimState {
         };
 
         // Create the Furnish task. total_cost = number of furniture items.
-        let total_cost = planned_count as f32;
+        let total_cost = planned_count as i64;
         let task_id = TaskId::new(&mut self.rng);
         let new_task = task::Task {
             id: task_id,
             kind: task::TaskKind::Furnish { structure_id },
             state: task::TaskState::Available,
             location,
-            progress: 0.0,
+            progress: 0,
             total_cost,
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
@@ -1530,7 +1525,7 @@ impl SimState {
 
         // Increment progress by 1 (one item).
         let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
-            t.progress += 1.0;
+            t.progress += 1;
         });
 
         // Check if furnishing is complete.

@@ -69,7 +69,12 @@
 //
 // **Critical constraint: determinism.** The solver iterates nodes in flat-array
 // order (x inner, z mid, y outer), uses fixed iteration count, and avoids
-// iterated HashMap. All floating-point operations are deterministic given identical input.
+// iterated HashMap.
+//
+// All intermediate computation uses i64 fixed-point with FP_SHIFT = 16
+// (FP_ONE = 65536). Config f32 values are converted to fixed-point at
+// function boundaries. This eliminates floating-point non-determinism and
+// matches the pattern used in tree_gen.rs.
 
 use crate::config::GameConfig;
 use crate::db::Strut;
@@ -78,15 +83,37 @@ use crate::world::VoxelWorld;
 use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
+// Fixed-point helpers
+// ---------------------------------------------------------------------------
+
+const FP_SHIFT: u32 = 16;
+const FP_ONE: i64 = 1 << FP_SHIFT;
+
+/// Convert an f32 value to fixed-point (FP_ONE scale). Used at config boundary.
+fn f32_to_fp(val: f32) -> i64 {
+    (val as f64 * FP_ONE as f64 + 0.5) as i64
+}
+
+/// Integer square root in FP space.
+/// Input x is in FP units (so the "real" value is x/FP_ONE).
+/// sqrt(x/FP_ONE) * FP_ONE = sqrt(x * FP_ONE).
+fn fp_sqrt(x: i64) -> i64 {
+    if x <= 0 {
+        return 0;
+    }
+    ((x as u64 * FP_ONE as u64).isqrt()) as i64
+}
+
+// ---------------------------------------------------------------------------
 // Data structures
 // ---------------------------------------------------------------------------
 
 /// A mass point in the structural network.
 struct Node {
-    /// Current position (starts at voxel center, displaced by solver).
-    position: [f32; 3],
-    /// Mass of this node (from material density + face weights).
-    mass: f32,
+    /// Current position in fixed-point space (FP_ONE per voxel).
+    position: [i64; 3],
+    /// Mass of this node (from material density + face weights), in FP.
+    mass: i64,
     /// Pinned nodes (ForestFloor) don't move under load.
     pinned: bool,
 }
@@ -97,12 +124,12 @@ struct Spring {
     node_a: usize,
     /// Index of the second node.
     node_b: usize,
-    /// Spring stiffness (resists deformation).
-    stiffness: f32,
-    /// Maximum force before failure.
-    strength: f32,
-    /// Natural (unstressed) length.
-    rest_length: f32,
+    /// Spring stiffness (resists deformation), in FP.
+    stiffness: i64,
+    /// Maximum force before failure, in FP.
+    strength: i64,
+    /// Natural (unstressed) length, in FP.
+    rest_length: i64,
     /// Whether this is a rod spring (along a strut axis). Rod springs only
     /// redistribute load *within* a strut — they do not attract external load
     /// from non-strut neighbors during weight-flow analysis.
@@ -118,11 +145,11 @@ pub struct StructuralNetwork {
 
 /// Result of running the structural solver.
 pub struct SolveResult {
-    /// Per-spring stress ratio (force / strength). Values > 1.0 mean failure.
-    pub spring_stresses: Vec<f32>,
-    /// Highest stress ratio across all springs.
-    pub max_stress_ratio: f32,
-    /// Whether any spring exceeded its strength (stress ratio > 1.0).
+    /// Per-spring stress ratio (force / strength) in FP. Values > FP_ONE mean failure.
+    pub spring_stresses: Vec<i64>,
+    /// Highest stress ratio across all springs, in FP.
+    pub max_stress_ratio: i64,
+    /// Whether any spring exceeded its strength (stress ratio > FP_ONE).
     pub any_failed: bool,
 }
 
@@ -171,8 +198,8 @@ impl BlueprintOverlay {
 pub struct BlueprintValidation {
     /// Overall validation tier.
     pub tier: ValidationTier,
-    /// Per-voxel maximum stress ratio (for heatmap rendering).
-    pub stress_map: BTreeMap<VoxelCoord, f32>,
+    /// Per-voxel maximum stress ratio in FP (for heatmap rendering).
+    pub stress_map: BTreeMap<VoxelCoord, i64>,
     /// Human-readable explanation.
     pub message: String,
 }
@@ -312,19 +339,19 @@ pub fn build_network(
 
                 if vt == VoxelType::BuildingInterior {
                     // BuildingInterior: base weight + face weights.
-                    let mut m = structural.building_interior_base_weight;
+                    let mut m = f32_to_fp(structural.building_interior_base_weight);
                     if let Some(fd) = face_data.get(&coord) {
                         for &dir in &FaceDirection::ALL {
                             let ft = fd.get(dir);
                             if let Some(fp) = structural.face_properties.get(&ft) {
-                                m += fp.weight;
+                                m += f32_to_fp(fp.weight);
                             }
                         }
                     }
                     mass = m;
                     pinned = false;
                 } else if let Some(mat) = structural.materials.get(&vt) {
-                    mass = mat.density;
+                    mass = f32_to_fp(mat.density);
                     pinned = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
                 } else {
                     // Unknown voxel type — skip.
@@ -334,7 +361,7 @@ pub fn build_network(
                 let node_idx = nodes.len();
                 coord_to_node.insert(coord, node_idx);
                 nodes.push(Node {
-                    position: [x as f32, y as f32, z as f32],
+                    position: [x as i64 * FP_ONE, y as i64 * FP_ONE, z as i64 * FP_ONE],
                     mass,
                     pinned,
                 });
@@ -367,7 +394,7 @@ pub fn build_network(
                 coord_a, vt_a, coord_b, vt_b, dx, dy, dz, face_data, structural,
             );
 
-            if stiffness <= 0.0 && strength <= 0.0 {
+            if stiffness <= 0 && strength <= 0 {
                 continue; // No structural connection.
             }
 
@@ -389,7 +416,22 @@ pub fn build_network(
     }
 }
 
+/// Compute harmonic mean of two FP values: 2*a*b / (a+b).
+/// Returns 0 if a+b is zero.
+fn fp_harmonic_mean(a: i64, b: i64) -> i64 {
+    let sum = a + b;
+    if sum <= 0 {
+        return 0;
+    }
+    // 2 * a * b / (a + b), in FP units. Use i128 to avoid overflow.
+    // ab = (a*b) >> FP_SHIFT is the product in FP scale.
+    // Then (2 * ab * FP_ONE / sum) keeps the result in FP scale.
+    let ab = (a as i128 * b as i128) >> FP_SHIFT;
+    (2 * ab * FP_ONE as i128 / sum as i128) as i64
+}
+
 /// Compute spring properties for a face-adjacent pair of voxels.
+/// Returns (stiffness, strength, rest_length) all in FP.
 #[allow(clippy::too_many_arguments)]
 fn compute_spring_properties(
     coord_a: VoxelCoord,
@@ -401,26 +443,24 @@ fn compute_spring_properties(
     dz: i32,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     structural: &crate::config::StructuralConfig,
-) -> (f32, f32, f32) {
-    let rest_length = 1.0; // Face-adjacent voxels are always 1 unit apart.
+) -> (i64, i64, i64) {
+    let rest_length = FP_ONE; // Face-adjacent voxels are always 1 unit apart.
 
     // Case 1: Both are solid (non-BuildingInterior, non-Air).
     if vt_a != VoxelType::BuildingInterior && vt_b != VoxelType::BuildingInterior {
         let mat_a = match structural.materials.get(&vt_a) {
             Some(m) => m,
-            None => return (0.0, 0.0, rest_length),
+            None => return (0, 0, rest_length),
         };
         let mat_b = match structural.materials.get(&vt_b) {
             Some(m) => m,
-            None => return (0.0, 0.0, rest_length),
+            None => return (0, 0, rest_length),
         };
+        let ka = f32_to_fp(mat_a.stiffness);
+        let kb = f32_to_fp(mat_b.stiffness);
         // Harmonic mean for stiffness, minimum for strength.
-        let stiffness = if mat_a.stiffness + mat_b.stiffness > 0.0 {
-            2.0 * mat_a.stiffness * mat_b.stiffness / (mat_a.stiffness + mat_b.stiffness)
-        } else {
-            0.0
-        };
-        let strength = mat_a.strength.min(mat_b.strength);
+        let stiffness = fp_harmonic_mean(ka, kb);
+        let strength = f32_to_fp(mat_a.strength).min(f32_to_fp(mat_b.strength));
         return (stiffness, strength, rest_length);
     }
 
@@ -454,54 +494,50 @@ fn compute_spring_properties(
                 (Some(_), Some(_)) => fb,
                 (Some(_), None) => fa,
                 (None, Some(_)) => fb,
-                (None, None) => return (0.0, 0.0, rest_length),
+                (None, None) => return (0, 0, rest_length),
             }
         }
         (Some(f), None) => f,
         (None, Some(f)) => f,
-        (None, None) => return (0.0, 0.0, rest_length),
+        (None, None) => return (0, 0, rest_length),
     };
 
     // If the winning face is Open, no spring.
     if face_type == FaceType::Open {
-        return (0.0, 0.0, rest_length);
+        return (0, 0, rest_length);
     }
 
-    let fp = match structural.face_properties.get(&face_type) {
+    let face_props = match structural.face_properties.get(&face_type) {
         Some(fp) => fp,
-        None => return (0.0, 0.0, rest_length),
+        None => return (0, 0, rest_length),
     };
+    let fp_k = f32_to_fp(face_props.stiffness);
+    let fp_s = f32_to_fp(face_props.strength);
 
     // If one side is solid, blend face stiffness with material stiffness.
     let (stiffness, strength) = if vt_a != VoxelType::BuildingInterior {
         let mat = structural.materials.get(&vt_a);
         match mat {
             Some(m) => {
-                let s = if m.stiffness + fp.stiffness > 0.0 {
-                    2.0 * m.stiffness * fp.stiffness / (m.stiffness + fp.stiffness)
-                } else {
-                    0.0
-                };
-                (s, m.strength.min(fp.strength))
+                let mk = f32_to_fp(m.stiffness);
+                let ms = f32_to_fp(m.strength);
+                (fp_harmonic_mean(mk, fp_k), ms.min(fp_s))
             }
-            None => (fp.stiffness, fp.strength),
+            None => (fp_k, fp_s),
         }
     } else if vt_b != VoxelType::BuildingInterior {
         let mat = structural.materials.get(&vt_b);
         match mat {
             Some(m) => {
-                let s = if m.stiffness + fp.stiffness > 0.0 {
-                    2.0 * m.stiffness * fp.stiffness / (m.stiffness + fp.stiffness)
-                } else {
-                    0.0
-                };
-                (s, m.strength.min(fp.strength))
+                let mk = f32_to_fp(m.stiffness);
+                let ms = f32_to_fp(m.strength);
+                (fp_harmonic_mean(mk, fp_k), ms.min(fp_s))
             }
-            None => (fp.stiffness, fp.strength),
+            None => (fp_k, fp_s),
         }
     } else {
         // Both BuildingInterior — pure face spring.
-        (fp.stiffness, fp.strength)
+        (fp_k, fp_s)
     };
 
     (stiffness, strength, rest_length)
@@ -520,8 +556,8 @@ fn compute_spring_properties(
 /// After all iterations, computes per-spring stress ratios.
 pub fn solve(network: &mut StructuralNetwork, config: &GameConfig) -> SolveResult {
     let structural = &config.structural;
-    let gravity = structural.gravity;
-    let damping_scale = structural.damping_factor;
+    let gravity = f32_to_fp(structural.gravity);
+    let damping_scale = f32_to_fp(structural.damping_factor);
     let max_iter = structural.max_iterations;
 
     // Build per-node adjacency list of (spring_index, other_node_index).
@@ -533,21 +569,24 @@ pub fn solve(network: &mut StructuralNetwork, config: &GameConfig) -> SolveResul
     }
 
     // Compute per-node effective stiffness (sum of connected spring stiffnesses).
-    let mut k_eff: Vec<f32> = vec![0.0; num_nodes];
+    let mut k_eff: Vec<i64> = vec![0; num_nodes];
     for spring in network.springs.iter() {
         k_eff[spring.node_a] += spring.stiffness;
         k_eff[spring.node_b] += spring.stiffness;
     }
 
+    // Small epsilon threshold (replaces 1e-10 in f32 version).
+    let epsilon: i64 = 4;
+
     // Gauss-Seidel iteration: update each node in-place using latest positions.
     for _ in 0..max_iter {
         for i in 0..num_nodes {
-            if network.nodes[i].pinned || k_eff[i] <= 0.0 {
+            if network.nodes[i].pinned || k_eff[i] <= 0 {
                 continue;
             }
 
-            // Net force: gravity + spring forces.
-            let mut force = [0.0f32, -network.nodes[i].mass * gravity, 0.0f32];
+            // Net force: gravity + spring forces (all in FP).
+            let mut force = [0i64, -((network.nodes[i].mass * gravity) >> FP_SHIFT), 0i64];
 
             for &(si, other) in &node_springs[i] {
                 let spring = &network.springs[si];
@@ -557,34 +596,37 @@ pub fn solve(network: &mut StructuralNetwork, config: &GameConfig) -> SolveResul
                 let dx = pos_o[0] - pos_i[0];
                 let dy = pos_o[1] - pos_i[1];
                 let dz = pos_o[2] - pos_i[2];
-                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                let dist_sq = ((dx * dx) + (dy * dy) + (dz * dz)) >> FP_SHIFT;
+                let dist = fp_sqrt(dist_sq);
 
-                if dist < 1e-10 {
+                if dist < epsilon {
                     continue;
                 }
 
                 let extension = dist - spring.rest_length;
-                let f_mag = spring.stiffness * extension;
+                let f_mag = (spring.stiffness * extension) >> FP_SHIFT;
 
-                force[0] += f_mag * dx / dist;
-                force[1] += f_mag * dy / dist;
-                force[2] += f_mag * dz / dist;
+                // f_mag * dx / dist — both in FP, so (f_mag * dx) >> FP_SHIFT / dist * FP_ONE
+                force[0] += (f_mag * dx) / dist;
+                force[1] += (f_mag * dy) / dist;
+                force[2] += (f_mag * dz) / dist;
             }
 
             // Per-node damping: damping_scale / local_stiffness.
-            let damping = damping_scale / k_eff[i];
-            network.nodes[i].position[0] += force[0] * damping;
-            network.nodes[i].position[1] += force[1] * damping;
-            network.nodes[i].position[2] += force[2] * damping;
+            // damping = damping_scale / k_eff[i] (in FP: damping_scale * FP_ONE / k_eff[i]).
+            let damping = (damping_scale * FP_ONE) / k_eff[i];
+            network.nodes[i].position[0] += (force[0] * damping) >> FP_SHIFT;
+            network.nodes[i].position[1] += (force[1] * damping) >> FP_SHIFT;
+            network.nodes[i].position[2] += (force[2] * damping) >> FP_SHIFT;
         }
     }
 
     // --- Phase 1: Deformation-based stress ---
     // Compute per-spring stress from spring extension after relaxation.
     let num_springs = network.springs.len();
-    let mut deform_stresses = vec![0.0f32; num_springs];
+    let mut deform_stresses = vec![0i64; num_springs];
     for (si, spring) in network.springs.iter().enumerate() {
-        if spring.strength <= 0.0 {
+        if spring.strength <= 0 {
             continue;
         }
         let pos_a = network.nodes[spring.node_a].position;
@@ -592,10 +634,13 @@ pub fn solve(network: &mut StructuralNetwork, config: &GameConfig) -> SolveResul
         let dx = pos_b[0] - pos_a[0];
         let dy = pos_b[1] - pos_a[1];
         let dz = pos_b[2] - pos_a[2];
-        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        let dist_sq = ((dx * dx) + (dy * dy) + (dz * dz)) >> FP_SHIFT;
+        let dist = fp_sqrt(dist_sq);
         let extension = (dist - spring.rest_length).abs();
-        let force = spring.stiffness * extension;
-        deform_stresses[si] = force / spring.strength;
+        let force = (spring.stiffness * extension) >> FP_SHIFT;
+        // stress = force / strength (both in FP), result in FP:
+        // (force * FP_ONE) / strength
+        deform_stresses[si] = (force * FP_ONE) / spring.strength;
     }
 
     // --- Phase 2: Weight-flow stress ---
@@ -603,12 +648,12 @@ pub fn solve(network: &mut StructuralNetwork, config: &GameConfig) -> SolveResul
     // downstream weight is the total weight of all descendants. This captures
     // cantilever bottleneck stress that the deformation solver misses (because
     // horizontal springs resist bending only through geometric nonlinearity).
-    let mut weight_stresses = vec![0.0f32; num_springs];
+    let mut weight_stresses = vec![0i64; num_springs];
     compute_weight_flow_stress(network, gravity, &node_springs, &mut weight_stresses);
 
     // --- Combine: take max of both analyses per spring ---
     let mut spring_stresses = Vec::with_capacity(num_springs);
-    let mut max_stress_ratio: f32 = 0.0;
+    let mut max_stress_ratio: i64 = 0;
     let mut any_failed = false;
 
     for si in 0..num_springs {
@@ -617,7 +662,7 @@ pub fn solve(network: &mut StructuralNetwork, config: &GameConfig) -> SolveResul
         if stress > max_stress_ratio {
             max_stress_ratio = stress;
         }
-        if stress > 1.0 {
+        if stress > FP_ONE {
             any_failed = true;
         }
     }
@@ -640,9 +685,9 @@ pub fn solve(network: &mut StructuralNetwork, config: &GameConfig) -> SolveResul
 /// among 3 junction springs).
 fn compute_weight_flow_stress(
     network: &StructuralNetwork,
-    gravity: f32,
+    gravity: i64,
     node_springs: &[Vec<(usize, usize)>],
-    weight_stresses: &mut [f32],
+    weight_stresses: &mut [i64],
 ) {
     let num_nodes = network.nodes.len();
     if num_nodes == 0 {
@@ -678,13 +723,18 @@ fn compute_weight_flow_stress(
     order.sort_by(|a, b| dist_to_ground[*b].cmp(&dist_to_ground[*a]));
 
     // Process from leaves to roots, distributing load upstream.
-    let mut accumulated_load: Vec<f32> = network.nodes.iter().map(|n| n.mass).collect();
+    let mut accumulated_load: Vec<i64> = network.nodes.iter().map(|n| n.mass).collect();
+
+    // Small FP epsilon (replaces 1e-6).
+    let k_epsilon: i64 = 1;
+    // Rod stiffness cap: 20.0 in FP.
+    let rod_k_cap: i64 = 20 * FP_ONE;
 
     for &node_idx in &order {
         if network.nodes[node_idx].pinned || dist_to_ground[node_idx] == u32::MAX {
             continue;
         }
-        if accumulated_load[node_idx] <= 0.0 {
+        if accumulated_load[node_idx] <= 0 {
             continue;
         }
 
@@ -692,8 +742,8 @@ fn compute_weight_flow_stress(
         // Rod springs participate in load distribution (sharing load with
         // face-adjacent springs within a strut) but use capped stiffness
         // so they don't attract disproportionate external load.
-        let mut upstream: Vec<(usize, usize, f32)> = Vec::new();
-        let mut total_k = 0.0f32;
+        let mut upstream: Vec<(usize, usize, i64)> = Vec::new();
+        let mut total_k: i64 = 0;
 
         for &(si, other) in &node_springs[node_idx] {
             if dist_to_ground[other] < dist_to_ground[node_idx] {
@@ -702,29 +752,32 @@ fn compute_weight_flow_stress(
                 // springs for load *attraction*, but their high strength
                 // still reduces stress on the load they carry.
                 let k = if spring.is_rod {
-                    spring.stiffness.clamp(1e-6, 20.0)
+                    spring.stiffness.clamp(k_epsilon, rod_k_cap)
                 } else {
-                    spring.stiffness.max(1e-6)
+                    spring.stiffness.max(k_epsilon)
                 };
                 upstream.push((si, other, k));
                 total_k += k;
             }
         }
 
-        if total_k <= 0.0 {
+        if total_k <= 0 {
             continue;
         }
 
         let load = accumulated_load[node_idx];
 
         for (si, other, k) in upstream {
-            let fraction = k / total_k;
-            let flow = load * gravity * fraction;
+            // fraction = k / total_k (in FP: k * FP_ONE / total_k).
+            let fraction = (k * FP_ONE) / total_k;
+            // flow = load * gravity * fraction (all FP).
+            let flow = (((load * gravity) >> FP_SHIFT) * fraction) >> FP_SHIFT;
             let spring = &network.springs[si];
-            if spring.strength > 0.0 {
-                weight_stresses[si] = flow / spring.strength;
+            if spring.strength > 0 {
+                // stress = flow / strength (FP result: flow * FP_ONE / strength).
+                weight_stresses[si] = (flow * FP_ONE) / spring.strength;
             }
-            accumulated_load[other] += load * fraction;
+            accumulated_load[other] += (load * fraction) >> FP_SHIFT;
         }
     }
 }
@@ -740,7 +793,7 @@ fn compute_weight_flow_stress(
 pub fn validate_tree(world: &VoxelWorld, config: &GameConfig) -> bool {
     let mut network = build_network(world, &BTreeMap::new(), config);
     let result = solve(&mut network, config);
-    result.max_stress_ratio < config.structural.warn_stress_ratio
+    result.max_stress_ratio < f32_to_fp(config.structural.warn_stress_ratio)
 }
 
 // ---------------------------------------------------------------------------
@@ -890,13 +943,13 @@ pub fn validate_blueprint(
     for (spring_idx, spring) in network.springs.iter().enumerate() {
         let stress = result.spring_stresses[spring_idx];
         if let Some(&coord_a) = node_to_coord.get(&spring.node_a) {
-            let entry = stress_map.entry(coord_a).or_insert(0.0f32);
+            let entry = stress_map.entry(coord_a).or_insert(0i64);
             if stress > *entry {
                 *entry = stress;
             }
         }
         if let Some(&coord_b) = node_to_coord.get(&spring.node_b) {
-            let entry = stress_map.entry(coord_b).or_insert(0.0f32);
+            let entry = stress_map.entry(coord_b).or_insert(0i64);
             if stress > *entry {
                 *entry = stress;
             }
@@ -905,22 +958,25 @@ pub fn validate_blueprint(
 
     // Classify based on thresholds.
     let structural = &config.structural;
-    if result.max_stress_ratio >= structural.block_stress_ratio {
+    let block_fp = f32_to_fp(structural.block_stress_ratio);
+    let warn_fp = f32_to_fp(structural.warn_stress_ratio);
+    if result.max_stress_ratio >= block_fp {
         BlueprintValidation {
             tier: ValidationTier::Blocked,
             stress_map,
             message: format!(
                 "Structure would fail: peak stress {:.1}x exceeds limit {:.1}x.",
-                result.max_stress_ratio, structural.block_stress_ratio
+                result.max_stress_ratio as f64 / FP_ONE as f64,
+                structural.block_stress_ratio
             ),
         }
-    } else if result.max_stress_ratio >= structural.warn_stress_ratio {
+    } else if result.max_stress_ratio >= warn_fp {
         BlueprintValidation {
             tier: ValidationTier::Warning,
             stress_map,
             message: format!(
                 "Structure is under significant stress ({:.1}x of limit).",
-                result.max_stress_ratio
+                result.max_stress_ratio as f64 / FP_ONE as f64
             ),
         }
     } else {
@@ -963,19 +1019,19 @@ fn build_network_from_set(
         let pinned;
 
         if vt == VoxelType::BuildingInterior {
-            let mut m = structural.building_interior_base_weight;
+            let mut m = f32_to_fp(structural.building_interior_base_weight);
             if let Some(fd) = face_data.get(&coord) {
                 for &dir in &FaceDirection::ALL {
                     let ft = fd.get(dir);
                     if let Some(fp) = structural.face_properties.get(&ft) {
-                        m += fp.weight;
+                        m += f32_to_fp(fp.weight);
                     }
                 }
             }
             mass = m;
             pinned = false;
         } else if let Some(mat) = structural.materials.get(&vt) {
-            mass = mat.density;
+            mass = f32_to_fp(mat.density);
             pinned = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
         } else {
             continue;
@@ -984,7 +1040,11 @@ fn build_network_from_set(
         let node_idx = nodes.len();
         coord_to_node.insert(coord, node_idx);
         nodes.push(Node {
-            position: [coord.x as f32, coord.y as f32, coord.z as f32],
+            position: [
+                coord.x as i64 * FP_ONE,
+                coord.y as i64 * FP_ONE,
+                coord.z as i64 * FP_ONE,
+            ],
             mass,
             pinned,
         });
@@ -1015,7 +1075,7 @@ fn build_network_from_set(
                 coord_a, vt_a, coord_b, vt_b, dx, dy, dz, face_data, structural,
             );
 
-            if stiffness <= 0.0 && strength <= 0.0 {
+            if stiffness <= 0 && strength <= 0 {
                 continue;
             }
 
@@ -1079,6 +1139,8 @@ fn add_rod_springs(
         }
 
         // Add a rod spring between each consecutive pair of connection points.
+        let rod_stiffness = f32_to_fp(structural.strut_rod_stiffness);
+        let rod_strength = f32_to_fp(structural.strut_rod_strength);
         for pair in connection_indices.windows(2) {
             let coord_a = line[pair[0]];
             let coord_b = line[pair[1]];
@@ -1092,19 +1154,20 @@ fn add_rod_springs(
                 None => continue,
             };
 
-            // Rest length: Euclidean distance between the two connection points.
+            // Rest length: Euclidean distance between the two connection points (FP).
             let pos_a = network.nodes[idx_a].position;
             let pos_b = network.nodes[idx_b].position;
             let dx = pos_b[0] - pos_a[0];
             let dy = pos_b[1] - pos_a[1];
             let dz = pos_b[2] - pos_a[2];
-            let rest_length = (dx * dx + dy * dy + dz * dz).sqrt();
+            let dist_sq = ((dx * dx) + (dy * dy) + (dz * dz)) >> FP_SHIFT;
+            let rest_length = fp_sqrt(dist_sq);
 
             network.springs.push(Spring {
                 node_a: idx_a,
                 node_b: idx_b,
-                stiffness: structural.strut_rod_stiffness,
-                strength: structural.strut_rod_strength,
+                stiffness: rod_stiffness,
+                strength: rod_strength,
                 rest_length,
                 is_rod: true,
             });
@@ -1249,7 +1312,7 @@ pub fn validate_blueprint_fast(
     // Add rod springs along strut axes for structural benefit.
     add_rod_springs(&mut network, struts, &visited, config);
 
-    let gravity = config.structural.gravity;
+    let gravity = f32_to_fp(config.structural.gravity);
 
     // Build per-node adjacency.
     let num_nodes = network.nodes.len();
@@ -1261,13 +1324,13 @@ pub fn validate_blueprint_fast(
 
     // Weight-flow stress computation.
     let num_springs = network.springs.len();
-    let mut weight_stresses = vec![0.0f32; num_springs];
+    let mut weight_stresses = vec![0i64; num_springs];
     compute_weight_flow_stress(&network, gravity, &node_springs, &mut weight_stresses);
 
     // Find max stress and build per-voxel stress map. Strut-internal
     // springs (is_rod) are excluded from the max — their stress is
     // by-design and doesn't reflect structural risk.
-    let mut max_stress_ratio: f32 = 0.0;
+    let mut max_stress_ratio: i64 = 0;
     let mut stress_map = BTreeMap::new();
 
     let node_to_coord: BTreeMap<usize, VoxelCoord> = network
@@ -1317,13 +1380,13 @@ pub fn validate_blueprint_fast(
             max_stress_ratio = stress;
         }
         if let Some(&coord_a) = node_to_coord.get(&spring.node_a) {
-            let entry = stress_map.entry(coord_a).or_insert(0.0f32);
+            let entry = stress_map.entry(coord_a).or_insert(0i64);
             if stress > *entry {
                 *entry = stress;
             }
         }
         if let Some(&coord_b) = node_to_coord.get(&spring.node_b) {
-            let entry = stress_map.entry(coord_b).or_insert(0.0f32);
+            let entry = stress_map.entry(coord_b).or_insert(0i64);
             if stress > *entry {
                 *entry = stress;
             }
@@ -1332,22 +1395,25 @@ pub fn validate_blueprint_fast(
 
     // Classify based on thresholds.
     let structural = &config.structural;
-    if max_stress_ratio >= structural.block_stress_ratio {
+    let block_fp = f32_to_fp(structural.block_stress_ratio);
+    let warn_fp = f32_to_fp(structural.warn_stress_ratio);
+    if max_stress_ratio >= block_fp {
         BlueprintValidation {
             tier: ValidationTier::Blocked,
             stress_map,
             message: format!(
                 "Structure would fail: peak stress {:.1}x exceeds limit {:.1}x.",
-                max_stress_ratio, structural.block_stress_ratio
+                max_stress_ratio as f64 / FP_ONE as f64,
+                structural.block_stress_ratio
             ),
         }
-    } else if max_stress_ratio >= structural.warn_stress_ratio {
+    } else if max_stress_ratio >= warn_fp {
         BlueprintValidation {
             tier: ValidationTier::Warning,
             stress_map,
             message: format!(
                 "Structure is under significant stress ({:.1}x of limit).",
-                max_stress_ratio
+                max_stress_ratio as f64 / FP_ONE as f64
             ),
         }
     } else {
@@ -1498,7 +1564,7 @@ pub fn validate_carve_fast(
     // Add rod springs along strut axes for structural benefit.
     add_rod_springs(&mut network, struts, &visited, config);
 
-    let gravity = config.structural.gravity;
+    let gravity = f32_to_fp(config.structural.gravity);
 
     let num_nodes = network.nodes.len();
     let mut node_springs: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_nodes];
@@ -1508,11 +1574,11 @@ pub fn validate_carve_fast(
     }
 
     let num_springs = network.springs.len();
-    let mut weight_stresses = vec![0.0f32; num_springs];
+    let mut weight_stresses = vec![0i64; num_springs];
     compute_weight_flow_stress(&network, gravity, &node_springs, &mut weight_stresses);
 
     // Find max stress and build per-voxel stress map.
-    let mut max_stress_ratio: f32 = 0.0;
+    let mut max_stress_ratio: i64 = 0;
     let mut stress_map = BTreeMap::new();
 
     let node_to_coord: BTreeMap<usize, VoxelCoord> = network
@@ -1527,13 +1593,13 @@ pub fn validate_carve_fast(
             max_stress_ratio = stress;
         }
         if let Some(&coord_a) = node_to_coord.get(&spring.node_a) {
-            let entry = stress_map.entry(coord_a).or_insert(0.0f32);
+            let entry = stress_map.entry(coord_a).or_insert(0i64);
             if stress > *entry {
                 *entry = stress;
             }
         }
         if let Some(&coord_b) = node_to_coord.get(&spring.node_b) {
-            let entry = stress_map.entry(coord_b).or_insert(0.0f32);
+            let entry = stress_map.entry(coord_b).or_insert(0i64);
             if stress > *entry {
                 *entry = stress;
             }
@@ -1542,22 +1608,25 @@ pub fn validate_carve_fast(
 
     // Classify based on thresholds.
     let structural = &config.structural;
-    if max_stress_ratio >= structural.block_stress_ratio {
+    let block_fp = f32_to_fp(structural.block_stress_ratio);
+    let warn_fp = f32_to_fp(structural.warn_stress_ratio);
+    if max_stress_ratio >= block_fp {
         BlueprintValidation {
             tier: ValidationTier::Blocked,
             stress_map,
             message: format!(
                 "Carving would cause structural failure: peak stress {:.1}x exceeds limit {:.1}x.",
-                max_stress_ratio, structural.block_stress_ratio
+                max_stress_ratio as f64 / FP_ONE as f64,
+                structural.block_stress_ratio
             ),
         }
-    } else if max_stress_ratio >= structural.warn_stress_ratio {
+    } else if max_stress_ratio >= warn_fp {
         BlueprintValidation {
             tier: ValidationTier::Warning,
             stress_map,
             message: format!(
                 "Remaining structure is under significant stress ({:.1}x of limit).",
-                max_stress_ratio
+                max_stress_ratio as f64 / FP_ONE as f64
             ),
         }
     } else {
@@ -1671,10 +1740,10 @@ mod tests {
             result.max_stress_ratio
         );
         assert!(
-            result.max_stress_ratio < config.structural.warn_stress_ratio,
+            result.max_stress_ratio < f32_to_fp(config.structural.warn_stress_ratio),
             "Short cantilever stress {} should be below warn threshold {}",
             result.max_stress_ratio,
-            config.structural.warn_stress_ratio
+            f32_to_fp(config.structural.warn_stress_ratio)
         );
     }
 
@@ -1696,16 +1765,17 @@ mod tests {
             result.max_stress_ratio
         );
         assert!(
-            result.max_stress_ratio > 1.0,
-            "Max stress {} should exceed 1.0",
-            result.max_stress_ratio
+            result.max_stress_ratio > FP_ONE,
+            "Max stress {} should exceed FP_ONE ({})",
+            result.max_stress_ratio,
+            FP_ONE
         );
     }
 
     #[test]
     fn stress_monotonically_increases_with_arm_length() {
         let lengths = [3, 5, 8, 12, 16, 20];
-        let mut prev_stress = 0.0f32;
+        let mut prev_stress = 0i64;
 
         for &len in &lengths {
             let mut world = make_column_world(32, 0..10, 5, 5, 10);
@@ -1741,16 +1811,9 @@ mod tests {
 
         assert_eq!(result1.spring_stresses.len(), result2.spring_stresses.len());
         for (s1, s2) in result1.spring_stresses.iter().zip(&result2.spring_stresses) {
-            assert_eq!(
-                s1.to_bits(),
-                s2.to_bits(),
-                "Stress values must be bit-identical"
-            );
+            assert_eq!(s1, s2, "Stress values must be identical");
         }
-        assert_eq!(
-            result1.max_stress_ratio.to_bits(),
-            result2.max_stress_ratio.to_bits()
-        );
+        assert_eq!(result1.max_stress_ratio, result2.max_stress_ratio);
     }
 
     #[test]
@@ -2082,7 +2145,7 @@ mod tests {
         let arm_len = 8;
         let config = GameConfig::default();
 
-        let make_building = |face_type: FaceType| -> f32 {
+        let make_building = |face_type: FaceType| -> i64 {
             let mut world = make_column_world(24, 0..10, 5, 5, arm_y);
             add_horizontal_arm(
                 &mut world,
@@ -2121,8 +2184,9 @@ mod tests {
         // (The actual relationship depends on whether bracing benefit > weight cost.)
         // For a cantilevered building, the bracing effect of walls is significant
         // since they create stiffer connections to the platform below via Floor.
+        // Tolerance: 0.1 in FP = FP_ONE/10 = 6553.
         assert!(
-            wall_stress < window_stress || (wall_stress - window_stress).abs() < 0.1,
+            wall_stress < window_stress || (wall_stress - window_stress).abs() < FP_ONE / 10,
             "Wall stress {} should not be significantly worse than window stress {}",
             wall_stress,
             window_stress
@@ -2896,10 +2960,12 @@ mod tests {
 
         // Verify rod springs have the right stiffness.
         let rod_springs: Vec<&Spring> = network.springs[spring_count_before..].iter().collect();
+        let expected_stiffness = f32_to_fp(config.structural.strut_rod_stiffness);
+        let expected_strength = f32_to_fp(config.structural.strut_rod_strength);
         for rs in &rod_springs {
-            assert_eq!(rs.stiffness, config.structural.strut_rod_stiffness);
-            assert_eq!(rs.strength, config.structural.strut_rod_strength);
-            assert!(rs.rest_length > 0.0);
+            assert_eq!(rs.stiffness, expected_stiffness);
+            assert_eq!(rs.strength, expected_strength);
+            assert!(rs.rest_length > 0);
         }
     }
 
@@ -3062,32 +3128,28 @@ mod tests {
         // reduce intermediate stress by routing load through high-strength
         // rod springs rather than weak face-adjacent springs.
         let mid_coord = VoxelCoord::new(5, 5, 5);
-        let mid_with = val_with.stress_map.get(&mid_coord).copied().unwrap_or(0.0);
-        let mid_without = val_without
-            .stress_map
-            .get(&mid_coord)
-            .copied()
-            .unwrap_or(0.0);
+        let mid_with = val_with.stress_map.get(&mid_coord).copied().unwrap_or(0);
+        let mid_without = val_without.stress_map.get(&mid_coord).copied().unwrap_or(0);
 
         assert!(
             mid_with < mid_without,
-            "Rod springs should reduce stress at mid-strut: with={:.3}, without={:.3}",
+            "Rod springs should reduce stress at mid-strut: with={}, without={}",
             mid_with,
             mid_without
         );
 
         // Max stress should not increase (both cases have the same ground
         // connection bottleneck carrying identical total load).
-        let max_with = val_with.stress_map.values().copied().fold(0.0f32, f32::max);
+        let max_with = val_with.stress_map.values().copied().fold(0i64, i64::max);
         let max_without = val_without
             .stress_map
             .values()
             .copied()
-            .fold(0.0f32, f32::max);
+            .fold(0i64, i64::max);
 
         assert!(
             max_with <= max_without,
-            "Rod springs should not increase max stress: with={:.3}, without={:.3}",
+            "Rod springs should not increase max stress: with={}, without={}",
             max_with,
             max_without
         );
@@ -3383,14 +3445,15 @@ mod tests {
         let result = solve(&mut network, &config);
 
         assert!(
-            result.max_stress_ratio.is_finite(),
-            "Solver should converge to finite stress, got {}",
+            result.max_stress_ratio >= 0,
+            "Solver should produce non-negative stress, got {}",
             result.max_stress_ratio
         );
         assert!(
-            result.max_stress_ratio < 10.0,
-            "Stress should be reasonable, got {}",
-            result.max_stress_ratio
+            result.max_stress_ratio < 10 * FP_ONE,
+            "Stress should be reasonable, got {} ({}x)",
+            result.max_stress_ratio,
+            result.max_stress_ratio as f64 / FP_ONE as f64
         );
     }
 
@@ -3472,9 +3535,44 @@ mod tests {
 
         let network = build_network(&world, &BTreeMap::new(), &config);
         let strut_idx = network.coord_to_node[&VoxelCoord::new(3, 1, 3)];
-        assert!(
-            (network.nodes[strut_idx].mass - strut_mat.density).abs() < 1e-6,
-            "Strut node mass should equal strut density"
+        assert_eq!(
+            network.nodes[strut_idx].mass,
+            f32_to_fp(strut_mat.density),
+            "Strut node mass should equal strut density in FP"
         );
+    }
+
+    #[test]
+    fn fp_harmonic_mean_equal_values() {
+        // harmonic_mean(x, x) = x for any x.
+        let two_fp = 2 * FP_ONE;
+        assert_eq!(fp_harmonic_mean(two_fp, two_fp), two_fp);
+        assert_eq!(fp_harmonic_mean(FP_ONE, FP_ONE), FP_ONE);
+    }
+
+    #[test]
+    fn fp_harmonic_mean_unequal_values() {
+        // harmonic_mean(1, 3) = 1.5 → 1.5 * FP_ONE
+        let result = fp_harmonic_mean(FP_ONE, 3 * FP_ONE);
+        let expected = 3 * FP_ONE / 2;
+        assert!(
+            (result - expected).abs() <= 1,
+            "Expected ~{expected}, got {result}"
+        );
+    }
+
+    #[test]
+    fn fp_harmonic_mean_with_zero() {
+        assert_eq!(fp_harmonic_mean(0, FP_ONE), 0);
+        assert_eq!(fp_harmonic_mean(FP_ONE, 0), 0);
+        assert_eq!(fp_harmonic_mean(0, 0), 0);
+    }
+
+    #[test]
+    fn structural_fp_sqrt_basic() {
+        assert_eq!(fp_sqrt(FP_ONE), FP_ONE);
+        assert_eq!(fp_sqrt(4 * FP_ONE), 2 * FP_ONE);
+        assert_eq!(fp_sqrt(0), 0);
+        assert_eq!(fp_sqrt(-1), 0);
     }
 }

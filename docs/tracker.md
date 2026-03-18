@@ -57,7 +57,6 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
-[ ] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -243,6 +242,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-preview-blueprints   Preview treats blueprints as complete
+[x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] F-alt-deselect         Alt+click to remove from selection
 [x] F-armor                Wearable armor system
@@ -4466,7 +4466,7 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 ### Sim Engine
 
 #### B-sim-floats — Remaining f32/f64 in sim logic threaten determinism
-**Status:** Todo
+**Status:** Done
 
 Several sim-logic code paths still use f32/f64 arithmetic, which is not
 guaranteed deterministic across platforms/compilers. Key areas:

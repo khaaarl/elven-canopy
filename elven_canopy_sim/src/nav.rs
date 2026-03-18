@@ -108,6 +108,16 @@ pub enum EdgeType {
     RopeLadderClimb,
 }
 
+/// Scale factor for integer edge distances. Euclidean voxel distances are
+/// multiplied by this value so that irrational lengths (sqrt(2), sqrt(3))
+/// are represented without floats. A power of two for cheap multiply/divide.
+pub const DIST_SCALE: u32 = 1024;
+
+/// Heuristic scale for A*: `DIST_SCALE / sqrt(3)` rounded down.
+/// Ensures Manhattan-based heuristic remains admissible when edge costs
+/// are scaled by `DIST_SCALE`.
+pub const HEURISTIC_SCALE: i64 = 591;
+
 /// A directed edge in the navigation graph.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NavEdge {
@@ -115,8 +125,20 @@ pub struct NavEdge {
     pub from: NavNodeId,
     pub to: NavNodeId,
     pub edge_type: EdgeType,
-    /// Euclidean distance between the two endpoints (in voxel units).
-    pub distance: f32,
+    /// Euclidean distance × DIST_SCALE (1024). Integer-only, deterministic.
+    /// For adjacent horizontal (1,0,0): 1024.
+    /// For diagonal (1,1,0): 1448 (≈ sqrt(2) × 1024).
+    /// For 3D diagonal (1,1,1): 1774 (≈ sqrt(3) × 1024).
+    pub distance: u32,
+}
+
+/// Compute a scaled integer Euclidean distance from coordinate deltas.
+/// Returns `floor(sqrt(dx² + dy² + dz²) * DIST_SCALE)`, computed with
+/// integer square root for determinism (no floats).
+pub fn scaled_distance(dx: i32, dy: i32, dz: i32) -> u32 {
+    let sq = (dx as i64 * dx as i64 + dy as i64 * dy as i64 + dz as i64 * dz as i64) as u64;
+    let scaled_sq = sq * (DIST_SCALE as u64 * DIST_SCALE as u64);
+    scaled_sq.isqrt() as u32
 }
 
 /// The navigation graph container.
@@ -162,7 +184,7 @@ impl NavGraph {
         from: NavNodeId,
         to: NavNodeId,
         edge_type: EdgeType,
-        distance: f32,
+        distance: u32,
     ) -> NavEdgeId {
         let forward_id = NavEdgeId(self.edges.len() as u32);
         let reverse_id = NavEdgeId(self.edges.len() as u32 + 1);
@@ -510,7 +532,7 @@ impl NavGraph {
                             pos,
                             to_node.position,
                         );
-                        let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+                        let dist = scaled_distance(dx, dy, dz);
                         self.add_edge(NavNodeId(slot as u32), NavNodeId(nslot), edge_type, dist);
                     }
                 }
@@ -680,7 +702,7 @@ impl NavGraph {
                             pos,
                             to_node.position,
                         );
-                        let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+                        let dist = scaled_distance(dx, dy, dz);
                         self.add_edge(NavNodeId(slot as u32), NavNodeId(nslot), edge_type, dist);
                     }
                 }
@@ -1163,7 +1185,7 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
             let edge_type =
                 derive_edge_type(from_surface, to_node.surface_type, pos, to_node.position);
 
-            let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+            let dist = scaled_distance(dx, dy, dz);
             graph.add_edge(NavNodeId(slot as u32), NavNodeId(to_slot), edge_type, dist);
         }
     }
@@ -1395,7 +1417,7 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
             }
 
             let dy = n_air_y - air_y;
-            let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+            let dist = scaled_distance(dx, dy, dz);
             graph.add_edge(
                 NavNodeId(slot as u32),
                 NavNodeId(to_slot),
@@ -1603,7 +1625,7 @@ pub fn update_large_after_voxel_solidified(
             let from_node_y = graph.nodes[slot].as_ref().unwrap().position.y;
             let to_node_y = graph.nodes[ns].as_ref().unwrap().position.y;
             let dy = to_node_y - from_node_y;
-            let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+            let dist = scaled_distance(dx, dy, dz);
             graph.add_edge(from_id, to_id, EdgeType::ForestFloor, dist);
         }
     }
@@ -1661,7 +1683,7 @@ mod tests {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, 5.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, 5 * DIST_SCALE);
 
         let a_edges: Vec<_> = graph
             .neighbors(a)
@@ -1683,7 +1705,7 @@ mod tests {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
         let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, 1.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, DIST_SCALE);
 
         let result = graph.spread_destinations(a, 1);
         assert_eq!(result, vec![a]);
@@ -1697,9 +1719,9 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
         let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::ForestFloor);
         let d = graph.add_node(VoxelCoord::new(3, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, 1.0);
-        graph.add_edge(b, c, EdgeType::ForestFloor, 1.0);
-        graph.add_edge(c, d, EdgeType::ForestFloor, 1.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, DIST_SCALE);
+        graph.add_edge(b, c, EdgeType::ForestFloor, DIST_SCALE);
+        graph.add_edge(c, d, EdgeType::ForestFloor, DIST_SCALE);
 
         // Spread from B, requesting 3 destinations.
         let result = graph.spread_destinations(b, 3);
@@ -1716,8 +1738,8 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
         let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
         let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, 1.0);
-        graph.add_edge(b, c, EdgeType::ForestFloor, 1.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, DIST_SCALE);
+        graph.add_edge(b, c, EdgeType::ForestFloor, DIST_SCALE);
 
         let result = graph.spread_destinations(b, 2);
         assert_eq!(result.len(), 2);
@@ -1729,7 +1751,7 @@ mod tests {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
         let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, 1.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, DIST_SCALE);
 
         // Request 5 but only 2 nodes exist.
         let result = graph.spread_destinations(a, 5);
@@ -1751,8 +1773,8 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
         let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
         let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, 1.0);
-        graph.add_edge(b, c, EdgeType::ForestFloor, 1.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, DIST_SCALE);
+        graph.add_edge(b, c, EdgeType::ForestFloor, DIST_SCALE);
 
         // Kill node B — A can't reach C.
         graph.kill_node(b);
@@ -2737,13 +2759,35 @@ mod tests {
         });
         let edge = edge.expect("Should have edge from (0,0) to (1,0)");
 
-        // dx=1, dy=1, dz=0 → sqrt(2)
-        let expected = (2.0_f32).sqrt();
-        assert!(
-            (edge.distance - expected).abs() < 0.001,
-            "Edge distance should be sqrt(2) ≈ {expected}, got {}",
+        // dx=1, dy=1, dz=0 → scaled_distance(1,1,0) = isqrt(2 * 1024²) = 1448
+        let expected = scaled_distance(1, 1, 0);
+        assert_eq!(
+            edge.distance, expected,
+            "Edge distance should be scaled sqrt(2) = {expected}, got {}",
             edge.distance,
         );
+    }
+
+    #[test]
+    fn scaled_distance_known_values() {
+        // Adjacent: sqrt(1) * 1024 = 1024
+        assert_eq!(scaled_distance(1, 0, 0), DIST_SCALE);
+        // 2D diagonal: sqrt(2) * 1024 ≈ 1448
+        assert_eq!(scaled_distance(1, 1, 0), 1448);
+        // 3D diagonal: floor(sqrt(3) * 1024) = 1773
+        assert_eq!(scaled_distance(1, 1, 1), 1773);
+        // Zero distance.
+        assert_eq!(scaled_distance(0, 0, 0), 0);
+        // Negative deltas (same magnitude).
+        assert_eq!(scaled_distance(-1, -1, 0), scaled_distance(1, 1, 0));
+    }
+
+    #[test]
+    fn scaled_distance_large_coords_no_overflow() {
+        // Maximum world distance: dx=255, dy=127, dz=255.
+        let d = scaled_distance(255, 127, 255);
+        // sqrt(255² + 127² + 255²) ≈ 383.8, × 1024 ≈ 393,036
+        assert!(d > 390_000 && d < 400_000, "Expected ~393k, got {d}");
     }
 
     // --- Building face awareness tests ---

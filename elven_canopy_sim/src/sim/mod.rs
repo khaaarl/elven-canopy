@@ -115,8 +115,8 @@
 // - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
 // - `location: NavNodeId` — where creatures go to work on the task.
 // - Assignment tracked via `creature.current_task` FK.
-// - `progress: f32` and `total_cost: f32` — for tasks that require work units
-//   (0.0 total_cost means instant completion, e.g. GoTo).
+// - `progress: i64` and `total_cost: i64` — for tasks that require work units
+//   (0 total_cost means instant completion, e.g. GoTo).
 // - `required_species: Option<Species>` — species restriction (if `Some`,
 //   only that species can claim it).
 //
@@ -436,13 +436,16 @@ pub struct SimState {
 pub struct Tree {
     pub id: TreeId,
     pub position: VoxelCoord,
-    pub health: f32,
+    pub health: i64,
     pub growth_level: u32,
-    pub mana_stored: f32,
-    pub mana_capacity: f32,
-    pub fruit_production_rate: f32,
-    pub carrying_capacity: f32,
-    pub current_load: f32,
+    /// Tree-scale mana in millimana (1000 = 1.0 display mana).
+    pub mana_stored: i64,
+    /// Maximum tree mana in millimana.
+    pub mana_capacity: i64,
+    /// Fruit spawn chance per heartbeat, in parts per million (500_000 = 50%).
+    pub fruit_production_rate_ppm: u32,
+    pub carrying_capacity: i64,
+    pub current_load: i64,
     pub owner: Option<CivId>,
     pub trunk_voxels: Vec<VoxelCoord>,
     pub branch_voxels: Vec<VoxelCoord>,
@@ -1122,86 +1125,87 @@ impl SimState {
                 // Movement is driven by CreatureActivation, not heartbeats.
 
                 // Phase 1: apply food and rest decay, read state for need checks.
-                let (should_seek_food, should_seek_sleep, starved) =
-                    if let Some(mut creature) = self.db.creatures.get(&creature_id) {
-                        let species = creature.species;
-                        let species_data = &self.species_table[&species];
-                        let interval = species_data.heartbeat_interval_ticks;
+                let (should_seek_food, should_seek_sleep, starved) = if let Some(mut creature) =
+                    self.db.creatures.get(&creature_id)
+                {
+                    let species = creature.species;
+                    let species_data = &self.species_table[&species];
+                    let interval = species_data.heartbeat_interval_ticks;
 
-                        // Food decay.
-                        let food_decay = species_data.food_decay_per_tick * interval as i64;
-                        creature.food = (creature.food - food_decay).max(0);
+                    // Food decay.
+                    let food_decay = species_data.food_decay_per_tick * interval as i64;
+                    creature.food = (creature.food - food_decay).max(0);
 
-                        // Rest decay.
-                        let rest_decay = species_data.rest_decay_per_tick * interval as i64;
-                        creature.rest = (creature.rest - rest_decay).max(0);
+                    // Rest decay.
+                    let rest_decay = species_data.rest_decay_per_tick * interval as i64;
+                    creature.rest = (creature.rest - rest_decay).max(0);
 
-                        // Mana generation: batch-apply mana_per_tick over the
-                        // heartbeat interval. Excess beyond mp_max overflows
-                        // to the bonded tree.
-                        let mana_gen = species_data.mana_per_tick * interval as i64;
-                        let mp_before = creature.mp;
-                        let mp_after = (mp_before + mana_gen).min(creature.mp_max);
-                        let mana_overflow = (mp_before + mana_gen) - mp_after;
-                        creature.mp = mp_after;
-                        let civ_for_overflow = creature.civ_id;
+                    // Mana generation: batch-apply mana_per_tick over the
+                    // heartbeat interval. Excess beyond mp_max overflows
+                    // to the bonded tree.
+                    let mana_gen = species_data.mana_per_tick * interval as i64;
+                    let mp_before = creature.mp;
+                    let mp_after = (mp_before + mana_gen).min(creature.mp_max);
+                    let mana_overflow = (mp_before + mana_gen) - mp_after;
+                    creature.mp = mp_after;
+                    let civ_for_overflow = creature.civ_id;
 
-                        let is_starving = creature.food == 0;
+                    let is_starving = creature.food == 0;
 
-                        let food_threshold =
-                            species_data.food_max * species_data.food_hunger_threshold_pct / 100;
-                        let is_hungry = creature.food < food_threshold;
+                    let food_threshold =
+                        species_data.food_max * species_data.food_hunger_threshold_pct / 100;
+                    let is_hungry = creature.food < food_threshold;
 
-                        let rest_threshold =
-                            species_data.rest_max * species_data.rest_tired_threshold_pct / 100;
-                        let is_tired = creature.rest < rest_threshold;
+                    let rest_threshold =
+                        species_data.rest_max * species_data.rest_tired_threshold_pct / 100;
+                    let is_tired = creature.rest < rest_threshold;
 
-                        let is_idle = creature.current_task.is_none();
+                    let is_idle = creature.current_task.is_none();
 
-                        // Write back mutated fields.
-                        let _ = self.db.creatures.update_no_fk(creature);
+                    // Write back mutated fields.
+                    let _ = self.db.creatures.update_no_fk(creature);
 
-                        // Overflow mana to the bonded tree (the tree owned by
-                        // the creature's civilization). Wild creatures (no civ)
-                        // lose their excess.
-                        if mana_overflow > 0
-                            && mana_gen > 0
-                            && let Some(civ_id) = civ_for_overflow
+                    // Overflow mana to the bonded tree (the tree owned by
+                    // the creature's civilization). Wild creatures (no civ)
+                    // lose their excess.
+                    if mana_overflow > 0
+                        && mana_gen > 0
+                        && let Some(civ_id) = civ_for_overflow
+                    {
+                        // Convert: overflow fraction × base_generation_rate
+                        // gives tree-scale mana (millimana). When fully
+                        // overflowing (overflow == mana_gen), the tree gains
+                        // exactly mana_base_generation_rate_mm per heartbeat.
+                        // Clamp overflow to mana_gen in case mp > mp_max.
+                        let clamped_overflow = mana_overflow.min(mana_gen);
+                        let tree_gain =
+                            clamped_overflow * self.config.mana_base_generation_rate_mm / mana_gen;
+                        if let Some(tree) =
+                            self.trees.values_mut().find(|t| t.owner == Some(civ_id))
                         {
-                            // Convert: overflow fraction × base_generation_rate
-                            // gives tree-scale mana. When fully overflowing
-                            // (overflow == mana_gen), the tree gains exactly
-                            // mana_base_generation_rate per heartbeat.
-                            // Clamp to 1.0 in case mp > mp_max (e.g., config change).
-                            let overflow_frac = (mana_overflow as f64 / mana_gen as f64).min(1.0);
-                            let tree_gain =
-                                overflow_frac as f32 * self.config.mana_base_generation_rate;
-                            if let Some(tree) =
-                                self.trees.values_mut().find(|t| t.owner == Some(civ_id))
-                            {
-                                tree.mana_stored =
-                                    (tree.mana_stored + tree_gain).min(tree.mana_capacity);
-                            }
+                            tree.mana_stored =
+                                (tree.mana_stored + tree_gain).min(tree.mana_capacity);
                         }
+                    }
 
-                        // Expire old thoughts.
-                        self.expire_creature_thoughts(creature_id);
+                    // Expire old thoughts.
+                    self.expire_creature_thoughts(creature_id);
 
-                        // Reschedule the next heartbeat.
-                        let next_tick = self.tick + interval;
-                        self.event_queue.schedule(
-                            next_tick,
-                            ScheduledEventKind::CreatureHeartbeat { creature_id },
-                        );
+                    // Reschedule the next heartbeat.
+                    let next_tick = self.tick + interval;
+                    self.event_queue.schedule(
+                        next_tick,
+                        ScheduledEventKind::CreatureHeartbeat { creature_id },
+                    );
 
-                        // Hunger takes priority over tiredness.
-                        let seek_food = is_hungry && is_idle;
-                        let seek_sleep = is_tired && is_idle && !is_hungry;
+                    // Hunger takes priority over tiredness.
+                    let seek_food = is_hungry && is_idle;
+                    let seek_sleep = is_tired && is_idle && !is_hungry;
 
-                        (seek_food, seek_sleep, is_starving)
-                    } else {
-                        (false, false, false)
-                    };
+                    (seek_food, seek_sleep, is_starving)
+                } else {
+                    (false, false, false)
+                };
 
                 // Starvation death: food reached zero.
                 if starved {
@@ -1240,8 +1244,8 @@ impl SimState {
                             kind: task::TaskKind::EatBread,
                             state: task::TaskState::InProgress,
                             location: nav_node,
-                            progress: 0.0,
-                            total_cost: 0.0,
+                            progress: 0,
+                            total_cost: 0,
                             required_species: None,
                             origin: task::TaskOrigin::Autonomous,
                             target_creature: None,
@@ -1266,8 +1270,8 @@ impl SimState {
                         kind: task::TaskKind::EatFruit { fruit_pos },
                         state: task::TaskState::InProgress,
                         location: nav_node,
-                        progress: 0.0,
-                        total_cost: 0.0,
+                        progress: 0,
+                        total_cost: 0,
                         required_species: None,
                         origin: task::TaskOrigin::Autonomous,
                         target_creature: None,
@@ -1320,8 +1324,8 @@ impl SimState {
                         },
                         state: task::TaskState::InProgress,
                         location: nav_node,
-                        progress: 0.0,
-                        total_cost: (sleep_ticks / self.config.sleep_action_ticks) as f32,
+                        progress: 0,
+                        total_cost: (sleep_ticks / self.config.sleep_action_ticks) as i64,
                         required_species: None,
                         origin: task::TaskOrigin::Autonomous,
                         target_creature: None,

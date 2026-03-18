@@ -109,7 +109,7 @@ impl SimState {
 
             // Mana drained — increment progress.
             let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
-                t.progress += 1.0;
+                t.progress += 1;
             });
 
             // Check if all actions are done.
@@ -355,9 +355,9 @@ impl SimState {
             // actions), all others use single-action (total_cost = work_ticks).
             let total_cost = if recipe.verb() == crate::recipe::RecipeVerb::Grow {
                 let per_action = self.config.grow_recipes.grow_work_ticks_per_action.max(1);
-                resolved.work_ticks.div_ceil(per_action) as f32
+                resolved.work_ticks.div_ceil(per_action) as i64
             } else {
-                resolved.work_ticks as f32
+                resolved.work_ticks as i64
             };
 
             let new_task = task::Task {
@@ -368,7 +368,7 @@ impl SimState {
                 },
                 state: task::TaskState::Available,
                 location,
-                progress: 0.0,
+                progress: 0,
                 total_cost,
                 required_species: recipe.required_species(),
                 origin: task::TaskOrigin::Automated,

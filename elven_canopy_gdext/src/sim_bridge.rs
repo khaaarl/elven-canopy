@@ -572,13 +572,13 @@ impl SimBridge {
         self.session.current_tick() as i64
     }
 
-    /// Return the mana stored in the player's home tree.
+    /// Return the mana stored in the player's home tree (display units).
     #[func]
-    fn home_tree_mana(&self) -> f32 {
+    fn home_tree_mana(&self) -> f64 {
         self.session.sim.as_ref().map_or(0.0, |s| {
             s.trees
                 .get(&s.player_tree_id)
-                .map_or(0.0, |t| t.mana_stored)
+                .map_or(0.0, |t| t.mana_stored as f64 / 1000.0)
         })
     }
 
@@ -796,14 +796,17 @@ impl SimBridge {
         };
 
         let mut dict = VarDictionary::new();
-        dict.set("health", tree.health);
+        dict.set("health", tree.health as i32);
         dict.set("growth_level", tree.growth_level as i32);
-        dict.set("mana_stored", tree.mana_stored);
-        dict.set("mana_capacity", tree.mana_capacity);
+        dict.set("mana_stored", tree.mana_stored as f64 / 1000.0);
+        dict.set("mana_capacity", tree.mana_capacity as f64 / 1000.0);
         dict.set("fruit_count", tree.fruit_positions.len() as i32);
-        dict.set("fruit_production_rate", tree.fruit_production_rate);
-        dict.set("carrying_capacity", tree.carrying_capacity);
-        dict.set("current_load", tree.current_load);
+        dict.set(
+            "fruit_production_rate",
+            tree.fruit_production_rate_ppm as f64 / 1_000_000.0,
+        );
+        dict.set("carrying_capacity", tree.carrying_capacity as i32);
+        dict.set("current_load", tree.current_load as i32);
 
         let trunk = tree.trunk_voxels.len() as i32;
         let branch = tree.branch_voxels.len() as i32;
@@ -1395,8 +1398,8 @@ impl SimBridge {
             dict.set("state", GString::from(state_str));
 
             // Progress.
-            dict.set("progress", task.progress);
-            dict.set("total_cost", task.total_cost);
+            dict.set("progress", task.progress as i32);
+            dict.set("total_cost", task.total_cost as i32);
 
             // Location — resolve NavNodeId to VoxelCoord.
             let pos = sim.nav_graph.node(task.location).position;

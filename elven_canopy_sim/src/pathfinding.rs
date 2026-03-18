@@ -6,19 +6,20 @@
 // deterministic behavior (no iterated `HashMap` — use `LookupMap` for point queries).
 //
 // Edge costs are species-dependent: `edge.distance * ticks_per_voxel`, where
+// `edge.distance` is a scaled integer (× DIST_SCALE = 1024) and
 // `ticks_per_voxel` is `walk_ticks_per_voxel` for flat edges and
 // `climb_ticks_per_voxel` for TrunkClimb/GroundToTrunk edges (from
-// `species.rs`). The heuristic uses `manhattan_distance * walk_ticks_per_voxel`
-// — the fastest speed — to remain admissible.
+// `species.rs`). The heuristic uses `manhattan_distance * walk_tpv *
+// HEURISTIC_SCALE` — guaranteed admissible because HEURISTIC_SCALE =
+// DIST_SCALE / sqrt(3), the worst-case manhattan-to-euclidean ratio.
 //
 // See also: `nav.rs` for the `NavGraph` being searched, `sim/activation.rs` which
 // calls pathfinding during creature AI decisions.
 //
 // **Critical constraint: determinism.** A* is a pure function of graph
-// state and start/goal nodes. No randomness, no floating-point ambiguity
-// beyond basic f32 arithmetic with `total_cmp` for ordering.
+// state and start/goal nodes. No randomness, no floats — all integer.
 
-use crate::nav::{EdgeType, NavGraph};
+use crate::nav::{EdgeType, HEURISTIC_SCALE, NavGraph};
 use crate::types::NavNodeId;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -30,19 +31,19 @@ pub struct PathResult {
     pub nodes: Vec<NavNodeId>,
     /// Indices into `NavGraph.edges` for each step (len = nodes.len() - 1).
     pub edge_indices: Vec<usize>,
-    /// Total traversal cost.
-    pub total_cost: f32,
+    /// Total traversal cost (distance_scaled × tpv, in DIST_SCALE units).
+    pub total_cost: i64,
 }
 
 /// Entry in the A* open set (min-heap via reversed ordering).
 struct OpenEntry {
     node: NavNodeId,
-    f_score: f32,
+    f_score: i64,
 }
 
 impl PartialEq for OpenEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.f_score.total_cmp(&other.f_score) == Ordering::Equal && self.node == other.node
+        self.f_score == other.f_score && self.node == other.node
     }
 }
 
@@ -59,7 +60,7 @@ impl Ord for OpenEntry {
         // Reversed for min-heap: smallest f_score is "greatest".
         other
             .f_score
-            .total_cmp(&self.f_score)
+            .cmp(&self.f_score)
             .then_with(|| other.node.0.cmp(&self.node.0))
     }
 }
@@ -87,22 +88,22 @@ pub fn astar(
         return Some(PathResult {
             nodes: vec![start],
             edge_indices: Vec::new(),
-            total_cost: 0.0,
+            total_cost: 0,
         });
     }
 
-    let walk_tpv_f = walk_tpv as f32;
+    let walk_tpv_i = walk_tpv as i64;
 
     // g_score[node] = cost of cheapest known path from start to node.
-    let mut g_score = vec![f32::INFINITY; n];
+    let mut g_score = vec![i64::MAX; n];
     // came_from[node] = (previous node, edge index used to get there).
     let mut came_from: Vec<Option<(NavNodeId, usize)>> = vec![None; n];
     let mut closed = vec![false; n];
 
-    g_score[start.0 as usize] = 0.0;
+    g_score[start.0 as usize] = 0;
 
     let mut open = BinaryHeap::new();
-    let h_start = heuristic(graph, start, goal, walk_tpv_f);
+    let h_start = heuristic(graph, start, goal, walk_tpv_i);
     open.push(OpenEntry {
         node: start,
         f_score: h_start,
@@ -133,27 +134,27 @@ pub fn astar(
                 continue;
             }
 
-            let tpv = match edge.edge_type {
+            let tpv: i64 = match edge.edge_type {
                 EdgeType::TrunkClimb | EdgeType::GroundToTrunk => match climb_tpv {
-                    Some(c) => c as f32,
+                    Some(c) => c as i64,
                     None => continue, // species cannot climb
                 },
                 EdgeType::WoodLadderClimb => match wood_ladder_tpv {
-                    Some(c) => c as f32,
+                    Some(c) => c as i64,
                     None => continue,
                 },
                 EdgeType::RopeLadderClimb => match rope_ladder_tpv {
-                    Some(c) => c as f32,
+                    Some(c) => c as i64,
                     None => continue,
                 },
-                _ => walk_tpv_f,
+                _ => walk_tpv_i,
             };
-            let tentative_g = current_g + edge.distance * tpv;
+            let tentative_g = current_g + edge.distance as i64 * tpv;
 
             if tentative_g < g_score[ni] {
                 g_score[ni] = tentative_g;
                 came_from[ni] = Some((current_id, edge_idx));
-                let f = tentative_g + heuristic(graph, neighbor, goal, walk_tpv_f);
+                let f = tentative_g + heuristic(graph, neighbor, goal, walk_tpv_i);
                 open.push(OpenEntry {
                     node: neighbor,
                     f_score: f,
@@ -186,20 +187,20 @@ pub fn astar_filtered(
         return Some(PathResult {
             nodes: vec![start],
             edge_indices: Vec::new(),
-            total_cost: 0.0,
+            total_cost: 0,
         });
     }
 
-    let walk_tpv_f = walk_tpv as f32;
+    let walk_tpv_i = walk_tpv as i64;
 
-    let mut g_score = vec![f32::INFINITY; n];
+    let mut g_score = vec![i64::MAX; n];
     let mut came_from: Vec<Option<(NavNodeId, usize)>> = vec![None; n];
     let mut closed = vec![false; n];
 
-    g_score[start.0 as usize] = 0.0;
+    g_score[start.0 as usize] = 0;
 
     let mut open = BinaryHeap::new();
-    let h_start = heuristic(graph, start, goal, walk_tpv_f);
+    let h_start = heuristic(graph, start, goal, walk_tpv_i);
     open.push(OpenEntry {
         node: start,
         f_score: h_start,
@@ -234,27 +235,27 @@ pub fn astar_filtered(
                 continue;
             }
 
-            let tpv = match edge.edge_type {
+            let tpv: i64 = match edge.edge_type {
                 EdgeType::TrunkClimb | EdgeType::GroundToTrunk => match climb_tpv {
-                    Some(c) => c as f32,
+                    Some(c) => c as i64,
                     None => continue,
                 },
                 EdgeType::WoodLadderClimb => match wood_ladder_tpv {
-                    Some(c) => c as f32,
+                    Some(c) => c as i64,
                     None => continue,
                 },
                 EdgeType::RopeLadderClimb => match rope_ladder_tpv {
-                    Some(c) => c as f32,
+                    Some(c) => c as i64,
                     None => continue,
                 },
-                _ => walk_tpv_f,
+                _ => walk_tpv_i,
             };
-            let tentative_g = current_g + edge.distance * tpv;
+            let tentative_g = current_g + edge.distance as i64 * tpv;
 
             if tentative_g < g_score[ni] {
                 g_score[ni] = tentative_g;
                 came_from[ni] = Some((current_id, edge_idx));
-                let f = tentative_g + heuristic(graph, neighbor, goal, walk_tpv_f);
+                let f = tentative_g + heuristic(graph, neighbor, goal, walk_tpv_i);
                 open.push(OpenEntry {
                     node: neighbor,
                     f_score: f,
@@ -305,17 +306,17 @@ pub fn dijkstra_nearest(
         }
     }
 
-    let walk_tpv_f = walk_tpv as f32;
+    let walk_tpv_i = walk_tpv as i64;
 
-    let mut g_score = vec![f32::INFINITY; n];
+    let mut g_score = vec![i64::MAX; n];
     let mut closed = vec![false; n];
 
-    g_score[start.0 as usize] = 0.0;
+    g_score[start.0 as usize] = 0;
 
     let mut open = BinaryHeap::new();
     open.push(OpenEntry {
         node: start,
-        f_score: 0.0, // Dijkstra: f = g (no heuristic).
+        f_score: 0, // Dijkstra: f = g (no heuristic).
     });
 
     while let Some(current) = open.pop() {
@@ -349,22 +350,22 @@ pub fn dijkstra_nearest(
                 continue;
             }
 
-            let tpv = match edge.edge_type {
+            let tpv: i64 = match edge.edge_type {
                 EdgeType::TrunkClimb | EdgeType::GroundToTrunk => match climb_tpv {
-                    Some(c) => c as f32,
+                    Some(c) => c as i64,
                     None => continue, // species cannot climb
                 },
                 EdgeType::WoodLadderClimb => match wood_ladder_tpv {
-                    Some(c) => c as f32,
+                    Some(c) => c as i64,
                     None => continue,
                 },
                 EdgeType::RopeLadderClimb => match rope_ladder_tpv {
-                    Some(c) => c as f32,
+                    Some(c) => c as i64,
                     None => continue,
                 },
-                _ => walk_tpv_f,
+                _ => walk_tpv_i,
             };
-            let tentative_g = current_g + edge.distance * tpv;
+            let tentative_g = current_g + edge.distance as i64 * tpv;
 
             if tentative_g < g_score[ni] {
                 g_score[ni] = tentative_g;
@@ -379,13 +380,13 @@ pub fn dijkstra_nearest(
     None // No target reachable.
 }
 
-/// Admissible heuristic: Manhattan distance * walk_ticks_per_voxel.
-/// Uses the fastest speed (flat walk) to ensure the heuristic never
-/// overestimates.
-fn heuristic(graph: &NavGraph, from: NavNodeId, to: NavNodeId, walk_tpv: f32) -> f32 {
+/// Admissible heuristic: Manhattan distance × walk_tpv × HEURISTIC_SCALE.
+/// HEURISTIC_SCALE = DIST_SCALE / sqrt(3) ensures we never overestimate,
+/// since the worst-case manhattan:euclidean ratio is sqrt(3) for 3D diagonals.
+fn heuristic(graph: &NavGraph, from: NavNodeId, to: NavNodeId, walk_tpv: i64) -> i64 {
     let a = graph.node(from).position;
     let b = graph.node(to).position;
-    a.manhattan_distance(b) as f32 * walk_tpv
+    a.manhattan_distance(b) as i64 * walk_tpv * HEURISTIC_SCALE
 }
 
 /// Reconstruct the path from came_from data.
@@ -393,7 +394,7 @@ fn reconstruct_path(
     came_from: &[Option<(NavNodeId, usize)>],
     start: NavNodeId,
     goal: NavNodeId,
-    total_cost: f32,
+    total_cost: i64,
 ) -> PathResult {
     let mut nodes = Vec::new();
     let mut edge_indices = Vec::new();
@@ -428,8 +429,15 @@ mod tests {
     use crate::nav::EdgeType;
     use crate::types::{VoxelCoord, VoxelType};
 
+    use crate::nav::DIST_SCALE;
+
     /// Shorthand: all test nodes use ForestFloor surface type.
     const S: VoxelType = VoxelType::ForestFloor;
+
+    /// Helper: distance in scaled units for test edges.
+    const fn dist(voxels: u32) -> u32 {
+        voxels * DIST_SCALE
+    }
 
     #[test]
     fn astar_trivial_path() {
@@ -441,7 +449,7 @@ mod tests {
         let path = result.unwrap();
         assert_eq!(path.nodes, vec![a]);
         assert!(path.edge_indices.is_empty());
-        assert_eq!(path.total_cost, 0.0);
+        assert_eq!(path.total_cost, 0);
     }
 
     #[test]
@@ -450,17 +458,17 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
-        // Edges store euclidean distance.
-        graph.add_edge(a, b, EdgeType::ForestFloor, 5.0);
-        graph.add_edge(b, c, EdgeType::ForestFloor, 5.0);
+        // Edges store scaled integer distance.
+        graph.add_edge(a, b, EdgeType::ForestFloor, dist(5));
+        graph.add_edge(b, c, EdgeType::ForestFloor, dist(5));
 
-        // walk_tpv=1 → cost = distance * 1 = distance.
+        // walk_tpv=1 → cost = distance_scaled * 1.
         let result = astar(&graph, a, c, 1, Some(2), None, None);
         assert!(result.is_some());
         let path = result.unwrap();
         assert_eq!(path.nodes, vec![a, b, c]);
         assert_eq!(path.edge_indices.len(), 2);
-        assert_eq!(path.total_cost, 10.0);
+        assert_eq!(path.total_cost, dist(10) as i64);
     }
 
     #[test]
@@ -470,14 +478,14 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // Direct long-distance edge a->c.
-        graph.add_edge(a, c, EdgeType::ForestFloor, 20.0);
+        graph.add_edge(a, c, EdgeType::ForestFloor, dist(20));
         // Shorter via b.
-        graph.add_edge(a, b, EdgeType::ForestFloor, 3.0);
-        graph.add_edge(b, c, EdgeType::ForestFloor, 3.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, dist(3));
+        graph.add_edge(b, c, EdgeType::ForestFloor, dist(3));
 
         let result = astar(&graph, a, c, 1, Some(2), None, None).unwrap();
         assert_eq!(result.nodes, vec![a, b, c]);
-        assert_eq!(result.total_cost, 6.0);
+        assert_eq!(result.total_cost, dist(6) as i64);
     }
 
     #[test]
@@ -497,8 +505,8 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // a->b via ForestFloor, b->c via TrunkClimb.
-        graph.add_edge(a, b, EdgeType::ForestFloor, 5.0);
-        graph.add_edge(b, c, EdgeType::TrunkClimb, 5.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, dist(5));
+        graph.add_edge(b, c, EdgeType::TrunkClimb, dist(5));
 
         // Only allow ForestFloor — path a->c should fail (can't cross TrunkClimb).
         let result = astar_filtered(
@@ -543,7 +551,7 @@ mod tests {
             &[EdgeType::ForestFloor],
         );
         assert!(result.is_some());
-        assert_eq!(result.unwrap().total_cost, 0.0);
+        assert_eq!(result.unwrap().total_cost, 0);
     }
 
     #[test]
@@ -553,15 +561,29 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(6, 0, 0), S);
         let d = graph.add_node(VoxelCoord::new(3, 3, 0), S);
-        graph.add_edge(a, b, EdgeType::ForestFloor, 3.0);
-        graph.add_edge(b, c, EdgeType::ForestFloor, 3.0);
-        graph.add_edge(a, d, EdgeType::TrunkClimb, 4.0);
-        graph.add_edge(d, c, EdgeType::TrunkClimb, 4.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, dist(3));
+        graph.add_edge(b, c, EdgeType::ForestFloor, dist(3));
+        graph.add_edge(a, d, EdgeType::TrunkClimb, dist(4));
+        graph.add_edge(d, c, EdgeType::TrunkClimb, dist(4));
 
         let r1 = astar(&graph, a, c, 500, Some(1250), None, None).unwrap();
         let r2 = astar(&graph, a, c, 500, Some(1250), None, None).unwrap();
         assert_eq!(r1.nodes, r2.nodes);
         assert_eq!(r1.total_cost, r2.total_cost);
+    }
+
+    #[test]
+    fn heuristic_admissible_for_3d_diagonal() {
+        // A 3D diagonal edge has cost = floor(sqrt(3)*1024) * tpv = 1773 * tpv.
+        // Heuristic for manhattan=3 is 3 * tpv * 591 = 1773 * tpv.
+        // Heuristic must not exceed actual cost (admissibility).
+        let tpv = 500i64;
+        let actual_cost = crate::nav::scaled_distance(1, 1, 1) as i64 * tpv;
+        let heuristic_cost = 3 * tpv * HEURISTIC_SCALE;
+        assert!(
+            heuristic_cost <= actual_cost,
+            "Heuristic ({heuristic_cost}) must not exceed actual cost ({actual_cost})"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -575,8 +597,8 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // a->b short, a->c long (but c is spatially further).
-        graph.add_edge(a, b, EdgeType::ForestFloor, 3.0);
-        graph.add_edge(b, c, EdgeType::ForestFloor, 7.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, dist(3));
+        graph.add_edge(b, c, EdgeType::ForestFloor, dist(7));
 
         // Both b and c are targets — b should win (closer by travel cost).
         let result = dijkstra_nearest(&graph, a, &[b, c], 1, Some(1), None, None, None);
@@ -590,8 +612,8 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(6, 0, 0), S);
         // a->b via ForestFloor (short), b->c via TrunkClimb.
-        graph.add_edge(a, b, EdgeType::ForestFloor, 3.0);
-        graph.add_edge(b, c, EdgeType::TrunkClimb, 3.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, dist(3));
+        graph.add_edge(b, c, EdgeType::TrunkClimb, dist(3));
 
         // Only ForestFloor allowed — c is unreachable.
         let result = dijkstra_nearest(
@@ -628,8 +650,8 @@ mod tests {
         let c = graph.add_node(VoxelCoord::new(0, 5, 0), S);
         // a->b: short distance via ForestFloor (walk speed).
         // a->c: short distance via TrunkClimb (climb speed — slower).
-        graph.add_edge(a, b, EdgeType::ForestFloor, 5.0);
-        graph.add_edge(a, c, EdgeType::TrunkClimb, 5.0);
+        graph.add_edge(a, b, EdgeType::ForestFloor, dist(5));
+        graph.add_edge(a, c, EdgeType::TrunkClimb, dist(5));
 
         // walk_tpv=500, climb_tpv=1250.
         // Cost to b: 5 * 500 = 2500. Cost to c: 5 * 1250 = 6250.

@@ -48,7 +48,7 @@ fn new_sim_has_home_tree() {
     assert!(sim.trees.contains_key(&sim.player_tree_id));
     let tree = &sim.trees[&sim.player_tree_id];
     assert_eq!(tree.owner, sim.player_civ_id);
-    assert_eq!(tree.mana_stored, sim.config.starting_mana);
+    assert_eq!(tree.mana_stored, sim.config.starting_mana_mm);
 }
 
 #[test]
@@ -1138,8 +1138,8 @@ fn insert_goto_task(sim: &mut SimState, location: NavNodeId) -> TaskId {
         kind: TaskKind::GoTo,
         state: TaskState::Available,
         location,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -1462,7 +1462,7 @@ fn fruit_grows_during_heartbeat() {
     // Use a config with no initial fruit but high spawn rate so heartbeats produce fruit.
     let mut config = test_config();
     config.fruit_initial_attempts = 0;
-    config.fruit_production_base_rate = 1.0; // Always spawn
+    config.fruit_production_rate_ppm = 1_000_000; // Always spawn
     config.fruit_max_per_tree = 100;
     let mut sim = SimState::with_config(42, config);
     let tree_id = sim.player_tree_id;
@@ -1486,7 +1486,7 @@ fn fruit_respects_max_count() {
     let mut config = test_config();
     config.fruit_max_per_tree = 3;
     config.fruit_initial_attempts = 100; // Many attempts, but max is 3.
-    config.fruit_production_base_rate = 1.0;
+    config.fruit_production_rate_ppm = 1_000_000;
     let sim = SimState::with_config(42, config);
     let tree = &sim.trees[&sim.player_tree_id];
 
@@ -1623,8 +1623,8 @@ fn harvest_fruit_carries_species_material() {
         kind: task::TaskKind::Harvest { fruit_pos },
         state: task::TaskState::InProgress,
         location: elf_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: task::TaskOrigin::Automated,
         target_creature: None,
@@ -1658,7 +1658,7 @@ fn fruit_heartbeat_tracks_species() {
     // Fruit grown via heartbeat should also be tracked in species map.
     let mut config = test_config();
     config.fruit_initial_attempts = 0;
-    config.fruit_production_base_rate = 1.0;
+    config.fruit_production_rate_ppm = 1_000_000;
     config.fruit_max_per_tree = 100;
     let mut sim = SimState::with_config(42, config);
 
@@ -2565,8 +2565,8 @@ fn busy_tired_elf_does_not_create_sleep_task() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: NavNodeId(0),
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -2706,7 +2706,7 @@ fn ground_sleep_fallback_when_no_beds() {
     let bed_pos = sim.task_voxel_ref(task.id, crate::db::TaskVoxelRole::BedPosition);
     assert_eq!(bed_pos, None, "No dormitories — should be ground sleep");
     // Ground sleep total_cost = sleep_ticks_ground / sleep_action_ticks (number of actions).
-    let expected_cost = (sim.config.sleep_ticks_ground / sim.config.sleep_action_ticks) as f32;
+    let expected_cost = (sim.config.sleep_ticks_ground / sim.config.sleep_action_ticks) as i64;
     assert_eq!(
         task.total_cost, expected_cost,
         "Ground sleep total_cost should be number of actions"
@@ -3348,7 +3348,7 @@ fn designate_build_creates_build_task() {
     let task = sim.db.tasks.get(&task_id).unwrap();
     assert!(task.kind_tag == TaskKindTag::Build);
     assert_eq!(task.state, TaskState::Available);
-    assert_eq!(task.total_cost, 1.0);
+    assert_eq!(task.total_cost, 1);
     assert_eq!(task.required_species, Some(Species::Elf));
 }
 
@@ -3937,7 +3937,7 @@ fn squirrel_can_climb() {
 
 #[test]
 fn all_small_species_spawn_and_coexist() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(300);
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let species_list = [
@@ -4870,7 +4870,7 @@ fn structure_voxels_rebuilt_on_rebuild_transient_state() {
 
 #[test]
 fn raycast_structure_finds_structure_voxel() {
-    let sim = designate_and_complete_build(test_sim(42));
+    let sim = designate_and_complete_build(test_sim(200));
     let structure = sim.db.structures.iter_all().next().unwrap();
     let bp = sim
         .db
@@ -5335,8 +5335,8 @@ fn eat_fruit_task_restores_food_on_arrival() {
         kind: TaskKind::EatFruit { fruit_pos },
         state: TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -5490,8 +5490,8 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: NavNodeId(0),
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -5702,8 +5702,8 @@ fn eat_bread_restores_food_and_removes_bread() {
         kind: TaskKind::EatBread,
         state: TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -5898,8 +5898,8 @@ fn eat_bread_generates_thought() {
         kind: TaskKind::EatBread,
         state: TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -6287,8 +6287,8 @@ fn walk_toward_dead_task_node_does_not_panic() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: task_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -6603,7 +6603,7 @@ fn designate_ladder_creates_build_task() {
     let task = sim.db.tasks.get(&bp.task_id.unwrap()).unwrap();
     assert!(task.kind_tag == TaskKindTag::Build);
     assert_eq!(task.required_species, Some(Species::Elf));
-    assert_eq!(task.total_cost, 2.0);
+    assert_eq!(task.total_cost, 2);
 }
 
 #[test]
@@ -7831,7 +7831,7 @@ fn furnish_structure_creates_task() {
     assert_eq!(placed, 0);
 
     // Total cost should be planned count (number of items = number of actions).
-    let expected_cost = planned as f32;
+    let expected_cost = planned as i64;
     assert_eq!(task.total_cost, expected_cost);
 }
 
@@ -10415,8 +10415,8 @@ fn logistics_counts_in_transit() {
         },
         state: TaskState::InProgress,
         location: NavNodeId(0),
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Automated,
         target_creature: None,
@@ -10632,8 +10632,8 @@ fn harvest_task_creates_ground_pile() {
         kind: TaskKind::Harvest { fruit_pos },
         state: TaskState::InProgress,
         location: fruit_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Automated,
         target_creature: None,
@@ -10777,8 +10777,8 @@ fn haul_source_empty_cancels() {
         },
         state: TaskState::InProgress,
         location: source_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Automated,
         target_creature: None,
@@ -11116,8 +11116,8 @@ fn acquire_item_picks_up_and_owns() {
         },
         state: TaskState::InProgress,
         location: pile_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -11518,8 +11518,8 @@ fn devastated_elf_interrupts_task_to_mope() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: far_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -11638,8 +11638,8 @@ fn mope_does_not_interrupt_autonomous_sleep() {
         },
         state: TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 1_000_000.0,
+        progress: 0,
+        total_cost: 1_000_000,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -11744,8 +11744,8 @@ fn mope_always_preempts_player_directed_build() {
         kind: TaskKind::Build { project_id },
         state: TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 1_000_000.0,
+        progress: 0,
+        total_cost: 1_000_000,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -12683,8 +12683,8 @@ fn craft_task_serde_roundtrip() {
         },
         state: task::TaskState::Available,
         location: NavNodeId(10),
-        progress: 0.0,
-        total_cost: 5000.0,
+        progress: 0,
+        total_cost: 5000,
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::Automated,
         target_creature: None,
@@ -13986,7 +13986,7 @@ fn resolve_craft_via_unified_catalog_path() {
 
     // Resolve the craft action — Grow recipes are multi-action now.
     // Call resolve until the task completes (drains mana each action).
-    let total_cost = sim.db.tasks.get(&craft_task_id).unwrap().total_cost as u32;
+    let total_cost = sim.db.tasks.get(&craft_task_id).unwrap().total_cost as u32; // i64 → u32 for loop range
     for i in 0..total_cost {
         let completed = sim.resolve_craft_action(elf_id);
         if i < total_cost - 1 {
@@ -14200,17 +14200,18 @@ fn multiple_floating_piles_in_same_column() {
     let mut sim = test_sim(42);
     // Two platforms at y=3 and y=6. Piles at y=4 and y=7.
     // Remove both platforms — both piles should fall to y=1, merging.
-    let p1 = VoxelCoord::new(30, 3, 30);
-    let p2 = VoxelCoord::new(30, 6, 30);
+    // Use coordinates far from the tree trunk (~32,32) to avoid overlap.
+    let p1 = VoxelCoord::new(10, 3, 10);
+    let p2 = VoxelCoord::new(10, 6, 10);
     sim.world.set(p1, VoxelType::GrownPlatform);
     sim.world.set(p2, VoxelType::GrownPlatform);
 
-    let pile1_pos = VoxelCoord::new(30, 4, 30);
+    let pile1_pos = VoxelCoord::new(10, 4, 10);
     let pile1_id = sim.ensure_ground_pile(pile1_pos);
     let pile1_inv = sim.db.ground_piles.get(&pile1_id).unwrap().inventory_id;
     sim.inv_add_simple_item(pile1_inv, inventory::ItemKind::Bread, 2, None, None);
 
-    let pile2_pos = VoxelCoord::new(30, 7, 30);
+    let pile2_pos = VoxelCoord::new(10, 7, 10);
     let pile2_id = sim.ensure_ground_pile(pile2_pos);
     let pile2_inv = sim.db.ground_piles.get(&pile2_id).unwrap().inventory_id;
     sim.inv_add_simple_item(pile2_inv, inventory::ItemKind::Fruit, 3, None, None);
@@ -14225,7 +14226,7 @@ fn multiple_floating_piles_in_same_column() {
         .db
         .ground_piles
         .iter_all()
-        .filter(|p| p.position.x == 30 && p.position.z == 30)
+        .filter(|p| p.position.x == 10 && p.position.z == 10)
         .collect();
     assert_eq!(remaining.len(), 1);
     let final_pile = &remaining[0];
@@ -14625,13 +14626,13 @@ fn mope_progress_increments_by_action_ticks() {
     let mope_task = mope_task.unwrap();
 
     // total_cost should be mope_duration_ticks (10000).
-    assert_eq!(mope_task.total_cost, 10_000.0);
+    assert_eq!(mope_task.total_cost, 10_000);
 
     // If still in progress, progress should be a multiple of mope_action_ticks.
     if mope_task.state == TaskState::InProgress {
-        let remainder = mope_task.progress % 1000.0;
+        let remainder = mope_task.progress % 1000;
         assert_eq!(
-            remainder, 0.0,
+            remainder, 0,
             "Mope progress should be a multiple of mope_action_ticks, got {}",
             mope_task.progress
         );
@@ -14700,8 +14701,8 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
         },
         state: task::TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: (sim.config.sleep_ticks_ground / sim.config.sleep_action_ticks) as f32,
+        progress: 0,
+        total_cost: (sim.config.sleep_ticks_ground / sim.config.sleep_action_ticks) as i64,
         required_species: None,
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
@@ -14960,8 +14961,8 @@ fn eat_action_ticks_controls_timing() {
         kind: task::TaskKind::EatBread,
         state: task::TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 1.0,
+        progress: 0,
+        total_cost: 1,
         required_species: None,
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
@@ -15573,8 +15574,8 @@ fn insert_pursuit_task(
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: Some(target_id),
@@ -15675,8 +15676,8 @@ fn pursuit_task_completes_when_adjacent() {
         },
         state: TaskState::InProgress,
         location: pursuer_node,
-        progress: 0.0,
-        total_cost: 999999.0, // very long sleep
+        progress: 0,
+        total_cost: 999999, // very long sleep
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -16287,8 +16288,8 @@ fn interrupt_goto_completes_task_and_clears_creature() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: far_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -16471,8 +16472,8 @@ fn interrupt_sleep_completes_task() {
         },
         state: TaskState::InProgress,
         location: current_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -16539,8 +16540,8 @@ fn interrupt_clears_move_action() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: current_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -19471,7 +19472,7 @@ fn arm_with_bow_and_arrows(sim: &mut SimState, creature_id: CreatureId, arrows: 
 
 #[test]
 fn test_shoot_arrow_spawns_projectile() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -19611,7 +19612,7 @@ fn test_shoot_arrow_no_arrows_fails() {
 
 #[test]
 fn test_shoot_arrow_cooldown_prevents_second_shot() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -19702,7 +19703,7 @@ fn test_shoot_arrow_blocked_los_fails() {
 
 #[test]
 fn test_shoot_arrow_leaf_does_not_block_los() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -19826,7 +19827,7 @@ fn test_shoot_action_serde_roundtrip() {
 
 #[test]
 fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -19929,7 +19930,7 @@ fn test_shoot_arrow_rejected_when_not_idle() {
 
 #[test]
 fn test_hostile_ai_shoots_when_armed() {
-    let mut sim = test_sim(99);
+    let mut sim = test_sim(300);
     let elf_id = spawn_species(&mut sim, Species::Elf);
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
 
@@ -20046,7 +20047,7 @@ fn engagement_style_config() {
 
 #[test]
 fn hostile_creature_pursues_and_attacks_elf() {
-    let mut sim = test_sim(99);
+    let mut sim = test_sim(300);
     let elf_id = spawn_species(&mut sim, Species::Elf);
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
 
@@ -21031,8 +21032,8 @@ fn attack_target_task_serde_roundtrip() {
         kind: TaskKind::AttackTarget { target },
         state: TaskState::InProgress,
         location,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: Some(target),
@@ -21339,8 +21340,8 @@ fn test_attack_move_serde_roundtrip() {
         kind: TaskKind::AttackMove,
         state: TaskState::InProgress,
         location,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -21405,8 +21406,8 @@ fn directed_goto_replaces_player_directed_task() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: dest_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -21454,8 +21455,8 @@ fn directed_goto_preempts_autonomous_task() {
         kind: TaskKind::Harvest { fruit_pos },
         state: TaskState::InProgress,
         location: dest_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -23086,8 +23087,8 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: far_node,
-        progress: 0.0,
-        total_cost: 1.0,
+        progress: 0,
+        total_cost: 1,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -23097,8 +23098,8 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: near_node,
-        progress: 0.0,
-        total_cost: 1.0,
+        progress: 0,
+        total_cost: 1,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -23156,8 +23157,8 @@ fn find_available_task_single_candidate_skips_dijkstra() {
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: task_node,
-        progress: 0.0,
-        total_cost: 1.0,
+        progress: 0,
+        total_cost: 1,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -23212,8 +23213,8 @@ fn find_available_task_respects_species_filter_with_proximity() {
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: task_node,
-        progress: 0.0,
-        total_cost: 1.0,
+        progress: 0,
+        total_cost: 1,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -24352,7 +24353,7 @@ fn prefer_ranged_shoots_before_closing() {
     use crate::species::{
         AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
     };
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.species_table
         .get_mut(&Species::Goblin)
         .unwrap()
@@ -24659,7 +24660,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
     // An elf in the Soldiers group (aggressive, 0% disengage) with a bow and
     // arrows, currently doing a low-priority AcquireItem task, should interrupt
     // that task to shoot at a nearby hostile orc.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(99);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
@@ -24689,8 +24690,8 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
         },
         state: task::TaskState::InProgress,
         location: task_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
@@ -24771,8 +24772,8 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
         },
         state: task::TaskState::InProgress,
         location: task_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
@@ -24872,8 +24873,8 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
         kind: task::TaskKind::GoTo,
         state: task::TaskState::Available,
         location: far_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -25328,7 +25329,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     use crate::species::{
         AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
     };
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
@@ -25371,8 +25372,8 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
         },
         state: task::TaskState::InProgress,
         location: task_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
@@ -27520,8 +27521,8 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
         },
         state: TaskState::InProgress,
         location: pile_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -27704,8 +27705,8 @@ fn acquire_item_preserves_material() {
         },
         state: TaskState::InProgress,
         location: pile_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -27783,8 +27784,8 @@ fn acquire_item_auto_equips_clothing() {
         },
         state: TaskState::InProgress,
         location: pile_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -27869,8 +27870,8 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
         },
         state: TaskState::InProgress,
         location: pile_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -28368,7 +28369,7 @@ fn flight_path_clear_no_creatures() {
 #[test]
 fn flight_path_blocked_by_friendly_creature() {
     // An elf between the shooter and the target should block the shot.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let shooter = spawn_elf(&mut sim);
@@ -28477,7 +28478,7 @@ fn shoot_arrow_blocked_by_friendly_in_path() {
 fn shoot_arrow_hostile_in_path_does_not_block() {
     // A hostile creature in the flight path should NOT block the shot
     // (they're a valid target the arrow can hit).
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let shooter = spawn_elf(&mut sim);
@@ -28898,8 +28899,8 @@ fn position_blocks_friendly_archer_on_line() {
             kind: TaskKind::AttackTarget { target: goblin },
             state: TaskState::InProgress,
             location: node,
-            progress: 0.0,
-            total_cost: 0.0,
+            progress: 0,
+            total_cost: 0,
             required_species: Some(Species::Elf),
             origin: TaskOrigin::PlayerDirected,
             target_creature: Some(goblin),
@@ -29282,7 +29283,7 @@ fn attack_move_creature_reactivates_after_arriving_at_destination() {
 fn attack_move_creature_wanders_after_arriving_at_destination() {
     // After attack-move completes, advance the sim and verify the elf
     // actually moves (wanders), proving it didn't get stuck.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -31672,8 +31673,8 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
         },
         state: TaskState::InProgress,
         location: pile_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -32447,8 +32448,8 @@ fn cleanup_acquire_military_equipment_clears_reservations() {
         },
         state: TaskState::InProgress,
         location: sim.nav_graph.find_nearest_node(pile_pos).unwrap(),
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -32501,8 +32502,8 @@ fn acquire_military_equipment_task_serde_roundtrip() {
         },
         state: TaskState::InProgress,
         location,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -33510,8 +33511,8 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
         },
         state: TaskState::InProgress,
         location: pile_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -33622,8 +33623,8 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
         },
         state: TaskState::InProgress,
         location: pile_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -33716,8 +33717,8 @@ fn military_equipment_non_wearable_not_equipped() {
         },
         state: TaskState::InProgress,
         location: pile_nav,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -34513,22 +34514,23 @@ fn elf_mana_overflow_goes_to_tree() {
     assert_eq!(sim.db.creatures.get(&elf_id).unwrap().mp, elf_mp_max);
 
     // Set tree mana to 0 so we can measure what gets added.
-    sim.trees.get_mut(&tree_id).unwrap().mana_stored = 0.0;
+    sim.trees.get_mut(&tree_id).unwrap().mana_stored = 0;
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat + 1);
 
     let tree = &sim.trees[&tree_id];
     assert!(
-        tree.mana_stored > 0.0,
+        tree.mana_stored > 0,
         "tree should have gained mana from elf overflow: {}",
         tree.mana_stored
     );
-    // Should gain approximately mana_base_generation_rate (1.0) per heartbeat.
-    let expected = sim.config.mana_base_generation_rate;
-    assert!(
-        (tree.mana_stored - expected).abs() < 0.01,
-        "expected ~{expected}, got {}",
+    // Should gain exactly mana_base_generation_rate_mm (1000 millimana) per
+    // heartbeat when fully overflowing.
+    let expected = sim.config.mana_base_generation_rate_mm;
+    assert_eq!(
+        tree.mana_stored, expected,
+        "expected {expected} millimana, got {}",
         tree.mana_stored
     );
 }
@@ -34565,14 +34567,14 @@ fn wild_creature_mana_overflow_is_lost() {
     let _ = sim.db.creatures.update_no_fk(elf);
 
     // Set tree mana to 0.
-    sim.trees.get_mut(&tree_id).unwrap().mana_stored = 0.0;
+    sim.trees.get_mut(&tree_id).unwrap().mana_stored = 0;
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat + 1);
 
     let tree = &sim.trees[&tree_id];
     assert_eq!(
-        tree.mana_stored, 0.0,
+        tree.mana_stored, 0,
         "wild elf overflow should not reach the tree"
     );
 }
@@ -34789,8 +34791,8 @@ fn nonmagical_creature_cannot_claim_build_task() {
         kind: TaskKind::Build { project_id },
         state: TaskState::Available,
         location: gob_node,
-        progress: 0.0,
-        total_cost: 1.0,
+        progress: 0,
+        total_cost: 1,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -34828,8 +34830,8 @@ fn elf_with_no_mana_skips_build_task() {
         kind: TaskKind::Build { project_id },
         state: TaskState::Available,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 1.0,
+        progress: 0,
+        total_cost: 1,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -34950,8 +34952,8 @@ fn try_drain_mana_exact_boundary() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -34983,8 +34985,8 @@ fn nonmagical_creature_cannot_claim_furnish_task() {
         },
         state: TaskState::Available,
         location: gob_node,
-        progress: 0.0,
-        total_cost: 1.0,
+        progress: 0,
+        total_cost: 1,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -35007,19 +35009,18 @@ fn multiple_elves_overflow_to_same_tree() {
 
     // Zero tree mana, then advance two full heartbeat intervals to ensure
     // both elves get at least one heartbeat from this baseline.
-    sim.trees.get_mut(&tree_id).unwrap().mana_stored = 0.0;
-    let mana_before = 0.0_f32;
+    sim.trees.get_mut(&tree_id).unwrap().mana_stored = 0;
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat * 2 + 1);
 
     let tree = &sim.trees[&tree_id];
-    // Two elves at full mp, each contributing ~base_generation_rate per
-    // heartbeat. Over 2 intervals, each elf contributes ~2x, total ~4x.
-    // We just check that we got contributions from both (> 1x).
-    let single_heartbeat = sim.config.mana_base_generation_rate;
+    // Two elves at full mp, each contributing base_generation_rate_mm per
+    // heartbeat. Over 2 intervals, each elf contributes ~2×, total ~4×.
+    // We just check that we got contributions from both (> 1×).
+    let single_heartbeat = sim.config.mana_base_generation_rate_mm;
     assert!(
-        tree.mana_stored - mana_before > single_heartbeat,
+        tree.mana_stored > single_heartbeat,
         "tree should receive overflow from multiple elves: got {}",
         tree.mana_stored
     );
@@ -35080,8 +35081,8 @@ fn cleanup_early_exit_resets_wasted_action_count() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -35168,8 +35169,8 @@ fn mana_wasted_position_recorded_on_failed_drain() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -35217,8 +35218,8 @@ fn successful_drain_does_not_record_position() {
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
         location: elf_node,
-        progress: 0.0,
-        total_cost: 0.0,
+        progress: 0,
+        total_cost: 0,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -35935,7 +35936,7 @@ fn grow_craft_task_has_action_count_total_cost() {
     let task = &craft_tasks[0];
     let per_action = sim.config.grow_recipes.grow_work_ticks_per_action;
     let work_ticks = sim.config.grow_recipes.grow_arrow_work_ticks;
-    let expected_actions = work_ticks.div_ceil(per_action) as f32;
+    let expected_actions = work_ticks.div_ceil(per_action) as i64;
     assert_eq!(
         task.total_cost, expected_actions,
         "Grow task total_cost should be action count ({expected_actions}), got {}",
@@ -36306,7 +36307,7 @@ fn grow_craft_task_total_cost_rounds_up() {
 
     // 7000 / 4000 = 1.75, ceil = 2
     assert_eq!(
-        task.total_cost, 2.0,
+        task.total_cost, 2,
         "div_ceil should round up: 7000/4000 = 2 actions"
     );
 }
