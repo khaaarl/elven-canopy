@@ -302,7 +302,9 @@ impl SimState {
         }
 
         let tpv = speeds.tpv_for_edge(edge.edge_type);
-        let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
+        let delay = (edge.distance as u64 * tpv)
+            .div_ceil(crate::nav::DIST_SCALE as u64)
+            .max(1);
 
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
@@ -435,7 +437,9 @@ impl SimState {
         let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
         let speeds = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
         let tpv = speeds.tpv_for_edge(edge.edge_type);
-        let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
+        let delay = (edge.distance as u64 * tpv)
+            .div_ceil(crate::nav::DIST_SCALE as u64)
+            .max(1);
 
         // Move creature to the destination.
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;

@@ -490,7 +490,9 @@ impl SimState {
             crate::nav::EdgeType::RopeLadderClimb => rope_ladder_tpv.unwrap_or(walk_tpv),
             _ => walk_tpv,
         };
-        let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
+        let delay = (edge.distance as u64 * tpv)
+            .div_ceil(crate::nav::DIST_SCALE as u64)
+            .max(1);
 
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
@@ -897,7 +899,9 @@ impl SimState {
             crate::nav::EdgeType::RopeLadderClimb => rope_ladder_tpv.unwrap_or(walk_tpv),
             _ => walk_tpv,
         };
-        let delay = ((edge.distance * tpv as f32).ceil() as u64).max(1);
+        let delay = (edge.distance as u64 * tpv)
+            .div_ceil(crate::nav::DIST_SCALE as u64)
+            .max(1);
 
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
