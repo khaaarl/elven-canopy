@@ -5,8 +5,15 @@
 // the Extract → Mill → Bake chain. Includes recipe queue management (add,
 // remove, reorder, enable/disable).
 //
+// **Grow-verb mana drain (F-mana-grow-recipes):** Grow recipes (magical wood
+// shaping) are multi-action tasks that drain mana per action, using the same
+// wasted-action / abandon-threshold mechanics as construction (`construction.rs`).
+// Non-Grow recipes remain single-action with no mana cost.
+//
 // See also: `recipe.rs` (recipe catalog/enum and definitions), `logistics.rs`
-// (item hauling to workstations), `inventory_mgmt.rs` (item operations).
+// (item hauling to workstations), `inventory_mgmt.rs` (item operations),
+// `construction.rs` (mana drain helpers: `mana_cost_for_grow_action`,
+// `try_drain_mana`).
 use super::*;
 use crate::db::ActionKind;
 use crate::event::ScheduledEventKind;
@@ -14,22 +21,32 @@ use crate::inventory;
 use crate::task;
 
 impl SimState {
-    /// Start a Craft action: set action kind and schedule next activation
-    /// after `recipe.work_ticks`. Craft is a single-action task.
+    /// Start a Craft action: set action kind and schedule next activation.
+    ///
+    /// For Grow-verb recipes, each action is one `grow_work_ticks_per_action`
+    /// step that drains mana on completion (multi-action task). For all other
+    /// recipes, the full `work_ticks` runs in a single action (no mana).
     pub(crate) fn start_craft_action(&mut self, creature_id: CreatureId, task_id: TaskId) {
         let craft_data = self.task_craft_data(task_id);
         let fruit_species: Vec<_> = self.db.fruit_species.iter_all().cloned().collect();
-        let duration = craft_data
+        let is_grow = craft_data
             .as_ref()
-            .and_then(|d| {
-                let params = crate::recipe::RecipeParams {
-                    material: d.material,
-                };
-                d.recipe
-                    .resolve(&params, &self.config, &fruit_species)
-                    .map(|r| r.work_ticks)
-            })
-            .unwrap_or(5000);
+            .is_some_and(|d| d.recipe.verb() == crate::recipe::RecipeVerb::Grow);
+        let duration = if is_grow {
+            self.config.grow_recipes.grow_work_ticks_per_action.max(1)
+        } else {
+            craft_data
+                .as_ref()
+                .and_then(|d| {
+                    let params = crate::recipe::RecipeParams {
+                        material: d.material,
+                    };
+                    d.recipe
+                        .resolve(&params, &self.config, &fruit_species)
+                        .map(|r| r.work_ticks)
+                })
+                .unwrap_or(5000)
+        };
 
         let tick = self.tick;
         let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
@@ -42,8 +59,14 @@ impl SimState {
         );
     }
 
-    /// Resolve a completed Craft action: consume reserved inputs, produce
-    /// outputs with subcomponents. Always returns true (single-action task).
+    /// Resolve a completed Craft action.
+    ///
+    /// **Grow-verb recipes (multi-action):** Drain mana per action. On success,
+    /// increment `progress` by 1. When `progress >= total_cost`, consume inputs
+    /// and produce outputs. On mana failure, wasted action (may abandon).
+    ///
+    /// **All other recipes (single-action):** Consume inputs, produce outputs,
+    /// complete immediately (no mana cost).
     pub(crate) fn resolve_craft_action(&mut self, creature_id: CreatureId) -> bool {
         let task_id = match self
             .db
@@ -68,6 +91,38 @@ impl SimState {
             }
         };
 
+        let is_grow = craft_data.recipe.verb() == crate::recipe::RecipeVerb::Grow;
+
+        // --- Grow-verb mana drain ---
+        if is_grow {
+            let cost = self.mana_cost_for_grow_action();
+            if cost > 0 && !self.try_drain_mana(creature_id, cost) {
+                // Wasted action. If try_drain_mana abandoned the task,
+                // the creature's current_task will be None.
+                return self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .and_then(|c| c.current_task)
+                    .is_none();
+            }
+
+            // Mana drained — increment progress.
+            let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+                t.progress += 1.0;
+            });
+
+            // Check if all actions are done.
+            let task = match self.db.tasks.get(&task_id) {
+                Some(t) => t,
+                None => return true,
+            };
+            if task.progress < task.total_cost {
+                return false; // More actions needed.
+            }
+        }
+
+        // --- Produce outputs (final action for Grow, only action for others) ---
         let fruit_species: Vec<_> = self.db.fruit_species.iter_all().cloned().collect();
         let params = crate::recipe::RecipeParams {
             material: craft_data.material,
@@ -296,6 +351,15 @@ impl SimState {
                 );
             }
 
+            // Grow-verb recipes use multi-action (total_cost = number of
+            // actions), all others use single-action (total_cost = work_ticks).
+            let total_cost = if recipe.verb() == crate::recipe::RecipeVerb::Grow {
+                let per_action = self.config.grow_recipes.grow_work_ticks_per_action.max(1);
+                resolved.work_ticks.div_ceil(per_action) as f32
+            } else {
+                resolved.work_ticks as f32
+            };
+
             let new_task = task::Task {
                 id: task_id,
                 kind: task::TaskKind::Craft {
@@ -305,7 +369,7 @@ impl SimState {
                 state: task::TaskState::Available,
                 location,
                 progress: 0.0,
-                total_cost: resolved.work_ticks as f32,
+                total_cost,
                 required_species: recipe.required_species(),
                 origin: task::TaskOrigin::Automated,
                 target_creature: None,

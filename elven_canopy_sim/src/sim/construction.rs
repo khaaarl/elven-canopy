@@ -950,29 +950,29 @@ impl SimState {
 
     /// Compute the creature-scale (i64) mana cost for one work action of the
     /// given build type. Platform and Bridge use their specific config costs;
-    /// all others (Furnish, Carve, Stairs, etc.) use `default_mana_cost_per_action`.
+    /// all others (Furnish, Carve, Stairs, etc.) use `default_mana_cost_per_mille`.
     ///
-    /// Conversion from tree-scale (f32) to creature-scale (i64): the tree
-    /// config cost is expressed relative to `starting_mana_capacity`. An elf's
-    /// creature-scale cost is `(tree_cost / mana_capacity) × elf.mp_max`.
-    /// E.g., platform cost 10.0 with capacity 500.0 → 2% of elf mp_max per voxel.
+    /// Config costs are in per-mille of creature mp_max (20 = 2%).
+    /// Conversion: `mp_max / 1000 × cost` — pure integer math, no floats.
     ///
-    /// NOTE: currently hardcodes Elf's mp_max for the conversion. If a future
-    /// magical species has a different mp_max, this will need a creature_id
-    /// parameter to look up the correct species.
+    /// NOTE: currently hardcodes Elf's mp_max. If a future magical species
+    /// has a different mp_max, this will need a creature_id parameter.
     pub(crate) fn mana_cost_per_action(&self, build_type: Option<BuildType>) -> i64 {
-        let tree_cost = match build_type {
-            Some(BuildType::Platform) => self.config.platform_mana_cost_per_voxel,
-            Some(BuildType::Bridge) => self.config.bridge_mana_cost_per_voxel,
-            _ => self.config.default_mana_cost_per_action,
+        let cost_per_mille = match build_type {
+            Some(BuildType::Platform) => self.config.platform_mana_cost_per_mille,
+            Some(BuildType::Bridge) => self.config.bridge_mana_cost_per_mille,
+            _ => self.config.default_mana_cost_per_mille,
         };
-        let capacity = self.config.starting_mana_capacity;
-        if capacity <= 0.0 {
-            return 0;
-        }
         let elf_mp_max = self.species_table[&Species::Elf].mp_max;
-        let cost = (tree_cost as f64 / capacity as f64) * elf_mp_max as f64;
-        (cost as i64).max(0)
+        elf_mp_max / 1000 * cost_per_mille as i64
+    }
+
+    /// Creature-scale mana cost for one Grow-verb crafting action.
+    /// Same per-mille conversion as `mana_cost_per_action`.
+    pub(crate) fn mana_cost_for_grow_action(&self) -> i64 {
+        let cost_per_mille = self.config.grow_mana_cost_per_mille;
+        let elf_mp_max = self.species_table[&Species::Elf].mp_max;
+        elf_mp_max / 1000 * cost_per_mille as i64
     }
 
     /// Try to drain mana from a creature for a work action. Returns true if
@@ -1498,7 +1498,7 @@ impl SimState {
             None => return false,
         };
 
-        // Drain mana (furnishing uses default_mana_cost_per_action).
+        // Drain mana (furnishing uses default_mana_cost_per_mille).
         let cost = self.mana_cost_per_action(None);
         if cost > 0 && !self.try_drain_mana(creature_id, cost) {
             return self

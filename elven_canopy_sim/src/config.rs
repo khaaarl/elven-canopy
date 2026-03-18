@@ -1083,6 +1083,12 @@ impl Default for ComponentRecipeConfig {
 /// See `recipe.rs` `build_wood_type_recipes()` for the generation logic.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GrowRecipeConfig {
+    /// Duration of one work action for Grow recipes (ticks). The total recipe
+    /// work_ticks is split into ceil(work_ticks / this) actions, each draining
+    /// mana via `GameConfig::grow_mana_cost_per_mille`.
+    #[serde(default = "default_grow_work_ticks_per_action")]
+    pub grow_work_ticks_per_action: u64,
+
     /// Grow bow: work ticks.
     #[serde(default = "default_grow_bow_work_ticks")]
     pub grow_bow_work_ticks: u64,
@@ -1118,6 +1124,7 @@ pub struct GrowRecipeConfig {
 impl Default for GrowRecipeConfig {
     fn default() -> Self {
         Self {
+            grow_work_ticks_per_action: default_grow_work_ticks_per_action(),
             grow_bow_work_ticks: default_grow_bow_work_ticks(),
             grow_arrow_work_ticks: default_grow_arrow_work_ticks(),
             grow_arrow_output: default_grow_arrow_output(),
@@ -1128,6 +1135,10 @@ impl Default for GrowRecipeConfig {
             grow_boots_work_ticks: default_grow_boots_work_ticks(),
         }
     }
+}
+
+fn default_grow_work_ticks_per_action() -> u64 {
+    1000
 }
 
 fn default_grow_bow_work_ticks() -> u64 {
@@ -1523,17 +1534,25 @@ pub struct GameConfig {
     /// `(min_multiplier, max_multiplier)` — interpolated from worst to best mood.
     pub mana_mood_multiplier_range: (f32, f32),
 
-    /// Mana cost to grow one voxel of platform.
-    pub platform_mana_cost_per_voxel: f32,
+    /// Mana cost to grow one voxel of platform, in per-mille of the
+    /// creature's mp_max (20 = 2%). Creature-scale cost = mp_max / 1000 × this.
+    #[serde(default = "default_platform_mana_cost_per_mille")]
+    pub platform_mana_cost_per_mille: u32,
 
-    /// Mana cost to grow one voxel of bridge/walkway.
-    pub bridge_mana_cost_per_voxel: f32,
+    /// Mana cost to grow one voxel of bridge/walkway, in per-mille of mp_max.
+    #[serde(default = "default_bridge_mana_cost_per_mille")]
+    pub bridge_mana_cost_per_mille: u32,
 
     /// Default mana cost per work action for build types that don't have a
     /// specific config field (stairs, walls, struts, carving, ladders,
-    /// furnishing). Uses the same f32 scale as the per-voxel costs above.
-    #[serde(default = "default_mana_cost_per_action")]
-    pub default_mana_cost_per_action: f32,
+    /// furnishing), in per-mille of mp_max.
+    #[serde(default = "default_mana_cost_per_mille")]
+    pub default_mana_cost_per_mille: u32,
+
+    /// Mana cost per work action for Grow-verb crafting recipes (magical
+    /// shaping of wood at a workshop), in per-mille of mp_max.
+    #[serde(default = "default_grow_mana_cost_per_mille")]
+    pub grow_mana_cost_per_mille: u32,
 
     /// Number of consecutive wasted work actions (insufficient mana) before
     /// a creature abandons its current task. The task reverts to Available
@@ -1871,8 +1890,20 @@ pub struct GameConfig {
     pub armor_degrade_location_weights: [i32; 5],
 }
 
-fn default_mana_cost_per_action() -> f32 {
-    10.0
+fn default_platform_mana_cost_per_mille() -> u32 {
+    20
+}
+
+fn default_bridge_mana_cost_per_mille() -> u32 {
+    30
+}
+
+fn default_mana_cost_per_mille() -> u32 {
+    20
+}
+
+fn default_grow_mana_cost_per_mille() -> u32 {
+    20
 }
 
 fn default_mana_abandon_threshold() -> u32 {
@@ -2459,9 +2490,10 @@ impl Default for GameConfig {
             tree_heartbeat_interval_ticks: 10000,
             mana_base_generation_rate: 1.0,
             mana_mood_multiplier_range: (0.2, 2.0),
-            platform_mana_cost_per_voxel: 10.0,
-            bridge_mana_cost_per_voxel: 15.0,
-            default_mana_cost_per_action: 10.0,
+            platform_mana_cost_per_mille: 20,
+            bridge_mana_cost_per_mille: 30,
+            default_mana_cost_per_mille: 20,
+            grow_mana_cost_per_mille: 20,
             mana_abandon_threshold: 3,
             fruit_production_base_rate: 0.5,
             fruit_max_per_tree: 20,
@@ -2775,8 +2807,8 @@ mod tests {
             "tree_heartbeat_interval_ticks": 10000,
             "mana_base_generation_rate": 1.0,
             "mana_mood_multiplier_range": [0.2, 2.0],
-            "platform_mana_cost_per_voxel": 10.0,
-            "bridge_mana_cost_per_voxel": 15.0,
+            "platform_mana_cost_per_mille": 20,
+            "bridge_mana_cost_per_mille": 30,
             "fruit_production_base_rate": 0.5,
             "fruit_max_per_tree": 20,
             "fruit_initial_attempts": 12,
@@ -2809,8 +2841,8 @@ mod tests {
             "tree_heartbeat_interval_ticks": 10000,
             "mana_base_generation_rate": 2.0,
             "mana_mood_multiplier_range": [0.1, 3.0],
-            "platform_mana_cost_per_voxel": 8.0,
-            "bridge_mana_cost_per_voxel": 12.0,
+            "platform_mana_cost_per_mille": 16,
+            "bridge_mana_cost_per_mille": 24,
             "fruit_production_base_rate": 0.8,
             "fruit_max_per_tree": 25,
             "fruit_initial_attempts": 15,

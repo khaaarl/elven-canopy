@@ -57,6 +57,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
+[ ] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -140,7 +141,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
-[ ] F-mana-grow-recipes    Grow-verb crafting recipes cost mana
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-transfer        Tree-to-elf mana transfer
 [ ] F-mass-conserve        Wood mass tracking and conservation
@@ -303,6 +303,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-logistics-filter     Logistics material filter
 [x] F-main-menu            Main menu UI
 [x] F-mana-depleted-vfx    Visual feedback for mana-depleted work actions
+[x] F-mana-grow-recipes    Grow-verb crafting recipes cost mana
 [x] F-mana-system          Mana generation, storage, and spending
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-melee-action         Melee attack action
@@ -1872,7 +1873,7 @@ in-transit counting, additive overlapping want semantics.
 **Related:** F-fruit-variety
 
 #### F-mana-grow-recipes — Grow-verb crafting recipes cost mana
-**Status:** Todo · **Refs:** §11
+**Status:** Done · **Refs:** §11
 
 Grow-verb crafting recipes (magical shaping of wood, fruit cultivation, etc.)
 should cost mana from the crafting creature's personal pool, using the same
@@ -1894,7 +1895,7 @@ Creatures with no civ bond (wild creatures) lose their excess. Trees store
 mana (mana_stored / mana_capacity) but do not generate it.
 
 Construction and furnishing tasks have a per-action mana cost (config-driven,
-per build type; types without a specific field use default_mana_cost_per_action)
+per build type; types without a specific field use default_mana_cost_per_mille)
 drained from the working creature's personal pool at the start of each work
 action. If the creature lacks sufficient mana, it spends the time but
 accomplishes no work (wasted action). Consecutive wasted actions are tracked
@@ -4139,6 +4140,31 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 **Related:** F-bldg-transparency, F-ghost-above, F-minimap
 
 ### Sim Engine
+
+#### B-sim-floats — Remaining f32/f64 in sim logic threaten determinism
+**Status:** Todo
+
+Several sim-logic code paths still use f32/f64 arithmetic, which is not
+guaranteed deterministic across platforms/compilers. Key areas:
+
+- **Tree struct** (sim/mod.rs): health, mana_stored, mana_capacity,
+  fruit_production_rate, carrying_capacity, current_load — all f32.
+  Mana overflow calculation uses f64.
+- **Task progress/total_cost** (task.rs, db.rs): f32 accumulated with
+  float arithmetic throughout construction, crafting, furnishing, etc.
+- **Mana generation** (config.rs): mana_base_generation_rate: f32,
+  mana_mood_multiplier_range: (f32, f32), starting_mana/capacity: f32.
+- **Pathfinding** (pathfinding.rs, nav.rs): f32 distances, g_scores,
+  heuristic. Derived from integer coords via sqrt.
+- **Combat/movement** (combat.rs, movement.rs): delay = (distance *
+  speed as f32).ceil().
+- **Greenhouse** (greenhouse.rs): next_f32() for fruit spawn chance.
+- **Needs/activation**: mope duration cast to f32.
+
+Worldgen floats (tree_gen.rs, structural.rs, texture_gen.rs) are run
+once at init with a seeded PRNG — lower risk but still non-portable.
+Rendering-only floats (mesh_gen, interpolated_position, raycast) are
+safe since they don't affect sim truth.
 
 #### F-activation-revamp — Replace manual event scheduling with automatic reactivation
 **Status:** Todo · **Phase:** 5

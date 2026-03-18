@@ -13984,9 +13984,20 @@ fn resolve_craft_via_unified_catalog_path() {
         let _ = sim.db.tasks.update_no_fk(t);
     }
 
-    // Resolve the craft action — should go through catalog path.
-    let completed = sim.resolve_craft_action(elf_id);
-    assert!(completed, "Craft should complete via catalog path");
+    // Resolve the craft action — Grow recipes are multi-action now.
+    // Call resolve until the task completes (drains mana each action).
+    let total_cost = sim.db.tasks.get(&craft_task_id).unwrap().total_cost as u32;
+    for i in 0..total_cost {
+        let completed = sim.resolve_craft_action(elf_id);
+        if i < total_cost - 1 {
+            assert!(!completed, "Grow craft should not complete on action {i}");
+        } else {
+            assert!(
+                completed,
+                "Craft should complete via catalog path on final action"
+            );
+        }
+    }
 
     // Bowstring should be consumed, bow should be produced.
     let bowstring_count = sim.inv_item_count(
@@ -34425,10 +34436,11 @@ fn mana_fields_default_on_old_save() {
 #[test]
 fn game_config_has_mana_cost_defaults() {
     let config = GameConfig::default();
-    assert!(config.default_mana_cost_per_action > 0.0);
+    assert!(config.default_mana_cost_per_mille > 0);
     assert!(config.mana_abandon_threshold > 0);
-    assert!(config.platform_mana_cost_per_voxel > 0.0);
-    assert!(config.bridge_mana_cost_per_voxel > 0.0);
+    assert!(config.platform_mana_cost_per_mille > 0);
+    assert!(config.bridge_mana_cost_per_mille > 0);
+    assert!(config.grow_mana_cost_per_mille > 0);
 }
 
 #[test]
@@ -34909,12 +34921,12 @@ fn mana_cost_per_action_carve_uses_default() {
 }
 
 #[test]
-fn mana_cost_per_action_zero_capacity_returns_zero() {
+fn mana_cost_per_action_zero_cost_returns_zero() {
     let mut config = test_config();
-    config.starting_mana_capacity = 0.0;
+    config.platform_mana_cost_per_mille = 0;
     let sim = SimState::with_config(42, config);
     let cost = sim.mana_cost_per_action(Some(BuildType::Platform));
-    assert_eq!(cost, 0, "zero capacity should yield zero cost");
+    assert_eq!(cost, 0, "zero per-mille cost should yield zero cost");
 }
 
 #[test]
@@ -35015,18 +35027,24 @@ fn multiple_elves_overflow_to_same_tree() {
 
 #[test]
 fn config_backward_compat_mana_fields_from_old_json() {
-    // Serialize a GameConfig, strip the new mana fields, deserialize,
+    // Serialize a GameConfig, strip the mana cost fields, deserialize,
     // and verify serde defaults are correct.
     let config = GameConfig::default();
     let json = serde_json::to_string(&config).unwrap();
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
     let obj = value.as_object_mut().unwrap();
-    obj.remove("default_mana_cost_per_action");
+    obj.remove("platform_mana_cost_per_mille");
+    obj.remove("bridge_mana_cost_per_mille");
+    obj.remove("default_mana_cost_per_mille");
+    obj.remove("grow_mana_cost_per_mille");
     obj.remove("mana_abandon_threshold");
     let stripped = serde_json::to_string(&value).unwrap();
 
     let restored: GameConfig = serde_json::from_str(&stripped).unwrap();
-    assert_eq!(restored.default_mana_cost_per_action, 10.0);
+    assert_eq!(restored.platform_mana_cost_per_mille, 20);
+    assert_eq!(restored.bridge_mana_cost_per_mille, 30);
+    assert_eq!(restored.default_mana_cost_per_mille, 20);
+    assert_eq!(restored.grow_mana_cost_per_mille, 20);
     assert_eq!(restored.mana_abandon_threshold, 3);
 }
 
@@ -35843,4 +35861,452 @@ fn all_civ_species_with_to_species_have_species_table_entry() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Grow-verb mana drain (F-mana-grow-recipes)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn grow_mana_cost_config_defaults() {
+    let config = GameConfig::default();
+    assert!(
+        config.grow_mana_cost_per_mille > 0,
+        "grow mana cost should have a positive default"
+    );
+    assert!(
+        config.grow_recipes.grow_work_ticks_per_action > 0,
+        "grow work ticks per action should have a positive default"
+    );
+}
+
+#[test]
+fn mana_cost_for_grow_action_positive() {
+    let sim = test_sim(42);
+    let cost = sim.mana_cost_for_grow_action();
+    assert!(cost > 0, "grow action mana cost should be positive: {cost}");
+}
+
+/// Place all furniture in a building so it is immediately functional.
+fn place_all_furniture(sim: &mut SimState, structure_id: StructureId) {
+    let furn_ids: Vec<_> = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|f| f.id)
+        .collect();
+    for fid in furn_ids {
+        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
+            f.placed = true;
+        });
+    }
+}
+
+#[test]
+fn grow_craft_task_has_action_count_total_cost() {
+    // Grow recipes should have total_cost = ceil(work_ticks / per_action)
+    // instead of total_cost = work_ticks.
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+    place_all_furniture(&mut sim, structure_id);
+    add_recipe_with_targets(
+        &mut sim,
+        structure_id,
+        Recipe::GrowArrow,
+        Some(Material::Oak),
+        100,
+    );
+
+    // Run the crafting monitor to create the task.
+    sim.process_unified_crafting_monitor();
+
+    let craft_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Craft)
+        .collect();
+    assert!(
+        !craft_tasks.is_empty(),
+        "crafting monitor should create a task"
+    );
+
+    let task = &craft_tasks[0];
+    let per_action = sim.config.grow_recipes.grow_work_ticks_per_action;
+    let work_ticks = sim.config.grow_recipes.grow_arrow_work_ticks;
+    let expected_actions = work_ticks.div_ceil(per_action) as f32;
+    assert_eq!(
+        task.total_cost, expected_actions,
+        "Grow task total_cost should be action count ({expected_actions}), got {}",
+        task.total_cost
+    );
+}
+
+#[test]
+fn grow_arrow_drains_elf_mana() {
+    let mut config = test_config();
+    // Disable mana regen so we can measure net drain.
+    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+    add_recipe_with_targets(
+        &mut sim,
+        structure_id,
+        Recipe::GrowArrow,
+        Some(Material::Oak),
+        100,
+    );
+
+    let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+    let mp_before = sim.db.creatures.get(&elf_id).unwrap().mp;
+
+    // Run long enough for the elf to work on the recipe.
+    sim.step(&[], sim.tick + 20_000);
+
+    let mp_after = sim.db.creatures.get(&elf_id).unwrap().mp;
+    assert!(
+        mp_after < mp_before,
+        "Grow recipe should drain mana: before={mp_before}, after={mp_after}"
+    );
+
+    // Should still produce arrows despite mana cost.
+    let inv_id = sim.structure_inv(structure_id);
+    let arrows = sim.inv_unreserved_item_count(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        inventory::MaterialFilter::Specific(Material::Oak),
+    );
+    assert!(
+        arrows > 0,
+        "GrowArrow should still produce arrows: {arrows}"
+    );
+}
+
+#[test]
+fn grow_with_zero_mana_wastes_actions_and_abandons() {
+    let mut config = test_config();
+    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    config.mana_abandon_threshold = 2;
+    let mut sim = SimState::with_config(42, config);
+
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+    add_recipe_with_targets(
+        &mut sim,
+        structure_id,
+        Recipe::GrowArrow,
+        Some(Material::Oak),
+        100,
+    );
+
+    let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Drain all elf mana.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.mp = 0;
+    });
+
+    // Run enough for the elf to attempt and abandon.
+    sim.step(&[], sim.tick + 20_000);
+
+    // Should produce zero arrows (never completed a recipe).
+    let inv_id = sim.structure_inv(structure_id);
+    let arrows = sim.inv_unreserved_item_count(
+        inv_id,
+        inventory::ItemKind::Arrow,
+        inventory::MaterialFilter::Specific(Material::Oak),
+    );
+    assert_eq!(
+        arrows, 0,
+        "Grow with no mana should produce nothing: {arrows}"
+    );
+}
+
+#[test]
+fn nonmagical_creature_cannot_claim_grow_craft_task() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+    place_all_furniture(&mut sim, structure_id);
+    add_recipe_with_targets(
+        &mut sim,
+        structure_id,
+        Recipe::GrowArrow,
+        Some(Material::Oak),
+        100,
+    );
+
+    // Run crafting monitor to create the task.
+    sim.process_unified_crafting_monitor();
+
+    // Verify a Craft task was created.
+    let craft_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state == task::TaskState::Available)
+        .collect();
+    assert!(
+        !craft_tasks.is_empty(),
+        "crafting monitor should create a task"
+    );
+
+    // Spawn a capybara (nonmagical, mp_max = 0).
+    let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Capybara, anchor, &mut events);
+    let capybara_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .unwrap()
+        .id;
+
+    // Capybara should NOT find the Grow craft task.
+    let found = sim.find_available_task(capybara_id);
+    assert!(
+        found.is_none(),
+        "nonmagical creature should not claim Grow craft task"
+    );
+}
+
+#[test]
+fn non_grow_craft_completes_with_zero_mana() {
+    // Extract (non-Grow verb) should work even with 0 mana.
+    let mut config = test_config();
+    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+
+    let species_id = insert_full_chain_fruit_species(&mut sim);
+    let mat = Material::FruitSpecies(species_id);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
+    place_all_furniture(&mut sim, structure_id);
+    add_recipe_with_targets(&mut sim, structure_id, Recipe::Extract, Some(mat), 100);
+
+    // Stock the kitchen with fruit.
+    let inv_id = sim.structure_inv(structure_id);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        10,
+        None,
+        None,
+        Some(mat),
+        0,
+        None,
+        None,
+    );
+
+    let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Drain all mana — non-Grow craft should still succeed.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.mp = 0;
+    });
+
+    sim.step(&[], sim.tick + 20_000);
+
+    // Should produce components despite 0 mana.
+    let pulp = sim.inv_unreserved_item_count(
+        inv_id,
+        inventory::ItemKind::Pulp,
+        inventory::MaterialFilter::Specific(mat),
+    );
+    let fiber = sim.inv_unreserved_item_count(
+        inv_id,
+        inventory::ItemKind::FruitFiber,
+        inventory::MaterialFilter::Specific(mat),
+    );
+    assert!(
+        pulp > 0 || fiber > 0,
+        "non-Grow recipe should complete with 0 mana (pulp={pulp}, fiber={fiber})"
+    );
+}
+
+#[test]
+fn drained_elf_can_still_claim_non_grow_craft_task() {
+    let mut config = test_config();
+    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+
+    let species_id = insert_full_chain_fruit_species(&mut sim);
+    let mat = Material::FruitSpecies(species_id);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
+    place_all_furniture(&mut sim, structure_id);
+    add_recipe_with_targets(&mut sim, structure_id, Recipe::Extract, Some(mat), 100);
+
+    // Stock the kitchen with fruit.
+    let inv_id = sim.structure_inv(structure_id);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Fruit,
+        10,
+        None,
+        None,
+        Some(mat),
+        0,
+        None,
+        None,
+    );
+
+    // Run crafting monitor to create the task.
+    sim.process_unified_crafting_monitor();
+
+    // Verify a Craft task was created.
+    let craft_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Craft && t.state == task::TaskState::Available)
+        .collect();
+    assert!(
+        !craft_tasks.is_empty(),
+        "crafting monitor should create a task"
+    );
+
+    let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Drain all mana.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.mp = 0;
+    });
+
+    // Elf with 0 mana should still find the non-Grow craft task.
+    let found = sim.find_available_task(elf_id);
+    assert!(
+        found.is_some(),
+        "drained elf should still find non-Grow craft tasks"
+    );
+}
+
+#[test]
+fn grow_recipe_serde_backward_compat_new_config_fields() {
+    // Serialize a GameConfig, strip the grow-mana fields, deserialize,
+    // and verify serde defaults are correct.
+    let config = GameConfig::default();
+    let json = serde_json::to_string(&config).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let obj = value.as_object_mut().unwrap();
+    obj.remove("grow_mana_cost_per_mille");
+    if let Some(grow_obj) = obj.get_mut("grow_recipes").and_then(|v| v.as_object_mut()) {
+        grow_obj.remove("grow_work_ticks_per_action");
+    }
+    let stripped = serde_json::to_string(&value).unwrap();
+
+    let restored: GameConfig = serde_json::from_str(&stripped).unwrap();
+    assert_eq!(restored.grow_mana_cost_per_mille, 20);
+    assert_eq!(restored.grow_recipes.grow_work_ticks_per_action, 1000);
+}
+
+#[test]
+fn drained_elf_cannot_claim_grow_craft_task() {
+    // An elf with mp > 0 but below the grow cost should not claim Grow tasks.
+    let mut config = test_config();
+    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    let mut sim = SimState::with_config(42, config);
+
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+    place_all_furniture(&mut sim, structure_id);
+    add_recipe_with_targets(
+        &mut sim,
+        structure_id,
+        Recipe::GrowArrow,
+        Some(Material::Oak),
+        100,
+    );
+    sim.process_unified_crafting_monitor();
+
+    let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set mp to 1 — below the grow cost (which is mp_max / 1000 * 20).
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.mp = 1;
+    });
+
+    let found = sim.find_available_task(elf_id);
+    assert!(
+        found.is_none(),
+        "elf with insufficient mana should not claim Grow craft task"
+    );
+}
+
+#[test]
+fn grow_craft_task_total_cost_rounds_up() {
+    // When work_ticks is not evenly divisible by per_action, div_ceil rounds up.
+    let mut config = test_config();
+    config.grow_recipes.grow_work_ticks_per_action = 4000;
+    // grow_arrow_work_ticks = 3000, so ceil(3000 / 4000) = 1
+    // grow_bow_work_ticks = 8000, so ceil(8000 / 4000) = 2
+    // grow_helmet_work_ticks = 7000, so ceil(7000 / 4000) = 2
+    let mut sim = SimState::with_config(42, config);
+
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+    place_all_furniture(&mut sim, structure_id);
+    add_recipe_with_targets(
+        &mut sim,
+        structure_id,
+        Recipe::GrowHelmet,
+        Some(Material::Oak),
+        10,
+    );
+    sim.process_unified_crafting_monitor();
+
+    let task = sim
+        .db
+        .tasks
+        .iter_all()
+        .find(|t| t.kind_tag == TaskKindTag::Craft)
+        .expect("should create a craft task");
+
+    // 7000 / 4000 = 1.75, ceil = 2
+    assert_eq!(
+        task.total_cost, 2.0,
+        "div_ceil should round up: 7000/4000 = 2 actions"
+    );
 }

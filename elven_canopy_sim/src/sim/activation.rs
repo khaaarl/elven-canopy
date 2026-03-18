@@ -421,18 +421,36 @@ impl SimState {
         let min_mana_cost = self.mana_cost_per_action(None);
         let has_mana_for_work = creature.mp >= min_mana_cost;
 
+        // Minimum mana for a Grow-verb craft action (may differ from build cost).
+        let min_grow_mana_cost = self.mana_cost_for_grow_action();
+        let has_mana_for_grow = creature.mp >= min_grow_mana_cost;
+
         // Collect all candidate tasks (id + location) that this creature can work.
         let candidates: Vec<(TaskId, NavNodeId)> = self
             .db
             .tasks
             .iter_all()
             .filter(|t| {
-                t.state == task::TaskState::Available
-                    && t.required_species.is_none_or(|s| s == species)
-                    // Nonmagical creatures cannot claim mana-requiring tasks.
-                    // Magical creatures need enough mana for at least one action.
-                    && (!t.kind_tag.requires_mana()
-                        || (!is_nonmagical && has_mana_for_work))
+                if t.state != task::TaskState::Available {
+                    return false;
+                }
+                if t.required_species.is_some_and(|s| s != species) {
+                    return false;
+                }
+                // Build/Furnish: nonmagical creatures cannot claim, magical need mana.
+                if t.kind_tag.requires_mana() {
+                    return !is_nonmagical && has_mana_for_work;
+                }
+                // Grow-verb Craft tasks also require mana.
+                if t.kind_tag == crate::db::TaskKindTag::Craft {
+                    let is_grow = self
+                        .task_craft_data(t.id)
+                        .is_some_and(|d| d.recipe.verb() == crate::recipe::RecipeVerb::Grow);
+                    if is_grow {
+                        return !is_nonmagical && has_mana_for_grow;
+                    }
+                }
+                true
             })
             .map(|t| (t.id, t.location))
             .collect();
