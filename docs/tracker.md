@@ -80,6 +80,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridges              Bridge construction between tree parts
+[ ] F-buff-system          Generic timed stat modifier buffs on creatures
 [ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-building-door        Player-controlled building door orientation
 [ ] F-cascade-fail         Cascading structural failure
@@ -89,14 +90,18 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-civ-pets             Non-elf civ members and pets
 [ ] F-cloak-slot           Cloak/cape equipment slot
 [ ] F-combat               Combat and invader threat system
+[ ] F-combat-singing       Combat singing buffs and musical instrument bands
 [ ] F-command-queue        Shift+right-click to queue commands
 [ ] F-compound-pk          Compound (multi-column) primary keys
 [ ] F-config-file          Game config file (user://config.json)
 [ ] F-config-ui            Settings UI panel (main menu + pause menu)
+[ ] F-conjured-creatures   Temporary creature spawning with lifetime and auto-despawn
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
+[ ] F-creature-control     Temporary allegiance change and AI override
+[ ] F-creature-gravity     Creatures fall when on unsupported voxels
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
@@ -108,6 +113,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
+[ ] F-elf-mana-pool        Per-elf mana pool wired to WIL/INT stats
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-emotions             Multi-dimensional emotional state
@@ -181,7 +187,20 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
+[ ] F-spell-berserk        Berserk frenzy buff (damage up, uncontrollable)
+[ ] F-spell-blink          Short-range teleport spell
+[ ] F-spell-cloak          Invisibility spell on self or nearby allies
+[ ] F-spell-ench-arrow     Enchanted arrow shot with mana cost and hit effects
+[ ] F-spell-gust           Gust AoE knockback cone spell
+[ ] F-spell-ice-shard      Ice Shard ranged magic projectile with autocast
+[ ] F-spell-mend           Mend healing spell with autocast healer AI
+[ ] F-spell-mind-ctrl      Temporary mind control of enemy creature
+[ ] F-spell-rootbind       Rootbind immobilize spell (contested duration)
+[ ] F-spell-summon         Conjure temporary allied creature
+[ ] F-spell-system         Core spell casting infrastructure (SpellId, commands, mana costs)
+[ ] F-spell-thornbriar     Thornbriar zone spell (slow + damage area)
 [ ] F-stairs               Stairs and ramps for vertical movement
+[ ] F-status-effects       Generic creature status effect system
 [ ] F-stealth              Camouflage and stealth mechanics
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
@@ -193,6 +212,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-priority        Priority queue and auto-assignment
+[ ] F-terrain-manip        Temporary voxel/zone placement with expiry
 [ ] F-tiling-tex           Prime-period tiling textures for bark and ground
 [ ] F-traders              Visiting traders from other civs
 [ ] F-tree-capacity        Per-tree carrying capacity limits
@@ -569,7 +589,7 @@ Elves assemble into choirs to sing the tree into growing. Construction speed
 and quality depend on choir composition and harmony. Ties into the music
 system.
 
-**Related:** F-choir-harmony, F-mana-system, F-music-runtime, F-sung-furniture
+**Related:** F-choir-harmony, F-combat-singing, F-mana-system, F-music-runtime, F-sung-furniture
 
 #### F-construction — Platform construction (designate/build/cancel)
 **Status:** Done · **Phase:** 2 · **Refs:** §11, §12
@@ -1197,6 +1217,18 @@ combat death. F-creature-death covers the starvation trigger specifically.
 
 **Related:** F-elf-needs, F-food-gauge, F-hp-death, F-soul-mech
 
+#### F-creature-gravity — Creatures fall when on unsupported voxels
+**Status:** Todo
+
+Creatures standing on unsupported voxels (e.g., a deconstructed platform)
+fall until they reach a solid surface. Falling causes damage proportional
+to distance fallen. Extends F-pile-gravity (which handles items) to
+living creatures. Enables Gust spell knockback off platforms as a
+meaningful tactical tool. Also improves general simulation fidelity.
+
+**Blocks:** F-spell-gust
+**Related:** F-pile-gravity
+
 #### F-creature-stats — Creature stats (str/agi/dex/con/wil/int/per/cha)
 **Status:** Done
 
@@ -1219,7 +1251,7 @@ TraitValue::Int in the creature_traits table.
 
 **Draft:** docs/drafts/creature_stats.md
 
-**Related:** F-creature-biology, F-per-detection, F-phased-archery
+**Related:** F-creature-biology, F-elf-mana-pool, F-per-detection, F-phased-archery
 
 #### F-elf-assign — Elf-to-building assignment UI
 **Status:** Todo · **Phase:** 3
@@ -1358,7 +1390,7 @@ Ranged attack as a creature ACTION. Uses the standard ActionKind / next_availabl
 
 **Draft:** docs/drafts/combat_military.md (§5)
 
-**Related:** F-friendly-fire, F-phased-archery, F-skirmish
+**Related:** F-friendly-fire, F-phased-archery, F-skirmish, F-spell-ench-arrow
 
 #### F-task-interruption — Unified task interruption and cleanup
 **Status:** Done
@@ -1910,7 +1942,7 @@ a mana-requiring task. More sophisticated rate-based sustainability estimates
 are future work.
 
 **Unblocked:** F-mana-depleted-vfx, F-mana-grow-recipes, F-mana-mood, F-mana-transfer, F-root-network
-**Related:** F-branch-growth, F-choir-build, F-forest-radar, F-mass-conserve, F-population, F-sung-furniture, F-tree-info, F-war-magic
+**Related:** F-branch-growth, F-choir-build, F-elf-mana-pool, F-forest-radar, F-mass-conserve, F-population, F-sung-furniture, F-tree-info, F-war-magic
 
 #### F-mana-transfer — Tree-to-elf mana transfer
 **Status:** Todo · **Refs:** §11
@@ -1948,6 +1980,8 @@ Ground piles that are not physically on a solid surface (e.g., after the
 platform beneath them is deconstructed) should fall until they reach a
 surface. If a falling pile lands on a voxel that already has a ground pile,
 the two piles merge their inventories into one.
+
+**Related:** F-creature-gravity
 
 #### F-recipe-any-mat — Any-material recipe parameter support
 **Status:** Todo
@@ -2325,7 +2359,24 @@ Multiple elves singing in harmony during construction. Choir composition
 affects construction speed/quality. Ties music generation into the core
 gameplay loop.
 
-**Related:** F-choir-build, F-music-runtime
+**Related:** F-choir-build, F-combat-singing, F-music-runtime
+
+#### F-combat-singing — Combat singing buffs and musical instrument bands
+**Status:** Todo
+
+Far-future feature: elves singing in combat to buff allies (attack speed,
+damage, morale, mana regen). Could evolve into a musical instrument /
+band system where different instruments provide different buffs and a
+full ensemble produces harmony bonuses. Mechanically distinct from
+construction choir singing (F-choir-build / F-choir-harmony). The music
+crate and lang crate already generate Vaelith lyrics and polyphonic
+music — this could eventually tie in. CHA stat drives singing
+effectiveness.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-buff-system
+**Related:** F-buff-system, F-choir-build, F-choir-harmony
 
 #### F-elf-names — Elf name generation from conlang rules
 **Status:** Done · **Phase:** 6 · **Refs:** §20
@@ -2483,6 +2534,23 @@ TaskKindTag::AttackTarget — player right-clicks a hostile creature. Creates ta
 
 **Related:** F-attack-move
 
+#### F-buff-system — Generic timed stat modifier buffs on creatures
+**Status:** Todo
+
+Generic system for timed stat modifier buffs on creatures. Each buff has
+a source, duration, and one or more stat modifiers (e.g., +damage, +speed,
+-speed). Multiple buffs can stack. Buffs tick down each heartbeat and are
+removed on expiry. Distinct from status effects (F-status-effects): status
+effects are binary conditions (immobilized, cloaked), buffs are numeric
+modifiers. Shared infrastructure for enchanted arrows, combat singing,
+berserk, and future buff-granting spells.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-spell-system
+**Blocks:** F-combat-singing, F-spell-berserk, F-spell-ench-arrow
+**Related:** F-combat-singing, F-status-effects
+
 #### F-combat — Combat and invader threat system
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
 
@@ -2492,6 +2560,35 @@ fog of war for surprise attacks.
 **Blocked by:** F-enemy-ai
 **Blocks:** F-defense-struct, F-military-campaign, F-military-org
 **Related:** F-elf-weapons, F-engagement-style, F-fog-of-war
+
+#### F-conjured-creatures — Temporary creature spawning with lifetime and auto-despawn
+**Status:** Todo
+
+System for spells to spawn temporary allied creatures with a fixed
+lifetime. Conjured creatures have independent AI, fight for the caster's
+side, and auto-despawn when their duration expires or they are killed.
+Not "real" creatures — they don't eat, sleep, have mood, or leave
+corpses. Possible summon types: elephant (tanky/slow), giant hornet
+(fast melee), bee swarm (AoE damage-over-time cloud).
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-spell-system
+**Blocks:** F-spell-summon
+
+#### F-creature-control — Temporary allegiance change and AI override
+**Status:** Todo
+
+System for temporarily overriding a creature's allegiance or AI behavior.
+Supports mind control (creature fights for the caster's side) and berserk
+(creature attacks nearest target regardless of allegiance). When the
+effect expires, original allegiance and AI restore. Must handle edge
+cases: what happens if a mind-controlled creature's controller dies?
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-spell-system
+**Blocks:** F-spell-berserk, F-spell-mind-ctrl
 
 #### F-defense-struct — Defensive structures (ballista, wards)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
@@ -2781,7 +2878,7 @@ Perception stat applies an exponential multiplier to the species-level
 from further away. Uses the same 2^20 fixed-point stat multiplier table
 as other stats. Depends on F-creature-stats for the Perception trait.
 
-**Related:** F-creature-stats, F-hostile-detection, F-stealth
+**Related:** F-creature-stats, F-hostile-detection, F-spell-cloak, F-stealth
 
 #### F-phased-archery — Phased archery (nock/draw/loose) with skill-gated mobility
 **Status:** Todo
@@ -2818,7 +2915,7 @@ SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity t
 
 **Draft:** docs/drafts/combat_military.md (§4)
 
-**Related:** F-friendly-fire, F-spatial-index
+**Related:** F-friendly-fire, F-spatial-index, F-spell-ench-arrow, F-spell-ice-shard
 
 #### F-raid-detection — Raid detection gating and stealth spawning
 **Status:** Todo
@@ -2865,6 +2962,178 @@ BTreeMap<VoxelCoord, Vec<CreatureId>> on SimState, #[serde(skip)], rebuilt on lo
 
 **Related:** F-projectiles
 
+#### F-spell-berserk — Berserk frenzy buff (damage up, uncontrollable)
+**Status:** Todo
+
+Buff an allied (or enemy) creature: increased damage and attack speed,
+but the target attacks the nearest creature regardless of allegiance
+(friend or foe) for the duration. High risk/reward — best used on
+expendable conjured creatures or enemies near their own allies. Uses
+both the buff system (stat modifiers) and creature control (AI override).
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-buff-system, F-creature-control, F-spell-system
+**Related:** F-war-magic
+
+#### F-spell-blink — Short-range teleport spell
+**Status:** Todo
+
+Short-range teleport (5-10 voxels). Instant cast, high mana cost,
+moderate cooldown. Destination must be a walkable voxel (validated
+against nav graph). Line-of-sight not required. Useful for
+repositioning healers, escaping melee, or reaching elevated platforms.
+One of the lighter spells to implement — mostly nav validation.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-spell-system
+**Related:** F-war-magic
+
+#### F-spell-cloak — Invisibility spell on self or nearby allies
+**Status:** Todo
+
+Invisibility on self, or AoE cloak on nearby allies. Enemies cannot
+detect cloaked creatures unless they get very close (PER-based detection
+check). Cloak breaks on attack or spell cast. Duration-limited or
+mana-drain-over-time. Ties into the stealth system (F-stealth) and
+detection mechanics (F-per-detection).
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-spell-system, F-status-effects
+**Related:** F-per-detection, F-stealth, F-war-magic
+
+#### F-spell-ench-arrow — Enchanted arrow shot with mana cost and hit effects
+**Status:** Todo
+
+Special arrow shot that costs mana and applies an effect on hit (burn
+DOT, slow, pierce through multiple targets, etc.). Uses normal archery
+stats (STR/DEX) plus mana. Could be autocastable (every Nth arrow is
+enchanted, or always enchanted while autocast is on and mana permits).
+Bridges the archery and magic systems — an elf doesn't need to be a
+pure mage to use magic in combat.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-buff-system, F-spell-system
+**Related:** F-projectiles, F-shoot-action, F-war-magic
+
+#### F-spell-gust — Gust AoE knockback cone spell
+**Status:** Todo
+
+AoE knockback in a cone in front of the caster. Pushes creatures away.
+No damage on its own, but pushing enemies off platforms causes fall
+damage (requires F-creature-gravity). Cheap mana cost, moderate
+cooldown. Manual cast only — directional spells don't autocast well.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-creature-gravity, F-spell-system
+**Related:** F-war-magic
+
+#### F-spell-ice-shard — Ice Shard ranged magic projectile with autocast
+**Status:** Todo
+
+Mana-fueled ranged projectile. Creates a sim projectile like arrows but
+uses magic stats (INT) instead of physical stats (STR/DEX). Flat mana
+cost per shot, no ammo consumed. Autocastable: elf fires at enemies in
+range like an archer but mana-limited instead of ammo-limited. Key
+distinction from archery: no equipment dependency, different stat
+scaling, mana as the limiting resource.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-spell-system
+**Related:** F-projectiles, F-war-magic
+
+#### F-spell-mend — Mend healing spell with autocast healer AI
+**Status:** Todo
+
+Single-target channeled heal on a friendly creature. Mana cost per tick
+of healing (not upfront). Heal amount scales with caster's INT. When
+autocast is enabled, the elf behaves like a StarCraft Medic: follows
+nearby injured friendlies, prioritizes lowest HP%, heals automatically,
+does not initiate combat. Manual cast: click target ally, caster walks
+to them and channels. Self-heal TBD (leaning no).
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-spell-system
+**Related:** F-war-magic
+
+#### F-spell-mind-ctrl — Temporary mind control of enemy creature
+**Status:** Todo
+
+Temporarily take control of an enemy creature. High mana cost, duration
+contested (caster INT vs target WIL — strong-willed targets break free
+faster). Controlled creature fights for the caster's side with
+independent AI. When the effect ends, original allegiance restores.
+Manual cast only.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-creature-control, F-spell-system
+**Related:** F-war-magic
+
+#### F-spell-rootbind — Rootbind immobilize spell (contested duration)
+**Status:** Todo
+
+Single-target immobilize spell. Roots entangle the target, preventing
+movement. Duration is contested: scales with caster's INT and inversely
+with target's STR (stronger targets tear free faster). Flat upfront mana
+cost. Not autocastable — stuns are too tactically valuable to spend
+automatically. Target can still attack in melee range while rooted.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-spell-system
+**Related:** F-status-effects, F-war-magic
+
+#### F-spell-summon — Conjure temporary allied creature
+**Status:** Todo
+
+Conjure a temporary allied creature at a target location. High mana
+cost, long cooldown. The summoned creature has independent AI and fights
+for the caster's side. Disappears when duration expires or killed.
+Different summon types (elephant, giant hornet, bee swarm) could be
+separate spells or one spell with variants. Uses the conjured creatures
+infrastructure (F-conjured-creatures).
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-conjured-creatures, F-spell-system
+**Related:** F-war-magic
+
+#### F-spell-thornbriar — Thornbriar zone spell (slow + damage area)
+**Status:** Todo
+
+Area-of-effect terrain spell. Grows a patch of thorny bushes at a target
+location. Creatures moving through the area take damage per tick and move
+at reduced speed. Duration-limited (bushes wither). Useful for blocking
+chokepoints, slowing charges, or creating kill zones for archers.
+Area targeting: click a point, affects a radius.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-spell-system, F-terrain-manip
+**Related:** F-war-magic
+
+#### F-status-effects — Generic creature status effect system
+**Status:** Todo
+
+Generic system for temporary status effects on creatures. Each effect has
+an ID, source creature, remaining duration (ticks), and mechanical
+modifier. First effect: Immobilized (prevents movement, used by
+Rootbind). System is generic to support future effects (slowed, burning,
+poisoned, cloaked, berserk, etc.). Status effects stored in a sim table,
+ticked down each heartbeat, removed on expiry.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocks:** F-spell-cloak, F-spell-system
+**Related:** F-buff-system, F-spell-rootbind, F-war-magic
+
 #### F-stealth — Camouflage and stealth mechanics
 **Status:** Todo
 
@@ -2874,7 +3143,21 @@ observer perception (F-per-detection). Enables ambush tactics, hidden
 sentries, and scouting. Cloaks/capes (F-cloak-slot) improve concealment.
 Could interact with F-fog-of-war for asymmetric information.
 
-**Related:** F-cloak-slot, F-fog-of-war, F-per-detection
+**Related:** F-cloak-slot, F-fog-of-war, F-per-detection, F-spell-cloak
+
+#### F-terrain-manip — Temporary voxel/zone placement with expiry
+**Status:** Todo
+
+System for spells to place temporary voxels or effect zones in the world
+that expire after a duration. Zones have per-tick effects on creatures
+inside them (damage, slow, etc.). Temporary voxels may block or impede
+pathing. On expiry, voxels are removed and nav graph is restored. First
+user: Thornbriar spell. Future: ice walls, fire zones, magical barriers.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-spell-system
+**Blocks:** F-spell-thornbriar
 
 #### F-voxel-exclusion — Creatures cannot enter voxels occupied by hostile creatures
 **Status:** Done · **Phase:** 3
@@ -2884,13 +3167,18 @@ Creatures should not be able to enter a voxel already occupied by a hostile crea
 #### F-war-magic — War magic (combat spells)
 **Status:** Todo
 
-Offensive and defensive magic usable in combat — fireballs, shields, healing,
-etc. Creatures with sufficient mana and training can cast spells as active
-abilities (bound via F-ability-hotkeys). Requires mana (F-mana-system) and
-a place to learn magic (F-bldg-library). Design TBD for spell list, mana
-costs, casting times, and effects.
+Offensive and defensive magic usable in combat. First pass: three spells
+(Mend, Rootbind, Ice Shard) with per-elf mana pools and SC-style
+command card controls. Creatures with sufficient mana and training can
+cast spells as active abilities (bound via F-ability-hotkeys). Spells
+use mental stats (INT, WIL) for effectiveness. Spell learning via
+F-bldg-library; debug grant for initial development. Future spells
+include conjured creatures, mind control, cloaking, thornbriar,
+enchanted arrows, and blink teleport.
 
-**Related:** F-ability-hotkeys, F-bldg-library, F-mana-system
+**Draft:** docs/drafts/war_magic.md
+
+**Related:** F-ability-hotkeys, F-bldg-library, F-elf-mana-pool, F-mana-system, F-spell-berserk, F-spell-blink, F-spell-cloak, F-spell-ench-arrow, F-spell-gust, F-spell-ice-shard, F-spell-mend, F-spell-mind-ctrl, F-spell-rootbind, F-spell-summon, F-spell-system, F-spell-thornbriar, F-status-effects
 
 ### World Expansion & Ecology
 
@@ -3181,6 +3469,20 @@ is a simulation fidelity hint, not a separate world.
 
 ### Soul Mechanics & Magic
 
+#### F-elf-mana-pool — Per-elf mana pool wired to WIL/INT stats
+**Status:** Todo
+
+Wire WIL and INT stats to per-elf mana pool size and mana regeneration
+rate. WIL determines mp_max (exponential scaling: +10 WIL = 2x pool).
+INT determines mana regen rate. Both use the existing stat multiplier
+table. This activates the first mechanical hooks for the currently-inert
+mental stats. Prereqs: F-mana-system (done), F-creature-stats (done).
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocks:** F-spell-system
+**Related:** F-creature-stats, F-mana-system, F-war-magic
+
 #### F-forest-radar — Forest awareness radar (world map detection)
 **Status:** Todo
 
@@ -3210,6 +3512,23 @@ Elf death, soul passage into trees, possible resurrection, and
 soul-powered constructs (golems, animated defenses).
 
 **Related:** F-creature-death, F-funeral-rites, F-incapacitation, F-magic-items
+
+#### F-spell-system — Core spell casting infrastructure (SpellId, commands, mana costs)
+**Status:** Todo
+
+Core spell casting infrastructure. SpellId enum, SimCommand::CastSpell
+and SimCommand::SetAutocast commands, per-creature spell knowledge
+(which spells an elf has learned), autocast state (per-creature
+per-spell toggle), mana cost validation, cooldown tracking. This is the
+shared foundation — individual spells (Mend, Rootbind, Ice Shard) build
+on top. Spell learning deferred to F-bldg-library; for now spells can
+be granted via debug command.
+
+**Draft:** docs/drafts/war_magic.md
+
+**Blocked by:** F-elf-mana-pool, F-status-effects
+**Blocks:** F-buff-system, F-conjured-creatures, F-creature-control, F-spell-berserk, F-spell-blink, F-spell-cloak, F-spell-ench-arrow, F-spell-gust, F-spell-ice-shard, F-spell-mend, F-spell-mind-ctrl, F-spell-rootbind, F-spell-summon, F-spell-thornbriar, F-terrain-manip
+**Related:** F-ability-hotkeys, F-war-magic
 
 #### F-uplift-tree — Uplift lesser tree into bonded great tree
 **Status:** Todo
@@ -3253,7 +3572,7 @@ in the UI (like StarCraft's command card). Abilities include combat magic
 (F-war-magic), special species abilities, and potentially other active skills.
 Hotkeys are displayed on the buttons and can be rebound.
 
-**Related:** F-war-magic
+**Related:** F-spell-system, F-war-magic
 
 #### F-ai-sprites — AI-generated sprite art pipeline
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24

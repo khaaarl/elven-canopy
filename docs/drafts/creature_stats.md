@@ -21,7 +21,10 @@ Builds on the `creature_traits` table from F-creature-biology.
 
 Mental stats (WIL, INT, CHA) are rolled and stored at spawn but have no
 mechanical effect until their systems are implemented. PER has an immediate
-hook via F-per-detection (hostile detection range multiplier).
+hook via F-per-detection (hostile detection range multiplier). WIL and INT's
+first mechanical hooks (mana pool size and regen rate) are designed in
+F-elf-mana-pool; spell effectiveness scaling via INT is designed in
+F-war-magic (see `docs/drafts/war_magic.md`).
 
 ## Scale
 
