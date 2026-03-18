@@ -156,7 +156,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-narrative-log        Events and narrative log
-[ ] F-nav-gen-opt          RLE-aware nav graph generation
 [ ] F-night-predators      Nocturnal predators
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-patrol               Patrol command for military groups
@@ -318,6 +317,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-music-gen            Palestrina-style music generator (standalone)
 [x] F-music-runtime        Integrate music generator into game
 [x] F-music-use-lang       Migrate music crate to shared lang crate
+[x] F-nav-gen-opt          RLE-aware nav graph generation
 [x] F-nav-graph            Navigation graph construction
 [x] F-nav-incremental      Incremental nav graph updates
 [x] F-new-game-ui          New game screen with tree presets
@@ -1073,7 +1073,7 @@ Includes `Species::Elephant`, `graph_for_species()` dispatch, incremental
 updates, SimBridge queries, GDScript spawn/render/placement, and sprite.
 
 #### F-nav-gen-opt — RLE-aware nav graph generation
-**Status:** Todo
+**Status:** Done
 
 Optimize initial nav graph generation to exploit RLE column storage.
 Instead of scanning every voxel O(world_volume), iterate column spans to
@@ -1087,10 +1087,10 @@ walkable surfaces at compatible heights.
 For a 1024×128×1024 world with ~3 spans per column, this is ~3M operations
 instead of ~134M.
 
-Also replace the flat `Vec<u32>` nav spatial index with a `HashMap<VoxelCoord, NavNodeId>` — point queries only, never iterated in order, so no determinism concern. Eliminates the 4-bytes-per-voxel overhead that would otherwise scale with world volume.
+Also replace the flat `Vec<u32>` nav spatial index with a `LookupMap<VoxelCoord, u32>` — point queries only, never iterated in order, so no determinism concern. Eliminates the 4-bytes-per-voxel overhead that would otherwise scale with world volume.
 
-**Blocks:** F-bigger-world
 **Unblocked by:** F-rle-voxels
+**Unblocked:** F-bigger-world
 
 #### F-nav-graph — Navigation graph construction
 **Status:** Done · **Phase:** 1 · **Refs:** §10
@@ -2885,8 +2885,7 @@ Increase the playable area beyond the current single-tree-centered map.
 Likely involves chunk streaming, camera bounds expansion, and world gen
 changes. Prerequisite or co-requisite for lesser trees and multi-tree play.
 
-**Blocked by:** F-nav-gen-opt
-**Unblocked by:** F-rle-voxels
+**Unblocked by:** F-nav-gen-opt, F-rle-voxels
 **Related:** F-lesser-trees, F-multi-tree, F-world-map, F-zone-world
 
 #### F-civ-knowledge — Civilization knowledge system (fruit tiers, discovery)

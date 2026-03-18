@@ -11,11 +11,14 @@
 // from `species.rs`). This means graph construction needs only the voxel
 // world — no speed config required.
 //
-// **Voxel-derived construction:** Every air voxel that is face-adjacent to at
-// least one solid voxel becomes a nav node. `BuildingInterior` voxels are
-// always nav nodes (face data provides surfaces). Air voxels adjacent to a
-// `BuildingInterior` face that blocks movement also become nav nodes. Edges
-// connect 26-neighbors among nav nodes, subject to face-blocking checks
+// **RLE-aware construction:** Instead of scanning every voxel in the world,
+// `build_nav_graph()` precomputes per-column material Y ranges from RLE column
+// spans (`VoxelWorld::column_spans()`), then only checks Y values near solid
+// material. Columns far from any material are skipped entirely, reducing node
+// discovery from O(world_volume) to O(surface_area). Every air voxel that is
+// face-adjacent to at least one solid voxel becomes a nav node.
+// `BuildingInterior` voxels are always nav nodes (face data provides surfaces).
+// Edges connect 26-neighbors among nav nodes, subject to face-blocking checks
 // (`is_edge_blocked_by_faces()`). This means the nav graph reflects actual
 // world geometry — construction changes the navigable topology via
 // incremental updates.
@@ -31,7 +34,7 @@
 // slots. This allows `update_after_voxel_solidified()` to add/remove nodes
 // without shifting IDs, so creatures' `current_node` references remain valid
 // unless their specific node was removed. Dead slots are recycled via
-// `free_slots`. A persistent `spatial_index` (flat voxel index → node slot)
+// `free_slots`. A persistent `spatial_index` (`LookupMap<VoxelCoord, u32>`)
 // enables O(1) coord→node lookup for both incremental updates and
 // `has_node_at()` queries.
 //
@@ -50,18 +53,22 @@
 // pathfinding code works unchanged. `sim/mod.rs` stores both graphs and dispatches
 // via `graph_for_species()` based on the species' footprint.
 //
-// All storage uses `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
-// and deterministic iteration order. Point-query-only maps may use `LookupMap`.
+// Nodes and edges use `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
+// and deterministic iteration order. The spatial index uses `LookupMap` (a
+// non-iterable `HashMap` wrapper) for O(1) coord→node lookup without
+// allocating 4 bytes per voxel in the entire world volume.
 //
 // See also: `world.rs` for the voxel grid, `tree_gen.rs` for tree geometry,
 // `pathfinding.rs` for A* search over this graph, `sim/mod.rs` which owns the
 // `NavGraph` as part of `SimState`, `species.rs` for the `footprint` field.
 //
 // **Critical constraint: determinism.** The graph is built by iterating voxels
-// in fixed order (Y-then-Z-then-X iteration over world bounds). Node/edge IDs are
-// sequential integers assigned in that order. Incremental updates are also
-// deterministic — they process affected positions in a fixed order.
+// in fixed order (Y-outer, Z-middle, X-inner over per-column scan ranges).
+// Node/edge IDs are sequential integers assigned in that order. Incremental
+// updates are also deterministic — they process affected positions in a fixed
+// order.
 
+use crate::lookup_map::LookupMap;
 use crate::types::{
     FaceData, FaceDirection, FaceType, NavEdgeId, NavNodeId, VoxelCoord, VoxelType,
 };
@@ -116,13 +123,16 @@ pub struct NavEdge {
 ///
 /// Nodes are stored as `Option<NavNode>` slots — `Some` for live nodes, `None`
 /// for removed nodes. This allows incremental updates (removing/adding nodes)
-/// without shifting IDs. The `spatial_index` maps flat voxel indices to node
-/// slots for O(1) coord→node lookup; `free_slots` tracks recyclable slots.
+/// without shifting IDs. The `spatial_index` maps `VoxelCoord → node slot`
+/// via `LookupMap` for O(1) coord→node lookup; `free_slots` tracks
+/// recyclable slots. Using `LookupMap` (non-iterable `HashMap` wrapper)
+/// instead of a flat `Vec<u32>` avoids allocating 4 bytes per voxel in the
+/// entire world volume — only actual nav nodes consume space.
 #[derive(Clone, Debug, Default)]
 pub struct NavGraph {
     nodes: Vec<Option<NavNode>>,
     pub edges: Vec<NavEdge>,
-    spatial_index: Vec<u32>,
+    spatial_index: LookupMap<VoxelCoord, u32>,
     free_slots: Vec<usize>,
     world_size: (usize, usize, usize),
 }
@@ -308,31 +318,18 @@ impl NavGraph {
 
     /// O(1) check whether a coordinate has a live nav node.
     pub fn has_node_at(&self, coord: VoxelCoord) -> bool {
-        let (sx, sy, sz) = self.world_size;
-        if sx == 0 {
-            return false;
-        }
-        let x = coord.x as usize;
-        let y = coord.y as usize;
-        let z = coord.z as usize;
-        if x >= sx || y >= sy || z >= sz {
-            return false;
-        }
-        let flat = x + z * sx + y * sx * sz;
-        flat < self.spatial_index.len() && self.spatial_index[flat] != u32::MAX
+        self.spatial_index.contains_key(&coord)
     }
 
-    /// Compute the flat voxel index for a coordinate within this graph's
-    /// world. Returns `None` if out of bounds.
-    fn flat_index(&self, coord: VoxelCoord) -> Option<usize> {
+    /// Check whether a coordinate is within this graph's world bounds.
+    fn in_bounds(&self, coord: VoxelCoord) -> bool {
         let (sx, sy, sz) = self.world_size;
-        let x = coord.x as usize;
-        let y = coord.y as usize;
-        let z = coord.z as usize;
-        if coord.x < 0 || coord.y < 0 || coord.z < 0 || x >= sx || y >= sy || z >= sz {
-            return None;
-        }
-        Some(x + z * sx + y * sx * sz)
+        coord.x >= 0
+            && coord.y >= 0
+            && coord.z >= 0
+            && (coord.x as usize) < sx
+            && (coord.y as usize) < sy
+            && (coord.z as usize) < sz
     }
 
     /// Incrementally update the nav graph after a single voxel changed from
@@ -363,7 +360,7 @@ impl NavGraph {
         affected.push(coord);
         for &(dx, dy, dz) in &FACE_OFFSETS {
             let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
-            if self.flat_index(neighbor).is_some() {
+            if self.in_bounds(neighbor) {
                 affected.push(neighbor);
             }
         }
@@ -371,12 +368,11 @@ impl NavGraph {
         // Step 2: For each affected position, add/remove/update nav node.
         for &pos in &affected {
             let should_be_node = should_be_nav_node(world, face_data, pos);
-            let flat = match self.flat_index(pos) {
-                Some(f) => f,
-                None => continue,
-            };
-            let current_slot = self.spatial_index[flat];
-            let is_node = current_slot != u32::MAX;
+            if !self.in_bounds(pos) {
+                continue;
+            }
+            let current_slot = self.spatial_index.get(&pos).copied();
+            let is_node = current_slot.is_some();
 
             if should_be_node && !is_node {
                 // Add new node.
@@ -401,19 +397,20 @@ impl NavGraph {
                     }));
                     slot
                 };
-                self.spatial_index[flat] = slot as u32;
+                self.spatial_index.insert(pos, slot as u32);
             } else if !should_be_node && is_node {
                 // Remove node.
-                let slot = current_slot as usize;
-                let id = NavNodeId(current_slot);
-                removed_ids.push(id);
+                let slot_val = current_slot.unwrap();
+                let slot = slot_val as usize;
+                removed_ids.push(NavNodeId(slot_val));
                 self.nodes[slot] = None;
-                self.spatial_index[flat] = u32::MAX;
+                self.spatial_index.remove(&pos);
                 self.free_slots.push(slot);
             } else if should_be_node && is_node {
                 // Update surface type (solid below may have changed).
                 let surface = derive_surface_type(world, face_data, pos);
-                if let Some(node) = self.nodes[current_slot as usize].as_mut() {
+                let slot_val = current_slot.unwrap();
+                if let Some(node) = self.nodes[slot_val as usize].as_mut() {
                     node.surface_type = surface;
                 }
             }
@@ -425,14 +422,11 @@ impl NavGraph {
         let mut is_dirty = vec![false; self.nodes.len()];
         for &pos in &affected {
             // Add the node at this position (if live).
-            if let Some(flat) = self.flat_index(pos) {
-                let slot = self.spatial_index[flat];
-                if slot != u32::MAX {
-                    let s = slot as usize;
-                    if !is_dirty[s] {
-                        is_dirty[s] = true;
-                        dirty_set.push(s);
-                    }
+            if let Some(&slot) = self.spatial_index.get(&pos) {
+                let s = slot as usize;
+                if !is_dirty[s] {
+                    is_dirty[s] = true;
+                    dirty_set.push(s);
                 }
             }
             // Add live 26-neighbors of this position.
@@ -443,14 +437,11 @@ impl NavGraph {
                             continue;
                         }
                         let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-                        if let Some(nflat) = self.flat_index(np) {
-                            let nslot = self.spatial_index[nflat];
-                            if nslot != u32::MAX {
-                                let ns = nslot as usize;
-                                if ns < is_dirty.len() && !is_dirty[ns] {
-                                    is_dirty[ns] = true;
-                                    dirty_set.push(ns);
-                                }
+                        if let Some(&nslot) = self.spatial_index.get(&np) {
+                            let ns = nslot as usize;
+                            if ns < is_dirty.len() && !is_dirty[ns] {
+                                is_dirty[ns] = true;
+                                dirty_set.push(ns);
                             }
                         }
                     }
@@ -484,11 +475,10 @@ impl NavGraph {
         // add a bidirectional edge. To avoid duplicate edges between two dirty
         // nodes, only create the pair when processing the smaller slot index.
         for &slot in &dirty_set {
-            let node = match &self.nodes[slot] {
-                Some(n) => n,
+            let (pos, from_surface) = match &self.nodes[slot] {
+                Some(n) => (n.position, n.surface_type),
                 None => continue,
             };
-            let pos = node.position;
 
             for dy in -1i32..=1 {
                 for dz in -1i32..=1 {
@@ -497,14 +487,10 @@ impl NavGraph {
                             continue;
                         }
                         let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-                        let nflat = match self.flat_index(np) {
-                            Some(f) => f,
+                        let nslot = match self.spatial_index.get(&np).copied() {
+                            Some(s) => s,
                             None => continue,
                         };
-                        let nslot = self.spatial_index[nflat];
-                        if nslot == u32::MAX {
-                            continue;
-                        }
                         let ns = nslot as usize;
 
                         // If both are dirty, only create edge from smaller slot.
@@ -517,19 +503,15 @@ impl NavGraph {
                             continue;
                         }
 
-                        let from_id = NavNodeId(slot as u32);
-                        let to_id = NavNodeId(ns as u32);
-                        let from_node = self.nodes[slot].as_ref().unwrap();
                         let to_node = self.nodes[ns].as_ref().unwrap();
-
                         let edge_type = derive_edge_type(
-                            from_node.surface_type,
+                            from_surface,
                             to_node.surface_type,
-                            from_node.position,
+                            pos,
                             to_node.position,
                         );
                         let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
-                        self.add_edge(from_id, to_id, edge_type, dist);
+                        self.add_edge(NavNodeId(slot as u32), NavNodeId(nslot), edge_type, dist);
                     }
                 }
             }
@@ -562,7 +544,7 @@ impl NavGraph {
         affected.push(coord);
         for &(dx, dy, dz) in &FACE_OFFSETS {
             let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
-            if self.flat_index(neighbor).is_some() {
+            if self.in_bounds(neighbor) {
                 affected.push(neighbor);
             }
         }
@@ -570,12 +552,11 @@ impl NavGraph {
         // Step 2: For each affected position, add/remove/update nav node.
         for &pos in &affected {
             let should_exist = should_be_nav_node(world, face_data, pos);
-            let flat = match self.flat_index(pos) {
-                Some(f) => f,
-                None => continue,
-            };
-            let current_slot = self.spatial_index[flat];
-            let is_node = current_slot != u32::MAX;
+            if !self.in_bounds(pos) {
+                continue;
+            }
+            let current_slot = self.spatial_index.get(&pos).copied();
+            let is_node = current_slot.is_some();
 
             if should_exist && !is_node {
                 let surface = derive_surface_type(world, face_data, pos);
@@ -599,17 +580,18 @@ impl NavGraph {
                     }));
                     slot
                 };
-                self.spatial_index[flat] = slot as u32;
+                self.spatial_index.insert(pos, slot as u32);
             } else if !should_exist && is_node {
-                let slot = current_slot as usize;
-                let id = NavNodeId(current_slot);
-                removed_ids.push(id);
+                let slot_val = current_slot.unwrap();
+                let slot = slot_val as usize;
+                removed_ids.push(NavNodeId(slot_val));
                 self.nodes[slot] = None;
-                self.spatial_index[flat] = u32::MAX;
+                self.spatial_index.remove(&pos);
                 self.free_slots.push(slot);
             } else if should_exist && is_node {
                 let surface = derive_surface_type(world, face_data, pos);
-                if let Some(node) = self.nodes[current_slot as usize].as_mut() {
+                let slot_val = current_slot.unwrap();
+                if let Some(node) = self.nodes[slot_val as usize].as_mut() {
                     node.surface_type = surface;
                 }
             }
@@ -620,14 +602,11 @@ impl NavGraph {
         let mut dirty_set: Vec<usize> = Vec::new();
         let mut is_dirty = vec![false; self.nodes.len()];
         for &pos in &affected {
-            if let Some(flat) = self.flat_index(pos) {
-                let slot = self.spatial_index[flat];
-                if slot != u32::MAX {
-                    let s = slot as usize;
-                    if !is_dirty[s] {
-                        is_dirty[s] = true;
-                        dirty_set.push(s);
-                    }
+            if let Some(&slot) = self.spatial_index.get(&pos) {
+                let s = slot as usize;
+                if !is_dirty[s] {
+                    is_dirty[s] = true;
+                    dirty_set.push(s);
                 }
             }
             for dy in -1i32..=1 {
@@ -637,14 +616,11 @@ impl NavGraph {
                             continue;
                         }
                         let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-                        if let Some(nflat) = self.flat_index(np) {
-                            let nslot = self.spatial_index[nflat];
-                            if nslot != u32::MAX {
-                                let ns = nslot as usize;
-                                if ns < is_dirty.len() && !is_dirty[ns] {
-                                    is_dirty[ns] = true;
-                                    dirty_set.push(ns);
-                                }
+                        if let Some(&nslot) = self.spatial_index.get(&np) {
+                            let ns = nslot as usize;
+                            if ns < is_dirty.len() && !is_dirty[ns] {
+                                is_dirty[ns] = true;
+                                dirty_set.push(ns);
                             }
                         }
                     }
@@ -671,11 +647,10 @@ impl NavGraph {
         }
 
         for &slot in &dirty_set {
-            let node = match &self.nodes[slot] {
-                Some(n) => n,
+            let (pos, from_surface) = match &self.nodes[slot] {
+                Some(n) => (n.position, n.surface_type),
                 None => continue,
             };
-            let pos = node.position;
 
             for dy in -1i32..=1 {
                 for dz in -1i32..=1 {
@@ -684,14 +659,10 @@ impl NavGraph {
                             continue;
                         }
                         let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-                        let nflat = match self.flat_index(np) {
-                            Some(f) => f,
+                        let nslot = match self.spatial_index.get(&np).copied() {
+                            Some(s) => s,
                             None => continue,
                         };
-                        let nslot = self.spatial_index[nflat];
-                        if nslot == u32::MAX {
-                            continue;
-                        }
                         let ns = nslot as usize;
 
                         if is_dirty[ns] && ns < slot {
@@ -702,19 +673,15 @@ impl NavGraph {
                             continue;
                         }
 
-                        let from_id = NavNodeId(slot as u32);
-                        let to_id = NavNodeId(ns as u32);
-                        let from_node = self.nodes[slot].as_ref().unwrap();
                         let to_node = self.nodes[ns].as_ref().unwrap();
-
                         let edge_type = derive_edge_type(
-                            from_node.surface_type,
+                            from_surface,
                             to_node.surface_type,
-                            from_node.position,
+                            pos,
                             to_node.position,
                         );
                         let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
-                        self.add_edge(from_id, to_id, edge_type, dist);
+                        self.add_edge(NavNodeId(slot as u32), NavNodeId(nslot), edge_type, dist);
                     }
                 }
             }
@@ -1001,54 +968,155 @@ fn derive_edge_type(
 /// Build a navigation graph by scanning the voxel world.
 ///
 /// **Algorithm:**
-/// 1. Allocate a spatial index (`Vec<u32>`, same size as the voxel grid,
-///    filled with `u32::MAX` as sentinel). This is freed after construction.
-/// 2. **Pass 1 — nodes:** Iterate all voxels in flat-index order (y outer,
-///    z middle, x inner). Each Air voxel with at least one solid face
-///    neighbor becomes a nav node. Its surface type is derived from the
-///    adjacent solid voxels.
-/// 3. **Pass 2 — edges:** Iterate again. For each nav node, check the 13
-///    positive-half neighbors (26-connectivity) to avoid duplicate
-///    bidirectional edges. If the neighbor is also a nav node, derive the
-///    edge type, compute euclidean distance, and add a bidirectional edge.
-///    26-connectivity (vs face-only) is needed because the air shell around
-///    thin geometry (radius-1 branches) would be disconnected with
-///    face-only edges.
+/// 1. **Precompute per-column material Y ranges** from RLE column spans.
+///    For each (x, z) column, record the min and max Y of any non-Air voxel
+///    (solid, `BuildingInterior`, ladder). Columns that are entirely Air
+///    produce no range.
+/// 2. **Pass 1 — nodes:** For each column, compute a scan range from its
+///    own material Y range (expanded ±1 for vertical adjacency) merged
+///    with the 4 horizontal neighbors' material Y ranges (at the same Y,
+///    a solid neighbor creates a nav node in this column). Only Y values
+///    in the scan range are checked via `should_be_nav_node()`. Columns
+///    with no nearby material are skipped entirely.
+/// 3. **Pass 2 — edges:** Iterate all node slots in order. For each live
+///    node, check the 13 positive-half neighbors (26-connectivity) via
+///    the `LookupMap` spatial index to avoid duplicate bidirectional edges.
 ///
-/// With the default 256×128×256 world, expect ~3000–5000 nav nodes (air
-/// voxels touching the tree surface and forest floor). The spatial index
-/// is ~32 MB and freed after construction.
+/// This is O(total_surface_area) instead of O(world_volume). For a
+/// 256×128×256 world with a tree, most of the ~65K columns are all-Air
+/// and skipped entirely.
 pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, FaceData>) -> NavGraph {
     let mut graph = NavGraph::new();
 
     let sx = world.size_x as usize;
     let sy = world.size_y as usize;
     let sz = world.size_z as usize;
-    let total = sx * sy * sz;
 
-    if total == 0 {
+    if sx == 0 || sy == 0 || sz == 0 {
         return graph;
     }
 
     graph.world_size = (sx, sy, sz);
-    graph.spatial_index = vec![u32::MAX; total];
+
+    // --- Precompute per-column material Y ranges from RLE spans ---
+    // For each column, store (min_y, max_y) of any non-Air material.
+    // This lets us skip columns (and Y ranges) that have no nearby material.
+    let mut col_ranges: Vec<Option<(u8, u8)>> = vec![None; sx * sz];
+    for z in 0..sz {
+        for x in 0..sx {
+            for (vt, y_start, y_end) in world.column_spans(x as u32, z as u32) {
+                if vt != VoxelType::Air {
+                    let entry = &mut col_ranges[x + z * sx];
+                    match entry {
+                        Some((min_y, max_y)) => {
+                            *min_y = (*min_y).min(y_start);
+                            *max_y = (*max_y).max(y_end);
+                        }
+                        None => *entry = Some((y_start, y_end)),
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Precompute per-column scan Y ranges ---
+    // For each column, the scan range covers its own material (expanded ±1
+    // for vertical adjacency) merged with the 4 horizontal neighbors'
+    // material ranges (at the same Y, a solid neighbor creates nav nodes).
+    let mut scan_ranges: Vec<Option<(usize, usize)>> = vec![None; sx * sz];
+    let mut global_y_lo = sy;
+    let mut global_y_hi: usize = 0;
+
+    for z in 0..sz {
+        for x in 0..sx {
+            let mut scan_min: Option<i32> = None;
+            let mut scan_max: Option<i32> = None;
+
+            let merge = |range: Option<(u8, u8)>,
+                         expand: i32,
+                         lo: &mut Option<i32>,
+                         hi: &mut Option<i32>| {
+                if let Some((rlo, rhi)) = range {
+                    let new_lo = rlo as i32 - expand;
+                    let new_hi = rhi as i32 + expand;
+                    *lo = Some(lo.map_or(new_lo, |v: i32| v.min(new_lo)));
+                    *hi = Some(hi.map_or(new_hi, |v: i32| v.max(new_hi)));
+                }
+            };
+
+            // Own column: expand by 1 (vertical adjacency).
+            merge(col_ranges[x + z * sx], 1, &mut scan_min, &mut scan_max);
+            // Horizontal neighbors: no expansion.
+            if x > 0 {
+                merge(
+                    col_ranges[(x - 1) + z * sx],
+                    0,
+                    &mut scan_min,
+                    &mut scan_max,
+                );
+            }
+            if x + 1 < sx {
+                merge(
+                    col_ranges[(x + 1) + z * sx],
+                    0,
+                    &mut scan_min,
+                    &mut scan_max,
+                );
+            }
+            if z > 0 {
+                merge(
+                    col_ranges[x + (z - 1) * sx],
+                    0,
+                    &mut scan_min,
+                    &mut scan_max,
+                );
+            }
+            if z + 1 < sz {
+                merge(
+                    col_ranges[x + (z + 1) * sx],
+                    0,
+                    &mut scan_min,
+                    &mut scan_max,
+                );
+            }
+
+            if let (Some(lo), Some(hi)) = (scan_min, scan_max) {
+                let y_lo = lo.max(1) as usize;
+                let y_hi = hi.min(sy as i32 - 1) as usize;
+                if y_lo <= y_hi {
+                    scan_ranges[x + z * sx] = Some((y_lo, y_hi));
+                    global_y_lo = global_y_lo.min(y_lo);
+                    global_y_hi = global_y_hi.max(y_hi);
+                }
+            }
+        }
+    }
 
     // --- Pass 1: create nav nodes ---
-    // Start at y=1: y=0 is the floor layer (ForestFloor), so air at y=0
-    // only exists at the floor boundary and creates disconnected artifacts.
-    // Creatures walk ON the floor (y=1), not beside it.
-    for y in 1..sy {
-        for z in 0..sz {
-            for x in 0..sx {
-                let coord = VoxelCoord::new(x as i32, y as i32, z as i32);
-                if !should_be_nav_node(world, face_data, coord) {
-                    continue;
-                }
+    // Iterate Y-outer, Z-middle, X-inner to preserve the same deterministic
+    // node-ID ordering as the original triple-nested loop. Per-column scan
+    // ranges skip voxels far from any material.
+    if global_y_lo <= global_y_hi {
+        for y in global_y_lo..=global_y_hi {
+            for z in 0..sz {
+                for x in 0..sx {
+                    if let Some((y_lo, y_hi)) = scan_ranges[x + z * sx] {
+                        if y < y_lo || y > y_hi {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
 
-                let surface = derive_surface_type(world, face_data, coord);
-                let node_id = graph.add_node(coord, surface);
-                let flat_idx = x + z * sx + y * sx * sz;
-                graph.spatial_index[flat_idx] = node_id.0;
+                    let coord = VoxelCoord::new(x as i32, y as i32, z as i32);
+                    if !should_be_nav_node(world, face_data, coord) {
+                        continue;
+                    }
+
+                    let surface = derive_surface_type(world, face_data, coord);
+                    let node_id = graph.add_node(coord, surface);
+                    graph.spatial_index.insert(coord, node_id.0);
+                }
             }
         }
     }
@@ -1070,55 +1138,33 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
         // dx == 0, dy == 0, dz > 0 (1 offset)
         ( 0,  0,  1),
     ];
-    for y in 1..sy {
-        for z in 0..sz {
-            for x in 0..sx {
-                let flat_idx = x + z * sx + y * sx * sz;
-                let from_id = graph.spatial_index[flat_idx];
-                if from_id == u32::MAX {
-                    continue;
-                }
 
-                for &(dx, dy, dz) in &positive_half {
-                    let nx = x as i32 + dx;
-                    let ny = y as i32 + dy;
-                    let nz = z as i32 + dz;
+    // Iterate node slots in order (same deterministic order as Pass 1).
+    for slot in 0..graph.nodes.len() {
+        let (pos, from_surface) = match &graph.nodes[slot] {
+            Some(n) => (n.position, n.surface_type),
+            None => continue,
+        };
 
-                    if nx < 0 || ny < 0 || nz < 0 {
-                        continue;
-                    }
-                    let (nxu, nyu, nzu) = (nx as usize, ny as usize, nz as usize);
-                    if nxu >= sx || nyu >= sy || nzu >= sz {
-                        continue;
-                    }
+        for &(dx, dy, dz) in &positive_half {
+            let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+            let to_slot = match graph.spatial_index.get(&np).copied() {
+                Some(s) => s,
+                None => continue,
+            };
 
-                    let n_flat = nxu + nzu * sx + nyu * sx * sz;
-                    let to_id = graph.spatial_index[n_flat];
-                    if to_id == u32::MAX {
-                        continue;
-                    }
+            let to_node = graph.nodes[to_slot as usize].as_ref().unwrap();
 
-                    let from = NavNodeId(from_id);
-                    let to = NavNodeId(to_id);
-                    let from_node = graph.node(from);
-                    let to_node = graph.node(to);
-
-                    // Check if face data blocks this edge.
-                    if is_edge_blocked_by_faces(face_data, from_node.position, to_node.position) {
-                        continue;
-                    }
-
-                    let edge_type = derive_edge_type(
-                        from_node.surface_type,
-                        to_node.surface_type,
-                        from_node.position,
-                        to_node.position,
-                    );
-
-                    let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
-                    graph.add_edge(from, to, edge_type, dist);
-                }
+            // Check if face data blocks this edge.
+            if is_edge_blocked_by_faces(face_data, pos, to_node.position) {
+                continue;
             }
+
+            let edge_type =
+                derive_edge_type(from_surface, to_node.surface_type, pos, to_node.position);
+
+            let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+            graph.add_edge(NavNodeId(slot as u32), NavNodeId(to_slot), edge_type, dist);
         }
     }
 
@@ -1288,17 +1334,15 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
     let sx = world.size_x as usize;
     let sy = world.size_y as usize;
     let sz = world.size_z as usize;
-    let total = sx * sy * sz;
 
-    if total == 0 || sx < 2 || sz < 2 || sy < 3 {
+    if sx < 2 || sz < 2 || sy < 3 {
         return graph;
     }
 
     graph.world_size = (sx, sy, sz);
-    graph.spatial_index = vec![u32::MAX; total];
 
     // Pass 1: create nodes.
-    // Large nodes live at the air layer above ground. Iterate in flat-index order.
+    // Large nodes live at the air layer above ground.
     for z in 0..sz.saturating_sub(1) {
         for x in 0..sx.saturating_sub(1) {
             if !is_large_node_valid(world, x as i32, z as i32) {
@@ -1307,69 +1351,57 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
             let air_y = large_node_surface_y(world, x as i32, z as i32).unwrap();
             let coord = VoxelCoord::new(x as i32, air_y, z as i32);
             let node_id = graph.add_node(coord, VoxelType::ForestFloor);
-            let flat_idx = x + z * sx + air_y as usize * sx * sz;
-            graph.spatial_index[flat_idx] = node_id.0;
+            graph.spatial_index.insert(coord, node_id.0);
         }
     }
 
     // Pass 2: create edges.
-    // Use 4 positive-half horizontal offsets to avoid duplicate edges.
+    // Iterate node slots in order and check 4 positive-half horizontal neighbors.
     #[rustfmt::skip]
     let positive_half: [(i32, i32); 4] = [
         ( 1, -1), ( 1, 0), ( 1, 1),
         ( 0,  1),
     ];
 
-    for z in 0..sz.saturating_sub(1) {
-        for x in 0..sx.saturating_sub(1) {
-            // Look up surface y for this anchor.
-            let air_y = match large_node_surface_y(world, x as i32, z as i32) {
-                Some(y) => y as usize,
+    for slot in 0..graph.nodes.len() {
+        let (ax, air_y, az) = match &graph.nodes[slot] {
+            Some(n) => (n.position.x, n.position.y, n.position.z),
+            None => continue,
+        };
+
+        for &(dx, dz) in &positive_half {
+            let nx = ax + dx;
+            let nz = az + dz;
+            if nx < 0 || nz < 0 {
+                continue;
+            }
+            let (nxu, nzu) = (nx as usize, nz as usize);
+            if nxu + 1 >= sx || nzu + 1 >= sz {
+                continue;
+            }
+
+            let n_air_y = match large_node_surface_y(world, nx, nz) {
+                Some(y) => y,
                 None => continue,
             };
-            let flat_idx = x + z * sx + air_y * sx * sz;
-            if flat_idx >= graph.spatial_index.len() {
+            let n_coord = VoxelCoord::new(nx, n_air_y, nz);
+            let to_slot = match graph.spatial_index.get(&n_coord).copied() {
+                Some(s) => s,
+                None => continue,
+            };
+
+            if !is_large_edge_valid(world, (ax, az), (nx, nz)) {
                 continue;
             }
-            let from_slot = graph.spatial_index[flat_idx];
-            if from_slot == u32::MAX {
-                continue;
-            }
 
-            for &(dx, dz) in &positive_half {
-                let nx = x as i32 + dx;
-                let nz = z as i32 + dz;
-                if nx < 0 || nz < 0 {
-                    continue;
-                }
-                let (nxu, nzu) = (nx as usize, nz as usize);
-                if nxu + 1 >= sx || nzu + 1 >= sz {
-                    continue;
-                }
-
-                let n_air_y = match large_node_surface_y(world, nx, nz) {
-                    Some(y) => y as usize,
-                    None => continue,
-                };
-                let n_flat = nxu + nzu * sx + n_air_y * sx * sz;
-                if n_flat >= graph.spatial_index.len() {
-                    continue;
-                }
-                let to_slot = graph.spatial_index[n_flat];
-                if to_slot == u32::MAX {
-                    continue;
-                }
-
-                if !is_large_edge_valid(world, (x as i32, z as i32), (nx, nz)) {
-                    continue;
-                }
-
-                let from = NavNodeId(from_slot);
-                let to = NavNodeId(to_slot);
-                let dy = n_air_y as i32 - air_y as i32;
-                let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
-                graph.add_edge(from, to, EdgeType::ForestFloor, dist);
-            }
+            let dy = n_air_y - air_y;
+            let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+            graph.add_edge(
+                NavNodeId(slot as u32),
+                NavNodeId(to_slot),
+                EdgeType::ForestFloor,
+                dist,
+            );
         }
     }
 
@@ -1409,108 +1441,81 @@ pub fn update_large_after_voxel_solidified(
         }
     }
 
+    // Helper: find the existing large node at anchor (ax, az) by scanning Y
+    // values. Large nodes have a unique (x, z) anchor — only one Y is valid.
+    let find_existing_node = |graph: &NavGraph, ax: i32, az: i32| -> Option<(VoxelCoord, u32)> {
+        let sy = graph.world_size.1;
+        for y in 0..sy {
+            let coord = VoxelCoord::new(ax, y as i32, az);
+            if let Some(&slot) = graph.spatial_index.get(&coord) {
+                return Some((coord, slot));
+            }
+        }
+        None
+    };
+
+    // Helper: allocate a node slot (reusing free slots or appending).
+    let alloc_node = |graph: &mut NavGraph, coord: VoxelCoord| -> u32 {
+        let slot = if let Some(free) = graph.free_slots.pop() {
+            let id = NavNodeId(free as u32);
+            graph.nodes[free] = Some(NavNode {
+                id,
+                position: coord,
+                surface_type: VoxelType::ForestFloor,
+                edge_indices: Vec::new(),
+            });
+            free
+        } else {
+            let slot = graph.nodes.len();
+            let id = NavNodeId(slot as u32);
+            graph.nodes.push(Some(NavNode {
+                id,
+                position: coord,
+                surface_type: VoxelType::ForestFloor,
+                edge_indices: Vec::new(),
+            }));
+            slot
+        };
+        graph.spatial_index.insert(coord, slot as u32);
+        slot as u32
+    };
+
     // Step 1: Update nodes at affected anchors.
     for &(ax, az) in &affected_anchors {
         let should_exist = is_large_node_valid(world, ax, az);
-
-        // Find existing node — try current surface y and previous known y.
-        // We need to check the spatial index at any y that might have a node.
-        let mut existing_flat = None;
-        let total = sx * graph.world_size.1 * sz;
-        for y in 0..graph.world_size.1 {
-            let flat = ax as usize + az as usize * sx + y * sx * sz;
-            if flat < total && graph.spatial_index[flat] != u32::MAX {
-                existing_flat = Some(flat);
-                break;
-            }
-        }
-
-        let current_slot = existing_flat.map_or(u32::MAX, |f| graph.spatial_index[f]);
-        let is_node = current_slot != u32::MAX;
+        let existing = find_existing_node(graph, ax, az);
+        let is_node = existing.is_some();
 
         if !should_exist && is_node {
-            let id = NavNodeId(current_slot);
-            removed_ids.push(id);
-            graph.nodes[current_slot as usize] = None;
-            if let Some(flat) = existing_flat {
-                graph.spatial_index[flat] = u32::MAX;
-            }
-            graph.free_slots.push(current_slot as usize);
+            let (existing_coord, slot_val) = existing.unwrap();
+            removed_ids.push(NavNodeId(slot_val));
+            graph.nodes[slot_val as usize] = None;
+            graph.spatial_index.remove(&existing_coord);
+            graph.free_slots.push(slot_val as usize);
         } else if should_exist && is_node {
-            // Node exists — check if it needs to move to a different y
-            // (surface height may have changed due to height tolerance).
+            // Node exists — check if it needs to move to a different y.
             let expected_air_y = large_node_surface_y(world, ax, az).unwrap();
-            let existing_y = graph.nodes[current_slot as usize]
-                .as_ref()
-                .unwrap()
-                .position
-                .y;
-            if existing_y != expected_air_y {
+            let (existing_coord, slot_val) = existing.unwrap();
+            if existing_coord.y != expected_air_y {
                 // Remove old node at wrong y.
-                let id = NavNodeId(current_slot);
-                removed_ids.push(id);
-                graph.nodes[current_slot as usize] = None;
-                if let Some(flat) = existing_flat {
-                    graph.spatial_index[flat] = u32::MAX;
-                }
-                graph.free_slots.push(current_slot as usize);
+                removed_ids.push(NavNodeId(slot_val));
+                graph.nodes[slot_val as usize] = None;
+                graph.spatial_index.remove(&existing_coord);
+                graph.free_slots.push(slot_val as usize);
                 // Add new node at correct y.
-                let anchor_coord = VoxelCoord::new(ax, expected_air_y, az);
-                let flat = ax as usize + az as usize * sx + expected_air_y as usize * sx * sz;
-                let slot = if let Some(free) = graph.free_slots.pop() {
-                    let id = NavNodeId(free as u32);
-                    graph.nodes[free] = Some(NavNode {
-                        id,
-                        position: anchor_coord,
-                        surface_type: VoxelType::ForestFloor,
-                        edge_indices: Vec::new(),
-                    });
-                    free
-                } else {
-                    let slot = graph.nodes.len();
-                    let id = NavNodeId(slot as u32);
-                    graph.nodes.push(Some(NavNode {
-                        id,
-                        position: anchor_coord,
-                        surface_type: VoxelType::ForestFloor,
-                        edge_indices: Vec::new(),
-                    }));
-                    slot
-                };
-                graph.spatial_index[flat] = slot as u32;
+                let new_coord = VoxelCoord::new(ax, expected_air_y, az);
+                alloc_node(graph, new_coord);
             }
         } else if should_exist && !is_node {
             let air_y = large_node_surface_y(world, ax, az).unwrap();
             let anchor_coord = VoxelCoord::new(ax, air_y, az);
-            let flat = ax as usize + az as usize * sx + air_y as usize * sx * sz;
-            let slot = if let Some(free) = graph.free_slots.pop() {
-                let id = NavNodeId(free as u32);
-                graph.nodes[free] = Some(NavNode {
-                    id,
-                    position: anchor_coord,
-                    surface_type: VoxelType::ForestFloor,
-                    edge_indices: Vec::new(),
-                });
-                free
-            } else {
-                let slot = graph.nodes.len();
-                let id = NavNodeId(slot as u32);
-                graph.nodes.push(Some(NavNode {
-                    id,
-                    position: anchor_coord,
-                    surface_type: VoxelType::ForestFloor,
-                    edge_indices: Vec::new(),
-                }));
-                slot
-            };
-            graph.spatial_index[flat] = slot as u32;
+            alloc_node(graph, anchor_coord);
         }
     }
 
     // Step 2: Collect dirty set — affected anchors + their 8 horizontal neighbors.
     let mut dirty_set: Vec<usize> = Vec::new();
     let mut is_dirty = vec![false; graph.nodes.len()];
-    let total = sx * graph.world_size.1 * sz;
 
     for &(ax, az) in &affected_anchors {
         for dz in -1i32..=1 {
@@ -1520,19 +1525,12 @@ pub fn update_large_after_voxel_solidified(
                 if nx < 0 || nz < 0 || (nx as usize) + 1 >= sx || (nz as usize) + 1 >= sz {
                     continue;
                 }
-                // Find the node at any y for this (nx, nz).
-                for y in 0..graph.world_size.1 {
-                    let flat = nx as usize + nz as usize * sx + y * sx * sz;
-                    if flat < total {
-                        let slot = graph.spatial_index[flat];
-                        if slot != u32::MAX {
-                            let s = slot as usize;
-                            if s < is_dirty.len() && !is_dirty[s] {
-                                is_dirty[s] = true;
-                                dirty_set.push(s);
-                            }
-                            break;
-                        }
+                // Find the node at any y for this anchor.
+                if let Some((_, slot)) = find_existing_node(graph, nx, nz) {
+                    let s = slot as usize;
+                    if s < is_dirty.len() && !is_dirty[s] {
+                        is_dirty[s] = true;
+                        dirty_set.push(s);
                     }
                 }
             }
@@ -1585,20 +1583,10 @@ pub fn update_large_after_voxel_solidified(
                 continue;
             }
             // Find neighbor node at any y.
-            let mut n_slot = u32::MAX;
-            for y in 0..graph.world_size.1 {
-                let n_flat = nx as usize + nz as usize * sx + y * sx * sz;
-                if n_flat < total {
-                    let s = graph.spatial_index[n_flat];
-                    if s != u32::MAX {
-                        n_slot = s;
-                        break;
-                    }
-                }
-            }
-            if n_slot == u32::MAX {
-                continue;
-            }
+            let (_, n_slot) = match find_existing_node(graph, nx, nz) {
+                Some(v) => v,
+                None => continue,
+            };
             let ns = n_slot as usize;
 
             // Avoid duplicate edges: only create from smaller slot.
@@ -3087,5 +3075,64 @@ mod tests {
 
         let surface = derive_surface_type(&world, &faces, ladder);
         assert_eq!(surface, VoxelType::WoodLadder);
+    }
+
+    // --- RLE-aware scan range tests ---
+
+    #[test]
+    fn empty_world_produces_empty_nav_graph() {
+        let world = VoxelWorld::new(16, 16, 16);
+        let graph = build_nav_graph(&world, &no_faces());
+        assert_eq!(graph.node_count(), 0);
+        assert_eq!(graph.edge_count(), 0);
+    }
+
+    #[test]
+    fn neighbor_column_solid_extends_scan_range() {
+        // A solid voxel in column (5, 5) should cause the adjacent all-Air
+        // column (6, 5) to produce a nav node at the same Y, since the air
+        // voxel at (6, y, 5) is face-adjacent to solid at (5, y, 5).
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(5, 3, 5), VoxelType::Trunk);
+        let graph = build_nav_graph(&world, &no_faces());
+
+        // The air voxels face-adjacent to the trunk at (5,3,5) should be nav nodes.
+        assert!(graph.has_node_at(VoxelCoord::new(6, 3, 5))); // +X neighbor
+        assert!(graph.has_node_at(VoxelCoord::new(4, 3, 5))); // -X neighbor
+        assert!(graph.has_node_at(VoxelCoord::new(5, 3, 6))); // +Z neighbor
+        assert!(graph.has_node_at(VoxelCoord::new(5, 3, 4))); // -Z neighbor
+        assert!(graph.has_node_at(VoxelCoord::new(5, 4, 5))); // +Y neighbor
+        // (5, 2, 5) is at y=2 which is ≥1, so it's also a nav node.
+        assert!(graph.has_node_at(VoxelCoord::new(5, 2, 5))); // -Y neighbor
+    }
+
+    #[test]
+    fn rle_aware_build_matches_brute_force_node_set() {
+        // Build a nav graph on a world with a tree and verify that every air
+        // voxel adjacent to solid has a nav node (and no others do).
+        let world = test_world();
+        let graph = build_nav_graph(&world, &no_faces());
+
+        let sx = world.size_x as usize;
+        let sy = world.size_y as usize;
+        let sz = world.size_z as usize;
+
+        // Check a sample of positions to verify agreement between has_node_at
+        // and should_be_nav_node.
+        for y in 1..sy {
+            for z in 0..sz {
+                for x in 0..sx {
+                    let coord = VoxelCoord::new(x as i32, y as i32, z as i32);
+                    let expected = should_be_nav_node(&world, &no_faces(), coord);
+                    assert_eq!(
+                        graph.has_node_at(coord),
+                        expected,
+                        "Mismatch at ({x}, {y}, {z}): has_node_at={}, should_be={}",
+                        graph.has_node_at(coord),
+                        expected,
+                    );
+                }
+            }
+        }
     }
 }
