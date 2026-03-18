@@ -541,6 +541,7 @@ mod inventory_mgmt;
 mod logistics;
 mod movement;
 mod needs;
+mod raid;
 mod task_helpers;
 
 impl SimState {
@@ -1057,6 +1058,9 @@ impl SimState {
             }
             SimAction::SetGroupEquipmentWants { group_id, wants } => {
                 self.set_group_equipment_wants(*group_id, wants.clone());
+            }
+            SimAction::TriggerRaid => {
+                self.trigger_raid(events);
             }
             SimAction::DebugSpawnProjectile {
                 origin,

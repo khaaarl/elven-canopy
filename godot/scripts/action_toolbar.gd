@@ -3,8 +3,9 @@
 ## The main toolbar row contains gameplay buttons: speed controls (pause/play/
 ## fast/very fast), Build, Tasks, Structures, Units, Military, Tree Info, and Debug toggle.
 ## A "Debug" toggle button (or F12) reveals a second row with dev/test tools:
-## creature spawn buttons, Summon Elf, and Test Notif (sends a debug
-## notification through the full sim command pipeline via SimBridge).
+## creature spawn buttons, Summon Elf, Test Notif (sends a debug
+## notification through the full sim command pipeline via SimBridge),
+## and Trigger Raid (spawns a hostile raiding party at the forest edge).
 ## Debug spawn buttons are click-only (no keyboard shortcuts).
 ##
 ## Keyboard shortcuts:
@@ -213,6 +214,11 @@ func _ready() -> void:
 	notif_button.text = "Test Notif"
 	notif_button.pressed.connect(_on_test_notif_pressed)
 	_debug_row.add_child(notif_button)
+
+	var raid_button := Button.new()
+	raid_button.text = "Trigger Raid"
+	raid_button.pressed.connect(func(): action_requested.emit("TriggerRaid"))
+	_debug_row.add_child(raid_button)
 
 	_update_speed_highlight()
 

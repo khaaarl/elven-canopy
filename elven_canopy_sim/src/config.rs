@@ -2130,6 +2130,7 @@ impl Default for GameConfig {
                     (TraitKind::Perception, 3, 4),
                     (TraitKind::Charisma, 3, 4),
                 ]),
+                raid_size: 1,
             },
         );
         species.insert(
@@ -2170,6 +2171,7 @@ impl Default for GameConfig {
                     (TraitKind::Perception, 5, 4),
                     (TraitKind::Charisma, 15, 4),
                 ]),
+                raid_size: 1,
             },
         );
         species.insert(
@@ -2210,6 +2212,7 @@ impl Default for GameConfig {
                     (TraitKind::Perception, 3, 4),
                     (TraitKind::Charisma, -10, 4),
                 ]),
+                raid_size: 1,
             },
         );
         species.insert(
@@ -2250,6 +2253,7 @@ impl Default for GameConfig {
                     (TraitKind::Perception, 10, 4),
                     (TraitKind::Charisma, 0, 4),
                 ]),
+                raid_size: 1,
             },
         );
         species.insert(
@@ -2290,6 +2294,7 @@ impl Default for GameConfig {
                     (TraitKind::Perception, 3, 5),
                     (TraitKind::Charisma, 5, 5),
                 ]),
+                raid_size: 1,
             },
         );
         species.insert(
@@ -2335,6 +2340,7 @@ impl Default for GameConfig {
                     (TraitKind::Perception, 5, 4),
                     (TraitKind::Charisma, -5, 4),
                 ]),
+                raid_size: 6,
             },
         );
         species.insert(
@@ -2375,6 +2381,7 @@ impl Default for GameConfig {
                     (TraitKind::Perception, 5, 4),
                     (TraitKind::Charisma, 5, 4),
                 ]),
+                raid_size: 1,
             },
         );
         species.insert(
@@ -2420,6 +2427,7 @@ impl Default for GameConfig {
                     (TraitKind::Perception, 0, 4),
                     (TraitKind::Charisma, -5, 4),
                 ]),
+                raid_size: 3,
             },
         );
         species.insert(
@@ -2460,6 +2468,7 @@ impl Default for GameConfig {
                     (TraitKind::Perception, 10, 4),
                     (TraitKind::Charisma, 3, 4),
                 ]),
+                raid_size: 1,
             },
         );
         species.insert(
@@ -2505,6 +2514,7 @@ impl Default for GameConfig {
                     (TraitKind::Perception, -5, 5),
                     (TraitKind::Charisma, -10, 5),
                 ]),
+                raid_size: 2,
             },
         );
 

@@ -280,6 +280,11 @@ pub struct SpeciesData {
     /// baseline with moderate variation). See `docs/drafts/creature_stats.md`.
     #[serde(default)]
     pub stat_distributions: std::collections::BTreeMap<TraitKind, StatDistribution>,
+
+    /// Number of creatures spawned in a raid by this species. Used by the
+    /// `TriggerRaid` command to size the raiding party. Default 1.
+    #[serde(default = "default_raid_size")]
+    pub raid_size: u32,
 }
 
 /// Species-specific distribution parameters for a single creature stat.
@@ -345,4 +350,8 @@ fn default_rest_per_sleep_tick() -> i64 {
     // We want ~10 seconds (10_000 ticks) of bed sleep to restore ~60% of rest_max.
     // 60% of 1e15 = 6e14. 6e14 / 10_000 = 6e10.
     60_000_000_000
+}
+
+fn default_raid_size() -> u32 {
+    1
 }

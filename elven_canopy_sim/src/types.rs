@@ -596,6 +596,18 @@ pub enum CivSpecies {
 }
 
 impl CivSpecies {
+    /// Convert to the sim-active `Species` enum. Returns `None` for species
+    /// that don't have creature instances yet (Human, Dwarf).
+    pub fn to_species(self) -> Option<Species> {
+        match self {
+            CivSpecies::Elf => Some(Species::Elf),
+            CivSpecies::Goblin => Some(Species::Goblin),
+            CivSpecies::Orc => Some(Species::Orc),
+            CivSpecies::Troll => Some(Species::Troll),
+            CivSpecies::Human | CivSpecies::Dwarf => None,
+        }
+    }
+
     /// All variants in declaration order, for iteration.
     pub const ALL: [CivSpecies; 6] = [
         CivSpecies::Elf,

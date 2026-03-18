@@ -30,6 +30,7 @@ elven-canopy/
 │       │   ├── logistics.rs    #   Hauling, harvesting, pickup/dropoff, logistics heartbeat
 │       │   ├── movement.rs     #   GoTo commands, unit spreading, step execution, wandering
 │       │   ├── needs.rs        #   Eating, sleeping, moping, personal item acquisition
+│       │   ├── raid.rs         #   Raid triggering (hostile civ raiding parties)
 │       │   └── task_helpers.rs #   Task extension table accessors, insert_task
 │       ├── db.rs               # SimDb — tabulosity relational store (36 tables, all entities)
 │       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with face culling

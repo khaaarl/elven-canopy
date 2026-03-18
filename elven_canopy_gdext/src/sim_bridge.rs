@@ -3086,6 +3086,12 @@ impl SimBridge {
         });
     }
 
+    /// Trigger a raid from a random hostile civilization (debug).
+    #[func]
+    fn trigger_raid(&mut self) {
+        self.apply_or_send(SimAction::TriggerRaid);
+    }
+
     // -------------------------------------------------------------------
     // HP / damage / death
     // -------------------------------------------------------------------

@@ -110,7 +110,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-emotions             Multi-dimensional emotional state
-[ ] F-enemy-raids          Enemy civilizations send raids
 [ ] F-festivals            Festivals and community ceremonies
 [ ] F-ff-vertical-arc      Vertical arc awareness for friendly-fire checks
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
@@ -165,6 +164,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
+[ ] F-raid-detection       Raid detection gating and stealth spawning
 [ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-recipe-params        Parameterized recipe templates
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
@@ -262,6 +262,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-elf-sprite           Billboard elf sprite rendering
 [x] F-elfcyclopedia-srv    Embedded localhost HTTP elfcyclopedia server
 [x] F-emotions-basic       Mood score from thought weights
+[x] F-enemy-raids          Enemy civilizations send raids
 [x] F-engagement-style     Unified engagement style (species + military group combat tactics)
 [x] F-equipment-color      Equipment sprites use item resolved color
 [x] F-equipment-sprites    Dynamic sprite customization for equipment
@@ -2520,7 +2521,7 @@ Simple aggression AI for non-civ hostile creatures. This is the first "it all co
 **Related:** F-arrow-chase, F-enemy-raids, F-engagement-style
 
 #### F-enemy-raids — Enemy civilizations send raids
-**Status:** Todo
+**Status:** Done
 
 Hostile civilizations periodically send organized raid parties against the
 player's tree. Raid frequency, composition, and strength scale with game
@@ -2528,7 +2529,7 @@ progression. Requires F-civilizations for civ relationships and diplomacy
 to determine who raids and why.
 
 **Unblocked by:** F-civilizations
-**Related:** F-civilizations, F-enemy-ai, F-settlement-gen, F-zone-world
+**Related:** F-civilizations, F-enemy-ai, F-raid-detection, F-settlement-gen, F-zone-world
 
 #### F-engagement-style — Unified engagement style (species + military group combat tactics)
 **Status:** Done
@@ -2575,7 +2576,7 @@ Creatures with passive initiative or HP below disengage threshold detect hostile
 World hidden except where observed by elves or sensed through tree/root
 network. Strongest near trunk, weaker at root edges, absent beyond.
 
-**Related:** F-combat, F-root-network, F-stealth
+**Related:** F-combat, F-raid-detection, F-root-network, F-stealth
 
 #### F-friendly-fire — Friendly-fire avoidance for ranged attacks
 **Status:** Done
@@ -2813,6 +2814,16 @@ SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity t
 **Draft:** docs/drafts/combat_military.md (§4)
 
 **Related:** F-friendly-fire, F-spatial-index
+
+#### F-raid-detection — Raid detection gating and stealth spawning
+**Status:** Todo
+
+Undetected raiders are invisible to the player; revealed when a friendly
+creature detects them within hostile detection range. Raid alert fires on
+first detection rather than on spawn. Periodic raid triggering based on
+game progression replaces the current debug-only button.
+
+**Related:** F-enemy-raids, F-fog-of-war
 
 #### F-rescue — Rescue and stabilize incapacitated creatures
 **Status:** Todo

@@ -824,6 +824,8 @@ func _setup_common(bridge: SimBridge) -> void:
 				bridge.send_debug_notification(
 					"Test notification at tick %d" % bridge.current_tick()
 				)
+			elif action == "TriggerRaid":
+				bridge.trigger_raid()
 	)
 
 	_task_panel.zoom_to_creature.connect(

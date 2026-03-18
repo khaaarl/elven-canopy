@@ -57,6 +57,8 @@
 //   spread destinations.
 // - `SetSelectionGroup` — overwrite a numbered selection group (Ctrl+N).
 // - `AddToSelectionGroup` — merge into a numbered selection group (Shift+N).
+// - `TriggerRaid` — debug: spawn a hostile raiding party from a random
+//   enemy civilization at the forest floor perimeter.
 //
 // See also: `sim/mod.rs` for `process_command()` which dispatches these,
 // `task.rs` for `TaskKind`, `types.rs` for the ID and enum types used here,
@@ -346,6 +348,10 @@ pub enum SimAction {
         creature_ids: Vec<CreatureId>,
         structure_ids: Vec<StructureId>,
     },
+    /// Trigger a raid from a random hostile civilization (debug). The sim
+    /// picks a hostile civ, spawns raiders at the forest floor edge, and
+    /// assigns each an attack-move toward the tree.
+    TriggerRaid,
     /// Spawn a projectile at a position with a given velocity (debug/testing).
     /// Creates a projectile with an arrow item in its inventory.
     DebugSpawnProjectile {

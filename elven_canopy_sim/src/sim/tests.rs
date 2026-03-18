@@ -35549,3 +35549,629 @@ fn successful_drain_does_not_record_position() {
         "no position recorded on success"
     );
 }
+
+// ---------------------------------------------------------------------------
+// F-enemy-raids tests
+// ---------------------------------------------------------------------------
+
+/// Helper: ensure the player civ knows about exactly one hostile civ (Goblin,
+/// Orc, or Troll). Removes all other hostile relationships so the raid is
+/// deterministic. Returns the hostile civ's CivId.
+fn ensure_hostile_civ(sim: &mut SimState) -> CivId {
+    let player_civ = sim.player_civ_id.unwrap();
+
+    // Find a goblin, orc, or troll civ.
+    let hostile_civ = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| {
+            c.id != player_civ
+                && matches!(
+                    c.primary_species,
+                    CivSpecies::Goblin | CivSpecies::Orc | CivSpecies::Troll
+                )
+        })
+        .map(|c| c.id);
+
+    let hostile_civ_id = hostile_civ.expect("worldgen should produce at least one hostile civ");
+
+    // Remove ALL hostile relationships involving the player (both directions)
+    // so the only hostile civ is the one we set up.
+    remove_all_hostile_rels(sim);
+
+    // Create bidirectional hostile relationship: they hate us (triggers raids)
+    // and we hate them (player awareness).
+    sim.discover_civ(hostile_civ_id, player_civ, CivOpinion::Hostile);
+    sim.discover_civ(player_civ, hostile_civ_id, CivOpinion::Hostile);
+
+    hostile_civ_id
+}
+
+/// Helper: remove all hostile relationships involving the player civ
+/// (both forward: player→other, and reverse: other→player).
+fn remove_all_hostile_rels(sim: &mut SimState) {
+    let player_civ = sim.player_civ_id.unwrap();
+    // Forward: player considers them hostile.
+    let forward_ids: Vec<_> = sim
+        .db
+        .civ_relationships
+        .by_from_civ(&player_civ, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|r| r.opinion == CivOpinion::Hostile)
+        .map(|r| r.id)
+        .collect();
+    for id in forward_ids {
+        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    }
+    // Reverse: they consider the player hostile.
+    let reverse_ids: Vec<_> = sim
+        .db
+        .civ_relationships
+        .by_to_civ(&player_civ, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|r| r.opinion == CivOpinion::Hostile)
+        .map(|r| r.id)
+        .collect();
+    for id in reverse_ids {
+        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    }
+}
+
+#[test]
+fn civ_species_to_species_conversion() {
+    assert_eq!(CivSpecies::Elf.to_species(), Some(Species::Elf));
+    assert_eq!(CivSpecies::Goblin.to_species(), Some(Species::Goblin));
+    assert_eq!(CivSpecies::Orc.to_species(), Some(Species::Orc));
+    assert_eq!(CivSpecies::Troll.to_species(), Some(Species::Troll));
+    assert_eq!(CivSpecies::Human.to_species(), None);
+    assert_eq!(CivSpecies::Dwarf.to_species(), None);
+}
+
+#[test]
+fn spawn_creature_with_civ_sets_civ_id() {
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let creature_id = sim
+        .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
+        .expect("should spawn goblin");
+
+    let creature = sim.db.creatures.get(&creature_id).unwrap();
+    assert_eq!(creature.civ_id, Some(hostile_civ));
+    assert_eq!(creature.species, Species::Goblin);
+}
+
+#[test]
+fn trigger_raid_spawns_creatures() {
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+
+    let hostile_species = sim
+        .db
+        .civilizations
+        .get(&hostile_civ)
+        .unwrap()
+        .primary_species
+        .to_species()
+        .unwrap();
+    let expected_count = sim.species_table[&hostile_species].raid_size;
+
+    let pre_count = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.civ_id == Some(hostile_civ))
+        .count();
+
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    let post_count = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.civ_id == Some(hostile_civ))
+        .count();
+
+    let spawned = post_count - pre_count;
+    assert!(spawned > 0, "trigger_raid should spawn at least one raider");
+    assert_eq!(
+        spawned, expected_count as usize,
+        "should spawn raid_size creatures"
+    );
+}
+
+#[test]
+fn trigger_raid_assigns_attack_move() {
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    // All raiders from the hostile civ should have tasks.
+    let raiders: Vec<_> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.civ_id == Some(hostile_civ) && c.vital_status == VitalStatus::Alive)
+        .collect();
+
+    assert!(!raiders.is_empty(), "should have spawned raiders");
+
+    for raider in &raiders {
+        assert!(
+            raider.current_task.is_some(),
+            "raider {} should have a task assigned",
+            raider.id
+        );
+        let task = sim.db.tasks.get(&raider.current_task.unwrap()).unwrap();
+        assert_eq!(
+            task.kind_tag,
+            TaskKindTag::AttackMove,
+            "raider should have an AttackMove task"
+        );
+    }
+}
+
+#[test]
+fn trigger_raid_spawns_at_perimeter() {
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    let cx = sim.config.world_size.0 as i32 / 2;
+    let cz = sim.config.world_size.2 as i32 / 2;
+    let extent = sim.config.floor_extent;
+
+    let raiders: Vec<_> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.civ_id == Some(hostile_civ) && c.vital_status == VitalStatus::Alive)
+        .collect();
+
+    for raider in &raiders {
+        let pos = raider.position;
+        // Should be near one of the four edges (within 3 voxels to allow nav snapping).
+        let near_north = pos.z <= cz - extent + 3;
+        let near_south = pos.z >= cz + extent - 3;
+        let near_east = pos.x >= cx + extent - 3;
+        let near_west = pos.x <= cx - extent + 3;
+        assert!(
+            near_north || near_south || near_east || near_west,
+            "raider at {:?} should be near the perimeter (cx={}, cz={}, extent={})",
+            pos,
+            cx,
+            cz,
+            extent
+        );
+    }
+}
+
+#[test]
+fn trigger_raid_no_hostile_civs() {
+    let mut sim = test_sim(42);
+    remove_all_hostile_rels(&mut sim);
+
+    let creature_count_before = sim.db.creatures.iter_all().count();
+
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    let creature_count_after = sim.db.creatures.iter_all().count();
+    assert_eq!(
+        creature_count_before, creature_count_after,
+        "no creatures should be spawned when no hostile civs exist"
+    );
+}
+
+#[test]
+fn trigger_raid_notification() {
+    let mut sim = test_sim(42);
+    ensure_hostile_civ(&mut sim);
+
+    let notif_count_before = sim.db.notifications.iter_all().count();
+
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    let notif_count_after = sim.db.notifications.iter_all().count();
+    assert!(
+        notif_count_after > notif_count_before,
+        "trigger_raid should create a notification"
+    );
+}
+
+#[test]
+fn trigger_raid_command_serde_roundtrip() {
+    let cmd = SimCommand {
+        player_name: "test".to_string(),
+        tick: 1,
+        action: SimAction::TriggerRaid,
+    };
+    let json = serde_json::to_string(&cmd).unwrap();
+    let restored: SimCommand = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::to_string(&restored).unwrap());
+}
+
+#[test]
+fn trigger_raid_single_activation_per_raider() {
+    // Raid-spawned creatures should have exactly 1 pending CreatureActivation,
+    // not 2. Both spawn_creature_with_civ and command_attack_move schedule an
+    // activation at tick+1; the duplicate causes jerky double-step movement.
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    let raiders: Vec<_> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.civ_id == Some(hostile_civ) && c.vital_status == VitalStatus::Alive)
+        .collect();
+
+    assert!(!raiders.is_empty(), "should have spawned raiders");
+
+    for raider in &raiders {
+        let activation_count = sim.event_queue.count_creature_activations(raider.id);
+        assert_eq!(
+            activation_count, 1,
+            "raider {} should have exactly 1 pending activation, got {}",
+            raider.id, activation_count
+        );
+    }
+}
+
+#[test]
+fn trigger_raid_zero_raid_size_does_not_panic() {
+    // If a species somehow has raid_size=0 and is selected for a raid,
+    // the sim must not panic (division by zero in find_perimeter_positions).
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+
+    // Set the raiding species' raid_size to 0.
+    let hostile_species = sim
+        .db
+        .civilizations
+        .get(&hostile_civ)
+        .unwrap()
+        .primary_species
+        .to_species()
+        .unwrap();
+    sim.species_table
+        .get_mut(&hostile_species)
+        .unwrap()
+        .raid_size = 0;
+
+    let creature_count_before = sim.db.creatures.iter_all().count();
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    // Should be a no-op — no creatures spawned, no panic.
+    let creature_count_after = sim.db.creatures.iter_all().count();
+    assert_eq!(creature_count_before, creature_count_after);
+}
+
+#[test]
+fn trigger_raid_no_player_civ() {
+    // If player_civ_id is None, trigger_raid should be a silent no-op.
+    let mut sim = test_sim(42);
+    sim.player_civ_id = None;
+
+    let creature_count_before = sim.db.creatures.iter_all().count();
+    let notif_count_before = sim.db.notifications.iter_all().count();
+
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    assert_eq!(creature_count_before, sim.db.creatures.iter_all().count());
+    assert_eq!(notif_count_before, sim.db.notifications.iter_all().count());
+}
+
+#[test]
+fn trigger_raid_deterministic_same_seed() {
+    // Two identically-seeded sims should produce identical raids.
+    let mut sim_a = test_sim(99);
+    let mut sim_b = test_sim(99);
+
+    let hostile_a = ensure_hostile_civ(&mut sim_a);
+    let hostile_b = ensure_hostile_civ(&mut sim_b);
+    assert_eq!(hostile_a, hostile_b);
+
+    let mut events_a = Vec::new();
+    let mut events_b = Vec::new();
+    sim_a.trigger_raid(&mut events_a);
+    sim_b.trigger_raid(&mut events_b);
+
+    let raiders_a: Vec<_> = sim_a
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.civ_id == Some(hostile_a) && c.vital_status == VitalStatus::Alive)
+        .map(|c| (c.species, c.position))
+        .collect();
+    let raiders_b: Vec<_> = sim_b
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.civ_id == Some(hostile_b) && c.vital_status == VitalStatus::Alive)
+        .map(|c| (c.species, c.position))
+        .collect();
+
+    assert_eq!(raiders_a, raiders_b, "raids should be deterministic");
+}
+
+#[test]
+fn trigger_raid_notification_includes_species_and_direction() {
+    let mut sim = test_sim(42);
+    ensure_hostile_civ(&mut sim);
+
+    let notif_count_before = sim.db.notifications.iter_all().count();
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    let new_notifs: Vec<_> = sim
+        .db
+        .notifications
+        .iter_all()
+        .skip(notif_count_before)
+        .collect();
+
+    assert!(!new_notifs.is_empty(), "should have a notification");
+    let msg = &new_notifs.last().unwrap().message;
+
+    // Must contain a direction.
+    let has_direction = msg.contains("north")
+        || msg.contains("south")
+        || msg.contains("east")
+        || msg.contains("west");
+    assert!(
+        has_direction,
+        "notification should mention direction: {msg}"
+    );
+
+    // Must contain "raiding party" and a count.
+    assert!(
+        msg.contains("raiding party"),
+        "notification should say 'raiding party': {msg}"
+    );
+    assert!(
+        msg.contains("raiders"),
+        "notification should mention raider count: {msg}"
+    );
+}
+
+#[test]
+fn species_config_backward_compat_raid_size() {
+    // Old save files won't have raid_size. Verify it defaults to 1.
+    let config = GameConfig::default();
+    let goblin_data = &config.species[&Species::Goblin];
+    let json = serde_json::to_string(goblin_data).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let obj = value.as_object_mut().unwrap();
+    obj.remove("raid_size");
+    let stripped = serde_json::to_string(&value).unwrap();
+
+    let restored: crate::species::SpeciesData = serde_json::from_str(&stripped).unwrap();
+    assert_eq!(restored.raid_size, 1, "raid_size should default to 1");
+}
+
+#[test]
+fn trigger_raid_finds_hostile_via_reverse_relationship() {
+    // If a civ considers the player hostile (them→player) but the player
+    // doesn't know about them, the raid should still find them as a target.
+    let mut sim = test_sim(42);
+    let player_civ = sim.player_civ_id.unwrap();
+
+    // Remove ALL hostile relationships in both directions.
+    remove_all_hostile_rels(&mut sim);
+
+    // Find a goblin/orc/troll civ and create only a reverse hostile
+    // relationship (they hate us, but we don't know them).
+    let hostile_species_civ = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| {
+            c.id != player_civ
+                && matches!(
+                    c.primary_species,
+                    CivSpecies::Goblin | CivSpecies::Orc | CivSpecies::Troll
+                )
+        })
+        .map(|c| c.id)
+        .expect("worldgen should produce at least one hostile-species civ");
+
+    sim.discover_civ(hostile_species_civ, player_civ, CivOpinion::Hostile);
+
+    let creature_count_before = sim.db.creatures.iter_all().count();
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    let creature_count_after = sim.db.creatures.iter_all().count();
+    assert!(
+        creature_count_after > creature_count_before,
+        "raid should spawn creatures when a civ considers the player hostile (reverse direction)"
+    );
+}
+
+#[test]
+fn trigger_raid_ignores_forward_only_hostility() {
+    // If the player hates a civ but they don't hate us, no raid should come
+    // from them — raids require them→player hostility.
+    let mut sim = test_sim(42);
+    let player_civ = sim.player_civ_id.unwrap();
+
+    remove_all_hostile_rels(&mut sim);
+
+    let hostile_species_civ = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| {
+            c.id != player_civ
+                && matches!(
+                    c.primary_species,
+                    CivSpecies::Goblin | CivSpecies::Orc | CivSpecies::Troll
+                )
+        })
+        .map(|c| c.id)
+        .expect("worldgen should produce at least one hostile-species civ");
+
+    // Player hates them, but they don't hate us.
+    sim.discover_civ(player_civ, hostile_species_civ, CivOpinion::Hostile);
+
+    let creature_count_before = sim.db.creatures.iter_all().count();
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    let creature_count_after = sim.db.creatures.iter_all().count();
+    assert_eq!(
+        creature_count_before, creature_count_after,
+        "forward-only hostility (we hate them) should not trigger a raid"
+    );
+}
+
+#[test]
+fn trigger_raid_human_civ_aborts_with_notification() {
+    // If the only hostile civ has CivSpecies::Human (no sim creature type),
+    // trigger_raid should abort with a "no creature type" notification.
+    let mut sim = test_sim(42);
+    let player_civ = sim.player_civ_id.unwrap();
+    remove_all_hostile_rels(&mut sim);
+
+    // Find any non-player civ and make it a Human civ that hates us.
+    let any_ai_civ = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| c.id != player_civ)
+        .map(|c| c.id)
+        .unwrap();
+    let _ = sim.db.civilizations.modify_unchecked(&any_ai_civ, |c| {
+        c.primary_species = CivSpecies::Human;
+    });
+    sim.discover_civ(any_ai_civ, player_civ, CivOpinion::Hostile);
+
+    let creature_count_before = sim.db.creatures.iter_all().count();
+    let notif_count_before = sim.db.notifications.iter_all().count();
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    assert_eq!(
+        creature_count_before,
+        sim.db.creatures.iter_all().count(),
+        "no creatures should spawn for a Human civ (no creature type)"
+    );
+    let new_notif = sim
+        .db
+        .notifications
+        .iter_all()
+        .skip(notif_count_before)
+        .last()
+        .expect("should have a notification");
+    assert!(
+        new_notif.message.contains("no creature type"),
+        "notification should mention missing creature type: {}",
+        new_notif.message
+    );
+}
+
+#[test]
+fn trigger_raid_creates_player_awareness_of_raiding_civ() {
+    // When a raid happens, the player civ should discover and hate the raiding
+    // civ. Without this, elves don't see raiders as hostile (yellow on minimap).
+    let mut sim = test_sim(42);
+    let player_civ = sim.player_civ_id.unwrap();
+    remove_all_hostile_rels(&mut sim);
+
+    // Set up: a civ hates us, but we don't know about them.
+    let hostile_species_civ = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| {
+            c.id != player_civ
+                && matches!(
+                    c.primary_species,
+                    CivSpecies::Goblin | CivSpecies::Orc | CivSpecies::Troll
+                )
+        })
+        .map(|c| c.id)
+        .unwrap();
+
+    // They hate us (reverse only — we don't know about them).
+    sim.discover_civ(hostile_species_civ, player_civ, CivOpinion::Hostile);
+
+    // Verify we currently see them as Neutral (no forward relationship).
+    assert_eq!(
+        sim.diplomatic_relation(Some(player_civ), None, Some(hostile_species_civ), None),
+        DiplomaticRelation::Neutral,
+        "before raid: player should not yet know the raiding civ"
+    );
+
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    // After the raid, the player should know about and hate the raiding civ.
+    assert_eq!(
+        sim.diplomatic_relation(Some(player_civ), None, Some(hostile_species_civ), None),
+        DiplomaticRelation::Hostile,
+        "after raid: player should consider the raiding civ hostile"
+    );
+}
+
+#[test]
+fn trigger_raid_elves_see_raiders_as_hostile() {
+    // Raiders must be considered hostile by elves so combat triggers.
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+    let player_civ = sim.player_civ_id.unwrap();
+
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    let raider = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.civ_id == Some(hostile_civ) && c.vital_status == VitalStatus::Alive)
+        .expect("should have spawned a raider");
+
+    // From the player civ's perspective, the raider should be hostile.
+    assert_eq!(
+        sim.diplomatic_relation(Some(player_civ), None, Some(hostile_civ), None),
+        DiplomaticRelation::Hostile,
+        "player should see raiding civ as hostile"
+    );
+
+    // From the raider's perspective, the player should also be hostile.
+    assert_eq!(
+        sim.diplomatic_relation(Some(hostile_civ), None, Some(player_civ), None),
+        DiplomaticRelation::Hostile,
+        "raiding civ should see player as hostile"
+    );
+}
+
+#[test]
+fn all_civ_species_with_to_species_have_species_table_entry() {
+    // Every CivSpecies that maps to a Species via to_species() must have
+    // a corresponding entry in the default species table.
+    let config = GameConfig::default();
+    for civ_species in CivSpecies::ALL {
+        if let Some(species) = civ_species.to_species() {
+            assert!(
+                config.species.contains_key(&species),
+                "{civ_species:?} maps to {species:?} but species table has no entry"
+            );
+        }
+    }
+}

@@ -312,6 +312,29 @@ fn generate_civilizations(
         create_default_military_groups(db, civ_id);
     }
 
+    // Guarantee: at least one AI civ must be a hostile species (one whose
+    // default opinion toward Elves is Hostile — currently Goblin and Orc).
+    // If the random rolls didn't produce one, convert the last AI civ.
+    if config.civ_count >= 2 {
+        let has_hostile_species = db.civilizations.iter_all().any(|c| {
+            c.id != player_civ_id
+                && species_default_opinion(c.primary_species, CivSpecies::Elf)
+                    == CivOpinion::Hostile
+        });
+
+        if !has_hostile_species {
+            let last_ai_id = CivId(config.civ_count - 1);
+            let new_name = generate_civ_name(rng, CivSpecies::Goblin, lexicon);
+            let new_culture = pick_culture_tag(rng, CivSpecies::Goblin);
+            let _ = db.civilizations.modify_unchecked(&last_ai_id, |c| {
+                c.primary_species = CivSpecies::Goblin;
+                c.name = new_name.clone();
+                c.culture_tag = new_culture;
+                c.minority_species = Vec::new();
+            });
+        }
+    }
+
     player_civ_id
 }
 
@@ -550,6 +573,10 @@ fn pick_minority_species(rng: &mut GameRng, primary: CivSpecies) -> Vec<CivSpeci
 /// For each ordered pair (i, j), independently rolls awareness per direction.
 /// For aware pairs, assigns initial opinion from a species-affinity default
 /// table, then applies random perturbation (~30% chance of shifting one step).
+///
+/// **Guarantee:** After generation, the player civ (CivId(0)) will know at
+/// least one hostile civ. If the random rolls don't produce one, a post-pass
+/// forces awareness of the first available hostile-species civ.
 fn generate_diplomacy(rng: &mut GameRng, config: &CivConfig, db: &mut SimDb) {
     let civ_ids: Vec<(CivId, CivSpecies)> = db
         .civilizations
@@ -620,6 +647,52 @@ fn generate_diplomacy(rng: &mut GameRng, config: &CivConfig, db: &mut SimDb) {
                 })
                 .unwrap();
         }
+    }
+
+    // Post-pass: guarantee bidirectional hostile awareness between the player
+    // and at least one hostile-species civ. This ensures raids always have a
+    // valid source (they hate us) and the player always sees an enemy in the
+    // elfcyclopedia (we hate them).
+    //
+    // Find the first hostile-species civ and ensure both directions are Hostile.
+    for &(civ_id, civ_species) in &civ_ids {
+        if civ_id == CivId(0) {
+            continue;
+        }
+        if species_default_opinion(civ_species, CivSpecies::Elf) != CivOpinion::Hostile {
+            continue;
+        }
+
+        ensure_hostile_rel(db, civ_id, CivId(0));
+        ensure_hostile_rel(db, CivId(0), civ_id);
+        break;
+    }
+}
+
+/// Ensure a Hostile relationship exists from `from_civ` to `to_civ`.
+/// If a relationship already exists, upgrade it to Hostile. Otherwise insert one.
+fn ensure_hostile_rel(db: &mut SimDb, from_civ: CivId, to_civ: CivId) {
+    let existing = db
+        .civ_relationships
+        .by_from_civ(&from_civ, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|r| r.to_civ == to_civ);
+
+    if let Some(rel) = existing {
+        if rel.opinion != CivOpinion::Hostile {
+            let _ = db.civ_relationships.modify_unchecked(&rel.id, |r| {
+                r.opinion = CivOpinion::Hostile;
+            });
+        }
+    } else {
+        db.civ_relationships
+            .insert_auto_no_fk(|id| CivRelationship {
+                id,
+                from_civ,
+                to_civ,
+                opinion: CivOpinion::Hostile,
+            })
+            .unwrap();
     }
 }
 
@@ -892,6 +965,46 @@ mod tests {
 
         for civ in result.db.civilizations.iter_all() {
             assert!(!civ.name.is_empty(), "CivId({}) has empty name", civ.id.0);
+        }
+    }
+
+    #[test]
+    fn worldgen_bidirectional_hostile_awareness() {
+        // Worldgen must guarantee that at least one hostile-species civ has
+        // bidirectional hostile awareness with the player: they hate us (so
+        // they can raid) AND we hate them (so the player sees the threat).
+        // Test across multiple seeds to catch probabilistic failures.
+        for seed in 0..20 {
+            let config = test_config();
+            let result = run_worldgen(seed, &config);
+
+            // Check reverse: at least one civ hates the player.
+            let hates_player: Vec<_> = result
+                .db
+                .civ_relationships
+                .by_to_civ(&CivId(0), tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .filter(|r| r.opinion == CivOpinion::Hostile)
+                .collect();
+
+            assert!(
+                !hates_player.is_empty(),
+                "Seed {seed}: at least one civ must consider the player hostile"
+            );
+
+            // Check forward: the player hates at least one civ.
+            let player_hates: Vec<_> = result
+                .db
+                .civ_relationships
+                .by_from_civ(&CivId(0), tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .filter(|r| r.opinion == CivOpinion::Hostile)
+                .collect();
+
+            assert!(
+                !player_hates.is_empty(),
+                "Seed {seed}: the player must be aware of at least one hostile civ"
+            );
         }
     }
 

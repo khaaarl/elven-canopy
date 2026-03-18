@@ -18,10 +18,31 @@ use crate::task;
 impl SimState {
     /// Spawn a creature at the nearest nav node to the given position.
     /// Ground-only species snap to ground nodes; others snap to any node.
+    /// Elves are automatically affiliated with the player's civ; other species
+    /// are unaffiliated. Use `spawn_creature_with_civ()` for explicit civ control.
     pub(crate) fn spawn_creature(
         &mut self,
         species: Species,
         position: VoxelCoord,
+        events: &mut Vec<SimEvent>,
+    ) -> Option<CreatureId> {
+        // Elves belong to the player's civ; other species are unaffiliated.
+        let civ_id = if species == Species::Elf {
+            self.player_civ_id
+        } else {
+            None
+        };
+        self.spawn_creature_with_civ(species, position, civ_id, events)
+    }
+
+    /// Spawn a creature at the nearest nav node to the given position with an
+    /// explicit civ affiliation. Ground-only species snap to ground nodes;
+    /// others snap to any node.
+    pub(crate) fn spawn_creature_with_civ(
+        &mut self,
+        species: Species,
+        position: VoxelCoord,
+        civ_id: Option<CivId>,
         events: &mut Vec<SimEvent>,
     ) -> Option<CreatureId> {
         let species_data = &self.species_table[&species];
@@ -67,13 +88,6 @@ impl SimState {
 
         // Create an inventory for this creature.
         let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::Creature);
-
-        // Elves belong to the player's civ; other species are unaffiliated.
-        let civ_id = if species == Species::Elf {
-            self.player_civ_id
-        } else {
-            None
-        };
 
         let creature = crate::db::Creature {
             id: creature_id,
