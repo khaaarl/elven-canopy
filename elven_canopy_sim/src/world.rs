@@ -820,34 +820,44 @@ impl VoxelWorld {
             return true;
         }
 
-        let from_f = [
-            from.x as f32 + 0.5,
-            from.y as f32 + 0.5,
-            from.z as f32 + 0.5,
+        // Integer DDA (Amanatides & Woo) using scaled-integer t values.
+        // All values are multiplied by a common scale factor to avoid floats.
+        // The scale = 2 * product of nonzero |d[axis]| values, so all t_delta
+        // and t_max values are exact integers.
+        let d = [
+            (to.x - from.x) as i64,
+            (to.y - from.y) as i64,
+            (to.z - from.z) as i64,
         ];
-        let to_f = [to.x as f32 + 0.5, to.y as f32 + 0.5, to.z as f32 + 0.5];
-        let dir = [
-            to_f[0] - from_f[0],
-            to_f[1] - from_f[1],
-            to_f[2] - from_f[2],
-        ];
+
+        // Scale factor: product of absolute direction components (nonzero only).
+        // Multiplied by 2 because rays start at voxel center (+0.5), and the
+        // initial t_max is 0.5/|d[axis]| = scale / (2 * |d[axis]|).
+        let abs_d = [d[0].abs(), d[1].abs(), d[2].abs()];
+        let scale: i64 = 2 * abs_d[0].max(1) * abs_d[1].max(1) * abs_d[2].max(1);
+        // t=1.0 in scaled units:
+        let t_one = scale;
 
         let mut voxel = [from.x, from.y, from.z];
         let end_voxel = [to.x, to.y, to.z];
 
         let mut step = [0i32; 3];
-        let mut t_max = [f32::INFINITY; 3];
-        let mut t_delta = [f32::INFINITY; 3];
+        // Use i64::MAX/2 as "infinity" for axes with zero direction.
+        let mut t_max = [i64::MAX / 2; 3];
+        let mut t_delta = [i64::MAX / 2; 3];
 
         for axis in 0..3 {
-            if dir[axis] > 0.0 {
+            if d[axis] > 0 {
                 step[axis] = 1;
-                t_delta[axis] = 1.0 / dir[axis];
-                t_max[axis] = ((voxel[axis] as f32 + 1.0) - from_f[axis]) / dir[axis];
-            } else if dir[axis] < 0.0 {
+                // t_delta = scale / |d[axis]| (how much t advances per voxel step)
+                t_delta[axis] = scale / abs_d[axis];
+                // t_max = 0.5 / |d[axis]| * scale = scale / (2 * |d[axis]|)
+                // (ray starts at center, half a voxel to first boundary)
+                t_max[axis] = scale / (2 * abs_d[axis]);
+            } else if d[axis] < 0 {
                 step[axis] = -1;
-                t_delta[axis] = 1.0 / (-dir[axis]);
-                t_max[axis] = (from_f[axis] - voxel[axis] as f32) / (-dir[axis]);
+                t_delta[axis] = scale / abs_d[axis];
+                t_max[axis] = scale / (2 * abs_d[axis]);
             }
         }
 
@@ -859,7 +869,7 @@ impl VoxelWorld {
         } else {
             2
         };
-        if t_max[min_axis] > 1.0 {
+        if t_max[min_axis] > t_one {
             return true; // Adjacent voxels, nothing between them.
         }
         voxel[min_axis] += step[min_axis];
@@ -883,7 +893,7 @@ impl VoxelWorld {
                 2
             };
 
-            if t_max[min_axis] > 1.0 {
+            if t_max[min_axis] > t_one {
                 return true;
             }
 
