@@ -57,20 +57,25 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
+[ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-ai-test-harness      Headless test harness for AI-driven manual testing
+[ ] F-anatomy              DF-style hit location anatomy system
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-armor                Wearable armor system
+[ ] F-arrow-chase          Enemies chase toward arrow source outside detection range
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
 [ ] F-batch-construct      Batch construction mode with ensemble validation
 [ ] F-batch-craft          Workstation-driven batch crafting with time discount
+[ ] F-bigger-world         Larger playable area
 [ ] F-binding-conflicts    Binding conflict detection
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
+[ ] F-bldg-library         Magic learning building (library/spire)
 [ ] F-bldg-storehouse      Storehouse (item storage)
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
@@ -81,6 +86,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
+[ ] F-civ-pets             Non-elf civ members and pets
+[ ] F-cloak-slot           Cloak/cape equipment slot
 [ ] F-combat               Combat and invader threat system
 [ ] F-command-queue        Shift+right-click to queue commands
 [ ] F-compound-pk          Compound (multi-column) primary keys
@@ -95,6 +102,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
+[ ] F-dwarf-fort-gen       Underground dwarf fortress generation
 [ ] F-dye-application      Apply dye to equipment at workshop
 [ ] F-dye-mixing           Dye color mixing recipes
 [ ] F-dye-palette          Named color palette system for dyes
@@ -104,6 +112,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-weapons          Bows, spears, clubs for elf combat
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-emotions             Multi-dimensional emotional state
+[ ] F-enemy-raids          Enemy civilizations send raids
+[ ] F-festivals            Festivals and community ceremonies
 [ ] F-ff-vertical-arc      Vertical arc awareness for friendly-fire checks
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
 [ ] F-fire-basic           Fire spread and voxel destruction
@@ -113,13 +123,22 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-follow-multi         Camera zoom-to and follow for multi-selections
 [ ] F-food-chain           Food production/distribution pipeline
+[ ] F-footwear-split       Sandals/shoes as footwear, boots as armor
+[ ] F-forest-ecology       Forest floor ecology (flora, fauna, foraging)
+[ ] F-forest-radar         Forest awareness radar (world map detection)
 [ ] F-fruit-pigments       More natural fruit pigment colors (secondaries on fruit parts)
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
+[ ] F-funeral-rites        Funeral rites and mourning
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
+[ ] F-herbalism            Herbalism and alchemy
+[ ] F-incapacitation       Incapacitation at 0 HP instead of instant death
+[ ] F-infra-decay          Infrastructure decay with automated maintenance
+[ ] F-insect-husbandry     Beekeeping and insect husbandry
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
+[ ] F-lesser-trees         Lesser trees (non-sentient, resource/ecology)
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -141,27 +160,35 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-narrative-log        Events and narrative log
+[ ] F-night-predators      Nocturnal predators
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-patrol               Patrol command for military groups
 [ ] F-per-detection        Perception stat modifies hostile detection range
 [ ] F-personality          Personality axes affecting behavior
+[ ] F-phased-archery       Phased archery (nock/draw/loose) with skill-gated mobility
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-recipe-params        Parameterized recipe templates
+[ ] F-rescue               Rescue and stabilize incapacitated creatures
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
+[ ] F-round-building       Round/circular building construction
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
+[ ] F-sculptures           Decorative sculptures
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-selection-bar        Bottom-of-screen selection bar (SC2-style)
+[ ] F-settlement-gen       Procedural NPC settlement generation
 [ ] F-skirmish             Ranged skirmish/kite behavior (shoot-retreat loop)
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
 [ ] F-stairs               Stairs and ramps for vertical movement
+[ ] F-stealth              Camouflage and stealth mechanics
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
+[ ] F-sung-furniture       Sung furniture grown from living wood
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-cycle            Tab to cycle focus through units in selection
 [ ] F-tab-joins            Join iterators across tables
@@ -169,16 +196,26 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-priority        Priority queue and auto-assignment
+[ ] F-traders              Visiting traders from other civs
 [ ] F-tree-capacity        Per-tree carrying capacity limits
+[ ] F-tree-db              Trees as DB entities with elf-tree bonding
+[ ] F-tree-disease         Tree diseases and parasites
 [ ] F-tree-memory          Ancient tree knowledge/vision system
 [ ] F-tree-species         Multiple tree species with properties
+[ ] F-troll-regen          Troll health regeneration over time
+[ ] F-two-click-build      Two-click construction designation (click start, click end)
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-unfurnish            Unfurnish/refurnish a building
+[ ] F-uplift-tree          Uplift lesser tree into bonded great tree
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
+[ ] F-vertical-garden      Vertical gardens on the tree
 [ ] F-visual-smooth        Smooth voxel surface rendering
+[ ] F-war-magic            War magic (combat spells)
 [ ] F-weather              Weather within seasons
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-world-boundary       World boundary visualization
+[ ] F-world-map            World map view
+[ ] F-zone-world           Zone-based world with fidelity partitioning
 ```
 
 ### Done
@@ -427,6 +464,16 @@ structure info panel (enable/disable, bread target). **Draft:**
 
 **Related:** F-bldg-dining, F-bread, F-component-recipes, F-elf-acquire, F-elf-assign, F-food-chain, F-fruit-extraction, F-fruit-variety, F-jobs, F-manufacturing, F-recipes
 
+#### F-bldg-library — Magic learning building (library/spire)
+**Status:** Todo
+
+A building where elves learn and research magic. Could be a library, a spire,
+or a sacred grove. Elves assigned here study spells (F-war-magic) and
+potentially other knowledge systems. Design TBD for research mechanics,
+spell unlocking, and training time.
+
+**Related:** F-forest-radar, F-war-magic
+
 #### F-bldg-storehouse — Storehouse (item storage)
 **Status:** Todo · **Phase:** 4
 
@@ -514,7 +561,7 @@ Elves assemble into choirs to sing the tree into growing. Construction speed
 and quality depend on choir composition and harmony. Ties into the music
 system.
 
-**Related:** F-choir-harmony, F-mana-system, F-music-runtime
+**Related:** F-choir-harmony, F-mana-system, F-music-runtime, F-sung-furniture
 
 #### F-construction — Platform construction (designate/build/cancel)
 **Status:** Done · **Phase:** 2 · **Refs:** §11, §12
@@ -525,7 +572,7 @@ adjacent to solid), creates a blueprint + Build task, elves claim the task
 and incrementally materialize voxels. Cancellation reverts placed voxels.
 Incremental nav graph updates keep pathfinding current during construction.
 
-**Related:** F-blueprint-mode, F-build-queue-ui, F-building, F-demolish, F-placement-ui, F-struct-upgrade, F-structure-reg, F-tree-overlap, F-undo-designate
+**Related:** F-blueprint-mode, F-build-queue-ui, F-building, F-demolish, F-placement-ui, F-round-building, F-struct-upgrade, F-structure-reg, F-tree-overlap, F-two-click-build, F-undo-designate
 
 #### F-demolish — Structure demolition
 **Status:** Todo · **Phase:** 3
@@ -558,6 +605,18 @@ floor area (density varies by type). Auto-renames the building to e.g.
 **New files:** `furniture_renderer.gd`
 
 **Related:** F-batch-craft, F-bldg-dormitory, F-building, F-greenhouse-revamp, F-unfurnish
+
+#### F-infra-decay — Infrastructure decay with automated maintenance
+**Status:** Todo
+
+Structures and infrastructure (rope bridges, platforms, ladders) gradually
+degrade over time and need maintenance. Only worth implementing if
+maintenance can be automated — elves with appropriate jobs periodically
+inspect and repair without player micromanagement. Neglected structures
+eventually become unsafe or collapse. Weather (F-weather) accelerates
+decay.
+
+**Related:** F-weather
 
 #### F-ladders — Rope/wood ladders as cheap connectors
 **Status:** Done · **Phase:** 3 · **Refs:** §11
@@ -633,6 +692,15 @@ display any ongoing or queued furling/unfurling tasks.
 
 **Related:** F-ladders, F-select-struct
 
+#### F-round-building — Round/circular building construction
+**Status:** Todo
+
+Support for round/circular building footprints in the construction system.
+Currently all buildings are rectangular. Round buildings would wrap around
+the tree trunk more naturally and offer architectural variety.
+
+**Related:** F-construction
+
 #### F-stairs — Stairs and ramps for vertical movement
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
 
@@ -661,6 +729,17 @@ Distinct from demolish-and-rebuild: preserves structure identity, name,
 and assignments. Requires structural validation of the expanded footprint.
 
 **Related:** F-construction, F-demolish, F-struct-names
+
+#### F-sung-furniture — Sung furniture grown from living wood
+**Status:** Todo
+
+Growing furniture and interior features directly from living wood via
+elven singing — chairs, tables, shelves, beds that are part of the tree
+itself. Distinct from manufactured furniture (crafted from harvested wood).
+Costs mana instead of materials. Higher quality from skilled singers.
+Unique to the tree-spirit concept and reinforces the symbiotic theme.
+
+**Related:** F-choir-build, F-mana-system
 
 #### F-support-struts — Support strut construction
 **Status:** Done · **Phase:** 3 · **Refs:** §9
@@ -1028,6 +1107,15 @@ hunger/satiation state; bread is the concrete item that fills it).
 Capybara species with ground-only movement restriction, own sprite renderer,
 and species-specific speed config.
 
+#### F-civ-pets — Non-elf civ members and pets
+**Status:** Todo
+
+Non-elf creatures that belong to the player's civilization — tamed animals,
+companion creatures, working beasts. They live in the settlement, have
+needs, and may perform tasks or provide combat support.
+
+**Related:** F-civilizations
+
 #### F-creature-actions — Creature action system: typed duration-bearing actions
 **Status:** Done
 
@@ -1101,7 +1189,7 @@ TraitValue::Int in the creature_traits table.
 
 **Draft:** docs/drafts/creature_stats.md
 
-**Related:** F-creature-biology, F-per-detection
+**Related:** F-creature-biology, F-per-detection, F-phased-archery
 
 #### F-elf-assign — Elf-to-building assignment UI
 **Status:** Todo · **Phase:** 3
@@ -1167,6 +1255,8 @@ panel and as overhead bar.
 #### F-hostile-species — Goblin, Orc, and Troll species
 **Status:** Done
 
+**Related:** F-troll-regen
+
 #### F-hp-death — HP, VitalStatus, and creature death handling
 **Status:** Done
 
@@ -1174,7 +1264,7 @@ Add hp, hp_max, vital_status fields to Creature. VitalStatus enum (Alive, Dead, 
 
 **Draft:** docs/drafts/combat_military.md (§3)
 
-**Related:** F-creature-death, F-hp-ui
+**Related:** F-creature-death, F-hp-ui, F-incapacitation
 
 #### F-melee-action — Melee attack action
 **Status:** Done
@@ -1238,7 +1328,7 @@ Ranged attack as a creature ACTION. Uses the standard ActionKind / next_availabl
 
 **Draft:** docs/drafts/combat_military.md (§5)
 
-**Related:** F-friendly-fire, F-skirmish
+**Related:** F-friendly-fire, F-phased-archery, F-skirmish
 
 #### F-task-interruption — Unified task interruption and cleanup
 **Status:** Done
@@ -1311,6 +1401,16 @@ also needs this function as a prerequisite.
 
 **Related:** F-creature-actions, F-dynamic-pursuit
 
+#### F-troll-regen — Troll health regeneration over time
+**Status:** Todo
+
+Trolls passively regenerate HP over time, making them harder to kill with
+sustained low-damage attacks. Encourages concentrated burst damage or
+fire-based strategies (if F-fire-basic is implemented). Species-level
+config for regen rate.
+
+**Related:** F-hostile-species
+
 ### Economy & Logistics
 
 #### F-batch-craft — Workstation-driven batch crafting with time discount
@@ -1331,13 +1431,24 @@ bakery.
 **Blocked by:** F-recipe-params
 **Related:** F-furnish, F-manufacturing, F-recipes, F-unified-craft-ui
 
+#### F-cloak-slot — Cloak/cape equipment slot
+**Status:** Todo
+
+A cloak/cape equipment slot — worn over other clothing/armor. Provides
+weather protection (F-weather), stealth bonus (F-stealth), and visual
+flair. Material and dye affect appearance. Distinct from armor — cloaks
+are utility/fashion, not protection (though enchanted cloaks could be
+a thing with F-magic-items).
+
+**Related:** F-clothing, F-magic-items, F-stealth, F-weather
+
 #### F-clothing — Wearable clothing system
 **Status:** Done
 
 Creatures can wear clothing items in defined body slots (e.g., head, torso, legs, feet). Clothing is crafted at workshops, stored in inventories, and equipped by creatures. Many details TBD: slot system design (fixed slots vs. layering), how clothing affects mood/comfort/thoughts, crafting recipes and material requirements, visual representation (sprite overlays? color tinting?), clothing durability and wear, species-specific clothing (elf vs. other species body plans), and whether clothing provides any mechanical benefits beyond mood. This is the base wearable-item infrastructure that armor builds on.
 
 **Unblocked:** F-armor, F-equipment-sprites
-**Related:** F-item-durability
+**Related:** F-cloak-slot, F-footwear-split, F-item-durability
 
 #### F-component-recipes — Component-based crafting recipes (bread, thread, bowstring)
 **Status:** Done · **Phase:** 7
@@ -1489,6 +1600,16 @@ creation, building input/output slots, and elf decision-making.
 
 **Related:** F-bldg-dining, F-bldg-kitchen, F-bldg-storehouse, F-bread, F-fruit-extraction, F-fruit-prod, F-fruit-variety, F-hauling, F-logistics, F-recipes
 
+#### F-footwear-split — Sandals/shoes as footwear, boots as armor
+**Status:** Todo
+
+Split footwear into civilian (sandals, shoes) and military (boots as armor).
+Sandals and shoes are normal clothing items; boots become explicitly an
+armor piece that provides protection at the cost of comfort or speed.
+Requires updates to equipment slots and item definitions.
+
+**Related:** F-armor, F-clothing
+
 #### F-fruit-extraction — Fruit extraction (hulling/separation into components)
 **Status:** Done · **Phase:** 7
 
@@ -1555,7 +1676,7 @@ random Leaf-adjacent positions, elves pathfind to harvest. Bridges the gap
 between the existing food decay mechanic (F-food-gauge) and the advanced
 food system (F-fruit-variety).
 
-**Related:** F-branch-growth, F-elf-needs, F-food-chain, F-food-gauge, F-fruit-variety, F-greenhouse-revamp, F-population
+**Related:** F-branch-growth, F-elf-needs, F-food-chain, F-food-gauge, F-fruit-variety, F-greenhouse-revamp, F-population, F-vertical-garden
 
 #### F-fruit-variety — Procedural fruit variety and processing
 **Status:** In Progress · **Phase:** 7 · **Refs:** §13
@@ -1601,7 +1722,7 @@ autonomous production-during-heartbeat model with a more tactile,
 visually rich loop. Number of planters scales with building floor area
 (like other furnishing types).
 
-**Related:** F-fruit-prod, F-fruit-variety, F-furnish
+**Related:** F-fruit-prod, F-fruit-variety, F-furnish, F-vertical-garden
 
 #### F-hauling — Item hauling task type
 **Status:** Done · **Phase:** 3
@@ -1612,6 +1733,28 @@ Includes item reservation system to prevent double-claiming, cleanup on
 task abandonment (clear reservations or drop carried items as ground pile).
 
 **Related:** F-elf-acquire, F-food-chain, F-logistics
+
+#### F-herbalism — Herbalism and alchemy
+**Status:** Todo
+
+Gathering forest plants and brewing them into useful products — healing
+salves (F-rescue), combat buffs, mood tonics, poultices for tree diseases
+(F-tree-disease). Requires foraging from the forest floor (F-forest-ecology)
+and a workshop or alchemist's station. Needs more design research before
+implementation.
+
+**Related:** F-forest-ecology, F-rescue, F-tree-disease
+
+#### F-insect-husbandry — Beekeeping and insect husbandry
+**Status:** Todo
+
+Domesticated insects integrated into the settlement economy — bees for
+honey and wax, silkworms for thread, maybe giant beetles as pack animals.
+Requires hives/enclosures as buildings or furniture. Honey as a food
+ingredient and trade good; wax for candles and sealant; silk as a
+textile material. Fits the forest ecology theme.
+
+**Related:** F-forest-ecology
 
 #### F-item-color — Item color system (material-derived and dye override)
 **Status:** Done
@@ -1746,7 +1889,7 @@ when mp < mp_max, mana bar on creature info panel for creatures with
 mp_max > 0, tree mana display (already exists).
 
 **Blocks:** F-mana-depleted-vfx, F-mana-grow-recipes, F-mana-mood, F-mana-transfer, F-root-network
-**Related:** F-branch-growth, F-choir-build, F-mass-conserve, F-population, F-tree-info
+**Related:** F-branch-growth, F-choir-build, F-forest-radar, F-mass-conserve, F-population, F-sung-furniture, F-tree-info, F-war-magic
 
 #### F-mana-transfer — Tree-to-elf mana transfer
 **Status:** Todo · **Refs:** §11
@@ -1775,7 +1918,7 @@ fields), SetWorkshopConfig command, logistics wants from recipes.
 workshop_enabled, recipe list, craft_status — mirrors kitchen cooking
 section).
 
-**Related:** F-batch-craft, F-bldg-kitchen, F-bread, F-items
+**Related:** F-batch-craft, F-bldg-kitchen, F-bread, F-items, F-sculptures
 
 #### F-pile-gravity — Ground pile gravity and merging
 **Status:** Done · **Phase:** 4
@@ -1870,6 +2013,15 @@ Avoids hardcoding conversion logic per building type.
 
 **Related:** F-batch-craft, F-bldg-kitchen, F-bldg-workshop, F-component-recipes, F-crafting, F-food-chain, F-fruit-variety, F-recipe-hierarchy, F-recipe-params
 
+#### F-sculptures — Decorative sculptures
+**Status:** Todo
+
+Craftable decorative sculptures that improve elf mood when placed in
+buildings or public spaces. Material and quality affect mood bonus.
+Skilled artisans produce better sculptures.
+
+**Related:** F-manufacturing, F-mood-system
+
 #### F-task-assign-opt — Event-driven bidirectional task assignment
 **Status:** Todo · **Phase:** 4
 
@@ -1914,6 +2066,16 @@ Dye integration deferred to F-dye-crafting.
 
 **Related:** F-component-recipes, F-dye-crafting, F-fruit-variety
 
+#### F-traders — Visiting traders from other civs
+**Status:** Todo
+
+Traders from other civilizations periodically visit to buy and sell goods.
+Provides access to materials and items not locally available. Trade
+relationships affected by diplomacy (F-civilizations). Requires a trade
+depot or meeting area.
+
+**Related:** F-civilizations
+
 #### F-tree-capacity — Per-tree carrying capacity limits
 **Status:** Todo · **Phase:** 7 · **Refs:** §13
 
@@ -1930,6 +2092,17 @@ Replace per-building-type crafting UIs (kitchen cooking toggle, workshop recipe 
 **Draft:** docs/drafts/unified_craft_ui.md
 
 **Related:** F-batch-craft, F-recipe-params
+
+#### F-vertical-garden — Vertical gardens on the tree
+**Status:** Todo
+
+Growing food directly on the tree — mosses, epiphytes, hanging planters,
+vine-trained crops. Reduces dependence on ground-level farming. May depend
+on moss/epiphyte visual systems being in place first. Distinct from
+F-greenhouse-revamp (enclosed building) — these are open-air, integrated
+into the tree's living surface.
+
+**Related:** F-fruit-prod, F-greenhouse-revamp
 
 ### Social & Emotional
 
@@ -1954,6 +2127,31 @@ stress, pain, fear, anxiety. Not a single "happiness" number.
 Derived mood score: sum of configurable per-ThoughtKind weights across a
 creature's active thoughts. Seven-tier label (Devastated → Elated). Computed
 on demand, never stored. Lays groundwork for full F-emotions.
+
+#### F-festivals — Festivals and community ceremonies
+**Status:** Todo
+
+Periodic community events — harvest festival, solstice celebration,
+remembrance of the fallen, coming-of-age ceremonies. Elves gather, sing,
+feast; temporarily unavailable for work but gain significant mood boosts.
+Scheduling tradeoffs: cancel a festival to meet a construction deadline,
+but elves will be unhappy about it. Distinct from F-poetry-reading (small
+social gatherings) — festivals are larger, rarer, whole-community events
+with mechanical consequences.
+
+**Related:** F-mood-system, F-poetry-reading
+
+#### F-funeral-rites — Funeral rites and mourning
+**Status:** Todo
+
+Cultural rituals when an elf dies. The community mourns — friends and
+family attend a ceremony, mood is affected settlement-wide. The form of
+the funeral may be culturally determined (sky burial in the canopy, root
+burial, soul-singing). Neglecting funeral rites (e.g., during a crisis)
+has lasting mood consequences. Interacts with F-incapacitation, F-soul-mech,
+and F-social-graph (close relationships = deeper grief).
+
+**Related:** F-incapacitation, F-mood-system, F-social-graph, F-soul-mech
 
 #### F-hedonic-adapt — Asymmetric hedonic adaptation
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -1990,6 +2188,8 @@ at Miserable/Devastated tiers (autonomous tasks like sleep/eat are never
 interrupted). All rates and durations in `MoodConsequencesConfig`. No work
 speed reduction, no social contagion, no personality modifiers — those build
 on top later.
+
+**Related:** F-festivals, F-funeral-rites, F-sculptures
 
 #### F-narrative-log — Events and narrative log
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -2040,7 +2240,7 @@ stress responses, and creative output.
 Elves gather for poetry readings, festivals, and social events. Quality of
 poetry/music affects mood and mana generation.
 
-**Related:** F-proc-poetry, F-vaelith-expand
+**Related:** F-festivals, F-proc-poetry, F-vaelith-expand
 
 #### F-seasons — Seasonal visual and gameplay effects
 **Status:** Todo · **Phase:** 4 · **Refs:** §8, §18
@@ -2049,7 +2249,7 @@ Leaf color changes, snow, seasonal fruit production variation. Gameplay
 effects: cold weather increases clothing need, leaf drop reduces canopy
 shelter.
 
-**Related:** F-weather
+**Related:** F-forest-ecology, F-weather
 
 #### F-social-graph — Relationships and social contagion
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -2057,7 +2257,7 @@ shelter.
 Elf-to-elf relationships: friendships, rivalries, romantic bonds, mentorship.
 Emotional contagion spreads mood through social connections.
 
-**Related:** F-emotions, F-personality
+**Related:** F-emotions, F-funeral-rites, F-personality
 
 #### F-thoughts — Creature thoughts (DF-style event reactions)
 **Status:** Done · **Phase:** 4 · **Refs:** §18
@@ -2190,6 +2390,18 @@ infrastructure.
 
 ### Combat & Defense
 
+#### F-anatomy — DF-style hit location anatomy system
+**Status:** Todo
+
+Dwarf Fortress-style hit location system. Attacks target specific body parts
+(head, torso, limbs) with distinct injury effects — a leg wound slows
+movement, an arm wound reduces combat ability, a head wound can cause
+unconsciousness. Species define their anatomy template. Interacts with
+F-incapacitation (injury type may determine incapacitation behavior) and
+F-armor (armor covers specific body parts).
+
+**Related:** F-armor, F-incapacitation
+
 #### F-armor — Wearable armor system
 **Status:** Todo
 
@@ -2197,6 +2409,18 @@ Armor items that can be worn in clothing slots, providing damage reduction in co
 
 **Unblocked by:** F-clothing, F-item-durability
 **Unblocked:** F-military-armor
+**Related:** F-anatomy, F-footwear-split
+
+#### F-arrow-chase — Enemies chase toward arrow source outside detection range
+**Status:** Todo
+
+When a hostile creature is hit by a projectile from outside its detection
+range, it infers the approximate direction of the attacker. If the creature
+is aggressive, it chases in that direction for a limited time/distance before
+giving up. Adds tactical depth — sniping from range has consequences, and
+enemies don't just stand there absorbing arrows from the fog.
+
+**Related:** F-enemy-ai
 
 #### F-arrow-durability — Arrow durability and recovery
 **Status:** Done · **Phase:** 3
@@ -2278,7 +2502,18 @@ Simple aggression AI for non-civ hostile creatures. This is the first "it all co
 **Draft:** docs/drafts/combat_military.md (§6 "Initial Behavior")
 
 **Blocks:** F-combat
-**Related:** F-engagement-style
+**Related:** F-arrow-chase, F-enemy-raids, F-engagement-style
+
+#### F-enemy-raids — Enemy civilizations send raids
+**Status:** Todo
+
+Hostile civilizations periodically send organized raid parties against the
+player's tree. Raid frequency, composition, and strength scale with game
+progression. Requires F-civilizations for civ relationships and diplomacy
+to determine who raids and why.
+
+**Unblocked by:** F-civilizations
+**Related:** F-civilizations, F-enemy-ai, F-settlement-gen, F-zone-world
 
 #### F-engagement-style — Unified engagement style (species + military group combat tactics)
 **Status:** Done
@@ -2325,7 +2560,7 @@ Creatures with passive initiative or HP below disengage threshold detect hostile
 World hidden except where observed by elves or sensed through tree/root
 network. Strongest near trunk, weaker at root edges, absent beyond.
 
-**Related:** F-combat, F-root-network
+**Related:** F-combat, F-root-network, F-stealth
 
 #### F-friendly-fire — Friendly-fire avoidance for ranged attacks
 **Status:** Done
@@ -2375,7 +2610,21 @@ Display creature HP in the game UI. Two elements:
    just a proportional fill bar. Hidden when HP is full (no visual clutter
    in peacetime). Needs hp/hp_max data piped to the sprite renderers.
 
-**Related:** F-hp-death
+**Related:** F-hp-death, F-incapacitation
+
+#### F-incapacitation — Incapacitation at 0 HP instead of instant death
+**Status:** Todo
+
+Creatures reaching 0 HP become incapacitated rather than dying instantly.
+Incapacitated creatures fall over (sprite rotated 90 degrees), cannot act,
+and begin bleeding out — HP continues to decrease. True death occurs when
+HP reaches the negative of max HP (e.g., a creature with 100 max HP dies
+at -100 HP). The red HP bar is replaced with a black-on-gray bar with a
+skull icon during incapacitation. This creates a rescue window (see
+F-rescue) and makes combat feel less binary.
+
+**Blocks:** F-rescue
+**Related:** F-anatomy, F-funeral-rites, F-hp-death, F-hp-ui, F-rescue, F-soul-mech
 
 #### F-instinctual-flee — Instinctual flee thresholds (species-level fear overrides)
 **Status:** Todo
@@ -2432,6 +2681,7 @@ Send elf parties on expeditions in the wider world with direct tactical
 control (unlike Dwarf Fortress's hands-off approach).
 
 **Blocked by:** F-combat, F-military-org
+**Related:** F-world-map, F-zone-world
 
 #### F-military-equip — Military group equipment acquisition
 **Status:** Done
@@ -2481,6 +2731,17 @@ commands for military groups and ad-hoc selections.
 
 **Related:** F-rts-selection
 
+#### F-night-predators — Nocturnal predators
+**Status:** Todo
+
+Different threat profile at night — nocturnal creatures that climb, fly,
+or hunt in darkness. Giant spiders, owlbears, shadow cats. Creates pressure
+to have defenses and lighting, and makes the day/night cycle mechanically
+meaningful beyond just pacing. Depends on F-day-night.
+
+**Blocked by:** F-day-night
+**Related:** F-day-night
+
 #### F-patrol — Patrol command for military groups
 **Status:** Todo · **Phase:** 5
 
@@ -2499,7 +2760,31 @@ Perception stat applies an exponential multiplier to the species-level
 from further away. Uses the same 2^20 fixed-point stat multiplier table
 as other stats. Depends on F-creature-stats for the Perception trait.
 
-**Related:** F-creature-stats, F-hostile-detection
+**Related:** F-creature-stats, F-hostile-detection, F-stealth
+
+#### F-phased-archery — Phased archery (nock/draw/loose) with skill-gated mobility
+**Status:** Todo
+
+Break the shoot action into three discrete phases: nock (attach arrow to
+bowstring), draw/aim (pull back and acquire target), and loose (release —
+near-instantaneous). Each phase has its own duration and movement rules:
+
+- **Nock:** moderate duration. Must be stationary at novice skill; can nock
+  while moving at moderate skill.
+- **Draw/Aim:** longer duration, determines accuracy. Must be stationary at
+  novice/moderate skill; can draw while moving at high skill (reduced
+  accuracy penalty).
+- **Loose:** instantaneous or near-instantaneous.
+
+Skill-gated mobility makes experienced archers dramatically more effective
+at skirmishing (F-skirmish) — a novice must stop, nock, stop, aim, loose,
+then start moving again, while an expert can do the entire sequence on the
+run. Could be implemented via cooldowns per phase or as a state machine on
+the creature's action. Interacts with F-creature-stats (Dexterity for
+nocking speed, Perception for aim time) and F-skirmish (mobile shooting
+enables effective kiting).
+
+**Related:** F-creature-stats, F-shoot-action, F-skirmish
 
 #### F-projectiles — Projectile physics system (arrows)
 **Status:** Done
@@ -2514,6 +2799,17 @@ SubVoxelCoord type (i64 per axis, 2^30 sub-units per voxel). Projectile entity t
 
 **Related:** F-friendly-fire, F-spatial-index
 
+#### F-rescue — Rescue and stabilize incapacitated creatures
+**Status:** Todo
+
+Allied creatures can rescue incapacitated friendlies — carry them to safety,
+apply first aid to stabilize bleeding. A complex feature involving new task
+types, pathfinding with a carried creature, and medical/stabilization
+mechanics. Design TBD.
+
+**Blocked by:** F-incapacitation
+**Related:** F-herbalism, F-incapacitation
+
 #### F-skirmish — Ranged skirmish/kite behavior (shoot-retreat loop)
 **Status:** Todo
 
@@ -2525,7 +2821,7 @@ to provide the configuration knobs (weapon preference, disengage
 threshold) that determine when a creature uses this tactic.
 
 **Unblocked by:** F-engagement-style
-**Related:** F-shoot-action
+**Related:** F-phased-archery, F-shoot-action
 
 #### F-spatial-index — Creature spatial index for voxel-level position queries
 **Status:** Done
@@ -2538,12 +2834,43 @@ BTreeMap<VoxelCoord, Vec<CreatureId>> on SimState, #[serde(skip)], rebuilt on lo
 
 **Related:** F-projectiles
 
+#### F-stealth — Camouflage and stealth mechanics
+**Status:** Todo
+
+Forest-based concealment mechanics. Elves can hide in foliage, set ambushes,
+use terrain for cover. Detection depends on movement, cover density, and
+observer perception (F-per-detection). Enables ambush tactics, hidden
+sentries, and scouting. Cloaks/capes (F-cloak-slot) improve concealment.
+Could interact with F-fog-of-war for asymmetric information.
+
+**Related:** F-cloak-slot, F-fog-of-war, F-per-detection
+
 #### F-voxel-exclusion — Creatures cannot enter voxels occupied by hostile creatures
 **Status:** Done · **Phase:** 3
 
 Creatures should not be able to enter a voxel already occupied by a hostile creature (and vice versa). Currently multiple creatures freely share voxels regardless of faction. Needs pathfinding and/or movement-step checks to enforce. Edge case: if creatures are already sharing a voxel when hostility begins, behavior is TBD (push apart, allow temporary overlap, etc.).
 
+#### F-war-magic — War magic (combat spells)
+**Status:** Todo
+
+Offensive and defensive magic usable in combat — fireballs, shields, healing,
+etc. Creatures with sufficient mana and training can cast spells as active
+abilities (bound via F-ability-hotkeys). Requires mana (F-mana-system) and
+a place to learn magic (F-bldg-library). Design TBD for spell list, mana
+costs, casting times, and effects.
+
+**Related:** F-ability-hotkeys, F-bldg-library, F-mana-system
+
 ### World Expansion & Ecology
+
+#### F-bigger-world — Larger playable area
+**Status:** Todo
+
+Increase the playable area beyond the current single-tree-centered map.
+Likely involves chunk streaming, camera bounds expansion, and world gen
+changes. Prerequisite or co-requisite for lesser trees and multi-tree play.
+
+**Related:** F-lesser-trees, F-multi-tree, F-world-map, F-zone-world
 
 #### F-civ-knowledge — Civilization knowledge system (fruit tiers, discovery)
 **Status:** Todo
@@ -2574,7 +2901,8 @@ for non-elf civs, Vaelith names for elf civs.
 
 **Draft:** `docs/drafts/elfcyclopedia_civs.md` §Civilizations
 
-**Related:** F-fruit-variety
+**Unblocked:** F-enemy-raids
+**Related:** F-civ-pets, F-dwarf-fort-gen, F-enemy-raids, F-fruit-variety, F-settlement-gen, F-traders
 
 #### F-cultural-drift — Inter-tree cultural divergence
 **Status:** Todo · **Phase:** 7 · **Refs:** §7, §18
@@ -2589,6 +2917,32 @@ social norms over time.
 
 Length of in-game day. Affects pacing, fruit production, sleep schedules.
 Open design question (§27).
+
+**Blocks:** F-night-predators
+**Related:** F-night-predators
+
+#### F-dwarf-fort-gen — Underground dwarf fortress generation
+**Status:** Todo
+
+Procedural generation of underground dwarf fortresses. Multi-level
+excavated halls, workshops, living quarters, treasury vaults, defensive
+chokepoints. Significantly more complex than surface settlement generation
+due to 3D interior layout, structural considerations, and the need to
+carve into existing terrain rather than place on top of it. Separate from
+F-settlement-gen due to complexity.
+
+**Related:** F-civilizations, F-settlement-gen, F-zone-world
+
+#### F-forest-ecology — Forest floor ecology (flora, fauna, foraging)
+**Status:** Todo
+
+The forest floor as a living system — mushrooms, undergrowth, ferns, animal
+trails, fallen logs, streams. Provides foraging resources (herbs, fungi,
+small game), affects pathfinding and visibility, and makes the ground level
+visually rich rather than flat terrain. Interacts with F-lesser-trees,
+F-herbalism, and F-seasons (seasonal variation in flora).
+
+**Related:** F-herbalism, F-insect-husbandry, F-lesser-trees, F-seasons
 
 #### F-fruit-naming — Fruit naming overhaul
 **Status:** Done · **Phase:** 7
@@ -2630,6 +2984,17 @@ interpolation. Dirt has voxel priority 0 (tree voxels overwrite it), maps to
 pinned in the structural solver. Large nav graph updated to handle variable
 terrain height.
 
+#### F-lesser-trees — Lesser trees (non-sentient, resource/ecology)
+**Status:** Todo
+
+Non-sentient trees that populate the world — smaller than great trees,
+providing wood, fruit, shade, and ecological variety. Not bonded to a spirit,
+cannot host elven construction. May be harvestable for resources. Interact
+with F-uplift-tree (can be awakened into a great tree).
+
+**Blocks:** F-uplift-tree
+**Related:** F-bigger-world, F-forest-ecology, F-uplift-tree, F-zone-world
+
 #### F-multi-tree — NPC trees with personalities
 **Status:** Todo · **Phase:** 7 · **Refs:** §2, §7
 
@@ -2641,8 +3006,9 @@ their own elves and mana, in cooperative or competitive configurations
 per-player entity ownership, per-player command validation, and per-player
 fog of war rendering.
 
+**Blocked by:** F-tree-db
 **Blocks:** F-cultural-drift, F-root-network
-**Related:** F-multiplayer, F-tree-capacity, F-tree-species
+**Related:** F-bigger-world, F-multiplayer, F-settlement-gen, F-tree-capacity, F-tree-db, F-tree-species, F-uplift-tree, F-zone-world
 
 #### F-root-network — Root network expansion and diplomacy
 **Status:** Todo · **Phase:** 7 · **Refs:** §2
@@ -2652,7 +3018,54 @@ convince trees to join the network. Expands buildable space and perception
 radius.
 
 **Blocked by:** F-mana-system, F-multi-tree
-**Related:** F-fog-of-war
+**Related:** F-fog-of-war, F-forest-radar
+
+#### F-settlement-gen — Procedural NPC settlement generation
+**Status:** Todo
+
+Procedural generation of NPC civilization settlements when a zone
+transitions from Seed to Active. Each civ species has a distinct
+settlement style:
+
+- **Elves:** Great tree with platforms, walkways, and grown structures
+  (reuses existing tree gen and construction systems).
+- **Humans:** Ground-level buildings — houses, walls, market squares,
+  roads. Wood and stone construction.
+- **Goblins:** Crude ground-level camps — palisades, firepits, huts.
+  Possibly cave-adjacent.
+- **Orcs:** Fortified ground-level compounds — thick walls, towers,
+  training grounds.
+- **Dwarves:** See F-dwarf-fort-gen (underground fortresses are
+  complex enough to warrant a separate feature).
+
+Generation uses civ metadata (population, wealth, age, culture tags)
+to determine settlement size, building types, and defensive structures.
+The result is placed into the zone's voxel grid with pre-built structures
+registered in SimDb. NPC creatures are spawned with appropriate equipment
+and assignments.
+
+**Open question:** Whether visited zones preserve voxel state permanently
+or regenerate from updated civ metadata on revisit is UNDECIDED. Permanent
+preservation is simpler conceptually and avoids weird resets, but has
+memory/save-size implications for a world with many visited zones.
+Regeneration allows background-state evolution (population grows, buildings
+added/repaired) to be reflected visually, but risks discarding player
+actions (battle damage, stolen loot, placed structures). This is a major
+architectural decision that affects F-zone-world's background tick design.
+
+**Related:** F-civilizations, F-dwarf-fort-gen, F-enemy-raids, F-multi-tree, F-zone-world
+
+#### F-tree-disease — Tree diseases and parasites
+**Status:** Todo
+
+Threats to the tree itself — fungal infections, boring insects, parasitic
+vines. Requires elves to diagnose (herbalism or tree-tending skill) and
+treat (pruning, poultices, controlled burns). Untreated disease can spread
+to other parts of the tree, weaken structural integrity, or reduce mana
+generation. A different kind of crisis from raids — slow-building and
+requiring specialized knowledge rather than military force.
+
+**Related:** F-herbalism
 
 #### F-tree-memory — Ancient tree knowledge/vision system
 **Status:** Todo · **Phase:** 7 · **Refs:** §2
@@ -2675,7 +3088,7 @@ are not yet specified.
 Rain, wind, storms within seasons. Could affect mood, fire spread, and
 construction difficulty. Open design question (§27).
 
-**Related:** F-fire-ecology, F-seasons
+**Related:** F-cloak-slot, F-fire-ecology, F-infra-decay, F-seasons
 
 #### F-worldgen-framework — Worldgen generator framework
 **Status:** Done
@@ -2688,7 +3101,58 @@ the pattern for generator sequencing.
 
 **Draft:** `docs/drafts/elfcyclopedia_civs.md` §Worldgen Framework
 
+#### F-zone-world — Zone-based world with fidelity partitioning
+**Status:** Todo
+
+Zone-based world architecture within a single unified sim. The world is
+partitioned into spatial zones, each a bounded voxel grid, but all zones
+share one SimDb, one save file, one deterministic simulation.
+
+**Zone states:**
+- **Active:** Full voxel sim — pathfinding, creature actions, construction,
+  combat. This is the current game, applied per-zone.
+- **Background:** Coarse heartbeat — population changes, repair/expansion
+  progress, resource accumulation. No pathfinding, no voxel-level movement.
+  Used for NPC civ towns, unoccupied areas.
+- **Seed:** Never visited. Exists as worldgen parameters + civ metadata.
+  Deterministically generated into full voxels on first activation.
+
+**DB changes:** Zone table in SimDb (zone_id, zone_state, world_map_pos,
+terrain_type, owning_civ, seed, etc.). zone_id column added to creature,
+structure, item, and other spatially-located tables.
+
+**Fidelity transitions:** Deterministic rules govern when zones change state.
+Active→Background when no player-relevant creatures remain. Seed→Active
+on first player creature entry (or other deterministic trigger). Background
+zones tick on a coarse schedule. All transitions must be deterministic for
+multiplayer/replay compatibility.
+
+**Inter-zone travel:** Creatures moving between zones have a world-map
+travel phase with nontrivial duration. Zones are not topologically
+connected at edges — implied uninteresting space between them. Encounters
+en route (e.g., intercept a raiding party) generate a battle zone on the
+fly from terrain type at the world map location.
+
+**No separate sims:** Same sim code, same event queue, same DB. The zone
+is a simulation fidelity hint, not a separate world.
+
+**Related:** F-bigger-world, F-dwarf-fort-gen, F-enemy-raids, F-forest-radar, F-lesser-trees, F-military-campaign, F-multi-tree, F-settlement-gen, F-tree-db, F-world-map
+
 ### Soul Mechanics & Magic
+
+#### F-forest-radar — Forest awareness radar (world map detection)
+**Status:** Todo
+
+Great trees extend awareness through the surrounding forest, detecting
+entity movement on the world map outside their home zone. Thematically
+tied to the tree's affinity for the surrounding forest canopy and root
+network. Requires research (F-bldg-library) and costs continual mana
+expenditure (F-mana-system) to maintain. Detection radius scales with
+mana investment. Reveals incoming raiding parties, trader caravans, and
+wildlife migration on the world map, giving the player advance warning
+and time to prepare or intercept.
+
+**Related:** F-bldg-library, F-mana-system, F-root-network, F-world-map, F-zone-world
 
 #### F-magic-items — Magic item personalities and crafting
 **Status:** Todo · **Phase:** 8+ · **Refs:** §22
@@ -2696,7 +3160,7 @@ the pattern for generator sequencing.
 Magic items with emergent personalities from their crafting circumstances
 and the souls/emotions imbued in them.
 
-**Related:** F-crafting, F-soul-mech
+**Related:** F-cloak-slot, F-crafting, F-soul-mech
 
 #### F-soul-mech — Death, soul passage, resurrection
 **Status:** Todo · **Phase:** 8+ · **Refs:** §19
@@ -2704,7 +3168,18 @@ and the souls/emotions imbued in them.
 Elf death, soul passage into trees, possible resurrection, and
 soul-powered constructs (golems, animated defenses).
 
-**Related:** F-creature-death, F-magic-items
+**Related:** F-creature-death, F-funeral-rites, F-incapacitation, F-magic-items
+
+#### F-uplift-tree — Uplift lesser tree into bonded great tree
+**Status:** Todo
+
+A major magical act: the player tree spirit (or an elf coven) awakens a
+lesser tree into a new great tree capable of bonding elves and hosting
+construction. Enables expansion beyond a single tree. The uplifted tree
+becomes a new entity in F-tree-db and can participate in F-multi-tree.
+
+**Blocked by:** F-lesser-trees
+**Related:** F-lesser-trees, F-multi-tree, F-tree-db
 
 ### UI & Presentation
 
@@ -2727,6 +3202,17 @@ _shortcut_input with an InputMap action that panels can selectively
 block.
 
 **Related:** F-selection-groups
+
+#### F-ability-hotkeys — RTS-style bindable ability hotkeys on creatures
+**Status:** Todo
+
+RTS-style ability buttons on selected creatures, with bindable keyboard
+shortcuts. When a creature with abilities is selected, ability buttons appear
+in the UI (like StarCraft's command card). Abilities include combat magic
+(F-war-magic), special species abilities, and potentially other active skills.
+Hotkeys are displayed on the buttons and can be rebound.
+
+**Related:** F-war-magic
 
 #### F-ai-sprites — AI-generated sprite art pipeline
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
@@ -3515,6 +4001,16 @@ or a persistent sidebar element.
 
 **Related:** F-creature-info, F-mana-system
 
+#### F-two-click-build — Two-click construction designation (click start, click end)
+**Status:** Todo
+
+Replace the current click-drag-release construction designation with a
+two-click workflow: click to set the start corner, move mouse to preview,
+click again to set the end corner. More precise and less prone to
+accidental designations.
+
+**Related:** F-construction
+
 #### F-world-boundary — World boundary visualization
 **Status:** Todo · **Phase:** 2
 
@@ -3523,6 +4019,15 @@ fixed dimensions but nothing shows the player where the edges are. Could be
 subtle ground grid lines, edge fog, fading terrain, or a visible border
 when the camera approaches the edge. Prevents confusion when placing
 construction near world limits.
+
+#### F-world-map — World map view
+**Status:** Todo
+
+A world map UI showing the broader region — other trees, civilizations,
+terrain. Used for strategic decisions like where to send expeditions,
+tracking incoming raids, and understanding the geopolitical landscape.
+
+**Related:** F-bigger-world, F-forest-radar, F-military-campaign, F-zone-world
 
 #### F-zlevel-vis — Z-level visibility (cutaway/toggle)
 **Status:** Done · **Refs:** §27
@@ -3693,6 +4198,18 @@ as `SimDb` (16 tables) — see F-sim-tab-migrate.
 
 #### F-split-sim — Split monolithic sim.rs into domain sub-modules
 **Status:** Done
+
+#### F-tree-db — Trees as DB entities with elf-tree bonding
+**Status:** Todo
+
+Trees as first-class entities in SimDb with columns for position, species,
+mana_stored, mana_capacity, etc. Each elf has a bonded_tree_id foreign key.
+Prerequisite for F-multi-tree: the current implicit "the one tree" must become
+an explicit DB row before multiple trees can coexist. Also enables per-tree
+mana pools, per-tree elf rosters, and tree-specific stats/upgrades.
+
+**Blocks:** F-multi-tree
+**Related:** F-multi-tree, F-uplift-tree, F-zone-world
 
 #### F-tree-gen — Procedural tree generation (trunk+branches)
 **Status:** Done · **Phase:** 1 · **Refs:** §8
