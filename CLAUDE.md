@@ -69,6 +69,8 @@ The repo's `.claude/settings.json` sets `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DI
 
 **Keep Bash commands simple.** Do not use `source`, command substitution (`$(...)` or backticks), heredocs (`<<EOF`), shell variables, or other shell tricks. These trigger unnecessary permission prompts. Also avoid putting flag names inside quotes (e.g., `git show --stat "--format="` can trigger a "quoted flag names" permission check) — keep flags as bare arguments. Use the dedicated Read/Write/Edit tools for file operations. For `git commit`, always use the `.tmp/commit-msg.txt` + `git commit -F` approach described in the "Committing Code" section.
 
+**Preserve slow command output.** Commands that compile, test, format, lint, or are otherwise slow must capture output via `tee` to `.tmp/` (e.g., `scripts/build.sh check 2>&1 | tee .tmp/check.txt | grep error`). Grep or read the file afterward instead of re-running the command.
+
 ## Scratch Files
 
 Use `.tmp/` in the repo root (gitignored) for any temporary files — benchmark output, intermediate data, scratch scripts, etc. It always exists. **Do NOT use `/tmp`** — it can trigger permission prompts and isn't project-scoped.
