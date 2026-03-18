@@ -362,6 +362,43 @@ func test_startup_scene_loads_and_initializes() -> void:
 		tree_info, ["position_x", "position_y", "position_z", "mana_stored"], "Home tree info"
 	)
 
+	# -- Verify tree info panel shows mana via UI --
+	_press_key(KEY_I)
+	var tree_panel_visible := await _wait_for(func(): return _is_panel_visible("TreeInfoPanel"), 30)
+	assert_true(tree_panel_visible, "TreeInfoPanel should open on I key press")
+	for _fi in 3:
+		await get_tree().process_frame
+	var tree_panel := _main_scene.find_child("TreeInfoPanel", true, false)
+	# The mana label shows "N / M" format; verify "Mana:" title is present.
+	assert_true(
+		_find_text_in_descendants(tree_panel, "Mana:"),
+		"TreeInfoPanel should show 'Mana:' label",
+	)
+	# Verify the mana value label contains " / " (the "stored / capacity" format).
+	assert_true(
+		_find_text_in_descendants(tree_panel, " / "),
+		"TreeInfoPanel should show mana in 'N / M' format",
+	)
+	# Close tree info panel and verify it hides.
+	_press_key(KEY_I)
+	var tree_panel_hidden := await _wait_for(
+		func(): return not _is_panel_visible("TreeInfoPanel"), 30
+	)
+	assert_true(tree_panel_hidden, "TreeInfoPanel should hide on second I key press")
+
+	# -- Verify status bar shows speed label --
+	# Note: the bridge-level set_sim_speed("Paused") call in _load_game_scene
+	# doesn't propagate to the StatusBar UI (it bypasses the signal chain),
+	# so the label likely still reads "Speed: Normal".  We just verify the
+	# speed label exists at all.
+	var found_speed := await _wait_for(
+		func():
+			var sbar := _main_scene.find_child("StatusBar", true, false)
+			return _find_text_in_descendants(sbar, "Speed:"),
+		30
+	)
+	assert_true(found_speed, "Status bar should show 'Speed:' label")
+
 
 # ===========================================================================
 # Test 2: Creature selection and info panel
@@ -413,9 +450,9 @@ func test_creature_selection_shows_info_panel() -> void:
 	# -- Wait for the creature info panel to appear --
 	var panel_visible := await _wait_for(func(): return _is_panel_visible("CreatureInfoPanel"), 30)
 	if not panel_visible:
-		# Fallback: select via the selection controller API directly.
-		# This validates the panel wiring even if click-to-select doesn't work
-		# under headless rendering.
+		# ACCEPTED EXCEPTION: Fallback to the selection controller API when
+		# click-to-select fails under headless xvfb.  The controller call
+		# exercises the same panel-wiring path a click would trigger.
 		var selector := _main_scene.find_child("SelectionController", true, false)
 		if selector:
 			selector.select_creature_by_id(_fixture.uuid)
@@ -430,6 +467,41 @@ func test_creature_selection_shows_info_panel() -> void:
 	var panel := _main_scene.find_child("CreatureInfoPanel", true, false)
 	var found_species := _find_text_in_descendants(panel, "Species: Elf")
 	assert_true(found_species, "Panel should show 'Species: Elf'")
+
+	# -- Verify panel shows creature name --
+	# The name label shows "Name: <name>" or "Name: <name> (<meaning>)".
+	assert_ne(_fixture.name, "", "Fixture name should be non-empty")
+	var found_name := _find_text_in_descendants(panel, _fixture.name)
+	assert_true(found_name, "Panel should show creature name '%s'" % _fixture.name)
+
+	# -- Verify panel shows HP --
+	# The HP label shows "<current> / <max>".  We can't predict the exact
+	# numbers, but the format "N / M" should be present.
+	var found_hp := _find_text_in_descendants(panel, " / ")
+	assert_true(found_hp, "Panel should show HP in 'N / M' format")
+
+	# -- Verify panel shows position --
+	# The position label shows "Position: (x, y, z)".
+	var pos_str := "Position: (%d, %d, %d)" % [int(_fixture.x), int(_fixture.y), int(_fixture.z)]
+	var found_pos := _find_text_in_descendants(panel, pos_str)
+	assert_true(found_pos, "Panel should show '%s'" % pos_str)
+
+	# -- Verify panel shows task --
+	# The task label shows "Task: <kind>" or "Task: none".
+	var found_task := _find_text_in_descendants(panel, "Task:")
+	assert_true(found_task, "Panel should show a 'Task:' label")
+
+	# -- Verify panel shows mood --
+	# The mood label shows "Mood: <tier> (+/-N)".
+	var found_mood := _find_text_in_descendants(panel, "Mood:")
+	assert_true(found_mood, "Panel should show a 'Mood:' label")
+
+	# -- Close the panel via ESC and verify it hides --
+	_press_key(KEY_ESCAPE)
+	var panel_hidden := await _wait_for(
+		func(): return not _is_panel_visible("CreatureInfoPanel"), 30
+	)
+	assert_true(panel_hidden, "CreatureInfoPanel should hide after ESC")
 
 
 # ===========================================================================
@@ -488,30 +560,45 @@ func test_military_panel_shows_group() -> void:
 	var panel_visible := await _wait_for(func(): return _is_panel_visible("MilitaryPanel"), 30)
 	assert_true(panel_visible, "MilitaryPanel should open on M key press")
 
-	# -- Verify panel contains "Alpha Squad" text --
-	# Wait a frame for the panel to refresh its content.
+	# -- Verify panel contains "Alpha Squad" text and member count --
+	# Wait a few frames for the panel to refresh its content.
 	for _fi in 3:
 		await get_tree().process_frame
 	var panel := _main_scene.find_child("MilitaryPanel", true, false)
 	var found_text := _find_text_in_descendants(panel, "Alpha Squad")
 	assert_true(found_text, "Panel should contain 'Alpha Squad' text")
 
-	# -- Verify member count via bridge (more reliable than UI text search) --
+	# The summary row is [Button("Alpha Squad [Passive]"), Label("1")].
+	# The button text includes the initiative in brackets.  Verify the
+	# button text contains "Alpha Squad" and the row also has the count.
 	var members: Array = _get_bridge().get_military_group_members(_fixture.group_id)
 	assert_eq(members.size(), 1, "Alpha Squad should have 1 member via bridge query")
+	# Verify the panel shows the initiative tag alongside the group name.
+	assert_true(
+		_find_text_in_descendants(panel, "Alpha Squad ["),
+		"Summary row button should show 'Alpha Squad [<initiative>]'",
+	)
 
 	# -- Close military panel via M key --
 	_press_key(KEY_M)
 	var panel_hidden := await _wait_for(func(): return not _is_panel_visible("MilitaryPanel"), 30)
 	assert_true(panel_hidden, "MilitaryPanel should close on second M key press")
 
-	# -- Reopen and verify consistency --
+	# -- Reopen and verify consistency in both bridge and UI --
 	_press_key(KEY_M)
 	var reopened := await _wait_for(func(): return _is_panel_visible("MilitaryPanel"), 30)
 	assert_true(reopened, "MilitaryPanel should reopen on third M key press")
+	for _fi in 3:
+		await get_tree().process_frame
 	# Group data should still be consistent after close+reopen.
 	var members_after: Array = _get_bridge().get_military_group_members(_fixture.group_id)
 	assert_eq(members_after.size(), 1, "Group should still have 1 member after panel reopen")
+	# Re-verify UI shows "Alpha Squad" after reopen.
+	var panel_after := _main_scene.find_child("MilitaryPanel", true, false)
+	assert_true(
+		_find_text_in_descendants(panel_after, "Alpha Squad"),
+		"Panel should still show 'Alpha Squad' after close+reopen",
+	)
 
 
 # ===========================================================================
@@ -564,8 +651,11 @@ func test_construction_blueprint_placement() -> void:
 	assert_eq(initial_bp.size(), 0, "No blueprints should exist initially")
 
 	# -- Place a platform blueprint via bridge --
-	# Using the bridge directly rather than the full drag-and-confirm UI flow,
-	# as mouse drag simulation is unreliable under headless xvfb.
+	# ACCEPTED EXCEPTION: Blueprint placement uses the bridge directly because
+	# the full UI construction flow requires mouse drag simulation (press at
+	# start voxel, drag to end voxel, release to enter preview, confirm) which
+	# is unreliable under headless xvfb.  The bridge call exercises the same
+	# sim command the UI would emit.
 	var result: String = _get_bridge().designate_build_rect(
 		_fixture.build_x, _fixture.build_y, _fixture.build_z, 2, 2
 	)
@@ -592,10 +682,48 @@ func test_construction_blueprint_placement() -> void:
 		"Should have either structures or remaining blueprints after stepping",
 	)
 
+	# -- If structures were built, select one and verify StructureInfoPanel --
+	if structures.size() > 0:
+		var first_sid: int = int(structures[0].get("id", -1))
+		var selector := _main_scene.find_child("SelectionController", true, false)
+		if selector and first_sid >= 0:
+			# ACCEPTED EXCEPTION: structure selection via controller (see crafting
+			# test step 1 comment for xvfb rationale).
+			selector.select_structure(first_sid)
+			var panel_visible := await _wait_for(
+				func(): return _is_panel_visible("StructureInfoPanel"), 30
+			)
+			assert_true(panel_visible, "StructureInfoPanel should open for completed structure")
+			var struct_panel := _main_scene.find_child("StructureInfoPanel", true, false)
+			assert_true(
+				_find_text_in_descendants(struct_panel, "Platform"),
+				"StructureInfoPanel should show 'Platform' build type",
+			)
+			# Deselect and verify panel closes.
+			_press_key(KEY_ESCAPE)
+			var struct_closed := await _wait_for(
+				func(): return not _is_panel_visible("StructureInfoPanel"), 30
+			)
+			assert_true(struct_closed, "StructureInfoPanel should hide after ESC")
+
 	# -- Verify the construction panel opens via B key --
 	_press_key(KEY_B)
 	var found_construction := await _wait_for(func(): return _is_construction_active(), 30)
 	assert_true(found_construction, "Construction mode should activate on B key")
+
+	# Verify construction mode buttons are visible (Platform, Building).
+	# Wait a few frames for the construction UI to fully populate.
+	for _fi in 3:
+		await get_tree().process_frame
+	assert_not_null(
+		_find_button(_main_scene, "Platform"),
+		"Construction mode should show 'Platform' button",
+	)
+	assert_not_null(
+		_find_button(_main_scene, "Building"),
+		"Construction mode should show 'Building' button",
+	)
+
 	# Exit construction mode.
 	_press_key(KEY_ESCAPE)
 	await _wait_for(func(): return not _is_construction_active(), 30)
@@ -628,7 +756,7 @@ func test_save_load_round_trip() -> void:
 	# -- Load the save --
 	await _load_game_scene(json)
 
-	# -- Verify initial state matches fixture --
+	# -- Verify initial state matches fixture (bridge) --
 	assert_eq(_get_bridge().current_tick(), _fixture.tick, "Tick should match fixture after load")
 	assert_eq(_get_bridge().elf_count(), _fixture.elf_count, "Elf count should match fixture")
 	assert_eq(
@@ -644,6 +772,30 @@ func test_save_load_round_trip() -> void:
 			% [_get_bridge().home_tree_mana(), _fixture.mana]
 		),
 	)
+
+	# -- Verify initial state matches fixture (UI) --
+	# Status bar should show the elf count.
+	var pop_str := "%d Elves" % _fixture.elf_count
+	if _fixture.elf_count == 1:
+		pop_str = "1 Elf"
+	var sb := _main_scene.find_child("StatusBar", true, false)
+	var found_pop := await _wait_for(func(): return _find_text_in_descendants(sb, pop_str), 30)
+	assert_true(found_pop, "Status bar should show '%s' after initial load" % pop_str)
+
+	# Units panel should list the capybara.
+	_press_key(KEY_U)
+	var units_visible := await _wait_for(func(): return _is_panel_visible("UnitsPanel"), 30)
+	assert_true(units_visible, "UnitsPanel should open on U key press")
+	# Wait for the panel to refresh its creature list.
+	for _fi in 5:
+		await get_tree().process_frame
+	var units_panel := _main_scene.find_child("UnitsPanel", true, false)
+	assert_true(
+		_find_text_in_descendants(units_panel, "Capybara"),
+		"UnitsPanel should show 'Capybara' section after load",
+	)
+	# Close units panel.
+	_press_key(KEY_U)
 
 	# -- Step time to modify state --
 	_step_ticks(100)
@@ -681,6 +833,17 @@ func test_save_load_round_trip() -> void:
 		_fixture.capybara_count,
 		"Capybara count should survive save/load round-trip",
 	)
+
+	# -- Verify reloaded state in UI --
+	# Status bar should still show the elf count after reload.
+	var sb_reload := _main_scene.find_child("StatusBar", true, false)
+	var pop_str_reload := "%d Elves" % _fixture.elf_count
+	if _fixture.elf_count == 1:
+		pop_str_reload = "1 Elf"
+	var found_pop_reload := await _wait_for(
+		func(): return _find_text_in_descendants(sb_reload, pop_str_reload), 30
+	)
+	assert_true(found_pop_reload, "Status bar should show '%s' after reload" % pop_str_reload)
 
 
 # ===========================================================================
@@ -938,6 +1101,10 @@ func _setup_crafting_fixture(bridge: SimBridge) -> void:
 		# (prevents elf starvation over the long sim duration).
 		bridge.debug_add_item_to_structure(storehouse_id, "Bowstring", 20, "")
 		bridge.debug_add_item_to_structure(storehouse_id, "Bread", 500, "")
+		# Pre-stock workshop with bowstrings so the crafting test doesn't
+		# need a mid-test debug_add_item call (logistics hauling is too slow
+		# for test timeouts).
+		bridge.debug_add_item_to_structure(workshop_id, "Bowstring", 10, "")
 
 	_fixture = {
 		"workshop_id": workshop_id,
@@ -969,6 +1136,11 @@ func test_crafting_pipeline_via_ui() -> void:
 	# ---------------------------------------------------------------
 	# 1. Select workshop → structure info panel opens
 	# ---------------------------------------------------------------
+	# ACCEPTED EXCEPTION: Structure selection uses the SelectionController API
+	# instead of clicking in the 3D viewport.  Unlike creature clicks (which
+	# have a single sprite to hit), structures span multiple voxels and the
+	# mesh click target is unreliable under headless xvfb.  The controller
+	# call exercises the same panel-wiring path a click would trigger.
 	selector.select_structure(workshop_id)
 	var panel_visible := await _wait_for(func(): return _is_panel_visible("StructureInfoPanel"), 30)
 	assert_true(panel_visible, "StructureInfoPanel should open when workshop selected")
@@ -1067,14 +1239,8 @@ func test_crafting_pipeline_via_ui() -> void:
 	assert_true(found_target_5, "Target LineEdit near recipe should show '5'")
 
 	# ---------------------------------------------------------------
-	# 6. Stock workshop with bowstrings, step time → bows crafted
+	# 6. Step time → bows crafted (bowstrings pre-stocked in fixture)
 	# ---------------------------------------------------------------
-	# Stock the workshop directly — the storehouse has bowstrings but
-	# logistics hauling is slow. This is a fixture-level setup step,
-	# not a test interaction (the crafting pipeline, not the hauling
-	# pipeline, is what this test exercises).
-	bridge.debug_add_item_to_structure(workshop_id, "Bowstring", 10, "")
-
 	# Step until bows appear or timeout.
 	var ticks_stepped := _step_until(
 		func():
@@ -1104,7 +1270,7 @@ func test_crafting_pipeline_via_ui() -> void:
 	# ---------------------------------------------------------------
 	# 7. Add second recipe (GrowArrow) via UI picker
 	# ---------------------------------------------------------------
-	# Re-select workshop and open crafting details + picker.
+	# Re-select workshop (see step 1 comment for xvfb exception rationale).
 	selector.select_structure(workshop_id)
 	await _wait_for(func(): return _is_panel_visible("StructureInfoPanel"), 30)
 	struct_panel = _main_scene.find_child("StructureInfoPanel", true, false)
@@ -1165,6 +1331,7 @@ func test_crafting_pipeline_via_ui() -> void:
 	# ---------------------------------------------------------------
 	# 9. Select kitchen, add extraction recipe via UI picker
 	# ---------------------------------------------------------------
+	# (See step 1 comment for xvfb exception rationale.)
 	selector.select_structure(kitchen_id)
 	await _wait_for(func(): return _is_panel_visible("StructureInfoPanel"), 30)
 	struct_panel = _main_scene.find_child("StructureInfoPanel", true, false)
