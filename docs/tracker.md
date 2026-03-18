@@ -2490,8 +2490,8 @@ Invader types, threat mechanics, and basic combat resolution. Ties into
 fog of war for surprise attacks.
 
 **Blocked by:** F-enemy-ai
-**Blocks:** F-defense-struct, F-elf-weapons, F-military-campaign, F-military-org
-**Related:** F-engagement-style, F-fog-of-war
+**Blocks:** F-defense-struct, F-military-campaign, F-military-org
+**Related:** F-elf-weapons, F-engagement-style, F-fog-of-war
 
 #### F-defense-struct — Defensive structures (ballista, wards)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
@@ -2506,9 +2506,8 @@ the construction system to support these build types.
 
 Weapon types with different ranges, damage, and crafting requirements.
 
-**Blocked by:** F-combat
 **Unblocked by:** F-crafting
-**Related:** F-bldg-workshop
+**Related:** F-bldg-workshop, F-combat
 
 #### F-enemy-ai — Hostile creature AI (goblin/orc/troll behavior)
 **Status:** In Progress
