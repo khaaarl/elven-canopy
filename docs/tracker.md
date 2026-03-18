@@ -148,6 +148,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mana-transfer        Tree-to-elf mana transfer
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
+[ ] F-mesh-gen-rle         RLE-aware chunk mesh generation
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
 [ ] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
@@ -3719,6 +3720,22 @@ construction has stalled.
 
 **Unblocked by:** F-mana-system
 
+#### F-mesh-gen-rle — RLE-aware chunk mesh generation
+**Status:** Todo
+
+Optimize chunk mesh generation to iterate column spans directly instead
+of per-voxel get() calls. Column groups share the XZ footprint with mesh
+chunks (16×16), so mesh gen can iterate spans and clip to each chunk's
+Y range rather than querying 16×16×16 = 4096 individual voxels.
+
+Also benefits heightmap generation (trivial: last non-Air span's top_y)
+and any future bulk voxel queries.
+
+Depends on the bulk iteration API (column_spans / chunk_columns) from
+F-rle-voxels.
+
+**Blocked by:** F-rle-voxels
+
 #### F-minimap — Minimap with tree silhouette and creature positions
 **Status:** Done · **Phase:** 2
 
@@ -4156,7 +4173,7 @@ Replace the flat `Vec<VoxelType>` voxel storage with a compressed
 column-based representation. Each column stores a sorted list of
 `(VoxelType, top_y)` spans — each span's voxel type extends upward until
 the next span's start. The topmost Air span is implicit (not stored).
-World height capped to [1, 255] so heights fit in a byte.
+World height capped to ≤256 so heights fit in a byte.
 
 Columns are grouped in 16×16 groups (matching chunk alignment). Each group
 holds inline arrays of span offsets (`[u16; 256]`) and span counts
@@ -4174,7 +4191,9 @@ single-voxel edits rewrite in place without repacking the group.
 **API:** `get_voxel` / `set_voxel` interface unchanged externally. Internals
 of VoxelWorld completely replaced.
 
-**Blocks:** F-bigger-world, F-nav-gen-opt
+**Draft:** `docs/drafts/rle_voxels.md`
+
+**Blocks:** F-bigger-world, F-mesh-gen-rle, F-nav-gen-opt
 
 #### F-save-load — Save/load to JSON with versioning
 **Status:** Done · **Phase:** 2 · **Refs:** §4, §5
