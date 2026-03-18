@@ -18487,6 +18487,1404 @@ fn test_melee_strike_dead_attacker() {
 }
 
 // -----------------------------------------------------------------------
+// Armor damage reduction tests
+// -----------------------------------------------------------------------
+
+/// Helper: equip a full set of wood armor on a creature (all 5 slots).
+fn equip_full_armor(sim: &mut SimState, creature_id: CreatureId) {
+    let inv_id = sim.db.creatures.get(&creature_id).unwrap().inventory_id;
+    let mat = Some(inventory::Material::Oak);
+    for (kind, slot) in [
+        (inventory::ItemKind::Helmet, inventory::EquipSlot::Head),
+        (
+            inventory::ItemKind::Breastplate,
+            inventory::EquipSlot::Torso,
+        ),
+        (inventory::ItemKind::Greaves, inventory::EquipSlot::Legs),
+        (inventory::ItemKind::Boots, inventory::EquipSlot::Feet),
+        (inventory::ItemKind::Gauntlets, inventory::EquipSlot::Hands),
+    ] {
+        // Unequip anything currently in this slot.
+        sim.inv_unequip_slot(inv_id, slot);
+        sim.inv_add_item(inv_id, kind, 1, Some(creature_id), None, mat, 0, None, None);
+        // Find the newly added stack and equip it.
+        let stack = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|s| s.kind == kind && s.equipped_slot.is_none())
+            .unwrap();
+        sim.inv_equip_item(stack.id);
+    }
+}
+
+/// Helper: equip a single armor piece with specific durability.
+fn equip_armor_with_durability(
+    sim: &mut SimState,
+    creature_id: CreatureId,
+    kind: inventory::ItemKind,
+    slot: inventory::EquipSlot,
+    current_hp: i32,
+    max_hp: i32,
+) {
+    let inv_id = sim.db.creatures.get(&creature_id).unwrap().inventory_id;
+    sim.inv_unequip_slot(inv_id, slot);
+    sim.inv_add_item_with_durability(
+        inv_id,
+        kind,
+        1,
+        Some(creature_id),
+        None,
+        Some(inventory::Material::Oak),
+        0,
+        current_hp,
+        max_hp,
+        None,
+        None,
+    );
+    let stack = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|s| s.kind == kind && s.equipped_slot.is_none())
+        .unwrap();
+    sim.inv_equip_item(stack.id);
+}
+
+#[test]
+fn armor_reduces_melee_damage() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Equip full armor on elf (total armor = 9).
+    equip_full_armor(&mut sim, elf);
+    // Disable degradation to isolate the damage-reduction test.
+    sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    // With 9 armor and min_damage=1, effective = max(raw - 9, 1).
+    let expected_effective = (goblin_damage - 9).max(sim.config.armor_min_damage);
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_after,
+        elf_hp_before - expected_effective,
+        "Armor should reduce damage from {} to {}",
+        goblin_damage,
+        expected_effective
+    );
+}
+
+#[test]
+fn armor_enforces_minimum_damage() {
+    // Even with massive armor, at least armor_min_damage (1) gets through.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    equip_full_armor(&mut sim, elf);
+
+    // Reduce goblin damage below total armor (9) to test the floor.
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .melee_damage = 3;
+    // Disable degradation to keep test deterministic.
+    sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_before - elf_hp_after,
+        sim.config.armor_min_damage,
+        "Damage floor: exactly armor_min_damage ({}) should get through when armor exceeds raw damage",
+        sim.config.armor_min_damage
+    );
+}
+
+#[test]
+fn no_armor_means_full_damage() {
+    // Unarmored creature takes full melee damage.
+    let mut sim = test_sim(42);
+    // Disable starting equipment to ensure no armor.
+    sim.config.elf_default_wants = vec![];
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip any starting equipment the elf might have.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_after,
+        elf_hp_before - goblin_damage,
+        "Unarmored creature should take full damage"
+    );
+}
+
+#[test]
+fn worn_armor_provides_less_protection() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip all slots first.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+
+    // Equip a breastplate in "worn" condition: 42/60 = 70% → exactly at worn threshold.
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Breastplate,
+        inventory::EquipSlot::Torso,
+        42,
+        60,
+    );
+
+    // Worn breastplate: base 3, -1 penalty = 2 effective armor.
+    let armor_params = inventory::ArmorParams {
+        worn_pct: sim.config.durability_worn_pct,
+        damaged_pct: sim.config.durability_damaged_pct,
+        worn_penalty: sim.config.armor_worn_penalty,
+        damaged_penalty: sim.config.armor_damaged_penalty,
+    };
+    let worn_armor = inventory::effective_armor_value(
+        inventory::ItemKind::Breastplate,
+        Some(inventory::Material::Oak),
+        42,
+        60,
+        armor_params,
+    );
+    assert_eq!(worn_armor, 2, "Worn breastplate should give 2 armor");
+
+    // Disable degradation to avoid PRNG interference.
+    sim.config.armor_non_penetrating_degrade_chance_recip = 0;
+    sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let expected = (goblin_damage - worn_armor as i64).max(sim.config.armor_min_damage);
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_after,
+        elf_hp_before - expected,
+        "Worn breastplate (armor={}) should reduce goblin damage ({}) to {}",
+        worn_armor,
+        goblin_damage,
+        expected,
+    );
+}
+
+#[test]
+fn damaged_armor_provides_even_less_protection() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip all slots.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+
+    // Equip a breastplate in "damaged" condition: 24/60 = 40% → at damaged threshold.
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Breastplate,
+        inventory::EquipSlot::Torso,
+        24,
+        60,
+    );
+
+    // Damaged breastplate: base 3, -2 penalty = 1 effective armor.
+    let armor_params = inventory::ArmorParams {
+        worn_pct: sim.config.durability_worn_pct,
+        damaged_pct: sim.config.durability_damaged_pct,
+        worn_penalty: sim.config.armor_worn_penalty,
+        damaged_penalty: sim.config.armor_damaged_penalty,
+    };
+    let damaged_armor = inventory::effective_armor_value(
+        inventory::ItemKind::Breastplate,
+        Some(inventory::Material::Oak),
+        24,
+        60,
+        armor_params,
+    );
+    assert_eq!(damaged_armor, 1, "Damaged breastplate should give 1 armor");
+
+    // Disable degradation.
+    sim.config.armor_non_penetrating_degrade_chance_recip = 0;
+    sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let expected = (goblin_damage - damaged_armor as i64).max(sim.config.armor_min_damage);
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_after,
+        elf_hp_before - expected,
+        "Damaged breastplate (armor={}) should reduce goblin damage ({}) to {}",
+        damaged_armor,
+        goblin_damage,
+        expected,
+    );
+}
+
+#[test]
+fn armor_degradation_penetrating_hit_reduces_durability() {
+    // With a penetrating hit, armor at the targeted location should degrade.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip all slots.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+
+    // Equip only a breastplate (armor=3). Force degradation to always hit torso.
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Breastplate,
+        inventory::EquipSlot::Torso,
+        60,
+        60,
+    );
+    // Weight only torso so the degradation always targets our breastplate.
+    sim.config.armor_degrade_location_weights = [1, 0, 0, 0, 0];
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    assert!(
+        goblin_damage > 3,
+        "Goblin damage must exceed armor (3) for penetrating hit"
+    );
+
+    // Run many strikes to statistically verify degradation happens.
+    let mut total_hp_lost = 0i32;
+    let strikes = 20;
+    for _ in 0..strikes {
+        let bp_before = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .map(|s| s.current_hp);
+        // Reset goblin so it can strike again.
+        force_idle(&mut sim, goblin);
+        // Heal the elf to survive.
+        let _ = sim.db.creatures.modify_unchecked(&elf, |c| c.hp = c.hp_max);
+        // Re-equip breastplate if it broke.
+        if bp_before.is_none() {
+            equip_armor_with_durability(
+                &mut sim,
+                elf,
+                inventory::ItemKind::Breastplate,
+                inventory::EquipSlot::Torso,
+                60,
+                60,
+            );
+        }
+
+        let bp_hp_before = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .unwrap()
+            .current_hp;
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_name: String::new(),
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+
+        if let Some(bp) = sim.inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso) {
+            total_hp_lost += bp_hp_before - bp.current_hp;
+        } else {
+            // Breastplate broke.
+            total_hp_lost += bp_hp_before;
+        }
+    }
+
+    assert!(
+        total_hp_lost > 0,
+        "After {strikes} penetrating hits, breastplate should have lost some HP"
+    );
+}
+
+#[test]
+fn armor_degradation_non_penetrating_rare() {
+    // With a non-penetrating hit (armor >= raw damage), degradation is rare (1/20).
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip all slots.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+
+    // Equip full armor (total=9) and reduce goblin damage to ensure non-penetrating.
+    equip_full_armor(&mut sim, elf);
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .melee_damage = 5;
+
+    // Force degradation to always target torso.
+    sim.config.armor_degrade_location_weights = [1, 0, 0, 0, 0];
+
+    let mut degrade_count = 0;
+    let strikes = 100;
+    for _ in 0..strikes {
+        force_idle(&mut sim, goblin);
+        let _ = sim.db.creatures.modify_unchecked(&elf, |c| c.hp = c.hp_max);
+
+        let bp_hp_before = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .unwrap()
+            .current_hp;
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_name: String::new(),
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+
+        let bp_hp_after = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .unwrap()
+            .current_hp;
+        if bp_hp_after < bp_hp_before {
+            degrade_count += 1;
+        }
+    }
+
+    // Expected ~5 out of 100 (1/20 chance). Allow 1–20 range.
+    assert!(
+        degrade_count >= 1 && degrade_count <= 20,
+        "Non-penetrating degradation count ({degrade_count}/100) should be rare (~5%)"
+    );
+}
+
+#[test]
+fn armor_degradation_empty_slot_no_crash() {
+    // When the random location picks an empty slot, nothing degrades.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip everything.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+
+    // This should not panic — degradation targets an empty slot.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+}
+
+#[test]
+fn clothing_degrades_from_combat_hit() {
+    // Clothing (not armor) in a targeted slot also degrades.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip all slots.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+
+    // Equip a cloth tunic (not armor — 0 armor value) in torso slot.
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Tunic,
+        inventory::EquipSlot::Torso,
+        30,
+        30,
+    );
+
+    // Force all degradation to torso.
+    sim.config.armor_degrade_location_weights = [1, 0, 0, 0, 0];
+
+    // Goblin hit is fully penetrating (tunic gives 0 armor).
+    let mut total_hp_lost = 0i32;
+    let strikes = 10;
+    for _ in 0..strikes {
+        force_idle(&mut sim, goblin);
+        let _ = sim.db.creatures.modify_unchecked(&elf, |c| c.hp = c.hp_max);
+
+        let tunic_hp_before = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .map(|s| s.current_hp)
+            .unwrap_or(0);
+
+        if tunic_hp_before <= 0 {
+            // Re-equip if broken.
+            equip_armor_with_durability(
+                &mut sim,
+                elf,
+                inventory::ItemKind::Tunic,
+                inventory::EquipSlot::Torso,
+                30,
+                30,
+            );
+        }
+
+        let tunic_hp_before = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .unwrap()
+            .current_hp;
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_name: String::new(),
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+
+        if let Some(tunic) = sim.inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso) {
+            total_hp_lost += tunic_hp_before - tunic.current_hp;
+        } else {
+            total_hp_lost += tunic_hp_before;
+        }
+    }
+
+    assert!(
+        total_hp_lost > 0,
+        "Clothing should degrade from combat hits"
+    );
+}
+
+#[test]
+fn armor_config_serde_roundtrip() {
+    // Verify the new config fields survive JSON roundtrip.
+    let config = GameConfig::default();
+    let json = serde_json::to_string(&config).unwrap();
+    let restored: GameConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.armor_min_damage, config.armor_min_damage);
+    assert_eq!(
+        restored.armor_non_penetrating_degrade_chance_recip,
+        config.armor_non_penetrating_degrade_chance_recip
+    );
+    assert_eq!(restored.armor_worn_penalty, config.armor_worn_penalty);
+    assert_eq!(restored.armor_damaged_penalty, config.armor_damaged_penalty);
+    assert_eq!(
+        restored.armor_degrade_location_weights,
+        config.armor_degrade_location_weights
+    );
+}
+
+#[test]
+fn armor_config_backward_compat_missing_fields() {
+    // Old saves without armor config fields should deserialize with defaults.
+    let sim = test_sim(42);
+    let json = serde_json::to_string(&sim).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let config_obj = val
+        .get_mut("config")
+        .and_then(|c| c.as_object_mut())
+        .unwrap();
+    config_obj.remove("armor_min_damage");
+    config_obj.remove("armor_non_penetrating_degrade_chance_recip");
+    config_obj.remove("armor_worn_penalty");
+    config_obj.remove("armor_damaged_penalty");
+    config_obj.remove("armor_degrade_location_weights");
+    let stripped = serde_json::to_string(&val).unwrap();
+    let restored: SimState = serde_json::from_str(&stripped).unwrap();
+    assert_eq!(restored.config.armor_min_damage, 1);
+    assert_eq!(
+        restored.config.armor_non_penetrating_degrade_chance_recip,
+        20
+    );
+    assert_eq!(restored.config.armor_worn_penalty, 1);
+    assert_eq!(restored.config.armor_damaged_penalty, 2);
+    assert_eq!(
+        restored.config.armor_degrade_location_weights,
+        [5, 4, 3, 2, 1]
+    );
+}
+
+#[test]
+fn armor_degradation_destroys_item() {
+    // When degradation reduces armor HP to 0, the item is removed.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip all, then equip a breastplate with only 1 HP remaining.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Breastplate,
+        inventory::EquipSlot::Torso,
+        1,
+        60,
+    );
+    // Force all degradation to torso.
+    sim.config.armor_degrade_location_weights = [1, 0, 0, 0, 0];
+
+    // Run strikes until the breastplate breaks.
+    let mut broke = false;
+    for _ in 0..50 {
+        force_idle(&mut sim, goblin);
+        let _ = sim.db.creatures.modify_unchecked(&elf, |c| c.hp = c.hp_max);
+
+        if sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .is_none()
+        {
+            broke = true;
+            break;
+        }
+
+        // Re-set to 1 HP if it survived (degradation might roll 0).
+        let _ = sim.db.item_stacks.modify_unchecked(
+            &sim.inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+                .unwrap()
+                .id,
+            |s| s.current_hp = 1,
+        );
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_name: String::new(),
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+    }
+
+    assert!(
+        broke,
+        "Breastplate with 1 HP should eventually break from combat degradation"
+    );
+    assert!(
+        sim.inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .is_none(),
+        "Torso slot should be empty after breastplate breaks"
+    );
+}
+
+#[test]
+fn armor_mixed_condition_pieces_sum_correctly() {
+    // Multiple pieces in different conditions should sum correctly.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip all.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+
+    // Good helmet (base 2), Worn breastplate (base 3, -1 = 2), Damaged greaves (base 2, -2 = 1).
+    // Total = 2 + 2 + 1 = 5.
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Helmet,
+        inventory::EquipSlot::Head,
+        40,
+        40,
+    );
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Breastplate,
+        inventory::EquipSlot::Torso,
+        42,
+        60, // 70% = worn
+    );
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Greaves,
+        inventory::EquipSlot::Legs,
+        16,
+        40, // 40% = damaged
+    );
+
+    // Disable degradation.
+    sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let expected = (goblin_damage - 5).max(sim.config.armor_min_damage);
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_after,
+        elf_hp_before - expected,
+        "Mixed-condition armor (total=5) should reduce {} damage to {}",
+        goblin_damage,
+        expected,
+    );
+}
+
+#[test]
+fn armor_extreme_penetrating_damage_no_overflow() {
+    // Extreme raw damage should not cause overflow in degradation math.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Give goblin absurdly high damage.
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .melee_damage = 1_000_000;
+    // Force degradation to torso.
+    sim.config.armor_degrade_location_weights = [1, 0, 0, 0, 0];
+
+    // Equip a breastplate so there's something to degrade.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Breastplate,
+        inventory::EquipSlot::Torso,
+        60,
+        60,
+    );
+
+    // Should not panic.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+}
+
+#[test]
+fn armor_reduces_projectile_damage() {
+    // Verify armor reduces damage from projectile (arrow) hits, not just melee.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+    // Equip full armor on the elf (total armor = 9).
+    equip_full_armor(&mut sim, elf);
+    // Disable degradation to keep test deterministic.
+    sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
+
+    // Record HP before.
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    // Spawn a projectile aimed at the elf (no gravity for predictability).
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
+    sim.spawn_projectile(origin, elf_pos, None);
+
+    // Run until resolved.
+    let mut hit_damage: Option<i64> = None;
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if let SimEventKind::ProjectileHitCreature { damage, .. } = &e.kind {
+                hit_damage = Some(*damage);
+            }
+        }
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert!(hit_damage.is_some(), "Projectile should have hit the elf");
+    let damage = hit_damage.unwrap();
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    let actual_damage = elf_hp_before - elf_hp_after;
+
+    // The event damage should equal the actual HP loss.
+    assert_eq!(actual_damage, damage);
+    // Damage should be reduced: at minimum, armor_min_damage (1) gets through.
+    assert!(
+        actual_damage >= sim.config.armor_min_damage,
+        "At least min_damage ({}) should get through armor",
+        sim.config.armor_min_damage
+    );
+}
+
+#[test]
+fn armor_projectile_degrades_equipment() {
+    // Verify armor/clothing degrades from projectile hits.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+    // Unequip all, equip only a breastplate.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Breastplate,
+        inventory::EquipSlot::Torso,
+        60,
+        60,
+    );
+    // Force all degradation to torso.
+    sim.config.armor_degrade_location_weights = [1, 0, 0, 0, 0];
+
+    // Fire multiple projectiles and check for degradation.
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    let mut total_hp_lost = 0i32;
+
+    for _ in 0..10 {
+        // Heal elf to survive.
+        let _ = sim.db.creatures.modify_unchecked(&elf, |c| c.hp = c.hp_max);
+
+        // Re-equip if breastplate broke.
+        if sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .is_none()
+        {
+            equip_armor_with_durability(
+                &mut sim,
+                elf,
+                inventory::ItemKind::Breastplate,
+                inventory::EquipSlot::Torso,
+                60,
+                60,
+            );
+        }
+
+        let bp_hp_before = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .unwrap()
+            .current_hp;
+
+        let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
+        sim.spawn_projectile(origin, elf_pos, None);
+
+        for _ in 0..500 {
+            if sim.db.projectiles.is_empty() {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+            if !sim.db.projectiles.is_empty() {
+                sim.event_queue
+                    .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+            }
+        }
+
+        if let Some(bp) = sim.inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso) {
+            total_hp_lost += bp_hp_before - bp.current_hp;
+        } else {
+            total_hp_lost += bp_hp_before;
+        }
+    }
+
+    assert!(
+        total_hp_lost > 0,
+        "Breastplate should degrade from projectile hits"
+    );
+}
+
+#[test]
+fn armor_melee_kill_with_armor_equipped() {
+    // Killing an armored creature should not corrupt state.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    equip_full_armor(&mut sim, elf);
+
+    // Set elf HP low enough that a single hit kills even through armor.
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| c.hp = 1);
+
+    let tick = sim.tick;
+    let events = sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().vital_status,
+        VitalStatus::Dead,
+    );
+    assert!(events.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::CreatureDied { creature_id, .. } if *creature_id == elf
+    )));
+}
+
+#[test]
+fn armor_save_load_roundtrip_preserves_combat() {
+    // Equipped armor with varying durability must survive serde roundtrip
+    // and still reduce damage correctly.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip all, equip a worn breastplate.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Breastplate,
+        inventory::EquipSlot::Torso,
+        42,
+        60, // 70% = worn, effective armor = 2
+    );
+    sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
+
+    // Roundtrip through JSON (from_json rebuilds transient state).
+    let json = sim.to_json().unwrap();
+    let mut restored = SimState::from_json(&json).unwrap();
+
+    // Verify breastplate survives roundtrip with correct durability.
+    let restored_inv_id = restored.db.creatures.get(&elf).unwrap().inventory_id;
+    let bp = restored
+        .inv_equipped_in_slot(restored_inv_id, inventory::EquipSlot::Torso)
+        .expect("breastplate should survive roundtrip");
+    assert_eq!(bp.current_hp, 42);
+    assert_eq!(bp.max_hp, 60);
+
+    // Verify combat uses the restored armor.
+    force_idle(&mut restored, goblin);
+    let goblin_damage = restored.species_table[&Species::Goblin].melee_damage;
+    let expected = (goblin_damage - 2).max(restored.config.armor_min_damage);
+    let elf_hp_before = restored.db.creatures.get(&elf).unwrap().hp;
+
+    let tick = restored.tick;
+    restored.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_hp_after = restored.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_after,
+        elf_hp_before - expected,
+        "Armor reduction should work after serde roundtrip"
+    );
+}
+
+#[test]
+fn armor_non_penetrating_degrade_disabled_when_recip_zero() {
+    // Setting recip to 0 should completely disable non-penetrating degradation.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip all, equip full armor (total=9), reduce goblin damage below armor.
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+    equip_full_armor(&mut sim, elf);
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .melee_damage = 5;
+    // Disable non-penetrating degradation.
+    sim.config.armor_non_penetrating_degrade_chance_recip = 0;
+    // Force all degradation to torso.
+    sim.config.armor_degrade_location_weights = [1, 0, 0, 0, 0];
+
+    let bp_hp_before = sim
+        .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+        .unwrap()
+        .current_hp;
+
+    for _ in 0..50 {
+        force_idle(&mut sim, goblin);
+        let _ = sim.db.creatures.modify_unchecked(&elf, |c| c.hp = c.hp_max);
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_name: String::new(),
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+    }
+
+    let bp_hp_after = sim
+        .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+        .unwrap()
+        .current_hp;
+    assert_eq!(
+        bp_hp_after, bp_hp_before,
+        "With recip=0, non-penetrating hits should never degrade armor"
+    );
+}
+
+#[test]
+fn armor_degradation_targets_hands_slot() {
+    // Verify weight-to-slot mapping: weights[4] = Hands.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    force_position(
+        &mut sim,
+        goblin,
+        VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
+    );
+    force_idle(&mut sim, goblin);
+
+    // Unequip all, equip gauntlets (Hands) and breastplate (Torso).
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    for slot in [
+        inventory::EquipSlot::Head,
+        inventory::EquipSlot::Torso,
+        inventory::EquipSlot::Legs,
+        inventory::EquipSlot::Feet,
+        inventory::EquipSlot::Hands,
+    ] {
+        sim.inv_unequip_slot(inv_id, slot);
+    }
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Gauntlets,
+        inventory::EquipSlot::Hands,
+        30,
+        30,
+    );
+    equip_armor_with_durability(
+        &mut sim,
+        elf,
+        inventory::ItemKind::Breastplate,
+        inventory::EquipSlot::Torso,
+        60,
+        60,
+    );
+
+    // Only target Hands: weights[4].
+    sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 1];
+
+    let mut gauntlet_hp_lost = 0i32;
+    for _ in 0..20 {
+        force_idle(&mut sim, goblin);
+        let _ = sim.db.creatures.modify_unchecked(&elf, |c| c.hp = c.hp_max);
+
+        // Re-equip gauntlets if broken.
+        if sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Hands)
+            .is_none()
+        {
+            equip_armor_with_durability(
+                &mut sim,
+                elf,
+                inventory::ItemKind::Gauntlets,
+                inventory::EquipSlot::Hands,
+                30,
+                30,
+            );
+        }
+
+        let g_hp_before = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Hands)
+            .unwrap()
+            .current_hp;
+        let bp_hp_before = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .unwrap()
+            .current_hp;
+
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_name: String::new(),
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+
+        // Breastplate should never degrade (only Hands targeted).
+        let bp_hp_after = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .unwrap()
+            .current_hp;
+        assert_eq!(
+            bp_hp_after, bp_hp_before,
+            "Breastplate should not degrade when only Hands is weighted"
+        );
+
+        if let Some(g) = sim.inv_equipped_in_slot(inv_id, inventory::EquipSlot::Hands) {
+            gauntlet_hp_lost += g_hp_before - g.current_hp;
+        } else {
+            gauntlet_hp_lost += g_hp_before;
+        }
+    }
+
+    assert!(
+        gauntlet_hp_lost > 0,
+        "Gauntlets should degrade when Hands slot is the only weighted target"
+    );
+}
+
+// -----------------------------------------------------------------------
 // Shoot action tests
 // -----------------------------------------------------------------------
 

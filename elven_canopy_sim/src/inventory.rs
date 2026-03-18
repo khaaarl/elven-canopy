@@ -3,12 +3,15 @@
 // Provides `ItemKind` (the enum of distinct item types: Bread, Fruit, Bow,
 // Arrow, Bowstring, extracted fruit components — Pulp, Husk, Seed,
 // FruitFiber, FruitSap, FruitResin — processed products — Flour, Thread,
-// Cord, Cloth, Dye — clothing — Tunic, Leggings, Boots, Hat, Gloves — and
-// armor — Helmet, Breastplate, Greaves, Gauntlets),
+// Cord, Cloth, Dye — clothing — Tunic, Leggings, Hat, Gloves — armor —
+// Helmet, Breastplate, Greaves, Gauntlets — and Boots, which are both
+// clothing and armor depending on material),
 // `Material` (wood species for crafted items, `FruitSpecies` for
 // fruits, extracted components, and processed products),
 // `MaterialFilter` (logistics want constraint: `Any` or `Specific(Material)`),
-// `EquipSlot` (body slot for wearable clothing: Head, Torso, Legs, Feet, Hands),
+// `ArmorParams` + `effective_armor_value()` (condition-aware armor damage
+// reduction — the public API used by combat code in `sim/combat.rs`),
+// `EquipSlot` (body slot for wearable items: Head, Torso, Legs, Feet, Hands),
 // `ItemColor` (RGB color for items, derived from material or dye),
 // and `EffectKind` (stubbed enchantment effect types for future use).
 // Item storage is now handled by the `db::ItemStack` and `db::Inventory`
@@ -178,14 +181,16 @@ impl ItemKind {
         )
     }
 
-    /// Flat damage reduction for this item kind when made from the given
-    /// material. Returns 0 for non-armor items and for non-wood materials
-    /// (e.g., cloth boots provide no protection). All wood types currently
-    /// give the same values; material-specific differentiation is deferred.
-    /// Quality will also factor in later (F-item-quality).
+    /// Base (unconditioned) damage reduction for this item kind when made
+    /// from the given material. Returns 0 for non-armor items and for
+    /// non-wood materials (e.g., cloth boots provide no protection). All
+    /// wood types currently give the same values; material-specific
+    /// differentiation is deferred.
     ///
-    /// Minimum damage per hit (1) is enforced by the combat system, not here.
-    pub fn armor_value(self, material: Option<Material>) -> i32 {
+    /// **Internal helper** — combat code should call `effective_armor_value()`
+    /// on an `ItemStack` instead, which applies condition penalties and any
+    /// future modifiers (enchantments, quality, etc.).
+    pub fn base_armor_value(self, material: Option<Material>) -> i32 {
         let is_wood = material.is_some_and(|m| m.is_wood());
         if !is_wood {
             return 0;
@@ -322,6 +327,47 @@ impl WearCategory {
     }
 }
 
+/// Config parameters needed by `effective_armor_value()`. Extracted from
+/// `GameConfig` to keep the function signature small and extensible.
+#[derive(Clone, Copy, Debug)]
+pub struct ArmorParams {
+    pub worn_pct: i32,
+    pub damaged_pct: i32,
+    pub worn_penalty: i32,
+    pub damaged_penalty: i32,
+}
+
+/// Compute the effective armor value for an equipped item, accounting for
+/// the item's condition (wear category). This is the public API for combat
+/// damage reduction — it wraps `ItemKind::base_armor_value()` and applies
+/// condition-based penalties.
+///
+/// - `worn_penalty`: subtracted from base value when item is `Worn` (default 1)
+/// - `damaged_penalty`: subtracted from base value when item is `Damaged` (default 2)
+/// - Floors: `Worn` items floor at 2, `Damaged` items floor at 1.
+/// - `Good` condition: no penalty.
+///
+/// Future modifiers (enchantments, quality, material bonuses) will be added
+/// here behind this same interface.
+pub fn effective_armor_value(
+    kind: ItemKind,
+    material: Option<Material>,
+    current_hp: i32,
+    max_hp: i32,
+    params: ArmorParams,
+) -> i32 {
+    let base = kind.base_armor_value(material);
+    if base <= 0 {
+        return 0;
+    }
+    let category = WearCategory::from_hp(current_hp, max_hp, params.worn_pct, params.damaged_pct);
+    match category {
+        WearCategory::Good => base,
+        WearCategory::Worn => (base - params.worn_penalty).max(2).min(base),
+        WearCategory::Damaged => (base - params.damaged_penalty).max(1).min(base),
+    }
+}
+
 /// Body slot for wearable items (clothing and armor).
 ///
 /// Each wearable `ItemKind` maps to exactly one slot via `ItemKind::equip_slot()`.
@@ -431,20 +477,23 @@ mod tests {
     }
 
     #[test]
-    fn armor_value_wood_materials() {
-        assert_eq!(ItemKind::Helmet.armor_value(Some(Material::Oak)), 2);
-        assert_eq!(ItemKind::Breastplate.armor_value(Some(Material::Oak)), 3);
-        assert_eq!(ItemKind::Greaves.armor_value(Some(Material::Oak)), 2);
-        assert_eq!(ItemKind::Gauntlets.armor_value(Some(Material::Oak)), 1);
-        assert_eq!(ItemKind::Boots.armor_value(Some(Material::Oak)), 1);
+    fn base_armor_value_wood_materials() {
+        assert_eq!(ItemKind::Helmet.base_armor_value(Some(Material::Oak)), 2);
+        assert_eq!(
+            ItemKind::Breastplate.base_armor_value(Some(Material::Oak)),
+            3
+        );
+        assert_eq!(ItemKind::Greaves.base_armor_value(Some(Material::Oak)), 2);
+        assert_eq!(ItemKind::Gauntlets.base_armor_value(Some(Material::Oak)), 1);
+        assert_eq!(ItemKind::Boots.base_armor_value(Some(Material::Oak)), 1);
     }
 
     #[test]
-    fn armor_value_all_wood_types_equal() {
+    fn base_armor_value_all_wood_types_equal() {
         // All wood types give the same armor value for now.
         for wood in &Material::WOOD_TYPES {
             assert_eq!(
-                ItemKind::Breastplate.armor_value(Some(*wood)),
+                ItemKind::Breastplate.base_armor_value(Some(*wood)),
                 3,
                 "{:?} breastplate should give 3 armor",
                 wood
@@ -453,36 +502,140 @@ mod tests {
     }
 
     #[test]
-    fn armor_value_non_wood_materials_zero() {
+    fn base_armor_value_non_wood_materials_zero() {
         let fruit_mat = Material::FruitSpecies(crate::fruit::FruitSpeciesId(0));
-        assert_eq!(ItemKind::Boots.armor_value(Some(fruit_mat)), 0);
-        assert_eq!(ItemKind::Helmet.armor_value(Some(fruit_mat)), 0);
+        assert_eq!(ItemKind::Boots.base_armor_value(Some(fruit_mat)), 0);
+        assert_eq!(ItemKind::Helmet.base_armor_value(Some(fruit_mat)), 0);
     }
 
     #[test]
-    fn armor_value_no_material_zero() {
-        assert_eq!(ItemKind::Helmet.armor_value(None), 0);
-        assert_eq!(ItemKind::Breastplate.armor_value(None), 0);
+    fn base_armor_value_no_material_zero() {
+        assert_eq!(ItemKind::Helmet.base_armor_value(None), 0);
+        assert_eq!(ItemKind::Breastplate.base_armor_value(None), 0);
     }
 
     #[test]
-    fn armor_value_non_armor_items_zero() {
-        assert_eq!(ItemKind::Tunic.armor_value(Some(Material::Oak)), 0);
-        assert_eq!(ItemKind::Hat.armor_value(Some(Material::Oak)), 0);
-        assert_eq!(ItemKind::Bow.armor_value(Some(Material::Oak)), 0);
+    fn base_armor_value_non_armor_items_zero() {
+        assert_eq!(ItemKind::Tunic.base_armor_value(Some(Material::Oak)), 0);
+        assert_eq!(ItemKind::Hat.base_armor_value(Some(Material::Oak)), 0);
+        assert_eq!(ItemKind::Bow.base_armor_value(Some(Material::Oak)), 0);
     }
 
     #[test]
-    fn armor_value_total_full_set() {
+    fn base_armor_value_total_full_set() {
         // Full armor set: helmet(2) + breastplate(3) + greaves(2) +
         // gauntlets(1) + boots(1) = 9.
         let wood = Some(Material::Oak);
-        let total = ItemKind::Helmet.armor_value(wood)
-            + ItemKind::Breastplate.armor_value(wood)
-            + ItemKind::Greaves.armor_value(wood)
-            + ItemKind::Gauntlets.armor_value(wood)
-            + ItemKind::Boots.armor_value(wood);
+        let total = ItemKind::Helmet.base_armor_value(wood)
+            + ItemKind::Breastplate.base_armor_value(wood)
+            + ItemKind::Greaves.base_armor_value(wood)
+            + ItemKind::Gauntlets.base_armor_value(wood)
+            + ItemKind::Boots.base_armor_value(wood);
         assert_eq!(total, 9);
+    }
+
+    // -- effective_armor_value tests --
+
+    const TEST_ARMOR_PARAMS: ArmorParams = ArmorParams {
+        worn_pct: 70,
+        damaged_pct: 40,
+        worn_penalty: 1,
+        damaged_penalty: 2,
+    };
+
+    #[test]
+    fn effective_armor_value_good_condition_no_penalty() {
+        // Full HP breastplate: base 3, no penalty.
+        let oak = Some(Material::Oak);
+        assert_eq!(
+            effective_armor_value(ItemKind::Breastplate, oak, 60, 60, TEST_ARMOR_PARAMS),
+            3
+        );
+    }
+
+    #[test]
+    fn effective_armor_value_worn_condition_minus_one() {
+        // Worn breastplate (70% HP): base 3, -1 penalty = 2, floor 2.
+        let oak = Some(Material::Oak);
+        assert_eq!(
+            effective_armor_value(ItemKind::Breastplate, oak, 42, 60, TEST_ARMOR_PARAMS),
+            2
+        );
+    }
+
+    #[test]
+    fn effective_armor_value_damaged_condition_minus_two() {
+        // Damaged breastplate (40% HP): base 3, -2 penalty = 1, floor 1.
+        let oak = Some(Material::Oak);
+        assert_eq!(
+            effective_armor_value(ItemKind::Breastplate, oak, 24, 60, TEST_ARMOR_PARAMS),
+            1
+        );
+    }
+
+    #[test]
+    fn effective_armor_value_worn_gauntlets_floors_at_two() {
+        // Worn gauntlets: base 1, -1 = 0, but floor at 2 → clamped to base (1).
+        // The .min(base) clamp ensures we never exceed base.
+        let oak = Some(Material::Oak);
+        assert_eq!(
+            effective_armor_value(ItemKind::Gauntlets, oak, 42, 60, TEST_ARMOR_PARAMS),
+            1
+        );
+    }
+
+    #[test]
+    fn effective_armor_value_damaged_gauntlets_floors_at_one() {
+        // Damaged gauntlets: base 1, -2 = -1, but floor at 1.
+        let oak = Some(Material::Oak);
+        assert_eq!(
+            effective_armor_value(ItemKind::Gauntlets, oak, 24, 60, TEST_ARMOR_PARAMS),
+            1
+        );
+    }
+
+    #[test]
+    fn effective_armor_value_damaged_helmet_floors_at_one() {
+        // Damaged helmet: base 2, -2 = 0, but floor at 1.
+        let oak = Some(Material::Oak);
+        assert_eq!(
+            effective_armor_value(ItemKind::Helmet, oak, 24, 60, TEST_ARMOR_PARAMS),
+            1
+        );
+    }
+
+    #[test]
+    fn effective_armor_value_non_armor_returns_zero() {
+        let oak = Some(Material::Oak);
+        assert_eq!(
+            effective_armor_value(ItemKind::Tunic, oak, 30, 30, TEST_ARMOR_PARAMS),
+            0
+        );
+    }
+
+    #[test]
+    fn effective_armor_value_fruit_material_returns_zero() {
+        let fruit = Material::FruitSpecies(crate::fruit::FruitSpeciesId(0));
+        assert_eq!(
+            effective_armor_value(
+                ItemKind::Breastplate,
+                Some(fruit),
+                60,
+                60,
+                TEST_ARMOR_PARAMS
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn effective_armor_value_indestructible_is_good() {
+        // Indestructible item (0/0): treated as Good condition.
+        let oak = Some(Material::Oak);
+        assert_eq!(
+            effective_armor_value(ItemKind::Breastplate, oak, 0, 0, TEST_ARMOR_PARAMS),
+            3
+        );
     }
 
     #[test]

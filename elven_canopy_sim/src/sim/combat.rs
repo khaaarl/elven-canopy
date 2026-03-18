@@ -5,8 +5,9 @@
 // projectile simulation, damage application, creature death, flee behavior,
 // hostile pursuit, friendly-fire avoidance, and voxel exclusion enforcement.
 // Also includes civilization diplomacy, military group management, arrow
-// durability degradation on impact (apply_arrow_impact_damage), and
-// arrow-condition damage scaling (scale_damage_by_arrow_hp).
+// durability degradation on impact (apply_arrow_impact_damage),
+// arrow-condition damage scaling (scale_damage_by_arrow_hp), and armor
+// damage reduction with equipment degradation (apply_armor_reduction).
 //
 // See also: `projectile.rs` (sub-voxel trajectory math), `preemption.rs`
 // (task priority for combat interruption), `movement.rs` (tactical repositioning).
@@ -1153,11 +1154,14 @@ impl SimState {
             return false;
         }
 
-        let damage = species_data.melee_damage;
+        let raw_damage = species_data.melee_damage;
         let duration = species_data.melee_interval_ticks;
 
         // Start the action (sets action_kind + next_available_tick, schedules activation).
         self.start_simple_action(attacker_id, ActionKind::MeleeStrike, duration);
+
+        // Apply armor reduction and degrade equipped armor/clothing.
+        let damage = self.apply_armor_reduction(target_id, raw_damage, events);
 
         // Apply damage (handles death if HP reaches 0).
         self.apply_damage(target_id, damage, events);
@@ -1570,7 +1574,10 @@ impl SimState {
         };
 
         // Scale damage by arrow durability: a worn arrow hits softer.
-        let damage = self.scale_damage_by_arrow_hp(proj_inv, base_damage);
+        let raw_damage = self.scale_damage_by_arrow_hp(proj_inv, base_damage);
+
+        // Apply armor reduction and degrade equipped armor/clothing.
+        let damage = self.apply_armor_reduction(target_id, raw_damage, events);
 
         // Apply damage.
         self.apply_damage(target_id, damage, events);
@@ -1674,6 +1681,139 @@ impl SimState {
             return base_damage;
         }
         (base_damage * arrow.current_hp as i64 / arrow.max_hp as i64).max(1)
+    }
+
+    /// Compute the total effective armor value for a creature by summing
+    /// `effective_armor_value` across all equipped items. Non-armor clothing
+    /// returns 0 from `effective_armor_value` so it's safe to check all slots.
+    fn compute_creature_armor(&self, creature_id: CreatureId) -> i64 {
+        let inv_id = match self.db.creatures.get(&creature_id) {
+            Some(c) => c.inventory_id,
+            None => return 0,
+        };
+        let mut total: i64 = 0;
+        let params = inventory::ArmorParams {
+            worn_pct: self.config.durability_worn_pct,
+            damaged_pct: self.config.durability_damaged_pct,
+            worn_penalty: self.config.armor_worn_penalty,
+            damaged_penalty: self.config.armor_damaged_penalty,
+        };
+        for slot in [
+            inventory::EquipSlot::Head,
+            inventory::EquipSlot::Torso,
+            inventory::EquipSlot::Legs,
+            inventory::EquipSlot::Feet,
+            inventory::EquipSlot::Hands,
+        ] {
+            if let Some(stack) = self.inv_equipped_in_slot(inv_id, slot) {
+                total += inventory::effective_armor_value(
+                    stack.kind,
+                    stack.material,
+                    stack.current_hp,
+                    stack.max_hp,
+                    params,
+                ) as i64;
+            }
+        }
+        total
+    }
+
+    /// Apply armor/clothing degradation after a creature takes a hit.
+    /// Picks a random body location (weighted), and if something is equipped
+    /// there, rolls durability damage based on whether the hit penetrated.
+    ///
+    /// - `raw_damage`: damage before armor reduction
+    /// - `total_armor`: the creature's total effective armor at time of hit
+    fn apply_armor_degradation(
+        &mut self,
+        creature_id: CreatureId,
+        raw_damage: i64,
+        total_armor: i64,
+        events: &mut Vec<SimEvent>,
+    ) {
+        let inv_id = match self.db.creatures.get(&creature_id) {
+            Some(c) => c.inventory_id,
+            None => return,
+        };
+
+        // 1. Pick a body location via weighted random.
+        // Weights: [Torso, Legs, Head, Feet, Hands]. Clamp negatives to 0.
+        let weights = self.config.armor_degrade_location_weights.map(|w| w.max(0));
+        let total_weight: i32 = weights.iter().fold(0i32, |a, &b| a.saturating_add(b));
+        if total_weight <= 0 {
+            return;
+        }
+        let roll = (self.rng.next_u64() % total_weight as u64) as i32;
+        let slots = [
+            inventory::EquipSlot::Torso,
+            inventory::EquipSlot::Legs,
+            inventory::EquipSlot::Head,
+            inventory::EquipSlot::Feet,
+            inventory::EquipSlot::Hands,
+        ];
+        let mut cumulative = 0;
+        let mut chosen_slot = slots[0];
+        for (i, &w) in weights.iter().enumerate() {
+            cumulative += w;
+            if roll < cumulative {
+                chosen_slot = slots[i];
+                break;
+            }
+        }
+
+        // 2. Check what's equipped there.
+        let stack = match self.inv_equipped_in_slot(inv_id, chosen_slot) {
+            Some(s) => s,
+            None => return, // Nothing equipped — no degradation.
+        };
+
+        // 3. Compute degradation amount.
+        let penetrated = raw_damage > total_armor;
+        let degrade_amount = if penetrated {
+            let min_damage = self.config.armor_min_damage.max(0);
+            let penetrating_damage = (raw_damage - total_armor).max(min_damage) - min_damage;
+            // Roll in [0, 2 * penetrating_damage].
+            if penetrating_damage <= 0 {
+                // Edge case: armor exactly equals raw_damage - min_damage.
+                // Still a penetrating hit, treat like 0 penetration.
+                0
+            } else {
+                // Clamp to i32 range before arithmetic to avoid overflow.
+                let clamped = penetrating_damage.min(i32::MAX as i64 / 2);
+                let range = (2 * clamped + 1) as u64;
+                (self.rng.next_u64() % range) as i32
+            }
+        } else {
+            // Non-penetrating: 1-in-N chance of losing 1 HP.
+            let recip = self.config.armor_non_penetrating_degrade_chance_recip;
+            if recip > 0 && self.rng.next_u64().is_multiple_of(recip as u64) {
+                1
+            } else {
+                0
+            }
+        };
+
+        if degrade_amount > 0 {
+            self.inv_damage_item(stack.id, degrade_amount, events);
+        }
+    }
+
+    /// Apply armor reduction to raw damage and return the effective damage.
+    /// Also triggers armor degradation on the target.
+    fn apply_armor_reduction(
+        &mut self,
+        target_id: CreatureId,
+        raw_damage: i64,
+        events: &mut Vec<SimEvent>,
+    ) -> i64 {
+        let total_armor = self.compute_creature_armor(target_id);
+        let min_damage = self.config.armor_min_damage.max(0);
+        let effective_damage = (raw_damage - total_armor).max(min_damage);
+
+        // Degrade armor/clothing at the target location.
+        self.apply_armor_degradation(target_id, raw_damage, total_armor, events);
+
+        effective_damage
     }
 
     /// A civ becomes aware of another civ. Creates a CivRelationship row.

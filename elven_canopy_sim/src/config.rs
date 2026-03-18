@@ -1360,6 +1360,27 @@ fn default_arrow_impact_damage_max() -> i32 {
     3
 }
 
+fn default_armor_min_damage() -> i64 {
+    1
+}
+
+fn default_armor_non_penetrating_degrade_chance_recip() -> i32 {
+    20
+}
+
+fn default_armor_worn_penalty() -> i32 {
+    1
+}
+
+fn default_armor_damaged_penalty() -> i32 {
+    2
+}
+
+fn default_armor_degrade_location_weights() -> [i32; 5] {
+    // [Torso, Legs, Head, Feet, Hands]
+    [5, 4, 3, 2, 1]
+}
+
 fn default_item_durability() -> BTreeMap<ItemKind, i32> {
     BTreeMap::from([
         // Stackable projectiles — small range to keep stacking viable.
@@ -1854,6 +1875,37 @@ pub struct GameConfig {
     /// Maximum durability damage an arrow takes on impact. Default 3.
     #[serde(default = "default_arrow_impact_damage_max")]
     pub arrow_impact_damage_max: i32,
+
+    // -- Armor damage reduction --
+    /// Minimum damage a creature takes per hit after armor reduction.
+    /// Armor can never reduce incoming damage below this value. Default 1.
+    #[serde(default = "default_armor_min_damage")]
+    pub armor_min_damage: i64,
+
+    /// Reciprocal of the chance that armor/clothing degrades on a
+    /// non-penetrating hit (raw damage ≤ total armor). 1-in-N chance per
+    /// hit. Set to 0 to disable non-penetrating degradation. Default 20.
+    #[serde(default = "default_armor_non_penetrating_degrade_chance_recip")]
+    pub armor_non_penetrating_degrade_chance_recip: i32,
+
+    /// Armor value penalty when an armor piece is in "worn" condition
+    /// (HP% ≤ `durability_worn_pct`). Effective value = base - penalty,
+    /// floored at 2. Default 1.
+    #[serde(default = "default_armor_worn_penalty")]
+    pub armor_worn_penalty: i32,
+
+    /// Armor value penalty when an armor piece is in "damaged" condition
+    /// (HP% ≤ `durability_damaged_pct`). Effective value = base - penalty,
+    /// floored at 1. Default 2.
+    #[serde(default = "default_armor_damaged_penalty")]
+    pub armor_damaged_penalty: i32,
+
+    /// Weighted random target location weights for armor degradation on
+    /// hit: \[Torso, Legs, Head, Feet, Hands\]. Higher weight = more likely
+    /// to be targeted. When the chosen location has nothing equipped, no
+    /// degradation occurs. Default \[5, 4, 3, 2, 1\].
+    #[serde(default = "default_armor_degrade_location_weights")]
+    pub armor_degrade_location_weights: [i32; 5],
 }
 
 fn default_mana_cost_per_action() -> f32 {
@@ -2595,6 +2647,12 @@ impl Default for GameConfig {
             durability_damaged_pct: default_durability_damaged_pct(),
             arrow_impact_damage_min: default_arrow_impact_damage_min(),
             arrow_impact_damage_max: default_arrow_impact_damage_max(),
+            armor_min_damage: default_armor_min_damage(),
+            armor_non_penetrating_degrade_chance_recip:
+                default_armor_non_penetrating_degrade_chance_recip(),
+            armor_worn_penalty: default_armor_worn_penalty(),
+            armor_damaged_penalty: default_armor_damaged_penalty(),
+            armor_degrade_location_weights: default_armor_degrade_location_weights(),
         }
     }
 }

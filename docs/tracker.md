@@ -64,7 +64,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-ai-test-harness      Headless test harness for AI-driven manual testing
 [ ] F-anatomy              DF-style hit location anatomy system
 [ ] F-apprentice           Skill transfer via proximity
-[ ] F-armor                Wearable armor system
 [ ] F-arrow-chase          Enemies chase toward arrow source outside detection range
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
@@ -229,6 +228,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] F-alt-deselect         Alt+click to remove from selection
+[x] F-armor                Wearable armor system
 [x] F-arrow-durability     Arrow durability and recovery
 [x] F-attack-move          Attack-move task (walk + fight en route)
 [x] F-attack-task          AttackCreature task (player-directed target pursuit)
@@ -2418,7 +2418,7 @@ F-armor (armor covers specific body parts).
 **Related:** F-armor, F-incapacitation
 
 #### F-armor — Wearable armor system
-**Status:** Todo
+**Status:** Done
 
 Armor items that can be worn in clothing slots, providing damage reduction in combat. Builds on the clothing/wearable system (F-clothing) for slot mechanics and equip/unequip flow. Many details TBD: armor types and their stats (leather, chain, plate?), how damage reduction is calculated (flat reduction? percentage? per-damage-type?), armor durability and repair, crafting recipes and material requirements, how armor interacts with movement speed or other stats, visual representation, whether armor and clothing can be worn simultaneously (layering), and species-specific armor availability.
 
