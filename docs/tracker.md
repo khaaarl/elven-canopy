@@ -159,6 +159,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-narrative-log        Events and narrative log
+[ ] F-nav-gen-opt          RLE-aware nav graph generation
 [ ] F-night-predators      Nocturnal predators
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-patrol               Patrol command for military groups
@@ -171,6 +172,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-recipe-params        Parameterized recipe templates
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
+[ ] F-rle-voxels           RLE column-based voxel storage
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-round-building       Round/circular building construction
@@ -1068,6 +1070,26 @@ Separate pre-baked `NavGraph` for 2x2x2 footprint creatures (elephants).
 Nodes only where a 2x2x2 volume is clear and all 4 ground cells are solid.
 Includes `Species::Elephant`, `graph_for_species()` dispatch, incremental
 updates, SimBridge queries, GDScript spawn/render/placement, and sprite.
+
+#### F-nav-gen-opt — RLE-aware nav graph generation
+**Status:** Todo
+
+Optimize initial nav graph generation to exploit RLE column storage.
+Instead of scanning every voxel O(world_volume), iterate column spans to
+find solid→air transitions — each such transition's bottom air voxel is a
+walkable surface. This reduces node discovery to O(total_spans) which is
+proportional to world surface complexity, not world volume.
+
+Edge creation then checks neighboring columns' span data to find adjacent
+walkable surfaces at compatible heights.
+
+For a 1024×128×1024 world with ~3 spans per column, this is ~3M operations
+instead of ~134M.
+
+Also replace the flat `Vec<u32>` nav spatial index with a `HashMap<VoxelCoord, NavNodeId>` — point queries only, never iterated in order, so no determinism concern. Eliminates the 4-bytes-per-voxel overhead that would otherwise scale with world volume.
+
+**Blocked by:** F-rle-voxels
+**Blocks:** F-bigger-world
 
 #### F-nav-graph — Navigation graph construction
 **Status:** Done · **Phase:** 1 · **Refs:** §10
@@ -2862,6 +2884,7 @@ Increase the playable area beyond the current single-tree-centered map.
 Likely involves chunk streaming, camera bounds expansion, and world gen
 changes. Prerequisite or co-requisite for lesser trees and multi-tree play.
 
+**Blocked by:** F-nav-gen-opt, F-rle-voxels
 **Related:** F-lesser-trees, F-multi-tree, F-world-map, F-zone-world
 
 #### F-civ-knowledge — Civilization knowledge system (fruit tiers, discovery)
@@ -4125,6 +4148,33 @@ state. The sim crate itself should need no changes.
 
 Plugin/scripting system for custom structures, elf behaviors, invader
 types. Open design question (§27).
+
+#### F-rle-voxels — RLE column-based voxel storage
+**Status:** Todo
+
+Replace the flat `Vec<VoxelType>` voxel storage with a compressed
+column-based representation. Each column stores a sorted list of
+`(VoxelType, top_y)` spans — each span's voxel type extends upward until
+the next span's start. The topmost Air span is implicit (not stored).
+World height capped to [1, 255] so heights fit in a byte.
+
+Columns are grouped in 16×16 groups (matching chunk alignment). Each group
+holds inline arrays of span offsets (`[u16; 256]`) and span counts
+(`[u8; 256]`), plus a single heap allocation for all span data. Columns
+are allocated with slack (multiples of 4 spans / 8 bytes) so most
+single-voxel edits rewrite in place without repacking the group.
+
+**Goals:**
+- 10–30× memory reduction for large, mostly-empty worlds
+- Enable 1024×128×1024+ playable areas without GB-scale RAM
+- `get_voxel` via binary/linear search on spans (fast for typical 2–5 span columns)
+- `set_voxel` splits/merges spans in place; repacks group only on overflow
+- Bulk iteration (mesh gen, nav build) can traverse spans directly
+
+**API:** `get_voxel` / `set_voxel` interface unchanged externally. Internals
+of VoxelWorld completely replaced.
+
+**Blocks:** F-bigger-world, F-nav-gen-opt
 
 #### F-save-load — Save/load to JSON with versioning
 **Status:** Done · **Phase:** 2 · **Refs:** §4, §5
