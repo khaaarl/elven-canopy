@@ -2,8 +2,17 @@
 //
 // Pure Rust, no Godot dependencies. Converts a region of the voxel world into
 // triangle mesh data suitable for rendering. The world is divided into 16x16x16
-// chunks; each chunk produces a `ChunkMesh` with two surfaces (opaque and leaf)
-// that the gdext bridge converts into Godot `ArrayMesh` objects.
+// chunks; each chunk produces a `ChunkMesh` with three surfaces (bark, ground,
+// and leaf) that the gdext bridge converts into Godot `ArrayMesh` objects.
+//
+// ## RLE-aware iteration
+//
+// Instead of iterating all 4096 voxels per chunk (16³), mesh generation walks
+// each column's RLE spans via `VoxelWorld::column_spans()`, clips them to the
+// chunk's Y range, and skips Air spans entirely. This means chunks in mostly-
+// empty regions (the vast majority in a tall world) are nearly free. The center
+// voxel type is known from the span without a `get()` call; only neighbor
+// lookups for face culling still use `world.get()`.
 //
 // ## Face culling rule
 //
@@ -29,11 +38,12 @@
 // even at corners where different orientations meet. Leaf UVs span the full
 // [0,1] range for the alpha-scissor texture.
 //
-// See also: `world.rs` for the voxel grid, `types.rs` for `VoxelType::is_opaque()`,
-// `mesh_cache.rs` (in the gdext crate) for the caching layer that sits on top
-// of this module, `sim_bridge.rs` for the Godot-facing API that builds
-// `ArrayMesh` objects from `ChunkMesh` data, `tree_renderer.gd` for the
-// texture generation and material setup on the Godot side.
+// See also: `world.rs` for the voxel grid and `column_spans()` API,
+// `types.rs` for `VoxelType::is_opaque()`, `mesh_cache.rs` (in the gdext
+// crate) for the caching layer that sits on top of this module,
+// `sim_bridge.rs` for the Godot-facing API that builds `ArrayMesh` objects
+// from `ChunkMesh` data, `tree_renderer.gd` for the texture generation and
+// material setup on the Godot side.
 //
 // **Determinism note:** This module is pure and deterministic (same world state
 // produces identical mesh data), but mesh generation is a rendering concern and
@@ -244,9 +254,14 @@ struct PendingFace {
 
 /// Generate the mesh data for a single chunk of the world.
 ///
-/// Iterates over all voxels in the chunk, checks each of the 6 faces against
-/// the neighbor voxel, and emits face geometry when the face should be visible.
-/// Neighbor lookups cross chunk boundaries correctly by reading from the world.
+/// Iterates column spans via `VoxelWorld::column_spans()` instead of per-voxel
+/// `get()` calls. For each (x, z) column in the chunk's 16×16 XZ footprint,
+/// the column's RLE spans are clipped to the chunk's Y range. Air spans are
+/// skipped entirely, so chunks in mostly-empty regions are nearly free.
+///
+/// Neighbor lookups for face culling still use `world.get()` since neighbors
+/// can be in different columns or chunks. The main win is eliminating the
+/// center-voxel `get()` call and skipping Air ranges.
 ///
 /// After emitting all face geometry, generates per-face Perlin noise texture
 /// atlases for bark and ground surfaces, and fixes up their UVs to point into
@@ -269,25 +284,38 @@ pub fn generate_chunk_mesh(
     let base_x = chunk.cx * CHUNK_SIZE;
     let base_y = chunk.cy * CHUNK_SIZE;
     let base_z = chunk.cz * CHUNK_SIZE;
+    let chunk_y_end = base_y + CHUNK_SIZE - 1;
 
-    for ly in 0..CHUNK_SIZE {
-        for lz in 0..CHUNK_SIZE {
-            for lx in 0..CHUNK_SIZE {
-                let wx = base_x + lx;
-                let wy = base_y + ly;
-                let wz = base_z + lz;
-                let coord = VoxelCoord::new(wx, wy, wz);
+    // Effective Y ceiling: the lower of the chunk top and the y_cutoff.
+    let effective_y_end = match y_cutoff {
+        Some(cutoff) => chunk_y_end.min(cutoff.saturating_sub(1)),
+        None => chunk_y_end,
+    };
 
-                // Skip voxels at or above the Y cutoff — they are invisible.
-                if let Some(cutoff) = y_cutoff
-                    && wy >= cutoff
-                {
+    // If the entire chunk is above the cutoff, produce an empty mesh.
+    if effective_y_end < base_y {
+        return mesh;
+    }
+
+    for lz in 0..CHUNK_SIZE {
+        for lx in 0..CHUNK_SIZE {
+            let wx = base_x + lx;
+            let wz = base_z + lz;
+
+            // Skip columns outside the world bounds.
+            if wx < 0 || wz < 0 || (wx as u32) >= world.size_x || (wz as u32) >= world.size_z {
+                continue;
+            }
+
+            for (vt, y_start, y_end) in world.column_spans(wx as u32, wz as u32) {
+                if !produces_geometry(vt) {
                     continue;
                 }
 
-                let vt = world.get(coord);
-
-                if !produces_geometry(vt) {
+                // Clip span to this chunk's Y range and the effective ceiling.
+                let clipped_start = (y_start as i32).max(base_y);
+                let clipped_end = (y_end as i32).min(effective_y_end);
+                if clipped_start > clipped_end {
                     continue;
                 }
 
@@ -302,74 +330,76 @@ pub fn generate_chunk_mesh(
                     &mut mesh.bark
                 };
 
-                for (face_idx, &(dx, dy, dz)) in FACES.iter().enumerate() {
-                    let ny = wy + dy;
-                    let neighbor = world.get(VoxelCoord::new(wx + dx, ny, wz + dz));
+                for wy in clipped_start..=clipped_end {
+                    for (face_idx, &(dx, dy, dz)) in FACES.iter().enumerate() {
+                        let ny = wy + dy;
+                        let neighbor = world.get(VoxelCoord::new(wx + dx, ny, wz + dz));
 
-                    // Treat above-cutoff neighbors as air so boundary faces
-                    // are exposed when the height cutoff is active.
-                    let neighbor_visible = match y_cutoff {
-                        Some(cutoff) if ny >= cutoff => false,
-                        _ => neighbor.is_opaque(),
-                    };
-
-                    // Cull face if neighbor is opaque and visible.
-                    if neighbor_visible {
-                        continue;
-                    }
-
-                    let base_vertex = surface.vertex_count() as u32;
-                    let normal = [dx as f32, dy as f32, dz as f32];
-
-                    // Record UV start for atlas fixup (bark/ground only).
-                    let uv_start = surface.uvs.len();
-
-                    // Emit 4 vertices for this face.
-                    for (vi, vert) in FACE_VERTICES[face_idx].iter().enumerate() {
-                        surface.vertices.push(vert[0] + wx as f32);
-                        surface.vertices.push(vert[1] + wy as f32);
-                        surface.vertices.push(vert[2] + wz as f32);
-
-                        surface.normals.push(normal[0]);
-                        surface.normals.push(normal[1]);
-                        surface.normals.push(normal[2]);
-
-                        surface.colors.push(color[0]);
-                        surface.colors.push(color[1]);
-                        surface.colors.push(color[2]);
-                        surface.colors.push(color[3]);
-
-                        if is_leaf {
-                            surface.uvs.push(LEAF_FACE_UVS[vi][0]);
-                            surface.uvs.push(LEAF_FACE_UVS[vi][1]);
-                        } else {
-                            // Placeholder UVs — will be overwritten by atlas fixup.
-                            surface.uvs.push(0.0);
-                            surface.uvs.push(0.0);
-                        }
-                    }
-
-                    // 2 triangles: 0-1-2, 0-2-3
-                    surface.indices.push(base_vertex);
-                    surface.indices.push(base_vertex + 1);
-                    surface.indices.push(base_vertex + 2);
-                    surface.indices.push(base_vertex);
-                    surface.indices.push(base_vertex + 2);
-                    surface.indices.push(base_vertex + 3);
-
-                    // Record pending face for atlas generation.
-                    if !is_leaf {
-                        let pending = PendingFace {
-                            wx,
-                            wy,
-                            wz,
-                            face_idx,
-                            uv_start,
+                        // Treat above-cutoff neighbors as air so boundary faces
+                        // are exposed when the height cutoff is active.
+                        let neighbor_visible = match y_cutoff {
+                            Some(cutoff) if ny >= cutoff => false,
+                            _ => neighbor.is_opaque(),
                         };
-                        if is_ground {
-                            ground_pending.push(pending);
-                        } else {
-                            bark_pending.push(pending);
+
+                        // Cull face if neighbor is opaque and visible.
+                        if neighbor_visible {
+                            continue;
+                        }
+
+                        let base_vertex = surface.vertex_count() as u32;
+                        let normal = [dx as f32, dy as f32, dz as f32];
+
+                        // Record UV start for atlas fixup (bark/ground only).
+                        let uv_start = surface.uvs.len();
+
+                        // Emit 4 vertices for this face.
+                        for (vi, vert) in FACE_VERTICES[face_idx].iter().enumerate() {
+                            surface.vertices.push(vert[0] + wx as f32);
+                            surface.vertices.push(vert[1] + wy as f32);
+                            surface.vertices.push(vert[2] + wz as f32);
+
+                            surface.normals.push(normal[0]);
+                            surface.normals.push(normal[1]);
+                            surface.normals.push(normal[2]);
+
+                            surface.colors.push(color[0]);
+                            surface.colors.push(color[1]);
+                            surface.colors.push(color[2]);
+                            surface.colors.push(color[3]);
+
+                            if is_leaf {
+                                surface.uvs.push(LEAF_FACE_UVS[vi][0]);
+                                surface.uvs.push(LEAF_FACE_UVS[vi][1]);
+                            } else {
+                                // Placeholder UVs — will be overwritten by atlas fixup.
+                                surface.uvs.push(0.0);
+                                surface.uvs.push(0.0);
+                            }
+                        }
+
+                        // 2 triangles: 0-1-2, 0-2-3
+                        surface.indices.push(base_vertex);
+                        surface.indices.push(base_vertex + 1);
+                        surface.indices.push(base_vertex + 2);
+                        surface.indices.push(base_vertex);
+                        surface.indices.push(base_vertex + 2);
+                        surface.indices.push(base_vertex + 3);
+
+                        // Record pending face for atlas generation.
+                        if !is_leaf {
+                            let pending = PendingFace {
+                                wx,
+                                wy,
+                                wz,
+                                face_idx,
+                                uv_start,
+                            };
+                            if is_ground {
+                                ground_pending.push(pending);
+                            } else {
+                                bark_pending.push(pending);
+                            }
                         }
                     }
                 }
@@ -859,5 +889,140 @@ mod tests {
         // Only y=5 leaf visible (6 faces).
         assert_eq!(mesh.leaf.vertex_count(), 24); // 6 * 4
         assert!(mesh.bark.is_empty());
+    }
+
+    // --- RLE span clipping tests ---
+
+    #[test]
+    fn span_clips_to_chunk_y_range() {
+        // World with 2 vertical chunks (32 tall). Place a tall column of trunk
+        // spanning y=10..25 (crosses the chunk boundary at y=16).
+        let mut world = VoxelWorld::new(16, 32, 16);
+        for y in 10..26 {
+            world.set(VoxelCoord::new(4, y, 4), VoxelType::Trunk);
+        }
+
+        let mesh0 = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
+        let mesh1 = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 1, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
+
+        // Chunk 0 (y=0..15): 6 voxels visible (y=10..15). Internal ±Y faces
+        // between adjacent same-type voxels are culled. The +Y face at y=15
+        // is also culled because the cross-chunk neighbor at y=16 is trunk.
+        // - 4 side faces × 6 = 24 side faces
+        // - 1 bottom face (y=10, -Y toward Air)
+        // Total: 24 + 1 = 25 faces
+        assert_eq!(mesh0.bark.vertex_count(), 25 * 4);
+
+        // Chunk 1 (y=16..31): 10 voxels visible (y=16..25).
+        // - 4 side faces * 10 = 40 side faces
+        // - bottom (y=16 -Y toward y=15 trunk → culled)
+        // - top (y=25 +Y toward Air → 1 face)
+        // Total: 40 + 1 = 41 faces
+        assert_eq!(mesh1.bark.vertex_count(), 41 * 4);
+    }
+
+    #[test]
+    fn empty_chunk_in_tall_world() {
+        // A tall world where a chunk far above the content is empty.
+        let mut world = VoxelWorld::new(16, 128, 16);
+        world.set(VoxelCoord::new(8, 0, 8), VoxelType::Trunk);
+
+        // Chunk at y=64..79 should be empty.
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 4, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
+        assert!(mesh.is_empty());
+    }
+
+    #[test]
+    fn y_cutoff_below_chunk_produces_empty_mesh() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        // Cutoff at y=0 means every voxel in chunk 0 (y=0..15) is at or above
+        // the cutoff. The early-return optimization should produce an empty mesh.
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(0),
+            &mut FaceTileCache::new(),
+        );
+        assert!(mesh.is_empty());
+    }
+
+    #[test]
+    fn strut_voxel_produces_geometry() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Strut);
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
+        assert_eq!(mesh.bark.vertex_count(), 24); // 6 faces * 4 verts
+    }
+
+    #[test]
+    fn world_smaller_than_chunk_skips_out_of_bounds_columns() {
+        // World is only 8×16×8 but chunk footprint is 16×16. The 8 columns
+        // outside the world in each dimension should be skipped.
+        let mut world = VoxelWorld::new(8, 16, 8);
+        world.set(VoxelCoord::new(4, 4, 4), VoxelType::Trunk);
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
+        assert_eq!(mesh.bark.vertex_count(), 24); // 6 faces * 4 verts
+    }
+
+    #[test]
+    fn y_cutoff_within_contiguous_span() {
+        // A trunk column from y=0..9 with cutoff=5 should mesh only y=0..4
+        // and expose the +Y cap face at y=4.
+        let mut world = one_chunk_world();
+        for y in 0..10 {
+            world.set(VoxelCoord::new(8, y, 8), VoxelType::Trunk);
+        }
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(5),
+            &mut FaceTileCache::new(),
+        );
+
+        // 5 visible voxels (y=0..4). Internal ±Y faces are culled.
+        // - 4 side faces × 5 = 20 side faces
+        // - 1 bottom face (y=0, -Y toward OOB = Air)
+        // - 1 top face (y=4, +Y toward y=5 which is above cutoff = treated as Air)
+        // Total: 20 + 2 = 22 faces
+        assert_eq!(mesh.bark.vertex_count(), 22 * 4);
+    }
+
+    #[test]
+    fn negative_chunk_coords_produce_empty_mesh() {
+        let world = one_chunk_world();
+        let mesh = generate_chunk_mesh(
+            &world,
+            ChunkCoord::new(-1, 0, 0),
+            None,
+            &mut FaceTileCache::new(),
+        );
+        assert!(mesh.is_empty());
     }
 }

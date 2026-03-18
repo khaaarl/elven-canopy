@@ -145,7 +145,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mana-transfer        Tree-to-elf mana transfer
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
-[ ] F-mesh-gen-rle         RLE-aware chunk mesh generation
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
 [ ] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
@@ -305,6 +304,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-mana-system          Mana generation, storage, and spending
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-melee-action         Melee attack action
+[x] F-mesh-gen-rle         RLE-aware chunk mesh generation
 [x] F-military-armor       Military equipment auto-equip and slot validation
 [x] F-military-equip       Military group equipment acquisition
 [x] F-military-groups      Military group data model and configuration
@@ -3722,7 +3722,7 @@ construction has stalled.
 **Unblocked by:** F-mana-system
 
 #### F-mesh-gen-rle — RLE-aware chunk mesh generation
-**Status:** Todo
+**Status:** Done
 
 Optimize chunk mesh generation to iterate column spans directly instead
 of per-voxel get() calls. Column groups share the XZ footprint with mesh

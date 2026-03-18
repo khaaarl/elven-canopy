@@ -506,6 +506,38 @@ impl ColumnGroup {
     }
 }
 
+/// Iterator over the spans of a single column, yielding `(VoxelType, y_start, y_end)`
+/// triples that fully tile `[0, max_y]`. The implicit trailing Air span (not stored
+/// internally) is synthesized by this iterator. See `VoxelWorld::column_spans()`.
+pub struct ColumnSpanIter<'a> {
+    spans: &'a [Span],
+    pos: usize,
+    next_y_start: u8,
+    max_y: u8,
+    emitted_trailing: bool,
+}
+
+impl Iterator for ColumnSpanIter<'_> {
+    type Item = (VoxelType, u8, u8);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos < self.spans.len() {
+            let span = &self.spans[self.pos];
+            let y_start = self.next_y_start;
+            let y_end = span.top_y;
+            self.next_y_start = y_end.saturating_add(1);
+            self.pos += 1;
+            Some((VoxelType::from_u8(span.voxel_type), y_start, y_end))
+        } else if !self.emitted_trailing && self.next_y_start <= self.max_y {
+            // Synthesize the implicit trailing Air span.
+            self.emitted_trailing = true;
+            Some((VoxelType::Air, self.next_y_start, self.max_y))
+        } else {
+            None
+        }
+    }
+}
+
 /// RLE column-based 3D voxel grid.
 #[derive(Clone, Debug, Default)]
 pub struct VoxelWorld {
@@ -751,6 +783,28 @@ impl VoxelWorld {
 
             voxel[min_axis] += step[min_axis];
             t_max[min_axis] += t_delta[min_axis];
+        }
+    }
+
+    /// Iterate the spans of a single column as `(VoxelType, y_start, y_end)`
+    /// triples covering `[0, size_y)`. The implicit trailing Air span at the
+    /// top of the column IS included, so the spans always fully tile the Y
+    /// range. For empty columns (no stored spans), yields a single Air span
+    /// covering the entire height.
+    ///
+    /// Panics (debug builds only) if `x >= size_x` or `z >= size_z`.
+    /// Callers must ensure coordinates are in bounds.
+    pub fn column_spans(&self, x: u32, z: u32) -> ColumnSpanIter<'_> {
+        debug_assert!(x < self.size_x && z < self.size_z);
+        let coord = VoxelCoord::new(x as i32, 0, z as i32);
+        let (gi, col) = self.group_and_col(coord);
+        let spans = self.groups[gi].col_spans(col);
+        ColumnSpanIter {
+            spans,
+            pos: 0,
+            next_y_start: 0,
+            max_y: (self.size_y - 1) as u8,
+            emitted_trailing: false,
         }
     }
 
@@ -1615,5 +1669,126 @@ mod tests {
         // Should be 2 spans: Air at 0, Dirt at 1..4.
         let (gi, col) = world.group_and_col(VoxelCoord::new(0, 0, 0));
         assert_eq!(world.groups[gi].cols[col].num_spans, 2);
+    }
+
+    // -- column_spans tests --
+
+    #[test]
+    fn column_spans_empty_column_is_single_air() {
+        let world = VoxelWorld::new(4, 8, 4);
+        let spans: Vec<_> = world.column_spans(0, 0).collect();
+        assert_eq!(spans, vec![(VoxelType::Air, 0, 7)]);
+    }
+
+    #[test]
+    fn column_spans_single_voxel_at_bottom() {
+        let mut world = VoxelWorld::new(4, 8, 4);
+        world.set(VoxelCoord::new(0, 0, 0), VoxelType::Trunk);
+        let spans: Vec<_> = world.column_spans(0, 0).collect();
+        assert_eq!(
+            spans,
+            vec![(VoxelType::Trunk, 0, 0), (VoxelType::Air, 1, 7)]
+        );
+    }
+
+    #[test]
+    fn column_spans_solid_fills_entire_height() {
+        let mut world = VoxelWorld::new(4, 4, 4);
+        for y in 0..4 {
+            world.set(VoxelCoord::new(0, y, 0), VoxelType::Dirt);
+        }
+        let spans: Vec<_> = world.column_spans(0, 0).collect();
+        // Solid all the way to the top — no trailing Air.
+        assert_eq!(spans, vec![(VoxelType::Dirt, 0, 3)]);
+    }
+
+    #[test]
+    fn column_spans_mixed_types() {
+        let mut world = VoxelWorld::new(4, 10, 4);
+        // y=0..2 Dirt, y=3..5 Trunk, y=6..9 Air
+        for y in 0..3 {
+            world.set(VoxelCoord::new(1, y, 1), VoxelType::Dirt);
+        }
+        for y in 3..6 {
+            world.set(VoxelCoord::new(1, y, 1), VoxelType::Trunk);
+        }
+        let spans: Vec<_> = world.column_spans(1, 1).collect();
+        assert_eq!(
+            spans,
+            vec![
+                (VoxelType::Dirt, 0, 2),
+                (VoxelType::Trunk, 3, 5),
+                (VoxelType::Air, 6, 9),
+            ]
+        );
+    }
+
+    #[test]
+    fn column_spans_height_1_world() {
+        let mut world = VoxelWorld::new(4, 1, 4);
+        world.set(VoxelCoord::new(0, 0, 0), VoxelType::Trunk);
+        let spans: Vec<_> = world.column_spans(0, 0).collect();
+        // Single voxel, solid — no trailing Air (top_y == max_y).
+        assert_eq!(spans, vec![(VoxelType::Trunk, 0, 0)]);
+    }
+
+    #[test]
+    fn column_spans_agrees_with_get() {
+        // Build a column with varied content and verify span iteration
+        // agrees with per-voxel get().
+        let mut world = VoxelWorld::new(4, 32, 4);
+        world.set(VoxelCoord::new(2, 0, 2), VoxelType::ForestFloor);
+        for y in 1..5 {
+            world.set(VoxelCoord::new(2, y, 2), VoxelType::Trunk);
+        }
+        world.set(VoxelCoord::new(2, 10, 2), VoxelType::Leaf);
+        world.set(VoxelCoord::new(2, 11, 2), VoxelType::Leaf);
+
+        let spans: Vec<_> = world.column_spans(2, 2).collect();
+
+        // Verify spans cover the full range.
+        let first_start = spans.first().unwrap().1;
+        let last_end = spans.last().unwrap().2;
+        assert_eq!(first_start, 0);
+        assert_eq!(last_end, 31);
+
+        // Verify each span is consistent with get().
+        for &(vt, y_start, y_end) in &spans {
+            for y in y_start..=y_end {
+                assert_eq!(
+                    world.get(VoxelCoord::new(2, y as i32, 2)),
+                    vt,
+                    "Mismatch at y={y}: span says {vt:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn column_spans_max_height_world() {
+        // Max world height (255), solid column reaching the top.
+        // Tests the saturating_add boundary: top_y=254, next_y_start saturates
+        // to 255 which is > max_y(254), so no trailing Air is emitted.
+        let mut world = VoxelWorld::new(4, 255, 4);
+        for y in 0..255 {
+            world.set(VoxelCoord::new(0, y, 0), VoxelType::Trunk);
+        }
+        let spans: Vec<_> = world.column_spans(0, 0).collect();
+        assert_eq!(spans, vec![(VoxelType::Trunk, 0, 254)]);
+    }
+
+    #[test]
+    fn column_spans_max_height_with_trailing_air() {
+        // Max world height (255), solid column not reaching the top.
+        // Ensures trailing Air is emitted correctly at y=254.
+        let mut world = VoxelWorld::new(4, 255, 4);
+        for y in 0..200 {
+            world.set(VoxelCoord::new(0, y, 0), VoxelType::Trunk);
+        }
+        let spans: Vec<_> = world.column_spans(0, 0).collect();
+        assert_eq!(
+            spans,
+            vec![(VoxelType::Trunk, 0, 199), (VoxelType::Air, 200, 254)]
+        );
     }
 }
