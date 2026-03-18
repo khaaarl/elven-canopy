@@ -144,6 +144,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mana-mood            Mana generation tied to elf mood
 [ ] F-mana-transfer        Tree-to-elf mana transfer
 [ ] F-mass-conserve        Wood mass tracking and conservation
+[ ] F-megachunk            MegaChunk spatial hierarchy with draw distance and frustum culling
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
@@ -821,6 +822,8 @@ walks to the building and removes furniture incrementally.
 Platforms and construction should render with smoothed surfaces rather than
 raw cubes. Exact technique TBD (marching cubes variant, mesh smoothing, or
 shader-based rounding).
+
+**Related:** F-megachunk
 
 #### F-wireframe-ghost — Wireframe ghost for overlap preview
 **Status:** Todo · **Phase:** 2
@@ -2905,7 +2908,7 @@ RLE-aware mesh gen (F-mesh-gen-rle), and LookupMap nav spatial index
 volume. The tiling texture system (F-tiling-tex) eliminates per-face
 atlas overhead that would otherwise be prohibitive at this scale.
 
-**Blocked by:** F-tiling-tex
+**Blocked by:** F-megachunk, F-tiling-tex
 **Unblocked by:** F-nav-gen-opt, F-rle-voxels
 **Related:** F-lesser-trees, F-multi-tree, F-world-map, F-zone-world
 
@@ -4221,6 +4224,40 @@ already a standalone pure mutation method with no dependency on `step()` or tick
 state. The sim crate itself should need no changes.
 
 **Related:** F-multiplayer, F-multiplayer (relay ordering)., F-session-sm, F-session-sm (session architecture)
+
+#### F-megachunk — MegaChunk spatial hierarchy with draw distance and frustum culling
+**Status:** Todo
+
+Spatial hierarchy for efficient chunk rendering at large world sizes.
+
+**MegaChunk:** A 16×16 horizontal group of chunk columns. Stores only
+chunks that have renderable geometry (not pure air, not pure solid
+underground). Provides coarse AABB for fast frustum culling — test one
+MegaChunk AABB instead of hundreds of individual chunk AABBs.
+
+**Draw distance:** Configurable radius (in MegaChunks or voxels) around
+the camera. MegaChunks outside the radius have their chunk meshes
+hidden. Chunk meshes are cached in memory with an LRU eviction policy
+under a configurable memory budget — panning back to a recently visible
+area is instant, but distant meshes are freed under memory pressure.
+
+**Frustum culling hierarchy:** Camera frustum tested against MegaChunk
+AABBs first (coarse), then individual chunk AABBs within visible
+MegaChunks (fine). At 1024×1024 that's ~4K MegaChunk columns — trivial
+to frustum-test each frame.
+
+**LOD (deferred):** After F-visual-smooth lands, add automatic geometry
+decimation for distant chunks — blurry blobby hills instead of per-voxel
+detail. Not needed for initial implementation; draw distance alone
+provides the performance knob.
+
+**Chunk mesh lifecycle:** Meshes are created on demand when a chunk
+enters draw distance, cached when it leaves, and evicted LRU when the
+memory budget is exceeded. Both draw distance and memory budget are
+user-configurable settings.
+
+**Blocks:** F-bigger-world
+**Related:** F-visual-smooth
 
 #### F-mesh-cache-lru — LRU cache for chunk meshes at different Y cutoffs
 **Status:** Todo · **Phase:** 2
