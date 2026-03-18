@@ -3937,7 +3937,7 @@ fn squirrel_can_climb() {
 
 #[test]
 fn all_small_species_spawn_and_coexist() {
-    let mut sim = test_sim(99);
+    let mut sim = test_sim(300);
     let tree_pos = sim.trees[&sim.player_tree_id].position;
 
     let species_list = [
@@ -4870,7 +4870,7 @@ fn structure_voxels_rebuilt_on_rebuild_transient_state() {
 
 #[test]
 fn raycast_structure_finds_structure_voxel() {
-    let sim = designate_and_complete_build(test_sim(42));
+    let sim = designate_and_complete_build(test_sim(200));
     let structure = sim.db.structures.iter_all().next().unwrap();
     let bp = sim
         .db
@@ -14200,17 +14200,18 @@ fn multiple_floating_piles_in_same_column() {
     let mut sim = test_sim(42);
     // Two platforms at y=3 and y=6. Piles at y=4 and y=7.
     // Remove both platforms — both piles should fall to y=1, merging.
-    let p1 = VoxelCoord::new(30, 3, 30);
-    let p2 = VoxelCoord::new(30, 6, 30);
+    // Use coordinates far from the tree trunk (~32,32) to avoid overlap.
+    let p1 = VoxelCoord::new(10, 3, 10);
+    let p2 = VoxelCoord::new(10, 6, 10);
     sim.world.set(p1, VoxelType::GrownPlatform);
     sim.world.set(p2, VoxelType::GrownPlatform);
 
-    let pile1_pos = VoxelCoord::new(30, 4, 30);
+    let pile1_pos = VoxelCoord::new(10, 4, 10);
     let pile1_id = sim.ensure_ground_pile(pile1_pos);
     let pile1_inv = sim.db.ground_piles.get(&pile1_id).unwrap().inventory_id;
     sim.inv_add_simple_item(pile1_inv, inventory::ItemKind::Bread, 2, None, None);
 
-    let pile2_pos = VoxelCoord::new(30, 7, 30);
+    let pile2_pos = VoxelCoord::new(10, 7, 10);
     let pile2_id = sim.ensure_ground_pile(pile2_pos);
     let pile2_inv = sim.db.ground_piles.get(&pile2_id).unwrap().inventory_id;
     sim.inv_add_simple_item(pile2_inv, inventory::ItemKind::Fruit, 3, None, None);
@@ -14225,7 +14226,7 @@ fn multiple_floating_piles_in_same_column() {
         .db
         .ground_piles
         .iter_all()
-        .filter(|p| p.position.x == 30 && p.position.z == 30)
+        .filter(|p| p.position.x == 10 && p.position.z == 10)
         .collect();
     assert_eq!(remaining.len(), 1);
     let final_pile = &remaining[0];
@@ -19471,7 +19472,7 @@ fn arm_with_bow_and_arrows(sim: &mut SimState, creature_id: CreatureId, arrows: 
 
 #[test]
 fn test_shoot_arrow_spawns_projectile() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -19611,7 +19612,7 @@ fn test_shoot_arrow_no_arrows_fails() {
 
 #[test]
 fn test_shoot_arrow_cooldown_prevents_second_shot() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -19702,7 +19703,7 @@ fn test_shoot_arrow_blocked_los_fails() {
 
 #[test]
 fn test_shoot_arrow_leaf_does_not_block_los() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -19826,7 +19827,7 @@ fn test_shoot_action_serde_roundtrip() {
 
 #[test]
 fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -19929,7 +19930,7 @@ fn test_shoot_arrow_rejected_when_not_idle() {
 
 #[test]
 fn test_hostile_ai_shoots_when_armed() {
-    let mut sim = test_sim(99);
+    let mut sim = test_sim(300);
     let elf_id = spawn_species(&mut sim, Species::Elf);
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
 
@@ -20046,7 +20047,7 @@ fn engagement_style_config() {
 
 #[test]
 fn hostile_creature_pursues_and_attacks_elf() {
-    let mut sim = test_sim(99);
+    let mut sim = test_sim(300);
     let elf_id = spawn_species(&mut sim, Species::Elf);
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
 
@@ -24352,7 +24353,7 @@ fn prefer_ranged_shoots_before_closing() {
     use crate::species::{
         AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
     };
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.species_table
         .get_mut(&Species::Goblin)
         .unwrap()
@@ -25328,7 +25329,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     use crate::species::{
         AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
     };
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
@@ -28368,7 +28369,7 @@ fn flight_path_clear_no_creatures() {
 #[test]
 fn flight_path_blocked_by_friendly_creature() {
     // An elf between the shooter and the target should block the shot.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let shooter = spawn_elf(&mut sim);
@@ -28477,7 +28478,7 @@ fn shoot_arrow_blocked_by_friendly_in_path() {
 fn shoot_arrow_hostile_in_path_does_not_block() {
     // A hostile creature in the flight path should NOT block the shot
     // (they're a valid target the arrow can hit).
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let shooter = spawn_elf(&mut sim);
@@ -29282,7 +29283,7 @@ fn attack_move_creature_reactivates_after_arriving_at_destination() {
 fn attack_move_creature_wanders_after_arriving_at_destination() {
     // After attack-move completes, advance the sim and verify the elf
     // actually moves (wanders), proving it didn't get stuck.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(200);
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
