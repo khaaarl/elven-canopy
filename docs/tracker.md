@@ -207,8 +207,10 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-sung-furniture       Sung furniture grown from living wood
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-cycle            Tab to cycle focus through units in selection
+[ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-nonpk-autoinc    Non-PK auto-increment fields in tabulosity
+[ ] F-tab-ordered-idx      Deterministic-iteration hash index with tombstone skip
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-priority        Priority queue and auto-assignment
@@ -4883,6 +4885,23 @@ High complexity.
 
 **Related:** F-sim-db-impl, F-tab-compound-idx
 
+#### F-tab-indexmap-fork — Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
+**Status:** Todo
+
+Higher-effort alternative to F-tab-ordered-idx: fork the `indexmap` crate and add
+tombstone-based removal with periodic compaction, instead of IndexMap's current
+O(n) shift-remove or order-disrupting swap-remove. This would avoid key
+duplication (IndexMap stores entries in a single vec, with the hash table pointing
+into it) and give better cache locality on iteration (no hash lookups needed).
+
+Probably not worth the effort given that F-tab-ordered-idx is simpler and the key
+duplication cost is minor for typical table sizes. But if profiling ever shows
+iteration performance or memory overhead from key duplication is a bottleneck,
+this is the path. The encapsulated interface from F-tab-ordered-idx means this
+can be dropped in without touching Tabulosity internals.
+
+**Related:** F-tab-ordered-idx
+
 #### F-tab-joins — Join iterators across tables
 **Status:** Todo
 
@@ -4924,6 +4943,82 @@ Add support for a single `#[auto_increment]` field per table that is NOT the pri
 
 **Blocks:** F-child-table-pks
 **Related:** F-child-table-pks, F-compound-pk, F-tab-parent-pk
+
+#### F-tab-ordered-idx — Deterministic-iteration hash index with tombstone skip
+**Status:** Todo
+
+Deterministic-iteration hash index for Tabulosity. Wraps a `HashMap<K, usize>`
++ `Vec<Entry<K, V>>` where entries are either live `(K, V)` pairs or tombstones.
+Iteration walks the vec in insertion order, skipping tombstones via O(1) span
+jumps (important for the common "get me 1 thing, don't care which" case).
+Compaction (rebuild vec, drop all tombstones, update HashMap usizes) triggers
+when `vec.len() - map.len()` exceeds a threshold ratio. Compaction preserves
+original insertion order for determinism stability regardless of compaction
+policy changes.
+
+**Entry representation:**
+```
+enum Entry<K, V> {
+    Live(K, V),
+    Tombstone { span_start: usize, after_span: usize },
+}
+```
+Relies on `(K, V)` being at least as large as two usizes in practice (true for
+most DB-style keys+values). If `(K, V)` is smaller, the enum is still correct,
+just slightly larger.
+
+**Tombstone skip structure:** Tombstones store `(span_start, after_span)` —
+absolute vec indices forming a linked skip structure within contiguous tombstone
+spans. Interior tombstones exist only to drop their `(K, V)` data; their fields
+are garbage and never read. Only span boundaries are read:
+
+- First tombstone in span: `span_start` points to itself (identifies it as span
+  start), `after_span` is the index of the next live entry (or `vec.len()`).
+- Last tombstone in span: `span_start` points to the first tombstone in the
+  span, `after_span` points past the span (identifies it as span end).
+- A span of 1: both fields are valid (it's both first and last).
+
+**Removal algorithm** (removing entry at vec index `i`):
+1. Replace `vec[i]` with `Tombstone { span_start: i, after_span: i + 1 }`
+   (a span of 1).
+2. If `i + 1` is in bounds and is a tombstone, read its `after_span` to find
+   the rightmost tombstone of that span. Otherwise, we are the rightmost
+   tombstone of our span.
+3. If `i - 1` is in bounds and is a tombstone, read its `span_start` to find
+   the leftmost tombstone of that span. Otherwise, we are the leftmost
+   tombstone of our span.
+4. Update the leftmost tombstone's `after_span` to the rightmost tombstone's
+   `after_span`. Update the rightmost tombstone's `span_start` to the leftmost
+   tombstone's `span_start`.
+
+All steps are O(1). No cascading updates, no interior tombstone reads.
+
+**Iteration:** On hitting a tombstone, read its `after_span`; if it equals
+`vec.len()`, iteration is done, otherwise jump to that index.
+
+**Example:** Vec after inserting A,B,C,D,E,F then removing B, C, and D
+(in any order):
+```
+[Live(A), Tomb{ss:1, as:4}, Tomb{--,--}, Tomb{ss:1, as:4}, Live(E), Live(F)]
+```
+Interior tombstone at index 2 has garbage fields — it exists only to drop the
+`(K, V)` that was there. Iterator at index 1 reads `after_span=4`, jumps to
+index 4 (E).
+
+**Interface encapsulation:** The data structure must expose only an opaque
+iteration + lookup interface. Nothing internal to Tabulosity should know about
+the vec or tombstone structure — just that the index supports O(1) lookup and
+deterministic iteration. This allows a future drop-in replacement (e.g., a
+forked IndexMap with compaction, see F-tab-indexmap-fork) without changing any
+Tabulosity internals.
+
+**Open design questions:**
+- Compaction threshold: e.g., compact when tombstones > 50% of vec length, or
+  when tombstones > N (absolute). TBD based on profiling.
+- Serde: the vec (with tombstones removed) should be serialized alongside the
+  table to preserve insertion order across save/load.
+
+**Related:** F-tab-indexmap-fork
 
 #### F-tab-parent-pk — Tabulosity: allow parent PK as child table PK for 1:1 relations
 **Status:** Done
