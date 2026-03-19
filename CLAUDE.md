@@ -144,6 +144,8 @@ When the user asks to merge a feature branch to main, use the `/merge-to-main` s
 
 **When to act:** Only start editing files or running commands when the user gives a clear, unambiguous instruction to do so — e.g., "implement this", "write that test", "update the tracker", "make a branch and do X". If you're not sure whether the user wants you to act or keep discussing, ask.
 
+**Never assume your own code is correct.** When the user requests verification (once-over, review, additional testing), run it without pushback, even if you just ran a similar check. Multiple rounds of review catch different issues. Do not say "we just did that" or "the branch is clean" as a reason to skip requested verification. The user's judgment about how much checking is needed overrides your confidence in the code.
+
 ## Planning
 
 **Never use EnterPlanMode/ExitPlanMode unless explicitly requested.** When a task is large enough to warrant significant planning, write the plan to `.tmp/plan-<name>.md` so it survives context compaction and restarts, summarize it in conversation, and wait for approval before implementing.
