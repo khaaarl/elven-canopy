@@ -60,7 +60,7 @@
 //   completion. Multi-activation: each activation restores rest proportional to
 //   `rest_per_sleep_tick`; completes when progress reaches `total_cost` or rest
 //   is full.
-// - `Haul { item_kind, quantity, source, destination, phase, destination_nav_node }`
+// - `Haul { item_kind, quantity, source, destination, phase, destination_coord }`
 //   — two-phase item transport. In `GoingToSource` phase, creature walks to the
 //   source (ground pile or building), picks up reserved items, then switches to
 //   `GoingToDestination` and walks to the destination building to deposit them.
@@ -111,7 +111,7 @@
 
 use crate::inventory::ItemKind;
 use crate::types::{
-    ActiveRecipeId, CreatureId, NavNodeId, ProjectId, Species, StructureId, TaskId, VoxelCoord,
+    ActiveRecipeId, CreatureId, ProjectId, Species, StructureId, TaskId, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 
@@ -186,7 +186,7 @@ pub enum TaskKind {
         source: HaulSource,
         destination: StructureId,
         phase: HaulPhase,
-        destination_nav_node: NavNodeId,
+        destination_coord: VoxelCoord,
     },
     /// Harvest a fruit voxel from a tree. The elf walks to the fruit's nav
     /// node, removes the fruit voxel from the world and tree, and creates a
@@ -271,8 +271,11 @@ pub struct Task {
     pub id: TaskId,
     pub kind: TaskKind,
     pub state: TaskState,
-    /// The nav node where creatures go to work on this task.
-    pub location: NavNodeId,
+    /// The voxel coordinate where creatures go to work on this task.
+    /// Resolved to a NavNodeId at runtime via the nav graph spatial index
+    /// or find_nearest_node. Stored as VoxelCoord because NavNodeId indices
+    /// can change when the nav graph is rebuilt (on load, after construction).
+    pub location: VoxelCoord,
     /// Current progress toward completion (integer work units).
     pub progress: i64,
     /// Total work units needed to complete. 0 for instant tasks (e.g. GoTo).
@@ -299,7 +302,7 @@ mod tests {
         let mut rng = GameRng::new(42);
         let task_id = TaskId::new(&mut rng);
         let project_id = crate::types::ProjectId::new(&mut rng);
-        let location = NavNodeId(3);
+        let location = VoxelCoord::new(3, 0, 0);
 
         let task = Task {
             id: task_id,
@@ -331,7 +334,7 @@ mod tests {
     fn eat_fruit_task_serialization_roundtrip() {
         let mut rng = GameRng::new(42);
         let task_id = TaskId::new(&mut rng);
-        let location = NavNodeId(7);
+        let location = VoxelCoord::new(7, 0, 0);
         let fruit_pos = VoxelCoord::new(10, 5, 10);
 
         let task = Task {
@@ -364,7 +367,7 @@ mod tests {
     fn eat_bread_task_serialization_roundtrip() {
         let mut rng = GameRng::new(42);
         let task_id = TaskId::new(&mut rng);
-        let location = NavNodeId(5);
+        let location = VoxelCoord::new(5, 0, 0);
 
         let task = Task {
             id: task_id,
@@ -392,7 +395,7 @@ mod tests {
     fn sleep_task_with_location_roundtrip() {
         let mut rng = GameRng::new(42);
         let task_id = TaskId::new(&mut rng);
-        let location = NavNodeId(10);
+        let location = VoxelCoord::new(10, 0, 0);
 
         let task = Task {
             id: task_id,
@@ -448,8 +451,8 @@ mod tests {
     fn haul_task_serialization_roundtrip() {
         let mut rng = GameRng::new(42);
         let task_id = TaskId::new(&mut rng);
-        let location = NavNodeId(5);
-        let dest_node = NavNodeId(20);
+        let location = VoxelCoord::new(5, 0, 0);
+        let dest_coord = VoxelCoord::new(20, 0, 20);
 
         // Test GroundPile source, GoingToSource phase.
         let task = Task {
@@ -460,7 +463,7 @@ mod tests {
                 source: HaulSource::GroundPile(VoxelCoord::new(10, 1, 10)),
                 destination: StructureId(7),
                 phase: HaulPhase::GoingToSource,
-                destination_nav_node: dest_node,
+                destination_coord: dest_coord,
             },
             state: TaskState::Available,
             location,
@@ -483,14 +486,14 @@ mod tests {
                 source,
                 destination,
                 phase,
-                destination_nav_node,
+                destination_coord: dc,
             } => {
                 assert_eq!(*item_kind, crate::inventory::ItemKind::Bread);
                 assert_eq!(*quantity, 3);
                 assert_eq!(*source, HaulSource::GroundPile(VoxelCoord::new(10, 1, 10)));
                 assert_eq!(*destination, StructureId(7));
                 assert_eq!(*phase, HaulPhase::GoingToSource);
-                assert_eq!(*destination_nav_node, dest_node);
+                assert_eq!(*dc, dest_coord);
             }
             _ => panic!("Expected Haul task kind"),
         }
@@ -505,10 +508,10 @@ mod tests {
                 source: HaulSource::Building(StructureId(3)),
                 destination: StructureId(9),
                 phase: HaulPhase::GoingToDestination,
-                destination_nav_node: dest_node,
+                destination_coord: dest_coord,
             },
             state: TaskState::InProgress,
-            location: dest_node,
+            location: VoxelCoord::new(20, 0, 0),
 
             progress: 0,
             total_cost: 0,
@@ -532,7 +535,7 @@ mod tests {
     fn acquire_item_task_serialization_roundtrip() {
         let mut rng = GameRng::new(42);
         let task_id = TaskId::new(&mut rng);
-        let location = NavNodeId(8);
+        let location = VoxelCoord::new(8, 0, 0);
 
         let task = Task {
             id: task_id,
@@ -574,7 +577,7 @@ mod tests {
     fn mope_task_serialization_roundtrip() {
         let mut rng = GameRng::new(42);
         let task_id = TaskId::new(&mut rng);
-        let location = NavNodeId(12);
+        let location = VoxelCoord::new(12, 0, 0);
 
         let task = Task {
             id: task_id,
@@ -607,7 +610,7 @@ mod tests {
 
         let mut rng = GameRng::new(42);
         let task_id = TaskId::new(&mut rng);
-        let location = NavNodeId(5);
+        let location = VoxelCoord::new(5, 0, 0);
 
         let task = Task {
             id: task_id,

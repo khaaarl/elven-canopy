@@ -463,16 +463,16 @@ impl SimState {
 
     /// Find the surface position below a given Y coordinate in a column.
     /// Scans downward from `start_y - 1` to find the first solid voxel, then
-    /// returns the air voxel directly above it. Falls back to y=1 if no solid
-    /// voxel is found (ForestFloor at y=0 is always solid).
+    /// returns the air voxel directly above it. Falls back to `floor_y + 1` if
+    /// no solid voxel is found (terrain at `floor_y` is always solid).
     pub(crate) fn find_surface_below(&self, x: i32, start_y: i32, z: i32) -> VoxelCoord {
         for y in (0..start_y).rev() {
             if self.world.get(VoxelCoord::new(x, y, z)).is_solid() {
                 return VoxelCoord::new(x, y + 1, z);
             }
         }
-        // Shouldn't happen (ForestFloor at y=0 is solid), but safe fallback.
-        VoxelCoord::new(x, 1, z)
+        // Shouldn't happen (terrain is always solid), but safe fallback.
+        VoxelCoord::new(x, self.config.floor_y + 1, z)
     }
 
     /// Check all ground piles for gravity: if the voxel below a pile's position

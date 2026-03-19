@@ -425,8 +425,8 @@ impl SimState {
         let min_grow_mana_cost = self.mana_cost_for_grow_action();
         let has_mana_for_grow = creature.mp >= min_grow_mana_cost;
 
-        // Collect all candidate tasks (id + location) that this creature can work.
-        let candidates: Vec<(TaskId, NavNodeId)> = self
+        // Collect all candidate tasks (id + location coord) that this creature can work.
+        let candidates: Vec<(TaskId, VoxelCoord)> = self
             .db
             .tasks
             .iter_all()
@@ -464,10 +464,20 @@ impl SimState {
             return Some(candidates[0].0);
         }
 
-        let target_nodes: Vec<NavNodeId> = candidates.iter().map(|&(_, loc)| loc).collect();
-
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
+
+        // Resolve VoxelCoords to NavNodeIds for Dijkstra, keeping the association.
+        let resolved: Vec<(TaskId, NavNodeId)> = candidates
+            .iter()
+            .filter_map(|&(id, coord)| graph.find_nearest_node(coord).map(|nav| (id, nav)))
+            .collect();
+
+        if resolved.is_empty() {
+            return None;
+        }
+
+        let target_nodes: Vec<NavNodeId> = resolved.iter().map(|&(_, nav)| nav).collect();
 
         let nearest_node = pathfinding::dijkstra_nearest(
             graph,
@@ -482,9 +492,9 @@ impl SimState {
 
         // Find the task at the nearest node. If multiple tasks share a location,
         // the first in iteration order wins (deterministic tiebreaker).
-        candidates
+        resolved
             .iter()
-            .find(|&&(_, loc)| loc == nearest_node)
+            .find(|&&(_, nav)| nav == nearest_node)
             .map(|&(id, _)| id)
     }
 
@@ -508,7 +518,7 @@ impl SimState {
         current_node: NavNodeId,
         events: &mut Vec<SimEvent>,
     ) {
-        let (mut task_location, target_creature) = match self.db.tasks.get(&task_id) {
+        let (mut task_location_coord, target_creature) = match self.db.tasks.get(&task_id) {
             Some(t) => (t.location, t.target_creature),
             None => {
                 // Task was removed — abort action, unassign, and wander.
@@ -525,24 +535,20 @@ impl SimState {
 
         // --- Dynamic pursuit: track moving target creature ---
         if let Some(target_id) = target_creature {
-            let target_node = self
-                .db
-                .creatures
-                .get(&target_id)
-                .and_then(|c| c.current_node);
-            match target_node {
+            let target_pos = self.db.creatures.get(&target_id).map(|c| c.position);
+            match target_pos {
                 None => {
-                    // Target creature is gone or has no nav node — abandon.
+                    // Target creature is gone — abandon.
                     self.interrupt_task(creature_id, task_id);
                     self.wander(creature_id, current_node, events);
                     return;
                 }
-                Some(target_nav) => {
-                    if target_nav != task_location {
+                Some(target_coord) => {
+                    if target_coord != task_location_coord {
                         // Target moved — update task location and invalidate path.
-                        task_location = target_nav;
+                        task_location_coord = target_coord;
                         let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
-                            t.location = target_nav;
+                            t.location = target_coord;
                         });
                         let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
                             c.path = None;
@@ -552,16 +558,35 @@ impl SimState {
             }
         }
 
-        // Check that both current_node and task_location are still alive in
-        // the nav graph. They can become dead slots after incremental updates
-        // (e.g. construction solidifying a voxel). If either is dead, abandon
-        // the task and wander.
+        // Resolve the task location VoxelCoord to a NavNodeId.
         let species = self
             .db
             .creatures
             .get(&creature_id)
             .map(|c| c.species)
             .unwrap_or(Species::Elf);
+        let graph = self.graph_for_species(species);
+
+        let task_location = match graph.find_nearest_node(task_location_coord) {
+            Some(n) => n,
+            None => {
+                // No reachable nav node for the task location — abandon.
+                self.interrupt_task(creature_id, task_id);
+                if let Some(c) = self.db.creatures.get(&creature_id) {
+                    let old_pos = c.position;
+                    let graph = self.graph_for_species(species);
+                    if let Some(new_node) = graph.find_nearest_node(old_pos) {
+                        self.wander(creature_id, new_node, events);
+                    }
+                }
+                return;
+            }
+        };
+
+        // Check that both current_node and task_location are still alive in
+        // the nav graph. They can become dead slots after incremental updates
+        // (e.g. construction solidifying a voxel). If either is dead, abandon
+        // the task and wander.
         let graph = self.graph_for_species(species);
         if !graph.is_node_alive(current_node) || !graph.is_node_alive(task_location) {
             // Clean up action and task state before abandoning.
@@ -814,18 +839,13 @@ impl SimState {
             self.interrupt_task(creature_id, old_task_id);
         }
 
-        // Determine mope location: assigned home nav node, else current node.
-        let mope_node = self
+        // Determine mope location: assigned home bed coord, else current position.
+        let mope_coord = self
             .find_assigned_home_bed(creature_id)
-            .map(|(_, nav_node, _)| nav_node)
-            .or_else(|| {
-                self.db
-                    .creatures
-                    .get(&creature_id)
-                    .and_then(|c| c.current_node)
-            });
-        let mope_node = match mope_node {
-            Some(n) => n,
+            .map(|(bed_coord, _, _)| bed_coord)
+            .or_else(|| self.db.creatures.get(&creature_id).map(|c| c.position));
+        let mope_coord = match mope_coord {
+            Some(c) => c,
             None => return,
         };
 
@@ -835,7 +855,7 @@ impl SimState {
             id: task_id,
             kind: task::TaskKind::Mope,
             state: task::TaskState::InProgress,
-            location: mope_node,
+            location: mope_coord,
             progress: 0,
             total_cost: duration as i64,
             required_species: None,

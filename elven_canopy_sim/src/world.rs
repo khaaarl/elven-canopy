@@ -21,11 +21,11 @@
 // max-solid-Y), and `has_solid_face_neighbor()` / `has_face_neighbor_of_type()`
 // for adjacency queries. All use `get()` internally.
 //
-// The world is regenerated from seed at load time, so it skips serialization
-// (`#[serde(skip)]` on `SimState.world`). After worldgen or load, call
-// `repack_all()` to compact groups and reclaim dead space from bulk writes.
-// The `Default` impl creates a zero-sized empty world; `SimState::new()`
-// constructs the real one from `config.world_size`.
+// The world is serialized using a compact binary pack format (see `pack()`/
+// `unpack()`) for efficient save/load. After worldgen, call `repack_all()` to
+// compact groups and reclaim dead space from bulk writes. The `Default` impl
+// creates a zero-sized empty world; `SimState::new()` constructs the real one
+// from `config.world_size`.
 //
 // See also: `tree_gen.rs` for populating the world with tree geometry,
 // `nav.rs` for the navigation graph built on top of the voxel data,
@@ -37,6 +37,7 @@
 // access from rendering threads.
 
 use crate::types::{VoxelCoord, VoxelType};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Column group size in the XZ plane (must be a power of 2).
 const GROUP_SIZE: u32 = 16;
@@ -106,6 +107,34 @@ impl ColumnGroup {
         }
         let start = meta.data_start as usize;
         &self.spans[start..start + meta.num_spans as usize]
+    }
+
+    /// Replace a column's spans with a single span of the given type from
+    /// y=0 to `top_y` (inclusive). The column must currently be empty (no
+    /// spans allocated). Used during worldgen to bulk-initialize terrain.
+    fn init_col_single_span(&mut self, col: usize, voxel_type: VoxelType, top_y: u8) {
+        debug_assert_eq!(
+            self.cols[col].num_spans, 0,
+            "init_col_single_span: column already has spans"
+        );
+        let idx = self.free_start;
+        self.free_start += 1;
+        if idx as usize >= self.spans.len() {
+            self.spans.push(Span {
+                voxel_type: voxel_type as u8,
+                top_y,
+            });
+        } else {
+            self.spans[idx as usize] = Span {
+                voxel_type: voxel_type as u8,
+                top_y,
+            };
+        }
+        self.cols[col] = ColMeta {
+            data_start: idx,
+            num_spans: 1,
+            num_allocated: 1,
+        };
     }
 
     /// Look up the voxel type at a given Y in a column.
@@ -551,9 +580,9 @@ pub struct VoxelWorld {
     /// Flat array of column groups, indexed by gx + gz * groups_x.
     groups: Vec<ColumnGroup>,
     /// Coordinates modified since the last drain. Used by the mesh cache to
-    /// know which chunks need regeneration. Not serialized (the world is
-    /// `#[serde(skip)]` on SimState and rebuilt from scratch on load, at which
-    /// point the mesh cache does a full rebuild anyway).
+    /// know which chunks need regeneration. Excluded from serialization (the
+    /// custom `pack()`/`unpack()` methods skip this field; after load, the
+    /// mesh cache does a full rebuild anyway).
     dirty_voxels: Vec<VoxelCoord>,
 }
 
@@ -628,6 +657,60 @@ impl VoxelWorld {
         }
     }
 
+    /// Initialize a column with a single Dirt span from y=0 to `top_y`
+    /// (inclusive). The column must be in its initial empty state (fresh world).
+    /// Does not track dirty voxels (used during worldgen before mesh cache).
+    pub fn init_terrain_column(&mut self, x: u32, z: u32, top_y: u8) {
+        debug_assert!(x < self.size_x && z < self.size_z);
+        let coord = VoxelCoord::new(x as i32, 0, z as i32);
+        let (gi, col) = self.group_and_col(coord);
+        self.groups[gi].init_col_single_span(col, VoxelType::Dirt, top_y);
+    }
+
+    /// Initialize all terrain columns in parallel from a height array.
+    ///
+    /// `heights` is a flat array of size `size_x * size_z` (row-major,
+    /// X-fastest: `heights[z * size_x + x]`). Each entry is the top Y
+    /// coordinate (inclusive) for a Dirt column from y=0. The world must be
+    /// freshly constructed (all columns empty).
+    ///
+    /// Uses rayon to process column groups in parallel — each group's 16x16
+    /// columns are independent, so no synchronization is needed.
+    pub fn init_terrain_parallel(&mut self, heights: &[i32]) {
+        use rayon::prelude::*;
+        let size_x = self.size_x;
+        let groups_x = self.groups_x;
+
+        self.groups
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(gi, group)| {
+                let gz = (gi as u32) / groups_x;
+                let gx = (gi as u32) % groups_x;
+                let base_x = gx * GROUP_SIZE;
+                let base_z = gz * GROUP_SIZE;
+                for lz in 0..GROUP_SIZE {
+                    let world_z = base_z + lz;
+                    if world_z >= self.size_z {
+                        continue;
+                    }
+                    for lx in 0..GROUP_SIZE {
+                        let world_x = base_x + lx;
+                        if world_x >= size_x {
+                            continue;
+                        }
+                        let col = (lx + lz * GROUP_SIZE) as usize;
+                        let top_y = heights[(world_z * size_x + world_x) as usize];
+                        debug_assert!(
+                            (0..=254).contains(&top_y),
+                            "terrain height {top_y} out of u8 range"
+                        );
+                        group.init_col_single_span(col, VoxelType::Dirt, top_y as u8);
+                    }
+                }
+            });
+    }
+
     /// Drain all dirty voxel coordinates accumulated since the last drain.
     /// Returns the list and clears the internal buffer.
     pub fn drain_dirty_voxels(&mut self) -> Vec<VoxelCoord> {
@@ -649,6 +732,132 @@ impl VoxelWorld {
         }
     }
 
+    /// Pack the world into a compact binary representation for serialization.
+    ///
+    /// Format: `[size_x:u32][size_y:u32][size_z:u32]` header, then for each
+    /// group: `[free_start:u16][span_count:u32]` followed by 256 ColMeta
+    /// entries (`[data_start:u16][num_spans:u8][num_allocated:u8]`) and then
+    /// `span_count` Span entries (`[voxel_type:u8][top_y:u8]`). All
+    /// multi-byte integers are little-endian.
+    fn pack(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&self.size_x.to_le_bytes());
+        buf.extend_from_slice(&self.size_y.to_le_bytes());
+        buf.extend_from_slice(&self.size_z.to_le_bytes());
+        for group in &self.groups {
+            buf.extend_from_slice(&group.free_start.to_le_bytes());
+            let span_count = group.spans.len() as u32;
+            buf.extend_from_slice(&span_count.to_le_bytes());
+            for meta in &group.cols {
+                buf.extend_from_slice(&meta.data_start.to_le_bytes());
+                buf.push(meta.num_spans);
+                buf.push(meta.num_allocated);
+            }
+            for span in &group.spans {
+                buf.push(span.voxel_type);
+                buf.push(span.top_y);
+            }
+        }
+        buf
+    }
+
+    /// Unpack a world from its compact binary representation.
+    fn unpack(data: &[u8]) -> Result<Self, String> {
+        if data.len() < 12 {
+            return Err("VoxelWorld data too short for header".into());
+        }
+        let mut pos = 0;
+        let read_u32 = |p: &mut usize| -> u32 {
+            let v = u32::from_le_bytes(data[*p..*p + 4].try_into().unwrap());
+            *p += 4;
+            v
+        };
+        let read_u16 = |p: &mut usize| -> u16 {
+            let v = u16::from_le_bytes(data[*p..*p + 2].try_into().unwrap());
+            *p += 2;
+            v
+        };
+
+        let size_x = read_u32(&mut pos);
+        let size_y = read_u32(&mut pos);
+        let size_z = read_u32(&mut pos);
+        if !(1..=255).contains(&size_y) {
+            return Err(format!(
+                "VoxelWorld size_y ({size_y}) out of valid range [1, 255]"
+            ));
+        }
+        let groups_x = (size_x + GROUP_MASK) >> GROUP_SHIFT;
+        let groups_z = (size_z + GROUP_MASK) >> GROUP_SHIFT;
+        let num_groups = (groups_x * groups_z) as usize;
+
+        let mut groups = Vec::with_capacity(num_groups);
+        for _ in 0..num_groups {
+            if pos + 6 > data.len() {
+                return Err("VoxelWorld data truncated in group header".into());
+            }
+            let free_start = read_u16(&mut pos);
+            let span_count = read_u32(&mut pos) as usize;
+
+            let cols_bytes = COLS_PER_GROUP * 4;
+            if pos + cols_bytes > data.len() {
+                return Err("VoxelWorld data truncated in cols".into());
+            }
+            let mut cols = [ColMeta::default(); COLS_PER_GROUP];
+            for col in &mut cols {
+                col.data_start = read_u16(&mut pos);
+                col.num_spans = data[pos];
+                pos += 1;
+                col.num_allocated = data[pos];
+                pos += 1;
+            }
+
+            let spans_bytes = span_count * 2;
+            if pos + spans_bytes > data.len() {
+                return Err("VoxelWorld data truncated in spans".into());
+            }
+            let mut spans = Vec::with_capacity(span_count);
+            for _ in 0..span_count {
+                spans.push(Span {
+                    voxel_type: data[pos],
+                    top_y: data[pos + 1],
+                });
+                pos += 2;
+            }
+
+            groups.push(ColumnGroup {
+                cols,
+                free_start,
+                spans,
+            });
+        }
+
+        Ok(Self {
+            size_x,
+            size_y,
+            size_z,
+            groups_x,
+            groups_z,
+            groups,
+            dirty_voxels: Vec::new(),
+        })
+    }
+}
+
+impl Serialize for VoxelWorld {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let bytes = self.pack();
+        serializer.serialize_bytes(&bytes)
+    }
+}
+
+impl<'de> Deserialize<'de> for VoxelWorld {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bytes: Vec<u8> = serde::de::Deserialize::deserialize(deserializer)?;
+        Self::unpack(&bytes).map_err(serde::de::Error::custom)
+    }
+}
+
+impl VoxelWorld {
     /// Compute a top-down heightmap: for each (x, z) column, find the maximum
     /// Y with a solid voxel. Returns a flat `Vec<u8>` of `size_x * size_z`
     /// entries in row-major order (X varies fastest, then Z). A value of 0
@@ -1800,5 +2009,158 @@ mod tests {
             spans,
             vec![(VoxelType::Trunk, 0, 199), (VoxelType::Air, 200, 254)]
         );
+    }
+
+    #[test]
+    fn serde_roundtrip_preserves_voxels() {
+        let mut world = VoxelWorld::new(32, 64, 32);
+        world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        world.set(VoxelCoord::new(1, 0, 0), VoxelType::Dirt);
+        world.set(VoxelCoord::new(16, 30, 16), VoxelType::Trunk);
+        world.set(VoxelCoord::new(16, 31, 16), VoxelType::Branch);
+        world.set(VoxelCoord::new(16, 32, 16), VoxelType::Leaf);
+        world.repack_all();
+
+        let packed = world.pack();
+        let restored = VoxelWorld::unpack(&packed).unwrap();
+
+        assert_eq!(restored.size_x, 32);
+        assert_eq!(restored.size_y, 64);
+        assert_eq!(restored.size_z, 32);
+        assert_eq!(restored.get(VoxelCoord::new(0, 0, 0)), VoxelType::Dirt);
+        assert_eq!(restored.get(VoxelCoord::new(1, 0, 0)), VoxelType::Dirt);
+        assert_eq!(restored.get(VoxelCoord::new(16, 30, 16)), VoxelType::Trunk);
+        assert_eq!(restored.get(VoxelCoord::new(16, 31, 16)), VoxelType::Branch);
+        assert_eq!(restored.get(VoxelCoord::new(16, 32, 16)), VoxelType::Leaf);
+        assert_eq!(restored.get(VoxelCoord::new(5, 5, 5)), VoxelType::Air);
+    }
+
+    #[test]
+    fn serde_roundtrip_empty_world() {
+        let world = VoxelWorld::new(16, 32, 16);
+        let packed = world.pack();
+        let restored = VoxelWorld::unpack(&packed).unwrap();
+        assert_eq!(restored.size_x, 16);
+        assert_eq!(restored.size_y, 32);
+        assert_eq!(restored.size_z, 16);
+        assert_eq!(restored.get(VoxelCoord::new(0, 0, 0)), VoxelType::Air);
+    }
+
+    #[test]
+    fn unpack_rejects_invalid_size_y() {
+        // Create a valid packed world.
+        let world = VoxelWorld::new(16, 32, 16);
+        let mut packed = world.pack();
+
+        // Overwrite size_y bytes (offset 4..8) with 0.
+        packed[4] = 0;
+        packed[5] = 0;
+        packed[6] = 0;
+        packed[7] = 0;
+        let result = VoxelWorld::unpack(&packed);
+        assert!(result.is_err(), "size_y=0 should be rejected");
+        assert!(
+            result.unwrap_err().contains("size_y"),
+            "error should mention size_y"
+        );
+
+        // Overwrite size_y bytes with 256 (little-endian).
+        packed[4] = 0;
+        packed[5] = 1; // 256 = 0x100
+        packed[6] = 0;
+        packed[7] = 0;
+        let result = VoxelWorld::unpack(&packed);
+        assert!(result.is_err(), "size_y=256 should be rejected");
+        assert!(
+            result.unwrap_err().contains("size_y"),
+            "error should mention size_y"
+        );
+    }
+
+    #[test]
+    fn unpack_empty_data_returns_error() {
+        let result = VoxelWorld::unpack(&[]);
+        assert!(result.is_err(), "empty data should return Err");
+    }
+
+    #[test]
+    fn unpack_truncated_group_returns_error() {
+        // Valid header but truncated group data.
+        let world = VoxelWorld::new(16, 32, 16);
+        let packed = world.pack();
+        // Keep just the header (12 bytes) plus a few bytes — not enough for a full group.
+        let truncated = &packed[..14.min(packed.len())];
+        let result = VoxelWorld::unpack(truncated);
+        assert!(result.is_err(), "truncated group data should return Err");
+    }
+
+    #[test]
+    fn init_terrain_parallel_varying_heights() {
+        let sx = 32u32;
+        let sz = 32u32;
+        let mut world = VoxelWorld::new(sx, 255, sz);
+        let mut heights = vec![0i32; (sx * sz) as usize];
+        // Create varying heights: each column gets a different height.
+        for z in 0..sz {
+            for x in 0..sx {
+                heights[(z * sx + x) as usize] = ((x + z) % 100) as i32;
+            }
+        }
+        world.init_terrain_parallel(&heights);
+
+        // Verify each column has the correct Dirt span.
+        for z in 0..sz as i32 {
+            for x in 0..sx as i32 {
+                let expected_top = ((x as u32 + z as u32) % 100) as i32;
+                // Voxels at y=0..top_y should be Dirt.
+                if expected_top >= 0 {
+                    assert_eq!(
+                        world.get(VoxelCoord::new(x, 0, z)),
+                        VoxelType::Dirt,
+                        "Expected Dirt at ({x}, 0, {z})"
+                    );
+                    assert_eq!(
+                        world.get(VoxelCoord::new(x, expected_top, z)),
+                        VoxelType::Dirt,
+                        "Expected Dirt at ({x}, {expected_top}, {z})"
+                    );
+                }
+                // One above top_y should be Air.
+                assert_eq!(
+                    world.get(VoxelCoord::new(x, expected_top + 1, z)),
+                    VoxelType::Air,
+                    "Expected Air at ({x}, {}, {z})",
+                    expected_top + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn init_terrain_parallel_non_aligned_size() {
+        // World size not a multiple of 16.
+        let sx = 19u32;
+        let sz = 23u32;
+        let mut world = VoxelWorld::new(sx, 64, sz);
+        let height = 5i32;
+        let heights = vec![height; (sx * sz) as usize];
+        world.init_terrain_parallel(&heights);
+
+        // Verify all columns including those in partial edge groups.
+        for z in 0..sz as i32 {
+            for x in 0..sx as i32 {
+                assert_eq!(
+                    world.get(VoxelCoord::new(x, height, z)),
+                    VoxelType::Dirt,
+                    "Expected Dirt at ({x}, {height}, {z})"
+                );
+                assert_eq!(
+                    world.get(VoxelCoord::new(x, height + 1, z)),
+                    VoxelType::Air,
+                    "Expected Air at ({x}, {}, {z})",
+                    height + 1
+                );
+            }
+        }
     }
 }

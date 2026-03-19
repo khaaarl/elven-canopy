@@ -52,7 +52,7 @@ impl SimState {
         };
         let item_kind = haul.item_kind;
         let quantity = haul.quantity;
-        let destination_nav_node = haul.destination_nav_node;
+        let destination_coord = haul.destination_coord;
 
         // Pick up reserved items from source by moving them to creature
         // inventory. This preserves all item properties (durability, etc.).
@@ -116,8 +116,9 @@ impl SimState {
         updated_haul.quantity = picked_up;
         let _ = self.db.task_haul_data.update_no_fk(updated_haul);
         // Update task location for the new destination.
+        let dest_coord = destination_coord;
         let _ = self.db.tasks.modify_unchecked(&task_id, |task| {
-            task.location = destination_nav_node;
+            task.location = dest_coord;
         });
         // Clear cached path so creature re-pathfinds to new destination.
         let _ = self
@@ -374,13 +375,13 @@ impl SimState {
         let max_tasks = self.config.max_haul_tasks_per_heartbeat;
         let to_create = shortfall.min(unclaimed_fruit.len() as u32).min(max_tasks);
 
-        for &(fruit_pos, nav_node) in unclaimed_fruit.iter().take(to_create as usize) {
+        for &(fruit_pos, _nav_node) in unclaimed_fruit.iter().take(to_create as usize) {
             let task_id = TaskId::new(&mut self.rng);
             let new_task = task::Task {
                 id: task_id,
                 kind: task::TaskKind::Harvest { fruit_pos },
                 state: task::TaskState::Available,
-                location: nav_node,
+                location: fruit_pos,
                 progress: 0,
                 total_cost: 0,
                 required_species: Some(Species::Elf),
@@ -445,7 +446,7 @@ impl SimState {
                 let needed = want.target_quantity - effective;
 
                 // Find a source for these items.
-                if let Some((source, available, source_nav_node)) = self.find_haul_source(
+                if let Some((source, available, source_coord)) = self.find_haul_source(
                     want.item_kind,
                     filter,
                     needed,
@@ -454,14 +455,8 @@ impl SimState {
                 ) {
                     let quantity = available.min(needed);
 
-                    // Find destination nav node.
-                    let dest_nav_node = match self
-                        .nav_graph
-                        .find_nearest_node(self.db.structures.get(building_id).unwrap().anchor)
-                    {
-                        Some(n) => n,
-                        None => continue,
-                    };
+                    // Find destination coordinate.
+                    let dest_anchor = self.db.structures.get(building_id).unwrap().anchor;
 
                     // Reserve items at source.
                     let task_id = TaskId::new(&mut self.rng);
@@ -477,10 +472,10 @@ impl SimState {
                             source,
                             destination: *building_id,
                             phase: task::HaulPhase::GoingToSource,
-                            destination_nav_node: dest_nav_node,
+                            destination_coord: dest_anchor,
                         },
                         state: task::TaskState::Available,
-                        location: source_nav_node,
+                        location: source_coord,
                         progress: 0,
                         total_cost: 0,
                         required_species: Some(Species::Elf),
@@ -554,17 +549,15 @@ impl SimState {
         needed: u32,
         exclude_building: StructureId,
         requester_priority: u8,
-    ) -> Option<(task::HaulSource, u32, NavNodeId)> {
+    ) -> Option<(task::HaulSource, u32, VoxelCoord)> {
         // Phase 1: Check ground piles.
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_unreserved_item_count(pile.inventory_id, item_kind, filter);
-            if available > 0
-                && let Some(nav_node) = self.nav_graph.find_nearest_node(pile.position)
-            {
+            if available > 0 && self.nav_graph.find_nearest_node(pile.position).is_some() {
                 return Some((
                     task::HaulSource::GroundPile(pile.position),
                     available.min(needed),
-                    nav_node,
+                    pile.position,
                 ));
             }
         }
@@ -583,13 +576,11 @@ impl SimState {
             }
             let available =
                 self.inv_unreserved_item_count(structure.inventory_id, item_kind, filter);
-            if available > 0
-                && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
-            {
+            if available > 0 && self.nav_graph.find_nearest_node(structure.anchor).is_some() {
                 return Some((
                     task::HaulSource::Building(sid),
                     available.min(needed),
-                    nav_node,
+                    structure.anchor,
                 ));
             }
         }
@@ -609,13 +600,11 @@ impl SimState {
             let held = self.inv_unreserved_item_count(structure.inventory_id, item_kind, filter);
             let wanted = self.inv_want_target_total(structure.inventory_id, item_kind);
             let surplus = held.saturating_sub(wanted);
-            if surplus > 0
-                && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
-            {
+            if surplus > 0 && self.nav_graph.find_nearest_node(structure.anchor).is_some() {
                 return Some((
                     task::HaulSource::Building(sid),
                     surplus.min(needed),
-                    nav_node,
+                    structure.anchor,
                 ));
             }
         }
@@ -676,17 +665,15 @@ impl SimState {
         kind: inventory::ItemKind,
         filter: inventory::MaterialFilter,
         needed: u32,
-    ) -> Option<(task::HaulSource, u32, NavNodeId)> {
+    ) -> Option<(task::HaulSource, u32, VoxelCoord)> {
         // Check ground piles.
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_count_unowned_unreserved(pile.inventory_id, kind, filter);
-            if available > 0
-                && let Some(nav_node) = self.nav_graph.find_nearest_node(pile.position)
-            {
+            if available > 0 && self.nav_graph.find_nearest_node(pile.position).is_some() {
                 return Some((
                     task::HaulSource::GroundPile(pile.position),
                     available.min(needed),
-                    nav_node,
+                    pile.position,
                 ));
             }
         }
@@ -695,13 +682,11 @@ impl SimState {
         for structure in self.db.structures.iter_all() {
             let sid = structure.id;
             let available = self.inv_count_unowned_unreserved(structure.inventory_id, kind, filter);
-            if available > 0
-                && let Some(nav_node) = self.nav_graph.find_nearest_node(structure.anchor)
-            {
+            if available > 0 && self.nav_graph.find_nearest_node(structure.anchor).is_some() {
                 return Some((
                     task::HaulSource::Building(sid),
                     available.min(needed),
-                    nav_node,
+                    structure.anchor,
                 ));
             }
         }

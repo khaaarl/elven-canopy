@@ -103,6 +103,15 @@ impl SurfaceMesh {
     pub fn vertex_count(&self) -> usize {
         self.vertices.len() / 3
     }
+
+    /// Estimated heap byte size of this surface's data.
+    pub fn estimate_byte_size(&self) -> usize {
+        self.vertices.len() * 4
+            + self.normals.len() * 4
+            + self.indices.len() * 4
+            + self.colors.len() * 4
+            + self.uvs.len() * 4
+    }
 }
 
 /// Mesh data for one chunk, split into bark, ground, and leaf surfaces.
@@ -119,6 +128,13 @@ pub struct ChunkMesh {
 impl ChunkMesh {
     pub fn is_empty(&self) -> bool {
         self.bark.is_empty() && self.ground.is_empty() && self.leaf.is_empty()
+    }
+
+    /// Estimated heap byte size of all surface data in this chunk mesh.
+    pub fn estimate_byte_size(&self) -> usize {
+        self.bark.estimate_byte_size()
+            + self.ground.estimate_byte_size()
+            + self.leaf.estimate_byte_size()
     }
 }
 
@@ -144,7 +160,7 @@ pub fn voxel_color(vt: VoxelType) -> [f32; 4] {
 
 /// Returns true if this voxel type should produce geometry in the chunk mesh.
 /// ForestFloor is opaque (culls neighbors) but produces no geometry itself.
-fn produces_geometry(vt: VoxelType) -> bool {
+pub fn produces_geometry(vt: VoxelType) -> bool {
     matches!(
         vt,
         VoxelType::Trunk
@@ -718,5 +734,36 @@ mod tests {
         let world = one_chunk_world();
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(-1, 0, 0), None);
         assert!(mesh.is_empty());
+    }
+
+    #[test]
+    fn estimate_byte_size_empty() {
+        let mesh = ChunkMesh::default();
+        assert_eq!(mesh.estimate_byte_size(), 0);
+    }
+
+    #[test]
+    fn estimate_byte_size_single_voxel() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
+        let size = mesh.estimate_byte_size();
+        // 6 faces, 4 verts each = 24 verts.
+        // vertices: 24*3*4=288, normals: 288, indices: 36*4=144,
+        // colors: 24*4*4=384, uvs: 0 (bark uses shader-derived UVs).
+        assert!(size > 0);
+        // Manual check: 288+288+144+384 = 1104
+        assert!(size >= 1104);
+    }
+
+    #[test]
+    fn produces_geometry_classification() {
+        assert!(produces_geometry(VoxelType::Trunk));
+        assert!(produces_geometry(VoxelType::Leaf));
+        assert!(produces_geometry(VoxelType::Dirt));
+        assert!(produces_geometry(VoxelType::Strut));
+        assert!(!produces_geometry(VoxelType::Air));
+        assert!(!produces_geometry(VoxelType::ForestFloor));
+        assert!(!produces_geometry(VoxelType::Fruit));
     }
 }

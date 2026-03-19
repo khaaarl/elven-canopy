@@ -26,10 +26,15 @@
 // - **Save/load:** `save_game_json()` returns the sim state as a JSON string,
 //   `load_game_json(json)` replaces the current sim from a JSON string.
 //   File I/O is handled in GDScript via Godot's `user://` paths.
-// - **World data / chunk mesh:** `build_world_mesh()` builds the initial
-//   chunk mesh cache, `update_world_mesh()` incrementally regenerates dirty
-//   chunks, `build_chunk_array_mesh(cx,cy,cz)` returns a Godot `ArrayMesh`
-//   for one chunk. `get_fruit_voxels()` — flat `PackedInt32Array` of (x,y,z,species_id)
+// - **World data / chunk mesh:** `build_world_mesh()` scans the world and
+//   populates the MegaChunk spatial index (no meshes generated yet).
+//   `update_world_mesh()` incrementally regenerates dirty visible chunks.
+//   `update_visibility(cam_x,cam_y,cam_z,frustum)` performs draw-distance and
+//   frustum culling, generates meshes on demand, and produces delta lists:
+//   `get_chunks_to_show/hide()`, `get_chunks_generated()`, `get_chunks_evicted()`.
+//   `set_draw_distance()` / `set_mesh_memory_budget()` configure culling/LRU.
+//   `build_chunk_array_mesh(cx,cy,cz)` returns a Godot `ArrayMesh` for one chunk.
+//   `get_fruit_voxels()` — flat `PackedInt32Array` of (x,y,z,species_id)
 //   quads for fruit billboard sprite rendering (fruit is not part of chunk mesh).
 // - **Creature positions:** `get_creature_positions(species_name, render_tick)`
 //   — `PackedVector3Array` for billboard sprite placement (used by renderers).
@@ -278,10 +283,9 @@ fn build_creature_info_dict(
     if let Some(tid) = &c.current_task
         && let Some(task) = sim.db.tasks.get(tid)
     {
-        let task_pos = sim.nav_graph.node(task.location).position;
-        dict.set("task_location_x", task_pos.x);
-        dict.set("task_location_y", task_pos.y);
-        dict.set("task_location_z", task_pos.z);
+        dict.set("task_location_x", task.location.x);
+        dict.set("task_location_y", task.location.y);
+        dict.set("task_location_z", task.location.z);
     }
     dict.set("hp", c.hp);
     dict.set("hp_max", c.hp_max);
@@ -400,9 +404,11 @@ impl INode for SimBridge {
         // Start the global elfcyclopedia server if not already running.
         Self::ensure_elfcyclopedia_started();
 
+        let mut session = GameSession::new_singleplayer();
+        session.set_wg_log(Box::new(|msg| godot_print!("{msg}")));
         Self {
             base,
-            session: GameSession::new_singleplayer(),
+            session,
             local_relay: None,
             local_player_id: SessionPlayerId::LOCAL,
             mesh_cache: None,
@@ -441,7 +447,9 @@ impl SimBridge {
         drop(self.net_client.take());
 
         // Clear sim state.
-        self.session = GameSession::new_singleplayer();
+        let mut session = GameSession::new_singleplayer();
+        session.set_wg_log(Box::new(|msg| godot_print!("{msg}")));
+        self.session = session;
         self.local_relay = None;
         self.mesh_cache = None;
         self.pending_compositions.clear();
@@ -512,6 +520,7 @@ impl SimBridge {
     fn init_sim_test_config(&mut self, seed: i64) {
         let mut config = GameConfig {
             world_size: (64, 64, 64),
+            floor_y: 0,
             ..GameConfig::default()
         };
         config.tree_profile.growth.initial_energy = 50.0;
@@ -1401,11 +1410,10 @@ impl SimBridge {
             dict.set("progress", task.progress as i32);
             dict.set("total_cost", task.total_cost as i32);
 
-            // Location — resolve NavNodeId to VoxelCoord.
-            let pos = sim.nav_graph.node(task.location).position;
-            dict.set("location_x", pos.x);
-            dict.set("location_y", pos.y);
-            dict.set("location_z", pos.z);
+            // Location is now stored directly as VoxelCoord.
+            dict.set("location_x", task.location.x);
+            dict.set("location_y", task.location.y);
+            dict.set("location_z", task.location.z);
 
             // Assignees — query creatures assigned to this task.
             let mut assignees_arr = VarArray::new();
@@ -4523,7 +4531,7 @@ impl SimBridge {
         if let Some(cutoff) = old_cutoff {
             cache.set_y_cutoff(Some(cutoff));
         }
-        cache.build_all(&sim.world);
+        cache.scan_nonempty_chunks(&sim.world);
         self.mesh_cache = Some(cache);
     }
 
@@ -4539,10 +4547,10 @@ impl SimBridge {
         if let Some(cutoff) = old_cutoff {
             cache.set_y_cutoff(Some(cutoff));
         }
-        cache.build_all(&sim.world);
+        cache.scan_nonempty_chunks(&sim.world);
         godot_print!(
-            "SimBridge: built world mesh ({} non-empty chunks)",
-            cache.chunk_coords().len()
+            "SimBridge: scanned world mesh ({} megachunks)",
+            cache.megachunk_count()
         );
         self.mesh_cache = Some(cache);
     }
@@ -4847,6 +4855,126 @@ impl SimBridge {
             return 0;
         }
         cache.tiling_cache().tiles_per_axis_pair(idx) as i32
+    }
+
+    // ========================================================================
+    // MegaChunk visibility methods
+    // ========================================================================
+
+    /// Set the draw distance in voxels (XZ). Chunks beyond this radius from
+    /// the camera are hidden. Pass 0.0 for unlimited (show everything).
+    #[func]
+    fn set_draw_distance(&mut self, radius_voxels: f32) {
+        if let Some(cache) = &mut self.mesh_cache {
+            cache.set_draw_distance(radius_voxels);
+        }
+    }
+
+    /// Set the mesh memory budget in bytes. Cached chunk meshes beyond this
+    /// budget are evicted LRU. Pass 0 for unlimited (no eviction).
+    #[func]
+    fn set_mesh_memory_budget(&mut self, bytes: i64) {
+        if let Some(cache) = &mut self.mesh_cache {
+            cache.set_memory_budget(bytes.max(0) as usize);
+        }
+    }
+
+    /// Update chunk visibility based on camera position and frustum planes.
+    /// `frustum` is a PackedFloat32Array of 24 floats: 6 planes × [nx,ny,nz,d].
+    /// Returns the number of chunk meshes generated this frame.
+    #[func]
+    fn update_visibility(
+        &mut self,
+        cam_x: f32,
+        cam_y: f32,
+        cam_z: f32,
+        frustum: PackedFloat32Array,
+    ) -> i32 {
+        let Some(sim) = &self.session.sim else {
+            return 0;
+        };
+        let Some(cache) = &mut self.mesh_cache else {
+            return 0;
+        };
+        let cam_pos = [cam_x, cam_y, cam_z];
+        let planes: Vec<[f32; 4]> = frustum
+            .as_slice()
+            .chunks_exact(4)
+            .map(|c| [c[0], c[1], c[2], c[3]])
+            .collect();
+        cache.update_visibility(&sim.world, cam_pos, &planes) as i32
+    }
+
+    /// Return chunks that should become visible this frame (set .visible=true).
+    /// Flat PackedInt32Array of (cx,cy,cz) triples.
+    #[func]
+    fn get_chunks_to_show(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for c in cache.chunks_to_show() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
+    /// Return chunks that should become hidden this frame (set .visible=false).
+    /// Flat PackedInt32Array of (cx,cy,cz) triples.
+    #[func]
+    fn get_chunks_to_hide(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for c in cache.chunks_to_hide() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
+    /// Return freshly generated chunks (subset of chunks_to_show that need
+    /// new MeshInstance3D creation). Flat PackedInt32Array of (cx,cy,cz) triples.
+    #[func]
+    fn get_chunks_generated(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for c in cache.chunks_generated() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
+    /// Return chunks evicted from the LRU cache (free their MeshInstance3D).
+    /// Flat PackedInt32Array of (cx,cy,cz) triples.
+    #[func]
+    fn get_chunks_evicted(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for c in cache.chunks_evicted() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
+    /// Return total cached mesh memory in bytes.
+    #[func]
+    fn get_total_mesh_bytes(&self) -> i64 {
+        self.mesh_cache
+            .as_ref()
+            .map_or(0, |c| c.total_cached_bytes() as i64)
     }
 
     // ========================================================================

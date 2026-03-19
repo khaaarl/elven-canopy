@@ -114,7 +114,7 @@ struct Node {
     position: [i64; 3],
     /// Mass of this node (from material density + face weights), in FP.
     mass: i64,
-    /// Pinned nodes (ForestFloor) don't move under load.
+    /// Pinned nodes (adjacent to terrain) don't move under load.
     pinned: bool,
 }
 
@@ -322,51 +322,88 @@ pub fn build_network(
 
     let structural = &config.structural;
 
-    // Pass 1: Create nodes for all non-Air voxels.
-    // Iterate in flat-array order: x inner, z mid, y outer.
-    for y in 0..world.size_y as i32 {
-        for z in 0..world.size_z as i32 {
-            for x in 0..world.size_x as i32 {
-                let coord = VoxelCoord::new(x, y, z);
-                let vt = world.get(coord);
+    // Collect the "interesting" voxel set: structural voxels (wood, buildings,
+    // etc.) plus a 1-voxel face-adjacent shell of terrain that anchors them.
+    //
+    // In a large world the terrain can contain tens of millions of Dirt voxels.
+    // Including all of them in the spring-mass network would consume gigabytes
+    // of RAM. Instead we:
+    //   1. Scan for all non-Air, non-terrain, non-Leaf/Fruit voxels ("core").
+    //   2. For each core voxel, check face-adjacent neighbors — any terrain
+    //      neighbor is added to the set as a pinned anchor node.
+    // This captures the tree geometry plus just the thin shell of terrain that
+    // provides structural grounding, keeping node count proportional to the
+    // tree size rather than the world size.
+    let is_terrain = |vt: VoxelType| vt == VoxelType::Dirt || vt == VoxelType::ForestFloor;
+    let is_core = |vt: VoxelType| {
+        !matches!(vt, VoxelType::Air | VoxelType::Leaf | VoxelType::Fruit) && !is_terrain(vt)
+    };
 
-                if vt == VoxelType::Air || vt == VoxelType::Leaf || vt == VoxelType::Fruit {
+    // Pass 0: Collect relevant voxels as (coord, voxel_type, pinned).
+    // Use column span scanning to skip large Dirt/Air spans efficiently.
+    let mut relevant: BTreeMap<VoxelCoord, (VoxelType, bool)> = BTreeMap::new();
+    for z in 0..world.size_z {
+        for x in 0..world.size_x {
+            for (vt, y_start, y_end) in world.column_spans(x, z) {
+                if !is_core(vt) {
                     continue;
                 }
+                for y in y_start as i32..=y_end as i32 {
+                    let coord = VoxelCoord::new(x as i32, y, z as i32);
+                    relevant.entry(coord).or_insert((vt, false));
 
-                let mass;
-                let pinned;
-
-                if vt == VoxelType::BuildingInterior {
-                    // BuildingInterior: base weight + face weights.
-                    let mut m = f32_to_fp(structural.building_interior_base_weight);
-                    if let Some(fd) = face_data.get(&coord) {
-                        for &dir in &FaceDirection::ALL {
-                            let ft = fd.get(dir);
-                            if let Some(fp) = structural.face_properties.get(&ft) {
-                                m += f32_to_fp(fp.weight);
-                            }
+                    // Check face-adjacent neighbors for terrain anchors.
+                    for &dir in &FaceDirection::ALL {
+                        let (dx, dy, dz) = dir.to_offset();
+                        let neighbor = VoxelCoord::new(coord.x + dx, y + dy, coord.z + dz);
+                        if !world.in_bounds(neighbor) {
+                            continue;
+                        }
+                        let nvt = world.get(neighbor);
+                        if is_terrain(nvt) {
+                            relevant.entry(neighbor).or_insert((nvt, true));
                         }
                     }
-                    mass = m;
-                    pinned = false;
-                } else if let Some(mat) = structural.materials.get(&vt) {
-                    mass = f32_to_fp(mat.density);
-                    pinned = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
-                } else {
-                    // Unknown voxel type — skip.
-                    continue;
                 }
-
-                let node_idx = nodes.len();
-                coord_to_node.insert(coord, node_idx);
-                nodes.push(Node {
-                    position: [x as i64 * FP_ONE, y as i64 * FP_ONE, z as i64 * FP_ONE],
-                    mass,
-                    pinned,
-                });
             }
         }
+    }
+
+    // Pass 1: Create nodes from the relevant set.
+    for (&coord, &(vt, force_pinned)) in &relevant {
+        let mass;
+        let pinned;
+
+        if vt == VoxelType::BuildingInterior {
+            let mut m = f32_to_fp(structural.building_interior_base_weight);
+            if let Some(fd) = face_data.get(&coord) {
+                for &dir in &FaceDirection::ALL {
+                    let ft = fd.get(dir);
+                    if let Some(fp) = structural.face_properties.get(&ft) {
+                        m += f32_to_fp(fp.weight);
+                    }
+                }
+            }
+            mass = m;
+            pinned = force_pinned;
+        } else if let Some(mat) = structural.materials.get(&vt) {
+            mass = f32_to_fp(mat.density);
+            pinned = force_pinned || is_terrain(vt);
+        } else {
+            continue;
+        }
+
+        let node_idx = nodes.len();
+        coord_to_node.insert(coord, node_idx);
+        nodes.push(Node {
+            position: [
+                coord.x as i64 * FP_ONE,
+                coord.y as i64 * FP_ONE,
+                coord.z as i64 * FP_ONE,
+            ],
+            mass,
+            pinned,
+        });
     }
 
     // Pass 2: Create springs for face-adjacent pairs.
@@ -830,13 +867,14 @@ pub fn flood_fill_connected(
         }
     };
 
-    // Find a starting ForestFloor voxel for BFS.
+    // Find a starting ground voxel (Dirt or ForestFloor) for BFS.
     let mut start = None;
     for y in 0..world.size_y as i32 {
         for z in 0..world.size_z as i32 {
             for x in 0..world.size_x as i32 {
                 let coord = VoxelCoord::new(x, y, z);
-                if world.get(coord) == VoxelType::ForestFloor {
+                let vt = world.get(coord);
+                if vt == VoxelType::ForestFloor || vt == VoxelType::Dirt {
                     start = Some(coord);
                     break;
                 }
@@ -1264,9 +1302,15 @@ pub fn validate_blueprint_fast(
             let vt = hypo_type(neighbor);
             if is_structural(vt) {
                 visited.insert(neighbor, vt);
-                queue.push_back(neighbor);
-                if vt == VoxelType::ForestFloor {
+                let is_terrain = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
+                if is_terrain {
+                    // Terrain acts as a pinned ground anchor but we don't
+                    // flood through it — on a large world the terrain layer
+                    // is millions of voxels. The structural analysis only
+                    // needs the contact shell.
                     reached_ground = true;
+                } else {
+                    queue.push_back(neighbor);
                 }
             }
         }
@@ -1487,11 +1531,12 @@ pub fn validate_carve_fast(
             let vt = hypo_type(neighbor);
             if is_structural(vt) {
                 // Seed from non-ground structural neighbors only.
-                // ForestFloor is ground — the question is whether the
+                // Dirt/ForestFloor is ground — the question is whether the
                 // remaining *above-ground* structure can still reach it.
-                // If ForestFloor were a seed, disconnected voxels above
+                // If ground were a seed, disconnected voxels above
                 // would appear connected via the shared BFS frontier.
-                if vt == VoxelType::ForestFloor {
+                let is_ground = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
+                if is_ground {
                     // Mark as visited so BFS reaching this coord counts
                     // as reaching ground, but don't enqueue — we don't
                     // want to flood outward from the floor itself.
@@ -1529,9 +1574,11 @@ pub fn validate_carve_fast(
             let vt = hypo_type(neighbor);
             if is_structural(vt) {
                 visited.insert(neighbor, vt);
-                queue.push_back(neighbor);
-                if vt == VoxelType::ForestFloor {
+                let is_terrain = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
+                if is_terrain {
                     reached_ground = true;
+                } else {
+                    queue.push_back(neighbor);
                 }
             }
         }
@@ -1702,12 +1749,15 @@ mod tests {
         let config = GameConfig::default();
         let network = build_network(&world, &BTreeMap::new(), &config);
 
-        // Count nodes: 64 floor (8x8) + 5 trunk + 3 platform = 72.
-        assert_eq!(network.nodes.len(), 72);
+        // Node count: 5 trunk + 3 platform + 1 floor voxel (directly below
+        // trunk base, included as terrain anchor). Distant floor voxels are
+        // excluded from the network — only terrain adjacent to structural
+        // voxels is included.
+        assert_eq!(network.nodes.len(), 9);
 
-        // All ForestFloor nodes should be pinned.
+        // The one floor voxel (terrain anchor) should be pinned.
         let pinned_count = network.nodes.iter().filter(|n| n.pinned).count();
-        assert_eq!(pinned_count, 64);
+        assert_eq!(pinned_count, 1);
 
         // Springs should exist (exact count depends on adjacency).
         assert!(!network.springs.is_empty());

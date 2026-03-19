@@ -64,6 +64,7 @@ dependencies = [
  "elven_canopy_sim",
  "elven_canopy_sprites",
  "godot",
+ "rayon",
  "serde",
  "serde_json",
  "tiny_http",
@@ -121,6 +122,7 @@ version = "0.1.0"
 dependencies = [
  "elven_canopy_lang",
  "elven_canopy_prng",
+ "rayon",
  "serde",
  "serde_json",
  "tabulosity",

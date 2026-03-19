@@ -205,6 +205,8 @@ pub struct GameSession {
     paused_by: Option<SessionPlayerId>,
     /// Current sim speed.
     speed: SessionSpeed,
+    /// Logging callback for worldgen timing output.
+    wg_log: crate::worldgen::WgLog,
 }
 
 impl GameSession {
@@ -227,7 +229,15 @@ impl GameSession {
             paused: false,
             paused_by: None,
             speed: SessionSpeed::Normal,
+            wg_log: crate::worldgen::stderr_log(),
         }
+    }
+
+    /// Set the worldgen logging callback. Call before starting a game to
+    /// route `[worldgen]` timing messages to the desired sink (e.g.
+    /// `godot_print!` in GDExtension, `eprintln!` in tests).
+    pub fn set_wg_log(&mut self, log: crate::worldgen::WgLog) {
+        self.wg_log = log;
     }
 
     /// Create a new multiplayer session. `host_id` is the session player who
@@ -249,6 +259,7 @@ impl GameSession {
             paused: false,
             paused_by: None,
             speed: SessionSpeed::Normal,
+            wg_log: crate::worldgen::stderr_log(),
         }
     }
 
@@ -287,7 +298,7 @@ impl GameSession {
                     self.sim = None;
                     events.push(SessionEvent::SimUnloaded);
                 }
-                let mut sim = SimState::with_config(seed, *config);
+                let mut sim = SimState::with_config_and_log(seed, *config, &self.wg_log);
                 // Register all connected players in the sim's Player table.
                 for slot in self.players.values() {
                     sim.register_player(&slot.name);
@@ -442,6 +453,7 @@ mod tests {
     fn session_test_config() -> GameConfig {
         let mut config = GameConfig {
             world_size: (64, 64, 64),
+            floor_y: 0,
             ..GameConfig::default()
         };
         config.tree_profile.growth.initial_energy = 50.0;

@@ -1616,9 +1616,14 @@ pub struct GameConfig {
 
     /// Half-extent of the forest floor around the world center.
     /// The floor covers `(center - floor_extent)` to `(center + floor_extent)`
-    /// in both X and Z at y=0. Also used by `rebuild_world()` when restoring
-    /// transient state after deserialization.
+    /// in both X and Z at `floor_y`.
     pub floor_extent: i32,
+
+    /// Y level of the forest floor. Tree trunk starts at `floor_y + 1`,
+    /// creatures walk at `floor_y + 1`. Voxels below this are available
+    /// for future underground content.
+    #[serde(default = "default_floor_y")]
+    pub floor_y: i32,
 
     /// Initial mana stored in the player's home tree, in millimana
     /// (1000 = 1.0 display mana).
@@ -1996,6 +2001,10 @@ fn default_sleep_ticks_ground() -> u64 {
 
 fn default_terrain_noise_scale() -> f32 {
     8.0
+}
+
+fn default_floor_y() -> i32 {
+    50
 }
 
 fn default_logistics_heartbeat_interval() -> u64 {
@@ -2566,8 +2575,9 @@ impl Default for GameConfig {
             fruit_production_rate_ppm: 500_000,
             fruit_max_per_tree: 20,
             fruit_initial_attempts: 12,
-            world_size: (256, 128, 256),
+            world_size: (1024, 255, 1024),
             floor_extent: 20,
+            floor_y: 50,
             starting_mana_mm: 100_000,
             starting_mana_capacity_mm: 500_000,
             build_work_ticks_per_voxel: 1000,
@@ -2609,7 +2619,7 @@ impl Default for GameConfig {
                 InitialCreatureSpec {
                     species: Species::Elf,
                     count: 5,
-                    spawn_position: VoxelCoord::new(128, 1, 128),
+                    spawn_position: VoxelCoord::new(512, 51, 512),
                     food_pcts: vec![100, 90, 70, 60, 48],
                     rest_pcts: vec![100, 95, 80, 60, 45],
                     bread_counts: vec![2, 2, 2, 2, 2],
@@ -2659,7 +2669,7 @@ impl Default for GameConfig {
                 InitialCreatureSpec {
                     species: Species::Capybara,
                     count: 5,
-                    spawn_position: VoxelCoord::new(128, 1, 128),
+                    spawn_position: VoxelCoord::new(512, 51, 512),
                     food_pcts: vec![],
                     rest_pcts: vec![],
                     bread_counts: vec![],
@@ -2668,7 +2678,7 @@ impl Default for GameConfig {
                 InitialCreatureSpec {
                     species: Species::Boar,
                     count: 3,
-                    spawn_position: VoxelCoord::new(128, 1, 128),
+                    spawn_position: VoxelCoord::new(512, 51, 512),
                     food_pcts: vec![],
                     rest_pcts: vec![],
                     bread_counts: vec![],
@@ -2677,7 +2687,7 @@ impl Default for GameConfig {
                 InitialCreatureSpec {
                     species: Species::Deer,
                     count: 3,
-                    spawn_position: VoxelCoord::new(128, 1, 128),
+                    spawn_position: VoxelCoord::new(512, 51, 512),
                     food_pcts: vec![],
                     rest_pcts: vec![],
                     bread_counts: vec![],
@@ -2686,7 +2696,7 @@ impl Default for GameConfig {
                 InitialCreatureSpec {
                     species: Species::Squirrel,
                     count: 3,
-                    spawn_position: VoxelCoord::new(128, 1, 128),
+                    spawn_position: VoxelCoord::new(512, 51, 512),
                     food_pcts: vec![],
                     rest_pcts: vec![],
                     bread_counts: vec![],
@@ -2695,7 +2705,7 @@ impl Default for GameConfig {
             ],
             initial_ground_piles: vec![
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Bread,
                     quantity: 5,
                     material: None,
@@ -2703,7 +2713,7 @@ impl Default for GameConfig {
                 },
                 // Undyed tunics.
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Tunic,
                     quantity: 1,
                     material: None,
@@ -2711,56 +2721,56 @@ impl Default for GameConfig {
                 },
                 // Purple-dyed tunic.
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Tunic,
                     quantity: 1,
                     material: None,
                     dye_color: Some(ItemColor::new(130, 50, 160)),
                 },
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Leggings,
                     quantity: 2,
                     material: None,
                     dye_color: None,
                 },
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Boots,
                     quantity: 2,
                     material: None,
                     dye_color: None,
                 },
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Hat,
                     quantity: 2,
                     material: None,
                     dye_color: None,
                 },
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Gloves,
                     quantity: 2,
                     material: None,
                     dye_color: None,
                 },
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Bow,
                     quantity: 2,
                     material: None,
                     dye_color: None,
                 },
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Arrow,
                     quantity: 30,
                     material: None,
                     dye_color: None,
                 },
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Helmet,
                     quantity: 1,
                     material: Some(Material::Oak),
@@ -2768,28 +2778,28 @@ impl Default for GameConfig {
                 },
                 // Red-dyed oak breastplate.
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Breastplate,
                     quantity: 1,
                     material: Some(Material::Oak),
                     dye_color: Some(ItemColor::new(180, 40, 40)),
                 },
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Greaves,
                     quantity: 1,
                     material: Some(Material::Oak),
                     dye_color: None,
                 },
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Gauntlets,
                     quantity: 1,
                     material: Some(Material::Oak),
                     dye_color: None,
                 },
                 InitialGroundPileSpec {
-                    position: VoxelCoord::new(128, 1, 138),
+                    position: VoxelCoord::new(512, 51, 522),
                     item_kind: ItemKind::Boots,
                     quantity: 1,
                     material: Some(Material::Oak),
@@ -2901,8 +2911,9 @@ mod tests {
             "fruit_max_per_tree": 20,
             "fruit_initial_attempts": 12,
             "build_work_ticks_per_voxel": 1000,
-            "world_size": [256, 128, 256],
+            "world_size": [1024, 255, 1024],
             "floor_extent": 20,
+            "floor_y": 50,
             "starting_mana_mm": 100000,
             "starting_mana_capacity_mm": 500000,
             "tree_profile": {
@@ -3036,6 +3047,38 @@ mod tests {
         }"#;
         let data: SpeciesData = serde_json::from_str(json).unwrap();
         assert_eq!(data.footprint, [1, 1, 1]);
+    }
+
+    #[test]
+    fn config_backward_compat_floor_y() {
+        // Old configs without "floor_y" should deserialize with the default (50).
+        let json = r#"{
+            "tick_duration_ms": 1,
+            "tree_heartbeat_interval_ticks": 10000,
+            "mana_base_generation_rate_mm": 1000,
+            "mana_mood_multiplier_range_permille": [200, 2000],
+            "platform_mana_cost_per_mille": 20,
+            "bridge_mana_cost_per_mille": 30,
+            "fruit_production_rate_ppm": 500000,
+            "fruit_max_per_tree": 20,
+            "fruit_initial_attempts": 12,
+            "build_work_ticks_per_voxel": 1000,
+            "world_size": [1024, 255, 1024],
+            "floor_extent": 20,
+            "starting_mana_mm": 100000,
+            "starting_mana_capacity_mm": 500000,
+            "tree_profile": {
+                "growth": { "initial_energy": 200.0, "energy_to_radius": 0.07, "min_radius": 0.5, "growth_step_length": 1.0, "energy_per_step": 1.0 },
+                "split": { "split_chance_base": 0.15, "split_count": 2, "split_energy_ratio": 0.3, "split_angle": 0.5, "split_angle_variance": 0.3, "min_progress_for_split": 0.1 },
+                "curvature": { "gravitropism": -0.1, "random_deflection": 0.1, "deflection_coherence": 0.9 },
+                "roots": { "root_energy_fraction": 0.1, "root_initial_count": 4, "root_gravitropism": 0.1, "root_initial_angle": 0.3, "root_surface_tendency": 0.7 },
+                "leaves": { "leaf_shape": "Sphere", "leaf_density": 0.4, "leaf_size": 2, "canopy_density": 1.2 },
+                "trunk": { "base_flare": 0.15, "initial_direction": [0.0, 1.0, 0.0] }
+            },
+            "species": {}
+        }"#;
+        let config: GameConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.floor_y, 50, "Missing floor_y should default to 50");
     }
 
     #[test]

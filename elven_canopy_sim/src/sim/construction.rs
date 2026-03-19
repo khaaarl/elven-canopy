@@ -224,17 +224,16 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest nav node to the blueprint.
-        let task_location = match self.nav_graph.find_nearest_node(build_voxels[0]) {
-            Some(n) => n,
-            None => return,
-        };
+        if self.nav_graph.find_nearest_node(build_voxels[0]).is_none() {
+            return;
+        }
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = build_voxels.len() as u64;
         let build_task = task::Task {
             id: task_id,
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
-            location: task_location,
+            location: build_voxels[0],
             progress: 0,
             total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
@@ -379,17 +378,16 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest nav node.
-        let task_location = match self.nav_graph.find_nearest_node(voxels[0]) {
-            Some(n) => n,
-            None => return,
-        };
+        if self.nav_graph.find_nearest_node(voxels[0]).is_none() {
+            return;
+        }
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = voxels.len() as u64;
         let build_task = task::Task {
             id: task_id,
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
-            location: task_location,
+            location: voxels[0],
             progress: 0,
             total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
@@ -535,17 +533,16 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest nav node to the bottom of the ladder.
-        let task_location = match self.nav_graph.find_nearest_node(build_voxels[0]) {
-            Some(n) => n,
-            None => return,
-        };
+        if self.nav_graph.find_nearest_node(build_voxels[0]).is_none() {
+            return;
+        }
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = build_voxels.len() as u64;
         let build_task = task::Task {
             id: task_id,
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
-            location: task_location,
+            location: build_voxels[0],
             progress: 0,
             total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
@@ -590,10 +587,10 @@ impl SimState {
     /// but solid in the overlay (pending build) is considered carvable; a voxel
     /// that is solid but overlaid as Air (pending carve) is not.
     ///
-    /// Filters the input to only carvable voxels (solid and not ForestFloor,
-    /// considering overlay). Air, ForestFloor, and voxels belonging to existing
-    /// blueprints (F-no-bp-overlap) are silently skipped. Records original
-    /// voxel types for cancel restoration.
+    /// Filters the input to only carvable voxels (solid and above the bedrock
+    /// layer at y=0, considering overlay). Air, bedrock, and voxels belonging
+    /// to existing blueprints (F-no-bp-overlap) are silently skipped. Records
+    /// original voxel types for cancel restoration.
     pub(crate) fn designate_carve(
         &mut self,
         voxels: &[VoxelCoord],
@@ -617,8 +614,9 @@ impl SimState {
         let effective_type =
             |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
 
-        // Filter to only carvable voxels: solid, not ForestFloor, and not
-        // already claimed by an existing blueprint (F-no-bp-overlap).
+        // Filter to only carvable voxels: solid, not at the bedrock layer
+        // (y=0), and not already claimed by an existing blueprint
+        // (F-no-bp-overlap).
         let mut carve_voxels = Vec::new();
         let mut original_voxels = Vec::new();
         for &coord in voxels {
@@ -626,7 +624,7 @@ impl SimState {
                 continue;
             }
             let vt = effective_type(coord);
-            if vt.is_solid() && vt != VoxelType::ForestFloor {
+            if vt.is_solid() && coord.y > 0 {
                 carve_voxels.push(coord);
                 original_voxels.push((coord, self.world.get(coord)));
             }
@@ -657,17 +655,16 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest nav node to the carve site.
-        let task_location = match self.nav_graph.find_nearest_node(carve_voxels[0]) {
-            Some(n) => n,
-            None => return,
-        };
+        if self.nav_graph.find_nearest_node(carve_voxels[0]).is_none() {
+            return;
+        }
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = carve_voxels.len() as u64;
         let build_task = task::Task {
             id: task_id,
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
-            location: task_location,
+            location: carve_voxels[0],
             progress: 0,
             total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
@@ -822,16 +819,15 @@ impl SimState {
         position: VoxelCoord,
         required_species: Option<Species>,
     ) {
-        let location = match self.nav_graph.find_nearest_node(position) {
-            Some(n) => n,
-            None => return,
-        };
+        if self.nav_graph.find_nearest_node(position).is_none() {
+            return;
+        }
         let task_id = TaskId::new(&mut self.rng);
         let new_task = task::Task {
             id: task_id,
             kind,
             state: task::TaskState::Available,
-            location,
+            location: position,
             progress: 0,
             total_cost: 0,
             required_species,
@@ -1388,10 +1384,9 @@ impl SimState {
         let _ = self.db.structures.update_no_fk(structure);
         self.set_inv_wants(inv_id, &default_wants);
 
-        let location = match self.nav_graph.find_nearest_node(task_pos) {
-            Some(n) => n,
-            None => return,
-        };
+        if self.nav_graph.find_nearest_node(task_pos).is_none() {
+            return;
+        }
 
         // Create the Furnish task. total_cost = number of furniture items.
         let total_cost = planned_count as i64;
@@ -1400,7 +1395,7 @@ impl SimState {
             id: task_id,
             kind: task::TaskKind::Furnish { structure_id },
             state: task::TaskState::Available,
-            location,
+            location: task_pos,
             progress: 0,
             total_cost,
             required_species: Some(Species::Elf),

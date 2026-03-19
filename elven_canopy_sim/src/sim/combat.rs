@@ -74,11 +74,12 @@ impl SimState {
 
         // Create and immediately assign the AttackTarget task.
         let task_id = TaskId::new(&mut self.rng);
+        let target_pos = self.nav_graph.node(target_node).position;
         let new_task = task::Task {
             id: task_id,
             kind: task::TaskKind::AttackTarget { target: target_id },
             state: task::TaskState::InProgress,
-            location: target_node,
+            location: target_pos,
             progress: 0,
             total_cost: 0,
             required_species: Some(attacker.species),
@@ -118,10 +119,9 @@ impl SimState {
             _ => return,
         };
 
-        let location = match self.nav_graph.find_nearest_node(destination) {
-            Some(n) => n,
-            None => return,
-        };
+        if self.nav_graph.find_nearest_node(destination).is_none() {
+            return;
+        }
 
         // Check preemption: can PlayerCombat preempt the current task?
         let mut mid_move = false;
@@ -152,7 +152,7 @@ impl SimState {
             id: task_id,
             kind: task::TaskKind::AttackMove,
             state: task::TaskState::InProgress,
-            location,
+            location: destination,
             progress: 0,
             total_cost: 0,
             required_species: Some(species),
@@ -315,9 +315,10 @@ impl SimState {
 
                 if let Some(&(nearest_id, nearest_node)) = targets.first() {
                     // Engage nearest hostile.
+                    let nearest_pos = self.nav_graph.node(nearest_node).position;
                     if let Some(mut t) = self.db.tasks.get(&task_id) {
                         t.target_creature = Some(nearest_id);
-                        t.location = nearest_node;
+                        t.location = nearest_pos;
                         let _ = self.db.tasks.update_no_fk(t);
                     }
                     let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
@@ -361,9 +362,10 @@ impl SimState {
         dest_nav_node: NavNodeId,
         creature_id: CreatureId,
     ) {
+        let dest_pos = self.nav_graph.node(dest_nav_node).position;
         if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.target_creature = None;
-            t.location = dest_nav_node;
+            t.location = dest_pos;
             let _ = self.db.tasks.update_no_fk(t);
         }
         let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
@@ -392,8 +394,17 @@ impl SimState {
 
         // Check for cached path.
         let next_step = if let Some(ref path) = creature.path {
-            if !path.remaining_edge_indices.is_empty() {
-                Some((path.remaining_edge_indices[0], path.remaining_nodes[0]))
+            if let Some(&next_pos) = path.remaining_positions.first() {
+                let dest_node = graph.node_at(next_pos);
+                let edge_idx = dest_node.and_then(|dn| {
+                    creature
+                        .current_node
+                        .and_then(|cn| graph.find_edge_to(cn, dn))
+                });
+                match (edge_idx, dest_node) {
+                    (Some(ei), Some(dn)) => Some((ei, dn)),
+                    _ => None,
+                }
             } else {
                 None
             }
@@ -449,13 +460,16 @@ impl SimState {
             let first_edge = path_result.edge_indices[0];
             let first_dest = path_result.nodes[1];
 
+            let remaining_positions: Vec<VoxelCoord> = path_result.nodes[1..]
+                .iter()
+                .map(|&nid| graph.node(nid).position)
+                .collect();
             let _ = self
                 .db
                 .creatures
                 .modify_unchecked(&creature_id, |creature| {
                     creature.path = Some(CreaturePath {
-                        remaining_nodes: path_result.nodes[1..].to_vec(),
-                        remaining_edge_indices: path_result.edge_indices.to_vec(),
+                        remaining_positions,
                     });
                 });
 
@@ -506,13 +520,10 @@ impl SimState {
                 creature.current_node = Some(dest_node);
                 creature.action_kind = ActionKind::Move;
                 creature.next_available_tick = Some(tick + delay);
-                if let Some(ref mut path) = creature.path {
-                    if !path.remaining_nodes.is_empty() {
-                        path.remaining_nodes.remove(0);
-                    }
-                    if !path.remaining_edge_indices.is_empty() {
-                        path.remaining_edge_indices.remove(0);
-                    }
+                if let Some(ref mut path) = creature.path
+                    && !path.remaining_positions.is_empty()
+                {
+                    path.remaining_positions.remove(0);
                 }
             });
 
@@ -776,8 +787,17 @@ impl SimState {
 
         // Check for cached path.
         let next_step = if let Some(ref path) = creature.path {
-            if !path.remaining_edge_indices.is_empty() {
-                Some((path.remaining_edge_indices[0], path.remaining_nodes[0]))
+            if let Some(&next_pos) = path.remaining_positions.first() {
+                let dest_node = graph.node_at(next_pos);
+                let edge_idx = dest_node.and_then(|dn| {
+                    creature
+                        .current_node
+                        .and_then(|cn| graph.find_edge_to(cn, dn))
+                });
+                match (edge_idx, dest_node) {
+                    (Some(ei), Some(dn)) => Some((ei, dn)),
+                    _ => None,
+                }
             } else {
                 None
             }
@@ -861,13 +881,16 @@ impl SimState {
             let first_edge = path_result.edge_indices[0];
             let first_dest = path_result.nodes[1];
 
+            let remaining_positions: Vec<VoxelCoord> = path_result.nodes[1..]
+                .iter()
+                .map(|&nid| graph.node(nid).position)
+                .collect();
             let _ = self
                 .db
                 .creatures
                 .modify_unchecked(&creature_id, |creature| {
                     creature.path = Some(CreaturePath {
-                        remaining_nodes: path_result.nodes[1..].to_vec(),
-                        remaining_edge_indices: path_result.edge_indices.to_vec(),
+                        remaining_positions,
                     });
                 });
 
@@ -917,13 +940,10 @@ impl SimState {
                 creature.current_node = Some(dest_node);
                 creature.action_kind = ActionKind::Move;
                 creature.next_available_tick = Some(tick + delay);
-                if let Some(ref mut path) = creature.path {
-                    if !path.remaining_nodes.is_empty() {
-                        path.remaining_nodes.remove(0);
-                    }
-                    if !path.remaining_edge_indices.is_empty() {
-                        path.remaining_edge_indices.remove(0);
-                    }
+                if let Some(ref mut path) = creature.path
+                    && !path.remaining_positions.is_empty()
+                {
+                    path.remaining_positions.remove(0);
                 }
             });
 

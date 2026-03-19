@@ -77,7 +77,7 @@ elven-canopy/
 ├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
 │   └── src/
 │       ├── lib.rs              # ExtensionLibrary entry point
-│       ├── mesh_cache.rs       # Chunk mesh cache with dirty tracking
+│       ├── mesh_cache.rs       # MegaChunk spatial hierarchy, visibility culling, LRU mesh cache
 │       ├── elfcyclopedia_server.rs # Embedded localhost HTTP species bestiary
 │       ├── sprite_bridge.rs    # SpriteGenerator — converts pixel buffers to Godot textures
 │       └── sim_bridge.rs       # SimBridge node exposed to Godot

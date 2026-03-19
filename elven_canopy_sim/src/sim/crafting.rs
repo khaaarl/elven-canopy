@@ -335,10 +335,10 @@ impl SimState {
             };
 
             let interior_pos = self.db.structures.get(&sid).unwrap().anchor;
-            let location = match self.nav_graph.find_nearest_node(interior_pos) {
-                Some(n) => n,
-                None => continue,
-            };
+            if self.nav_graph.find_nearest_node(interior_pos).is_none() {
+                continue;
+            }
+            let location = interior_pos;
 
             let task_id = TaskId::new(&mut self.rng);
             for input in &resolved.inputs {

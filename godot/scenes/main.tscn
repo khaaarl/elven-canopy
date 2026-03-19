@@ -39,17 +39,17 @@ light_energy = 0.3
 shadow_enabled = false
 
 [node name="CameraPivot" type="Node3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 128, 20, 128)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 512, 70, 512)
 script = ExtResource("1_camera")
 zoom_max = 200.0
-focal_y_max = 128.0
+focal_y_max = 255.0
 
 [node name="Camera3D" type="Camera3D" parent="CameraPivot"]
 current = true
-far = 500.0
+far = 2000.0
 
 [node name="Ground" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 128, 0, 128)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 512, 50, 512)
 mesh = SubResource("BoxMesh_ground")
 surface_material_override/0 = SubResource("Material_ground")
 

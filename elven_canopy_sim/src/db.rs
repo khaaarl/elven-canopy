@@ -425,7 +425,7 @@ pub struct Task {
     pub kind_tag: TaskKindTag,
     #[indexed]
     pub state: TaskState,
-    pub location: NavNodeId,
+    pub location: VoxelCoord,
     pub progress: i64,
     pub total_cost: i64,
     #[indexed]
@@ -487,7 +487,7 @@ pub struct TaskHaulData {
     pub quantity: u32,
     pub phase: HaulPhase,
     pub source_kind: HaulSourceKind,
-    pub destination_nav_node: NavNodeId,
+    pub destination_coord: VoxelCoord,
     /// The material filter from the want that triggered this haul.
     #[serde(default)]
     pub material_filter: crate::inventory::MaterialFilter,

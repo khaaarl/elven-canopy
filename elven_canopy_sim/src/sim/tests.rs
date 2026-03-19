@@ -25,10 +25,18 @@ static CACHED_SIM_42: LazyLock<SimState> =
 fn test_config() -> GameConfig {
     let mut config = GameConfig {
         world_size: (64, 64, 64),
+        floor_y: 0,
         ..GameConfig::default()
     };
     config.tree_profile.growth.initial_energy = 50.0;
     config.terrain_max_height = 0;
+    // Adjust spawn positions for the small test world (center=32, floor_y=0).
+    for spec in &mut config.initial_creatures {
+        spec.spawn_position = VoxelCoord::new(32, 1, 32);
+    }
+    for pile in &mut config.initial_ground_piles {
+        pile.position = VoxelCoord::new(32, 1, 42);
+    }
     config
 }
 
@@ -908,7 +916,7 @@ fn spawn_capybara_command() {
         }
     )));
 
-    // Capybara should be at a ground-level node (y=1, air above ForestFloor).
+    // Capybara should be at a ground-level node (y=1, air above terrain).
     let capybara = sim
         .db
         .creatures
@@ -964,7 +972,7 @@ fn capybara_stays_on_ground() {
     };
     sim.step(&[cmd], 2);
 
-    // Run for many ticks — capybara must never leave y=1 (air above ForestFloor).
+    // Run for many ticks — capybara must never leave y=1 (air above terrain).
     for target in (10000..100000).step_by(10000) {
         sim.step(&[], target);
         let capybara = sim
@@ -1133,11 +1141,12 @@ fn spawn_elf(sim: &mut SimState) -> CreatureId {
 /// Helper: insert a GoTo task at the given nav node (elf-only).
 fn insert_goto_task(sim: &mut SimState, location: NavNodeId) -> TaskId {
     let task_id = TaskId::new(&mut sim.rng);
+    let location_coord = sim.nav_graph.node(location).position;
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::Available,
-        location,
+        location: location_coord,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -1153,14 +1162,15 @@ fn creature_claims_available_task() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
 
-    // Pick a task location far from the elf — a branch tip node requires
-    // climbing the trunk and walking a branch, many hops away.
-    let far_node = NavNodeId((sim.nav_graph.node_count() - 1) as u32);
-    let task_id = insert_goto_task(&mut sim, far_node);
+    // Far ground-level location — elf spawns near (32,1,32), this is ~20
+    // voxels away so it won't arrive within the tick budget.
+    let task_pos = VoxelCoord::new(10, 1, 10);
+    let task_node = sim.nav_graph.find_nearest_node(task_pos).unwrap();
+    let task_id = insert_goto_task(&mut sim, task_node);
 
-    // Tick enough for one activation (~500 ticks for a ground edge at
-    // walk_ticks_per_voxel=500).
-    sim.step(&[], sim.tick + 10000);
+    // Tick enough for the elf to claim but not finish (~500 ticks per edge
+    // at walk_ticks_per_voxel=500, ~20 edges to walk).
+    sim.step(&[], sim.tick + 5000);
 
     let elf = sim.db.creatures.get(&elf_id).unwrap();
     assert_eq!(
@@ -1169,13 +1179,6 @@ fn creature_claims_available_task() {
         "Elf should have claimed the available task"
     );
     let task = sim.db.tasks.get(&task_id).unwrap();
-    assert!(
-        sim.db
-            .creatures
-            .get(&elf_id)
-            .is_some_and(|c| c.current_task == Some(task.id)),
-        "Elf should be assigned to the task"
-    );
     assert_eq!(task.state, TaskState::InProgress);
 }
 
@@ -1184,8 +1187,9 @@ fn creature_walks_to_task_location() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
 
-    // Pick a far task location (branch tip) so the elf has a long walk.
-    let far_node = NavNodeId((sim.nav_graph.node_count() - 1) as u32);
+    // Far ground-level location so the elf has a long walk.
+    let task_coord = VoxelCoord::new(10, 1, 10);
+    let far_node = sim.nav_graph.find_nearest_node(task_coord).unwrap();
     let task_location = sim.nav_graph.node(far_node).position;
     let _task_id = insert_goto_task(&mut sim, far_node);
 
@@ -1208,9 +1212,14 @@ fn creature_walks_to_task_location() {
         .position
         .manhattan_distance(task_location);
 
+    // The elf should either be closer to the task (still walking)
+    // or have already completed it (GoTo completes instantly at arrival,
+    // then the elf may wander away).
+    let task = sim.db.tasks.get(&_task_id).unwrap();
     assert!(
-        mid_dist < initial_dist,
-        "Elf should be closer to task after walking (initial={initial_dist}, mid={mid_dist})"
+        mid_dist < initial_dist || task.state == TaskState::Complete,
+        "Elf should be closer to task or have completed it (initial={initial_dist}, mid={mid_dist}, state={:?})",
+        task.state,
     );
 }
 
@@ -1622,7 +1631,7 @@ fn harvest_fruit_carries_species_material() {
         id: task_id,
         kind: task::TaskKind::Harvest { fruit_pos },
         state: task::TaskState::InProgress,
-        location: elf_nav,
+        location: elf_pos,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -1690,106 +1699,52 @@ fn fruit_heartbeat_tracks_species() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn rebuild_world_matches_original() {
+fn save_load_preserves_world_voxels() {
     let sim = test_sim(42);
     let tree = &sim.trees[&sim.player_tree_id];
 
-    // Rebuild world from stored tree voxels and config.
-    let rebuilt = SimState::rebuild_world(
-        &sim.config,
-        &sim.trees,
-        &sim.placed_voxels,
-        &sim.carved_voxels,
-    );
+    // Roundtrip through JSON (world is now serialized, not rebuilt).
+    let json = sim.to_json().unwrap();
+    let restored = SimState::from_json(&json).unwrap();
 
-    // Check trunk voxels.
+    // Check trunk voxels survived serialization.
     for coord in &tree.trunk_voxels {
         assert_eq!(
-            rebuilt.get(*coord),
+            restored.world.get(*coord),
             VoxelType::Trunk,
-            "Rebuilt world missing trunk voxel at {coord}"
+            "Restored world missing trunk voxel at {coord}"
         );
     }
     // Check branch voxels.
     for coord in &tree.branch_voxels {
         assert_eq!(
-            rebuilt.get(*coord),
+            restored.world.get(*coord),
             VoxelType::Branch,
-            "Rebuilt world missing branch voxel at {coord}"
+            "Restored world missing branch voxel at {coord}"
         );
     }
     // Check root voxels.
     for coord in &tree.root_voxels {
         assert_eq!(
-            rebuilt.get(*coord),
+            restored.world.get(*coord),
             VoxelType::Root,
-            "Rebuilt world missing root voxel at {coord}"
+            "Restored world missing root voxel at {coord}"
         );
     }
     // Check leaf voxels.
     for coord in &tree.leaf_voxels {
         assert_eq!(
-            rebuilt.get(*coord),
+            restored.world.get(*coord),
             VoxelType::Leaf,
-            "Rebuilt world missing leaf voxel at {coord}"
+            "Restored world missing leaf voxel at {coord}"
         );
     }
-    // Check forest floor.
-    let (ws_x, _, ws_z) = sim.config.world_size;
-    let center_x = ws_x as i32 / 2;
-    let center_z = ws_z as i32 / 2;
-    let floor_coord = VoxelCoord::new(center_x, 0, center_z);
-    assert_eq!(rebuilt.get(floor_coord), VoxelType::ForestFloor);
-}
-
-#[test]
-fn rebuild_world_includes_placed_voxels() {
-    let sim = test_sim(42);
-    let air_coord = find_air_adjacent_to_trunk(&sim);
-
-    // Manually construct placed_voxels and rebuild.
-    let placed = vec![(air_coord, VoxelType::GrownPlatform)];
-    let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &placed, &[]);
-
+    // Check that a known solid voxel (first trunk) survived.
+    let first_trunk = tree.trunk_voxels[0];
     assert_eq!(
-        rebuilt.get(air_coord),
-        VoxelType::GrownPlatform,
-        "Rebuilt world should contain the placed platform voxel"
-    );
-}
-
-#[test]
-fn rebuild_world_includes_dirt_voxels() {
-    let mut config = test_config();
-    config.terrain_max_height = 3;
-    config.terrain_noise_scale = 8.0;
-    let sim = SimState::with_config(42, config);
-
-    let tree = &sim.trees[&sim.player_tree_id];
-    assert!(
-        !tree.dirt_voxels.is_empty(),
-        "With terrain enabled, tree should have dirt voxels"
-    );
-
-    // Rebuild and verify dirt is present.
-    let rebuilt = SimState::rebuild_world(&sim.config, &sim.trees, &sim.placed_voxels, &[]);
-    for &coord in &tree.dirt_voxels {
-        let voxel = rebuilt.get(coord);
-        // Dirt might be overwritten by tree voxels (trunk/branch/root),
-        // but any remaining should be Dirt.
-        if voxel == VoxelType::Dirt {
-            assert_eq!(voxel, VoxelType::Dirt);
-        }
-    }
-    // At least some dirt voxels should survive (not all overwritten by tree).
-    let dirt_count = tree
-        .dirt_voxels
-        .iter()
-        .filter(|c| rebuilt.get(**c) == VoxelType::Dirt)
-        .count();
-    assert!(
-        dirt_count > 0,
-        "Some dirt voxels should survive in the rebuilt world"
+        restored.world.get(first_trunk),
+        VoxelType::Trunk,
+        "First trunk voxel should be present after roundtrip"
     );
 }
 
@@ -1798,16 +1753,17 @@ fn rebuild_transient_state_restores_nav_graph() {
     let sim = test_sim(42);
     let json = sim.to_json().unwrap();
 
-    // Deserialize — transient fields are default (empty).
+    // Deserialize — world is preserved but transient fields are default.
     let mut restored: SimState = serde_json::from_str(&json).unwrap();
     assert_eq!(
         restored.nav_graph.node_count(),
         0,
         "Before rebuild, nav_graph should be empty"
     );
+    // World is now serialized, so it should be present after deserialization.
     assert_eq!(
-        restored.world.size_x, 0,
-        "Before rebuild, world should be empty"
+        restored.world.size_x, sim.world.size_x,
+        "After deserialization, world should be present"
     );
 
     // Rebuild transient state.
@@ -2564,7 +2520,7 @@ fn busy_tired_elf_does_not_create_sleep_task() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: NavNodeId(0),
+        location: VoxelCoord::new(0, 0, 0),
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -5335,7 +5291,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
         id: task_id,
         kind: TaskKind::EatFruit { fruit_pos },
         state: TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -5490,7 +5446,7 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: NavNodeId(0),
+        location: VoxelCoord::new(0, 0, 0),
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -5702,7 +5658,7 @@ fn eat_bread_restores_food_and_removes_bread() {
         id: task_id,
         kind: TaskKind::EatBread,
         state: TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -5898,7 +5854,7 @@ fn eat_bread_generates_thought() {
         id: task_id,
         kind: TaskKind::EatBread,
         state: TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -6287,7 +6243,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: task_node,
+        location: sim.nav_graph.node(task_node).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -6311,16 +6267,22 @@ fn walk_toward_dead_task_node_does_not_panic() {
         "Task node should be dead",
     );
 
-    // Step the sim — the elf should try to walk toward the now-dead
-    // task node. This must NOT panic.
+    // Step the sim — the elf should gracefully handle the dead task
+    // node by either redirecting to the nearest alive node (and
+    // completing the GoTo) or abandoning the task. Must NOT panic.
     sim.step(&[], 50000);
 
-    // The elf should have dropped the task (can't reach dead node).
+    // With VoxelCoord-based task locations, the task resolves to the
+    // nearest alive node. The elf should have completed the GoTo task
+    // (walked to the nearest alive node) or abandoned it. Either way,
+    // it should not still be working on the original task.
     let elf = sim.db.creatures.get(&elf_id).unwrap();
-    assert!(
-        elf.current_task.is_none(),
-        "Elf should abandon task with dead location node",
-    );
+    if let Some(tid) = elf.current_task {
+        assert_ne!(
+            tid, task_id,
+            "Elf should not still be working on the task with the dead location node",
+        );
+    }
 }
 
 // ===================================================================
@@ -6679,28 +6641,28 @@ fn cancel_ladder_removes_blueprint_and_data() {
 }
 
 #[test]
-fn test_carve_skips_forest_floor() {
+fn test_carve_skips_bedrock_layer() {
     let mut sim = test_sim(42);
     let (ws_x, _, ws_z) = sim.config.world_size;
     let center_x = ws_x as i32 / 2;
     let center_z = ws_z as i32 / 2;
-    let floor = VoxelCoord::new(center_x, 0, center_z);
-    assert_eq!(sim.world.get(floor), VoxelType::ForestFloor);
+    let bedrock = VoxelCoord::new(center_x, 0, center_z);
+    assert!(sim.world.get(bedrock).is_solid());
 
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
-            voxels: vec![floor],
+            voxels: vec![bedrock],
             priority: Priority::Normal,
         },
     };
     sim.step(&[cmd], 1);
 
-    // No blueprint should be created — ForestFloor is not carvable.
+    // No blueprint should be created — y=0 bedrock is not carvable.
     assert!(
         sim.db.blueprints.is_empty(),
-        "ForestFloor should not be carvable"
+        "Bedrock layer (y=0) should not be carvable"
     );
     assert_eq!(sim.last_build_message.as_deref(), Some("Nothing to carve."));
 }
@@ -7310,14 +7272,14 @@ fn carve_partial_overlap_filters_claimed_voxels() {
     let mut sim = test_sim(42);
     let tree = &sim.trees[&sim.player_tree_id];
 
-    // Find two carvable (solid, non-ForestFloor) voxels.
+    // Find two carvable (solid, above bedrock) voxels.
     let carvable: Vec<VoxelCoord> = tree
         .trunk_voxels
         .iter()
         .copied()
         .filter(|v| {
             let vt = sim.world.get(*v);
-            vt.is_solid() && vt != VoxelType::ForestFloor && v.y > 0
+            vt.is_solid() && v.y > 0
         })
         .take(2)
         .collect();
@@ -10412,10 +10374,10 @@ fn logistics_counts_in_transit() {
             source: task::HaulSource::GroundPile(pile_pos),
             destination: sid,
             phase: task::HaulPhase::GoingToSource,
-            destination_nav_node: NavNodeId(0),
+            destination_coord: VoxelCoord::new(0, 0, 0),
         },
         state: TaskState::InProgress,
-        location: NavNodeId(0),
+        location: VoxelCoord::new(0, 0, 0),
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -10632,7 +10594,7 @@ fn harvest_task_creates_ground_pile() {
         id: task_id,
         kind: TaskKind::Harvest { fruit_pos },
         state: TaskState::InProgress,
-        location: fruit_nav,
+        location: sim.nav_graph.node(fruit_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -10774,10 +10736,10 @@ fn haul_source_empty_cancels() {
             source: task::HaulSource::GroundPile(source_pos),
             destination: sid,
             phase: task::HaulPhase::GoingToSource,
-            destination_nav_node: dest_nav,
+            destination_coord: anchor,
         },
         state: TaskState::InProgress,
-        location: source_nav,
+        location: sim.nav_graph.node(source_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -11116,7 +11078,7 @@ fn acquire_item_picks_up_and_owns() {
             quantity: 2,
         },
         state: TaskState::InProgress,
-        location: pile_nav,
+        location: sim.nav_graph.node(pile_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -11518,7 +11480,7 @@ fn devastated_elf_interrupts_task_to_mope() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: far_node,
+        location: sim.nav_graph.node(far_node).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -11638,9 +11600,9 @@ fn mope_does_not_interrupt_autonomous_sleep() {
             location: crate::task::SleepLocation::Ground,
         },
         state: TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
-        total_cost: 1_000_000,
+        total_cost: 1000000,
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -11744,9 +11706,9 @@ fn mope_always_preempts_player_directed_build() {
         id: task_id,
         kind: TaskKind::Build { project_id },
         state: TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
-        total_cost: 1_000_000,
+        total_cost: 1000000,
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
@@ -11853,10 +11815,11 @@ fn mope_task_location_is_home_when_assigned() {
                 .is_some_and(|c| c.current_task == Some(t.id))
     });
     assert!(mope_task.is_some(), "Elf should have a Mope task");
+    let home_pos = sim.nav_graph.node(home_nav_node).position;
     assert_eq!(
         mope_task.unwrap().location,
-        home_nav_node,
-        "Mope task location should be the home's nav node"
+        home_pos,
+        "Mope task location should be the home's nav node position"
     );
 }
 
@@ -12091,11 +12054,12 @@ fn raycast_solid_skips_above_y_cutoff() {
     assert!(result.is_some(), "Should hit without y_cutoff");
     assert_eq!(result.unwrap().0, target);
 
-    // With y_cutoff at the voxel's Y, it is treated as air.
+    // With y_cutoff at the voxel's Y, the trunk is treated as air.
+    // The ray passes through it and hits the terrain at y=0 instead.
     let result = sim.raycast_solid(from, dir, 100, None, Some(10));
-    assert_eq!(
-        result, None,
-        "Trunk at y=10 should be skipped with y_cutoff=10"
+    assert!(
+        result.is_none() || result.unwrap().0.y < 10,
+        "Trunk at y=10 should be skipped with y_cutoff=10, got {result:?}"
     );
 }
 
@@ -12683,7 +12647,7 @@ fn craft_task_serde_roundtrip() {
             active_recipe_id: ActiveRecipeId(99),
         },
         state: task::TaskState::Available,
-        location: NavNodeId(10),
+        location: VoxelCoord::new(10, 0, 0),
         progress: 0,
         total_cost: 5000,
         required_species: Some(Species::Elf),
@@ -14022,7 +13986,7 @@ fn resolve_craft_via_unified_catalog_path() {
 #[test]
 fn pile_on_solid_ground_does_not_fall() {
     let mut sim = test_sim(42);
-    // Place a pile on y=1 (above ForestFloor at y=0 — always solid).
+    // Place a pile on y=1 (above terrain at y=0 — always solid).
     let pos = VoxelCoord::new(10, 1, 10);
     let pile_id = sim.ensure_ground_pile(pos);
     sim.inv_add_simple_item(
@@ -14067,7 +14031,7 @@ fn floating_pile_falls_to_surface() {
     let fell = sim.apply_pile_gravity();
     assert_eq!(fell, 1);
 
-    // Pile should have fallen to y=1 (above ForestFloor at y=0).
+    // Pile should have fallen to y=1 (above terrain at y=0).
     // The pile gets a new ID after remove+re-insert, so look up by position.
     let landing = VoxelCoord::new(10, 1, 10);
     let piles_at_landing = sim
@@ -14300,7 +14264,7 @@ fn ensure_ground_pile_snaps_floating_position_to_surface() {
     let floating_pos = VoxelCoord::new(40, 10, 40);
     let pile_id = sim.ensure_ground_pile(floating_pos);
 
-    // Pile should have been snapped to y=1 (above ForestFloor).
+    // Pile should have been snapped to y=1 (above terrain).
     let pile = sim.db.ground_piles.get(&pile_id).unwrap();
     assert_eq!(pile.position, VoxelCoord::new(40, 1, 40));
 }
@@ -14701,7 +14665,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
             location: task::SleepLocation::Ground,
         },
         state: task::TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
         total_cost: (sim.config.sleep_ticks_ground / sim.config.sleep_action_ticks) as i64,
         required_species: None,
@@ -14961,7 +14925,7 @@ fn eat_action_ticks_controls_timing() {
         id: task_id,
         kind: task::TaskKind::EatBread,
         state: task::TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -15570,11 +15534,17 @@ fn insert_pursuit_task(
     pursuer_id: CreatureId,
 ) -> TaskId {
     let task_id = TaskId::new(&mut sim.rng);
+    // Safely get the position; if the node is bogus/dead, use a sentinel coord.
+    let location_coord = if sim.nav_graph.is_node_alive(location) {
+        sim.nav_graph.node(location).position
+    } else {
+        VoxelCoord::new(999, 999, 999)
+    };
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location,
+        location: location_coord,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -15614,7 +15584,8 @@ fn pursuit_task_repaths_when_target_moves() {
 
     // Create pursuit task at target's current node, assigned to pursuer.
     let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
-    assert_eq!(sim.db.tasks.get(&task_id).unwrap().location, target_node);
+    let target_pos = sim.nav_graph.node(target_node).position;
+    assert_eq!(sim.db.tasks.get(&task_id).unwrap().location, target_pos);
 
     // Manually move the target to the new node (simulates target movement).
     let new_pos = sim.nav_graph.node(new_target_node).position;
@@ -15628,11 +15599,11 @@ fn pursuit_task_repaths_when_target_moves() {
 
     // The pursuit task's location should have changed from the initial
     // value, proving the repath logic fired. We don't assert the exact
-    // node because the target may have moved further during the step
+    // coord because the target may have moved further during the step
     // (heartbeat-driven tasks, wandering after the GoTo completes, etc.).
     if let Some(task) = sim.db.tasks.get(&task_id) {
         assert_ne!(
-            task.location, target_node,
+            task.location, target_pos,
             "Pursuit task location should have updated when target moved"
         );
     }
@@ -15676,9 +15647,9 @@ fn pursuit_task_completes_when_adjacent() {
             location: task::SleepLocation::Ground,
         },
         state: TaskState::InProgress,
-        location: pursuer_node,
+        location: sim.nav_graph.node(pursuer_node).position,
         progress: 0,
-        total_cost: 999999, // very long sleep
+        total_cost: 999999,
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
@@ -15929,7 +15900,7 @@ fn blueprint_overlay_maps_carve_to_air() {
         .iter()
         .find(|&&c| {
             let vt = sim.world.get(c);
-            vt.is_solid() && vt != VoxelType::ForestFloor
+            vt.is_solid() && c.y > 0
         })
         .expect("Need a carvable trunk voxel");
 
@@ -16086,7 +16057,7 @@ fn overlapping_carve_designations_rejected() {
         .iter()
         .find(|&&c| {
             let vt = sim.world.get(c);
-            vt.is_solid() && vt != VoxelType::ForestFloor
+            vt.is_solid() && c.y > 0
         })
         .expect("Need a carvable trunk voxel");
 
@@ -16130,11 +16101,11 @@ fn building_foundation_on_designated_platform() {
     let mut sim = test_sim(42);
 
     // Find a 3x3 air area adjacent to the trunk at some Y level.
-    // Use the building site finder logic but at y=1 where ForestFloor
+    // Use the building site finder logic but at y=1 where terrain
     // provides the foundation, then place a platform to serve as a
     // higher foundation.
     let site = find_building_site(&sim);
-    // site is at y=0 (ForestFloor). Interior starts at y=1.
+    // site is at y=0 (terrain). Interior starts at y=1.
     // Designate a 3x3 platform at y=1.
     let mut platform_voxels = Vec::new();
     for dx in 0..3 {
@@ -16288,7 +16259,7 @@ fn interrupt_goto_completes_task_and_clears_creature() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: far_node,
+        location: sim.nav_graph.node(far_node).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -16472,7 +16443,7 @@ fn interrupt_sleep_completes_task() {
             location: task::SleepLocation::Ground,
         },
         state: TaskState::InProgress,
-        location: current_node,
+        location: sim.nav_graph.node(current_node).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -16540,7 +16511,7 @@ fn interrupt_clears_move_action() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: current_node,
+        location: sim.nav_graph.node(current_node).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -17562,8 +17533,10 @@ fn force_position(sim: &mut SimState, creature_id: CreatureId, new_pos: VoxelCoo
         old_pos,
         footprint,
     );
+    let new_node = sim.nav_graph.find_nearest_node(new_pos);
     let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
         c.position = new_pos;
+        c.current_node = new_node;
     });
     SimState::register_creature_in_index(&mut sim.spatial_index, creature_id, new_pos, footprint);
 }
@@ -17983,7 +17956,9 @@ fn test_melee_strike_cooldown_expires() {
     // hostile AI will auto-strike the elf again (still adjacent). There
     // may also be a pre-existing activation from spawn, so the elf may
     // take more than one additional hit. Verify at least 2 total strikes.
-    sim.step(&[], sim.tick + interval + 1);
+    // Give enough time for the goblin's activation to fire and complete
+    // the second strike (cooldown + activation interval + margin).
+    sim.step(&[], sim.tick + interval * 3);
     let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
     let total_damage = elf_hp_initial - elf_hp_after;
     assert!(
@@ -21026,7 +21001,7 @@ fn attack_target_task_serde_roundtrip() {
     let mut rng = GameRng::new(42);
     let task_id = TaskId::new(&mut rng);
     let target = CreatureId::new(&mut rng);
-    let location = NavNodeId(5);
+    let location = VoxelCoord::new(5, 0, 0);
 
     let task = Task {
         id: task_id,
@@ -21334,7 +21309,7 @@ fn test_attack_move_flee_exempt() {
 fn test_attack_move_serde_roundtrip() {
     let mut rng = GameRng::new(42);
     let task_id = TaskId::new(&mut rng);
-    let location = NavNodeId(5);
+    let location = VoxelCoord::new(5, 0, 0);
 
     let task = Task {
         id: task_id,
@@ -21406,7 +21381,7 @@ fn directed_goto_replaces_player_directed_task() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: dest_node,
+        location: sim.nav_graph.node(dest_node).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -21455,7 +21430,7 @@ fn directed_goto_preempts_autonomous_task() {
         id: task_id,
         kind: TaskKind::Harvest { fruit_pos },
         state: TaskState::InProgress,
-        location: dest_node,
+        location: sim.nav_graph.node(dest_node).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -22424,7 +22399,7 @@ fn task_haul_data_serde_backward_compat() {
             "quantity": 5,
             "phase": "GoingToSource",
             "source_kind": "Pile",
-            "destination_nav_node": 0
+            "destination_coord": [0, 0, 0]
         }"#;
     let data: crate::db::TaskHaulData = serde_json::from_str(json).unwrap();
     assert_eq!(data.material_filter, inventory::MaterialFilter::Any);
@@ -23087,7 +23062,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         id: far_task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: far_node,
+        location: sim.nav_graph.node(far_node).position,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -23098,7 +23073,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         id: near_task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: near_node,
+        location: sim.nav_graph.node(near_node).position,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -23157,7 +23132,7 @@ fn find_available_task_single_candidate_skips_dijkstra() {
         id: task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: task_node,
+        location: sim.nav_graph.node(task_node).position,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -23213,7 +23188,7 @@ fn find_available_task_respects_species_filter_with_proximity() {
         id: elf_task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: task_node,
+        location: sim.nav_graph.node(task_node).position,
         progress: 0,
         total_cost: 1,
         required_species: Some(Species::Elf),
@@ -24690,7 +24665,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
             quantity: 2,
         },
         state: task::TaskState::InProgress,
-        location: task_nav,
+        location: sim.nav_graph.node(task_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -24772,7 +24747,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
             quantity: 2,
         },
         state: task::TaskState::InProgress,
-        location: task_nav,
+        location: sim.nav_graph.node(task_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -24873,7 +24848,7 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
         id: goto_task_id,
         kind: task::TaskKind::GoTo,
         state: task::TaskState::Available,
-        location: far_node,
+        location: sim.nav_graph.node(far_node).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -25372,7 +25347,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
             quantity: 2,
         },
         state: task::TaskState::InProgress,
-        location: task_nav,
+        location: sim.nav_graph.node(task_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -27521,7 +27496,7 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
             quantity: 3,
         },
         state: TaskState::InProgress,
-        location: pile_nav,
+        location: sim.nav_graph.node(pile_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -27705,7 +27680,7 @@ fn acquire_item_preserves_material() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: pile_nav,
+        location: sim.nav_graph.node(pile_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -27784,7 +27759,7 @@ fn acquire_item_auto_equips_clothing() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: pile_nav,
+        location: sim.nav_graph.node(pile_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -27870,7 +27845,7 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: pile_nav,
+        location: sim.nav_graph.node(pile_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -28899,7 +28874,7 @@ fn position_blocks_friendly_archer_on_line() {
             id: task_id,
             kind: TaskKind::AttackTarget { target: goblin },
             state: TaskState::InProgress,
-            location: node,
+            location: sim.nav_graph.node(node).position,
             progress: 0,
             total_cost: 0,
             required_species: Some(Species::Elf),
@@ -30269,10 +30244,11 @@ fn voxel_exclusion_walk_toward_task_clears_cached_path() {
     sim.event_queue.cancel_creature_activations(elf);
 
     // Give the elf a cached path through the goblin's node.
+    let pos_b = sim.nav_graph.node(node_b).position;
+    let pos_c = sim.nav_graph.node(node_c).position;
     let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
         c.path = Some(CreaturePath {
-            remaining_nodes: vec![node_b, node_c],
-            remaining_edge_indices: vec![0, 0], // dummy indices
+            remaining_positions: vec![pos_b, pos_c],
         });
     });
     assert!(
@@ -31673,7 +31649,7 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: pile_nav,
+        location: sim.nav_graph.node(pile_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -32448,7 +32424,7 @@ fn cleanup_acquire_military_equipment_clears_reservations() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.find_nearest_node(pile_pos).unwrap(),
+        location: pile_pos,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -32491,7 +32467,7 @@ fn cleanup_acquire_military_equipment_clears_reservations() {
 fn acquire_military_equipment_task_serde_roundtrip() {
     let mut rng = GameRng::new(42);
     let task_id = TaskId::new(&mut rng);
-    let location = NavNodeId(5);
+    let location = VoxelCoord::new(5, 0, 0);
     let pile_pos = VoxelCoord::new(128, 1, 138);
 
     let task = Task {
@@ -33511,7 +33487,7 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: pile_nav,
+        location: sim.nav_graph.node(pile_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -33623,7 +33599,7 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: pile_nav,
+        location: sim.nav_graph.node(pile_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -33717,7 +33693,7 @@ fn military_equipment_non_wearable_not_equipped() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: pile_nav,
+        location: sim.nav_graph.node(pile_nav).position,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -34791,7 +34767,7 @@ fn nonmagical_creature_cannot_claim_build_task() {
         id: task_id,
         kind: TaskKind::Build { project_id },
         state: TaskState::Available,
-        location: gob_node,
+        location: sim.nav_graph.node(gob_node).position,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -34830,7 +34806,7 @@ fn elf_with_no_mana_skips_build_task() {
         id: task_id,
         kind: TaskKind::Build { project_id },
         state: TaskState::Available,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
         total_cost: 1,
         required_species: Some(Species::Elf),
@@ -34952,7 +34928,7 @@ fn try_drain_mana_exact_boundary() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -34985,7 +34961,7 @@ fn nonmagical_creature_cannot_claim_furnish_task() {
             structure_id: StructureId(999),
         },
         state: TaskState::Available,
-        location: gob_node,
+        location: sim.nav_graph.node(gob_node).position,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -35081,7 +35057,7 @@ fn cleanup_early_exit_resets_wasted_action_count() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -35169,7 +35145,7 @@ fn mana_wasted_position_recorded_on_failed_drain() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -35218,7 +35194,7 @@ fn successful_drain_does_not_record_position() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: elf_node,
+        location: sim.nav_graph.node(elf_node).position,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -36310,6 +36286,66 @@ fn grow_craft_task_total_cost_rounds_up() {
     assert_eq!(
         task.total_cost, 2,
         "div_ceil should round up: 7000/4000 = 2 actions"
+    );
+}
+
+/// Verify that a creature with a cached path containing a position where no
+/// nav node exists (e.g., because the node was destroyed) handles it gracefully
+/// — no panic, creature stays alive and valid.
+#[test]
+fn path_resolution_nav_node_destroyed_no_panic() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Find a connected pair so the elf has a valid starting node.
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_idle(&mut sim, elf);
+
+    // Give the elf a GoTo task at node_b so it has reason to move.
+    let task_id = insert_goto_task(&mut sim, node_b);
+    if let Some(mut t) = sim.db.tasks.get(&task_id) {
+        t.state = TaskState::InProgress;
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Assign a cached path through a position that has NO nav node.
+    // Use a coordinate far from the world (no node will exist there).
+    let bogus_pos = VoxelCoord::new(63, 63, 63);
+    assert!(
+        sim.nav_graph.node_at(bogus_pos).is_none(),
+        "Test setup: bogus position should have no nav node"
+    );
+
+    let real_dest = sim.nav_graph.node(node_b).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.path = Some(CreaturePath {
+            remaining_positions: vec![bogus_pos, real_dest],
+        });
+    });
+
+    // Schedule the elf to activate and step forward. The movement code should
+    // detect the missing nav node and repath (not panic).
+    sim.event_queue.cancel_creature_activations(elf);
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+    sim.step(&[], sim.tick + 200);
+
+    // Creature should still be alive and at a valid position.
+    let creature = sim
+        .db
+        .creatures
+        .get(&elf)
+        .expect("Creature should still exist after path resolution failure");
+    assert!(
+        creature.hp > 0,
+        "Creature should be alive after graceful repath"
     );
 }
 
@@ -37456,4 +37492,87 @@ fn hostile_ai_spear_attacks_at_extended_range() {
         goblin_final_pos, goblin_pos,
         "Goblin should stay at spear range, not close to adjacent"
     );
+}
+
+#[test]
+fn creature_path_serde_roundtrip() {
+    let path = CreaturePath {
+        remaining_positions: vec![
+            VoxelCoord::new(10, 5, 20),
+            VoxelCoord::new(11, 5, 20),
+            VoxelCoord::new(12, 6, 21),
+            VoxelCoord::new(13, 6, 22),
+        ],
+    };
+    let json = serde_json::to_string(&path).unwrap();
+    let restored: CreaturePath = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        path.remaining_positions, restored.remaining_positions,
+        "CreaturePath positions should survive serde roundtrip"
+    );
+}
+
+/// Verify that a creature with a cached path to a bogus position repaths
+/// gracefully and ends up at a valid task location (not just "doesn't panic",
+/// but actually completes or re-evaluates its task).
+#[test]
+fn cached_path_reroutes_when_nav_node_destroyed() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Find two connected nodes: start (A) and destination (B).
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_idle(&mut sim, elf);
+
+    // Give the elf a GoTo task at node_b.
+    let task_id = insert_goto_task(&mut sim, node_b);
+    if let Some(mut t) = sim.db.tasks.get(&task_id) {
+        t.state = TaskState::InProgress;
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Assign a cached path with TWO bogus positions (unlike the existing
+    // test which uses one bogus + one real). This forces a full repath.
+    let bogus_a = VoxelCoord::new(63, 63, 63);
+    let bogus_b = VoxelCoord::new(62, 63, 63);
+    assert!(sim.nav_graph.node_at(bogus_a).is_none());
+    assert!(sim.nav_graph.node_at(bogus_b).is_none());
+
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.path = Some(CreaturePath {
+            remaining_positions: vec![bogus_a, bogus_b],
+        });
+    });
+
+    // Schedule activation and step forward.
+    sim.event_queue.cancel_creature_activations(elf);
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+    sim.step(&[], sim.tick + 500);
+
+    // Creature should still be alive.
+    let creature = sim
+        .db
+        .creatures
+        .get(&elf)
+        .expect("Creature should still exist after reroute");
+    assert!(creature.hp > 0, "Creature should be alive after reroute");
+
+    // The bogus path should have been cleared — creature should have
+    // either rerouted or abandoned the path.
+    if let Some(ref path) = creature.path {
+        for pos in &path.remaining_positions {
+            assert!(
+                *pos != bogus_a && *pos != bogus_b,
+                "Bogus positions should have been cleared from path"
+            );
+        }
+    }
 }

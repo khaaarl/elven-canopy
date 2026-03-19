@@ -47,6 +47,8 @@ scripts/build.sh run-branch NAME  # Fetch, checkout branch, sync to remote, buil
 
 Individual crate tests: `cargo test -p elven_canopy_sim`, `cargo test -p elven_canopy_lang`, `cargo test -p elven_canopy_music`, `cargo test -p tabulosity -p tabulosity_derive`. Tabulosity serde tests: `cargo test -p tabulosity --features serde --test serde`. Music CLI: `cargo run -p elven_canopy_music -- --help`.
 
+**Targeted clean:** If stale build artifacts cause errors (e.g., after force-pushes or branch switches), clean only the project crates — not the entire target directory: `cargo clean -p elven_canopy_sim -p elven_canopy_gdext`. This preserves the cached `godot` crate build, which is very slow to recompile.
+
 ### Python Tools
 
 The `python/` directory contains offline training tools for the music generator — they are **not** part of the game runtime. **Never use `source .venv/bin/activate`** — always invoke tools via their full venv path (e.g., `python/.venv/bin/python`).
@@ -92,7 +94,7 @@ For the full list of codebase patterns, conventions, and gotchas, see `docs/code
 - Before assigning ANY new keyboard shortcut, **thoroughly audit all existing bindings** across every GDScript file. Search for `KEY_` in `godot/scripts/`. Many keys are already in use.
 - **Always ask the user** before assigning a shortcut — never pick one unilaterally.
 
-**Voxel coordinate system:** Y is up. Flat array indexing: `x + z * size_x + y * size_x * size_z`. Forest floor at y=0, creatures walk at y=1. Renderers offset by +0.5.
+**Voxel coordinate system:** Y is up. Flat array indexing: `x + z * size_x + y * size_x * size_z`. Terrain floor at `config.floor_y` (default 50), creatures walk at `floor_y + 1`. Renderers offset by +0.5.
 
 **"Pull main":** When asked to pull/update/rebase on main, first update the local ref: `git fetch origin main:main` (if not on main) or `git pull` (if on main). A stale local main causes wrong diffs.
 

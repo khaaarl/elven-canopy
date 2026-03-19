@@ -27,10 +27,9 @@ impl SimState {
             _ => return,
         };
 
-        let location = match self.nav_graph.find_nearest_node(position) {
-            Some(n) => n,
-            None => return,
-        };
+        if self.nav_graph.find_nearest_node(position).is_none() {
+            return;
+        }
 
         // Check preemption: can PlayerDirected preempt the current task?
         let mut mid_move = false;
@@ -64,7 +63,7 @@ impl SimState {
             id: task_id,
             kind: task::TaskKind::GoTo,
             state: task::TaskState::InProgress,
-            location,
+            location: position,
             progress: 0,
             total_cost: 0,
             required_species: Some(creature.species),
@@ -205,11 +204,21 @@ impl SimState {
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
 
-        // Check if we already have a path. If so, advance one step.
-        // If not (or path is exhausted), compute a new one.
+        // Check if we already have a path. If so, resolve the next position
+        // to a nav node + edge. If not (or path is exhausted), compute a new one.
         let next_step = if let Some(ref path) = creature.path {
-            if !path.remaining_edge_indices.is_empty() {
-                Some((path.remaining_edge_indices[0], path.remaining_nodes[0]))
+            if let Some(&next_pos) = path.remaining_positions.first() {
+                // Resolve the stored position to a nav node and find the edge.
+                let dest_node = graph.node_at(next_pos);
+                let edge_idx = dest_node.and_then(|dn| {
+                    creature
+                        .current_node
+                        .and_then(|cn| graph.find_edge_to(cn, dn))
+                });
+                match (edge_idx, dest_node) {
+                    (Some(ei), Some(dn)) => Some((ei, dn)),
+                    _ => None, // graph changed; repath
+                }
             } else {
                 None
             }
@@ -266,14 +275,17 @@ impl SimState {
             let first_edge = path_result.edge_indices[0];
             let first_dest = path_result.nodes[1];
 
-            // Store remaining path for future activations.
+            // Store remaining path as positions for future activations.
+            let remaining_positions: Vec<VoxelCoord> = path_result.nodes[1..]
+                .iter()
+                .map(|&nid| graph.node(nid).position)
+                .collect();
             let _ = self
                 .db
                 .creatures
                 .modify_unchecked(&creature_id, |creature| {
                     creature.path = Some(CreaturePath {
-                        remaining_nodes: path_result.nodes[1..].to_vec(),
-                        remaining_edge_indices: path_result.edge_indices.to_vec(),
+                        remaining_positions,
                     });
                 });
 
@@ -320,13 +332,10 @@ impl SimState {
                 creature.next_available_tick = Some(tick + delay);
 
                 // Advance stored path.
-                if let Some(ref mut path) = creature.path {
-                    if !path.remaining_nodes.is_empty() {
-                        path.remaining_nodes.remove(0);
-                    }
-                    if !path.remaining_edge_indices.is_empty() {
-                        path.remaining_edge_indices.remove(0);
-                    }
+                if let Some(ref mut path) = creature.path
+                    && !path.remaining_positions.is_empty()
+                {
+                    path.remaining_positions.remove(0);
                 }
             });
 
@@ -522,7 +531,11 @@ impl SimState {
                 .iter()
                 .copied()
                 .filter(|&idx| {
-                    let dest_pos = graph.node(graph.edge(idx).to).position;
+                    let dest_id = graph.edge(idx).to;
+                    if !graph.is_node_alive(dest_id) {
+                        return false;
+                    }
+                    let dest_pos = graph.node(dest_id).position;
                     !self.destination_blocked_by_hostile(creature_id, dest_pos, footprint)
                 })
                 .collect()

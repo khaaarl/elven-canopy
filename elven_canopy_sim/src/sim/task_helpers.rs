@@ -261,7 +261,7 @@ impl SimState {
                 source,
                 destination,
                 phase,
-                destination_nav_node,
+                destination_coord,
             } => {
                 // Destination structure ref.
                 let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
@@ -307,7 +307,7 @@ impl SimState {
                         quantity: *quantity,
                         phase: *phase,
                         source_kind,
-                        destination_nav_node: *destination_nav_node,
+                        destination_coord: *destination_coord,
                         material_filter: inventory::MaterialFilter::Any,
                         hauled_material: None,
                     });

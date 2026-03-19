@@ -116,7 +116,7 @@ impl SimState {
                 // Fallback: attack-move toward world center at ground level.
                 let cx = self.config.world_size.0 as i32 / 2;
                 let cz = self.config.world_size.2 as i32 / 2;
-                VoxelCoord::new(cx, 1, cz)
+                VoxelCoord::new(cx, self.config.floor_y + 1, cz)
             } else {
                 let target_idx = (self.rng.next_u64() % attack_targets.len() as u64) as usize;
                 attack_targets[target_idx]

@@ -42,11 +42,62 @@ use std::collections::BTreeMap;
 
 use crate::config::{CivConfig, FruitConfig, GameConfig};
 use crate::db::{CivRelationship, Civilization, SimDb};
+
+/// Logging callback for worldgen timing. The callback receives a message
+/// string for each step start/finish. Callers can route this to
+/// `godot_print!`, `eprintln!`, or any other sink.
+pub type WgLog = Box<dyn Fn(&str)>;
+
+/// Default log function: prints to stderr.
+pub fn stderr_log() -> WgLog {
+    Box::new(|msg| eprintln!("{msg}"))
+}
+
+/// No-op log function (for tests).
+pub fn noop_log() -> WgLog {
+    Box::new(|_| {})
+}
+
+/// Timer for worldgen steps. Logs "starting: X" on creation, "X took Y" on
+/// drop. Always active (worldgen runs once at game start).
+struct WgTimer<'a> {
+    label: &'static str,
+    start: std::time::Instant,
+    log: &'a dyn Fn(&str),
+}
+
+impl<'a> WgTimer<'a> {
+    fn new(label: &'static str, log: &'a dyn Fn(&str)) -> Self {
+        log(&format!("[worldgen] starting: {label}"));
+        Self {
+            label,
+            start: std::time::Instant::now(),
+            log,
+        }
+    }
+}
+
+impl Drop for WgTimer<'_> {
+    fn drop(&mut self) {
+        (self.log)(&format!(
+            "[worldgen] {} took {:.1?}",
+            self.label,
+            self.start.elapsed()
+        ));
+    }
+}
+
+/// Start a worldgen timing step. The timer logs elapsed time when dropped.
+macro_rules! wg_time {
+    ($label:expr, $log:expr) => {
+        let _wg_timer = WgTimer::new($label, $log);
+    };
+}
 use crate::nav::{self, NavGraph};
 use crate::sim::Tree;
 use crate::structural;
 use crate::tree_gen;
-use crate::types::{CivId, CivOpinion, CivSpecies, CultureTag, TreeId, VoxelCoord, VoxelType};
+use crate::types::{CivId, CivOpinion, CivSpecies, CultureTag, TreeId, VoxelCoord};
 use crate::world::VoxelWorld;
 use elven_canopy_prng::GameRng;
 
@@ -96,7 +147,9 @@ pub struct WorldgenResult {
 /// This separation ensures worldgen-only changes (e.g., adding a new generator)
 /// don't shift the runtime PRNG sequence, as long as the worldgen PRNG is
 /// consumed identically.
-pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
+pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResult {
+    wg_time!("run_worldgen (total)", log.as_ref());
+
     // Worldgen PRNG: dedicated instance seeded from the world seed.
     // All worldgen generators draw from this PRNG in a fixed order.
     let mut wg_rng = GameRng::new(seed);
@@ -109,20 +162,26 @@ pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
     let player_tree_id = TreeId::new(&mut wg_rng);
 
     // --- Generator 1: Tree ---
-    let (world, home_tree) = generate_tree(&mut wg_rng, config, player_tree_id);
+    let (world, home_tree) = {
+        wg_time!("tree generation + terrain", log.as_ref());
+        generate_tree(&mut wg_rng, config, player_tree_id, log)
+    };
 
     // Load lexicon once — used by fruit naming and civ naming.
     let lexicon = elven_canopy_lang::default_lexicon();
 
     // --- Generator 2: Fruits ---
-    let mut fruit_species =
-        crate::fruit::generate_fruit_species(&mut wg_rng, &config.worldgen.fruit);
-    crate::fruit::assign_fruit_names(
-        &mut fruit_species,
-        &mut wg_rng,
-        &config.worldgen.fruit,
-        &lexicon,
-    );
+    let fruit_species = {
+        wg_time!("fruit species generation", log.as_ref());
+        let mut species = crate::fruit::generate_fruit_species(&mut wg_rng, &config.worldgen.fruit);
+        crate::fruit::assign_fruit_names(
+            &mut species,
+            &mut wg_rng,
+            &config.worldgen.fruit,
+            &lexicon,
+        );
+        species
+    };
 
     // Assign a fruit species to the home tree. Pick a random common species
     // so the player's starting tree always produces an accessible fruit.
@@ -149,22 +208,34 @@ pub fn run_worldgen(seed: u64, config: &GameConfig) -> WorldgenResult {
         let _ = db.fruit_species.insert_no_fk(fruit.clone());
     }
 
-    let player_civ_id =
-        generate_civilizations(&mut wg_rng, &config.worldgen.civs, &mut db, &lexicon);
+    {
+        wg_time!("civilization generation", log.as_ref());
+        let player_civ_id =
+            generate_civilizations(&mut wg_rng, &config.worldgen.civs, &mut db, &lexicon);
+        home_tree.owner = Some(player_civ_id);
+    }
 
-    // Now that we know the player civ, assign tree ownership.
-    home_tree.owner = Some(player_civ_id);
+    let player_civ_id = home_tree.owner.unwrap();
 
     // --- Generator 4: Diplomacy ---
-    generate_diplomacy(&mut wg_rng, &config.worldgen.civs, &mut db);
+    {
+        wg_time!("diplomacy generation", log.as_ref());
+        generate_diplomacy(&mut wg_rng, &config.worldgen.civs, &mut db);
+    }
 
     // --- Generator 5: Knowledge distribution (placeholder) ---
     // Will be implemented by F-civ-knowledge. The generator will populate
     // CivFruitKnowledge tables.
 
     // Build nav graphs from the completed voxel world.
-    let nav_graph = nav::build_nav_graph(&world, &BTreeMap::new());
-    let large_nav_graph = nav::build_large_nav_graph(&world);
+    let nav_graph = {
+        wg_time!("nav graph", log.as_ref());
+        nav::build_nav_graph(&world, &BTreeMap::new())
+    };
+    let large_nav_graph = {
+        wg_time!("large nav graph", log.as_ref());
+        nav::build_large_nav_graph(&world)
+    };
 
     // Derive the runtime PRNG from the worldgen PRNG's current state.
     // This uses the worldgen PRNG to generate a new seed, ensuring the
@@ -192,6 +263,7 @@ fn generate_tree(
     rng: &mut GameRng,
     config: &GameConfig,
     player_tree_id: TreeId,
+    log: &WgLog,
 ) -> (VoxelWorld, Tree) {
     let (ws_x, ws_y, ws_z) = config.world_size;
     let center_x = ws_x as i32 / 2;
@@ -201,22 +273,23 @@ fn generate_tree(
     let mut tree_result = None;
 
     for _attempt in 0..config.structural.tree_gen_max_retries {
-        let candidate = tree_gen::generate_tree(&mut world, config, rng);
-        if structural::validate_tree(&world, config) {
+        let candidate = {
+            wg_time!(
+                "tree_gen::generate_tree (terrain + tree geometry)",
+                log.as_ref()
+            );
+            tree_gen::generate_tree(&mut world, config, rng, log.as_ref())
+        };
+        let valid = {
+            wg_time!("structural::validate_tree", log.as_ref());
+            structural::validate_tree(&world, config)
+        };
+        if valid {
             tree_result = Some(candidate);
             break;
         }
-        // Clear and rebuild world for retry.
+        // Clear world for retry. Terrain will be regenerated by generate_tree.
         world = VoxelWorld::new(ws_x, ws_y, ws_z);
-        let floor_extent = config.floor_extent;
-        for dx in -floor_extent..=floor_extent {
-            for dz in -floor_extent..=floor_extent {
-                world.set(
-                    VoxelCoord::new(center_x + dx, 0, center_z + dz),
-                    VoxelType::ForestFloor,
-                );
-            }
-        }
     }
 
     let tree_result = tree_result.expect(
@@ -226,7 +299,7 @@ fn generate_tree(
 
     let home_tree = Tree {
         id: player_tree_id,
-        position: VoxelCoord::new(center_x, 0, center_z),
+        position: VoxelCoord::new(center_x, config.floor_y, center_z),
         health: 100,
         growth_level: 1,
         mana_stored: config.starting_mana_mm,
@@ -239,7 +312,6 @@ fn generate_tree(
         branch_voxels: tree_result.branch_voxels,
         leaf_voxels: tree_result.leaf_voxels,
         root_voxels: tree_result.root_voxels,
-        dirt_voxels: tree_result.dirt_voxels,
         fruit_positions: Vec::new(),
         fruit_species_id: None,
     };
@@ -731,6 +803,7 @@ mod tests {
     fn test_config() -> GameConfig {
         let mut config = GameConfig {
             world_size: (64, 64, 64),
+            floor_y: 0,
             ..GameConfig::default()
         };
         config.tree_profile.growth.initial_energy = 50.0;
@@ -744,8 +817,8 @@ mod tests {
         let seed = 42;
         let config = test_config();
 
-        let result1 = run_worldgen(seed, &config);
-        let result2 = run_worldgen(seed, &config);
+        let result1 = run_worldgen(seed, &config, &noop_log());
+        let result2 = run_worldgen(seed, &config, &noop_log());
 
         // Tree geometry must match.
         assert_eq!(
@@ -758,7 +831,6 @@ mod tests {
         );
         assert_eq!(result1.home_tree.leaf_voxels, result2.home_tree.leaf_voxels);
         assert_eq!(result1.home_tree.root_voxels, result2.home_tree.root_voxels);
-        assert_eq!(result1.home_tree.dirt_voxels, result2.home_tree.dirt_voxels);
 
         // IDs must match.
         assert_eq!(result1.home_tree.id, result2.home_tree.id);
@@ -787,8 +859,8 @@ mod tests {
     fn different_seeds_produce_different_worlds() {
         let config = test_config();
 
-        let result1 = run_worldgen(1, &config);
-        let result2 = run_worldgen(2, &config);
+        let result1 = run_worldgen(1, &config, &noop_log());
+        let result2 = run_worldgen(2, &config, &noop_log());
 
         // Different seeds should produce different tree geometry.
         // (Technically could collide, but astronomically unlikely.)
@@ -805,7 +877,7 @@ mod tests {
         let seed = 42;
         let config = test_config();
 
-        let result = run_worldgen(seed, &config);
+        let result = run_worldgen(seed, &config, &noop_log());
 
         // The runtime RNG should produce different values than a fresh RNG
         // with the same seed.
@@ -831,7 +903,7 @@ mod tests {
     #[test]
     fn worldgen_creates_player_civ() {
         let config = test_config();
-        let result = run_worldgen(42, &config);
+        let result = run_worldgen(42, &config, &noop_log());
 
         // Player civ is always CivId(0) and player-controlled.
         let player_civ = result.db.civilizations.get(&CivId(0)).unwrap();
@@ -844,7 +916,7 @@ mod tests {
     fn worldgen_creates_correct_civ_count() {
         let mut config = test_config();
         config.worldgen.civs.civ_count = 5;
-        let result = run_worldgen(42, &config);
+        let result = run_worldgen(42, &config, &noop_log());
 
         let civs: Vec<_> = result.db.civilizations.iter_all().collect();
         assert_eq!(civs.len(), 5);
@@ -859,7 +931,7 @@ mod tests {
     fn worldgen_ai_civs_are_not_player_controlled() {
         let mut config = test_config();
         config.worldgen.civs.civ_count = 3;
-        let result = run_worldgen(42, &config);
+        let result = run_worldgen(42, &config, &noop_log());
 
         for civ in result.db.civilizations.iter_all() {
             if civ.id == CivId(0) {
@@ -874,7 +946,7 @@ mod tests {
     fn worldgen_diplomacy_creates_relationships() {
         let mut config = test_config();
         config.worldgen.civs.civ_count = 4;
-        let result = run_worldgen(42, &config);
+        let result = run_worldgen(42, &config, &noop_log());
 
         // With 4 civs, there should be some relationships (but not necessarily all,
         // since awareness is probabilistic).
@@ -890,7 +962,7 @@ mod tests {
         let mut config = test_config();
         config.worldgen.civs.civ_count = 20;
         config.worldgen.civs.player_starting_known_civs = 3;
-        let result = run_worldgen(42, &config);
+        let result = run_worldgen(42, &config, &noop_log());
 
         // Player civ should know at most 3 other civs.
         let player_rels = result
@@ -909,8 +981,8 @@ mod tests {
         // Same seed + config must produce identical civilizations.
         let mut config = test_config();
         config.worldgen.civs.civ_count = 8;
-        let r1 = run_worldgen(42, &config);
-        let r2 = run_worldgen(42, &config);
+        let r1 = run_worldgen(42, &config, &noop_log());
+        let r2 = run_worldgen(42, &config, &noop_log());
 
         let civs1: Vec<_> = r1.db.civilizations.iter_all().collect();
         let civs2: Vec<_> = r2.db.civilizations.iter_all().collect();
@@ -938,8 +1010,8 @@ mod tests {
     fn worldgen_different_seeds_produce_different_civs() {
         let mut config = test_config();
         config.worldgen.civs.civ_count = 10;
-        let r1 = run_worldgen(1, &config);
-        let r2 = run_worldgen(2, &config);
+        let r1 = run_worldgen(1, &config, &noop_log());
+        let r2 = run_worldgen(2, &config, &noop_log());
 
         // Names should differ with different seeds.
         let names1: Vec<_> = r1
@@ -961,7 +1033,7 @@ mod tests {
     fn worldgen_all_civs_have_names() {
         let mut config = test_config();
         config.worldgen.civs.civ_count = 10;
-        let result = run_worldgen(42, &config);
+        let result = run_worldgen(42, &config, &noop_log());
 
         for civ in result.db.civilizations.iter_all() {
             assert!(!civ.name.is_empty(), "CivId({}) has empty name", civ.id.0);
@@ -976,7 +1048,7 @@ mod tests {
         // Test across multiple seeds to catch probabilistic failures.
         for seed in 0..20 {
             let config = test_config();
-            let result = run_worldgen(seed, &config);
+            let result = run_worldgen(seed, &config, &noop_log());
 
             // Check reverse: at least one civ hates the player.
             let hates_player: Vec<_> = result

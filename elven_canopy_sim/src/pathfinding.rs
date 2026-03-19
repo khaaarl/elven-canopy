@@ -18,9 +18,12 @@
 //
 // **Critical constraint: determinism.** A* is a pure function of graph
 // state and start/goal nodes. No randomness, no floats — all integer.
+// When multiple paths have equal cost, the tiebreaker uses `VoxelCoord`
+// ordering (not `NavNodeId`) so results are independent of nav-graph node
+// ID assignment.
 
 use crate::nav::{EdgeType, HEURISTIC_SCALE, NavGraph};
-use crate::types::NavNodeId;
+use crate::types::{NavNodeId, VoxelCoord};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -36,14 +39,19 @@ pub struct PathResult {
 }
 
 /// Entry in the A* open set (min-heap via reversed ordering).
+///
+/// Tiebreaker uses `VoxelCoord` ordering (not `NavNodeId`) so that
+/// pathfinding results are independent of nav-graph node ID assignment.
 struct OpenEntry {
     node: NavNodeId,
     f_score: i64,
+    /// Cached position for deterministic tiebreaking.
+    position: VoxelCoord,
 }
 
 impl PartialEq for OpenEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.f_score == other.f_score && self.node == other.node
+        self.f_score == other.f_score && self.position == other.position
     }
 }
 
@@ -58,10 +66,11 @@ impl PartialOrd for OpenEntry {
 impl Ord for OpenEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reversed for min-heap: smallest f_score is "greatest".
+        // Tiebreaker: VoxelCoord ordering (deterministic regardless of node IDs).
         other
             .f_score
             .cmp(&self.f_score)
-            .then_with(|| other.node.0.cmp(&self.node.0))
+            .then_with(|| other.position.cmp(&self.position))
     }
 }
 
@@ -107,6 +116,7 @@ pub fn astar(
     open.push(OpenEntry {
         node: start,
         f_score: h_start,
+        position: graph.node(start).position,
     });
 
     while let Some(current) = open.pop() {
@@ -158,6 +168,7 @@ pub fn astar(
                 open.push(OpenEntry {
                     node: neighbor,
                     f_score: f,
+                    position: graph.node(neighbor).position,
                 });
             }
         }
@@ -204,6 +215,7 @@ pub fn astar_filtered(
     open.push(OpenEntry {
         node: start,
         f_score: h_start,
+        position: graph.node(start).position,
     });
 
     while let Some(current) = open.pop() {
@@ -259,6 +271,7 @@ pub fn astar_filtered(
                 open.push(OpenEntry {
                     node: neighbor,
                     f_score: f,
+                    position: graph.node(neighbor).position,
                 });
             }
         }
@@ -317,6 +330,7 @@ pub fn dijkstra_nearest(
     open.push(OpenEntry {
         node: start,
         f_score: 0, // Dijkstra: f = g (no heuristic).
+        position: graph.node(start).position,
     });
 
     while let Some(current) = open.pop() {
@@ -372,6 +386,7 @@ pub fn dijkstra_nearest(
                 open.push(OpenEntry {
                     node: neighbor,
                     f_score: tentative_g,
+                    position: graph.node(neighbor).position,
                 });
             }
         }
@@ -684,5 +699,58 @@ mod tests {
         // No edges — b is unreachable.
         let result = dijkstra_nearest(&graph, a, &[b], 1, Some(1), None, None, None);
         assert_eq!(result, None);
+    }
+
+    /// Proves that the A* tiebreaker is position-based, not NavNodeId-based.
+    ///
+    /// Two graphs have the same node positions and edges but nodes are added in
+    /// different order (so NavNodeIds differ). A* should produce the same path
+    /// (measured as a position sequence) on both graphs.
+    #[test]
+    fn astar_tiebreaker_uses_position_not_id() {
+        let pos_a = VoxelCoord::new(0, 0, 0);
+        let pos_b = VoxelCoord::new(1, 0, 0);
+        let pos_c = VoxelCoord::new(0, 0, 1);
+        let pos_d = VoxelCoord::new(1, 0, 1);
+
+        // Graph 1: add nodes in order A, B, C, D.
+        let mut g1 = NavGraph::new();
+        let g1_a = g1.add_node(pos_a, S);
+        let g1_b = g1.add_node(pos_b, S);
+        let g1_c = g1.add_node(pos_c, S);
+        let g1_d = g1.add_node(pos_d, S);
+        // Diamond: A-B, A-C, B-D, C-D — all cost dist(1).
+        g1.add_edge(g1_a, g1_b, EdgeType::ForestFloor, dist(1));
+        g1.add_edge(g1_a, g1_c, EdgeType::ForestFloor, dist(1));
+        g1.add_edge(g1_b, g1_d, EdgeType::ForestFloor, dist(1));
+        g1.add_edge(g1_c, g1_d, EdgeType::ForestFloor, dist(1));
+
+        // Graph 2: add nodes in reversed order D, C, B, A.
+        let mut g2 = NavGraph::new();
+        let g2_d = g2.add_node(pos_d, S);
+        let g2_c = g2.add_node(pos_c, S);
+        let g2_b = g2.add_node(pos_b, S);
+        let g2_a = g2.add_node(pos_a, S);
+        // Same diamond edges.
+        g2.add_edge(g2_a, g2_b, EdgeType::ForestFloor, dist(1));
+        g2.add_edge(g2_a, g2_c, EdgeType::ForestFloor, dist(1));
+        g2.add_edge(g2_b, g2_d, EdgeType::ForestFloor, dist(1));
+        g2.add_edge(g2_c, g2_d, EdgeType::ForestFloor, dist(1));
+
+        // NavNodeIds differ: in g1, A=0,B=1,C=2,D=3; in g2, A=3,B=2,C=1,D=0.
+        assert_ne!(g1_a, g2_a, "IDs should differ between graphs");
+
+        // A* from A to D on both graphs.
+        let r1 = astar(&g1, g1_a, g1_d, 1, Some(1), None, None).unwrap();
+        let r2 = astar(&g2, g2_a, g2_d, 1, Some(1), None, None).unwrap();
+
+        // Convert node IDs to positions for comparison.
+        let positions_1: Vec<VoxelCoord> = r1.nodes.iter().map(|n| g1.node(*n).position).collect();
+        let positions_2: Vec<VoxelCoord> = r2.nodes.iter().map(|n| g2.node(*n).position).collect();
+
+        assert_eq!(
+            positions_1, positions_2,
+            "A* paths should be identical by position regardless of node ID assignment"
+        );
     }
 }

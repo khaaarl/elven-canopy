@@ -260,8 +260,6 @@ pub struct TreeGenResult {
     pub leaf_voxels: Vec<VoxelCoord>,
     /// Root voxel positions (at or below ground level).
     pub root_voxels: Vec<VoxelCoord>,
-    /// Dirt voxel positions forming hilly terrain above ForestFloor.
-    pub dirt_voxels: Vec<VoxelCoord>,
 }
 
 // ---------------------------------------------------------------------------
@@ -347,33 +345,36 @@ fn try_place_voxel(
 /// and at most `terrain_max_height` voxels. Heights are smoothly interpolated
 /// from a coarse noise grid seeded by `rng`.
 ///
-/// Returns an empty vec if `terrain_max_height == 0` (backward compat).
-fn generate_terrain(
-    world: &mut VoxelWorld,
+/// Compute per-column dirt heights into a flat array (size_x × size_z,
+/// row-major X-fastest). Each value is the top Y coordinate (inclusive) of
+/// the dirt column: `floor_y + noise_height` where noise_height is in
+/// `[1, terrain_max_height]`. The PRNG is consumed single-threaded for the
+/// noise grid; height computation is parallelized with rayon.
+fn compute_terrain_heights(
+    size_x: u32,
+    size_z: u32,
     config: &GameConfig,
     rng: &mut GameRng,
-) -> Vec<VoxelCoord> {
+) -> Vec<i32> {
+    use rayon::prelude::*;
+
     let max_height = config.terrain_max_height;
+    let floor_y = config.floor_y;
     if max_height <= 0 {
         return Vec::new();
     }
 
-    let floor_extent = config.floor_extent;
     // noise_scale is an f32 config param; convert to FP for integer interpolation.
     let noise_scale_fp = f32_to_fp(config.terrain_noise_scale.max(1.0));
-    let center_x = world.size_x as i32 / 2;
-    let center_z = world.size_z as i32 / 2;
 
-    let min_x = center_x - floor_extent;
-    let max_x = center_x + floor_extent;
-    let min_z = center_z - floor_extent;
-    let max_z = center_z + floor_extent;
-    let floor_width_fp = (max_x - min_x + 1) as i64 * FP_ONE;
-    let floor_depth_fp = (max_z - min_z + 1) as i64 * FP_ONE;
+    // Coarse noise grid: one cell per noise_scale voxels, covering entire world.
+    // Built single-threaded to consume PRNG deterministically.
+    let world_width_fp = size_x as i64 * FP_ONE;
+    let world_depth_fp = size_z as i64 * FP_ONE;
 
     // Coarse noise grid dimensions.
-    let grid_w = ((floor_width_fp + noise_scale_fp - 1) / noise_scale_fp) as usize + 2;
-    let grid_h = ((floor_depth_fp + noise_scale_fp - 1) / noise_scale_fp) as usize + 2;
+    let grid_w = ((world_width_fp + noise_scale_fp - 1) / noise_scale_fp) as usize + 2;
+    let grid_h = ((world_depth_fp + noise_scale_fp - 1) / noise_scale_fp) as usize + 2;
 
     // Noise values in [0, FP_ONE) range, one per grid cell.
     let mut noise_grid = Vec::with_capacity(grid_w * grid_h);
@@ -382,19 +383,21 @@ fn generate_terrain(
         noise_grid.push((rng.next_u32() as i64 * FP_ONE / (u32::MAX as i64 + 1)).min(FP_ONE - 1));
     }
 
-    let mut dirt_voxels = Vec::new();
-
-    for x in min_x..=max_x {
-        for z in min_z..=max_z {
+    // Compute heights in parallel — pure math on the shared noise grid.
+    let count = (size_x as usize) * (size_z as usize);
+    (0..count)
+        .into_par_iter()
+        .map(|i| {
+            let x = (i % size_x as usize) as i64;
+            let z = (i / size_x as usize) as i64;
             // Map (x, z) to noise grid coordinates in FP.
-            let fx = (x - min_x) as i64 * FP_ONE / noise_scale_fp;
-            let fz = (z - min_z) as i64 * FP_ONE / noise_scale_fp;
+            let fx = x * FP_ONE / noise_scale_fp;
+            let fz = z * FP_ONE / noise_scale_fp;
             let gx = (fx >> FP_SHIFT) as usize;
             let gz = (fz >> FP_SHIFT) as usize;
             let tx = fx & (FP_ONE - 1); // fractional part
             let tz = fz & (FP_ONE - 1);
 
-            // Clamp grid indices.
             let gx1 = (gx + 1).min(grid_w - 1);
             let gz1 = (gz + 1).min(grid_h - 1);
             let gx = gx.min(grid_w - 1);
@@ -416,16 +419,30 @@ fn generate_terrain(
             // raw is in [0, FP_ONE), so raw * max_height / FP_ONE gives [0, max_height).
             let height = ((raw * max_height as i64 + FP_ONE / 2) >> FP_SHIFT) as i32;
             let height = height.clamp(1, max_height);
+            floor_y + height
+        })
+        .collect()
+}
 
-            for y in 1..=height {
-                let coord = VoxelCoord::new(x, y, z);
-                world.set(coord, VoxelType::Dirt);
-                dirt_voxels.push(coord);
-            }
-        }
+/// Generate terrain: lay a base ground plane of Dirt from y=0 to `floor_y`,
+/// then optionally extend columns upward with noise-based hills. Uses rayon
+/// to initialize column groups in parallel.
+fn generate_terrain(world: &mut VoxelWorld, config: &GameConfig, rng: &mut GameRng) {
+    let size_x = world.size_x;
+    let size_z = world.size_z;
+    let floor_y = config.floor_y;
+    let max_height = config.terrain_max_height;
+
+    if max_height <= 0 {
+        // Flat ground: uniform height array, still parallelized via groups.
+        let flat: Vec<i32> = vec![floor_y; (size_x as usize) * (size_z as usize)];
+        world.init_terrain_parallel(&flat);
+        return;
     }
 
-    dirt_voxels
+    // Compute noise-based heights (parallel) and apply to world (parallel).
+    let heights = compute_terrain_heights(size_x, size_z, config, rng);
+    world.init_terrain_parallel(&heights);
 }
 
 // ---------------------------------------------------------------------------
@@ -435,11 +452,13 @@ fn generate_terrain(
 /// Generate a tree at the world center, populating the voxel world and
 /// returning the voxel lists for the Tree entity.
 ///
-/// Also fills `ForestFloor` at y=0 for the walkable ground plane.
+/// Also generates terrain: every column gets a single Dirt span from y=0 up to
+/// `floor_y + noise_height`, creating rolling hills across the entire map.
 pub fn generate_tree(
     world: &mut VoxelWorld,
     config: &GameConfig,
     rng: &mut GameRng,
+    log: &dyn Fn(&str),
 ) -> TreeGenResult {
     let profile = &config.tree_profile;
 
@@ -451,19 +470,14 @@ pub fn generate_tree(
     let center_x_fp = (world.size_x as i64 / 2) * FP_ONE;
     let center_z_fp = (world.size_z as i64 / 2) * FP_ONE;
 
-    // --- Forest floor at y=0 ---
-    let floor_extent = config.floor_extent;
-    let center_x_i = (world.size_x / 2) as i32;
-    let center_z_i = (world.size_z / 2) as i32;
-    for dx in -floor_extent..=floor_extent {
-        for dz in -floor_extent..=floor_extent {
-            let coord = VoxelCoord::new(center_x_i + dx, 0, center_z_i + dz);
-            world.set(coord, VoxelType::ForestFloor);
-        }
-    }
-
-    // --- Hilly dirt terrain above forest floor ---
-    let dirt_voxels = generate_terrain(world, config, rng);
+    // --- Terrain: every column is a single Dirt span from y=0 to floor_y + noise_height ---
+    let floor_y = config.floor_y;
+    let t0 = std::time::Instant::now();
+    generate_terrain(world, config, rng);
+    log(&format!(
+        "[worldgen]   terrain generation took {:.1?}",
+        t0.elapsed()
+    ));
 
     // --- Convert config params to fixed-point ---
     let initial_energy_fp = f32_to_fp(profile.growth.initial_energy);
@@ -480,8 +494,9 @@ pub fn generate_tree(
     ]);
 
     let mut job_queue: VecDeque<SegmentJob> = VecDeque::new();
+    let trunk_base_y_fp = (floor_y as i64 + 1) * FP_ONE;
     job_queue.push_back(SegmentJob {
-        position: [center_x_fp, FP_ONE, center_z_fp],
+        position: [center_x_fp, trunk_base_y_fp, center_z_fp],
         direction: trunk_dir,
         energy: trunk_energy,
         generation: 0,
@@ -508,7 +523,7 @@ pub fn generate_tree(
                 ((horiz_z * cos_down) >> FP_SHIFT),
             ]);
             job_queue.push_back(SegmentJob {
-                position: [center_x_fp, FP_ONE, center_z_fp],
+                position: [center_x_fp, trunk_base_y_fp, center_z_fp],
                 direction: dir,
                 energy: energy_per_root,
                 generation: 0,
@@ -519,6 +534,7 @@ pub fn generate_tree(
     }
 
     // --- Process work queue ---
+    let t0 = std::time::Instant::now();
     while let Some(job) = job_queue.pop_front() {
         grow_segment(
             job,
@@ -530,19 +546,29 @@ pub fn generate_tree(
             &mut root_voxels,
             &mut leaf_blob_centers,
             &mut job_queue,
+            floor_y,
             energy_per_step_fp,
         );
     }
 
+    log(&format!(
+        "[worldgen]   segment growth took {:.1?}",
+        t0.elapsed()
+    ));
+
     // --- Leaf blobs (separate pass after all segments) ---
+    let t0 = std::time::Instant::now();
     let leaf_voxels = generate_leaf_blobs(&leaf_blob_centers, world, profile, rng);
+    log(&format!(
+        "[worldgen]   leaf blob generation took {:.1?}",
+        t0.elapsed()
+    ));
 
     TreeGenResult {
         trunk_voxels,
         branch_voxels,
         leaf_voxels,
         root_voxels,
-        dirt_voxels,
     }
 }
 
@@ -559,6 +585,7 @@ fn grow_segment(
     root_voxels: &mut Vec<VoxelCoord>,
     leaf_blob_centers: &mut Vec<LeafBlobCenter>,
     job_queue: &mut VecDeque<SegmentJob>,
+    floor_y: i32,
     energy_per_step_fp: i64,
 ) {
     let initial_energy = job.energy;
@@ -593,7 +620,8 @@ fn grow_segment(
 
         // Apply base flare for trunk (generation 0, non-root, near ground).
         if job.generation == 0 && !job.is_root && base_flare_fp > 0 {
-            let height_fp = job.position[1] - FP_ONE; // height above y=1
+            let trunk_base_y_fp = (floor_y as i64 + 1) * FP_ONE;
+            let height_fp = job.position[1] - trunk_base_y_fp; // height above trunk base
             let five_fp = 5 * FP_ONE;
             if height_fp < five_fp {
                 // flare_factor = 1 + base_flare * (1 - height/5)
@@ -699,9 +727,9 @@ fn grow_segment(
         let grav_bias = vec3_scale(up, gravitropism_fp);
         job.direction = vec3_normalize(vec3_add(job.direction, grav_bias));
 
-        // Root surface tendency: pull roots back toward y=0.
+        // Root surface tendency: pull roots back toward floor level.
         if job.is_root && surface_tendency_fp > 0 {
-            let target_y_fp = 0i64;
+            let target_y_fp = floor_y as i64 * FP_ONE;
             let y_offset = job.position[1] - target_y_fp;
             // surface_bias_y = -y_offset * surface_tendency * 0.1
             // In FP: -y_offset * surface_tendency / (10 * FP_ONE)
@@ -907,6 +935,7 @@ mod tests {
     fn test_config() -> GameConfig {
         let mut config = GameConfig {
             world_size: (64, 64, 64),
+            floor_y: 0,
             ..GameConfig::default()
         };
         config.tree_profile.growth.initial_energy = 50.0;
@@ -927,7 +956,7 @@ mod tests {
         let config = test_config_no_roots();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         assert!(!result.trunk_voxels.is_empty());
         for coord in &result.trunk_voxels {
@@ -941,11 +970,11 @@ mod tests {
 
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
-        let result_a = generate_tree(&mut world_a, &config, &mut rng_a);
+        let result_a = generate_tree(&mut world_a, &config, &mut rng_a, &|_| {});
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(42);
-        let result_b = generate_tree(&mut world_b, &config, &mut rng_b);
+        let result_b = generate_tree(&mut world_b, &config, &mut rng_b, &|_| {});
 
         assert_eq!(result_a.trunk_voxels, result_b.trunk_voxels);
         assert_eq!(result_a.branch_voxels, result_b.branch_voxels);
@@ -959,11 +988,11 @@ mod tests {
 
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
-        let result_a = generate_tree(&mut world_a, &config, &mut rng_a);
+        let result_a = generate_tree(&mut world_a, &config, &mut rng_a, &|_| {});
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(999);
-        let result_b = generate_tree(&mut world_b, &config, &mut rng_b);
+        let result_b = generate_tree(&mut world_b, &config, &mut rng_b, &|_| {});
 
         // Branch geometry uses RNG for angles, growth, forking — must differ.
         assert_ne!(
@@ -977,7 +1006,7 @@ mod tests {
         let config = test_config_no_roots();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         // Count trunk voxels near the base (y <= 3) vs near the top.
         let max_y = result.trunk_voxels.iter().map(|v| v.y).max().unwrap_or(0);
@@ -998,15 +1027,15 @@ mod tests {
     }
 
     #[test]
-    fn generates_forest_floor() {
+    fn generates_dirt_terrain() {
         let config = test_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        generate_tree(&mut world, &config, &mut rng);
+        generate_tree(&mut world, &config, &mut rng, &|_| {});
 
-        // Check a floor tile away from the trunk center (roots may overwrite center).
-        let edge = VoxelCoord::new(32 + config.floor_extent, 0, 32);
-        assert_eq!(world.get(edge), VoxelType::ForestFloor);
+        // Ground plane at floor_y should be Dirt (check away from trunk where roots won't overwrite).
+        let edge = VoxelCoord::new(5, 0, 5);
+        assert_eq!(world.get(edge), VoxelType::Dirt);
     }
 
     #[test]
@@ -1018,7 +1047,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         assert!(!result.trunk_voxels.is_empty(), "Should have trunk voxels");
         assert!(
@@ -1037,7 +1066,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         assert!(
             !result.root_voxels.is_empty(),
@@ -1060,7 +1089,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         let center_x = 32;
         let center_z = 32;
@@ -1095,7 +1124,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         assert!(
             !result.leaf_voxels.is_empty(),
@@ -1111,7 +1140,7 @@ mod tests {
         let config = test_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         for coord in &result.trunk_voxels {
             assert_eq!(
@@ -1143,7 +1172,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         assert!(
             result.leaf_voxels.is_empty(),
@@ -1162,11 +1191,11 @@ mod tests {
 
         let mut world_nf = VoxelWorld::new(64, 64, 64);
         let mut rng_nf = GameRng::new(42);
-        let result_nf = generate_tree(&mut world_nf, &config_no_flare, &mut rng_nf);
+        let result_nf = generate_tree(&mut world_nf, &config_no_flare, &mut rng_nf, &|_| {});
 
         let mut world_f = VoxelWorld::new(64, 64, 64);
         let mut rng_f = GameRng::new(42);
-        let result_f = generate_tree(&mut world_f, &config_flare, &mut rng_f);
+        let result_f = generate_tree(&mut world_f, &config_flare, &mut rng_f, &|_| {});
 
         let base_count_no_flare = result_nf.trunk_voxels.iter().filter(|v| v.y == 1).count();
         let base_count_flare = result_f.trunk_voxels.iter().filter(|v| v.y == 1).count();
@@ -1187,11 +1216,11 @@ mod tests {
 
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(99);
-        let result_a = generate_tree(&mut world_a, &config, &mut rng_a);
+        let result_a = generate_tree(&mut world_a, &config, &mut rng_a, &|_| {});
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(99);
-        let result_b = generate_tree(&mut world_b, &config, &mut rng_b);
+        let result_b = generate_tree(&mut world_b, &config, &mut rng_b, &|_| {});
 
         assert_eq!(result_a.trunk_voxels, result_b.trunk_voxels);
         assert_eq!(result_a.branch_voxels, result_b.branch_voxels);
@@ -1215,7 +1244,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         let all_wood: Vec<VoxelCoord> = result
             .trunk_voxels
@@ -1259,7 +1288,7 @@ mod tests {
         let config = test_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         let all_wood: Vec<VoxelCoord> = result
             .trunk_voxels
@@ -1298,7 +1327,7 @@ mod tests {
         let config = test_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         assert!(!result.trunk_voxels.is_empty(), "Should have trunk voxels");
         assert!(
@@ -1320,6 +1349,7 @@ mod tests {
     fn terrain_config() -> GameConfig {
         let mut config = GameConfig {
             world_size: (64, 64, 64),
+            floor_y: 0,
             ..GameConfig::default()
         };
         config.tree_profile.growth.initial_energy = 50.0;
@@ -1334,13 +1364,14 @@ mod tests {
 
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
-        let result_a = generate_tree(&mut world_a, &config, &mut rng_a);
+        generate_tree(&mut world_a, &config, &mut rng_a, &|_| {});
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(42);
-        let result_b = generate_tree(&mut world_b, &config, &mut rng_b);
+        generate_tree(&mut world_b, &config, &mut rng_b, &|_| {});
 
-        assert_eq!(result_a.dirt_voxels, result_b.dirt_voxels);
+        // Compare heightmaps to verify terrain determinism.
+        assert_eq!(world_a.heightmap(), world_b.heightmap());
     }
 
     #[test]
@@ -1348,14 +1379,15 @@ mod tests {
         let config = terrain_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        generate_tree(&mut world, &config, &mut rng, &|_| {});
 
-        let y_values: std::collections::BTreeSet<i32> =
-            result.dirt_voxels.iter().map(|v| v.y).collect();
+        // Check that terrain heights vary across the world.
+        let hm = world.heightmap();
+        let unique: std::collections::BTreeSet<u8> = hm.iter().copied().collect();
         assert!(
-            y_values.len() > 1,
-            "Terrain should have dirt at multiple y levels (got {:?})",
-            y_values
+            unique.len() > 1,
+            "Terrain should have multiple height levels (got {:?})",
+            unique
         );
     }
 
@@ -1364,15 +1396,21 @@ mod tests {
         let config = terrain_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        generate_tree(&mut world, &config, &mut rng, &|_| {});
 
-        for coord in &result.dirt_voxels {
-            assert!(
-                coord.y >= 1 && coord.y <= config.terrain_max_height,
-                "Dirt at y={} exceeds max_height={}",
-                coord.y,
-                config.terrain_max_height
-            );
+        // Check terrain height at corners (far from center tree).
+        let max_terrain = config.terrain_max_height;
+        for &(x, z) in &[(0, 0), (0, 63), (63, 0), (63, 63)] {
+            for y in (max_terrain + 1)..64 {
+                assert_eq!(
+                    world.get(VoxelCoord::new(x, y, z)),
+                    VoxelType::Air,
+                    "Terrain at ({},{},{}) should be air above max_height",
+                    x,
+                    y,
+                    z
+                );
+            }
         }
     }
 
@@ -1381,20 +1419,17 @@ mod tests {
         let config = terrain_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        generate_tree(&mut world, &config, &mut rng, &|_| {});
 
-        let center = 32;
-        let extent = config.floor_extent;
-        let dirt_set: std::collections::HashSet<VoxelCoord> =
-            result.dirt_voxels.iter().copied().collect();
-        for dx in -extent..=extent {
-            for dz in -extent..=extent {
-                let coord = VoxelCoord::new(center + dx, 1, center + dz);
+        // Every column should have solid ground at y=0.
+        for z in 0..64_i32 {
+            for x in 0..64_i32 {
+                let coord = VoxelCoord::new(x, 0, z);
                 assert!(
-                    dirt_set.contains(&coord),
-                    "Column ({},{}) missing dirt at y=1",
-                    center + dx,
-                    center + dz
+                    world.get(coord).is_solid(),
+                    "Column ({},{}) missing solid ground at y=0",
+                    x,
+                    z
                 );
             }
         }
@@ -1406,12 +1441,15 @@ mod tests {
         config.terrain_max_height = 0;
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng);
+        generate_tree(&mut world, &config, &mut rng, &|_| {});
 
-        assert!(
-            result.dirt_voxels.is_empty(),
-            "With terrain_max_height=0, should have no dirt voxels"
-        );
+        // With terrain_max_height=0, ground plane should still exist at floor_y
+        // (check away from trunk center where roots won't overwrite).
+        let coord = VoxelCoord::new(5, 0, 5);
+        assert_eq!(world.get(coord), VoxelType::Dirt);
+        // No hills above floor_y: off-center y=1 should be air.
+        let offcenter = VoxelCoord::new(5, 1, 5);
+        assert_eq!(world.get(offcenter), VoxelType::Air);
     }
 
     #[test]
@@ -1485,6 +1523,55 @@ mod tests {
         assert!(
             (len - FP_ONE).abs() < FP_ONE / 20,
             "Drift after 100 normalizations: {len} vs {FP_ONE}"
+        );
+    }
+
+    #[test]
+    fn generates_tree_at_nonzero_floor_y() {
+        let mut config = test_config();
+        config.floor_y = 10;
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+
+        // All trunk voxels must be above the floor (trunk starts at floor_y + 1).
+        for coord in &result.trunk_voxels {
+            assert!(
+                coord.y >= 11,
+                "Trunk voxel at y={} is below floor_y+1=11",
+                coord.y
+            );
+        }
+
+        // All branch voxels must also be above the floor.
+        for coord in &result.branch_voxels {
+            assert!(
+                coord.y >= 11,
+                "Branch voxel at y={} is below floor_y+1=11",
+                coord.y
+            );
+        }
+
+        // Terrain Dirt should exist at floor_y=10.
+        let edge = VoxelCoord::new(5, 10, 5);
+        assert_eq!(
+            world.get(edge),
+            VoxelType::Dirt,
+            "Expected Dirt at floor_y=10"
+        );
+
+        // No trunk or branch voxels below floor_y + 1.
+        let below_floor: Vec<_> = result
+            .trunk_voxels
+            .iter()
+            .chain(result.branch_voxels.iter())
+            .filter(|v| v.y < 11)
+            .collect();
+        assert!(
+            below_floor.is_empty(),
+            "Found {} trunk/branch voxels below floor_y+1: {:?}",
+            below_floor.len(),
+            &below_floor[..below_floor.len().min(5)]
         );
     }
 }

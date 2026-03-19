@@ -2,8 +2,11 @@
 ##
 ## Built at startup via setup(), then incrementally updated every frame via
 ## refresh() so that carved voxels disappear and new construction appears in
-## real time. The Rust sim generates per-chunk ArrayMesh data with up to three
-## surfaces:
+## real time. Uses a MegaChunk spatial hierarchy on the Rust side for
+## draw-distance filtering and frustum culling — only nearby, visible chunks
+## have MeshInstance3D nodes.
+##
+## The Rust sim generates per-chunk ArrayMesh data with up to three surfaces:
 ## - Surface 0 (bark): Trunk, Branch, Root, and construction voxels with
 ##   per-face culling. Textured via a custom tiling shader that samples three
 ##   global Texture2DArray caches at prime periods per axis. Bark caches use
@@ -21,23 +24,28 @@
 ## material-specific tiling textures; the leaf surface shares a single
 ## StandardMaterial3D.
 ##
+## ## Visibility pipeline (per frame)
+##
+## 1. Extract camera frustum planes from the active Camera3D.
+## 2. Send camera position + frustum to Rust via update_visibility().
+## 3. Rust returns delta lists: chunks to show/hide/generate/evict.
+## 4. GDScript toggles .visible, creates new MeshInstance3Ds for generated
+##    chunks, and frees evicted ones.
+##
 ## Fruit is rendered as billboarded Sprite3D nodes, one per fruit voxel,
-## using procedural 16x16 pixel art textures from elven_canopy_sprites. Each
-## fruit species gets a unique texture generated from its FruitAppearance
-## data (shape, color, size, glow). Textures are cached per species ID so
-## at most ~40 textures exist per game. Fruit sprites are rebuilt every
-## frame via _refresh_fruit(), grouped by species for texture reuse.
+## using procedural 16x16 pixel art textures from elven_canopy_sprites.
 ##
 ## See also: mesh_gen.rs (sim crate) for the face-culled mesh generation
 ## algorithm, texture_gen.rs for the prime-period tiling texture system,
-## mesh_cache.rs (gdext crate) for the chunk caching layer,
-## sim_bridge.rs for build_world_mesh()/update_world_mesh()/build_chunk_array_mesh(),
-## bark_ground.gdshader for the tiling shader,
-## main.gd which creates this node and calls setup() + refresh().
+## mesh_cache.rs (gdext crate) for the MegaChunk hierarchy and LRU cache,
+## sim_bridge.rs for the bridge API, bark_ground.gdshader for the tiling
+## shader, main.gd which creates this node and calls setup() + refresh().
 
 extends Node3D
 
 var _bridge: SimBridge
+## Reference to the active Camera3D for frustum extraction.
+var _camera: Camera3D
 ## Cached leaf texture — generated once, reused across refreshes.
 var _leaf_texture: ImageTexture
 ## Leaf material: vertex color tinted alpha-scissor with procedural texture.
@@ -57,22 +65,40 @@ var _fruit_sprites: Array[Sprite3D] = []
 
 
 ## Call after SimBridge is initialized to build the chunk meshes.
-func setup(bridge: SimBridge) -> void:
+## camera: the active Camera3D used for frustum culling.
+func setup(bridge: SimBridge, camera: Camera3D) -> void:
 	_bridge = bridge
+	_camera = camera
 	_leaf_texture = _generate_leaf_texture()
 	_leaf_material = _build_leaf_material()
-	_bark_material = _build_tiling_material(0)  # material 0 = bark
-	_ground_material = _build_tiling_material(1)  # material 1 = ground
 	_fruit_container = Node3D.new()
 	_fruit_container.name = "FruitSprites"
 	add_child(_fruit_container)
 	_bridge.build_world_mesh()
-	_build_all_chunks()
+	# Tiling materials must be built after build_world_mesh(), which creates
+	# the mesh cache that owns the tiling texture data.
+	_bark_material = _build_tiling_material(0)  # material 0 = bark
+	_ground_material = _build_tiling_material(1)  # material 1 = ground
+	_do_initial_visibility()
 	_cache_fruit_textures()
 	_refresh_fruit()
 
 
-## Rebuild dirty chunks and refresh fruit. Called every frame by main.gd.
+## Perform the first visibility pass to populate initial chunks.
+## Skips frustum culling (empty plane list) because the camera may not have
+## a valid frustum yet during setup — the viewport hasn't rendered a frame.
+## All chunks within draw distance are generated, up to the per-frame cap.
+func _do_initial_visibility() -> void:
+	var cam_pos := _camera.global_position
+	var empty_frustum := PackedFloat32Array()
+	_bridge.update_visibility(cam_pos.x, cam_pos.y, cam_pos.z, empty_frustum)
+	_process_generated_chunks()
+	# The per-frame cap means not all chunks may be generated on the first call.
+	# Subsequent refresh() calls will generate the rest via _update_chunk_visibility.
+
+
+## Rebuild dirty chunks, update visibility, and refresh fruit.
+## Called every frame by main.gd.
 func refresh() -> void:
 	var updated := _bridge.update_world_mesh()
 	if updated > 0:
@@ -84,7 +110,63 @@ func refresh() -> void:
 			var cy := dirty[idx + 1]
 			var cz := dirty[idx + 2]
 			_rebuild_chunk(cx, cy, cz)
+
+	# Visibility update: send camera state to Rust, process deltas.
+	_update_chunk_visibility()
+
 	_refresh_fruit()
+
+
+## Send camera frustum + position to Rust and process the resulting
+## show/hide/generate/evict delta lists.
+func _update_chunk_visibility() -> void:
+	var frustum := _extract_frustum_planes()
+	var cam_pos := _camera.global_position
+	_bridge.update_visibility(cam_pos.x, cam_pos.y, cam_pos.z, frustum)
+
+	# Hide chunks that left visibility.
+	var to_hide := _bridge.get_chunks_to_hide()
+	var hide_count := to_hide.size() / 3
+	for i in hide_count:
+		var idx := i * 3
+		var key := "%d,%d,%d" % [to_hide[idx], to_hide[idx + 1], to_hide[idx + 2]]
+		if _chunk_instances.has(key):
+			var inst: MeshInstance3D = _chunk_instances[key]
+			inst.visible = false
+
+	# Show chunks that entered visibility (already have MeshInstance3D).
+	var to_show := _bridge.get_chunks_to_show()
+	var show_count := to_show.size() / 3
+	for i in show_count:
+		var idx := i * 3
+		var key := "%d,%d,%d" % [to_show[idx], to_show[idx + 1], to_show[idx + 2]]
+		if _chunk_instances.has(key):
+			var inst: MeshInstance3D = _chunk_instances[key]
+			inst.visible = true
+
+	# Create MeshInstance3Ds for freshly generated chunks.
+	_process_generated_chunks()
+
+	# Free evicted chunks.
+	var evicted := _bridge.get_chunks_evicted()
+	var evict_count := evicted.size() / 3
+	for i in evict_count:
+		var idx := i * 3
+		var key := "%d,%d,%d" % [evicted[idx], evicted[idx + 1], evicted[idx + 2]]
+		if _chunk_instances.has(key):
+			var inst: MeshInstance3D = _chunk_instances[key]
+			inst.queue_free()
+			_chunk_instances.erase(key)
+
+
+## Create MeshInstance3D nodes for chunks that were freshly generated by
+## the Rust visibility pass.
+func _process_generated_chunks() -> void:
+	var generated := _bridge.get_chunks_generated()
+	var gen_count := generated.size() / 3
+	for i in gen_count:
+		var idx := i * 3
+		_rebuild_chunk(generated[idx], generated[idx + 1], generated[idx + 2])
 
 
 func _build_leaf_material() -> StandardMaterial3D:
@@ -133,19 +215,6 @@ func _build_tiling_material(material_id: int) -> ShaderMaterial:
 	return mat
 
 
-## Build MeshInstance3D nodes for all non-empty chunks from the initial
-## world mesh build.
-func _build_all_chunks() -> void:
-	var coords := _bridge.get_mesh_chunk_coords()
-	var count := coords.size() / 3
-	for i in count:
-		var idx := i * 3
-		var cx := coords[idx]
-		var cy := coords[idx + 1]
-		var cz := coords[idx + 2]
-		_rebuild_chunk(cx, cy, cz)
-
-
 ## Build or rebuild the MeshInstance3D for a single chunk.
 ##
 ## The Rust side always emits exactly 3 surfaces in fixed order:
@@ -181,6 +250,21 @@ func _rebuild_chunk(cx: int, cy: int, cz: int) -> void:
 	instance.name = "Chunk_%s" % key
 	add_child(instance)
 	_chunk_instances[key] = instance
+
+
+## Extract the 6 camera frustum planes as a flat PackedFloat32Array of
+## 24 floats: [nx, ny, nz, d] × 6 (Godot convention).
+func _extract_frustum_planes() -> PackedFloat32Array:
+	var planes := _camera.get_frustum()
+	var arr := PackedFloat32Array()
+	arr.resize(24)
+	for i in planes.size():
+		var p: Plane = planes[i]
+		arr[i * 4] = p.normal.x
+		arr[i * 4 + 1] = p.normal.y
+		arr[i * 4 + 2] = p.normal.z
+		arr[i * 4 + 3] = p.d
+	return arr
 
 
 ## Generate and cache fruit textures for all species in the world.

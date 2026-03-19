@@ -237,14 +237,13 @@
 //
 // ## Save/load
 //
-// `SimState` derives `Serialize`/`Deserialize` via serde. Several transient
-// fields (`world`, `nav_graph`, `large_nav_graph`, `species_table`, `lexicon`,
-// `face_data`, `ladder_orientations`, `structure_voxels`) are `#[serde(skip)]`
-// and must be rebuilt after deserialization via `rebuild_transient_state()`.
-// Convenience methods `to_json()` and `from_json()` handle the full
-// serialize/deserialize + rebuild cycle. `rebuild_world()` reconstructs the
-// voxel grid from stored tree voxel lists, `placed_voxels` (construction
-// progress), and config (forest floor extent).
+// `SimState` derives `Serialize`/`Deserialize` via serde. The voxel world is
+// serialized directly using a compact binary pack format (see `world.rs`).
+// Several transient fields (`nav_graph`, `large_nav_graph`, `species_table`,
+// `lexicon`, `face_data`, `ladder_orientations`, `structure_voxels`) are
+// `#[serde(skip)]` and must be rebuilt after deserialization via
+// `rebuild_transient_state()`. Convenience methods `to_json()` and
+// `from_json()` handle the full serialize/deserialize + rebuild cycle.
 //
 // ## Sub-modules
 //
@@ -365,8 +364,7 @@ pub struct SimState {
     #[serde(default)]
     pub player_civ_id: Option<CivId>,
 
-    /// The 3D voxel world grid. Regenerated from seed, not serialized.
-    #[serde(skip)]
+    /// The 3D voxel world grid. Serialized compactly as packed binary data.
     pub world: VoxelWorld,
 
     /// The navigation graph built from tree geometry. Regenerated from seed, not serialized.
@@ -453,9 +451,6 @@ pub struct Tree {
     pub leaf_voxels: Vec<VoxelCoord>,
     /// Root voxel positions (at or below ground level).
     pub root_voxels: Vec<VoxelCoord>,
-    /// Dirt voxel positions forming hilly terrain above ForestFloor.
-    #[serde(default)]
-    pub dirt_voxels: Vec<VoxelCoord>,
     /// Positions of fruit hanging below leaf voxels.
     pub fruit_positions: Vec<VoxelCoord>,
     /// The fruit species this tree produces. Assigned during worldgen from the
@@ -466,12 +461,14 @@ pub struct Tree {
 }
 
 /// A creature's current path through the nav graph.
+///
+/// Stores positions (`VoxelCoord`) instead of `NavNodeId`s so that paths are
+/// independent of nav-graph node ID assignment. At each step the sim resolves
+/// the next position to a `NavNodeId` via the graph's spatial index.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreaturePath {
-    /// Remaining node IDs to visit (next node is index 0).
-    pub remaining_nodes: Vec<NavNodeId>,
-    /// Remaining edge indices to traverse (next edge is index 0).
-    pub remaining_edge_indices: Vec<usize>,
+    /// Remaining positions to visit (next position is index 0).
+    pub remaining_positions: Vec<VoxelCoord>,
 }
 
 /// The result of processing commands and advancing the simulation.
@@ -605,9 +602,20 @@ impl SimState {
     /// a dedicated worldgen PRNG. The runtime PRNG is derived from the worldgen
     /// PRNG's final state, ensuring deterministic separation.
     pub fn with_config(seed: u64, config: GameConfig) -> Self {
+        Self::with_config_and_log(seed, config, &crate::worldgen::stderr_log())
+    }
+
+    /// Like `with_config`, but accepts a custom logging callback for worldgen
+    /// timing output. Use this from GDExtension to route logs through
+    /// `godot_print!`.
+    pub fn with_config_and_log(
+        seed: u64,
+        config: GameConfig,
+        log: &crate::worldgen::WgLog,
+    ) -> Self {
         use crate::worldgen;
 
-        let wg = worldgen::run_worldgen(seed, &config);
+        let wg = worldgen::run_worldgen(seed, &config, log);
 
         let player_tree_id = wg.home_tree.id;
 
@@ -1273,18 +1281,15 @@ impl SimState {
                         .unwrap_or(false);
 
                     if has_bread
-                        && let Some(nav_node) = self
-                            .db
-                            .creatures
-                            .get(&creature_id)
-                            .and_then(|c| c.current_node)
+                        && let Some(creature_pos) =
+                            self.db.creatures.get(&creature_id).map(|c| c.position)
                     {
                         let task_id = TaskId::new(&mut self.rng);
                         let new_task = task::Task {
                             id: task_id,
                             kind: task::TaskKind::EatBread,
                             state: task::TaskState::InProgress,
-                            location: nav_node,
+                            location: creature_pos,
                             progress: 0,
                             total_cost: 0,
                             required_species: None,
@@ -1303,14 +1308,14 @@ impl SimState {
                 // Fall back to seeking fruit if no bread was available.
                 if should_seek_food
                     && !ate_bread
-                    && let Some((fruit_pos, nav_node)) = self.find_nearest_fruit(creature_id)
+                    && let Some((fruit_pos, _nav_node)) = self.find_nearest_fruit(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
                     let new_task = task::Task {
                         id: task_id,
                         kind: task::TaskKind::EatFruit { fruit_pos },
                         state: task::TaskState::InProgress,
-                        location: nav_node,
+                        location: fruit_pos,
                         progress: 0,
                         total_cost: 0,
                         required_species: None,
@@ -1328,27 +1333,27 @@ impl SimState {
                 // or fall back to sleeping on the ground.
                 // Priority: assigned home bed → dormitory bed → ground.
                 if should_seek_sleep {
-                    let (bed_pos, nav_node, sleep_ticks, sleep_location) =
-                        if let Some((bp, nn, sid)) = self.find_assigned_home_bed(creature_id) {
+                    let (bed_pos, task_coord, sleep_ticks, sleep_location) =
+                        if let Some((bp, _nn, sid)) = self.find_assigned_home_bed(creature_id) {
                             (
                                 Some(bp),
-                                nn,
+                                bp,
                                 self.config.sleep_ticks_bed,
                                 task::SleepLocation::Home(sid),
                             )
-                        } else if let Some((bp, nn, sid)) = self.find_nearest_bed(creature_id) {
+                        } else if let Some((bp, _nn, sid)) = self.find_nearest_bed(creature_id) {
                             (
                                 Some(bp),
-                                nn,
+                                bp,
                                 self.config.sleep_ticks_bed,
                                 task::SleepLocation::Dormitory(sid),
                             )
                         } else if let Some(creature) = self.db.creatures.get(&creature_id)
-                            && let Some(node) = creature.current_node
+                            && creature.current_node.is_some()
                         {
                             (
                                 None,
-                                node,
+                                creature.position,
                                 self.config.sleep_ticks_ground,
                                 task::SleepLocation::Ground,
                             )
@@ -1364,7 +1369,7 @@ impl SimState {
                             location: sleep_location,
                         },
                         state: task::TaskState::InProgress,
-                        location: nav_node,
+                        location: task_coord,
                         progress: 0,
                         total_cost: (sleep_ticks / self.config.sleep_action_ticks) as i64,
                         required_species: None,
@@ -1752,93 +1757,14 @@ impl SimState {
         (score, self.config.mood.tier(score))
     }
 
-    /// Rebuild the voxel world from config, stored tree entity data, and
-    /// construction-placed voxels.
-    ///
-    /// Recreates the `VoxelWorld` from scratch: lays the forest floor at y=0
-    /// using `config.floor_extent`, then places every tree's trunk, branch,
-    /// root, leaf, and fruit voxels, then places any construction voxels from
-    /// `placed_voxels`. This is the inverse of tree generation — instead of
-    /// growing the tree procedurally, we replay the stored voxel lists.
-    pub fn rebuild_world(
-        config: &GameConfig,
-        trees: &BTreeMap<TreeId, Tree>,
-        placed_voxels: &[(VoxelCoord, VoxelType)],
-        carved_voxels: &[VoxelCoord],
-    ) -> VoxelWorld {
-        let (ws_x, ws_y, ws_z) = config.world_size;
-        let mut world = VoxelWorld::new(ws_x, ws_y, ws_z);
-
-        // Lay forest floor.
-        let center_x = ws_x as i32 / 2;
-        let center_z = ws_z as i32 / 2;
-        let floor_extent = config.floor_extent;
-        for dx in -floor_extent..=floor_extent {
-            for dz in -floor_extent..=floor_extent {
-                let coord = VoxelCoord::new(center_x + dx, 0, center_z + dz);
-                world.set(coord, VoxelType::ForestFloor);
-            }
-        }
-
-        // Place dirt voxels (terrain hills). Dirt has priority 0 so tree voxels
-        // overwrite it where they overlap — the tree embeds naturally in hillside.
-        for tree in trees.values() {
-            for &coord in &tree.dirt_voxels {
-                world.set(coord, VoxelType::Dirt);
-            }
-        }
-
-        // Place tree voxels. Priority order: Trunk > Branch > Root > Leaf > Fruit.
-        for tree in trees.values() {
-            for &coord in &tree.trunk_voxels {
-                world.set(coord, VoxelType::Trunk);
-            }
-            for &coord in &tree.branch_voxels {
-                world.set(coord, VoxelType::Branch);
-            }
-            for &coord in &tree.root_voxels {
-                world.set(coord, VoxelType::Root);
-            }
-            for &coord in &tree.leaf_voxels {
-                world.set(coord, VoxelType::Leaf);
-            }
-            for &coord in &tree.fruit_positions {
-                world.set(coord, VoxelType::Fruit);
-            }
-        }
-
-        // Place construction voxels.
-        for &(coord, voxel_type) in placed_voxels {
-            world.set(coord, voxel_type);
-        }
-
-        // Apply carve removals (set to Air).
-        for &coord in carved_voxels {
-            world.set(coord, VoxelType::Air);
-        }
-
-        world
-    }
-
     /// Rebuild all transient (`#[serde(skip)]`) fields after deserialization.
     ///
-    /// Restores: `world` (voxel grid from stored tree voxels + config),
-    /// `nav_graph` (from rebuilt world geometry), `species_table` (from config),
-    /// `spatial_index` (from creatures + species footprints — must run after
-    /// `species_table`), `lexicon` (from embedded JSON), `structure_voxels`
-    /// (from completed blueprints + structures).
+    /// The voxel world is now serialized directly, so only derived data
+    /// structures need rebuilding: `nav_graph` (from world geometry),
+    /// `species_table` (from config), `spatial_index` (from creatures +
+    /// species footprints), `lexicon` (from embedded JSON),
+    /// `structure_voxels` (from completed blueprints + structures).
     pub fn rebuild_transient_state(&mut self) {
-        self.world = Self::rebuild_world(
-            &self.config,
-            &self.trees,
-            &self.placed_voxels,
-            &self.carved_voxels,
-        );
-        // World rebuild produces dirty_voxels entries for every set() call.
-        // Clear them — the mesh cache will do a full build_all() after load.
-        self.world.clear_dirty_voxels();
-        // Compact RLE column groups after bulk load writes.
-        self.world.repack_all();
         self.face_data = self.face_data_list.iter().cloned().collect();
         self.ladder_orientations = self.ladder_orientations_list.iter().cloned().collect();
         self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);

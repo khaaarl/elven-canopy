@@ -57,6 +57,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
+[ ] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -70,7 +71,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
 [ ] F-batch-construct      Batch construction mode with ensemble validation
 [ ] F-batch-craft          Workstation-driven batch crafting with time discount
-[ ] F-bigger-world         Larger playable area
 [ ] F-binding-conflicts    Binding conflict detection
 [ ] F-bldg-concert         Concert hall
 [ ] F-bldg-dining          Dining hall
@@ -161,6 +161,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-narrative-log        Events and narrative log
+[ ] F-nav-perf             Optimize nav graph generation performance
 [ ] F-night-predators      Nocturnal predators
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-patrol               Patrol command for military groups
@@ -171,6 +172,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-raid-detection       Raid detection gating and stealth spawning
+[ ] F-raid-polish          Raid polish: military groups, provisions for long treks
 [ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
 [ ] F-root-network         Root network expansion and diplomacy
@@ -248,6 +250,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-attack-move          Attack-move task (walk + fight en route)
 [x] F-attack-task          AttackCreature task (player-directed target pursuit)
 [x] F-audio-synth          Waveform synthesis for audio rendering
+[x] F-bigger-world         Larger playable area
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
 [x] F-bldg-kitchen         Kitchen (cooking from ingredients)
@@ -2470,6 +2473,11 @@ infrastructure.
 
 ### Combat & Defense
 
+#### B-raid-spawn — Raiders sometimes spawn inside map instead of at perimeter
+**Status:** Todo
+
+Raiders are supposed to spawn at the map edge perimeter, but some spawn closer to the center. Likely related to floor_extent no longer matching the actual terrain extent — floor_extent defines the raid perimeter band, but terrain now covers the full world (1024x1024). The perimeter filter in find_perimeter_positions (raid.rs) uses floor_extent to determine "edge" positions, which may be much smaller than the actual map edge with the bigger world.
+
 #### F-anatomy — DF-style hit location anatomy system
 **Status:** Todo
 
@@ -2936,6 +2944,15 @@ game progression replaces the current debug-only button.
 
 **Related:** F-enemy-raids, F-fog-of-war
 
+#### F-raid-polish — Raid polish: military groups, provisions for long treks
+**Status:** Todo
+
+Raiders should receive quality-of-life improvements for the bigger world:
+
+- Raiders should be organized into their civ's equivalent of a 'soldier' military group (currently they spawn as ungrouped hostiles)
+- Raiders should carry provisions (food) so they can survive the long trek from map edge to the tree on a 1024x1024 world — without food they may starve or become too weak to fight before arriving
+- Raiders should consume provisions during the march, using the existing food/hunger system
+
 #### F-rescue — Rescue and stabilize incapacitated creatures
 **Status:** Todo
 
@@ -3192,7 +3209,7 @@ enchanted arrows, and blink teleport.
 ### World Expansion & Ecology
 
 #### F-bigger-world — Larger playable area
-**Status:** Todo
+**Status:** Done
 
 Increase world size to 1024×255×1024. The tree and terrain start at
 ~y=50, leaving room below for underground content (caves, drow, mining).
@@ -3205,8 +3222,7 @@ RLE-aware mesh gen (F-mesh-gen-rle), and LookupMap nav spatial index
 volume. The tiling texture system (F-tiling-tex) eliminates per-face
 atlas overhead that would otherwise be prohibitive at this scale.
 
-**Blocked by:** F-megachunk
-**Unblocked by:** F-nav-gen-opt, F-rle-voxels, F-tiling-tex
+**Unblocked by:** F-megachunk, F-nav-gen-opt, F-rle-voxels, F-tiling-tex
 **Related:** F-lesser-trees, F-multi-tree, F-world-map, F-zone-world
 
 #### F-civ-knowledge — Civilization knowledge system (fruit tiers, discovery)
@@ -4609,7 +4625,7 @@ enters draw distance, cached when it leaves, and evicted LRU when the
 memory budget is exceeded. Both draw distance and memory budget are
 user-configurable settings.
 
-**Blocks:** F-bigger-world
+**Unblocked:** F-bigger-world
 **Related:** F-visual-smooth
 
 #### F-mesh-cache-lru — LRU cache for chunk meshes at different Y cutoffs
@@ -4620,6 +4636,19 @@ user-configurable settings.
 
 Plugin/scripting system for custom structures, elf behaviors, invader
 types. Open design question (§27).
+
+#### F-nav-perf — Optimize nav graph generation performance
+**Status:** Todo
+
+build_nav_graph and build_large_nav_graph each take ~3 seconds on a 1024x255x1024 world. The algorithm is now span-scan + BFS (no brute-force Y iteration), but the bottleneck is data structure overhead: ~1M nodes with HashMap-based spatial index lookups (13M for edges), BFS visited tracking, and Vec reallocations for edge_indices.
+
+Potential optimizations (from perf analysis):
+- Rayon-parallelize the column span scan phase (embarrassingly parallel)
+- Replace HashMap spatial_index with flat 2D array for ground-plane lookups (O(1) vs O(log n) for 13M edge lookups)
+- Replace HashMap visited/seed_set with a 2D bitset (~128KB vs millions of HashMap entries)
+- Pre-allocate edge_indices capacity (saves ~5M Vec reallocations)
+- For build_large_nav_graph: use precomputed col_top_solid in edge creation (currently re-scans spans per edge, ~150M redundant span scans)
+- find_nearest_node() does an O(N) linear scan of all live nodes; with ~1M ground nodes this is slow. Called from activation.rs for every task resolution and from construction for task creation. Consider a spatial acceleration structure (grid, k-d tree, or 2D array for ground-plane nodes).
 
 #### F-rle-voxels — RLE column-based voxel storage
 **Status:** Done
