@@ -121,7 +121,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
 [ ] F-fire-structure       Fire x structural integrity cascades
-[ ] F-flying-nav           3D flight navigation system
+[ ] F-flying-nav           3D flight nav for 1×1 flying creatures (vanilla A*)
+[ ] F-flying-nav-big       3D flight nav for 2×2×2 flying creatures
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-follow-multi         Camera zoom-to and follow for multi-selections
 [ ] F-food-chain           Food production/distribution pipeline
@@ -132,6 +133,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-funeral-rites        Funeral rites and mourning
+[ ] F-giant-hornet         Giant hornet hostile flying creature
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-herbalism            Herbalism and alchemy
@@ -234,6 +236,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-wood-stats           Wood-type material variation for crafted items
 [ ] F-world-boundary       World boundary visualization
 [ ] F-world-map            World map view
+[ ] F-wyvern               Wyvern hostile flying creature (2×2×2)
 [ ] F-zone-world           Zone-based world with fidelity partitioning
 ```
 
@@ -1086,11 +1089,23 @@ change that benefits from independent implementation and testing.
 
 **Related:** F-creature-actions, F-task-interruption
 
-#### F-flying-nav — 3D flight navigation system
+#### F-flying-nav — 3D flight nav for 1×1 flying creatures (vanilla A*)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §10
 
-Full 3D movement for birds and winged elves. Separate from the
-surface-based nav graph — likely a volumetric approach.
+3D flight pathfinding for one-voxel-sized flying creatures.
+Vanilla A* in 3D space — the sky is mostly open so no nav graph
+is needed.
+
+**Blocks:** F-flying-nav-big, F-giant-hornet
+
+#### F-flying-nav-big — 3D flight nav for 2×2×2 flying creatures
+**Status:** Todo
+
+3D flight pathfinding for 2×2×2 flying creatures. Extends
+F-flying-nav with multi-voxel clearance checks.
+
+**Blocked by:** F-flying-nav
+**Blocks:** F-wyvern
 
 #### F-large-nav-tolerance — 1-voxel height tolerance for large nav
 **Status:** Done · **Phase:** 8+
@@ -1323,6 +1338,16 @@ panel and as overhead bar.
 
 **Related:** F-bread, F-creature-death, F-elf-needs, F-fruit-prod
 
+#### F-giant-hornet — Giant hornet hostile flying creature
+**Status:** Todo
+
+Giant hornet hostile flying creature (1×1×1). Aggressive AI
+targeting elves. Debug button to spawn one, angry at elves.
+Requires F-flying-nav.
+
+**Blocked by:** F-flying-nav
+**Related:** F-wyvern
+
 #### F-hostile-species — Goblin, Orc, and Troll species
 **Status:** Done
 
@@ -1481,6 +1506,16 @@ fire-based strategies (if F-fire-basic is implemented). Species-level
 config for regen rate.
 
 **Related:** F-hostile-species
+
+#### F-wyvern — Wyvern hostile flying creature (2×2×2)
+**Status:** Todo
+
+Wyvern hostile flying creature (2×2×2). Different sprite from the
+giant hornet but similar aggressive AI, bigger and more dangerous.
+Requires F-flying-nav-big.
+
+**Blocked by:** F-flying-nav-big
+**Related:** F-giant-hornet
 
 ### Economy & Logistics
 
