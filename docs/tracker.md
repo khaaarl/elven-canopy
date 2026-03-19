@@ -83,6 +83,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-building-door        Player-controlled building door orientation
 [ ] F-cascade-fail         Cascading structural failure
+[ ] F-child-table-pks      Convert child tables to natural compound primary keys
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
@@ -207,6 +208,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-cycle            Tab to cycle focus through units in selection
 [ ] F-tab-joins            Join iterators across tables
+[ ] F-tab-nonpk-autoinc    Non-PK auto-increment fields in tabulosity
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-priority        Priority queue and auto-assignment
@@ -4769,10 +4771,68 @@ type priority prevents overwrites.
 #### B-tab-serde-tests — Fix tabulosity test compilation under feature unification
 **Status:** Done
 
+#### F-child-table-pks — Convert child tables to natural compound primary keys
+**Status:** Todo
+
+Convert child tables in SimDb from synthetic auto-increment primary keys to natural compound primary keys. The auto-increment IDs on these tables are never referenced outside of `types.rs` and `db.rs` — they exist only to satisfy the "every table needs a PK" requirement. Replacing them with natural keys eliminates dead ID types, makes the schema self-documenting, and in the case of 1:1 extension tables, allows direct `.get(&parent_id)` lookups instead of `by_parent_id(...).into_iter().next()`.
+
+**Tables to convert — natural compound PKs (no auto-increment needed):**
+
+- **CreatureTrait** → `(creature_id, trait_kind)`. Already has a unique compound index enforcing this invariant. `CreatureTraitId` is never used outside `types.rs`/`db.rs`. The existing `modify_unchecked(&row.id, ...)` calls in `sim/tests.rs` become `modify_unchecked(&(creature_id, trait_kind), ...)`, which is arguably clearer.
+
+- **CivRelationship** → `(from_civ, to_civ)`. Relationship table with two FK columns that together form a natural unique key. `CivRelationshipId` is never used outside `types.rs`/`db.rs`.
+
+- **TaskHaulData** → `(task_id)`. 1:1 extension table. Accessor `task_haul_data()` becomes `.get(&task_id)` instead of `by_task_id(...).next()`. One `modify_unchecked(&data.id, ...)` call in `logistics.rs` becomes `modify_unchecked(&data.task_id, ...)`.
+
+- **TaskSleepData** → `(task_id)`. 1:1 extension table. Never modified after insertion. Same `.get()` simplification.
+
+- **TaskAcquireData** → `(task_id)`. 1:1 extension table. Never modified after insertion. Same pattern.
+
+- **TaskCraftData** → `(task_id)`. 1:1 extension table. One `modify_unchecked` call in `crafting.rs`. Also has `active_recipe_id` field (not a FK-as-PK, just a regular field).
+
+- **TaskAttackTargetData** → `(task_id)`. 1:1 extension table. Never modified after insertion.
+
+- **TaskAttackMoveData** → `(task_id)`. 1:1 extension table. Never modified after insertion.
+
+**Tables to convert — compound PK with auto-increment tiebreaker (requires F-tab-nonpk-autoinc):**
+
+- **Thought** → `(creature_id, seq)` with `seq` as `#[auto_increment]`. A creature can have multiple thoughts of the same kind on the same tick, so no combination of existing fields forms a unique key. `ThoughtId` is never referenced outside `types.rs`/`db.rs`.
+
+- **TaskStructureRef** → `(task_id, seq)` with `seq` as `#[auto_increment]`. No unique index on `(task_id, role)` in the schema — the one-ref-per-role invariant is application-layer convention only. `TaskStructureRefId` is never referenced outside `types.rs`/`db.rs`.
+
+- **TaskVoxelRef** → `(task_id, seq)` with `seq` as `#[auto_increment]`. Same situation as TaskStructureRef — `role` is indexed independently but not in a unique compound index with `task_id`. `TaskVoxelRefId` is never referenced outside `types.rs`/`db.rs`.
+
+- **TaskBlueprintRef** → `(task_id, seq)` with `seq` as `#[auto_increment]`. Currently 1:1 per task, but we anticipate multiple blueprints per task in the future. `TaskBlueprintRefId` is never referenced outside `types.rs`/`db.rs`.
+
+- **LogisticsWantRow** → `(inventory_id, seq)` with `seq` as `#[auto_increment]`. A single inventory can have multiple wants for the same item kind with different material filters, so no combination of existing fields is guaranteed unique. `LogisticsWantId` is never referenced outside `types.rs`/`db.rs`.
+
+- **ItemSubcomponent** → `(item_stack_id, seq)` with `seq` as `#[auto_increment]`. An item stack can have multiple subcomponents with the same `(component_kind, material)` at different qualities, so those fields don't form a unique key. `ItemSubcomponentId` is never referenced outside `types.rs`/`db.rs`.
+
+- **EnchantmentEffect** → `(enchantment_id, seq)` with `seq` as `#[auto_increment]`. Design allows multiple identical effects on the same enchantment. `EnchantmentEffectId` is never referenced outside `types.rs`/`db.rs`.
+
+**Save compatibility:** The `seq` field on converted tables will use `#[serde(rename = "id")]` so that old saves (which serialized the field as `"id"`) deserialize correctly into the renamed field. The auto-increment counter initialization (from F-tab-nonpk-autoinc) computes `max(field) + 1` when no counter is present in the save data, ensuring the sequence picks up where the old auto-PK left off and doesn't collide with existing row values.
+
+**Tables NOT converted (and why):**
+
+- **Notification** — `NotificationId` is never referenced, but there's no natural key. `(tick, message)` is plausible but not structurally guaranteed unique (two events at the same tick could produce identical messages). No benefit to a compound PK here.
+
+- **ActiveRecipeTarget** — `ActiveRecipeTargetId` is used in `SimCommand::SetRecipeOutputTarget` and threaded through the GDScript bridge. Converting would require the UI to pass a multi-field key instead of a single ID. Not worth the disruption.
+
+- **Furniture** — No guaranteed uniqueness on `(structure_id, coord)` — the same voxel could hold multiple furniture items.
+
+- **ItemStack** — `ItemStackId` is heavily referenced across 7+ files (combat, inventory, activation, needs, etc.). Fundamental entity, not a child table.
+
+- **Inventory** — Same as ItemStack; heavily referenced, not a child table.
+
+**Blocked by:** F-tab-nonpk-autoinc
+**Related:** F-compound-pk, F-tab-nonpk-autoinc, F-tab-parent-pk
+
 #### F-compound-pk — Compound (multi-column) primary keys
 **Status:** Done
 
 Support compound (multi-column) primary keys in Tabulosity tables, analogous to existing compound secondary indexes. Currently all tables require a single-field `#[primary_key]`. Compound PKs would allow tables like `creature_traits(creature_id, trait_kind) → value` to use the natural key as the PK without a synthetic auto-increment ID.
+
+**Related:** F-child-table-pks, F-tab-nonpk-autoinc
 
 #### F-tab-auto-pk — Auto-generated primary keys
 **Status:** Done
@@ -4846,8 +4906,29 @@ closure call. Database-level wrappers delegate to the table methods.
 
 **Related:** F-sim-db-impl, F-tab-query-opts
 
+#### F-tab-nonpk-autoinc — Non-PK auto-increment fields in tabulosity
+**Status:** Todo
+
+Add support for a single `#[auto_increment]` field per table that is NOT the primary key. Currently, auto-incrementing is only available on single-column primary keys (`#[primary_key(auto_increment)]`). This feature decouples auto-incrementing from primary-key status, allowing a table to have a compound PK while still getting an automatically assigned unique value for one of its fields.
+
+**Motivation:** Many child tables have a natural compound primary key (e.g., `(parent_id, seq)`) but need a globally unique tiebreaker column because the parent-scoped fields alone don't guarantee uniqueness. For example, a creature can have multiple thoughts of the same kind on the same tick, so `(creature_id, kind, tick)` isn't a valid PK — but `(creature_id, seq)` is, if `seq` auto-increments.
+
+**Design decisions:**
+- **One auto-increment field per table.** This matches every major relational database: MySQL explicitly forbids multiple auto-increment columns, PostgreSQL technically allows multiple `SERIAL` columns but only because they're syntactic sugar for independent sequences — no database actually supports or encourages multiple auto-increment fields per table. One is always sufficient.
+- **Global sequence, not per-parent.** The counter is table-wide (a single `next_<field>` value), not scoped to each parent ID. Global uniqueness is simpler to implement and what databases universally do. Per-parent numbering (seq restarts at 0 for each parent value) can be done at the application layer if desired.
+- **Field-level attribute.** The existing `#[primary_key(auto_increment)]` stays as-is for backward compatibility. The new `#[auto_increment]` attribute goes on a regular (non-PK) field. The table codegen produces an `insert_auto`-style method that fills in the auto-increment field and returns it.
+- **Serde.** The table serializes/deserializes `next_<field>` alongside the rows array, just as auto-PK tables already serialize `next_id`. On deserialization, if the counter is missing from the data (e.g., loading an old save where this field used to be the PK and `next_id` was stored instead), the table must compute `max(field) + 1` across all loaded rows to initialize the counter. This prevents the counter from restarting at a low value and colliding with existing row values.
+- **Interaction with compound PKs.** A compound PK can include the auto-increment field as one of its columns. The table's insert method takes all non-auto-increment PK fields from the caller, fills in the auto-increment field, and constructs the full compound key.
+
+**Scope:** Tabulosity crate only (`tabulosity` + `tabulosity_derive`). No sim changes.
+
+**Blocks:** F-child-table-pks
+**Related:** F-child-table-pks, F-compound-pk, F-tab-parent-pk
+
 #### F-tab-parent-pk — Tabulosity: allow parent PK as child table PK for 1:1 relations
 **Status:** Done
+
+**Related:** F-child-table-pks, F-tab-nonpk-autoinc
 
 #### F-tab-query-opts — Query options struct for index queries
 **Status:** Done
