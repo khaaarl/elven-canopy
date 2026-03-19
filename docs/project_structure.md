@@ -55,6 +55,7 @@ elven-canopy/
 │   ├── src/
 │   │   ├── lib.rs              # Re-exports, module declarations
 │   │   ├── error.rs            # Error enum (5 variants), DeserializeError
+│   │   ├── ins_ord_hash_map.rs # InsOrdHashMap: insertion-ordered hash map with tombstone-skip iteration
 │   │   └── table.rs            # Bounded, FkCheck, TableMeta, AutoIncrementable, IntoQuery, QueryOpts
 │   ├── tests/
 │   │   ├── auto_increment.rs   # Auto-increment PK generation and serde roundtrip
@@ -65,6 +66,7 @@ elven-canopy/
 │   │   ├── compound_pk_serde.rs     # Compound PK serde roundtrip (feature-gated)
 │   │   ├── database.rs         # FK validation, restrict/cascade/nullify on-delete
 │   │   ├── indexed_table.rs    # Secondary indexes, range queries
+│   │   ├── ins_ord_hash_map.rs # InsOrdHashMap integration tests + serde roundtrips
 │   │   ├── modify_unchecked.rs # Closure-based mutation (single/range/all) + debug assertions
 │   │   ├── nonpk_auto_database.rs     # Non-PK auto-increment: DB-level FKs, cascades, serde
 │   │   ├── nonpk_auto_increment.rs    # Non-PK #[auto_increment] with compound PKs, indexes

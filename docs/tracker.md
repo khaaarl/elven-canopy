@@ -207,9 +207,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-sung-furniture       Sung furniture grown from living wood
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-cycle            Tab to cycle focus through units in selection
+[ ] F-tab-hash-idx         Hash-based indexes in Tabulosity derive macro
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
-[ ] F-tab-ordered-idx      Deterministic-iteration hash index with tombstone skip
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-priority        Priority queue and auto-assignment
@@ -396,6 +396,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-filter-idx       Filtered/partial indexes
 [x] F-tab-modify-unchk     Closure-based row mutation (modify_unchecked)
 [x] F-tab-nonpk-autoinc    Non-PK auto-increment fields in tabulosity
+[x] F-tab-ordered-idx      Deterministic-iteration hash index with tombstone skip
 [x] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [x] F-tab-query-opts       Query options struct for index queries
 [x] F-tab-schema-ver       Schema versioning fundamentals
@@ -4885,6 +4886,39 @@ High complexity.
 
 **Related:** F-sim-db-impl, F-tab-compound-idx
 
+#### F-tab-hash-idx — Hash-based indexes in Tabulosity derive macro
+**Status:** Todo
+
+Integrate `InsOrdHashMap` into Tabulosity's derive macro so users can
+declare hash-based indexes on table fields. Currently all indexes are
+`BTreeSet`-backed with O(log n) lookup; hash indexes give O(1) exact
+lookup with deterministic insertion-order iteration.
+
+**Attribute syntax (tentative):**
+- `#[indexed(hash)]` — simple hash index on a single field
+- `#[indexed(hash, unique)]` — unique hash index
+- `#[index(name = "...", fields("a", "b"), kind = "hash")]` — compound hash index
+
+**Derive macro changes (`tabulosity_derive/src/table.rs`):**
+- Index storage: emit `InsOrdHashMap<FieldType, SmallVec<[PK; N]>>` for
+  non-unique indexes, `InsOrdHashMap<FieldType, PK>` for unique indexes,
+  instead of `BTreeSet<(fields..., pk...)>`.
+- Query methods: `by_*` / `iter_by_*` / `count_by_*` dispatch via `get`
+  for exact matches. Range queries not supported on hash indexes — only
+  `QueryBound::Exact` and `QueryBound::MatchAll`.
+- Index maintenance: insert/update/remove codegen maintains `InsOrdHashMap`.
+- Bounds tracking: not needed for hash indexes (no range scans).
+
+**Primary storage option (separate or here):**
+Optionally allow `InsOrdHashMap<PK, Row>` instead of `BTreeMap<PK, Row>` for
+the main `rows` field, giving O(1) primary key lookup. This changes iteration
+order of `iter_all` / `keys` from PK-sorted to insertion-ordered.
+
+**Depends on:** F-tab-ordered-idx (the `InsOrdHashMap` data structure)
+
+**Unblocked by:** F-tab-ordered-idx
+**Related:** F-tab-indexmap-fork, F-tab-ordered-idx
+
 #### F-tab-indexmap-fork — Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 **Status:** Todo
 
@@ -4900,7 +4934,7 @@ iteration performance or memory overhead from key duplication is a bottleneck,
 this is the path. The encapsulated interface from F-tab-ordered-idx means this
 can be dropped in without touching Tabulosity internals.
 
-**Related:** F-tab-ordered-idx
+**Related:** F-tab-hash-idx, F-tab-ordered-idx
 
 #### F-tab-joins — Join iterators across tables
 **Status:** Todo
@@ -4945,7 +4979,7 @@ Add support for a single `#[auto_increment]` field per table that is NOT the pri
 **Related:** F-child-table-pks, F-compound-pk, F-tab-parent-pk
 
 #### F-tab-ordered-idx — Deterministic-iteration hash index with tombstone skip
-**Status:** Todo
+**Status:** Done
 
 Deterministic-iteration hash index for Tabulosity. Wraps a `HashMap<K, usize>`
 + `Vec<Entry<K, V>>` where entries are either live `(K, V)` pairs or tombstones.
@@ -4957,12 +4991,7 @@ original insertion order for determinism stability regardless of compaction
 policy changes.
 
 **Entry representation:**
-```
-    Live(K, V),
-    Tombstone { span_start: usize, after_span: usize },
-enum Entry<K, V> {
-}
-```
+`enum Entry<K, V> { Live(K, V), Tombstone { span_start: usize, after_span: usize } }`
 Relies on `(K, V)` being at least as large as two usizes in practice (true for
 most DB-style keys+values). If `(K, V)` is smaller, the enum is still correct,
 just slightly larger.
@@ -5018,7 +5047,8 @@ Tabulosity internals.
 - Serde: the vec (with tombstones removed) should be serialized alongside the
   table to preserve insertion order across save/load.
 
-**Related:** F-tab-indexmap-fork
+**Unblocked:** F-tab-hash-idx
+**Related:** F-tab-hash-idx, F-tab-indexmap-fork
 
 #### F-tab-parent-pk — Tabulosity: allow parent PK as child table PK for 1:1 relations
 **Status:** Done

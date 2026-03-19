@@ -17,13 +17,17 @@
 //! ordered collections. This is a hard requirement for its primary consumer,
 //! `elven_canopy_sim`, which must produce identical results given the same seed
 //! for lockstep multiplayer and replay verification. **`HashMap` and `HashSet`
-//! must never be introduced** into library code, generated code, or test
-//! helpers — even where iteration order appears irrelevant — because hash
-//! ordering varies across platforms, Rust versions, and process invocations.
+//! must never be iterated** in library code, generated code, or test helpers —
+//! hash ordering varies across platforms, Rust versions, and process invocations.
+//! The one exception is `InsOrdHashMap`, which uses a `HashMap` internally for
+//! O(1) lookup but never iterates it — all iteration goes through an ordered vec.
 //!
 //! # Crate layout
 //!
 //! - `error.rs` — `Error` enum and `DeserializeError` for write failures.
+//! - `ins_ord_hash_map.rs` — `InsOrdHashMap<K, V>`, an insertion-ordered hash
+//!   map with deterministic iteration via tombstone-skip vec. O(1) lookup and
+//!   removal with automatic compaction.
 //! - `table.rs` — `Bounded` trait, `FkCheck` trait, `IntoQuery`/`QueryBound`/
 //!   `MatchAll` query types, `QueryOrder`/`QueryOpts` for ordering and offset,
 //!   `in_bounds` helper, and range bound helpers used by generated code.
@@ -33,9 +37,11 @@
 //! This crate re-exports those derives so users only need `use tabulosity::*`.
 
 mod error;
+mod ins_ord_hash_map;
 mod table;
 
 pub use error::{DeserializeError, Error};
+pub use ins_ord_hash_map::InsOrdHashMap;
 pub use table::{
     AutoIncrementable, Bounded, FkCheck, IntoQuery, MatchAll, QueryBound, QueryOpts, QueryOrder,
     TableMeta, in_bounds,
